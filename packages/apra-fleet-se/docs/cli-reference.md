@@ -51,9 +51,12 @@ allowed.
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
 | `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
+| `--usage-limit-max-wait-s <s>` | | no | integer >= 60 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_WAIT_S`) | Total wall-clock seconds a single dispatch may stay paused across all usage-limit reprobes before the controller gives up with a typed `UsageLimitWaitExhaustedError` (routed through `finalizeAbort()`/an `[ABORTED]` PR). Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. See `docs/architecture.md` "A provider usage/rate limit pauses the run". |
+| `--usage-limit-max-reprobes <n>` | | no | integer >= 1 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_REPROBES`) | Maximum usage-limit reprobe attempts before the controller gives up, independent of elapsed wait. Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. |
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
+| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the orchestrator member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
@@ -70,7 +73,9 @@ several keys `bin/cli.mjs` never sets, so they stay at their defaults for
 every CLI-launched sprint: the legacy singular `target_issue`, `assignee`,
 `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
 `azdevops_pat_secret_name`, and the engine-injected `callTool`. See
-`docs/fleet-sprint-cli-contract.md` for that contract.
+`docs/fleet-sprint-cli-contract.md` for that contract, and its "Dormant
+argument audit" section specifically for the productize-or-prune decision on
+`assignee`, `doer_worklist_mode` and `resume_model_switch` (apra-fleet-3swo.7.13).
 
 ### Environment variables
 
@@ -81,13 +86,25 @@ every CLI-launched sprint: the legacy singular `target_issue`, `assignee`,
   `APRA_FLEET_DATA_DIR` -- fleet-server connection resolution, see below.
 - `APRA_FLEET_SE_SCHEMAS_DIR` -- role-schema directory override, see
   "Role schema resolution" below.
+- `FLEET_SPRINT_EXPECT_BEADS` -- env fallback for `--expect-beads`.
+
+Before any `bd` mutation, the CLI prints a `Beads:` banner naming the expected
+identity, then logs `beads ok: <member> ...` per member as each one's probe
+passes. Severity: a MISMATCH (a field that resolved on both sides and
+differs) raises `BeadsIdentityError` and aborts; a probe that fails or
+resolves nothing is a `[beads-identity] WARNING: ...` line naming the member,
+the field, the probe, the error and the fix -- that field is simply not
+compared and the sprint proceeds. The banner's own pre-flight probe of the
+orchestrator member prints `Warning: ...` (with the fix) on failure instead of
+exiting.
 
 ### Exit codes
 
 - `0` -- `--help`, or a sprint that finished successfully.
 - `1` -- any precondition or validation failure (missing required flags,
   malformed issue id/branch/role-map, out-of-range `--max-cycles`/
-  `--viewer-port`/`--dispatch-timeout-s`/`--budget`, unreachable fleet
+  `--viewer-port`/`--dispatch-timeout-s`/`--usage-limit-max-wait-s`/
+  `--usage-limit-max-reprobes`/`--budget`, unreachable fleet
   server, member validation failure, missing target issue, topology
   mismatch, viewer `listen` failure), and any sprint failure.
 - `130` -- SIGINT received while a sprint was in flight.

@@ -113,9 +113,15 @@ test('mock sprint: an integ dispatch inactivity timeout that persists after resu
             result.logs.some((m) => m.includes('Integration tests INCONCLUSIVE this cycle') && m.includes('infra dispatch failure (dispatch_failed)')),
             `Expected the persisted infra failure to be recorded as INCONCLUSIVE, logs: ${JSON.stringify(result.logs)}`
         );
+        // apra-fleet-3swo.5.7: the integ ladder's degrade moved onto the
+        // dispatchRole engine, which announces the same distinction in its own
+        // generic wording (the degrade KIND names it) rather than in the
+        // ladder's hand-written sentence. Same fact: the ladder said out loud
+        // that it was degrading to INCONCLUSIVE and NOT recording a failure
+        // verdict.
         check(
-            result.logs.some((m) => m.includes('recording INCONCLUSIVE, NOT a test FAIL')),
-            `Expected the outer-catch log distinguishing an infra fault from a test FAIL, logs: ${JSON.stringify(result.logs)}`
+            result.logs.some((m) => m.includes('degrading (inconclusive), NOT recording a failure verdict')),
+            `Expected the degrade log distinguishing an infra fault from a test FAIL, logs: ${JSON.stringify(result.logs)}`
         );
         check(
             !result.logs.some((m) => m.includes('Integration tests FAILED this cycle')),

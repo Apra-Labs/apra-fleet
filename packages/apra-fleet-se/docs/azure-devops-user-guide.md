@@ -8,8 +8,11 @@ don't.
 
 ## What you need first
 
-- A git repository on Azure DevOps (`https://dev.azure.com/<org>/<project>/_git/<repo>`)
-  that already has a [beads](https://github.com/gastownhall/beads) (`bd`)
+- A git repository on Azure DevOps (`https://dev.azure.com/<org>/<project>/_git/<repo>`,
+  or the legacy `https://<org>.visualstudio.com/[DefaultCollection/]<project>/_git/<repo>`;
+  an `ssh.dev.azure.com` / `vs-ssh.visualstudio.com` v3 remote also works, but
+  then git push uses the member's own SSH key and the PAT serves only the
+  pull-request REST calls) that already has a [beads](https://github.com/gastownhall/beads) (`bd`)
   issue tracker set up -- fleet-sprint reads and writes real beads issues,
   it does not create a tracking system of its own. If your repo has no
   beads DB yet, run `bd init` in it and push once so `sync.remote` is real.
@@ -41,14 +44,14 @@ provision_vcs_auth(
   member_name: "my-dev",
   provider: "azure-devops",
   org_url: "https://dev.azure.com/<your-org>",
-  pat: "{{secure.azdevops_pat}}",
+  pat: "{{secret.azdevops_pat}}",
   git_access: "push+pr"
 )
 ```
 
 Store the PAT via `credential_store_set` first (name it `azdevops_pat`, or
 anything -- see `auth-azdevops.md`'s "Secret-Name Convention" section) so
-it's referenced as a `{{secure.NAME}}` placeholder here, never typed
+it's referenced as a `{{secret.NAME}}` placeholder here, never typed
 directly into a tool call. The fleet resolves it server-side; the plaintext
 never enters your conversation with the agent.
 

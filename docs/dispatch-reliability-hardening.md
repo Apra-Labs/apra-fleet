@@ -1,5 +1,5 @@
-<!-- llm-context: Design notes for a cluster of dispatch/orchestration reliability fixes -- self-heal-and-retry coverage at git-operation boundaries, watchdog tick reentrancy, the doer VERIFY-only-next-action contract, the undici/Node toolchain pin, and the CLI overwrite-install stop/confirm sequence. Read alongside architecture.md's "Terminal-Signal and Dead-Session Detection Invariants", stall-detector-resilience.md, runner-error-classification.md, and install.md, which cover the rest of the same reliability cluster. -->
-<!-- keywords: self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth, install --force, ETXTBSY, poll, escalation -->
+<!-- llm-context: Design notes for a cluster of dispatch/orchestration reliability fixes -- self-heal-and-retry coverage at git-operation boundaries, permission-scope vs auth-expiry git failure classification, missing-remote-ref sync handling, watchdog tick reentrancy, the doer VERIFY-only-next-action contract, the undici/Node toolchain pin, and the CLI overwrite-install stop/confirm sequence. Read alongside architecture.md's "Terminal-Signal and Dead-Session Detection Invariants", stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md, and install.md, which cover the rest of the same reliability cluster. -->
+<!-- keywords: self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth, permission-scope, workflows permission, missing remote ref, publish blocked, install --force, ETXTBSY, poll, escalation -->
 <!-- see-also: architecture.md, stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md, install.md -->
 
 # Dispatch and orchestration reliability hardening
@@ -27,6 +27,84 @@ inventing a bespoke retry, and should fail soft (log and continue with
 reduced fidelity) rather than aborting the cleanup path entirely if the retry
 also fails -- cleanup-time git failures should never mask the original abort
 reason.
+
+## A permission-scope git rejection is not an auth failure, and must not be treated as one
+
+The orchestrator's git-failure classifier distinguishes credential expiry
+(re-mintable: the same principal, refreshed, will likely succeed) from a
+permission-scope refusal (the principal is understood but was never granted
+the specific permission the operation needs -- re-minting the *same*
+permission set reproduces the *same* rejection). Conflating the two has two
+independent failure modes, and a fix needs to close both:
+
+- **Self-heal must not fire for a permission-scope refusal.** The generic
+  self-heal-and-retry-once wrapper exists to recover from a stale/expired
+  credential; running it against a permission-scope refusal just re-mints and
+  re-sends the identical doomed request, burning a retry for no chance of
+  success. A permission-scope match must be classified as its own axis,
+  checked *ahead of* whatever generic precedence table the provider normally
+  uses -- a host's permission refusal commonly arrives wrapped inside the
+  same generic rejection tail an unrelated failure class also matches (e.g.
+  git's "failed to push some refs", which a divergence-detection pattern also
+  matches and which would otherwise win by outranking the permission-scope
+  signal). The failure must be returned immediately with no self-heal attempt
+  and no retry.
+- **A permission-scope push rejection discovered *after* a dispatch has
+  already completed and committed real work must not fail that dispatch's
+  beads.** If the doer's work is done and committed locally but the
+  post-dispatch push is refused for a permission reason no retry can fix, the
+  correct outcome is "work done, publish blocked" -- not "dispatch failed,
+  re-open and re-dispatch the same beads next cycle." Re-dispatching
+  identical beads against an unfixable permission gap wastes a full dispatch
+  every remaining cycle for zero chance of a different outcome, and worse,
+  strands the doer's already-committed local work while repeatedly
+  re-attempting it. The fix records which beads were blocked this way and
+  excludes them from the next cycle's ready-work set for the rest of the
+  sprint, while surfacing the operator referral prominently (a named,
+  greppable log line) so a human can act on it -- transient, auth-expired,
+  and divergence failure handling are all left completely unchanged; this is
+  strictly a new, narrower classification carved out of what used to fall
+  through to the generic failure path.
+
+A provider that grants a scoped credential (e.g. a GitHub App installation
+token minted per member, scoped to a specific permission set rather than the
+App's full permission set) needs one additional invariant to keep this
+classification correct at the source: the mint-time permission grant itself
+must include every fine-grained permission the intended operations need for
+every access level meant to support those operations. A push-capable access
+level that omits a fine-grained permission some pushes need (e.g. a
+permission gating one specific path prefix under the repo) produces the
+exact permission-scope rejection above on every affected push, regardless of
+which git identity holds the token -- the fix belongs in the mint-time
+permission-request table, not in the classifier that reacts to the
+resulting rejection after the fact. When the credential backend itself
+rejects the mint request because the broader identity (e.g. the App
+installation, as opposed to the per-member token) was never granted that
+permission, that rejection must become an actionable operator referral
+(naming exactly which permission and which identity needs it granted) rather
+than surfacing the backend's raw error text or silently minting a reduced
+permission set -- a silent reduction hides the misconfiguration instead of
+surfacing it, and both a raw-text and a silent-downgrade response leave an
+operator with strictly less signal than a named referral would.
+
+## A git sync bracket must not assume the remote branch already exists
+
+A sync step that runs a pull/rebase before its own first successful push
+cannot assume the remote already has the branch: on a brand-new sprint
+branch created only locally (not yet pushed), the remote genuinely has
+nothing to fetch or rebase against, and git's own error text for this case
+("couldn't find remote ref ...") is easy to misclassify as a real conflict
+that needs the full conflict-resolution ladder. The durable fix factors a
+single predicate that recognizes this exact, unambiguous git message and
+shares it between the pre-dispatch and post-dispatch sync steps (rather than
+each carrying its own copy of the same regex), and treats a match as "there
+is nothing to rebase against" -- skip the conflict-resolution machinery
+entirely and retry the push directly, which creates the branch on the
+remote. If that direct retry is itself rejected because a concurrent writer
+published the branch first, that is a genuine divergence and is raised as
+such, exactly as any other divergence would be -- the missing-ref case is a
+narrow bypass of the conflict ladder for one unambiguous precondition, not a
+general relaxation of divergence handling.
 
 ## Watchdog ticks need a reentrancy guard when their own work can outlast the tick interval
 

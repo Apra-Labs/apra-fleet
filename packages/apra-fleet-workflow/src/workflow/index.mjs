@@ -657,12 +657,37 @@ export class FleetWorkflow extends EventEmitter {
      * guard is set, that guard returning truthy. Calling it while already
      * paused or pause-requested is a no-op.
      *
+     * (apra-fleet-hzeb.3) Also exposed on the script context (see
+     * _bindPrimitives), so a running workflow script can initiate a pause
+     * for a condition only IT can detect (e.g. a provider usage/rate limit
+     * signal) -- not just the dashboard/operator via requestStop()'s sibling
+     * instance-level API. A script-initiated pause is indistinguishable from
+     * an operator-initiated one downstream: it fires the exact same
+     * 'pause:requested'/'paused'/'resumed' events, so any existing listener
+     * (the dashboard viewer's state.pause wiring, fleet-sprint's
+     * cli.mjs `on('paused', releaseForPause)` /
+     * `setPreResumeHook(reReserveForResume)`) engages for it unchanged.
+     *
      * @param {string} [reason]
+     * @param {{ resumeAt?: string, source?: string }} [opts] - Optional
+     *   metadata carried on the 'pause:requested' payload (apra-fleet-hzeb.3):
+     *   `resumeAt` is an ISO-8601 timestamp (or any caller-defined string) the
+     *   caller expects the condition to clear by -- e.g. a provider's
+     *   usage-limit reset time -- surfaced by the dashboard viewer in the
+     *   paused banner. `source` identifies what requested the pause (e.g.
+     *   `'usage_limit'`) for the same display purpose. Both are purely
+     *   informational to the engine, which does not interpret or act on
+     *   them. Omitting `opts` is fully backwards compatible with existing
+     *   single-arg callers.
      */
-    requestPause(reason = 'Workflow run paused via requestPause()') {
+    requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
         if (this._paused || this._pauseRequested) return;
         this._pauseRequested = true;
-        this.emit('pause:requested', this._pauseEventPayload({ reason }));
+        this.emit('pause:requested', this._pauseEventPayload({
+            reason,
+            resumeAt: opts.resumeAt ?? null,
+            source: opts.source ?? null
+        }));
         // If we're already quiescent (nothing in flight, guard permits), the
         // pause engages right now; otherwise it engages later as in-flight
         // work drains (_exitActivity) or the guard opens (setPauseGuard).
@@ -1257,7 +1282,14 @@ export class FleetWorkflow extends EventEmitter {
                     // result.usage is null and cost is null -- the viewer then
                     // tallies it as an unknown-cost activity rather than fiction.
                     this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                    // apra-fleet-hzeb.2: pure pass-through, no policy decisions here --
+                    // when execute_prompt relayed a provider usage-limit signal
+                    // (reason: 'usage_limit'), forward its usageLimit block and the
+                    // in-flight sessionId onto AgentDispatchError.details unchanged, so
+                    // the fleet-sprint pause/resume policy can read
+                    // err.details.usageLimit.resumeAt / err.details.sessionId directly
+                    // instead of re-parsing the failure text.
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
@@ -1988,10 +2020,19 @@ export class FleetWorkflow extends EventEmitter {
             endGroup: this.endGroup.bind(this),
             // (apra-fleet-p2to.1) Script-facing: lets the workflow declare
             // where a clean-state boundary is so a deferred pause engages
-            // there. requestPause()/requestResume()/requestStop() stay
-            // instance-only (driven by the viewer/orchestrator, like
-            // requestStop() already is), not part of the script context.
-            setPauseGuard: this.setPauseGuard.bind(this)
+            // there.
+            setPauseGuard: this.setPauseGuard.bind(this),
+            // (apra-fleet-hzeb.3) Script-facing pause/resume: a running
+            // script may PARK ITSELF on a condition only it can detect (a
+            // provider usage/rate limit, an external gate) by calling these
+            // directly -- they are the exact same requestPause()/
+            // requestResume() the dashboard/operator use, so a
+            // script-initiated pause fires the identical 'pause:requested'/
+            // 'paused'/'resumed' lifecycle events as an operator-initiated
+            // one. requestStop() remains instance-only/operator-only -- a
+            // script has no business tearing down its own run.
+            requestPause: this.requestPause.bind(this),
+            requestResume: this.requestResume.bind(this)
         };
     }
 

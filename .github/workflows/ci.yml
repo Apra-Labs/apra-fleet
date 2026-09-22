@@ -93,23 +93,30 @@ jobs:
       # a REAL `bd --version`/`bd list`/etc via scripts/lib/exec-bd.mjs, with
       # no CI-skip guard -- they need `bd` on PATH by the time "Run tests"
       # starts, not just by the later workspace-tests step.
-      # Pinned to 1.1.2 (2026-08-12), matching src/cli/install.ts's own
-      # installer pin (bumped together from 1.0.4 -> 1.1.2): an unpinned
-      # `npm install -g @beads/bd` here previously picked up 1.2.1, which
-      # changed the dolt-remote-history probe's behavior against a freshly-
-      # created (never `git init`'d) local directory -- the probe's `git`
-      # call now returns non-zero there, and bd conservatively treats a
-      # failed probe as "assume history exists", so `bd init --from-jsonl
-      # --remote <fresh-dir>` now deterministically refuses where 1.1.2
-      # succeeds. Broke every PR's CI simultaneously the moment 1.2.1 became
-      # "latest". Re-verify against a newer bd release before bumping this
-      # pin; see tests/2cc-win-bd-invocation-integ.test.ts,
-      # tests/smoke-test-flow-e2e-integ.test.ts, and scripts/sandbox-seed-beads.mjs.
+      # Pinned to 1.3.0 (2026-09-18), matching src/cli/install.ts's own
+      # installer pin (bumped together from 1.1.2 -> 1.3.0; apra-fleet-4ipl):
+      # this repo's own .beads Dolt database has been migrated forward to
+      # schema v66 by newer local `bd` clients, and 1.1.2 only understands up
+      # to v53 -- every `bd list`/`bd show` call in CI failed outright with a
+      # schema-mismatch error, which serve-wiring-integration.test.mjs's
+      # real dashboard-boot test surfaced as a 90s GET / timeout (the
+      # backlog render silently failed on every retry, so the page it waited
+      # on could never appear). 1.3.0 is the first tested release that reads
+      # this schema (confirmed empirically, not from changelog text alone).
+      #
+      # NOTE: 1.3.0 still carries the dolt-remote-history-probe regression
+      # first introduced in 1.2.1 (treats a fresh/never-`git init`'d local
+      # directory's failed `git ls-remote` as "remote has Dolt history", so
+      # `bd init --from-jsonl --remote <fresh-dir>` refuses) --
+      # tests/2cc-win-bd-invocation-integ.test.ts's sandbox-seed scenario is
+      # expected to fail until that's fixed upstream or worked around here;
+      # tracked separately from apra-fleet-4ipl, do not treat as a new
+      # regression when it turns red.
       - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
         env:
           CI: ''
         run: |
-          npm install -g @beads/bd@1.1.2 --foreground-scripts
+          npm install -g @beads/bd@1.3.0 --foreground-scripts
           bd --version
 
       # serve-wiring-integration.test.mjs and supervisor-dashboard-
@@ -154,6 +161,36 @@ jobs:
       # already hoisted into the root node_modules by apra-fleet-se.
       - name: Run apra-pm test suite (node:test; not an npm workspace)
         run: npm test --prefix packages/apra-fleet-se/apra-pm
+
+      # apra-fleet-j918.8.19: test/f34-concurrent-launch-engagement-
+      # integration.test.mjs's two topology subtests (f34.1/f34.2, gated by
+      # the file's own REPLAY_SKIP) only run under real bd/dolt engagement --
+      # under the default replay mode exercised by "Run workspace package
+      # test suites" above they report "# SKIP ... skipping under bd mode
+      # replay" and assert nothing. `npm run test:integration` (the real-bd
+      # lane, scripts/run-tests.mjs real) is never otherwise invoked by any
+      # workflow in this repo, so before this step neither subtest had ANY
+      # CI coverage (apra-fleet-j918.8.5 closed intending this but never
+      # wired it up). Scoped to just this one file rather than the whole
+      # ~129-file real-bd suite (`npm run test:integration` with no file
+      # arg) for two reasons: (1) that full suite takes ~4h and is meant to
+      # run once per sprint/CI per apra-fleet-040, not on every PR; (2) it
+      # would surface the unrelated, deliberately out-of-scope real-bd
+      # carry-over regressions tracked at apra-fleet-g541/apra-fleet-4rjy
+      # across the rest of the workspace. Verified immediately before wiring
+      # this step (2026-09-15, branch chore/j918-test-suite-cleanup, commit
+      # 2092137e): a fresh standalone real-bd run of this exact file passed
+      # both subtests with zero skips ("# pass 2 / # fail 0 / # skipped 0",
+      # ~364s) -- neither g541's "No ready beads found ... deadlocked" nor
+      # 4rjy's "unexpected tool member_detail" failure signature reproduced,
+      # so nothing needs excluding from this step. Ubuntu-only: matches this
+      # job's other single-run checks (llms-full.txt below) and keeps this
+      # ~6min real bd/dolt/supervisor-subprocess run from tripling across the
+      # OS matrix.
+      - name: Run f34 real-bd concurrency-topology subtests (apra-fleet-se)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: packages/apra-fleet-se
+        run: node scripts/run-tests.mjs real test/f34-concurrent-launch-engagement-integration.test.mjs
 
       # llms-full.txt is regenerated by the pre-commit hook when docs change.
       # This check fails if a dev bypassed the hook (--no-verify, missing hook

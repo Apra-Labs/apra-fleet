@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockPollLogFile, mockPollDirectoryActivity, mockUpdateAgent, mockLogLine, mockLogWarn, mockScopeWarn } = vi.hoisted(() => ({
+const {
+  mockPollLogFile, mockPollDirectoryActivity, mockUpdateAgent, mockLogLine, mockLogWarn,
+  mockScopeWarn, mockScopeOk, mockWriteStatusline,
+} = vi.hoisted(() => ({
   mockPollLogFile: vi.fn(),
   mockPollDirectoryActivity: vi.fn(),
   mockUpdateAgent: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockScopeWarn: vi.fn(),
+  mockScopeOk: vi.fn(),
+  mockWriteStatusline: vi.fn(),
 }));
 
 vi.mock('../src/services/stall/stall-poller.js', () => ({
@@ -18,6 +23,10 @@ vi.mock('../src/services/registry.js', () => ({
   updateAgent: mockUpdateAgent,
 }));
 
+vi.mock('../src/services/statusline.js', () => ({
+  writeStatusline: mockWriteStatusline,
+}));
+
 vi.mock('../src/utils/log-helpers.js', () => ({
   logLine: mockLogLine,
   logWarn: mockLogWarn,
@@ -27,7 +36,7 @@ vi.mock('../src/utils/log-helpers.js', () => ({
     info(_msg: string) {}
     warn(msg: string) { mockScopeWarn(msg); }
     error(_msg: string) {}
-    ok(_msg?: string) {}
+    ok(msg?: string) { mockScopeOk(msg); }
     fail(_msg: string) {}
     abort(_msg: string) {}
   },
@@ -276,6 +285,94 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+  });
+
+  describe('_poll — per-entry thresholdMs (apra-fleet-25yl.1.1)', () => {
+    it('a non-provisional entry with its own thresholdMs is evaluated against it, ignoring the env fallback', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // would fire if honored
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime, thresholdMs: 60_000 })); // but well within 60s
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('a non-provisional entry with a SHORTER thresholdMs than the env fallback stalls sooner', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '600000'; // env alone would not fire
+      const pastTime = Date.now() - 10_000; // 10s idle
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime, thresholdMs: 5_000 })); // but its own budget is 5s
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+
+    it('a provisional entry with its own thresholdMs is evaluated against it on the provisional path too', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // would fire if honored
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: pastTime,
+        thresholdMs: 60_000, // well within its own 60s budget
+        onStall,
+      }));
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+    });
+
+    it('an entry without thresholdMs falls back to the env/default value on the non-provisional path (no behavior change)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime })); // no thresholdMs set
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+
+      await detector._poll();
+
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+    });
+
+    it('an entry without thresholdMs falls back to the env/default value on the provisional path too (no behavior change)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: pastTime,
+        onStall,
+        // no thresholdMs set
+      }));
+
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
       const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
         try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
       });
@@ -535,6 +632,295 @@ describe('StallDetector', () => {
     });
   });
 
+  // apra-fleet-25yl.4: the adaptive probe cadence's floor (the loop's own
+  // tick interval) must win over its 300_000ms ceiling when
+  // STALL_POLL_INTERVAL_MS is overridden above that ceiling. Before this fix,
+  // probeIntervalMs = min(ceiling, max(tick, threshold/5)) let the ceiling
+  // win instead, so an over-ceiling tick interval produced a probe interval
+  // BELOW the tick interval and the gate fired on every tick.
+  describe('_poll — adaptive probe cadence floor wins over the ceiling (apra-fleet-25yl.4)', () => {
+    it('does not probe again until the over-ceiling tick interval has elapsed', async () => {
+      const tickIntervalMs = 360_000; // 6 minutes -- above the 300_000ms ceiling
+      process.env['STALL_POLL_INTERVAL_MS'] = String(tickIntervalMs);
+      process.env['STALL_THRESHOLD_MS'] = '5000'; // threshold/5 = 1000ms, well under the ceiling
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date().toISOString() });
+
+      const start = Date.now();
+      detector.add('member-1', makeEntry({ lastActivityAt: start }));
+
+      // First poll seeds lastPolledAt.
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(1);
+
+      // Past the OLD (buggy) 300_000ms ceiling, but still short of the
+      // 360_000ms tick interval -- with the fix, the floor wins and this
+      // tick must be skipped (no live probe issued).
+      vi.setSystemTime(start + 300_001);
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(1);
+
+      // At/past the tick interval -- now it must probe again.
+      vi.setSystemTime(start + tickIntervalMs + 1);
+      await detector._poll();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // apra-fleet-25yl.3.2: full behavioural coverage of the adaptive per-entry
+  // probe cadence introduced by apra-fleet-25yl.3.1/.3/.4 -- the ceiling, the
+  // false-kill-window guard, and the stall_poll_tick observability fields
+  // added by apra-fleet-25yl.3.3. All fake timers; no real waits.
+  describe('_poll — adaptive probe cadence (apra-fleet-25yl.3.2)', () => {
+    const TICK_MS = 30_000; // DEFAULT_POLL_INTERVAL_MS
+
+    /** Advances fake time by `deltaMs` and drives one more _poll() tick. */
+    async function tick(deltaMs: number): Promise<void> {
+      vi.setSystemTime(Date.now() + deltaMs);
+      await detector._poll();
+    }
+
+    const stallDetectedCalls = () => mockScopeWarn.mock.calls.filter((c: string[]) => {
+      try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+    });
+
+    it('part A: a long-threshold entry is probed at least 5x less often than the fixed tick baseline, and less often than a small-threshold entry', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+
+      // 150s default threshold -> probeIntervalMs === tickIntervalMs (the fixed baseline).
+      detector.add('small', makeEntry({ memberId: 'small', memberName: 'small', lastActivityAt: start }));
+      // 9000s threshold -> probeIntervalMs capped at 300_000ms (10x the tick interval).
+      detector.add('long', makeEntry({ memberId: 'long', memberName: 'long', lastActivityAt: start, thresholdMs: 9_000_000 }));
+
+      await detector._poll(); // seed both at t=0
+      const WINDOW_TICKS = 20; // 10 minutes at a 30s tick
+      for (let i = 0; i < WINDOW_TICKS; i++) await tick(TICK_MS);
+
+      const countFor = (id: string) => mockPollLogFile.mock.calls.filter((c) => c[0] === id).length;
+      const smallCount = countFor('small');
+      const longCount = countFor('long');
+
+      expect(smallCount).toBe(WINDOW_TICKS + 1); // probed every tick, same as the fixed baseline
+      expect(longCount).toBeLessThanOrEqual(Math.floor(smallCount / 5)); // at least 5x less often
+      expect(longCount).toBeLessThan(smallCount);
+    });
+
+    it('an entry with a 1800s stable threshold is probed about once per 300s (the 5-minute cap)', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start, thresholdMs: 1_800_000 }));
+
+      await detector._poll(); // seed, t=0
+      const probeTimes: number[] = [Date.now()];
+      for (let i = 0; i < 20; i++) {
+        await tick(TICK_MS);
+        const count = mockPollLogFile.mock.calls.filter((c) => c[0] === 'e').length;
+        if (count > probeTimes.length) probeTimes.push(Date.now());
+      }
+
+      // 20 * 30s = 600s window -> probes at t=0, 300s, 600s: 3 probes, ~300s apart.
+      expect(probeTimes).toHaveLength(3);
+      expect(probeTimes[1]! - probeTimes[0]!).toBe(300_000);
+      expect(probeTimes[2]! - probeTimes[1]!).toBe(300_000);
+    });
+
+    it('an entry with the 9000s production threshold is ALSO capped at 300s -- it must not drift to 1800s', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start, thresholdMs: 9_000_000 }));
+
+      await detector._poll(); // seed, t=0
+      await tick(300_000); // t=300s -- must probe again if capped at 300s
+      await tick(300_000); // t=600s -- must probe again
+
+      // Would be 1 (no re-probe within this window at all) if the cap were
+      // dropped: 9000s / 5 = 1800s, which is longer than this 600s window.
+      const count = mockPollLogFile.mock.calls.filter((c) => c[0] === 'e').length;
+      expect(count).toBe(3);
+    });
+
+    it('a 150s-default entry is probed at exactly the loop tick interval, and STALL_POLL_INTERVAL_MS moves that floor with it (no independent floor knob)', async () => {
+      process.env['STALL_POLL_INTERVAL_MS'] = '60000';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start }));
+
+      await detector._poll(); // seed, t=0
+      vi.setSystemTime(start + 59_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(1); // not yet due -- below the overridden 60s floor
+
+      vi.setSystemTime(start + 60_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(2); // due exactly at the overridden tick interval
+    });
+
+    it('two entries with different thresholds are gated independently within the same shared tick loop', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('fast', makeEntry({ memberId: 'fast', memberName: 'fast', lastActivityAt: start })); // tick cadence
+      detector.add('slow', makeEntry({ memberId: 'slow', memberName: 'slow', lastActivityAt: start, thresholdMs: 9_000_000 })); // 300s cadence
+
+      await detector._poll(); // t=0 -- both due (never polled)
+      for (let i = 0; i < 9; i++) await tick(TICK_MS); // through t=270000
+
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'fast')).toHaveLength(10);
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'slow')).toHaveLength(1);
+
+      await tick(TICK_MS); // t=300000 -- 'slow' becomes due again
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'slow')).toHaveLength(2);
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'fast')).toHaveLength(11);
+    });
+
+    it('part B (false-kill window): a tick on which an entry probe is deferred issues no probe and performs no stall-threshold evaluation', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const start = Date.now();
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(start).toISOString() }); // frozen -- no advance
+
+      await detector._poll(); // seed at t=0 -- idle=0, no stall
+      let entry = detector.getEntry('e')!;
+      const idleCyclesAfterSeed = entry.consecutiveIdleCycles;
+      const readFailuresAfterSeed = entry.consecutiveReadFailures;
+      expect(idleCyclesAfterSeed).toBe(1);
+
+      // 10s idle already exceeds the entry's own 5s threshold, but its own
+      // probeIntervalMs is floored at the 30s tick interval, so it is not due
+      // for another probe yet.
+      vi.setSystemTime(start + 10_000);
+      await detector._poll();
+
+      expect(mockPollLogFile).toHaveBeenCalledTimes(1); // no second probe issued
+      entry = detector.getEntry('e')!;
+      expect(entry.consecutiveIdleCycles).toBe(idleCyclesAfterSeed); // no evaluation happened on the skipped tick
+      expect(entry.consecutiveReadFailures).toBe(readFailuresAfterSeed);
+      expect(stallDetectedCalls()).toHaveLength(0); // not reported as stalled despite naive-elapsed > threshold
+    });
+
+    it('part B: a short-timeout entry with a genuinely frozen transcript is still killed within one probe interval of its own threshold', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const start = Date.now();
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(start).toISOString() }); // frozen forever
+
+      await detector._poll(); // seed at t=0
+
+      vi.setSystemTime(start + TICK_MS); // t=30000 -- the next probe-interval boundary (the tick floor), past the 5s threshold
+      await detector._poll();
+
+      const calls = stallDetectedCalls();
+      expect(calls).toHaveLength(1); // killed at the first probe due after its own (short) threshold elapsed
+      const logged = JSON.parse(calls[0]![0] as string);
+      expect(logged.idleSecs).toBe(30); // not the old global 150s default, and not a longer adaptive interval
+    });
+
+    it('a genuinely stalled long-threshold entry is reported stalled within one probe interval past its threshold', async () => {
+      const start = Date.now();
+      const THRESHOLD_MS = 9_000_000;
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start, thresholdMs: THRESHOLD_MS }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(start).toISOString() }); // frozen forever
+
+      await detector._poll(); // seed at t=0
+
+      vi.setSystemTime(start + THRESHOLD_MS); // exactly at the threshold -- not yet exceeded
+      await detector._poll();
+      expect(stallDetectedCalls()).toHaveLength(0);
+
+      vi.setSystemTime(start + THRESHOLD_MS + 300_000); // one probe interval past the threshold
+      await detector._poll();
+      expect(stallDetectedCalls()).toHaveLength(1);
+    });
+
+    it('stall_poll_tick observability: probesIssued/probesSkipped/entryProbeIntervals reflect one due entry and one gated-off entry', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+
+      detector.add('due', makeEntry({ memberId: 'due', memberName: 'due', lastActivityAt: start })); // tick cadence, always due
+      detector.add('gated', makeEntry({ memberId: 'gated', memberName: 'gated', lastActivityAt: start, thresholdMs: 9_000_000 })); // 300s cadence
+
+      await detector._poll(); // seed both -- both due on the very first tick
+      mockScopeOk.mockClear();
+
+      await tick(TICK_MS); // t=30000 -- 'due' is due again, 'gated' is not
+
+      expect(mockScopeOk).toHaveBeenCalledTimes(1);
+      const summary = JSON.parse(mockScopeOk.mock.calls[0]![0] as string);
+      expect(summary.probesIssued).toBe(1);
+      expect(summary.probesSkipped).toBe(1);
+      expect(summary.entryProbeIntervals).toHaveLength(2);
+      expect(summary.entryProbeIntervals).toEqual(expect.arrayContaining([
+        { memberName: 'due', probeIntervalMs: TICK_MS },
+        { memberName: 'gated', probeIntervalMs: 300_000 },
+      ]));
+    });
+
+    it('the status line is still refreshed for an entry whose probe was skipped', async () => {
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('gated', makeEntry({ memberId: 'gated', memberName: 'gated', lastActivityAt: start, thresholdMs: 9_000_000 }));
+
+      await detector._poll(); // seed
+      mockWriteStatusline.mockClear();
+      await tick(TICK_MS); // 'gated' entry's probe is skipped this tick
+
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'gated')).toHaveLength(1); // still just the seed -- skipped
+      const lastCall = mockWriteStatusline.mock.calls[mockWriteStatusline.mock.calls.length - 1]!;
+      const arg = lastCall[0] as Map<string, string>;
+      expect(arg.get('gated')).toMatch(/^busy\(/);
+    });
+  });
+
+  // apra-fleet-25yl.6: a malformed STALL_THRESHOLD_MS must not silently wedge
+  // the adaptive probe gate for entries with no per-dispatch thresholdMs.
+  describe('_poll — malformed STALL_THRESHOLD_MS env guard (apra-fleet-25yl.6)', () => {
+    it('a non-numeric STALL_THRESHOLD_MS still yields a finite probeIntervalMs, and an entry with no thresholdMs is probed a second time on a later tick', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'not-a-number';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start })); // no thresholdMs -- uses the fallback
+
+      await detector._poll(); // seed at t=0
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(1);
+
+      // Advance well past the DEFAULT_STALL_THRESHOLD_MS (150s) fallback the
+      // guard must produce -- a NaN probeIntervalMs would leave dueForProbe
+      // false forever and this entry would never be probed again.
+      vi.setSystemTime(start + 200_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(2);
+    });
+
+    it('an entry that DOES carry its own thresholdMs is unaffected by the malformed env value', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'garbage';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      // 60s thresholdMs / 5 = 12s, floored at the 30s tick interval.
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start, thresholdMs: 60_000 }));
+
+      await detector._poll(); // seed
+      vi.setSystemTime(start + 30_000);
+      await detector._poll();
+      expect(mockPollLogFile.mock.calls.filter((c) => c[0] === 'e')).toHaveLength(2); // cadence derived purely from its own thresholdMs
+    });
+
+    it('logs the rejected env value exactly once, not once per tick', async () => {
+      process.env['STALL_THRESHOLD_MS'] = 'nope';
+      const start = Date.now();
+      mockPollLogFile.mockImplementation(async () => ({ lastTimestamp: new Date().toISOString() }));
+      detector.add('e', makeEntry({ memberId: 'e', memberName: 'e', lastActivityAt: start }));
+
+      await detector._poll();
+      vi.setSystemTime(start + 30_000);
+      await detector._poll();
+      vi.setSystemTime(start + 60_000);
+      await detector._poll();
+
+      const warnCalls = mockLogWarn.mock.calls.filter((c) => c[0] === 'stall_threshold_env_invalid');
+      expect(warnCalls).toHaveLength(1);
+      expect(JSON.parse(warnCalls[0]![1] as string).value).toBe('nope');
+    });
+  });
+
   // apra-fleet-iuc.2: the transcript file's OS mtime cross-checked against the
   // content-parsed timestamp. Every test above mocks pollLogFile WITHOUT
   // mtimeMs (undefined), so this block is what actually exercises the new
@@ -700,5 +1086,63 @@ describe('computeEffectiveThresholdMs (PR#416 finding 4: clamp)', () => {
   it('falls back to the built-in ceiling when the env override is unparseable', () => {
     process.env['STALL_MAX_THRESHOLD_MS'] = 'not-a-number';
     expect(computeEffectiveThresholdMs(BASELINE, 86_400_000)).toBe(CEILING);
+  });
+
+  // apra-fleet-25yl.1.1: the trusted baseline (orchestrator-authored
+  // timeout_s) must never be capped by MAX_STALL_THRESHOLD_MS -- that ceiling
+  // exists only to bound the untrusted pendingToolTimeoutMs contribution.
+  describe('trusted baseline is never capped (apra-fleet-25yl.1.1)', () => {
+    it('a trusted baseline at the ceiling survives unchanged with no declaration', () => {
+      expect(computeEffectiveThresholdMs(CEILING, null)).toBe(CEILING);
+      expect(describeClamp(CEILING, null, CEILING)).toBeNull();
+    });
+
+    it('a trusted baseline ABOVE the ceiling survives unchanged with no declaration', () => {
+      const above = CEILING + 1_000_000;
+      expect(computeEffectiveThresholdMs(above, null)).toBe(above);
+      expect(describeClamp(above, null, above)).toBeNull();
+    });
+
+    it('an untrusted pendingToolTimeoutMs is still capped by the ceiling regardless of baseline', () => {
+      const actual = computeEffectiveThresholdMs(300_000, 86_400_000);
+      expect(actual).toBe(CEILING);
+      expect(describeClamp(300_000, 86_400_000, actual)).toBe('ceiling');
+    });
+
+    it('a trusted baseline above the ceiling still wins over a large-but-lesser pending declaration', () => {
+      const above = CEILING + 500_000;
+      const actual = computeEffectiveThresholdMs(above, 900_000);
+      expect(actual).toBe(above);
+      // The baseline dominated the (ceiling-capped) untrusted contribution --
+      // same "floor" verdict as any other case where the trusted value wins,
+      // never mislabeled as a ceiling clamp that did not happen.
+      expect(describeClamp(above, 900_000, actual)).toBe('floor');
+    });
+
+    it('a trusted baseline above the ceiling still wins even when the raw (uncapped) pending value exceeds it', () => {
+      // PRIMARY regression case: base sits ABOVE the ceiling, and raw
+      // (pending + grace) sits ABOVE base too -- the one region the earlier
+      // fix's fixtures never covered. The baseline still wins the max(), but
+      // effective ends up BELOW raw, which is exactly what fooled the old
+      // "effective < raw => ceiling" comparison into lying.
+      const base = 3_600_000; // above CEILING (1_800_000)
+      const pending = 86_400_000; // raw = 86_460_000, far above base
+      const actual = computeEffectiveThresholdMs(base, pending);
+      expect(actual).toBe(base);
+      expect(describeClamp(base, pending, actual)).toBe('floor');
+    });
+
+    it('reports "floor", not null, at the knife-edge where the baseline happens to equal the raw pending value', () => {
+      // SECONDARY regression case: base === pending + GRACE (raw), so the
+      // final effective value coincides with raw even though the ceiling DID
+      // cap the pending contribution internally along the way. The verdict
+      // must reflect that the baseline (floor) is what determined the
+      // result, not fall back to null just because effective === raw.
+      const base = 3_060_000;
+      const pending = 3_000_000; // raw = 3_060_000 === base
+      const actual = computeEffectiveThresholdMs(base, pending);
+      expect(actual).toBe(base);
+      expect(describeClamp(base, pending, actual)).toBe('floor');
+    });
   });
 });

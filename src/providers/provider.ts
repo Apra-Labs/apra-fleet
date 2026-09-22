@@ -54,6 +54,33 @@ export type SessionIdStrategy =
   | { type: 'caller-minted' }
   | { type: 'provider-minted' };
 
+/**
+ * apra-fleet-25yl.2.1: what the EXEC-LEVEL ROLLING (inactivity) timeout handed
+ * to `strategy.execCommand()` is derived from, for this provider.
+ *
+ *  - 'inactivity_timeout' -- derive it from the caller's `timeout_s`. Choose
+ *    this when the exec channel (stdout/stderr on the dispatch pipe) is a
+ *    REAL mid-turn liveness signal for the provider, OR when preserving the
+ *    provider's current behaviour is the point. Codex is the load-bearing
+ *    case: its adapter returns null from resolveSessionLogDir(), so the
+ *    StallDetector has no transcript to poll and this timer is its ONLY stall
+ *    signal -- decoupling it there disables stall detection outright.
+ *  - 'total_ceiling' -- do NOT arm a `timeout_s`-sized rolling deadline;
+ *    derive it from `max_total_s` instead (a value that can never bind before
+ *    the caller's own hard ceiling does). Choose this when the provider is
+ *    batch/CONOUT$-only, so the exec channel emits nothing mid-turn and a
+ *    `timeout_s`-sized rolling deadline is a false kill. The StallDetector's
+ *    transcript polling is the real stall mechanism for these providers, and
+ *    it still gets `timeout_s` as its thresholdMs.
+ *
+ * This is deliberately a REQUIRED member of {@link ProviderAdapter} rather
+ * than an optional one with a default: a newly added provider must state its
+ * own answer (a compile error if it does not) instead of silently inheriting
+ * whichever branch happens to be the fallback, because the wrong branch
+ * silently disables a kill path.
+ */
+export type ExecTimeoutSource = 'inactivity_timeout' | 'total_ceiling';
+
 export function encodeClaudeProjectDir(workFolder: string): string {
   return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
 }
@@ -119,6 +146,64 @@ export interface PromptOptions {
   agentName?: string;
 }
 
+/**
+ * apra-fleet-hzeb.1: a provider-agnostic "this dispatch hit a usage/quota limit
+ * and cannot make progress until `resumeAt`" signal. Distinct from a transient
+ * overload (529/overloaded), which is retryable after a short backoff -- a usage
+ * limit needs a real wall-clock wait until the quota window resets.
+ *
+ * `resumeAt` is ALWAYS a concrete ISO-8601 UTC timestamp, never null: when the
+ * provider CLI exposes a real reset time we parse it (`resumeAtSource: 'parsed'`);
+ * otherwise we fall back to a guessed window (`resumeAtSource: 'guessed'`), so a
+ * consumer can always schedule a resume without special-casing "unknown".
+ */
+export interface UsageLimitSignal {
+  type: 'usage_limit';
+  /** ISO-8601 UTC instant at which work may resume. Never null. */
+  resumeAt: string;
+  /** Whether `resumeAt` was parsed from the provider's own reset time, or guessed. */
+  resumeAtSource: 'parsed' | 'guessed';
+  /** The raw message/output that identified this as a usage limit (for logging). */
+  message: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: THE provider-adapter default resume window for a guessed
+ * usage-limit signal (1 hour). This is the single source of truth for the guess --
+ * fleet-sprint and other consumers must read the signal's `resumeAt`, never
+ * hardcode their own 1h fallback.
+ */
+export const DEFAULT_USAGE_LIMIT_RESUME_MS = 60 * 60 * 1000;
+
+/**
+ * apra-fleet-hzeb.1: build a guessed usage-limit signal whose `resumeAt` is
+ * `now + DEFAULT_USAGE_LIMIT_RESUME_MS`. `now` is injectable for deterministic
+ * tests.
+ */
+export function guessedUsageLimitSignal(message: string, now: number = Date.now()): UsageLimitSignal {
+  return {
+    type: 'usage_limit',
+    resumeAt: new Date(now + DEFAULT_USAGE_LIMIT_RESUME_MS).toISOString(),
+    resumeAtSource: 'guessed',
+    message,
+  };
+}
+
+/**
+ * apra-fleet-hzeb.1: generic quota/usage-limit detector shared by the
+ * non-Claude adapters. Matches the durable "you are out of quota" signatures
+ * (a bare 429, "rate limit", "quota exceeded", "usage limit", "credit limit",
+ * "resource_exhausted") and returns a GUESSED signal. Transient overload
+ * (529 / "overloaded") deliberately does NOT match here -- that stays a
+ * retryable overload, not a usage limit.
+ */
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+
+export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
+  if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
+  return guessedUsageLimitSignal(output, now);
+}
+
 export interface ParsedResponse {
   result: string;
   sessionId?: string;
@@ -129,6 +214,12 @@ export interface ParsedResponse {
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
   terminalReason?: string;
+  /** apra-fleet-hzeb.1: the Claude result event's api_error_status (e.g. 429), when
+   *  present -- previously dropped by the parser. Used by detectUsageLimit. */
+  apiErrorStatus?: number;
+  /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
+   *  dispatch was terminated by a provider usage/quota limit. */
+  usageLimit?: UsageLimitSignal;
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -163,6 +254,20 @@ export interface RegisterMcpEndpointResult {
  *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
  *  services/strategy.ts. */
 export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+
+/** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
+ *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
+ *  directory, without going through a shell command line: node:fs for a local member,
+ *  SFTP for an SSH member. A merged ~/.claude.json can be far larger than any command
+ *  line a Windows process may carry (CreateProcess caps it at 32767 chars; cmd.exe at
+ *  8191), so the adapter prefers this channel when present and only falls back to
+ *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
+ *  failure so the adapter can fall back. */
+export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+
+export interface WorkspaceTrustTransport {
+  writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+}
 
 export interface EnsureWorkspaceTrustedResult {
   /** true only when this call just wrote hasTrustDialogAccepted=true because it was
@@ -224,12 +329,25 @@ export interface ProviderAdapter {
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
 
+  /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
+   *  usage/quota limit (as opposed to a transient overload). Returns a
+   *  {@link UsageLimitSignal} with a concrete `resumeAt`, or null when this was not
+   *  a usage limit. REQUIRED on every adapter: none.ts returns null; the non-Claude
+   *  adapters delegate to {@link defaultUsageLimitSignal} on their raw output; Claude
+   *  keys off its api_error_status / terminal_reason plus its own limit message. */
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null;
+
   // Session management
   supportsResume(): boolean;
   supportsMaxTurns(): boolean;
   resumeFlag(sessionId?: string, resuming?: boolean): string;
   /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
   sessionIdStrategy(): SessionIdStrategy;
+  /** apra-fleet-25yl.2.1: what the exec-level rolling (inactivity) timeout is
+   *  derived from for this provider -- see {@link ExecTimeoutSource}. REQUIRED
+   *  on every adapter, deliberately with no default, so a new provider must
+   *  state its answer rather than inherit one. */
+  execTimeoutSource(): ExecTimeoutSource;
   /** apra-fleet-lmtg.1: true when this provider supports fork-mode dispatch --
    *  branching a NEW, distinct session id from an existing session's context,
    *  as opposed to resume (which continues the source id in place). Optional:
@@ -346,8 +464,11 @@ export interface ProviderAdapter {
    *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
    *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
    *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
-   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8). */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult>;
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
+   *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
+   *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

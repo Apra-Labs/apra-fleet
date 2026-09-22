@@ -1,4 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -99,6 +100,12 @@ export class CopilotProvider implements ProviderAdapter {
     }
   }
 
+  // apra-fleet-hzeb.1: Copilot has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+  }
+
   supportsResume(): boolean {
     return true;
   }
@@ -109,6 +116,17 @@ export class CopilotProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: 'inactivity_timeout' here means PRESERVE CURRENT
+  // BEHAVIOUR, not "the exec channel is a proven mid-turn signal for Copilot".
+  // Copilot was deliberately left out of scope for the per-provider decoupling:
+  // resolveSessionLogDir() below returns null, so it has no file-side signal
+  // either way, and that gap is tracked as its own separate work item. Changing
+  // this value is a behaviour change for Copilot -- do it there, not casually
+  // here.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
   }
 
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {

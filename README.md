@@ -293,8 +293,9 @@ When NOT to use it: a one-off single-file change needs no fleet.
 ## Security model, in one paragraph
 
 Secrets are entered out-of-band into a credential store and referenced as
-`{{secure.NAME}}` -- resolved server-side at execution, never visible to
-any LLM or log. Credentials scope to members, expire on TTL, and can carry
+`{{secret.NAME}}` -- resolved server-side at execution, never visible to
+any LLM or log; see [docs/secret-variables.md](docs/secret-variables.md).
+Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
 god-mode. VCS access is provisioned and revocable per member, across GitHub,
@@ -302,7 +303,12 @@ Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
 auth pattern, error vocabulary) are hidden behind a per-provider descriptor
 rather than leaking into shared code; see
 `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-credential-assembly and PAT-lifetime details. Permission
+credential-assembly and PAT-lifetime details. A credential-requiring VCS
+command can be handed to the server for execution (`vcs_credential_exec`)
+rather than the orchestrator learning the plaintext token itself: the
+server substitutes the credential into the command, runs it on the member,
+and redacts the token from every field of the result -- the plaintext never
+transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
@@ -423,7 +429,7 @@ third-party verticals.
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
-| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |

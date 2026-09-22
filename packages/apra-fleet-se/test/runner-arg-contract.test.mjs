@@ -9,6 +9,7 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
+import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -225,6 +226,42 @@ describe('validateArgs', () => {
         assert.throws(() => validateArgs('nope'), /args must be an object/);
         assert.throws(() => validateArgs(['a']), /args must be an object/);
     });
+
+    // -------------------------------------------------------------------
+    // expect_beads: the beads identity every member must resolve to
+    // (--expect-beads JSON / FLEET_SPRINT_EXPECT_BEADS), consumed by the
+    // beads identity precondition.
+    // -------------------------------------------------------------------
+
+    test('expect_beads omitted -> expectBeads undefined (expectation comes from the orchestrator)', () => {
+        const result = validateArgs(VALID_ARGS);
+        assert.strictEqual(result.expectBeads, undefined);
+    });
+
+    test('expect_beads as a JSON string is parsed into a normalized identity record', () => {
+        const json = JSON.stringify({ beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' });
+        const result = validateArgs({ ...VALID_ARGS, expect_beads: json });
+        assert.deepStrictEqual(result.expectBeads, {
+            beadsDir: '/w/.beads',
+            prefix: 'proj',
+            syncRemote: 'https://example.com/o/r.git',
+            repoRemote: 'https://example.com/o/r.git',
+        });
+    });
+
+    test('expect_beads as an object (programmatic caller) is accepted and normalized', () => {
+        const result = validateArgs({ ...VALID_ARGS, expect_beads: { prefix: ' proj ', extra: 'ignored' } });
+        assert.deepStrictEqual(result.expectBeads, { beadsDir: '', prefix: 'proj', syncRemote: '', repoRemote: '' });
+    });
+
+    test('expect_beads with invalid JSON is a hard arg error', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: '{not json' }), /Invalid expect_beads: not valid JSON/);
+    });
+
+    test('expect_beads that names no compared field is rejected', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: '{"beadsDir":"/x/.beads"}' }), /at least one of prefix, syncRemote, repoRemote/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, expect_beads: 42 }), /must be a JSON string or an object/);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -273,33 +310,43 @@ function mockCmdResult(code, stdout, stderr = '') {
 // THROWS on anything that isn't valid JSON (see mock-sprint-harness.mjs's
 // defaultMockCallTool doc comment for the identical fix there) -- so
 // dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
-// too, not the plain '✅ mock <name>' prose generic callers elsewhere use.
-function spyCallTool(name, toolArgs) {
-    // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
-    // provider via VCSModule.resolveProvider() (a 'member_detail' call)
-    // BEFORE every provision_vcs_auth call.
-    if (name === 'member_detail') {
-        return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
-    }
-    if (name === 'provision_vcs_auth') {
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        return Promise.resolve({ content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
-    }
-    if (name === 'dolt_push_mutex') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'acquire') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+// too, not the plain '[OK] mock <name>' prose generic callers elsewhere use.
+// apra-fleet-3swo.7.19: `executeCommand` (the spy's OWN executeCommand,
+// already in the `({ content, structuredContent }) => Promise` shape
+// defaultMockCallTool()'s vcs_credential_exec branch expects -- no adapter
+// needed, unlike the finalizeAbort-level test files that pass a `{ ok,
+// output, error }`-shaped legacy `command`) lets the fallback below delegate
+// to the SAME shared simulator (reusing its placeholder substitution and
+// redaction) instead of re-implementing it here.
+function spyCallTool(executeCommand) {
+    const base = defaultMockCallTool({ executeCommand });
+    return function (name, toolArgs) {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
+        // provider via VCSModule.resolveProvider() (a 'member_detail' call)
+        // BEFORE every provision_vcs_auth call.
+        if (name === 'member_detail') {
+            return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
-    }
-    if (name === 'child_id_allocator') {
-        const action = toolArgs && toolArgs.action;
-        if (action === 'allocate') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return Promise.resolve({ content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
         }
-        return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
-    }
-    return Promise.resolve({ content: [{ text: `✅ mock ${name}` }] });
+        if (name === 'dolt_push_mutex') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'acquire') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
+        }
+        if (name === 'child_id_allocator') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'allocate') {
+                return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+            }
+            return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
+        }
+        return Promise.resolve(base(name, toolArgs));
+    };
 }
 
 // apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the
@@ -341,6 +388,14 @@ function buildSpyFleetApi(overrides = {}) {
             // canned bead must be a CHILD of 'bd-1' (the target used by
             // every test in this suite), not 'bd-1' itself, or it falls
             // outside scope and every downstream call sees nothing.
+            // The beads identity precondition's `bd where --json` probe
+            // (fleet-sprint/beads-identity-check.mjs) runs on every member
+            // before the first bd read; answer a consistent database so the
+            // check passes (sync.remote and origin fall through to the
+            // existing default answers below).
+            if (/^bd where --json$/.test(opts.command)) {
+                return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
+            }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
                 return mockCmdResult(0, allBeadsJson);
             }
@@ -476,7 +531,7 @@ describe('runner.js mock-level execution', () => {
             // degrades to skipping PR creation entirely (apra-fleet-tfx.8.1)
             // -- this test exercises the PR-raise path itself, so it needs a
             // working callTool.
-            callTool: spyCallTool,
+            callTool: spyCallTool(spy.executeCommand),
         }, true);
 
         assert.strictEqual(result.status, 'success');
@@ -508,9 +563,16 @@ describe('runner.js mock-level execution', () => {
         // + 'bd dolt pull'). Pin that ordering contract (only bd commands may
         // precede the first git command) and anchor the git triplet at the
         // first git index instead of hardcoding index 0.
-        const firstGitIdx = spy.commandLog.findIndex((c) => /^git /.test(c));
+        // The beads identity precondition's three per-member probes (`bd
+        // where --json`, `bd config get sync.remote --json`, `git remote
+        // get-url origin`) precede even that gate; skip them first.
+        // Exactly three: this is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
+        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
-        for (const pre of spy.commandLog.slice(0, firstGitIdx)) {
+        for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
             assert.match(
                 pre,
                 /^bd /,
@@ -540,25 +602,34 @@ describe('runner.js mock-level execution', () => {
         // hosted-remote PR-raise path is exercised unchanged, just with one
         // extra command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
-        // push+pr credential's token from the git-credential-helper script,
-        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 4 commandLog entries are: push,
-        // the classification probe, the credential-token read, and the
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
         // curl POST itself.
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read between the probe and the
+        // curl. The create-PR dispatch now goes through the
+        // vcs_credential_exec handoff, which reads and substitutes the
+        // credential server-side, so the orchestrator dispatches no
+        // credential-read command and the tail is one entry shorter. The
+        // retired positional assertion is replaced below by the strictly
+        // stronger "no credential read anywhere in the log".
         // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
         // origin URL the Publish PR step already resolved) makes
         // provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const last4 = spy.commandLog.slice(-4);
-        assert.match(last4[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last4[1], /^git remote get-url origin\b/);
-        assert.match(last4[2], /^\$HOME\/\.fleet-git-credential-/);
-        assert.match(last4[3], /^curl -sS -X POST\b/);
-        assert.ok(last4[3].includes('/pulls'));
-        assert.ok(last4[3].includes('"base":"develop"'));
-        assert.ok(last4[3].includes('"head":"auto-sprint/reach-test"'));
+        const last3 = spy.commandLog.slice(-3);
+        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last3[1], /^git remote get-url origin\b/);
+        assert.match(last3[2], /^curl -sS -X POST\b/);
+        assert.ok(last3[2].includes('/pulls'));
+        assert.ok(last3[2].includes('"base":"develop"'));
+        assert.ok(last3[2].includes('"head":"auto-sprint/reach-test"'));
+        assert.ok(
+            !spy.commandLog.some((c) => typeof c === 'string' && /^\$HOME\/\.fleet-git-credential-/.test(c)),
+            'the orchestrator must dispatch no credential-helper read of its own -- vcs_credential_exec performs it server-side',
+        );
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {
@@ -680,8 +751,11 @@ describe('runner.js mock-level execution', () => {
         // bracket (the Issue 31 pre-gate reads the BRACKET member's own
         // sync.remote before deciding whether to push), so it is excluded
         // alongside `bd dolt *` for the same reason.
+        // `bd where` is the beads identity precondition's per-member probe
+        // (it deliberately runs on EVERY physical member, not just the
+        // orchestrator), excluded for the same reason.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -711,8 +785,9 @@ describe('runner.js mock-level execution', () => {
         // member rather than `orchestratorMember`.
         // `bd config get sync.remote` excluded like `bd dolt *` -- part of
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
+        // `bd where` (per-member beads identity probe) excluded, see above.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);

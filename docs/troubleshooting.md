@@ -109,7 +109,7 @@ A dispatch can end in two distinct ways:
 **A token or password appeared in command output**
 
 Store the secret with `credential_store_set`, then reference it as
-`{{secure.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
+`{{secret.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
 before the LLM ever sees the output. See
 [docs/features/oob-auth.md](features/oob-auth.md).
 
@@ -117,7 +117,7 @@ before the LLM ever sees the output. See
 
 Run `credential_store_delete name=<NAME>` then `credential_store_set
 name=<NAME>`. The new value is picked up immediately on the next
-`execute_command` that references `{{secure.NAME}}`.
+`execute_command` that references `{{secret.NAME}}`.
 
 ## Git
 
@@ -144,7 +144,7 @@ calling it, rather than treating the error as a failure.
 
 ## Build & native dependencies
 
-**`npm ci`/`npm install` fails compiling a native module (e.g. `better-sqlite3`) via `node-gyp`**
+**`npm ci`/`npm install` fails compiling a native module (e.g. `cpu-features`, an optional dependency of `ssh2`) via `node-gyp`**
 
 This is a toolchain/environment incompatibility, not a code defect -- do not
 patch the deploy or build scripts to work around it. On macOS it shows up as

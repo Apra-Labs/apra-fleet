@@ -23,7 +23,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 //
 // Three cases per the bead:
 //   (a) an Azure DevOps member: provision_vcs_auth is invoked with the
-//       derived org_url and a secure PAT placeholder, unattended -- no
+//       derived org_url and a secret PAT placeholder, unattended -- no
 //       out-of-band prompt path is ever entered.
 //   (b) the named secret is absent from the credential store: the preflight
 //       never calls provision_vcs_auth and the run's own logs surface the
@@ -34,29 +34,35 @@ const check = (cond, msg) => assert.ok(cond, msg);
 
 const AZ_ORIGIN = 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo';
 
-test('mock sprint: an Azure DevOps member is provisioned unattended by the preflight, with a derived org_url and a secure PAT placeholder', async () => {
+test('mock sprint: an Azure DevOps member is provisioned unattended by the preflight, with a derived org_url and a secret PAT placeholder', async () => {
     await withScenarioMarkers('5co8.2.2 ado preflight provisions', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') {
-                return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
-            }
-            if (name === 'credential_store_list') {
-                return { content: [{ text: JSON.stringify([{ name: 'azdevops_pat', scope: 'persistent' }]) }] };
-            }
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-                return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: callToolFactory (not a plain callTool) so
+        // `base`'s vcs_credential_exec branch can delegate to the SAME
+        // executeCommand this scenario's own mockFleetApi uses -- see
+        // runDevelopLoopScenario's callToolFactory doc comment.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') {
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                }
+                if (name === 'credential_store_list') {
+                    return { content: [{ text: JSON.stringify([{ name: 'azdevops_pat', scope: 'persistent' }]) }] };
+                }
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                    return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2ado_ok', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the unattended Azure DevOps preflight' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             originUrl: AZ_ORIGIN,
         });
 
@@ -100,17 +106,17 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
 
         // THE acceptance criterion: provision_vcs_auth was invoked, unattended,
         // with the org_url derived from the member's own git remote and the
-        // PAT passed as a secure placeholder -- never a raw value, never
+        // PAT passed as a secret placeholder -- never a raw value, never
         // GitHub-App vocabulary (git_access/repos).
         check(
             vcsAuthCalls.some((c) => c
                 && c.member_name === 'local'
                 && c.provider === 'azure-devops'
                 && c.org_url === 'https://dev.azure.com/mock-org'
-                && c.pat === '{{secure.azdevops_pat}}'
+                && c.pat === '{{secret.azdevops_pat}}'
                 && !('git_access' in c)
                 && !('repos' in c)),
-            `expected an unattended provision_vcs_auth call with a derived org_url and a secure PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
+            `expected an unattended provision_vcs_auth call with a derived org_url and a secret PAT placeholder, got: ${JSON.stringify(vcsAuthCalls)}`,
         );
 
         // apra-fleet-5co8.19: happy-path control for the missing-secret
@@ -127,27 +133,31 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
 test("mock sprint: a member whose Azure DevOps PAT secret is absent from the credential store never provisions, and the run's own logs name credential_store_set instead of prompting", async () => {
     await withScenarioMarkers('5co8.2.2 ado preflight missing secret', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'member_detail') {
-                return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
-            }
-            if (name === 'credential_store_list') {
-                // The store is reachable but simply has no azdevops_pat entry.
-                return { content: [{ text: JSON.stringify([]) }] };
-            }
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-                return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: see the sibling scenario above for why this
+        // is a callToolFactory rather than a plain callTool.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'member_detail') {
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                }
+                if (name === 'credential_store_list') {
+                    // The store is reachable but simply has no azdevops_pat entry.
+                    return { content: [{ text: JSON.stringify([]) }] };
+                }
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                    return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2ado_nosec', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the missing-secret Azure DevOps preflight' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             originUrl: AZ_ORIGIN,
         });
 
@@ -197,18 +207,19 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
 
-        // apra-fleet-5co8.19: the Publish PR phase must degrade to the
-        // provider's clean authRemedy guidance ONLY -- it must never also
-        // leak the raw provision_vcs_auth failure text ("the credential
-        // store has no entry named") that raiseVcsPrForMember's catch
-        // (apra-fleet-5co8.15) is supposed to have replaced with
-        // remedyHint. This is deliberately scoped to the Publish-PR-tagged
-        // logs, not the whole log stream: that raw text legitimately still
-        // appears in the PREFLIGHT's own swallowed log (asserted above),
-        // which is a different, non-Publish-PR code path.
+        // apra-fleet-5co8.19 originally required the Publish PR log to carry
+        // the provider's authRemedy guidance ONLY. GitHub issue #502 showed
+        // why that hides the real problem: an unreadable remote, a missing
+        // credential-store entry and a dead PAT all printed the identical
+        // "PATs cannot be re-minted" paragraph, and the operator could not
+        // tell which one to fix. The contract is now: the ACTUAL cause first
+        // (here the missing secret), then the remedy hint -- both in the
+        // same [Publish PR Skipped] line, still without aborting the sprint.
         check(
-            !publishPrLogs.some((l) => /the credential store has no entry named/.test(l)),
-            `expected no Publish PR log to leak the raw provision_vcs_auth failure text, got logs: ${JSON.stringify(publishPrLogs)}`,
+            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l)
+                && /the credential store has no entry named 'azdevops_pat'/.test(l)
+                && /PATs cannot be re-minted server-side/.test(l)),
+            `expected the Publish PR Skipped log to lead with the actual provisioning cause before the remedy hint, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
     });
 });
@@ -216,19 +227,23 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
 test('mock sprint: a GitHub member is unaffected by the Azure DevOps preflight hook -- its provision_vcs_auth args keep the GitHub-App shape', async () => {
     await withScenarioMarkers('5co8.2.2 github unaffected', async () => {
         const vcsAuthCalls = [];
-        const base = defaultMockCallTool();
-        const callTool = async (name, args) => {
-            if (name === 'provision_vcs_auth') {
-                vcsAuthCalls.push(args);
-            }
-            return base(name, args);
+        // apra-fleet-3swo.7.19: see the first scenario in this file for why
+        // this is a callToolFactory rather than a plain callTool.
+        const callToolFactory = (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, args) => {
+                if (name === 'provision_vcs_auth') {
+                    vcsAuthCalls.push(args);
+                }
+                return base(name, args);
+            };
         };
 
         const scenario = await runDevelopLoopScenario('5co82_2gh_ok', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: exercise the GitHub preflight path unchanged' }],
             maxCycles: 1,
-            callTool,
+            callToolFactory,
             // defaultMockCallTool()'s member_detail resolves 'github', and the
             // default originUrl is already GitHub-shaped -- no override needed.
         });

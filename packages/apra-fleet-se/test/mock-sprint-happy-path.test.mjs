@@ -86,11 +86,21 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // no-remote skip), so this asserts on the first GIT command's
         // position rather than a fixed index, and that everything before it
         // is exactly this gate's own bd command(s).
-        const firstGitIdx = run1.commandLog.findIndex((c) => /^git /.test(c));
-        check(firstGitIdx > 0, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
+        // The beads identity precondition (fleet-sprint/beads-identity-
+        // check.mjs) now runs FIRST of all: its three read-only probes per
+        // member (`bd where --json`, `bd config get sync.remote --json`,
+        // `git remote get-url origin`) precede even the beads-health gate,
+        // so they are skipped here before locating the first REAL git
+        // command (the branch-ensure fetch).
+        // Exactly three here: run1 is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
+        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
-            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
+            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
         // interceptor succeeds by default), so Ensure Sprint Branch now also
@@ -128,32 +138,41 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // `originUrl` option), so the PR-raise path is still exercised, just
         // with this extra probe command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() (1) reads back the just-provisioned
-        // push+pr credential's token from the git-credential-helper script,
-        // then (2) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 4 commandLog entries are: push,
-        // the classification probe, the credential-token read, and the
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
         // curl POST itself.
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read sitting between the probe
+        // and the curl. The credential read MOVED SERVER-SIDE: the create-PR
+        // command now goes out through the vcs_credential_exec handoff, which
+        // reads and substitutes the credential inside the server, so the
+        // orchestrator dispatches no credential-read command at all and the
+        // tail is one entry shorter.
         // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
         // origin URL the Publish PR step already resolved a few lines
         // earlier) makes provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const pushIdx = run1.commandLog.length - 4;
-        const originUrlIdx = run1.commandLog.length - 3;
-        const credReadIdx = run1.commandLog.length - 2;
+        const pushIdx = run1.commandLog.length - 3;
+        const originUrlIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;
         check(
             run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
-            `Expected fourth-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
         );
         check(
             run1.commandLog[originUrlIdx] === 'git remote get-url origin',
-            `Expected third-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
+            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
         );
+        // apra-fleet-3swo.7.6: replaces the retired "second-to-last entry is
+        // the credential-token read" assertion. Strictly stronger than what it
+        // replaces -- it pins this bead's headline property, that the
+        // orchestrator NEVER reads the plaintext credential itself, anywhere
+        // in the run rather than merely at one tail position.
         check(
-            run1.commandLog[credReadIdx] && run1.commandLog[credReadIdx].startsWith('$HOME/.fleet-git-credential-'),
-            `Expected second-to-last commandLog entry to be the just-provisioned credential-token read, got: ${JSON.stringify(run1.commandLog[credReadIdx])}`
+            !run1.commandLog.some((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')),
+            `Expected NO credential-token read to be dispatched by the orchestrator (the vcs_credential_exec handoff reads it server-side), got: ${JSON.stringify(run1.commandLog.filter((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')))}`
         );
         check(
             run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('curl -sS -X POST') && run1.commandLog[prIdx].includes('/pulls') && run1.commandLog[prIdx].includes('"base":"main"') && run1.commandLog[prIdx].includes(`"head":"${RUN1_BRANCH}"`),

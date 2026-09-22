@@ -18,6 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,10 +156,19 @@ export function buildOptionsSpec() {
         // a direct/standalone CLI launch (no supervisor) falls back to
         // --branch for this identity, exactly as before this flag existed.
         'run-id': { type: 'string' },
+        // The beads identity (JSON, serializeExpectedIdentity output) every
+        // member's bd must resolve to, injected by the supervisor's spawner;
+        // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
+        // the runner takes the expectation from the orchestrator member.
+        'expect-beads': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
         'dispatch-timeout-s': { type: 'string' },
+        // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+        // Both optional; omitted, the runner uses USAGE_LIMIT_BUDGET_DEFAULTS.
+        'usage-limit-max-wait-s': { type: 'string' },
+        'usage-limit-max-reprobes': { type: 'string' },
         // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
         // topology mode (orchestrator-bracketed git sync -- same-origin +
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
@@ -193,12 +203,22 @@ Options:
                                 Normally set automatically to the supervisor's sprintId when this
                                 sprint is supervisor-spawned; omitted (direct/standalone launch)
                                 falls back to --branch, exactly as before this flag existed.
+      --expect-beads <json>    Beads identity every member must resolve to, as JSON
+                                ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
+                                the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
+                                orchestrator member's own 'bd where' becomes the expectation and every
+                                other member must match it. A mismatch aborts before any bd mutation.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
                                 the inactivity timeout and the hard ceiling on every agent dispatch
                                 (the integration-test dispatch ceiling is 2x). Lower it for small
                                 sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
+      --usage-limit-max-wait-s <s>   Total wall-clock seconds a dispatch may stay paused across all
+                                usage-limit reprobes before giving up (typed sprint abort). Optional;
+                                omitted uses the runner default. Minimum 60.
+      --usage-limit-max-reprobes <n> Max usage-limit reprobe attempts before giving up, independent
+                                of elapsed wait. Optional; omitted uses the runner default. Minimum 1.
       --sync                   Use synced topology mode (orchestrator-bracketed git sync):
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
@@ -303,7 +323,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl, runId }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -316,6 +336,11 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (roleMap !== undefined) args.roleMap = roleMap;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets,
+    // forwarded to runner.js's validateArgs() when supplied (omitted keeps the
+    // runner's USAGE_LIMIT_BUDGET_DEFAULTS).
+    if (usageLimitMaxWaitS !== undefined) args.usage_limit_max_wait_s = usageLimitMaxWaitS;
+    if (usageLimitMaxReprobes !== undefined) args.usage_limit_max_reprobes = usageLimitMaxReprobes;
     // apra-fleet-f34.1: forwarded straight through to runner.js's validateArgs()
     // (args.serviceUrl), which is what actually switches it onto the
     // HTTP-backed dolt-mutex/id-allocator clients (fleet-sprint/runner.js
@@ -327,7 +352,64 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // dispatch so deploy.md's active-sprints gate can recognize this sprint's
     // OWN reservation instead of stopping on it.
     if (runId !== undefined) args.run_id = runId;
+    // The raw --expect-beads JSON, forwarded verbatim; runner.js's
+    // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
+    if (expectBeads !== undefined) args.expect_beads = expectBeads;
     return args;
+}
+
+/**
+ * Resolves the `--expect-beads` value: the flag wins, else the
+ * FLEET_SPRINT_EXPECT_BEADS env var, else undefined (no expectation).
+ * @param {string|undefined} flagValue
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string|undefined}
+ */
+export function resolveExpectBeads(flagValue, env = process.env) {
+    if (typeof flagValue === 'string' && flagValue.trim()) return flagValue;
+    const fromEnv = env.FLEET_SPRINT_EXPECT_BEADS;
+    if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv;
+    return undefined;
+}
+
+/**
+ * Runs `bd where --json` on the ORCHESTRATOR MEMBER (never locally -- the
+ * sprint's bd commands run in that member's workFolder, see
+ * checkIssuesExistOnMember below) so the startup banner can show which
+ * .beads the sprint is about to mutate, and so a member with no beads
+ * database is reported plainly (as a WARNING with the fix -- the `bd show`
+ * precondition right after it is what actually fails a member whose bd
+ * cannot answer). The runner re-probes every member and does the hard
+ * expected-vs-actual comparison; this is display only.
+ * @param {{ member: string, runCommand: (cmd: string, member: string) => Promise<string> }} opts
+ * @returns {Promise<{ ok: boolean, identity: object|null, message: string }>}
+ */
+export async function probeBeadsIdentityOnMember({ member, runCommand }) {
+    const raw = {};
+    const fix = `To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's .beads.`;
+    for (const [key, cmd] of Object.entries(BEADS_IDENTITY_PROBES)) {
+        try {
+            raw[key] = await runCommand(cmd, member);
+        } catch (err) {
+            if (key === 'where') {
+                return {
+                    ok: false,
+                    identity: null,
+                    message: `Warning: no beads database found at member '${member}'s workFolder ('${cmd}' failed: ${err && err.message ? err.message : String(err)}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
+                };
+            }
+            raw[key] = '';
+        }
+    }
+    const identity = parseBeadsIdentity(raw);
+    if (!identity.beadsDir) {
+        return {
+            ok: false,
+            identity: null,
+            message: `Warning: no beads database found at member '${member}'s workFolder ('${BEADS_IDENTITY_PROBES.where}' returned no database path: ${String(raw.where || '').trim() || '(no output)'}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
+        };
+    }
+    return { ok: true, identity, message: formatBeadsIdentity(identity, { label: `[Precondition] member '${member}'` }) };
 }
 
 /**
@@ -521,6 +603,18 @@ async function main() {
     // (unchanged pre-existing behavior in that case).
     const effectiveRunId = values['run-id'] || branchName;
     const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+    const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
+    const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
+    // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
+    // so malformed JSON fails before any fleet connection; the runner's
+    // validateArgs() re-validates the raw string it is handed.
+    const expectBeads = resolveExpectBeads(values['expect-beads']);
+    const expectedBeads = expectBeads !== undefined ? parseExpectedIdentity(expectBeads) : null;
+    if (expectBeads !== undefined && !expectedBeads) {
+        console.error(`Error: --expect-beads is not valid JSON: ${expectBeads}`);
+        process.exit(1);
+    }
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -558,6 +652,18 @@ async function main() {
     // own budget check (non-negative finite number; see N10, apra-fleet-unw2.8).
     if (dispatchTimeoutS !== undefined && (!Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60)) {
         console.error(`Error: --dispatch-timeout-s must be an integer >= 60 (seconds), got "${values['dispatch-timeout-s']}".`);
+        process.exit(1);
+    }
+
+    // apra-fleet-hzeb.4.2: same strict-parsing posture as --dispatch-timeout-s
+    // above; mirrors (does not replace) runner.js validateArgs's own checks.
+    if (usageLimitMaxWaitS !== undefined && (!Number.isInteger(usageLimitMaxWaitS) || usageLimitMaxWaitS < 60)) {
+        console.error(`Error: --usage-limit-max-wait-s must be an integer >= 60 (seconds), got "${values['usage-limit-max-wait-s']}".`);
+        process.exit(1);
+    }
+
+    if (usageLimitMaxReprobes !== undefined && (!Number.isInteger(usageLimitMaxReprobes) || usageLimitMaxReprobes < 1)) {
+        console.error(`Error: --usage-limit-max-reprobes must be an integer >= 1, got "${values['usage-limit-max-reprobes']}".`);
         process.exit(1);
     }
 
@@ -648,6 +754,25 @@ async function main() {
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
     const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
+    const runProbe = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        const text = res && res.content && res.content[0] ? res.content[0].text : '';
+        if (res && res.isError) throw new Error(text || 'unknown error');
+        const exitCode = res && res.structuredContent && typeof res.structuredContent.exitCode === 'number' ? res.structuredContent.exitCode : 0;
+        if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
+        return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
+    };
+    // Which .beads the orchestrator member's bd resolves to -- probed BEFORE
+    // the `bd show` precondition below so a member with no beads database
+    // is reported plainly (a warning with the fix) ahead of the bare bd
+    // error that precondition would otherwise be the first to show, and
+    // shown in the banner. A failed probe is a warning, not an exit: the
+    // existing preconditions decide. The runner repeats this for every
+    // member and hard-fails only a mismatch against --expect-beads.
+    const beadsProbe = await probeBeadsIdentityOnMember({ member: orchestratorMember, runCommand: runProbe });
+    if (!beadsProbe.ok) {
+        console.warn(beadsProbe.message);
+    }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
         member: orchestratorMember,
@@ -729,6 +854,10 @@ async function main() {
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${orchestratorMember}'` })}`);
+    if (expectedBeads) {
+        console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
+    }
 
     const workflow = new FleetWorkflow(fleetApi);
     const engine = new WorkflowEngine(workflow);
@@ -896,8 +1025,11 @@ async function main() {
                 roleMap,
                 budget,
                 dispatchTimeoutS,
+                usageLimitMaxWaitS,
+                usageLimitMaxReprobes,
                 serviceUrl,
                 runId: effectiveRunId,
+                expectBeads,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc
@@ -952,6 +1084,22 @@ async function main() {
 
 function isMainModule() {
     try {
+        // Never self-execute when this module is loaded as a test file under a
+        // Node test runner. `node --test <file>` sets NODE_TEST_CONTEXT in the
+        // process that evaluates the file AND leaves process.argv[1] pointing at
+        // that file, so the URL comparison below would otherwise treat the test
+        // load as a direct CLI run and fire main() for real. The Phase-4
+        // move-only probe (scripts/phase4-moveonly-probe.mjs) does exactly this:
+        // it copies cli.mjs to a sibling `.phase4probe-cli.mjs` and runs
+        // `node --test` on it, so without this guard main() runs, exits 1 on the
+        // missing required flags, and the CURRENT revision fails to corroborate
+        // as an ANCHOR_DESYNC -- turning the move-only gate red. NODE_TEST_CONTEXT
+        // is stripped from the probe's spawn env, but `node --test` re-injects it
+        // into the file's own process, so it is a reliable "loaded as a test"
+        // signal. A production CLI launch (node bin/cli.mjs ...) and the workflow
+        // import trampoline (src/cli/workflow.ts, which is not a node --test run)
+        // never have it set, so both keep self-executing.
+        if (process.env.NODE_TEST_CONTEXT) return false;
         if (process.argv[1] === undefined) return false;
         const invokedUrl = pathToFileURL(process.argv[1]).href;
         const moduleUrl = import.meta.url;

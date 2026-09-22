@@ -14,6 +14,12 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-j918.13.3: harvest.mjs derives the analysisArtifactFile path
+// (docs/sprint-analysis-<slug>.md) from the sprint's branch via this exact
+// function (see fleet-sprint/phases/harvest.mjs) -- reused (not
+// re-implemented) here so normalizeText() can fold the per-invocation-unique
+// branch's slug back to the golden fixture's original slug.
+import { computeBranchSlug } from '../fleet-sprint/sprint-report.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,6 +57,14 @@ const __dirname = path.dirname(__filename);
 const GOLDEN_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 const GOLDEN_PATH = path.join(GOLDEN_DIR, 'mock-sprint-happy-path.jsonl');
 const UPDATE_GOLDEN = process.env.UPDATE_GOLDEN === '1';
+
+// apra-fleet-j918.13.3: the fixed branch literal the committed golden
+// fixture was recorded against, before runGoldenScenario() started minting a
+// per-invocation-unique branch (see uniqueGoldenBranch()) to give every
+// invocation its own sprint-lock identity. normalizeText() folds each run's
+// actual, unique branch back to this literal so the fixture needs no
+// regeneration.
+const CANONICAL_GOLDEN_BRANCH = 'auto-sprint/mock-sprint';
 
 // apra-fleet-7ll: replicate the real execute_command MCP tool's response
 // shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
@@ -539,13 +553,16 @@ const ISO_TIMESTAMP_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/g;
  * (defensive; no known dispatch text embeds it today, since every bd/probe
  * command runs with `cwd: tempDir` rather than an absolute path baked into
  * the command string, but this keeps the snapshot robust if that ever
- * changes).
+ * changes), and this run's per-invocation-unique sprint branch (and its
+ * derived docs/sprint-analysis-<slug>.md slug) -> the fixed literal the
+ * committed golden fixture was recorded against (see CANONICAL_GOLDEN_BRANCH).
  * @param {string} text
  * @param {Map<string, string>} idMap
  * @param {string} tempDir
+ * @param {string} [branch]
  * @returns {string}
  */
-function normalizeText(text, idMap, tempDir) {
+function normalizeText(text, idMap, tempDir, branch) {
     if (typeof text !== 'string') return text;
     let out = text;
     // Replace longest ids first so no id is ever a substring-prefix of
@@ -553,6 +570,29 @@ function normalizeText(text, idMap, tempDir) {
     const ids = [...idMap.keys()].sort((a, b) => b.length - a.length);
     for (const id of ids) {
         out = out.split(id).join(idMap.get(id));
+    }
+    // apra-fleet-j918.13.3: runGoldenScenario()'s branch is now unique per
+    // invocation (tag + pid, see uniqueGoldenBranch()) instead of the shared
+    // literal 'auto-sprint/mock-sprint', so that concurrent invocations never
+    // collide on sprint-lock.mjs's (branch, members) key. Fold the actual,
+    // per-run-unique branch string back to that original literal here --
+    // exactly the same "normalize away a volatility THIS harness injected"
+    // treatment already applied to bead ids/timestamps/tempDir above -- so
+    // the committed golden fixture (which was recorded against the old fixed
+    // branch) needs no regeneration, and two independently-tagged runs (e.g.
+    // 'golden-main' vs 'golden-det-2' in the determinism test) still produce
+    // byte-identical transcripts.
+    if (branch) {
+        out = out.split(branch).join(CANONICAL_GOLDEN_BRANCH);
+        // harvest.mjs's analysisArtifactFile (docs/sprint-analysis-<slug>.md)
+        // embeds computeBranchSlug(branch), NOT the raw branch string -- '/'
+        // replaced with '-' plus an 8-char sha256 prefix of the raw branch
+        // (see sprint-report.mjs's computeBranchSlug doc comment). That slug
+        // never matches the plain split() above, and its hash suffix differs
+        // per invocation (deterministic per branch, but the branch itself is
+        // now per-invocation-unique), so fold it back to the golden fixture's
+        // original slug the same way.
+        out = out.split(computeBranchSlug(branch)).join(computeBranchSlug(CANONICAL_GOLDEN_BRANCH));
     }
     out = out.replace(ISO_TIMESTAMP_PATTERN, '<TIMESTAMP>');
     // bd's `owner`/`created_by` fields (embedded in `bd show --json` output
@@ -581,21 +621,61 @@ function normalizeText(text, idMap, tempDir) {
  * @param {string} tag - unique per-call scratch-dir suffix
  * @returns {Promise<{ transcript: object[], result: object }>}
  */
+// apra-fleet-j918.7.8: memoizes the ONE 'golden-main' run so the snapshot
+// test and the determinism test's "run1" share it instead of each paying for
+// their own byte-identically-configured full sprint run. Caches the PROMISE
+// (not the resolved value) so concurrent callers await the same in-flight
+// run rather than racing two overlapping sprints -- safe regardless of
+// node:test's execution order for this file's top-level tests. The
+// determinism test still performs its OWN, genuinely independent second run
+// (run2, tag 'golden-det-2') and compares it against this memoized run1, so
+// the comparison is never a run against itself -- see that test for the
+// falsification record proving it is not a tautology.
+let goldenMainRunPromise = null;
+function goldenMainRun() {
+    if (!goldenMainRunPromise) goldenMainRunPromise = runGoldenScenario('golden-main');
+    return goldenMainRunPromise;
+}
+
+// apra-fleet-j918.13.3: mirrors mock-sprint-harness.mjs's uniqueMockBranch()
+// -- appends this process's pid (in addition to the tag, since this file
+// itself calls runGoldenScenario() more than once per process: 'golden-main'
+// (memoized), 'golden-progress', and 'golden-det-2') so no two invocations,
+// in this process or any other concurrently-running test file/real sprint,
+// can ever share sprint-lock.mjs's (branch, members) key.
+function uniqueGoldenBranch(tag) {
+    return `auto-sprint/mock-sprint-${tag}-${process.pid}`;
+}
+
 async function runGoldenScenario(tag) {
     const { tempDir, epicBead } = await setup(tag);
     const dispatchLog = [];
     let currentGroup = null;
+    // apra-fleet-j918.13.3: give this invocation its own private sprint-lock
+    // directory instead of relying on sprint-lock.mjs's OS-tmpdir-wide
+    // default (see fleet-sprint/sprint-lock.mjs) -- without this, two
+    // concurrent golden-transcript children collided with
+    // SprintLockHeldError/SPRINT_LOCK_HELD on the shared literal branch
+    // 'auto-sprint/mock-sprint'. Same save/mkdtemp/restore/rm shape as
+    // runDevelopLoopScenario() in test/helpers/mock-sprint-harness.mjs;
+    // golden-transcript-3bead.test.mjs's alternative (set once at module
+    // scope for the whole file) doesn't fit here because THIS file calls
+    // runGoldenScenario() multiple times within one process.
+    const priorSprintLockDir = process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+    const sprintLockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-golden-'));
+    process.env.APRA_FLEET_SPRINT_LOCK_DIR = sprintLockDir;
     try {
         const fleetApi = buildTranscriptFleetApi(tempDir, epicBead, dispatchLog);
         const workflow = new FleetWorkflow(fleetApi, { targetRepo: tempDir });
         workflow.on('group:start', (e) => { currentGroup = e.title; });
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
+        const branch = uniqueGoldenBranch(tag);
 
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,
             members: ['local'],
-            branch: 'auto-sprint/mock-sprint',
+            branch,
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
@@ -609,20 +689,26 @@ async function runGoldenScenario(tag) {
             if (entry.kind === 'command') {
                 normalized.kind = 'command';
                 normalized.member = entry.member;
-                normalized.command = normalizeText(entry.command, idMap, tempDir);
+                normalized.command = normalizeText(entry.command, idMap, tempDir, branch);
             } else {
                 normalized.kind = 'prompt';
                 normalized.agentType = entry.agentType;
                 normalized.label = entry.label;
                 normalized.member = entry.member;
                 normalized.schemaId = entry.schemaId;
-                normalized.prompt = normalizeText(entry.prompt, idMap, tempDir);
+                normalized.prompt = normalizeText(entry.prompt, idMap, tempDir, branch);
             }
             return normalized;
         });
 
         return { transcript, result };
     } finally {
+        if (priorSprintLockDir === undefined) {
+            delete process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+        } else {
+            process.env.APRA_FLEET_SPRINT_LOCK_DIR = priorSprintLockDir;
+        }
+        await fs.rm(sprintLockDir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
         await teardown(tempDir);
     }
 }
@@ -694,7 +780,7 @@ function diffFirstDivergence(goldenJsonl, actualJsonl) {
 }
 
 test('golden transcript: mock sprint happy-path dispatch sequence matches the committed snapshot', async (t) => {
-    const { transcript, result } = await runGoldenScenario('golden-main');
+    const { transcript, result } = await goldenMainRun();
     const actualJsonl = transcriptToJsonl(transcript);
 
     assert.strictEqual(result.status, 'success', `Golden scenario did not succeed: ${JSON.stringify(result)}`);
@@ -749,11 +835,22 @@ test('golden transcript: mock sprint happy-path dispatch sequence matches the co
 // failing" shape from the real incident) -- which engine.executeFile()
 // rejects `runGoldenScenario()`'s promise with, caught below.
 //
-// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
-// { await runCmd(...) }` loop in buildTranscriptFleetApi()'s
-// integ-test-runner handler above (restoring the old canned
-// {featuresClosed, passed:true}-only response) makes this test's `caught`
-// assertion fail: it throws a StalledSprintError instead of completing.
+// MUTATION CHECK (PERFORMED against real bd by apra-fleet-w7ee.1; recorded
+// here as evidence rather than as a claim). Deleting exactly
+// apra-fleet-66u.4's three-line `for (const id of verifyIds) { await
+// runCmd(`bd close ${id}`, tempDir); }` loop from buildTranscriptFleetApi()'s
+// integ-test-runner handler above (leaving the canned {featuresClosed,
+// passed:true} response, and leaving the doer handler's own closes intact)
+// was OBSERVED to take this file from pass=5 fail=0 to pass=2 fail=3: this
+// test's `caught` assertion failed with a StalledSprintError carrying the
+// original incident's signature, "Sprint stalled: 2 consecutive cycle(s)
+// made no new high-water-mark progress (closed beads + verify-routed beads)
+// ... Closed-count history: [1, 1, 1] (high-water mark on progress score:
+// 2)", and the snapshot and determinism-proof subtests aborted the same way.
+// The tree was then restored byte-for-byte from a pre-mutation copy.
+// The sibling 3-bead guard was likewise proven falsifiable, separately and
+// on its own handler, by apra-fleet-w7ee.2 -- see the MUTATION CHECK block
+// in golden-transcript-3bead.test.mjs for its [3, 3, 3]/high-water-4 shape.
 test('golden transcript: Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
     let caught = null;
     let transcript = null;
@@ -798,7 +895,25 @@ test('golden transcript: Integ Test closing the childful epic in the same cycle 
     );
 });
 
+// run1 (tag 'golden-det-1') and run2 (tag 'golden-det-2') are two genuinely
+// INDEPENDENT full sprint executions, each with its own tempDir and its own
+// cold dolt-sync cache state, so this is a real two-independent-runs
+// comparison, not a run compared against itself.
+//
+// FALSIFICATION (confirmed by hand): temporarily inserting
+// `run2.transcript[0] = { ...run2.transcript[0], seq: 'MUTATED' };`
+// immediately before the jsonl1/jsonl2 comparison below made this test fail
+// with the expected "produced different transcripts" assert.fail and a
+// first-divergence diff naming the mutated `seq` field; the line was removed
+// immediately afterward and `git diff` confirmed a byte-clean revert. This
+// confirms run1 and run2 are still compared as two distinct values, not
+// short-circuited into a tautological self-comparison.
 test('golden transcript: two consecutive runs of the mock sprint produce an identical transcript (determinism proof)', async () => {
+    // run1 uses its own independent scenario run (tag 'golden-det-1') rather
+    // than the memoized goldenMainRun(), so it does not inherit
+    // goldenMainRun()'s warm dolt-sync state (per-member sync.remote/tip
+    // memoization in dolt-sync.mjs). Both runs therefore start independently
+    // cold, making the comparison apples-to-apples without any cache reset.
     const run1 = await runGoldenScenario('golden-det-1');
     const run2 = await runGoldenScenario('golden-det-2');
 

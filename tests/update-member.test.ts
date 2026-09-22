@@ -7,6 +7,10 @@ import { ClaudeProvider } from '../src/providers/claude.js';
 import { invalidatePreflightCache } from '../src/services/preflight-check.js';
 import type { SSHExecResult } from '../src/types.js';
 
+// GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
+// out-of-band file channel for a large ~/.claude.json) for every non-relay member.
+const TRUST_TRANSPORT = expect.objectContaining({ writeHomeFile: expect.any(Function) });
+
 // tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
 const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
@@ -144,7 +148,7 @@ describe('updateMember', () => {
     expect(result).toContain('Member "new-name" updated.');
   });
 
-  it('resolves {{secure.NAME}} token in password field', async () => {
+  it('resolves {{secret.NAME}} token in password field', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
@@ -153,7 +157,7 @@ describe('updateMember', () => {
     try {
       const result = await updateMember({
         member_id: member.id,
-        password: `{{secure.${credName}}}`,
+        password: `{{secret.${credName}}}`,
       });
       expect(result).toContain('Member "test-agent" updated.');
     } finally {
@@ -161,16 +165,36 @@ describe('updateMember', () => {
     }
   });
 
-  it('returns error when {{secure.NAME}} token references missing credential', async () => {
+  it('returns error when {{secret.NAME}} token references missing credential', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
     const result = await updateMember({
       member_id: member.id,
-      password: '{{secure.nonexistent_cred}}',
+      password: '{{secret.nonexistent_cred}}',
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
     expect(result).toContain('Member was NOT updated.');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in password field and appends a deprecation warning', async () => {
+    const member = makeTestAgent({ authType: 'password' });
+    addAgent(member);
+
+    const credName = `test-legacy-cred-${Date.now()}`;
+    credentialSet(credName, 'mysecretpass');
+    try {
+      const result = await updateMember({
+        member_id: member.id,
+        password: `{{secure.${credName}}}`,
+      });
+      expect(result).toContain('Member "test-agent" updated.');
+      expect(result).toContain('[deprecated]');
+      expect(result).toContain(`secure.${credName}`);
+      expect(result).toContain(`secret.${credName}`);
+    } finally {
+      credentialDelete(credName);
+    }
   });
 
   it('stores a valid category', async () => {
@@ -420,7 +444,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
     spy.mockRestore();
   });
 
@@ -451,7 +475,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });

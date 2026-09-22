@@ -20,9 +20,9 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   console.error('Usage:');
-  console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
-  console.error('  apra-fleet auth --oauth --member <name> [<token> | secure.<name> | --secure <name>]');
-  console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
+  console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secret.<name> | --secret <name>]');
+  console.error('  apra-fleet auth --oauth --member <name> [<token> | secret.<name> | --secret <name>]');
+  console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secret.<name> | --secret <name>]');
   process.exit(1);
 }
 
@@ -30,7 +30,7 @@ export async function runAuth(args: string[]): Promise<void> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Parse args shared by --oauth and --api-key: --llm, --secure, --member, positional token. */
+/** Parse args shared by --oauth and --api-key: --llm, --secret (--secure legacy alias), --member, positional token. */
 async function parseTokenArgs(
   args: string[],
   modeFlag: string,
@@ -38,14 +38,18 @@ async function parseTokenArgs(
   const llmIdx = args.indexOf('--llm');
   const llmArg = llmIdx !== -1 && llmIdx + 1 < args.length ? args[llmIdx + 1] : null;
 
+  // --secure is the deprecated spelling of --secret (still accepted, no hard-fail).
+  const secretIdx = args.indexOf('--secret');
   const secureIdx = args.indexOf('--secure');
-  const secureName = secureIdx !== -1 && secureIdx + 1 < args.length ? args[secureIdx + 1] : null;
+  const usedLegacyFlag = secretIdx === -1 && secureIdx !== -1;
+  const flagIdx = secretIdx !== -1 ? secretIdx : secureIdx;
+  const secretName = flagIdx !== -1 && flagIdx + 1 < args.length ? args[flagIdx + 1] : null;
 
   const memberIdx = args.indexOf('--member');
   const memberArg = memberIdx !== -1 && memberIdx + 1 < args.length ? args[memberIdx + 1] : null;
 
   const skipNext = new Set<number>();
-  for (const flag of ['--llm', '--secure', '--member']) {
+  for (const flag of ['--llm', '--secret', '--secure', '--member']) {
     const idx = args.indexOf(flag);
     if (idx !== -1) { skipNext.add(idx); skipNext.add(idx + 1); }
   }
@@ -55,10 +59,14 @@ async function parseTokenArgs(
     if (args[i] === modeFlag) continue;
     if (args[i].startsWith('-')) {
       console.error(`Error: Unknown option "${args[i]}".`);
-      console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secure.<name> | --secure <name>]`);
+      console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secret.<name> | --secret <name>]`);
       process.exit(1);
     }
     positionals.push(args[i]);
+  }
+
+  if (usedLegacyFlag) {
+    console.error('[deprecated] --secure is deprecated -- use --secret (still accepted for now)');
   }
 
   // Provider
@@ -77,7 +85,18 @@ async function parseTokenArgs(
 
   // Token
   const rawOrRef = positionals[0] ?? null;
-  const storeRef = secureName ?? (rawOrRef?.startsWith('secure.') ? rawOrRef.slice('secure.'.length) : null);
+  let usedLegacyPrefix = false;
+  let prefixedRef: string | null = null;
+  if (rawOrRef?.startsWith('secret.')) {
+    prefixedRef = rawOrRef.slice('secret.'.length);
+  } else if (rawOrRef?.startsWith('secure.')) {
+    prefixedRef = rawOrRef.slice('secure.'.length);
+    usedLegacyPrefix = true;
+  }
+  if (usedLegacyPrefix) {
+    console.error('[deprecated] secure.<name> is deprecated -- use secret.<name> (still accepted for now)');
+  }
+  const storeRef = secretName ?? prefixedRef;
 
   let token: string;
   if (storeRef) {
@@ -96,7 +115,7 @@ async function parseTokenArgs(
     token = rawOrRef;
   } else {
     console.error('✗ No token provided.');
-    console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secure.<name> | --secure <name>]`);
+    console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secret.<name> | --secret <name>]`);
     process.exit(1);
     throw new Error(); // unreachable
   }

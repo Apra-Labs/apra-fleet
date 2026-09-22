@@ -26,7 +26,8 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 - Rejects any key not in `KNOWN_ARG_KEYS` (`target_issues`, `target_issue`
   [legacy single-issue form], `members`, `branch`, `base_branch`, `goal`,
   `max_cycles`, `requirementsFile`, `roleMap`, `budget`,
-  `dispatch_timeout_s`, `serviceUrl`, `run_id`, `assignee`,
+  `dispatch_timeout_s`, `usage_limit_max_wait_s`,
+  `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `assignee`,
   `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
   `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
   and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
@@ -42,6 +43,27 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 
 Validation runs to completion, and only then does the very first `command()`
 dispatch happen -- a rejected/malformed arg produces zero fleet dispatches.
+
+### Dispatch timeout budgets are split: total ceiling vs. inactivity threshold
+
+Every role dispatch carries two distinct time budgets, not one:
+
+- `DISPATCH_TIMEOUT_S` (from `dispatch_timeout_s`, derived per-role) is the
+  hard total-duration ceiling for the dispatch -- the outer bound regardless
+  of whether the remote session is actively producing output.
+- `DISPATCH_INACTIVITY_TIMEOUT_S`, derived from `DISPATCH_TIMEOUT_S` via
+  `min(1800, DISPATCH_TIMEOUT_S)`, is the value actually threaded through as
+  the dispatch's `timeout_s` -- the inactivity/stall threshold a stalled
+  session is killed on. Capping this at 30 minutes independent of how large
+  the total ceiling is means a role with a very large total budget (hours)
+  does not also get a multi-hour grace period before a genuinely stalled
+  session is detected and killed; the stall threshold and the total-duration
+  ceiling are allowed to diverge, and normally do.
+
+Both values are passed to the underlying `execute_prompt` dispatch as
+distinct parameters (`timeout_s` for inactivity, `max_total_s` for the total
+ceiling); how a given dispatch server and its providers consume those two
+parameters is that server's own concern, not this engine's.
 
 ## Role -> member resolution
 
@@ -153,6 +175,22 @@ prompt for a streak only includes feedback for the bead(s) that streak
 actually owns -- never a blanket broadcast of the whole verdict to every
 doer.
 
+### A permission-scope publish failure is "work done, publish blocked," not a failed streak
+
+A doer streak can complete and commit its work locally, and then have its
+post-dispatch git-sync push refused for a permission-scope reason (see
+"VCS provider abstraction" above) that no retry or self-heal can fix. Marking
+that streak `FAILED` and re-dispatching the same bead(s) next cycle wastes a
+full dispatch every remaining cycle against a gap that provably cannot close
+without an operator action, and worse, repeatedly re-attempts work that is
+already done and committed. This exact classification instead reports the
+streak as "work done, publish blocked": the operator referral is logged
+prominently, the affected bead ids are recorded for the rest of the sprint,
+and subsequent rounds/cycles exclude them from the ready-work set instead of
+re-dispatching. Every other post-dispatch sync failure classification
+(transient, auth-expired, diverged) is unaffected -- this is a narrow
+carve-out, not a change to the general failure-handling path.
+
 ### Batched bead claiming is a dormant contract, not yet live behavior
 
 `claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
@@ -243,6 +281,36 @@ scope before deciding to exit -- it never trusts a stale `APPROVED` verdict
 left over from an earlier cycle. `lastReviewVerdict`/`reviewedThisCycle` are
 reset at the top of every cycle specifically to make this distinction
 possible.
+
+**Deferred beads are excluded from the "0 beads in scope" count above, using
+the exact same partitioning function the dispatcher's own ready-work query
+is built from.** A `deferred` bead never appears in `bd list --ready`, so the
+dispatcher already treats it as out of scope; if Cycle Evaluation instead
+re-derived "still open" from raw status without excluding deferred beads, a
+sprint whose only remaining beads were deliberately deferred could never
+reach the "0 beads" branch above, no matter how long it ran -- it would
+dispatch nothing every cycle (correctly) while evaluation kept reporting a
+non-zero open count, walking straight into stall detection below despite the
+scope being effectively finished. Sharing one partitioning function between
+the dispatcher's readiness query and this exit check is what keeps the two
+views from drifting apart; a sprint that exits this way names every deferred
+bead id explicitly (exit log line, the sprint analysis artifact, the
+final-verdict prompt) rather than silently dropping them from the record.
+
+A second, independent short-circuit exits the cycle loop as soon as every
+configured sprint root/target bead id is already closed, regardless of
+`lastReviewVerdict`. This covers the case where the root closes as a side
+effect of something other than the review path (for example, an
+integration-test pass verifying and force-closing the epic on its own) --
+once nothing remains in scope to route through review, the verdict can never
+reach `APPROVED` again through the ordinary path above, so without this
+second check the loop would grind forward every remaining cycle until stall
+detection (mis)reads the standstill as a stall. This check runs *after* the
+cycle's own review/re-review dispatch has already had its chance to run, so
+a root that closes via a side effect in the same cycle a genuinely fresh
+re-review would otherwise run does not skip that re-review; and it only
+applies when the sprint has an actual configured root/target scope, so a
+whole-database-fallback sprint (no configured root) is unaffected.
 
 ## Stall detection
 
@@ -448,6 +516,35 @@ VCSModule replaces that with a provider-agnostic seam:
   provider's real auth-failure text (not just the generic OpenSSH/git text
   that happens to port across hosts), because the cost of a miss is a false
   sprint-fatal abort on what is usually a routine, recoverable token expiry.
+- **A provider can declare a separate "permission-scope" classification
+  axis**, distinct from its ordinary auth-failure patterns, for the case
+  where the credential's *identity* is understood and valid but the
+  *principal* was never granted the specific permission the operation needs
+  (a fine-grained repo permission gating a specific path prefix, for
+  example). A permission-scope match wins outright, ahead of the provider's
+  normal failure-kind precedence -- because the host's permission-refusal
+  text commonly arrives wrapped inside the same generic rejection tail an
+  unrelated failure kind also matches, and reordering the whole precedence
+  table to fix one rule would re-read every other ambiguous pattern too --
+  and it is explicitly excluded from self-heal: re-minting the same
+  principal's credential reproduces the identical permission set, so the
+  self-heal-and-retry step is skipped entirely and the failure (with its own
+  operator-facing referral text, supplied by the provider) is returned
+  immediately. This is a strict narrowing carved out of what used to fall
+  through to the ordinary re-mintable auth-failure path; every other auth
+  classification a provider produces is unaffected by declaring this axis.
+- **Reading whether the self-heal callback itself succeeded must prefer the
+  structured result over any prose fallback.** `provision_vcs_auth` (like
+  the other provisioning tools) returns a structured `ok`/`reason` result
+  (see `docs/design-git-auth.md`), but MCP tool text can still carry
+  legacy-formatted prose for older callers. The outcome check for this
+  self-heal reads `structuredContent.ok` first, falling back to a `[FAIL]`
+  prose-prefix match only when structured content is absent -- a check that
+  keys on prose alone (e.g. a "does the text look like success" heuristic
+  built around a specific emoji or marker string) silently misreads a
+  well-formed structured failure as success the moment that marker text
+  changes or is retired, letting the sprint proceed to retry a push against
+  a credential that never actually got fixed.
 
 ## Orchestrator-bracketed git sync (`synced` mode)
 
@@ -483,6 +580,41 @@ than a single mechanism:
 
 A member with no genuine content conflict never leaves Tier 0; Tier 2 is a
 rare, explicitly-logged escalation, not the common path.
+
+**A brand-new sprint branch's first sync is a distinct precondition, not a
+Tier 1 conflict.** A sprint branch created only locally (never yet pushed)
+has nothing on the remote to fetch or rebase against; a pull-rebase attempted
+before that first push fails with git's exact, unambiguous "couldn't find
+remote ref" message. That message is recognized by one shared predicate used
+by both the pre-dispatch and post-dispatch sync steps (rather than each
+carrying its own copy of the same check), and on a match the escalation
+ladder above is bypassed entirely: no `git rebase --abort`, no Tier 2 agent
+dispatch -- the push is retried directly, which creates the branch on the
+remote. If that direct retry is itself rejected because a concurrent writer
+published the branch first, that is treated as a genuine divergence and
+raises the same typed diverged-sync error Tier 2's own failure path raises --
+this bypass only ever short-circuits the *conflict-resolution machinery* for
+one unambiguous precondition, never the divergence detection itself.
+
+### Crossing-bracket mutual exclusion
+
+`git-sync.mjs`'s `withOpenSyncBracket` detects a **crossing close** -- one
+sync bracket closing while a second, overlapping bracket for the same
+member is still open, which would otherwise let the two brackets' pull/push
+pairs interleave unpredictably. On a crossing close it raises
+`ConcurrentSyncBracketError`. That error is raised *after* the pause-guard
+re-registration for the bracket, with the bracketed body's own original
+error still attached as `cause`, so a caller inspecting the failure sees
+both facts -- the sync-safety violation and whatever the body itself was
+doing when it happened -- rather than the mutual-exclusion error silently
+replacing the real one. The pause-guard poke on this path is currently
+inert (the crossing-close condition itself already guarantees
+`openSyncBracketCount >= 1`, so the poke never actually changes anything
+there); it is kept anyway as hardening against a future refactor of the
+counter's invariants, not because it does anything today. Do not read the
+poke's presence there as evidence it is load-bearing -- check
+`openSyncBracketCount`'s invariant before removing it, not the other way
+round.
 
 ## Dolt sync discipline (`synced` mode)
 
@@ -526,6 +658,69 @@ reach):
   child's reported parent is verified against the id that was actually
   requested before the creation is trusted -- a mismatch is treated as a
   failed create, not silently accepted.
+
+#### The allocator's floor read must include closed children, and the create
+#### itself must be probed, not trusted
+
+Two independent gaps let the allocator hand out an id that already belongs
+to an existing bead, and `bd create --id <id>` on an occupied id is not a
+safe no-op: it **silently overwrites** whatever bead already holds that id
+(open or closed), reusing the same row and clobbering its
+title/description/priority/type with no error. Both gaps had to close for
+the hazard to actually go away -- fixing only one leaves the other as a live
+path to the same silent-overwrite outcome:
+
+- **Floor computation must count closed children.** The allocator seeds its
+  first allocation under a parent from a best-effort read of the parent's
+  existing direct children (`bd list --parent <id>`), so it never mints an
+  id colliding with a child created before the allocator's own persisted
+  state existed. `bd list --parent` excludes closed issues by default, so
+  once every existing child under a parent is closed, an unfiltered read
+  returns empty, the floor computes to 0, and the allocator re-mints
+  already-used ids (`.1`, `.2`, ...) that collide with the just-closed
+  originals. The fix reads with `bd list`'s documented `--all` flag ("show
+  all issues including closed"); `--status all` is a documented value for
+  `bd search`'s `-s` flag, not for `bd list`, and does not fix this. Every
+  failure mode of this read (a rejected flag, a dispatch timeout,
+  unparseable JSON) still collapses to the same best-effort floor of 0 by
+  design -- that return value is deliberate and unchanged -- but the failure
+  is now logged instead of vanishing into a bare catch, so a silent
+  mis-seed is at least observable in sprint output.
+- **The create itself must probe for an existing occupant first, regardless
+  of how it got its id.** The allocator handing back a genuinely free id is
+  the common case, but is not a guarantee an occupied-id create can safely
+  skip past: a crashed/partial prior run, a stale persisted high-water, or a
+  manually-created bead can leave an id occupied despite the allocator
+  believing otherwise. On the explicit-id path, the creator therefore probes
+  (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
+  (releasing the reservation, throwing loudly) rather than proceeding into
+  an overwrite if the id is already occupied. The probe's failure mode is
+  itself two-valued and must be told apart: `bd show <missing-id> --json`
+  does not exit 0 with an empty result, it exits non-zero with a documented
+  "no issues found" error payload -- so the probe's own catch block
+  classifies that payload as "id positively confirmed absent, proceed" and
+  treats every OTHER catch shape (unparseable output, a differently-shaped
+  error, a transport/dispatch fault) as "unknown, fail closed" rather than
+  assuming an unrecognized failure means the id is free. The null-allocator
+  fallback path (`bd create --parent`, no explicit id) needs no such probe:
+  `bd` mints the id itself in that case and cannot collide.
+
+**Reservation lifecycle after the create lands is asymmetric, and that
+asymmetry is load-bearing, not an oversight.** `release()` returns a
+reservation to the pool for reuse and is only ever correct while the id is
+still genuinely free; `confirm()` durably commits it. Once `bd create`
+itself has landed, the id is genuinely occupied, so the reservation is
+confirmed immediately (before the follow-up parent-link update and before
+any Dolt push) and **must never be released again**, no matter what fails
+next: a failure in the immediately-following `bd update <id> --parent
+<parentId>` link step, or in `confirm()` itself (an allocator transport
+fault), both throw a distinct, orphan-id-naming error so an operator can
+recover manually -- but neither one releases the id back to the pool, since
+doing so would hand the same, now-genuinely-occupied id to the next
+allocation and reproduce the exact collision this whole mechanism exists to
+prevent. `release()` fires in exactly one place: when staging the
+description or dispatching `bd create` itself fails, i.e. before the bead
+exists at all.
 
 ### Two coordination hosts, not one -- and why
 
@@ -1244,3 +1439,278 @@ it exited 0 -- a child that spawned zero subtests, or crashed before running
 anything, would still report a clean marker file and a zero exit code,
 silently passing a vacuous check. Parse the child's own TAP summary line
 (`# tests`, `# pass`) and assert it clears a known floor.
+
+## Module decomposition: `runner.js` as a strangler-fig facade
+
+`runner.js` began as a single ~11,850-line file and has been decomposed
+into focused `fleet-sprint/*.mjs` modules (plus a `fleet-sprint/phases/*.mjs`
+directory, one file per sprint-cycle phase) while staying a drop-in facade
+for its importers and mock-sprint test fixtures. `runner.js` itself is now
+under 3,200 lines: a composition root that wires the phase modules together
+and re-exports the full facade surface, not a place new logic gets added.
+The approach was a strangler-fig extraction, not a rewrite:
+
+- **Move-only discipline.** An extraction commit relocates code verbatim
+  (plus import/export wiring); it does not change behavior. Any actual
+  behavior change ships as a separate, explicitly flagged commit, so a
+  facade regression and a genuine behavior regression are never entangled
+  in the same diff and either can be reverted independently.
+- **Facade re-exports.** Every symbol a module absorbs from `runner.js` is
+  re-exported from `runner.js` under its original name, so existing
+  importers and mock-sprint fixtures need no changes. Each extraction has a
+  paired "facade completeness" test asserting the re-export surface is
+  intact and the extracted module is behaviorally pure (no hidden
+  dependency on `runner.js`-local state).
+- **Extracted modules, by concern:** `vcs-auth.mjs` (VCS credential
+  resolution, self-heal, preflight), `sprint-args.mjs` (`validateArgs` and
+  option validation), `prompts.mjs` (the per-role prompt builders),
+  `worklists.mjs` (tier policy, effort-budget packing, streak worklists),
+  `abort.mjs` / `branch-ensure.mjs` (abort predicates, branch selection,
+  `newTask` validation), `mcp-result.mjs` (shared MCP result-text helpers),
+  `member-target.mjs` (the unified member-resolution registry), `member-
+  sync.mjs` / `git-topology.mjs` (per-member git ensure/resync and git-
+  failure classification), `member-provisioning.mjs` (credential/deploy-
+  permission provisioning for a member), `git-sync.mjs` (the `withGitSync`
+  dispatch bracket and the pause-bracket counter it owns), `coordination.mjs`
+  (dolt-push-mutex clients, the child-id allocator, the reservation-ledger
+  client), `kb.mjs` (knowledge-bank priming/query/capture, including logging
+  a rejected `kb_query` result instead of failing silently), `beads-
+  scope.mjs` (the scope-snapshot BFS and its invalidation contract --
+  `phase()` invalidates the shared snapshot at every phase boundary, not
+  just at planning time), `beads-transitions.mjs` (verdict-application
+  transitions, including the Re-Review site that previously applied a
+  verdict with no scope-ceiling guard), `beads-children.mjs` (bead-child
+  allocation helpers split out of `beads-scope.mjs`), `sprint-report.mjs` /
+  `newtask-text.mjs` (sprint-summary and newTask text formatting, including
+  the structured-findings-to-newTask-text translation described below),
+  `round-session.mjs` / `dispatch-failure.mjs` (per-round session bookkeeping
+  and dispatch-failure classification), and `fatal-diagnostics.mjs` (the
+  sprint-fatal diagnostics writer). The extraction slate that this epic
+  scoped is complete: every module the epic named has landed, `runner.js`
+  holds no unextracted concern pending its own module, and further module
+  splits are ordinary maintenance, not epic backlog.
+- **`phases/*.mjs`: one file per sprint-cycle phase.** `runSprintCycle`'s
+  body -- Ensure Sprint Branch, Plan, Replan, Develop, Review, Deploy, Integ
+  Test, Re-Review, Final Review, Regression Test, Harvest, Publish PR -- is
+  now twelve calls into `fleet-sprint/phases/*.mjs`, one module per phase,
+  in that fixed order. `runner.js` itself is a composition root: it wires
+  the phase modules together and re-exports the facade surface, and a
+  dedicated completeness test enumerates every `fleet-sprint/*.mjs` and
+  `phases/*.mjs` file against a discovered permitted set rather than a
+  literal list, so a phase slice that lands without registering its output
+  module fails that gate rather than silently escaping coverage.
+- **`role-policies.mjs` + `dispatch-role.mjs`: dispatch policy as data,
+  consumed by one engine.** Each sprint role (planner, plan-reviewer,
+  scoped-replan-planner, scoped-replan-plan-reviewer, streak-assignment,
+  doer, doer-resume, reviewer, final-review, deployer, integ-test-runner,
+  regression-test-runner, harvester -- 13 roles) is recorded in
+  `role-policies.mjs` as a frozen data table describing the axes every
+  hand-written ladder used to repeat -- git-sync bracket usage, turn budgets
+  and timeouts, watchdog arming, retry/degrade behavior, knowledge-injection
+  source, and pre/post-dispatch hooks -- keyed by symbolic references to the
+  constants that supply concrete values (turn budgets are runtime-derived,
+  so the table names the constant, not a number). `dispatch-role.mjs`
+  implements the single `dispatchRole(ctx, roleName, opts)` engine that
+  reads this table; every one of `runner.js`'s dispatch call sites routes
+  through it, so there is exactly one place a dispatch is constructed, not
+  a per-role hand-rolled ladder. `migratedRoleNames()` returns the roles
+  whose ladder has actually been migrated onto the engine -- do not infer a
+  migration from the policy table's existence alone, since the table can
+  (and did, mid-refactor) describe a role before its call site is switched
+  over. One deliberate asymmetry survives: `doer-resume` shares its policy
+  entry with `doer` (`ROLE_POLICIES['doer-resume'] ===
+  ROLE_POLICIES.doer.secondary`) but is dispatched from the same call site
+  as `doer` rather than its own, so the engine has 12 call sites against 13
+  named roles -- a documented gap, not a miscount.
+- **`inline-ladder-guard.mjs`** closes the gap a `dispatchRole` migration
+  could otherwise leave open: once a role is marked `migrated: true` in
+  `role-policies.mjs`, this guard scans for a surviving *inline* `agent()`
+  call site still routing to that role's member, catching a migration that
+  adds the new call but forgets to delete the old one (which would
+  double-dispatch, or silently race on whichever path executes first). The
+  guard's early-return-on-empty-list behavior means it asserts nothing
+  until at least one role is marked migrated -- with all 13 roles migrated,
+  it is now a live check on every one of them, not an inert placeholder.
+- **Every role's dispatch watchdog is explicit, not defaulted.** The
+  `role-policies.mjs` normalizer no longer silently defaults a role's
+  watchdog to disarmed: all 13 roles declare either `watchdog()` (armed,
+  with a stated rationale) or `noWatchdog()` (deliberately unarmed, also
+  with a stated rationale). `deployer`, `integ-test-runner` and
+  `regression-test-runner` are armed as long, unattended, single-dispatch
+  phases with no other client-side kill path. `resolveWatchdogTimeout` is
+  applied in both a role's primary `policy()` and its `secondary()` (used by
+  roles that build their own `watchdog()`, such as the four secondaries that
+  would otherwise have the already-resolved value overwritten by a naive
+  spread); every `budgets()` row keeps `maxTotalS >= timeoutS`, so an armed
+  watchdog's hard elapsed ceiling can never end up shorter than its own
+  per-turn timeout.
+- **A provider usage/rate limit pauses the run rather than failing the
+  dispatch.** When a role dispatch fails with a usage-limit signal
+  (`execute_prompt` relays the provider's `detectUsageLimit()` result as an
+  `AgentDispatchError` whose `details.reason === 'usage_limit'`, carrying the
+  `UsageLimitSignal` on `details.usageLimit`) and the role's policy sets
+  `retry.usageLimitPause`, `dispatchRole` hands the signal to
+  `ctx.onUsageLimit` -- the controller built by
+  `createUsageLimitPauseController` (`usage-limit-controller.mjs`) and wired in
+  `runner.js`. It uses the engine's **cooperative pause** primitive
+  (`requestPause`/`requestResume`, exposed on the script context) to park the
+  whole run until the provider's own `resumeAt` (never a locally invented 1h
+  window -- the guessed fallback lives in the provider adapter's signal),
+  clamped to `[USAGE_LIMIT_MIN_WAIT_S, USAGE_LIMIT_MAX_WAIT_S]`. Pausing
+  releases member reservations, the watchdog reads `PAUSED`, and the dashboard
+  shows the expected resume time. On wake, `requestResume`'s pre-resume hook
+  performs the **resume re-sync** (member re-reserve/resync as a hard barrier)
+  before the controller runs ONE real re-probe dispatch to the same member; a
+  fresh `usage_limit` re-pauses on a bounded reprobe backoff ladder, any other
+  probe outcome proceeds to let the real re-dispatch be the final test. A
+  resumed member re-dispatches the role **without consuming a retry attempt**;
+  a **retry budget** exhausted across `USAGE_LIMIT_MAX_WAIT_S` /
+  `USAGE_LIMIT_MAX_REPROBES` (in `role-policies.mjs`'s
+  `USAGE_LIMIT_BUDGET_DEFAULTS`; the wait and reprobe caps are CLI-overridable
+  via `usage_limit_max_wait_s` / `usage_limit_max_reprobes`) gives up with a
+  typed `UsageLimitWaitExhaustedError`, which `isTypedAbortError` routes
+  through `finalizeAbort()`/an `[ABORTED]` PR like every other terminal abort.
+  A cooperative stop (`requestStop` -> `CancelledError`) taken mid-pause is
+  never swallowed by the probe, so operator stop still tears the run down. The
+  hook fires strictly *outside* any git-sync bracket (`openSyncBracketCount ===
+  0`), which is what lets the clean-state pause guard engage the pause instead
+  of deferring it. Two known simplifications: (1) **the pause is sprint-wide,
+  not per-member** -- only the rate-limited member is re-probed while the run
+  is paused; every other member's dispatches are gated by the engine-level
+  pause rather than being individually probed for their own usage limit. (2)
+  **a pause longer than ~30 minutes can let the cloud idle manager
+  (`src/services/cloud/idle-manager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) suspend a
+  cloud member's VM** while it sits reservation-released during the pause;
+  `ensureCloudReady` (`src/tools/execute-prompt.ts`) transparently restarts it
+  on the probe dispatch that follows `requestResume`, so this is logged but
+  has no special handling in the controller itself.
+- **Pre-sprint validation refusals are typed.** `PreSprintValidationError`
+  (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
+  distinguishable only by prose with a `reason` discriminator drawn from a
+  frozen vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`), plus reason-specific structured
+  fields (e.g. `invisibleTargets`, `cyclePairs`, `deadlockedIds`). The
+  human-readable message is unchanged from the prose each refusal already
+  emitted -- this adds a type and discriminator without restyling
+  operator-facing text -- and the error is never caught inside the
+  pre-sprint block, so it still fails the run before any dispatch occurs.
+  Constructing one with a `reason` outside the frozen vocabulary throws a
+  `TypeError` at construction, rather than shipping a refusal that only
+  looks typed.
+- **The plan-reviewer contract carries a structured, per-bead `findings`
+  array** (`apra-pm/agents/schemas/plan-reviewer-output.json`) alongside the
+  free-text `notes` field. Each entry is `{ id, kind, detail }`, where `kind`
+  is a closed vocabulary mirroring the plan-reviewer's numbered quality
+  criteria (`coverage`, `missing_test_task`, `acceptance_criteria`,
+  `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other`).
+  `findings` is populated on every `CHANGES_NEEDED` verdict; an **empty**
+  array on `CHANGES_NEEDED` is the explicit "the objection is plan-wide,
+  names no individual bead" signal, distinct from a verdict that predates
+  the field entirely (no `findings` key at all), which callers still fall
+  back to reading `notes` for. This replaced `extractContestedBeadIds`'s
+  prose-scraping of `notes` to find contested bead ids -- contested-bead
+  routing now reads `findings` directly instead of pattern-matching
+  free text, and `newtask-text.mjs` carries the translation from a
+  `findings` array back into newTask text for the one channel that still
+  needs prose (task creation for a human/downstream reader).
+
+### The shared guarded-module list
+
+Several independent mechanical guards enforce invariants across
+`fleet-sprint/*` source (a shell-command-construction guard, a dolt-literal
+guard, a full-db-fetch guard, an unbracketed-push guard, the inline-ladder
+guard above). Each originally hard-coded its own single target file
+(`runner.js`). That wiring has a silent failure mode under decomposition:
+the moment a guarded construct moves out of `runner.js` into a newly
+extracted module, every guard pointed only at `runner.js` stops covering it
+while continuing to report a green baseline -- a false sense of safety, not
+an absence of risk.
+
+`guarded-modules.mjs` fixes this by being the single place a newly
+extracted module is registered; every guard consumes that shared list
+rather than keeping a private path array. Registering an extraction's
+output module here is part of the extraction commit itself, not a
+follow-up task -- an extraction that lands without this registration is
+incomplete even if every other test passes. A small, deliberate exemption
+list exists for modules that legitimately emit the exact constructs a guard
+flags (the per-shell command builders, which ARE the OS-branched surface
+other code is required to route through instead of hand-rolling shell
+syntax; `dolt-sync.mjs`, which legitimately owns the `bd dolt pull`/`bd dolt
+push` command strings). Per-guard violation counts (how many raw `command()`
+calls a given module is allowed) are derived from `guarded-modules.mjs` and
+compared by **basename**, not from a separate hard-coded literal, because
+each guard's own violation reporting labels a scanned file by
+`path.basename(p)` -- a baseline that compared full paths would not match
+what the guard actually reports.
+
+Basename comparison is deliberately NOT used, however, for the separate
+"is every `fleet-sprint/*.mjs`/`phases/*.mjs` file accounted for at all"
+completeness sweep (`guarded-modules-coverage.test.mjs`'s `isAccountedFor()`)
+-- that check compares **full relative paths**. A basename-only version of
+this specific check has a real collision hazard: once nested directories
+like `phases/` exist, a nested file can share a bare filename with an
+unrelated top-level registered module (`phases/index.mjs` vs.
+`vcs-providers/index.mjs`, `phases/errors.mjs` vs. `errors.mjs`) and would
+be silently reported as "already covered" by that unrelated module's
+registration, even though it was never registered itself. Both comparisons
+are correct for what each one is checking -- the distinction is per-guard
+reporting fidelity (basename) versus registration completeness (full path)
+-- so do not "fix" one by making it consistent with the other.
+
+#### An exempt-list guard is a different shape from a violation-count guard
+
+The explicit-id-create guard (enforcing the child-id collision-refusal
+invariant above -- no scanned module may dispatch a bead-CREATION command
+unless it lives in the one module paired with the probe-and-refuse seam)
+deliberately does not fit the per-module "N raw calls allowed" shape the
+other mechanical guards use. Its invariant is binary: exactly one module in
+the scanned set is allowed to contain a bead-creation dispatch at all, and
+every other scanned module must report zero, forever -- there is no
+legitimate count above zero to baseline elsewhere. It therefore keeps its
+own exemption constant (a single path, not a per-file violation-count map)
+alongside a shared list of the module paths it scans, both sourced from
+`guarded-modules.mjs` so a newly extracted module is still picked up
+automatically the same way the count-based guards are.
+
+The guard's own rule had to widen twice past its first cut, and both
+widenings generalize to any future mechanical scanner in this family:
+neither "does an explicit `--id` flag literal appear in this call" nor
+"is this call spelled through the literal identifier `command(`/`agent(`"
+survives a caller that assembles the flag from a variable or dispatches
+through a renamed/wrapped binding (a local helper, a destructured import, a
+method call). The rule that does survive both is shape-based rather than
+identifier-based: flag any string/template literal whose content begins
+with the dispatched command name and continues into what looks like an
+argument, regardless of which call expression carries it. A scanner in this
+family should default to a content-shape rule over an
+identifier/call-expression rule for exactly this reason -- the latter is
+trivially defeated by renaming or wrapping, the former is not.
+
+#### A source-text scanner that masks comments/strings must treat regex
+#### literals as opaque spans too, or a quote inside one desyncs the walk
+
+Every mechanical guard in this family that walks raw source text to find
+call sites or balanced ranges (`dispatch-safety-guard.mjs`'s
+`extractBalancedCall`, `unbracketed-push-guard.mjs`'s
+`findFunctionBodyRange`) does so over a comment-masked copy of the source,
+so a stray apostrophe in a prose comment is never misread as opening a real
+string. That masking pass has a second, less obvious hazard: a regex
+literal in real source can itself contain a quote or apostrophe in its body
+(a character class like `[.,:;!?()'_/+[\]-]`, or a literal like `/couldn't
+find remote ref/i`). A masking/depth-walk that recognizes strings but not
+regex literals reads that embedded quote as opening a real string and
+swallows everything up to the next matching quote -- including real
+comments, brackets, and parens in between -- silently desyncing the walk's
+positional accounting. The fix is to recognize and copy a regex literal
+through verbatim (masked the same way a string is: preserved, not
+stripped) BEFORE the string-literal branch gets a chance to misread the
+quote inside it, using a real regex-vs-division disambiguation heuristic
+(scan backward past whitespace to the last significant token; a `/`
+immediately following an identifier/number/`)`/`]`/`}`/closing-quote is
+division, everything else can open a regex). Any new source-text scanner
+added to this family must reuse the shared `maskComments()` /
+`canStartRegex()` / `skipRegexLiteral()` helpers rather than re-deriving
+this heuristic locally -- two independent guards got this wrong before
+converging on the shared helpers, which is a strong signal it is not safe
+to hand-roll again.

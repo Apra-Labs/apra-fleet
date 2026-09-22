@@ -13,10 +13,18 @@
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
  *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
  *   callers effectively opt out of this client-level default unless they ask for resume.
+ *   CALLER OBLIGATION: anything reaching executePrompt() WITHOUT going through that
+ *   workflow layer must set this field explicitly. Omitting it is never neutral -- the
+ *   server resumes the member's stored last session, so a one-off instruction silently
+ *   lands in whatever unrelated (and possibly very large) conversation that member last
+ *   ran. This client deliberately does NOT inject a default of its own: doing so would
+ *   change the documented tool contract for every existing caller. State the intent at
+ *   the call site: `true` to continue that member's prior session, a session-id string
+ *   to continue a specific one, `false` for a self-contained dispatch.
  * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {boolean|string} [fork] - Branch a NEW session seeded from an existing one instead of continuing it in place. true = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with resume (any non-default value) and with session_id.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
- * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
+ * @property {number} [timeout_s] - Inactivity timeout in seconds -- always drives the stall detector's per-dispatch baseline threshold, measured against the member's own session transcript activity (default: 300). Per-provider, it ALSO arms the exec-level rolling timer against this dispatch's stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource() server-side)
  * @property {number} [expected_context_tokens] - Optional estimate of how many
  *   tokens this dispatch will add to the target session's context. When set (or context_size is
  *   set), the server compares it against the session's remaining context-window headroom BEFORE
@@ -37,6 +45,43 @@
  * @property {AbortSignal} [signal] - Optional AbortSignal to cancel the client-side wait for
  *   a response. Not sent to the server. Aborting rejects the pending request locally; it
  *   cannot cancel a job already accepted by the remote fleet-server (see client.mjs).
+ */
+
+/**
+ * apra-fleet-hzeb.2: a provider-agnostic "this dispatch cannot make progress until
+ * `resumeAt`" signal, mirroring src/providers/provider.ts's UsageLimitSignal exactly.
+ * @typedef {Object} UsageLimitSignal
+ * @property {'usage_limit'} type
+ * @property {string} resumeAt - ISO-8601 UTC instant at which work may resume. Never null:
+ *   when the provider CLI exposes a real reset time it is parsed (resumeAtSource: 'parsed');
+ *   otherwise it falls back to a guessed window (resumeAtSource: 'guessed').
+ * @property {'parsed'|'guessed'} resumeAtSource
+ * @property {string} message - The raw provider message/output that identified this as a
+ *   usage/quota limit (for logging).
+ */
+
+/**
+ * Result-side shape of execute_prompt's `structuredContent` -- the single place callers
+ * should read the outcome of a dispatch rather than re-parsing the display text. This is
+ * NOT exhaustive of every `reason` value (see src/tools/execute-prompt.ts's
+ * ExecutePromptStructured for the full union); it documents the fields most callers key off.
+ * @typedef {Object} ExecutePromptStructured
+ * @property {boolean} [isError] - true on any failure path; absent/false on success.
+ * @property {string} [reason] - Machine-readable failure/status classification, e.g.
+ *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | ...
+ * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
+ *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
+ *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
+ *   retrying via the stale-session or server-overloaded (529, reason: 'overloaded') retry
+ *   paths. Read `usageLimit.resumeAt`/`resumeAtSource` to schedule a resume rather than
+ *   re-parsing the failure text; `packages/apra-fleet-workflow` forwards this unchanged onto
+ *   `AgentDispatchError.details.usageLimit`.
+ * @property {string} [response] - The LLM's actual reply text on success.
+ * @property {string} [sessionId] - The session id this dispatch landed on, when known --
+ *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
+ *   session can be resumed later instead of losing context to a fresh one.
+ * @property {{input_tokens:number, output_tokens:number, total_tokens:number}} [usage]
  */
 
 /**
@@ -134,7 +179,7 @@
  * @property {number} [port] - New SSH port
  * @property {"password" | "key"} [auth_type] - New auth method
  * @property {string} [password] - New SSH password
- * @property {boolean} [rotate_password] - Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
+ * @property {boolean} [rotate_password] - Trigger out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
  * @property {string} [key_path] - New SSH private key path
  * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - Git access level for this member
  * @property {string[]} [git_repos] - Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])
@@ -174,6 +219,12 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
+ *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
+ *   when the member was registered without an explicit level. Consumers that need to know whether a
+ *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
+ *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
+ *   exactly for the members at risk.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
@@ -193,12 +244,134 @@
  */
 
 /**
+ * @typedef {Object} MemberReservationOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"reserve" | "release" | "force_release"} action - "reserve" claims the member for
+ *   sprint_id (fails if already reserved by someone else); "release" clears it only if sprint_id
+ *   matches the current holder; "force_release" clears it regardless of owner.
+ * @property {string} [sprint_id] - Sprint/session id claiming or releasing the reservation.
+ *   Required for "reserve" and "release", ignored for "force_release".
+ */
+
+/**
+ * @typedef {Object} MemberReservationStructured
+ * @property {"reserved" | "reservation_refreshed" | "released" | "force_released" |
+ *   "already_reserved_by_other" | "not_reserved" | "unreservable" | "invalid_input" |
+ *   "member_not_found" | "failed"} outcome - Machine-readable outcome discriminator. Branch on
+ *   this field; never string-match the human-readable summary text.
+ * @property {boolean} ok - True when the requested operation took effect (or was already true).
+ * @property {"reserve" | "release" | "force_release"} action - The action that was requested.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {string|null} sprintId - The sprint id supplied by the caller, null when none.
+ * @property {string|null} ownerSprintId - The sprint that held the reservation when the call
+ *   arrived, null when the member was unreserved. On "already_reserved_by_other" this is the
+ *   blocking owner.
+ *
+ * Mirrors src/tools/member-reservation.ts's MemberReservationStructured field-for-field
+ * (apra-fleet-3swo.7.1). The tool still returns the same human-readable summary in
+ * `content[0].text`; this shape is the machine-readable half of the same response.
+ */
+
+/**
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
- *   session is copied to the member instead. Supports {{secure.NAME}} token --
+ *   session is copied to the member instead. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
+ */
+
+/**
+ * @typedef {Object} VcsCredentialExecOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} command - The credential-requiring command to run on the member. MUST
+ *   contain at least one of two placeholders where the credential belongs (both may appear in
+ *   the same command): {{vcs_token}}, referenced BARE (never inside your own quotes) -- the
+ *   server substitutes it with the value ALREADY escaped AND quoted for that member's shell, so
+ *   wrapping it in your own quotes double-escapes it and surfaces as a false 401; or
+ *   {{vcs_token_inline}}, referenced INSIDE your own single quotes -- the server substitutes it
+ *   with the value escaped for the interior of a single-quoted string, with no quotes of its
+ *   own, for interpolating the token into a larger already-quoted value (e.g. an Authorization
+ *   header) where a bare, self-quoting substitution cannot compose.
+ * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
+ *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
+ *   unlabelled helper.
+ * @property {number} [timeout_s] - Timeout in seconds for the command (default: 120).
+ */
+
+/**
+ * @typedef {Object} VcsCredentialExecStructured
+ * @property {boolean} ok - True when the credential-requiring command was dispatched. Read
+ *   exitCode for the command's own outcome.
+ * @property {"ok" | "member_not_found" | "placeholder_missing" | "unsupported_member_os" |
+ *   "credential_read_failed" | "credential_empty" | "dispatch_failed"} reason - Machine-readable
+ *   outcome code. Branch on this, never on the text.
+ * @property {number|null} exitCode - Exit code of the dispatched command, null if it never ran.
+ * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
+ * @property {string} stderr - Command stderr, with every occurrence of the credential redacted.
+ * @property {number} tokenRedactions - How many times the credential had to be redacted out of
+ *   stdout+stderr. Normally 0; nonzero means the command echoed its own credential back.
+ * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/vcs-credential-exec.ts's VcsCredentialExecStructured field-for-field
+ * (apra-fleet-3swo.7.3). The plaintext credential appears in NO field of this payload.
+ */
+
+/**
+ * @typedef {Object} ProvisionAuthStructured
+ * @property {boolean} ok - True when credentials were deployed (verified or not).
+ * @property {"ok" | "deployed_unverified" | "deployed_with_errors" | "skipped_local_member" |
+ *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
+ *   "secret_variable_denied" | "secret_variable_expired" | "oauth_not_supported" |
+ *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
+ *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
+ *   "oob_cancelled"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ * @property {string|null} provider - The resolved ProviderAdapter's own name (claude, codex,
+ *   copilot, agy, opencode or none -- there is no gemini adapter), null when unresolved.
+ * @property {string|null} credentialLabel - What was deployed, never the secret: the env var
+ *   name for the API-key flow (e.g. ANTHROPIC_API_KEY) or "oauth" for the file-copy flow.
+ * @property {string|null} expiresAt - Credential expiry as an ISO timestamp, or null meaning
+ *   "no expiry tracked -> OK".
+ * @property {boolean} verified - True when the post-deploy auth check confirmed working auth.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/provision-auth.ts's ProvisionAuthStructured field-for-field
+ * (apra-fleet-3swo.7.2). Carries no plaintext credential of any kind.
+ */
+
+/**
+ * @typedef {Object} ProvisionVcsAuthStructured
+ * @property {boolean} ok - True when the credential was actually deployed onto the member.
+ * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
+ *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
+ *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
+ *   "credential_assembly_unsupported" | "credential_assembly_failed" | "deploy_threw" |
+ *   "deploy_failed"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ * @property {string} provider - The VCS provider requested.
+ * @property {string} credentialLabel - Credential label the helper was deployed under
+ *   (defaults to the provider name).
+ * @property {string|null} scopeUrl - Git credential scope URL the helper was registered for.
+ * @property {string|null} expiresAt - Token expiry as an ISO timestamp, or null meaning "no
+ *   expiry tracked -> OK" (the reading checkVcsTokenExpiry applies server-side). Read this
+ *   instead of scraping an "expiresAt:" line out of the summary text.
+ * @property {boolean} verified - True only when testConnectivity() actually ran AND succeeded.
+ * @property {boolean} verificationSkipped - True when the connectivity check was not performed.
+ * @property {Record<string, string>|null} metadata - The provider's own deploy metadata,
+ *   filtered through a server-side key allowlist before it reaches this field (an unrecognised
+ *   key is dropped, never passed through). Providers additionally mask the token value here to
+ *   its first four characters plus asterisks, so this never carries the plaintext token.
+ * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {string|null} memberId - Registry id of the resolved member, or null.
+ * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's ProvisionVcsAuthStructured field-for-field
+ * (apra-fleet-3swo.7.2).
  */
 
 /**
@@ -208,20 +381,22 @@
  * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
  * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
- *   Defaults to "https://<host>".
+ *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
+ *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
- *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
+ *   Supports {{secret.NAME}} token -- resolved from the credential store server-side before use.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - Bitbucket account email
- * @property {string} [api_token] - Bitbucket API token. Supports {{secure.NAME}} token --
+ * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
  * @property {string} [workspace] - Bitbucket workspace slug
- * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
- * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
+ * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg,
+ *   or the legacy https://myorg.visualstudio.com)
+ * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
  *   token -- resolved from the credential store server-side before use.
  * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as
  *   chosen when creating the token. Propagated to the member registry so provisioning can
@@ -320,8 +495,14 @@ const TIMEOUT_GRACE_MS = 30 * 1000;
 
 /**
  * Derives a client-side McpClient.request() timeout (ms) from a payload's
- * own timeout hints. Prefers max_total_s (a hard ceiling) over timeout_s
- * (an inactivity timeout) when both are present, then adds a grace margin.
+ * own timeout hints. Intentionally prefers max_total_s (a hard ceiling) over
+ * timeout_s (the stall-detector inactivity baseline) when both are present.
+ * This reflects the post-apra-fleet-25yl.2 contract: max_total_s is the
+ * primary exec deadline for Claude/AGY, while timeout_s drives only the stall
+ * detector's per-dispatch baseline (other providers have different exec-timer
+ * mappings per their own adapters). The client's own deadline thus uses the
+ * appropriate upper bound for the dispatch. Adds a grace margin to account
+ * for server-side retry overhead.
  * Returns undefined when neither hint is present, letting McpClient fall
  * back to its own conservative default (never infinite).
  *
@@ -372,6 +553,9 @@ export class ApraFleet {
     /**
      * Run an AI prompt on a member.
      * @param {ExecutePromptOptions} options
+     * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecutePromptStructured}>}
+     *   the raw callTool() result -- see the {@link ExecutePromptStructured} typedef above
+     *   for the structuredContent shape (reason, usageLimit, sessionId, usage, ...).
      */
     async executePrompt(options) {
         const { timeoutMs, signal, ...payload } = options;
@@ -469,8 +653,34 @@ export class ApraFleet {
     }
 
     /**
+     * Reserve, release or force-release exclusive ownership of a member for a
+     * sprint (src/tools/member-reservation.ts).
+     *
+     * The MCP result carries BOTH halves: `content[0].text` is the unchanged
+     * human-readable summary, and `structuredContent` is a
+     * MemberReservationStructured. Programmatic callers must branch on
+     * `structuredContent.outcome` -- string-matching the prose is exactly what
+     * apra-fleet-3swo.7.1 removed the need for.
+     *
+     * @param {MemberReservationOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberReservationStructured }>}
+     */
+    async memberReservation(options) {
+        return this.mcpClient.callTool('member_reservation', options);
+    }
+
+    /**
      * Provision LLM auth (OAuth session copy or API key) onto a member.
+     *
+     * The MCP result carries both halves: `content[0].text` is the
+     * human-readable summary (ASCII markers -- [OK]/[WARN]/[FAIL]/[SKIP], no
+     * emoji) and `structuredContent` is a ProvisionAuthStructured. Branch on
+     * `structuredContent.ok` / `.reason`, never on the summary text.
+     *
      * @param {ProvisionLlmAuthOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: ProvisionAuthStructured }>}
      */
     async provisionLlmAuth(options) {
         return this.mcpClient.callTool('provision_llm_auth', options);
@@ -479,10 +689,39 @@ export class ApraFleet {
     /**
      * Provision VCS (git host) auth -- GitHub App token / PAT, Bitbucket API
      * token, or Azure DevOps PAT -- onto a member.
+     *
+     * Same two-halves result shape as provisionLlmAuth: read
+     * `structuredContent.ok`/`.reason` for the outcome and
+     * `structuredContent.expiresAt` for the token expiry, instead of parsing
+     * an "expiresAt:" line out of the prose.
+     *
      * @param {ProvisionVcsAuthOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: ProvisionVcsAuthStructured }>}
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);
+    }
+
+    /**
+     * Run a credential-requiring git/VCS command on a member WITHOUT the
+     * caller ever learning the credential (src/tools/vcs-credential-exec.ts).
+     *
+     * This is the server-side replacement for reading a token back out of the
+     * deployed git-credential-helper: the server reads the credential
+     * in-process, substitutes whichever placeholder(s) the command contains
+     * -- {{vcs_token}} (bare, already quoted for the member's shell) and/or
+     * {{vcs_token_inline}} (for use inside the caller's own single quotes,
+     * escaped for that interior with no quotes of its own) -- dispatches the
+     * command, and redacts the value from the returned stdout/stderr. The
+     * plaintext appears in no field of the result.
+     *
+     * @param {VcsCredentialExecOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: VcsCredentialExecStructured }>}
+     */
+    async vcsCredentialExec(options) {
+        return this.mcpClient.callTool('vcs_credential_exec', options);
     }
 
     /**

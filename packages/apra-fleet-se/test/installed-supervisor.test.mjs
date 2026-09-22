@@ -435,14 +435,21 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // NOT the installed tree, and unrelated to either -- mirrors how a
         // real operator's shell cwd has nothing to do with where
         // ~/.apra-fleet/workflows/fleet-sprint lives, and confirms nothing
-        // resolves relative to cwd either.
+        // resolves relative to cwd either. Without a reachable .beads the
+        // supervisor still starts but with its beads identity unknown (a
+        // startup WARNING, bin/serve.mjs / src/supervisor/beads-identity.mjs)
+        // and which tracker an arbitrary tmp cwd walks up to is host-
+        // dependent, so the beads tracker is named explicitly via --beads-dir
+        // (this repo's own, as CI bootstraps it) -- module resolution is
+        // still exercised from the unrelated cwd: every import resolves at
+        // load time, before serve chdir's.
         const arbitraryCwd = await mkTmp('installed-supervisor-arbitrary-cwd-');
         const dataDir = await mkTmp('installed-supervisor-data-');
         const seDataDir = await mkTmp('installed-supervisor-se-data-');
         const port = await getFreePort();
 
         let stderrBuf = '';
-        const serve = spawn(process.execPath, [serveBin, '--port', String(port)], {
+        const serve = spawn(process.execPath, [serveBin, '--port', String(port), '--beads-dir', ROOT], {
             cwd: arbitraryCwd,
             stdio: ['ignore', 'ignore', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },

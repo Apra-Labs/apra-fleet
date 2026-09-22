@@ -8,6 +8,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -170,7 +171,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // apra-fleet-ryk / apra-fleet-33c.1: same contention-starvation fix
         // already applied to the GET / wait below -- this boot-wait must also
         // pass concurrency explicitly, since plain `npm test` (unlike
-        // scripts/run-tests.mjs) invokes `node --test --test-concurrency=8`
+        // scripts/run-tests.mjs) invokes `node --test --test-concurrency=${TEST_CONCURRENCY}`
         // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
         // silently fell back to its unscaled 15s baseMs while genuinely
         // running 8-wide, starving the real-subprocess boot under contention
@@ -192,7 +193,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
                 return false;
             }
         }, {
-            timeoutMs: scaledTimeout(15000, { concurrency: 8, multiplier: 6 }),
+            timeoutMs: scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 }),
             label: 'supervisor /api/health to answer',
             isAlive: () => !serveExited,
         });
@@ -226,7 +227,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
     test('GET / returns 200 with the Sprint Stack, Backlog, and Launch Sprint markers', async () => {
         // apra-fleet-04g.3.1: unlike /api/health above, the '/' route renders
         // the full dashboard (renderBeadsHtml over real bd), which on first
-        // hit under CPU contention (e.g. --test-concurrency=8) can exceed the
+        // hit under CPU contention (e.g. --test-concurrency=TEST_CONCURRENCY) can exceed the
         // per-request scaledTimeout(5000) in httpGet. Retry via the same
         // waitFor() pattern used for the /api/health boot-check above until
         // the route answers 200, then run the body-marker assertions once
@@ -235,7 +236,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         //
         // apra-fleet-33c.1: the package's plain `npm test` script (unlike
         // scripts/run-tests.mjs's test:unit/test:integration/test:record
-        // modes) invokes `node --test --test-concurrency=8 ...` directly
+        // modes) invokes `node --test --test-concurrency=${TEST_CONCURRENCY} ...` directly
         // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
         // silently fell back to its unscaled 15s baseMs even though the
         // suite really was running 8-wide -- starving this real-subprocess
@@ -253,16 +254,25 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // not a flat literal) and pass isAlive so a genuinely crashed
         // `serve` subprocess still fails fast instead of eating the whole
         // widened ceiling.
+        //
+        // CI-watcher fix (runs 35249061362/35262798890, PRs #488/#489): a 200
+        // response does not mean the backlog has finished rendering. `GET /`
+        // can return 200 before renderBeadsHtml's async bd read completes, so
+        // the FIRST 200 sometimes ships a page still missing
+        // `id="backlog-table"`, failing the marker assertion below even
+        // though the server is healthy. Poll on the actual rendered marker,
+        // not just the status code, so a slow first render is retried
+        // instead of asserted against.
         const res = await waitFor(async () => {
             try {
                 const attempt = await httpGet(port, '/');
-                return attempt.status === 200 ? attempt : false;
+                return attempt.status === 200 && attempt.body.includes('id="backlog-table"') ? attempt : false;
             } catch {
                 return false;
             }
         }, {
-            timeoutMs: scaledTimeout(15000, { concurrency: 8, multiplier: 6 }),
-            label: 'GET / to render the dashboard',
+            timeoutMs: scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 }),
+            label: 'GET / to render the dashboard with the backlog table',
             isAlive: () => !serveExited,
         });
         assert.equal(res.status, 200, res.body);

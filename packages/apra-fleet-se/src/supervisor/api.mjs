@@ -46,6 +46,7 @@ import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.j
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
+import { toBeadsSummary } from './beads-identity.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -354,6 +355,10 @@ export function defaultBuildVersion() {
  *     Called once at controller creation to stamp what this process is
  *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
+ *   beadsIdentity?: { get: () => object|null },
+ *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
+ *     When present, launch() records toBeadsSummary(get()) as the ledger
+ *     entry's `beads` field; absent (tests, older wiring) -> null.
  * }} deps
  */
 export function createSprintController(deps = {}) {
@@ -370,6 +375,15 @@ export function createSprintController(deps = {}) {
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
+    const beadsIdentity = deps.beadsIdentity ?? null;
+    const beadsSummaryForLaunch = () => {
+        if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
+        try {
+            return toBeadsSummary(beadsIdentity.get());
+        } catch {
+            return null;
+        }
+    };
     // eft.5.2: the default beforeLaunch is the all-or-nothing member-axis
     // overlap guard (409 on conflict), not a no-op. Callers may still inject
     // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
@@ -600,6 +614,10 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            // Which .beads this supervisor resolved at launch time (see
+            // beads-identity.mjs) -- the same identity the child received as
+            // --expect-beads, recorded so the dashboard can show it per row.
+            beads: beadsSummaryForLaunch(),
         });
 
         return {

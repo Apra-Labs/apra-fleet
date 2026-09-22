@@ -15,46 +15,18 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 
-const { resolveSchemasDir } = await import('../fleet-sprint/contracts.mjs');
-
-describe('resolveSchemasDir path-precedence (direct exercise, no real filesystem dependency)', () => {
-    test('scenario a: dist/agents/schemas present resolves on a freshness tie, even with lower-precedence candidates also present', () => {
-        // apra-fleet-ot2z.20.1: when both candidates exist, resolution is
-        // freshness-first (newer .json content wins), not
-        // dist-always-wins -- a tie still resolves to dist, preserving the
-        // pre-apra-fleet-ot2z.20 default. newestJsonMtimeMs is injected
-        // alongside exists so this stays a pure branch test rather than
-        // falling through to a real recursive filesystem walk of whatever
-        // dist/ and package-local directories happen to exist on this
-        // machine.
-        const seen = [];
-        const result = resolveSchemasDir({
-            env: {},
-            exists: (candidate) => {
-                seen.push(candidate);
-                return true; // every candidate "exists" -- precedence order must still pick the first checked
-            },
-            newestJsonMtimeMs: () => 1000, // both candidates equally fresh -> tie resolves to dist
-        });
-        assert.ok(/dist[\\/]agents[\\/]schemas$/.test(result), result);
-        // dist/agents/schemas must be the FIRST candidate probed, proving the
-        // root-bundled layout wins over the standalone/dev fallbacks when present.
-        assert.ok(/dist[\\/]agents[\\/]schemas$/.test(seen[0]), seen[0]);
-    });
-
-    test('scenario b: package-local apra-pm resolves when dist/agents/schemas is absent (standalone install layout)', () => {
-        const result = resolveSchemasDir({
-            env: {},
-            exists: (candidate) => !/dist[\\/]agents[\\/]schemas$/.test(candidate),
-        });
-        assert.ok(/apra-fleet-se[\\/]apra-pm[\\/]agents[\\/]schemas$/.test(result), result);
-    });
-
-    test('scenario c: neither bundled location exists -- returns null', () => {
-        const result = resolveSchemasDir({ env: {}, exists: () => false });
-        assert.strictEqual(result, null);
-    });
-});
+// apra-fleet-j918.7.4: the "resolveSchemasDir path-precedence (direct
+// exercise, no real filesystem dependency)" describe block that used to
+// live here (scenario a/b/c: freshness-tie-to-dist + probe order,
+// dist-absent fallthrough, neither-exists-null) duplicated test/contracts-
+// schemas-dir.test.mjs's cases 1-4 exactly, plus scenario a's probe-order
+// assertion (moved into that file's case 3, verified non-regressed before
+// deletion here). contracts-schemas-dir.test.mjs is now the single source
+// of truth for the precedence algorithm; this file keeps only its own
+// distinct packaging concern below -- real end-to-end resolution wired
+// through a real env var and a real temp/fixture directory, proving the
+// SCHEMAS export degrades to (or resolves away from) FALLBACK_SCHEMAS
+// correctly, which the pure-precedence unit tests never exercise.
 
 describe('wired end-to-end resolution against a real OS temp directory', () => {
     test('scenario c (wired): an empty/no-schemas directory still produces a fully working, non-crashing module', async () => {

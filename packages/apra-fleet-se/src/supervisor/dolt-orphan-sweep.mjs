@@ -208,7 +208,7 @@ export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS, ownerDa
 export function parseSweepOutput(output) {
     const found = [];
     for (const line of String(output || '').split('\n')) {
-        const match = line.match(/ORPHAN:(\d+):(.*)$/);
+        const match = line.replace(/\r$/, '').match(/ORPHAN:(\d+):(.*)$/);
         if (match) found.push({ pid: Number(match[1]), commandLine: match[2].trim() });
     }
     return found;

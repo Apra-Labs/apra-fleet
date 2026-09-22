@@ -139,7 +139,7 @@ export interface VcsProviderService {
    * return a plain error string naming the fields it requires (apra-fleet-
    * 5co8.3.1). Pure/deterministic: validation and shaping only -- never
    * network, filesystem or credential-store access, all of which happen
-   * before (secure-token resolution) or after (deploy) this call.
+   * before (secret-token resolution) or after (deploy) this call.
    *
    * OPTIONAL only while providers are migrated onto the seam one at a time;
    * the tool keeps its own switch for a provider that has not implemented it.

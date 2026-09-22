@@ -261,7 +261,7 @@ fields are sent as the tool payload; `timeoutMs` is passed to
 | `session_id` | `string?` | Optional explicit session ID to resume (shorthand alias for `resume: "<sessionId>"`). |
 | `fork` | `(boolean \| string)?` | Branch a NEW session seeded from an existing one instead of continuing it in place. `true` = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with `resume` (any non-default value) and with `session_id`. |
 | `substitutions` | `Record<string,string>?` | Token-name -> replacement-value map. |
-| `timeout_s` | `number?` | Inactivity timeout in seconds (default: 300). |
+| `timeout_s` | `number?` | Inactivity timeout in seconds -- always drives the stall detector's per-dispatch baseline threshold (default: 300). Per-provider, it ALSO arms the exec-level rolling timer against this dispatch's stdout/stderr channel for Codex and Copilot (no pollable transcript); Claude and AGY take that exec-channel ceiling from `max_total_s` instead; OpenCode keeps BOTH signals armed at once (exec-channel timer plus coarse log-directory-mtime polling, OR semantics), since its transcript signal is directory-level only. |
 | `expected_context_tokens` | `number?` | Estimate of how many tokens this dispatch adds to the target session's context. When set (or `context_size` is set), the server compares it against the session's remaining context-window headroom BEFORE invoking the LLM: too little headroom rejects the call with `{reason: "insufficient_context_headroom", detail: {demand, headroom, window}}` and no spawn; a fit that lands inside the safety margin still proceeds but attaches a structured `contextWarning`. Wins over `context_size` when both are set. |
 | `context_size` | `("S" \| "M" \| "L")?` | Size-bucket shorthand for `expected_context_tokens`, mapping to configured token estimates (fleet defaults, overridable via `config.json`'s `contextAdmission.sizeBucketTokens`). Ignored when `expected_context_tokens` is also set. Omitting both fields disables the headroom check entirely. |
 | `timeoutMs` | `number?` | Client-side request timeout override (ms); not sent to the server. |
@@ -319,7 +319,7 @@ session (`session.id`, the current session ID or `null`), work folder
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
-`repo_remote_url?`, `vcsProvider?`, `connectivity`, `offline?`,
+`repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
 `llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
 `branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by
@@ -363,7 +363,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `port` | `number?` | SSH port (default: 22). |
 | `username` | `string?` | SSH username. |
 | `auth_type` | `"password" \| "key"?` | SSH authentication method. |
-| `password` | `string?` | SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `password` | `string?` | SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
 | `key_path` | `string?` | Path to SSH private key file. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
 | `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
@@ -403,7 +403,7 @@ and means "new value for this field". Identifies the target member via
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |
 | `auth_type` | `"password" \| "key"?` | New SSH authentication method (remote members only). |
-| `password` | `string?` | New SSH password. Omit for out-of-band secure entry via terminal prompt. Supports secure credential tokens. |
+| `password` | `string?` | New SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
 | `rotate_password` | `boolean?` | Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if `auth_type` is not password. |
 | `key_path` | `string?` | New SSH private key path. Used for both regular SSH connections and cloud instance lifecycle. |
 | `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
@@ -448,7 +448,7 @@ client-side cost tracker can price a dispatch. Options: `member_id?`,
 Calls `provision_llm_auth` -- puts LLM auth on a member. Options:
 `member_id?`, `member_name?`, and `api_key?`. Omitting `api_key` copies the
 local OAuth session to the member instead. `api_key` supports a
-`{{secure.NAME}}` token, resolved from the credential store server-side.
+`{{secret.NAME}}` token, resolved from the credential store server-side.
 
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
@@ -458,7 +458,7 @@ PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
 `repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
-`pat_expires_at`. Every secret-bearing field supports a `{{secure.NAME}}`
+`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
 token. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
@@ -467,7 +467,10 @@ fall back to its default.
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission
-profile to a member. Options: `member_id?`, `member_name?`, `role?`
+profile to a member. On the server host, complete profile directories (with
+both `base-dev.json` and `base-reviewer.json`) are checked by most recent
+installation date, then by the remaining supported providers in deterministic
+order. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
 `grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each

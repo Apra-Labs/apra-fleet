@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import os from 'os';
+import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
 import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -260,9 +261,14 @@ export function redactNetworkCommandForLog(command) {
 // that reaches PR creation needs a working `callTool`, not just the small
 // subset that opted in for self-heal/preflight coverage (apra-fleet-eft.75.3).
 // This default answers 'provision_vcs_auth' with the same shape the real
-// production tool returns on success (a leading check-mark line plus an
-// 'expiresAt:' metadata line, see src/tools/provision-vcs-auth.ts and
-// runner.js's parseExpiresAtFromProvisionText()) and, for any other tool
+// production tool returns on success (a leading '[OK]' line plus an
+// 'expiresAt:' metadata line, AND the structuredContent half the orchestrator
+// actually reads the expiry from -- see src/tools/provision-vcs-auth.ts and
+// vcs-auth.mjs's provisionVcsAuthForMember(), which reads
+// `structuredContent.expiresAt` inline (deliberately not extracted into its
+// own named helper, since test/vcs-auth-extraction-facade.test.mjs pins
+// vcs-auth.mjs's top-level declarations symbol-for-symbol and would fail on
+// an added name) and, for any other tool
 // name, a generic success -- so it never masks a genuinely-unexpected tool
 // call as a failure. A scenario that needs to observe a provisioning
 // failure, or assert on the exact provision_vcs_auth call args, still passes
@@ -276,7 +282,7 @@ export function redactNetworkCommandForLog(command) {
 // mutex -- BOTH of those, unlike provision_vcs_auth/member_reservation/
 // stop_prompt, are read through parseCoordinationToolResult(), which
 // JSON.parse()s the tool's text and THROWS on anything that isn't valid JSON
-// (see runner.js). The old generic `✅ mock <name>` text is plain prose, not
+// (see runner.js). The old generic `[OK] mock <name>` text is plain prose, not
 // JSON, so any scenario that reaches one of these two tools (e.g. a reviewer
 // newTasks response gets id-allocated via `bd create`) would fail every
 // allocate/acquire call with "returned a non-JSON response" -- a real
@@ -285,7 +291,158 @@ export function redactNetworkCommandForLog(command) {
 // null-childId fallback paths take over exactly as they did when callTool was
 // unwired (id derivation still falls back to `bd create --parent` locally;
 // the mutex is effectively a no-op grant).
-export function defaultMockCallTool() {
+//
+// apra-fleet-3swo.7.18: `vcs_credential_exec` (src/tools/vcs-credential-
+// exec.ts) is server-side-only -- grep across packages/apra-fleet-se/test,
+// /src and /fleet-sprint turns up zero hits -- so before this bead every mock
+// sprint that reaches it (once apra-fleet-3swo.7.6 lands and starts
+// dispatching it for the create-PR call) fell through to the generic
+// `[OK] mock <name>` branch below with NO structuredContent, and every
+// PR-raising scenario that depends on it would report a dispatch failure.
+// Rather than hand-write a second, parallel canned PR response here,
+// mockVcsCredentialExec() SUBSTITUTES the caller's placeholder(s) with the
+// same two hard-coded mock tokens the credential-helper-read intercepts in
+// buildMockFleetApi's executeCommand already answer with (the
+// `$HOME/.fleet-git-credential-github`/`-azure-devops` branches around
+// :932-936 -- MOCK_VCS_CREDENTIAL_TOKENS below is the single source of truth
+// both sides read from) and then DISPATCHES the substituted command through
+// that SAME executeCommand path. That is what lets the curl-interception,
+// commandLog/commandLogDetailed recording and prCurlResponseQueue/
+// gitGhFailurePattern/prExistsState simulation already built for the
+// create-PR curl call keep working completely unchanged for a
+// vcs_credential_exec-routed dispatch too, instead of forcing an edit to
+// every one of the roughly fifty harness-default scenarios that reach that
+// call. `executeCommand`, when supplied, must be the SAME mock fleet api's
+// executeCommand a scenario's engine.executeFile() call is about to use --
+// see the two defaultMockCallTool() call sites below, both of which now
+// thread `buildMockFleetApi(...).executeCommand` through. Called with no
+// argument (the pre-existing zero-arg signature every other caller in this
+// file relies on), `executeCommand` is simply undefined and a
+// vcs_credential_exec call throws loudly instead of silently no-op'ing, since
+// nothing in this file's production code dispatches that tool yet (this bead
+// is deliberately additive and inert).
+
+// Mirrors the two credential-helper-read intercepts in executeCommand above
+// (around :932-936) label-for-label -- kept as one map so the two can never
+// drift apart. An unrecognised label intentionally has NO entry here: the
+// real tool fails hard on a missing/unreadable credential helper rather than
+// substituting an empty token, and this mock must fail the same way (that is
+// exactly the label-mismatch bug those two exact-match executeCommand
+// branches exist to catch).
+const MOCK_VCS_CREDENTIAL_TOKENS = {
+    github: 'mock-vcs-module-token',
+    'azure-devops': 'mock-azure-devops-pat',
+};
+
+// Minimal reimplementation of src/utils/shell-escape.ts's
+// escapeShellArgInner/escapeShellArg for this mock only. Not imported from
+// src directly: this file runs under plain `node --test`, not a TS/vitest
+// loader (see the mock-sprint harness's own kb note on how a missing export
+// degrades very differently under vitest's SSR transform vs. Node ESM's
+// link-time failure), and the mock only ever substitutes the two fixed,
+// plain-ASCII tokens in MOCK_VCS_CREDENTIAL_TOKENS above, so there is no
+// byte-identical-escaping requirement to keep this in lockstep with the
+// production escaper the way vcs-credential-exec.ts itself must be.
+function mockEscapeShellArgInner(s) {
+    return s.replace(/'/g, "'\\''");
+}
+function mockEscapeShellArg(s) {
+    return `'${mockEscapeShellArgInner(s)}'`;
+}
+
+const VCS_CREDENTIAL_EXEC_REDACTION = '[REDACTED:vcs_token]';
+
+/** Replace every occurrence of `secret` in `output`, and report how many. */
+function redactVcsCredentialToken(output, secret) {
+    if (!secret) return { text: output, count: 0 };
+    const parts = output.split(secret);
+    return { text: parts.join(VCS_CREDENTIAL_EXEC_REDACTION), count: parts.length - 1 };
+}
+
+/**
+ * Builds a vcs_credential_exec result with EXACTLY the nine
+ * structuredContent fields execResult() emits in
+ * src/tools/vcs-credential-exec.ts (ok, reason, exitCode, stdout, stderr,
+ * tokenRedactions, credentialLabel, memberId, memberName) -- field for
+ * field, so a scenario asserting on this mock's shape is asserting on the
+ * real tool's contract.
+ */
+function vcsCredentialExecResult(text, fields) {
+    return {
+        content: [{ text }],
+        structuredContent: {
+            ok: fields.ok ?? fields.reason === 'ok',
+            reason: fields.reason,
+            exitCode: fields.exitCode ?? null,
+            stdout: fields.stdout ?? '',
+            stderr: fields.stderr ?? '',
+            tokenRedactions: fields.tokenRedactions ?? 0,
+            credentialLabel: fields.credentialLabel ?? null,
+            memberId: fields.memberId ?? null,
+            memberName: fields.memberName ?? null,
+        },
+    };
+}
+
+const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
+const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
+
+async function mockVcsCredentialExec(toolArgs, executeCommand) {
+    const label = toolArgs && toolArgs.label;
+    const memberId = (toolArgs && toolArgs.member_id) ?? null;
+    const memberName = (toolArgs && toolArgs.member_name) ?? null;
+    const who = { credentialLabel: label ?? null, memberId, memberName };
+    const command = (toolArgs && toolArgs.command) || '';
+
+    const hasBare = command.includes(VCS_TOKEN_PLACEHOLDER);
+    const hasInline = command.includes(VCS_TOKEN_INLINE_PLACEHOLDER);
+    if (!hasBare && !hasInline) {
+        return vcsCredentialExecResult(
+            `[FAIL] command must contain ${VCS_TOKEN_PLACEHOLDER} or ${VCS_TOKEN_INLINE_PLACEHOLDER} -- use execute_command for a command that needs no credential.`,
+            { ...who, reason: 'placeholder_missing' },
+        );
+    }
+
+    const token = MOCK_VCS_CREDENTIAL_TOKENS[label];
+    if (!token) {
+        return vcsCredentialExecResult(
+            `[FAIL] Cannot read a VCS credential for label "${label}" (no mock credential-helper file registered for this label in the mock-sprint harness).`,
+            { ...who, reason: 'credential_read_failed' },
+        );
+    }
+
+    if (!executeCommand) {
+        throw new Error(
+            'mock-sprint-harness: vcs_credential_exec was called but no `executeCommand` was threaded into ' +
+                'defaultMockCallTool({ executeCommand }) -- wire it from the same buildMockFleetApi(...).executeCommand ' +
+                "the scenario's engine.executeFile() call uses (see the two call sites below).",
+        );
+    }
+
+    const finalCommand = command
+        .replaceAll(VCS_TOKEN_PLACEHOLDER, mockEscapeShellArg(token))
+        .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, mockEscapeShellArgInner(token));
+
+    const res = await executeCommand({ command: finalCommand, member_id: toolArgs && toolArgs.member_id, member_name: memberName });
+    const structured = res.structuredContent || {};
+    const exitCode = typeof structured.exitCode === 'number' ? structured.exitCode : null;
+    const outRedacted = redactVcsCredentialToken(structured.stdout ?? '', token);
+    const errRedacted = redactVcsCredentialToken(structured.stderr ?? '', token);
+
+    return vcsCredentialExecResult(
+        `[OK] Ran credential-requiring command on "${memberName ?? memberId ?? '(unknown)'}" (exit ${exitCode}).`,
+        {
+            ...who,
+            reason: 'ok',
+            exitCode,
+            stdout: outRedacted.text,
+            stderr: errRedacted.text,
+            tokenRedactions: outRedacted.count + errRedacted.count,
+        },
+    );
+}
+
+export function defaultMockCallTool({ executeCommand } = {}) {
     return async (name, toolArgs) => {
         // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the
         // member's provider via VCSModule.resolveProvider() -- a
@@ -300,7 +457,17 @@ export function defaultMockCallTool() {
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+            // apra-fleet-3swo.7.5: the orchestrator reads the credential expiry
+            // from structuredContent.expiresAt now, not from the prose's
+            // 'expiresAt:' metadata line, so this default must carry the
+            // STRUCTURED half too or every mock-sprint scenario's preflight
+            // cache would silently start seeing "no expiry tracked". Both
+            // halves are kept, exactly as the real tool emits them
+            // (src/tools/provision-vcs-auth.ts).
+            return {
+                content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }],
+                structuredContent: { ok: true, reason: 'ok', expiresAt },
+            };
         }
         if (name === 'child_id_allocator') {
             const action = toolArgs && toolArgs.action;
@@ -316,7 +483,42 @@ export function defaultMockCallTool() {
             }
             return { content: [{ text: JSON.stringify({ released: true }) }] };
         }
-        return { content: [{ text: `✅ mock ${name}` }] };
+        if (name === 'vcs_credential_exec') {
+            return mockVcsCredentialExec(toolArgs, executeCommand);
+        }
+        return { content: [{ text: `[OK] mock ${name}` }] };
+    };
+}
+
+// apra-fleet-3swo.7.19: several standalone finalizeAbort()-level test files
+// (mock-sprint-abort-pr.test.mjs, mock-sprint-azure-devops-vcs-publish.
+// test.mjs, and similar) predate buildMockFleetApi() entirely -- they drive
+// finalizeAbort() directly against a hand-rolled `command(cmd, opts) =>
+// Promise<{ ok, output, error } | string>` mock, never an executeCommand from
+// this file. Adapts that legacy shape into the `executeCommand({ command,
+// member_id, member_name }) => Promise<{ structuredContent: { exitCode,
+// stdout, stderr } }>` shape defaultMockCallTool()'s vcs_credential_exec
+// branch expects, so those files can delegate to the SAME shared simulator
+// (reusing its placeholder substitution and redaction) instead of
+// re-implementing it locally. Always dispatches with `failSoft: true` (every
+// production vcs_credential_exec-eligible call site already does, and this
+// mirrors it), so `command` never throws here.
+export function legacyCommandExecuteCommandAdapter(command) {
+    return async ({ command: cmd, member_id, member_name }) => {
+        const res = await command(cmd, {
+            member_id,
+            member_name,
+            silent: true,
+            failSoft: true,
+            label: 'vcs_credential_exec dispatch (legacy command mock)',
+        });
+        return {
+            structuredContent: {
+                exitCode: res && res.ok ? 0 : 1,
+                stdout: (res && res.output) || '',
+                stderr: res && !res.ok ? (res.error || '') : '',
+            },
+        };
     };
 }
 
@@ -329,11 +531,168 @@ export const runCmd = (cmd, cwd) => bdRunCmd(cmd, cwd);
 
 export const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
-export async function setup(tempDirSuffix) {
+// ---------------------------------------------------------------------------
+// shared scenario-clone bootstrap (apra-fleet-38o8)
+// ---------------------------------------------------------------------------
+// Diagnosis behind these three helpers: the recurring real-bd-lane failure
+// "[advanced-mock-runner-test] setupMinimal(<scenario>): bd create --silent
+// did not return an epic id" was never a `bd create` defect, and it is not a
+// transient. It is the DOWNSTREAM symptom of the preceding `bd init` having
+// FAILED -- a non-zero exit that both setup() and setupMinimal() issued and
+// then discarded, carrying on to create beads in a directory that has no
+// beads database at all.
+//
+// Captured against the real bd CLI (bd version 1.1.0, 8e4e59d39), the two
+// halves of that chain:
+//
+//   $ bd init                      # into a dir an earlier init already claimed
+//     exit=1  stdout=""  stderr="Error:\n  Found existing Dolt database:
+//              <dir>/.beads/embeddeddolt/<db>\n\nThis workspace is already
+//              initialized. ... Aborting."
+//   $ bd create -t epic "Epic: x" -d "probe" --silent   # in that same dir
+//     exit=1  stdout="" (0 bytes)  stderr="Error: no beads database found
+//              Hint: run 'bd where' ... or 'bd init' to create a new database"
+//
+// which rules out every competing explanation for the empty id:
+//   - the id is NOT misrouted to stderr or prefixed: stderr carries no id at
+//     all, and stdout is 0 bytes, not "prefix + id";
+//   - it is NOT a transient Dolt lock/timeout: exit=1 is immediate and
+//     deterministic, and the failing file's reported wall clock was ~1s;
+//   - `--silent` IS honoured by this bd (`bd create --help`: "--silent
+//     Output only the issue ID (for scripting)"), and a healthy clone answers
+//     with exactly "<id>\n" -- 13 bytes for a 12-char id;
+//   - the create genuinely failed, for the stated reason: no database.
+//
+// So the remedy is to fail AT the real failure (`bd init`) with `bd init`'s
+// own evidence, never to retry a create that cannot succeed -- a retry loop
+// here would just spend N attempts re-deriving "no beads database found" and
+// would risk masking a genuine create failure, which is exactly what the bug
+// asks not to happen. Both setup() and setupMinimal() (and every bead either
+// of them creates, not just the epic) now route through the same helpers, so
+// the two guards can no longer diverge.
+
+// Every bd result the harness reports on, rendered uniformly: exit code +
+// error message + verbatim stdout/stderr. Strictly richer than the ad-hoc
+// describe() this replaces, which omitted the exit code.
+export const describeBdResult = (label, res) => {
+    if (!res) return `${label}: (not run)`;
+    const exitCode = res.err ? (typeof res.err.code === 'number' ? res.err.code : 'unknown') : 0;
+    return (
+        `${label}: exit=${exitCode} err=${res.err ? JSON.stringify(res.err.message) : 'null'} ` +
+        `stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`
+    );
+};
+
+/**
+ * `bd init` for a scenario's scratch clone, with its exit status actually
+ * checked. Returns the init result so later failures can still quote it.
+ *
+ * `runCmdFn` (apra-fleet-38o8.2) is the injection seam this guard's own test
+ * suite uses to simulate a failing/malformed `bd init` or `bd create` without
+ * requiring a contended real-bd run: it defaults to the real `runCmd` above,
+ * so every production call site (setup()/setupMinimal()) is unaffected.
+ */
+/**
+ * The `bd init` command for a scenario's scratch clone. By default this is the
+ * bare `bd init`, whose recorded form every existing fixture already carries.
+ *
+ * A scenario's Dolt database name is derived from its tempdir basename
+ * (hyphens -> underscores). Dolt (MySQL-compatible) caps identifier length at
+ * 64 chars, so a scenario with a long tag whose tempdir also carries a wide
+ * (7-digit) process id can push that derived name past the limit, making a
+ * bare `bd init` fail with "produces an invalid database name" -- a
+ * host-dependent flake that has nothing to do with the scenario under test.
+ * When the derived name would exceed the limit, we pass an explicit short
+ * `--database` (Dolt db name only -- the issue-id prefix still comes from the
+ * directory, so recorded ids are unchanged). The short name is derived from
+ * the STABLE scenario key (basename minus the trailing -<timestamp>-<pid>), so
+ * the recorded command string is deterministic and matches on replay.
+ */
+export function bdInitCommandForClone(tempDir) {
+    const base = path.basename(tempDir);
+    // Decide from the STABLE scenario key ONLY (basename minus the trailing
+    // -<timestamp>-<pid>), never the volatile suffix: the recorded command must
+    // be byte-identical at record and replay time, and it must not depend on
+    // whether this host's pids are 6 or 7 digits. Worst case a tempdir suffix
+    // adds `_<13-digit ms timestamp>_<up to 7-digit pid>` = 22 chars; if the
+    // stable db name plus that worst case still fits Dolt's 64-char identifier
+    // cap, a bare `bd init` is always safe on any host.
+    const stableKey = base.replace(/-\d+-\d+$/, '');
+    const stableDbName = stableKey.replace(/[^A-Za-z0-9]/g, '_');
+    const WORST_CASE_SUFFIX = 22;
+    if (stableDbName.length + WORST_CASE_SUFFIX <= 64) return 'bd init';
+    const shortHash = crypto.createHash('sha1').update(stableKey).digest('hex').slice(0, 16);
+    return `bd init --database md${shortHash}`;
+}
+
+export async function initScenarioClone(label, tempDir, runCmdFn = runCmd) {
+    let initRes;
+    try {
+        initRes = await runCmdFn(bdInitCommandForClone(tempDir), tempDir);
+    } catch (err) {
+        // Real mode serves `bd init` from the shared template copy in
+        // bd-replay.mjs rather than spawning bd, so this path can also throw a
+        // raw fs error (a template that vanished mid-copy). Label it instead of
+        // letting an opaque ENOENT surface with no scenario attached.
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' threw before producing a result ` +
+                `(real mode serves it from the shared bd-init template -- see test/helpers/bd-replay.mjs). ` +
+                `tempDir=${tempDir}\n  ${err && err.stack ? err.stack : String(err)}`,
+        );
+    }
+    if (initRes.err) {
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' FAILED, so this clone has no beads database. ` +
+                `Every later bd command in this scenario would fail downstream -- classically as an empty ` +
+                `'bd create --silent' id ("Error: no beads database found"), which is the SYMPTOM, not the cause. ` +
+                `tempDir=${tempDir}\n  ${describeBdResult('bd init', initRes)}`,
+        );
+    }
+    return initRes;
+}
+
+// `bd create --silent` prints exactly the new bead's id and nothing else, so a
+// well-formed answer is a single whitespace-free token. Empty is the reported
+// failure; multi-token output means bd printed prose (an error, a warning, a
+// hint) where an id belongs, which would otherwise be fed into the next
+// command as if it were an id. Verified against all 351 recorded `--silent`
+// creates under test/fixtures/bd-recordings: every successful one is a single
+// token, so this cannot false-reject a real id.
+const isBeadId = (value) => value.length > 0 && !/\s/.test(value);
+
+/**
+ * Issue one `bd create ... --silent` and return the created id, or throw with
+ * the full evidence chain (the clone's `bd init` result plus this create's own
+ * exit code / stdout / stderr).
+ *
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as initScenarioClone()
+ * above, defaulting to the real `runCmd`.
+ */
+export async function createBeadOrThrow(label, tempDir, createCmd, initRes, runCmdFn = runCmd) {
+    const res = await runCmdFn(createCmd, tempDir);
+    const id = (res.stdout ?? '').trim();
+    if (!res.err && isBeadId(id)) return id;
+    throw new Error(
+        `[advanced-mock-runner-test] ${label}: ${JSON.stringify(createCmd)} did not return a bead id ` +
+            `(parsed ${JSON.stringify(id)}). tempDir=${tempDir}\n` +
+            `  ${describeBdResult('bd init', initRes)}\n` +
+            `  ${describeBdResult('bd create', res)}`,
+    );
+}
+
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): optional injection seam threaded through to
+ * initScenarioClone()/createBeadOrThrow() below, defaulting to the real
+ * `runCmd`. Every production call site omits it and is unaffected; the
+ * guard's own test suite uses it to simulate a failing `bd init`/`bd create`
+ * without a contended real-bd run.
+ */
+export async function setup(tempDirSuffix, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setup(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
 
     // `--silent` returns the created id directly on stdout, from the exact
     // write just performed -- unlike a separate `bd list --json` + title
@@ -343,28 +702,14 @@ export async function setup(tempDirSuffix) {
     // Dolt state hits this every time, even though sequential `bd create`
     // calls each fully complete -- exec()'s callback only fires on process
     // exit -- before the next command starts).
-    const epicRes = await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', tempDir);
-    const task1Res = await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', tempDir);
-    const task2Res = await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', tempDir);
-    const epicId = epicRes.stdout.trim();
-    const task1Id = task1Res.stdout.trim();
-    const task2Id = task2Res.stdout.trim();
+    const epicId = await createBeadOrThrow(label, tempDir, 'bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', initRes, runCmdFn);
+    const task1Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', initRes, runCmdFn);
+    const task2Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', initRes, runCmdFn);
 
-    if (!epicId || !task1Id || !task2Id) {
-        const describe = (label, res) => `${label}: err=${res.err ? JSON.stringify(res.err.message) : 'null'} stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`;
-        throw new Error(
-            `[advanced-mock-runner-test] setup(${tempDirSuffix}): bd create --silent did not return an id for one or more beads. tempDir=${tempDir}\n` +
-                `  ${describe('bd init', initRes)}\n` +
-                `  ${describe('epic create', epicRes)}\n` +
-                `  ${describe('task1 create', task1Res)}\n` +
-                `  ${describe('task2 create', task2Res)}`,
-        );
-    }
+    await runCmdFn(`bd update ${task1Id} --parent ${epicId}`, tempDir);
+    await runCmdFn(`bd update ${task2Id} --parent ${epicId}`, tempDir);
 
-    await runCmd(`bd update ${task1Id} --parent ${epicId}`, tempDir);
-    await runCmd(`bd update ${task2Id} --parent ${epicId}`, tempDir);
-
-    const finalList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const finalList = JSON.parse((await runCmdFn('bd list --json', tempDir)).stdout || '[]');
     const epicBead = finalList.find((b) => b.id === epicId);
     const task1 = finalList.find((b) => b.id === task1Id);
     const task2 = finalList.find((b) => b.id === task2Id);
@@ -389,24 +734,20 @@ export async function setup(tempDirSuffix) {
  * creation order so scenario code can address them by id without re-parsing
  * `bd list` output itself.
  */
-export async function setupMinimal(tempDirSuffix, taskSpecs) {
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as setup() above.
+ */
+export async function setupMinimal(tempDirSuffix, taskSpecs, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setupMinimal(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
     // `--silent` returns the created id directly, from the write just
     // performed -- avoids a separate `bd list --json` + title match, which
     // reads back through bd's embedded Dolt store and can lag behind a
     // just-completed write on a cold/fresh environment (see setup() above).
-    const epicRes = await runCmd(`bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, tempDir);
-    const epicId = epicRes.stdout.trim();
-    if (!epicId) {
-        throw new Error(
-            `[advanced-mock-runner-test] setupMinimal(${tempDirSuffix}): bd create --silent did not return an epic id. tempDir=${tempDir}\n` +
-                `  bd init: err=${initRes.err ? JSON.stringify(initRes.err.message) : 'null'} stdout=${JSON.stringify(initRes.stdout)} stderr=${JSON.stringify(initRes.stderr)}\n` +
-                `  epic create: err=${epicRes.err ? JSON.stringify(epicRes.err.message) : 'null'} stdout=${JSON.stringify(epicRes.stdout)} stderr=${JSON.stringify(epicRes.stderr)}`,
-        );
-    }
+    const epicId = await createBeadOrThrow(label, tempDir, `bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, initRes, runCmdFn);
     const epicBead = { id: epicId };
 
     const tasks = [];
@@ -415,9 +756,10 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
         // create a task below the sprint's goal priority, for the A5
         // goal-priority exit-condition scenarios below.
         const priorityFlag = spec.priority ? ` -p ${spec.priority}` : '';
-        const createRes = await runCmd(`bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, tempDir);
-        const id = createRes.stdout.trim();
-        await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
+        // Same guard as the epic above (it used to have none here, so a failed
+        // task create silently produced `bd update  --parent <epic>`).
+        const id = await createBeadOrThrow(label, tempDir, `bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, initRes, runCmdFn);
+        await runCmdFn(`bd update ${id} --parent ${epicBead.id}`, tempDir);
         tasks.push({ id, title: spec.title });
     }
 
@@ -522,6 +864,36 @@ export function checkHarvesterContract(prompt) {
     }
 
     return missing;
+}
+
+// The three beads identity probes (fleet-sprint/beads-identity.mjs's
+// BEADS_IDENTITY_PROBES), keyed by the override field a scenario names.
+const BEADS_IDENTITY_PROBE_KEYS = [
+    ['where', /^bd where( --json)?$/],
+    ['syncRemote', /^bd config get sync\.remote( --json)?$/],
+    ['repoRemote', /^git remote get-url origin$/],
+];
+
+/**
+ * Answers one beads identity probe from a per-member override map (the
+ * `beadsIdentity` option of buildMockFleetApi), or returns null when the
+ * member/probe has no override so the caller falls through to its default.
+ * Exported so a scenario with its own executeCommand can reuse it.
+ */
+export function answerBeadsIdentityProbe(overrides, member, command) {
+    if (!overrides || !member) return null;
+    const perMember = overrides[member];
+    if (!perMember) return null;
+    const cmd = String(command || '').trim();
+    for (const [key, re] of BEADS_IDENTITY_PROBE_KEYS) {
+        if (!re.test(cmd) || perMember[key] === undefined) continue;
+        const value = perMember[key];
+        if (value && typeof value === 'object' && value.fail !== undefined) {
+            return mockCmdResult(1, '', String(value.fail));
+        }
+        return mockCmdResult(0, String(value), '');
+    }
+    return null;
 }
 
 export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = {}) {
@@ -646,6 +1018,18 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // default simulation when provided; omitted (the default), the
         // existing 201/already-exists-422 behavior is completely unchanged.
         prCurlResponseQueue = null,
+        // Per-member beads identity overrides for the runner's beads identity
+        // precondition (fleet-sprint/beads-identity-check.mjs), which probes
+        // every member with `bd where --json`, `bd config get sync.remote
+        // --json` and `git remote get-url origin` before the first mutating
+        // bd command. DEFAULT (omitted): every member answers consistently --
+        // `bd where` is synthesized from the shared tempDir by bd-replay.mjs,
+        // sync.remote is unset, and origin is `originUrl` above -- so the
+        // check passes. Shape: `{ [member]: { where?, syncRemote?,
+        // repoRemote? } }`, each value either the raw stdout to answer with or
+        // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
+        // named are intercepted; everything else keeps the default answer.
+        beadsIdentity = null,
     } = options;
     const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
 
@@ -748,6 +1132,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 }
             }
 
+            // Beads identity probe overrides (see the `beadsIdentity` option
+            // comment above). Checked first so a scenario can make ONE member
+            // answer differently (or fail) while every other member keeps
+            // the consistent default.
+            if (beadsIdentity) {
+                const override = answerBeadsIdentityProbe(beadsIdentity, opts.member_name, opts.command);
+                if (override) return override;
+            }
+
             // apra-fleet-9te.4.1: Ensure Sprint Branch probes for a
             // pre-existing local branch via this exact rev-parse before
             // deciding whether to reuse it as-is or reset it to base.
@@ -839,7 +1232,33 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // vcs-providers/azure-devops.mjs. No already-exists
                     // simulation here (that's lzfv.6's canned-queue scope);
                     // always answer with a hermetic default success.
-                    const body = JSON.stringify({ pullRequestId: 101, _links: { web: { href: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo/pullRequest/101' } } });
+                    //
+                    // apra-fleet-j918.8.8: this body previously fabricated a
+                    // `_links.web.href` field. A real Azure DevOps response
+                    // carries no such field -- vcs-providers/azure-devops.mjs's
+                    // pullRequestResponse.map (mapPullRequestResponse) reads
+                    // ONLY `pullRequestId` from the body and constructs the
+                    // browsable URL itself from org/project/repo context
+                    // (webUrlField: null, "No web-URL field exists in the body
+                    // -- it is constructed"), confirmed against a real
+                    // node:http stub in test/vcs-http-stub.test.mjs's
+                    // AZURE_CREATE_PR_201 fixture. The old `_links` field was
+                    // silently ignored by every consumer (nothing in
+                    // fleet-sprint/ ever read it) rather than causing a wrong
+                    // result, but it was still a disagreement between this
+                    // harness's assumed shape and the real one -- corrected
+                    // here to match the fields the real API and the stub
+                    // fixture actually return.
+                    const body = JSON.stringify({
+                        repository: { id: 'e1a2b3c4', name: 'mock-repo', project: { name: 'mock-project' } },
+                        pullRequestId: 101,
+                        codeReviewId: 101,
+                        status: 'active',
+                        sourceRefName: 'refs/heads/auto-sprint/mock-sprint',
+                        targetRefName: 'refs/heads/main',
+                        title: 'Sprint PR',
+                        url: 'https://dev.azure.com/mock-org/_apis/git/repositories/e1a2b3c4/pullRequests/101',
+                    });
                     return mockCmdResult(0, `${body}\n201`, '');
                 }
                 const headMatch = /"head":"([^"]*)"/.exec(opts.command);
@@ -1421,7 +1840,12 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
-            callTool: defaultMockCallTool(),
+            // apra-fleet-3swo.7.18: thread this scenario's own executeCommand
+            // through so a vcs_credential_exec call (once apra-fleet-3swo.7.6
+            // lands) delegates its create-PR dispatch to the SAME curl
+            // interception this mock fleet api already provides -- see the
+            // header comment above defaultMockCallTool().
+            callTool: defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
         }, true);
 
         // bd list hides closed issues by default -- pass --all so the final
@@ -1575,6 +1999,16 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
+    // apra-fleet-3swo.7.19: optional `(executeCommand) => callTool` factory,
+    // for a scenario whose own callTool needs to delegate vcs_credential_exec
+    // to the SAME shared simulator (defaultMockCallTool's executeCommand
+    // branch) this function's own internal `mockFleetApi` uses -- that
+    // instance does not exist yet at the point a caller builds a plain
+    // `callTool` value (it is constructed below, inside this function), so a
+    // caller that needs it supplies this factory instead and receives
+    // `mockFleetApi.executeCommand` once it exists. Takes priority over a
+    // plain `callTool` when both are supplied.
+    callToolFactory,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -1588,6 +2022,11 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Beads identity precondition passthroughs: `beadsIdentity` is
+    // buildMockFleetApi's per-member probe override map (see its option
+    // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
+    // string or record) the supervisor would pass as `--expect-beads`.
+    beadsIdentity, expectBeads,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -1656,6 +2095,7 @@ export async function runDevelopLoopScenario(tag, {
             prExistsState,
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
+            ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
@@ -1683,11 +2123,17 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
-                callTool: callTool !== undefined ? callTool : defaultMockCallTool(),
+                // apra-fleet-3swo.7.18: same executeCommand-threading as
+                // runOnce() above, for the default (no per-scenario callTool
+                // override) case.
+                callTool: callToolFactory
+                    ? callToolFactory(mockFleetApi.executeCommand)
+                    : (callTool !== undefined ? callTool : defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand })),
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
             }, true);
         } catch (err) {
             error = err;

@@ -286,7 +286,7 @@ export function assertVersionPin(role, schema, expectedMajor) {
         // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
-                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
+                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` + // shell-guard-allow: "$id" here and on the next line is the JSON Schema $id property name (schema.$id), not a shell variable expansion -- this text is a thrown JS Error, never dispatched as a command string.
                 `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm package update changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,
@@ -426,6 +426,47 @@ const FALLBACK_planReviewerVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
         notes: { type: 'string' },
+        // apra-fleet-3swo.7.8: optional, deliberately NOT in `required` below
+        // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
+        // Machine-readable per-bead findings, so a CHANGES_NEEDED verdict can
+        // be routed to the beads it concerns WITHOUT scanning free-text notes
+        // for literal bead ids (the job extractContestedBeadIds does today in
+        // fleet-sprint/newtask-text.mjs; retiring that scraper is a separate
+        // task). An EMPTY array is meaningful -- it is the explicit
+        // "plan-wide objection, no individual bead named" signal, which is the
+        // same thing the prose scan expressed by matching no id. An ABSENT
+        // field is schema-valid and means "this verdict predates the findings
+        // contract", so the consumer may still fall back to notes for one
+        // release; keeping it out of `required` is what makes that fallback
+        // window possible.
+        findings: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    kind: {
+                        type: 'string',
+                        enum: [
+                            'coverage',
+                            'missing_test_task',
+                            'acceptance_criteria',
+                            'task_size',
+                            'dependency_wiring',
+                            'scope_creep',
+                            'duplicate_work',
+                            'feasibility',
+                            'ready_work',
+                            'model_metadata',
+                            'lane_cohesion',
+                            'other',
+                        ],
+                    },
+                    detail: { type: 'string', minLength: 1 },
+                },
+                required: ['id', 'kind', 'detail'],
+            },
+        },
         taskAssignments: { type: 'array', items: taskAssignmentSchema },
     },
     required: ['verdict', 'notes', 'taskAssignments'],
@@ -931,19 +972,22 @@ function longestBacktickRun(content) {
 }
 
 /**
- * The pattern src/tools/execute-prompt.ts matches to reject a dispatch
- * outright. Duplicated here as a literal rather than imported: this module
- * deliberately has no dependency on the fleet server sources.
+ * The pattern src/services/secret-token.ts (SECRET_TOKEN_RE) matches to
+ * reject a dispatch outright / redact untrusted content. Mirrored here as a
+ * literal rather than imported: this module deliberately has no dependency
+ * on the fleet server sources. Accepts both the canonical {{secret.NAME}}
+ * spelling and the deprecated {{secure.NAME}} one.
  */
-const SECURE_TOKEN_RE_G = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+const SECRET_TOKEN_RE_G = /\{\{(secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
-const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the block above '
-    + '(secure.NAME is shown without its surrounding double braces). Write the braced form when '
+const SECRET_REDACTION_NOTE = 'NOTE: secret-token braces were redacted from the block above '
+    + '(secret.NAME is shown without its surrounding double braces). Write the braced form when '
     + 'you actually use the token in an execute_command call.';
 
 /**
- * Strips the surrounding double braces from any secure-token reference in
- * untrusted content, keeping the token NAME so the text still reads.
+ * Strips the surrounding double braces from any secret-token reference
+ * (either {{secret.NAME}} or the deprecated {{secure.NAME}}) in untrusted
+ * content, keeping the "secret.NAME"/"secure.NAME" text so it still reads.
  *
  * Why this must happen before the content reaches a prompt: execute_prompt
  * rejects the ENTIRE dispatch -- no LLM call, an error string returned in
@@ -956,17 +1000,17 @@ const SECURE_REDACTION_NOTE = 'NOTE: secure-token braces were redacted from the 
  * @param {string} content
  * @returns {{text: string, redacted: boolean}}
  */
-function redactSecureTokens(content) {
+function redactSecretTokens(content) {
     let text = content;
     let redacted = false;
     // Run to a fixed point rather than a single pass: replacing the inner
-    // token in `{{{{secure.A}}}}` leaves `{{secure.A}}`, so the surrounding
+    // token in `{{{{secret.A}}}}` leaves `{{secret.A}}`, so the surrounding
     // braces close over the redacted name and rebuild exactly the pattern
     // being removed. Untrusted content is attacker-influenced free-text, so
     // one pass is not enough. Guaranteed to terminate -- every replacement
     // removes four brace characters, so `text` strictly shrinks.
     for (;;) {
-        const next = text.replace(SECURE_TOKEN_RE_G, (_match, name) => `secure.${name}`);
+        const next = text.replace(SECRET_TOKEN_RE_G, (_match, kind, name) => `${kind}.${name}`);
         if (next === text) break;
         text = next;
         redacted = true;
@@ -999,7 +1043,7 @@ export function wrapUntrustedBlock(sourceLabel, content) {
     if (typeof content !== 'string') {
         throw new TypeError('[contracts] wrapUntrustedBlock requires content to be a string');
     }
-    const { text: safeContent, redacted } = redactSecureTokens(content);
+    const { text: safeContent, redacted } = redactSecretTokens(content);
     const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(safeContent) + 1);
     const fence = '`'.repeat(fenceLength);
     return [
@@ -1008,7 +1052,7 @@ export function wrapUntrustedBlock(sourceLabel, content) {
         `${fence}${UNTRUSTED_BLOCK_FENCE_LABEL}`,
         safeContent,
         fence,
-        ...(redacted ? [SECURE_REDACTION_NOTE] : []),
+        ...(redacted ? [SECRET_REDACTION_NOTE] : []),
     ].join('\n');
 }
 

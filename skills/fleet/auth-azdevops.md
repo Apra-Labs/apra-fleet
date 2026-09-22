@@ -39,7 +39,7 @@ The credential is entered via the out-of-band prompt during `provision_vcs_auth`
 
 ```
 credential_store_set  name=azdevops_pat
-execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
+execute_command  command="curl -sf -u :{{secret.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
 ```
 
 **Per-sprint override:** To use a different credential name for a specific sprint (for example, when working with a different Azure DevOps organization or test repo), pass the `azdevops_pat_secret_name` argument to the sprint invocation (threaded through `packages/apra-fleet-se/fleet-sprint/runner.js`). It must name a credential already stored via `credential_store_set`; the runner validates it as a credential-store name at contract-validation time and uses it instead of the default `azdevops_pat` entry for provisioning, self-heal, and preflight checks on that sprint.
@@ -63,11 +63,22 @@ curl -sf -u :pat "https://dev.azure.com/{org}/_apis/projects?api-version=7.1&\$t
 git ls-remote https://dev.azure.com/{org}/{project}/_git/{repo} HEAD
 ```
 
+## Legacy `<org>.visualstudio.com` remotes
+
+git looks credentials up by the remote's own hostname, so a PAT bound to
+`dev.azure.com` is never offered for a push to `https://<org>.visualstudio.com/...`.
+Pass `scope_url="https://<org>.visualstudio.com"` to `provision_vcs_auth`
+(fleet-sprint does this automatically from the member's remote). `org_url`
+stays `https://dev.azure.com/<org>` -- the REST API serves every org there.
+An ssh remote (`vs-ssh.visualstudio.com` / `ssh.dev.azure.com`) cannot take a
+PAT at all: push uses the member's SSH key; the PAT serves only REST calls.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
 | 401 Unauthorized | Create new PAT and re-deploy |
+| push to `<org>.visualstudio.com` prompts / 401 while REST works | Re-provision with `scope_url="https://<org>.visualstudio.com"` |
 | 403 Forbidden | Create PAT with broader scopes |
 | TF400813: Resource not available | Verify org URL matches `https://dev.azure.com/{org}` |
 | Clone prompts for password | Re-run `provision_vcs_auth` |
@@ -97,8 +108,8 @@ credential_store_set  name=azdevops_pat
 **Use it in a command on a member:**
 
 ```
-execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
-execute_command  command="git remote set-url origin https://token:{{secure.azdevops_pat}}@dev.azure.com/{org}/{project}/_git/{repo}"
+execute_command  command="curl -sf -u :{{secret.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
+execute_command  command="git remote set-url origin https://token:{{secret.azdevops_pat}}@dev.azure.com/{org}/{project}/_git/{repo}"
 ```
 
 The token is resolved server-side and redacted in output (`[REDACTED:azdevops_pat]`) - it never appears in the LLM conversation or command logs.

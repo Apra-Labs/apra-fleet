@@ -14,6 +14,10 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-j918.7.8: the determinism test resets dolt-sync's process-
+// lifetime sync.remote/tip memoization (apra-fleet-akuv) before its own
+// independent second run -- see that test for why.
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,22 +145,76 @@ const TASK_TITLES = [
     'Task: Mmm add ensureMember idempotency check',
 ];
 
-async function setup(tempDirSuffix) {
+// apra-fleet-wclh.1: setup() drives several sequential `bd` calls whose
+// results feed straight into the NEXT call (e.g. `bd list --json`'s output
+// decides `epicBead`, then `epicBead.id` is used to parent every task). Under
+// real bd (APRA_FLEET_BD_MOCK=0) any one of those calls can fail for a
+// reason that has nothing to do with this scenario's logic (a transient
+// spawn/resource failure, an unexpected bd exit) -- `runCmd()` never rejects,
+// it resolves `{ err, stdout, stderr }` and leaves the caller to notice.
+// Before this fix, setup() never checked `err` on any of its calls, so a
+// failed `bd list --json` silently produced `stdout: ''` -> `epicList: []` ->
+// `epicBead: undefined`, and the very next line's `epicBead.id` threw a bare
+// `TypeError: Cannot read properties of undefined (reading 'id')` with a
+// stack trace pointing at the dereference, not the actual failed command --
+// exactly the crash apra-fleet-wclh reported (reproduced by forcing `bd
+// list --json` to fail: identical message, identical ~4-5s elapsed, all
+// scenario-running subtests failing the same way). Guarding every call here
+// turns that opaque TypeError into a diagnostic naming the actual failed `bd`
+// command, its exit/stderr, and -- for the epic lookup specifically -- what
+// `bd list --json` actually returned.
+function assertCmdOk(res, description) {
+    if (res.err) {
+        throw new Error(
+            `golden-transcript-3bead.test.mjs setup(): ${description} failed unexpectedly.\n` +
+            `exit: ${typeof res.err.code === 'number' ? res.err.code : '(spawn failure -- process never ran)'}\n` +
+            `stdout: ${res.stdout || '(empty)'}\n` +
+            `stderr: ${res.stderr || '(empty)'}\n` +
+            `${res.err.message || ''}`
+        );
+    }
+    return res;
+}
+
+// apra-fleet-wclh.2: `runCmdFn` is an injection seam (defaulting to the real
+// `runCmd` above) so this guard's own test suite below can drive setup()
+// with a simulated failing/malformed `bd` response and pin the exact
+// dereference apra-fleet-wclh.1 fixed, without requiring a contended real-bd
+// run to exercise the failure path. Every production call site omits it and
+// is unaffected.
+async function setup(tempDirSuffix, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-golden-3bead-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    await runCmd('bd init', tempDir);
+    assertCmdOk(await runCmdFn('bd init', tempDir), '`bd init`');
 
-    await runCmd('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir);
+    assertCmdOk(
+        await runCmdFn('bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', tempDir),
+        '`bd create -t epic ...` (epic creation)'
+    );
 
-    const epicList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const epicListRes = assertCmdOk(await runCmdFn('bd list --json', tempDir), '`bd list --json` (epic lookup)');
+    const epicList = JSON.parse(epicListRes.stdout || '[]');
     const epicBead = epicList.find((b) => b.title.startsWith('Epic:'));
+    if (!epicBead) {
+        throw new Error(
+            'golden-transcript-3bead.test.mjs setup(): `bd list --json` did not return the just-created epic bead ' +
+            `(expected a title starting with 'Epic:'). Got ${epicList.length} bead(s): ` +
+            `${JSON.stringify(epicList.map((b) => b.title))}.`
+        );
+    }
 
     const taskIds = [];
     for (const title of TASK_TITLES) {
-        const createRes = await runCmd(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir);
+        const createRes = assertCmdOk(
+            await runCmdFn(`bd create "${title}" -d "Independent sibling task." --silent`, tempDir),
+            `\`bd create "${title}"\``
+        );
         const id = createRes.stdout.trim();
-        await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
+        assertCmdOk(
+            await runCmdFn(`bd update ${id} --parent ${epicBead.id}`, tempDir),
+            `\`bd update ${id} --parent ${epicBead.id}\``
+        );
         taskIds.push(id);
     }
 
@@ -165,6 +223,140 @@ async function setup(tempDirSuffix) {
 
     return { tempDir, epicBead, taskIds };
 }
+
+// apra-fleet-wclh.2: regression pin for apra-fleet-wclh.1's fix, unit-level
+// (no real-bd sprint run required -- see criterion 3). Drives setup() and
+// assertCmdOk() directly with an injected fake `runCmdFn` reproducing the
+// exact input shape that used to crash: a `bd list --json` that fails (or
+// returns a list with no epic bead), which pre-fix flowed straight into
+// `epicBead.id` and threw a bare `TypeError: Cannot read properties of
+// undefined (reading 'id')`. Every case below asserts on the SPECIFIC
+// diagnostic text the fix now produces, not merely that some error was
+// thrown -- a test that only checks "it threw" would still pass against a
+// reverted fix (the bare TypeError also throws), so that would not meet
+// criterion 2's "pin the specific handled shape" requirement.
+function fakeCmdResult(err, stdout = '', stderr = '') {
+    return { err, stdout, stderr };
+}
+
+function makeFailingErr(code, message) {
+    return Object.assign(new Error(message), { code });
+}
+
+// setup() unconditionally fs.mkdir(tempDir)s before issuing any bd call, so
+// even a case that throws mid-setup leaves an empty tempDir behind. Swept up
+// by suffix after each such test so this guard's own suite leaves nothing
+// outside its sandbox (acceptance criterion 5).
+async function cleanupGoldenTempDirs(suffix) {
+    const tmp = os.tmpdir();
+    const prefix = `apra-fleet-golden-3bead-${suffix}-`;
+    let entries;
+    try {
+        entries = await fs.readdir(tmp);
+    } catch {
+        return;
+    }
+    await Promise.all(
+        entries
+            .filter((name) => name.startsWith(prefix))
+            .map((name) => fs.rm(path.join(tmp, name), { recursive: true, force: true })),
+    );
+}
+
+test('assertCmdOk: a failed bd call throws naming the description, exit code, and stdout/stderr', () => {
+    assert.throws(
+        () => assertCmdOk(fakeCmdResult(makeFailingErr(1, 'Command failed: bd list --json'), '', 'unknown flag: --FORCE-REPRO-FAILURE'), '`bd list --json` (epic lookup)'),
+        (err) => {
+            assert.match(err.message, /`bd list --json` \(epic lookup\) failed unexpectedly/);
+            assert.match(err.message, /exit: 1/);
+            assert.match(err.message, /unknown flag: --FORCE-REPRO-FAILURE/);
+            return true;
+        },
+    );
+});
+
+test('assertCmdOk: a successful bd call returns the result unchanged', () => {
+    const ok = fakeCmdResult(null, 'apra-fleet-abcd\n', '');
+    assert.strictEqual(assertCmdOk(ok, 'label'), ok);
+});
+
+test('golden 3-bead setup(): a failing `bd list --json` (the exact wclh input shape) throws the assertCmdOk diagnostic, never the bare undefined-id TypeError', async () => {
+    const seenCmds = [];
+    const fakeRunCmd = async (cmd, cwd) => {
+        seenCmds.push(cmd);
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        if (cmd === 'bd list --json') {
+            // Byte-for-byte the forced repro apra-fleet-wclh.1's own close
+            // notes captured: a nonzero exit with an "unknown flag" stderr.
+            return fakeCmdResult(makeFailingErr(1, 'Command failed: bd list --json'), '', 'unknown flag: --FORCE-REPRO-FAILURE');
+        }
+        throw new Error(`unexpected command reached after the epic lookup failed: ${JSON.stringify(cmd)}`);
+    };
+    try {
+        await assert.rejects(
+            () => setup('wclh2g-listfail', fakeRunCmd),
+            (err) => {
+                assert.match(err.message, /`bd list --json` \(epic lookup\) failed unexpectedly/);
+                assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+                return true;
+            },
+        );
+        assert.deepStrictEqual(seenCmds, ['bd init', 'bd create -t epic "Epic: Fleet Member Management APIs (3-bead)" -d "Three independent, sibling tasks -- no dependency between them -- so all three are ready in the same Develop cycle and dispatch as concurrent doer streaks."', 'bd list --json'], 'setup() must stop at the failed epic lookup and never reach a task create/update');
+    } finally {
+        await cleanupGoldenTempDirs('wclh2g-listfail');
+    }
+});
+
+test('golden 3-bead setup(): `bd list --json` succeeding with no epic bead in it throws the epic-not-found diagnostic, never the bare undefined-id TypeError', async () => {
+    const fakeRunCmd = async (cmd) => {
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        // Succeeds, but the epic never made it into the list -- the second
+        // half of the pre-fix hazard (an empty/mismatched list is not itself
+        // a `runCmd` error, so assertCmdOk alone cannot catch it).
+        if (cmd === 'bd list --json') return fakeCmdResult(null, '[]', '');
+        throw new Error(`unexpected command: ${JSON.stringify(cmd)}`);
+    };
+    try {
+        await assert.rejects(
+            () => setup('wclh2g-noepic', fakeRunCmd),
+            (err) => {
+                assert.match(err.message, /did not return the just-created epic bead/);
+                assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+                return true;
+            },
+        );
+    } finally {
+        await cleanupGoldenTempDirs('wclh2g-noepic');
+    }
+});
+
+test('golden 3-bead setup(): the full happy path (init + epic + 3 tasks + parent links) still succeeds end to end', async () => {
+    const epicId = 'apra-fleet-epic1';
+    const taskIds = ['apra-fleet-t1', 'apra-fleet-t2', 'apra-fleet-t3'];
+    let taskIndex = 0;
+    const fakeRunCmd = async (cmd) => {
+        if (cmd === 'bd init') return fakeCmdResult(null, '', '');
+        if (cmd.startsWith('bd create -t epic')) return fakeCmdResult(null, '', '');
+        if (cmd === 'bd list --json') return fakeCmdResult(null, JSON.stringify([{ id: epicId, title: 'Epic: Fleet Member Management APIs (3-bead)' }]), '');
+        if (cmd.startsWith('bd create "Task:')) {
+            const id = taskIds[taskIndex];
+            taskIndex += 1;
+            return fakeCmdResult(null, `${id}\n`, '');
+        }
+        if (cmd.startsWith(`bd update `)) return fakeCmdResult(null, '', '');
+        throw new Error(`unexpected command: ${JSON.stringify(cmd)}`);
+    };
+    let result;
+    try {
+        result = await setup('wclh2g-happy', fakeRunCmd);
+        assert.strictEqual(result.epicBead.id, epicId);
+        assert.deepStrictEqual(result.taskIds, taskIds);
+    } finally {
+        if (result) await fs.rm(result.tempDir, { recursive: true, force: true });
+    }
+});
 
 async function teardown(tempDir) {
     if (!tempDir) return;
@@ -460,6 +652,18 @@ function extractReviewerBeadIdList(prompt) {
     return match ? match[1] : null;
 }
 
+// apra-fleet-j918.7.8: memoizes the ONE 'golden-3bead-main' run so the
+// snapshot test and the determinism test's "run1" share it instead of each
+// paying for their own byte-identically-configured full sprint run -- see
+// golden-transcript.test.mjs's identical-purpose goldenMainRun() for the
+// full rationale (promise memoization, why the determinism test's run2 stays
+// genuinely independent, and the falsification record).
+let golden3BeadMainRunPromise = null;
+function golden3BeadMainRun() {
+    if (!golden3BeadMainRunPromise) golden3BeadMainRunPromise = run3BeadScenario('golden-3bead-main');
+    return golden3BeadMainRunPromise;
+}
+
 /**
  * Runs one full deterministic 3-bead mock sprint and returns ONLY the two
  * order-sensitive artifacts this golden variant protects -- never the full
@@ -595,7 +799,7 @@ function diffFirstDivergence(goldenJsonl, actualJsonl) {
 }
 
 test('golden transcript (3-bead): streak-assignment prompt + reviewer bead-id list match the committed snapshot', async (t) => {
-    const { artifacts, result } = await run3BeadScenario('golden-3bead-main');
+    const { artifacts, result } = await golden3BeadMainRun();
     const actualJsonl = artifactsToJsonl(artifacts);
 
     assert.strictEqual(result.status, 'success', `3-bead scenario did not succeed: ${JSON.stringify(result)}`);
@@ -649,11 +853,32 @@ test('golden transcript (3-bead): streak-assignment prompt + reviewer bead-id li
 // this also exercises the fix under the file's genuine parallel-streak
 // shape.
 //
-// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
-// { await runCmd(...) }` loop in build3BeadFleetApi()'s integ-test-runner
-// handler above (restoring the old canned {featuresClosed, passed:true}-
-// only response) makes this test's `caught` assertion fail: it throws a
-// StalledSprintError instead of completing.
+// MUTATION CHECK (apra-fleet-w7ee.2, PERFORMED against real bd on THIS
+// file -- previously an unverified claim inherited from the single-bead
+// file, where apra-fleet-w7ee.1 had run the mutation; the 3-bead handler
+// itself had never been mutated, so this guard was unproven rather than
+// known-falsifiable). Deleting exactly apra-fleet-66u.4's three-line
+// `for (const id of verifyIds) { await runCmd(`bd close ${id}`, tempDir); }`
+// loop from build3BeadFleetApi()'s integ-test-runner handler above (leaving
+// the canned {featuresClosed, passed:true} response, and leaving the doer
+// handler's own closes intact), then running
+// `node scripts/run-tests.mjs real test/golden-transcript-3bead.test.mjs`,
+// was OBSERVED to take the file from pass=9 fail=0 to pass=6 fail=3 in
+// 137.7s: this test's named assertion #1 failed with
+//   "Expected no false-stall abort on the mock golden 3-bead sprint's
+//    same-cycle Integ Test closure of the childful epic, got: Sprint
+//    stalled: 2 consecutive cycle(s) made no new high-water-mark progress
+//    (closed beads + verify-routed beads) ... Closed-count history:
+//    [3, 3, 3] (high-water mark on progress score: 4) ... 1 bead(s) were
+//    routed to verify this sprint but never closed -- the verifier may be
+//    failing"
+// (the [3,3,3]/high-water-4 shape is the 3-bead analogue of the
+// single-bead file's [1,1,1]/high-water-2 signature: three closed tasks
+// plus the one verify-routed epic that the mutated verifier never closes).
+// The snapshot and determinism-proof subtests aborted with the same
+// StalledSprintError. The file was then restored byte-for-byte from a
+// pre-mutation copy; no committed golden fixture was regenerated. So this
+// guard is falsifiable on the 3-bead path, not vacuous.
 // =============================================================================
 test('golden transcript (3-bead): Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
     let caught = null;
@@ -698,8 +923,25 @@ test('golden transcript (3-bead): Integ Test closing the childful epic in the sa
     );
 });
 
+// apra-fleet-j918.7.8: run1 is the MEMOIZED 'golden-3bead-main' run the
+// snapshot test above already performed (golden3BeadMainRun()) -- this file
+// used to pay for a second, byte-identically-configured full sprint run
+// purely to have a "first run" to diff against. run2 is still a genuinely
+// INDEPENDENT second execution (tag 'golden-3bead-det-2', its own tempDir,
+// its own full sprint), so this remains a real two-independent-runs
+// comparison, not a run compared against itself. See
+// golden-transcript.test.mjs's identical-purpose test for the falsification
+// record proving the comparison still fires on a real divergence.
 test('golden transcript (3-bead): two consecutive runs produce an identical snapshot (determinism proof)', async () => {
-    const run1 = await run3BeadScenario('golden-3bead-det-1');
+    const run1 = await golden3BeadMainRun();
+    // run1 may have been the FIRST sprint scenario this test process ever
+    // ran, which is when dolt-sync.mjs's per-member sync.remote/tip
+    // memoization (apra-fleet-akuv) is still cold -- see
+    // golden-transcript.test.mjs's identical reset for why this is required
+    // for an apples-to-apples comparison against run2.
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
     const run2 = await run3BeadScenario('golden-3bead-det-2');
 
     const jsonl1 = artifactsToJsonl(run1.artifacts);

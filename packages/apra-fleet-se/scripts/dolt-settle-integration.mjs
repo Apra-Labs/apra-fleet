@@ -26,6 +26,14 @@
 // scripts/ specifically so the package's `test` script -- which globs only
 // test/*.test.mjs -- can never sweep it up. Do not add it to any CI pass.
 //
+// This exclusion was re-examined and re-affirmed on 2026-09-15 (apra-fleet-
+// j918.5.3, docs/dolt-sync-redesign.md Part 6.7) specifically against the
+// data-loss risk of CI's only other coverage of settleDoltConflicts() being
+// the hand-written SQL simulator in test/dolt-settle.test.mjs. Part 6.7 also
+// records the follow-up bead (apra-fleet-j918.9) for a narrower, local-only,
+// live-dolt CI test that does not require this script's live-fleet/SSH
+// dependency.
+//
 // SANDBOX, NOT PRODUCTION (Part 6.4). Mandatory. The script manufactures
 // wedging conflicts and then runs recovery code against them, so it must never
 // touch a member's real `.beads` clone or the shared production beads remote:

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -33,7 +34,20 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // creation skipped) is unchanged; only the retry COUNT/shape changed.
 // =============================================================================
 
-test('mock sprint: a persistently failing Publish push keeps the computed verdict (pushed:false), skips gh pr create, and never reports ABORTED', { timeout: 180000 }, async () => {
+// apra-fleet-d6fq.2: base=180000 is the pre-existing standalone-calibrated
+// budget, not a guess -- apra-fleet-d6fq/apra-fleet-7kt4's real-bd carry-over
+// reports show this file's two subtests only exceed 180000ms under the
+// default 8-way concurrent suite (file elapsed 426-431s, both subtests
+// timing out at the ceiling), and apra-fleet-5ey2 records the same failure
+// family passing when its file is rerun standalone (no contention). Directly
+// confirmed: `node scripts/run-tests.mjs real test/mock-sprint-publish-push-
+// failure.test.mjs` standalone -- pass=2 fail=0, subtest durations 36329.5ms
+// and 35644.9ms, both comfortably under the 180000ms base. So the existing
+// 180000 constant already IS the right standalone budget; only the
+// concurrent case was under-provisioned. scaledTimeout() keeps it unscaled
+// at concurrency<=1 and multiplies it (3x = 540000ms) under the real
+// 8-way suite, which is what apra-fleet-d6fq.1 makes non-inert.
+test('mock sprint: a persistently failing Publish push keeps the computed verdict (pushed:false), skips gh pr create, and never reports ABORTED', { timeout: scaledTimeout(180000) }, async () => {
     await withScenarioMarkers('publishpushfails', async () => {
         const scenario = await runDevelopLoopScenario('publishpushfails', {
             members: ['local'],
@@ -91,7 +105,9 @@ test('mock sprint: a persistently failing Publish push keeps the computed verdic
     });
 });
 
-test('mock sprint: the Publish push success path is unchanged -- one push, VCSModule PR create still raised, pushed:true', { timeout: 180000 }, async () => {
+// apra-fleet-d6fq.2: same base and rationale as the sibling subtest above --
+// see that test's leading comment.
+test('mock sprint: the Publish push success path is unchanged -- one push, VCSModule PR create still raised, pushed:true', { timeout: scaledTimeout(180000) }, async () => {
     await withScenarioMarkers('publishpushok', async () => {
         const scenario = await runDevelopLoopScenario('publishpushok', {
             members: ['local'],

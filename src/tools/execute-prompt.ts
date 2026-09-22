@@ -23,6 +23,7 @@ import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
+import { hasSecretToken } from '../services/secret-token.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
 import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
@@ -38,13 +39,13 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse } from '../providers/provider.js';
+import type { ParsedResponse, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -64,6 +65,10 @@ export interface ExecutePromptStructured {
    *  'provider' (from a provider-native getUsage()) vs 'estimated' (fleet-side
    *  token-count fallback). */
   budgetUsage?: BudgetUsageBlock;
+  /** Present on a 'usage_limit' rejection (apra-fleet-hzeb.2) -- the provider's
+   *  detectUsageLimit() signal verbatim, so a caller (notably fleet-sprint) can
+   *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
+  usageLimit?: UsageLimitSignal;
   [key: string]: unknown;
 }
 
@@ -94,7 +99,7 @@ export const executePromptSchema = z.object({
     'call. NOTE: this field only covers the schema + the mutual-exclusivity guard; actual fork ' +
     'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
   ),
-  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- always drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default. Per-provider, it ALSO arms the exec-level rolling timer against this dispatch\'s stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource()).'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
@@ -161,6 +166,17 @@ ${output}`;
     : `[FAIL] Prompt failed on "${agentName}":
 ${output}`;
 }
+
+// apra-fleet-25yl.2.1: the exec-level rolling deadline used for a provider
+// whose ExecTimeoutSource is 'total_ceiling' when the caller supplied NO
+// max_total_s -- i.e. there is no ceiling to mirror. 24h: large enough that it
+// can never bind before any realistic dispatch or client-side deadline, and
+// small enough to stay inside the int32 range setTimeout accepts (Infinity or
+// MAX_SAFE_INTEGER overflow to "fire immediately", which would invert the
+// decoupling into an instant kill). The alternative -- falling back to
+// timeout_s -- is deliberately NOT taken: that is the exact coupling this
+// removes, and for these providers timeout_s belongs to the StallDetector.
+const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
@@ -274,8 +290,6 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
  * shared with member_detail (the fleet-sprint engine's only source for it).
  */
 export { knownRepoRemoteUrl };
-
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 /**
  * The sprint id this server process dispatches on behalf of, or undefined when
@@ -517,10 +531,22 @@ async function executePromptInteractive(
 }
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
-  if (SECURE_TOKEN_RE.test(input.prompt)) {
-    return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  if (hasSecretToken(input.prompt)) {
+    return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
   }
 
+  // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is
+  // derived from it. Previously `forkRequested` (below) checked
+  // input.fork.length > 0 (untrimmed) while `explicitForkId` (further down)
+  // checked input.fork.trim().length > 0 -- for a whitespace-only fork id the
+  // two disagreed (forkRequested true, explicitForkId undefined), which
+  // silently routed a caller's explicit-but-invalid fork id into the
+  // fork===true best-effort path and could hand back a plain FRESH session
+  // with no error. Both forkRequested and explicitForkId are now derived from
+  // this single normalised value, so an all-whitespace or empty string can
+  // never disagree with itself. Trimming a boolean/undefined value is a
+  // no-op -- the ternary passes it through unchanged.
+  const forkArg = typeof input.fork === 'string' ? input.fork.trim() : input.fork;
   // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4): fork branches a
   // NEW session from an existing one, resume continues IN PLACE -- the two
   // are semantically incompatible, so a call requesting both is rejected here,
@@ -531,7 +557,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // other than the schema default `true` (i.e. `false`, or an explicit
   // session-id string) -- default-true resume is left alone since fork mode
   // resolution (next task) supersedes it.
-  const forkRequested = input.fork === true || (typeof input.fork === 'string' && input.fork.length > 0);
+  // Deliberately NOT `forkArg.length > 0`: any STRING value of fork (including
+  // '' and whitespace-only, once trimmed to '') is a fork REQUEST -- just one
+  // whose explicit id turns out to be invalid (see explicitForkId below),
+  // rejected with a terminal session_not_found rather than silently treated
+  // as "no fork requested at all".
+  const forkRequested = forkArg === true || typeof forkArg === 'string';
   if (forkRequested) {
     if (input.session_id !== undefined) {
       return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
@@ -818,6 +849,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // confirmed stall settles the pending dispatch immediately and surfaces a
   // typed 'stalled' error instead of hanging.
   const stallAbortController = new AbortController();
+  // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
+  // baseline now, not merely an inactivity kill on stdout/stderr -- see the
+  // schema description on `timeout_s` above. A caller that omits timeout_s
+  // gets a 300s baseline (the schema default), a deliberate change from the
+  // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
+  const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -828,6 +865,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    thresholdMs: stallThresholdMs,
     onStall: () => {
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
@@ -909,9 +947,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
   // request forces resuming off so the dispatch mints a fresh distinct output
   // session id instead of continuing the stored one in place.
-  const explicitForkId = (typeof input.fork === 'string' && input.fork.trim().length > 0)
-    ? input.fork.trim()
-    : undefined;
+  // apra-fleet-3swo.42: derived from the SAME normalised forkArg the top-of-
+  // function mutual-exclusivity guard computed forkRequested from (no second,
+  // independently-trimmed copy of the rule). Deliberately NOT gated on
+  // `.length > 0`: an explicit fork string that trims to '' (fork: '' or
+  // fork: '   ') must still be an EXPLICIT id -- just an invalid one -- so it
+  // takes the explicit-id branch below (terminal session_not_found, no LLM
+  // call) instead of being mistaken for the fork===true best-effort path.
+  const explicitForkId = typeof forkArg === 'string' ? forkArg : undefined;
   // forkRequested is already computed at the top of executePrompt for the
   // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
   const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
@@ -1056,6 +1099,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
+    thresholdMs: stallThresholdMs,
   });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
@@ -1086,8 +1130,32 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
   const dispatchStartedAt = Date.now();
 
-  const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+  // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
+  // strategy.execCommand() is no longer provider-blind. It used to be
+  // `timeout_s` for everyone, which is a false kill for the batch-only
+  // providers (they emit nothing on this channel until the turn ends) and the
+  // only working stall signal for the providers with no pollable transcript.
+  // The per-provider answer lives in ONE named place -- ProviderAdapter
+  // .execTimeoutSource() -- so a newly added provider must state its own
+  // (a compile error if it does not) instead of inheriting a default branch.
+  //
+  // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
+  // EVERY provider (see stallThresholdMs above). This decision governs the
+  // exec-channel timer only; it must not be used to skip that threading.
+  const execTimeoutSource = provider.execTimeoutSource();
+  const timeoutMs = execTimeoutSource === 'inactivity_timeout'
+    ? (input.timeout_s ?? 300) * 1000
+    // 'total_ceiling': mirror max_total_s, which can never bind before the
+    // caller's own hard ceiling does (a rolling inactivity window of
+    // max_total_s starts at dispatch start and only ever resets later).
+    // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
+    // never-binds-first constant rather than silently falling back to
+    // timeout_s (which is exactly the coupling this change removes). It is
+    // deliberately a finite value well inside the int32 range setTimeout
+    // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
+    // on the next tick, inverting this fix into an instant kill.
+    : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
 
   // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
   // server-overloaded) re-dispatches with a FRESH session but used to reuse the
@@ -1241,6 +1309,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: mintedId,
         logFilePath: logPath,
         provisional: !logPath,
+        thresholdMs: stallThresholdMs,
       });
     }
   };
@@ -1272,6 +1341,41 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
   // repeat trust failure after the heal is terminal, never looped.
   let trustHealAttempted = false;
+  // apra-fleet-hzeb.2: a provider usage/quota limit (e.g. Claude's 429) can
+  // never be cured by a fresh session, so it must short-circuit the
+  // stale-session and server-overloaded retries below rather than burning the
+  // shared retryBudget() waiting out a window that is already known. Checked
+  // immediately after EVERY provider.parseResponse(result) call in the
+  // dispatch path (initial dispatch, stale-session retry, overloaded retry,
+  // orphan recovery, trust-heal retry) -- and regardless of result.code,
+  // since a 0-exit result event whose text carries the limit message must not
+  // be returned as a success response either.
+  const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
+    const signal = provider.detectUsageLimit(r, p);
+    if (!signal) return null;
+    // Accurate finally-block exit logging (scope.fail, not scope.abort) even
+    // when this fires on the very first parse, before the shared
+    // `_epExitCode = result.code` assignment below would otherwise run.
+    _epExitCode = r.code;
+    scope.info(`usage limit detected -- resumes ~${signal.resumeAt} (${signal.resumeAtSource})`);
+    // Session bookkeeping mirrors the max_turns path: record/touch the
+    // session id when present so fleet-sprint can resume the SAME session
+    // after the pause instead of starting a fresh one that has lost context.
+    if (p.sessionId) {
+      recordKnownSession(agent.id, p.sessionId);
+      touchAgent(agent.id, p.sessionId);
+    }
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" hit a provider usage limit (resumes ~${signal.resumeAt}, ${signal.resumeAtSource}): ${signal.message}`,
+      structuredContent: {
+        isError: true,
+        reason: 'usage_limit',
+        usageLimit: signal,
+        ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+        ...(p.usage ? { usage: { input_tokens: p.usage.input_tokens, output_tokens: p.usage.output_tokens, total_tokens: p.usage.input_tokens + p.usage.output_tokens } } : {}),
+      },
+    };
+  };
   try {
     let result;
     try {
@@ -1311,6 +1415,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
+    {
+      const usageLimitResult = checkUsageLimit(result, parsed);
+      if (usageLimitResult) return usageLimitResult;
+    }
 
     // apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions
     // (project-scoped allow entries silently dropped) without killing the CLI process --
@@ -1350,6 +1458,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
         if (parsed.usage) _epUsage = parsed.usage;
+        const usageLimitResult = checkUsageLimit(result, parsed);
+        if (usageLimitResult) return usageLimitResult;
       }
     }
 
@@ -1369,6 +1479,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
         if (parsed.usage) _epUsage = parsed.usage;
+        const usageLimitResult = checkUsageLimit(result, parsed);
+        if (usageLimitResult) return usageLimitResult;
       }
     }
 
@@ -1463,11 +1575,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (recovery.status === 'recovered' && recovery.stdout) {
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
-        const recoveredParsed = provider.parseResponse({ stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 });
+        const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
+        const recoveredParsed = provider.parseResponse(recoveredResult);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
           if (parsed.usage) _epUsage = parsed.usage;
+          const usageLimitResult = checkUsageLimit(recoveredResult, recoveredParsed);
+          if (usageLimitResult) return usageLimitResult;
         }
       }
 
@@ -1498,6 +1613,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
           parsed = provider.parseResponse(result);
           if (parsed.usage) _epUsage = parsed.usage;
+          const usageLimitResult = checkUsageLimit(result, parsed);
+          if (usageLimitResult) return usageLimitResult;
         }
       }
 
@@ -1577,6 +1694,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: finalSid,
         logFilePath: postLogPath,
         provisional: !postLogPath,
+        thresholdMs: stallThresholdMs,
       });
     }
     clearStoredPid(agent.id);

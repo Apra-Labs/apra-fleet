@@ -28,20 +28,33 @@ const TOOL_TIMEOUT_GRACE_MS = 60_000;
 // comfortably above the largest real case that motivated the feature
 // (900_000ms + grace = 960_000ms). Override with STALL_MAX_THRESHOLD_MS.
 const MAX_STALL_THRESHOLD_MS = 1_800_000;
+// apra-fleet-25yl.3: ceiling for the per-entry ADAPTIVE PROBE cadence (see
+// the gate in _poll()). Without a ceiling, the 9000s production default
+// threshold yields a 30-minute probe gap and a busy status up to 30 minutes
+// stale. This bounds ONLY the live probe interval -- the shared setInterval
+// loop's own cadence is unchanged by this feature.
+const MAX_STALL_PROBE_INTERVAL_MS = 300_000;
 
 /**
- * Clamp the per-tick stall threshold into [baselineMs, MAX_STALL_THRESHOLD_MS].
+ * Resolve the per-tick effective stall threshold.
+ *
+ * `baselineMs` is orchestrator-authored (timeout_s / the generic
+ * STALL_THRESHOLD_MS default) and is TRUSTED: it must never be capped by
+ * MAX_STALL_THRESHOLD_MS, however large it is configured.
  *
  * A pending tool_use's own declared `input.timeout` is a useful hint that a
- * long-running call is legitimately in flight, but it is model-authored and
+ * long-running call is legitimately in flight, but it is model-authored --
+ * read straight out of the transcript's own tool_use.input.timeout -- and
  * must not be trusted as a raw control parameter:
  *
  *  - FLOOR: a small (or seconds-denominated -- `timeout: 30`) value would
- *    otherwise push the effective threshold BELOW the generic baseline and
+ *    otherwise push the effective threshold BELOW the trusted baseline and
  *    make the watchdog fire earlier than it does with no declaration at all.
  *    The floor also neutralizes the seconds-vs-milliseconds unit ambiguity in
  *    `extractPendingToolTimeoutMs`.
  *  - CEILING: an enormous value would otherwise disable detection entirely.
+ *    The ceiling bounds ONLY the untrusted pending-tool-timeout contribution,
+ *    never the trusted baseline.
  *
  * Non-finite / NaN / negative / null / undefined inputs all degrade to the
  * baseline, which is the safe answer for an uninterpretable declaration.
@@ -53,18 +66,46 @@ export function computeEffectiveThresholdMs(
   const maxMs = parseInt(process.env['STALL_MAX_THRESHOLD_MS'] ?? String(MAX_STALL_THRESHOLD_MS));
   const ceilingMs = Number.isFinite(maxMs) ? maxMs : MAX_STALL_THRESHOLD_MS;
   const base = Number.isFinite(baselineMs) ? baselineMs : DEFAULT_STALL_THRESHOLD_MS;
-  // No usable declaration -> the generic baseline stands untouched. (Note this
-  // is deliberately NOT `(pendingToolTimeoutMs ?? 0) + GRACE`: that form would
-  // silently raise the threshold to the grace period alone whenever the
-  // baseline is configured below it, changing behavior for the very common
-  // "no declared timeout" case.)
+  // No usable declaration -> the trusted baseline stands untouched, uncapped.
+  // (Note this is deliberately NOT `(pendingToolTimeoutMs ?? 0) + GRACE`: that
+  // form would silently raise the threshold to the grace period alone
+  // whenever the baseline is configured below it, changing behavior for the
+  // very common "no declared timeout" case.)
   if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) {
-    return Math.min(base, ceilingMs);
+    return base;
   }
-  return Math.min(Math.max(base, pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS), ceilingMs);
+  // The untrusted pending-tool-timeout contribution is clamped into
+  // [0, ceilingMs] BEFORE competing against the trusted baseline, so the
+  // ceiling can never suppress a baseline that legitimately sits at or above
+  // it.
+  return Math.max(base, Math.min(pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS, ceilingMs));
 }
 
-/** Which clamp (if any) was applied, for observability in the stall_detected log. */
+/**
+ * Which clamp (if any) actually determined the effective threshold, for
+ * observability in the stall_detected log.
+ *
+ * Mirrors computeEffectiveThresholdMs's shape --
+ * effective = max(base, min(raw, ceiling)) -- so it must report which term of
+ * that max() won, not merely compare the final result against the raw
+ * (uncapped) pending contribution. Comparing against raw alone is what made
+ * the pre-fix version lie: once the trusted baseline can exceed the ceiling,
+ * `effective < raw` no longer implies the ceiling determined the result --
+ * the baseline can still be the one that won, even though the ceiling
+ * capped the untrusted contribution internally along the way.
+ *
+ *  - 'floor': the trusted baseline is >= the (possibly ceiling-capped)
+ *    pending contribution, so the baseline determined effectiveThresholdMs.
+ *    This holds even at the knife-edge where the baseline happens to equal
+ *    the raw (uncapped) pending value -- the ceiling still capped the
+ *    pending contribution internally; it merely didn't end up mattering.
+ *  - 'ceiling': the ceiling genuinely capped the pending contribution
+ *    (min(raw, ceiling) < raw) AND that capped value still exceeds the
+ *    baseline, so the ceiling determined effectiveThresholdMs.
+ *  - null: no usable declaration, or the pending contribution passed
+ *    through unclamped and still exceeded the baseline (effective === raw)
+ *    -- neither clamp changed the outcome.
+ */
 export function describeClamp(
   baselineMs: number,
   pendingToolTimeoutMs: number | null | undefined,
@@ -72,9 +113,13 @@ export function describeClamp(
 ): 'floor' | 'ceiling' | null {
   // No usable declaration -> the baseline was used as-is; nothing was clamped.
   if (typeof pendingToolTimeoutMs !== 'number' || !Number.isFinite(pendingToolTimeoutMs)) return null;
+  const maxMs = parseInt(process.env['STALL_MAX_THRESHOLD_MS'] ?? String(MAX_STALL_THRESHOLD_MS));
+  const ceilingMs = Number.isFinite(maxMs) ? maxMs : MAX_STALL_THRESHOLD_MS;
+  const base = Number.isFinite(baselineMs) ? baselineMs : DEFAULT_STALL_THRESHOLD_MS;
   const raw = pendingToolTimeoutMs + TOOL_TIMEOUT_GRACE_MS;
-  if (effectiveThresholdMs < raw) return 'ceiling';
-  if (effectiveThresholdMs > raw) return 'floor';
+  const cappedPending = Math.min(raw, ceilingMs);
+  if (base >= cappedPending) return 'floor';
+  if (cappedPending < raw) return 'ceiling';
   return null;
 }
 
@@ -87,6 +132,23 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  /**
+   * apra-fleet-25yl.1: per-dispatch trusted baseline threshold (typically
+   * derived from the orchestrator's own timeout_s), overriding the
+   * process-wide STALL_THRESHOLD_MS default for this entry only. When unset,
+   * falls back to the env/default baseline -- behaviour for callers that set
+   * nothing is unchanged.
+   */
+  thresholdMs?: number;
+  /**
+   * apra-fleet-25yl.3: wall-clock time (Date.now()) of the last tick on
+   * which a LIVE probe (pollLogFile / pollDirectoryActivity) was actually
+   * issued for this entry, as opposed to a tick that was gated out by the
+   * adaptive cadence check in _poll(). `undefined` means "never probed
+   * yet" -- the gate always treats that as due, so a freshly added entry is
+   * probed on its very first tick regardless of its threshold.
+   */
+  lastPolledAt?: number;
   /** A genuine stall has been detected AND reported/killed -- suppresses
    *  re-reporting and re-killing. Reset when activity resumes. */
   stallReported: boolean;
@@ -107,6 +169,9 @@ export interface StallEntry {
 export class StallDetector {
   readonly stallCheckList: Map<string, StallEntry> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
+  // apra-fleet-25yl.6: latches the malformed-STALL_THRESHOLD_MS warning so a
+  // sustained typo logs once, not once per tick for the life of the process.
+  private malformedStallThresholdEnvWarned = false;
 
   add(memberId: string, entry: StallEntry): void {
     if (this.stallCheckList.has(memberId)) {
@@ -164,9 +229,98 @@ export class StallDetector {
     }));
 
     const now = Date.now();
-    const stallThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    // apra-fleet-25yl.1: env/default baseline is now only the FALLBACK for
+    // entries that carry no per-dispatch thresholdMs of their own -- resolved
+    // per entry below, not once per tick.
+    //
+    // apra-fleet-25yl.6: guarded exactly like tickIntervalMs below -- a
+    // non-numeric STALL_THRESHOLD_MS must not silently become NaN. An
+    // unguarded NaN here makes every entry without its own thresholdMs
+    // resolve a NaN probeIntervalMs, which makes the adaptive-cadence gate's
+    // `>= probeIntervalMs` comparison false forever: the entry is probed once
+    // (on its first, lastPolledAt===undefined tick) and never again, silently
+    // disabling stall detection for it for the life of the process.
+    const parsedFallbackThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+    if (!Number.isFinite(parsedFallbackThresholdMs) && !this.malformedStallThresholdEnvWarned) {
+      this.malformedStallThresholdEnvWarned = true;
+      logWarn('stall_threshold_env_invalid', JSON.stringify({
+        value: process.env['STALL_THRESHOLD_MS'],
+        note: 'STALL_THRESHOLD_MS is not a valid number; falling back to the default stall threshold for entries with no per-dispatch thresholdMs.',
+      }));
+    }
+    const fallbackThresholdMs = Number.isFinite(parsedFallbackThresholdMs)
+      ? parsedFallbackThresholdMs
+      : DEFAULT_STALL_THRESHOLD_MS;
+    // apra-fleet-25yl.3 AMENDMENT: the adaptive probe cadence's FLOOR is the
+    // loop's own tick interval -- the same resolved value start()'s
+    // setInterval uses (STALL_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS) --
+    // not an independent constant. A separate, smaller floor would make
+    // short-threshold entries poll MORE often than today's fixed cadence,
+    // the opposite of this feature's goal. Resolved once per tick, mirroring
+    // the other STALL_* env overrides above, so an env override of the tick
+    // interval moves the floor with it.
+    const parsedTickIntervalMs = parseInt(process.env['STALL_POLL_INTERVAL_MS'] ?? String(DEFAULT_POLL_INTERVAL_MS));
+    const tickIntervalMs = Number.isFinite(parsedTickIntervalMs) ? parsedTickIntervalMs : DEFAULT_POLL_INTERVAL_MS;
+
+    // apra-fleet-25yl.3.3: counters for observability: track per-entry probe
+    // intervals and whether each entry's probe was issued or skipped by the
+    // adaptive cadence gate. These are emitted once per tick at scope.ok().
+    let probesIssued = 0;
+    let probesSkipped = 0;
+    const entryProbeIntervals: Array<{ memberName: string; probeIntervalMs: number }> = [];
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
+      const stallThresholdMs = entry.thresholdMs ?? fallbackThresholdMs;
+
+      // apra-fleet-25yl.3: adaptive per-entry probe cadence. An entry with a
+      // large effective threshold (e.g. a long timeout_s dispatch) does not
+      // need a LIVE probe on every tick; gate the live probe call itself
+      // (pollLogFile / pollDirectoryActivity, issued just below in each
+      // branch) on clamp(tickIntervalMs, stallThresholdMs/5, 300_000ms):
+      // never less often than the loop's own tick (the floor), and never
+      // more than 5 minutes apart even for the largest trusted threshold
+      // (the ceiling). This gates ONLY the live probe -- the shared
+      // setInterval loop and its cadence/unref behaviour are untouched. A
+      // skipped tick is simply not evidence in either direction: it must
+      // never increment consecutiveIdleCycles/consecutiveReadFailures, and
+      // must never itself be read as activity or as a stall. Detection stays
+      // bounded to roughly one probe interval past the entry's threshold
+      // because the stall check further down only runs on ticks that DO
+      // probe -- it is never evaluated against stale data on a skipped tick.
+      //
+      // apra-fleet-25yl.4: the floor (tickIntervalMs) MUST win over the
+      // ceiling (MAX_STALL_PROBE_INTERVAL_MS) -- the invariant that the probe
+      // interval never falls below the loop's own tick interval is
+      // non-negotiable, since a value below it would make the gate fire on
+      // every tick, defeating the point of the cadence. Clamping
+      // stallThresholdMs/5 to the ceiling FIRST, then flooring the result at
+      // tickIntervalMs, gives exactly that precedence: when
+      // STALL_POLL_INTERVAL_MS is overridden above the 300_000ms ceiling, the
+      // tick interval still wins. (The old min(ceiling, max(tick, s/5)) order
+      // let the ceiling win instead, yielding a probe interval BELOW the tick
+      // interval whenever the tick interval itself exceeded the ceiling.)
+      // Behaviourally identical to the old formula whenever tickIntervalMs
+      // <= MAX_STALL_PROBE_INTERVAL_MS (the normal case).
+      const probeIntervalMs = Math.max(
+        tickIntervalMs,
+        Math.min(MAX_STALL_PROBE_INTERVAL_MS, stallThresholdMs / 5),
+      );
+      // apra-fleet-25yl.3.3: track probe intervals for observability.
+      entryProbeIntervals.push({ memberName: entry.memberName, probeIntervalMs });
+
+      const dueForProbe = entry.lastPolledAt === undefined || (now - entry.lastPolledAt) >= probeIntervalMs;
+      if (!dueForProbe) {
+        // apra-fleet-25yl.3.3: count this probe as skipped by the adaptive gate.
+        probesSkipped++;
+        if (!entry.stallReported) {
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
+        }
+        continue;
+      }
+      // apra-fleet-25yl.3.3: count this probe as issued.
+      probesIssued++;
+      entry.lastPolledAt = now;
+
       if (entry.provisional) {
         // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
         let signalAvailable = true;
@@ -231,7 +385,8 @@ export class StallDetector {
         // the non-provisional path: a pending tool_use's own declared
         // timeout, when present, replaces the generic baseline threshold for
         // this tick's stall check.
-        // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+        // Uncapped trusted floor, untrusted contribution capped into
+        // [0, ceiling] -- see computeEffectiveThresholdMs.
         const provisionalEffectiveThresholdMs = computeEffectiveThresholdMs(
           stallThresholdMs,
           provisionalPendingToolTimeoutMs,
@@ -274,7 +429,8 @@ export class StallDetector {
       // it is a hard, model-declared budget for a call already known to be
       // long-running (900000ms in one confirmed stall, 600000ms in another),
       // and the fleet watchdog must not fire before that budget elapses.
-      // Clamped into [baseline, ceiling] -- see computeEffectiveThresholdMs.
+      // Uncapped trusted floor, untrusted contribution capped into
+      // [0, ceiling] -- see computeEffectiveThresholdMs.
       const effectiveThresholdMs = computeEffectiveThresholdMs(stallThresholdMs, pendingToolTimeoutMs);
 
       if (error) {
@@ -367,6 +523,15 @@ export class StallDetector {
         writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
       }
     }
+
+    // apra-fleet-25yl.3.3: emit tick-level summary with probe counts and
+    // per-entry probe intervals. This single-line close at scope.ok() keeps
+    // log volume constant (one line per tick, not per entry).
+    scope.ok(JSON.stringify({
+      probesIssued,
+      probesSkipped,
+      entryProbeIntervals,
+    }));
   }
 }
 

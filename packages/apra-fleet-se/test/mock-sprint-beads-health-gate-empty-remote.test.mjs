@@ -13,6 +13,7 @@ import {
     withScenarioMarkers,
 } from './helpers/mock-sprint-harness.mjs';
 import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
@@ -93,9 +94,16 @@ function buildEmptyRemoteGateFleetApi(tempDir, epicBead, dispatched, commandLog,
     };
 }
 
+// scaledTimeout() budgets these against APRA_FLEET_TEST_CONCURRENCY (see
+// scripts/run-tests.mjs / test/helpers/scaled-timeout.mjs): both scenarios
+// below drive a full engine.executeFile(runner.js, ...) run whose wall-clock
+// cost is sensitive to CPU/IO contention from sibling test files under the
+// default 8-way concurrent suite, even though neither issues a real `bd`
+// spawn (apra-fleet-bkax.2).
 test(
     'apra-fleet-eft.63.2: preflight D-pull against an empty never-pushed Dolt remote (Error 1105 "no branches found") ' +
     'is a no-op success and the sprint reaches Planning and completes',
+    { timeout: scaledTimeout(60000) },
     async () => {
         await withScenarioMarkers('emptyremotegate', async () => {
             const { tempDir, epicBead } = await setup('emptyremotegate');
@@ -193,6 +201,7 @@ function buildDivergedGateFleetApi(tempDir, epicBead, dispatched, commandLog, op
 test(
     'apra-fleet-eft.63.2 NEGATIVE CASE: a genuine divergence/conflict D-pull failure still aborts the sprint ' +
     'BEFORE Planning (not swallowed by the new empty-remote no-op)',
+    { timeout: scaledTimeout(60000) },
     async () => {
         await withScenarioMarkers('emptyremotegateneg', async () => {
             const { tempDir, epicBead } = await setupMinimal('emptyremotegateneg', [

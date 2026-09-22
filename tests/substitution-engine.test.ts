@@ -208,16 +208,16 @@ describe('applySubstitutions -- values never appear in errors (j)', () => {
 // ---- secrets boundary tests (k-o) ----
 
 describe('validateSubstitutionKeys -- secrets boundary (k, l)', () => {
-  it('(k) rejects key matching secure.* pattern', () => {
-    const result = validateSubstitutionKeys('send_files', { 'secure.github_pat': 'value' });
+  it('(k) rejects key matching secret.* pattern', () => {
+    const result = validateSubstitutionKeys('send_files', { 'secret.github_pat': 'value' });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain('send_files: invalid substitutions');
-    expect(result.error).toContain('secure.github_pat');
+    expect(result.error).toContain('secret.github_pat');
     expect(result.error).toContain('execute_command');
   });
 
-  it('(l) rejects key containing a dot that is not secure.*', () => {
+  it('(l) rejects key containing a dot that is not secret.*', () => {
     const result = validateSubstitutionKeys('execute_prompt', { 'some.thing': 'x' });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -232,10 +232,10 @@ describe('validateSubstitutionKeys -- secrets boundary (k, l)', () => {
   });
 
   it('(l) rejects key with colon', () => {
-    const result = validateSubstitutionKeys('send_files', { 'secure:token': 'x' });
+    const result = validateSubstitutionKeys('send_files', { 'secret:token': 'x' });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('secure:token');
+    expect(result.error).toContain('secret:token');
   });
 
   it('(l) rejects key with whitespace', () => {
@@ -245,13 +245,13 @@ describe('validateSubstitutionKeys -- secrets boundary (k, l)', () => {
 
   it('(k+l) accepts multiple bad keys and lists them all', () => {
     const result = validateSubstitutionKeys('send_files', {
-      'secure.github_pat': 'v1',
+      'secret.github_pat': 'v1',
       'branch-name': 'v2',
       valid_key: 'v3',
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('secure.github_pat');
+    expect(result.error).toContain('secret.github_pat');
     expect(result.error).toContain('branch-name');
     expect(result.error).not.toContain('valid_key');
     // values must never appear in errors
@@ -264,9 +264,9 @@ describe('validateSubstitutionKeys -- secrets boundary (k, l)', () => {
   });
 });
 
-describe('applySubstitutions -- {{secure.NAME}} content pass-through (m)', () => {
-  it('(m) {{secure.NAME}} in content is not treated as a substitution token', () => {
-    const content = 'run with {{secure.github_pat}} and {{branch}}';
+describe('applySubstitutions -- {{secret.NAME}} content pass-through (m)', () => {
+  it('(m) {{secret.NAME}} in content is not treated as a substitution token', () => {
+    const content = 'run with {{secret.github_pat}} and {{branch}}';
     const result = applySubstitutions(
       'send_files',
       [{ label: 'cmd.md', content }],
@@ -274,29 +274,29 @@ describe('applySubstitutions -- {{secure.NAME}} content pass-through (m)', () =>
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // {{branch}} substituted, {{secure.github_pat}} passes through verbatim
-    expect(result.outputs[0]).toBe('run with {{secure.github_pat}} and feat/x');
+    // {{branch}} substituted, {{secret.github_pat}} passes through verbatim
+    expect(result.outputs[0]).toBe('run with {{secret.github_pat}} and feat/x');
   });
 
-  it('(m) {{secure.NAME}} does NOT appear in unresolved tokens list', () => {
+  it('(m) {{secret.NAME}} does NOT appear in unresolved tokens list', () => {
     const result = applySubstitutions(
       'send_files',
-      [{ label: 'cmd.md', content: '{{secure.token}} {{real_token}}' }],
-      {}, // real_token missing, but secure.token must not appear as missing
+      [{ label: 'cmd.md', content: '{{secret.token}} {{real_token}}' }],
+      {}, // real_token missing, but secret.token must not appear as missing
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     // real_token is missing
     expect(result.error).toContain('real_token');
-    // secure.token is NOT a valid substitution token -- must not appear as unresolved
-    expect(result.error).not.toContain('secure.token');
-    expect(result.error).not.toContain('secure');
+    // secret.token is NOT a valid substitution token -- must not appear as unresolved
+    expect(result.error).not.toContain('secret.token');
+    expect(result.error).not.toContain('secret');
   });
 
-  it('(m) {{secure.NAME}} does NOT trigger the heuristic warning', () => {
+  it('(m) {{secret.NAME}} does NOT trigger the heuristic warning', () => {
     const result = applySubstitutions(
       'execute_prompt',
-      [{ label: 'prompt', content: 'use {{secure.github_pat}} in execute_command' }],
+      [{ label: 'prompt', content: 'use {{secret.github_pat}} in execute_command' }],
       undefined,
     );
     expect(result.ok).toBe(true);
@@ -307,16 +307,16 @@ describe('applySubstitutions -- {{secure.NAME}} content pass-through (m)', () =>
 });
 
 describe('applySubstitutions -- value pass-through in substitution values (n)', () => {
-  it('(n) {{secure.NAME}} syntax inside a substitution value is written verbatim, not re-interpreted', () => {
+  it('(n) {{secret.NAME}} syntax inside a substitution value is written verbatim, not re-interpreted', () => {
     const result = applySubstitutions(
       'execute_prompt',
       [{ label: 'prompt', content: '{{branch}}' }],
-      { branch: '{{secure.github_pat}}' }, // value happens to contain secure syntax
+      { branch: '{{secret.github_pat}}' }, // value happens to contain secret syntax
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // No recursive substitution: the value is written as-is
-    expect(result.outputs[0]).toBe('{{secure.github_pat}}');
+    expect(result.outputs[0]).toBe('{{secret.github_pat}}');
   });
 });
 
@@ -327,7 +327,7 @@ describe('validateSubstitutionKeys -- rejection before content read (o)', () => 
     const result = applySubstitutions(
       'send_files',
       [{ label: 'f.md', content: '{{branch}}' }],
-      { 'secure.github_pat': 'x', branch: 'feat' }, // bad key present
+      { 'secret.github_pat': 'x', branch: 'feat' }, // bad key present
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;

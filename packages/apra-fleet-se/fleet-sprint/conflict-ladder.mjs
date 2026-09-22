@@ -172,6 +172,14 @@ export async function dispatchConflictResolutionAgent({ agent, member, branch, u
         member_name: member,
         label: `Tier 2 conflict resolution [${unmergedPaths.join(', ')}]`,
         model,
+        // EXPLICITLY a fresh session. The runbook above is entirely
+        // self-contained (it names the member, the branch and every
+        // conflicted path), and the member's stored last session is whatever
+        // role dispatch happened to run there -- resuming it would drop a git
+        // conflict-resolution instruction into an unrelated conversation.
+        // Never rely on an omitted `resume`: execute_prompt defaults it to
+        // true, i.e. best-effort reattachment to exactly that stale session.
+        resume: false,
         timeout_s: 1800,
         max_total_s: 1800,
     });

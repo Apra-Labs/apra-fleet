@@ -184,7 +184,7 @@ describe('provisionAuth — API key per provider', () => {
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
       const provider = providers.getProvider(llmProvider);
-      const result = await provisionAuth({ member_id: member.id, api_key: llmProvider === 'claude' ? 'sk-ant-12345' : 'test-key-12345' });
+      const { text: result } = await provisionAuth({ member_id: member.id, api_key: llmProvider === 'claude' ? 'sk-ant-12345' : 'test-key-12345' });
 
       expect(result).toContain('API key provisioned');
 
@@ -200,7 +200,7 @@ describe('provisionAuth — API key per provider', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id, api_key: 'cl-code-12345' });
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: 'cl-code-12345' });
     expect(result).toContain('API key provisioned');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
@@ -216,7 +216,7 @@ describe('provisionAuth — API key per provider', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(mockCollectOobApiKey).toHaveBeenCalledWith('copilot-oauth', 'provision_llm_auth', expect.objectContaining({ prompt: expect.stringContaining('copilot') }));
     expect(result).toContain('Could not open terminal');
 

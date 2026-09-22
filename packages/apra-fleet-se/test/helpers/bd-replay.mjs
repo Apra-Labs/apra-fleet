@@ -114,6 +114,37 @@ const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
 // dedupes concurrent probes from parallel doer streaks).
 const isStableConfigProbe = (cmd) => /^\s*bd\s+config\s+get\s+sync\.remote\b/.test(cmd);
 
+// The beads identity precondition (fleet-sprint/beads-identity-check.mjs)
+// asks every member `bd where --json` before the first mutating bd command.
+// Like the D-pull/D-push brackets it is pure infrastructure: in this
+// single-clone harness the answer is a function of the scenario's tempDir
+// and nothing else, so the mocked (replay/record) modes synthesize it from
+// cwd instead of requiring (or drifting) a recorded response. Real mode runs
+// the real `bd where`, cached per clone like the sync.remote probe.
+const isBdWhereCommand = (cmd) => /^\s*bd\s+where(\s+--json)?\s*$/.test(cmd);
+
+export function synthesizeBdWhere(cmd, cwd) {
+    const beadsDir = path.join(cwd, '.beads');
+    if (/--json/.test(cmd)) {
+        const body = {
+            database_path: path.join(beadsDir, 'dolt'),
+            path: beadsDir,
+            prefix: 'mock',
+            schema_version: 1,
+        };
+        return { err: null, stdout: JSON.stringify(body, null, 2) + '\n', stderr: '' };
+    }
+    return { err: null, stdout: `${beadsDir}\n  prefix: mock\n`, stderr: '' };
+}
+
+// The same precondition also issues `bd config get sync.remote --json` once
+// per member. Every committed recording answers that command with an unset
+// value (a scratch `bd init` clone has no sync remote), so replay mode
+// synthesizes that identical answer instead of consuming one recorded entry
+// per member -- which would otherwise exhaust the FIFO ahead of the
+// D-pull/D-push brackets' own reads and read as recording drift.
+const SYNC_REMOTE_UNSET_STDOUT = '{\n  "key": "sync.remote",\n  "location": "config.yaml",\n  "schema_version": 1,\n  "value": ""\n}\n';
+
 // apra-fleet-eft.56.1: commands that pass reviewer-authored free text via a
 // local temp file (`bd create --body-file "<path>"`, `bd note <id> --file
 // "<path>"` -- see writeCommandBodyTempFile()/appendRejectedFindingToParentNotes()
@@ -659,7 +690,7 @@ export function runCmd(cmd, cwd) {
         // Hydrate each fixture's dolt clone once, then serve repeat D-pull/
         // D-push brackets -- and the stable sync.remote pre-gate probe every
         // bracket consults -- from cache (see realDoltSyncCached above).
-        if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd)) return realDoltSyncCached(cmd, cwd);
+        if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd) || isBdWhereCommand(cmd)) return realDoltSyncCached(cmd, cwd);
         // Serve a bare `bd init` from the shared template instead of
         // re-running bd's own bootstrap (see realBdInitTemplated above).
         if (isBdInitCommand(cmd)) return realBdInitTemplated(cwd);
@@ -673,6 +704,11 @@ export function runCmd(cmd, cwd) {
     // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
     // synthesize a clean success WITHOUT recording or requiring a recording.
     if (isDoltSyncCommand(cmd)) return Promise.resolve({ err: null, stdout: '', stderr: '' });
+    // The beads identity probes (see synthesizeBdWhere above): `bd where` is
+    // synthesized in both mocked modes; the sync.remote probe only in replay
+    // (record mode captures the real answer, exactly as it always did).
+    if (isBdWhereCommand(cmd)) return Promise.resolve(synthesizeBdWhere(cmd, cwd));
     if (mode === 'record') return recordBd(cmd, cwd);
+    if (isStableConfigProbe(cmd)) return Promise.resolve({ err: null, stdout: SYNC_REMOTE_UNSET_STDOUT, stderr: '' });
     return replayBd(cmd, cwd);
 }

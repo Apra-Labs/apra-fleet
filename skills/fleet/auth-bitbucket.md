@@ -49,8 +49,8 @@ credential_store_set  name=bitbucket_token
 **Use it in a command on a member:**
 
 ```
-execute_command  command="curl -sf -u me@example.com:{{secure.bitbucket_token}} https://api.bitbucket.org/2.0/user"
-execute_command  command="git remote set-url origin https://me@example.com:{{secure.bitbucket_token}}@bitbucket.org/workspace/repo.git"
+execute_command  command="curl -sf -u me@example.com:{{secret.bitbucket_token}} https://api.bitbucket.org/2.0/user"
+execute_command  command="git remote set-url origin https://me@example.com:{{secret.bitbucket_token}}@bitbucket.org/workspace/repo.git"
 ```
 
 The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_token]`) - it never appears in the LLM conversation or command logs.

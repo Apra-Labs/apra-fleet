@@ -301,9 +301,29 @@ function parseRepoRef(remoteUrl) {
  *  default is used. */
 const DEFAULT_PAT_SECRET = 'azdevops_pat';
 
-/** The canonical remote shape parseRepoRef() expects, quoted into every
- *  operator-facing remedy this module produces (see `repoRefHint` below). */
-const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO';
+/** The remote shapes parseRepoRef() expects, quoted into every
+ *  operator-facing remedy this module produces (see `repoRefHint` below):
+ *  the modern host an operator copies out of the "Clone" dialog and the
+ *  legacy per-org host older projects still live on. */
+const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO or https://ORG.visualstudio.com/[DefaultCollection/]PROJECT/_git/REPO';
+
+/** Classify a remote URL parseRepoRef() accepts by the HOST it lands on:
+ *  which transport git will use (a PAT only applies to https; ssh uses the
+ *  member's key) and whether it is the legacy `<org>.visualstudio.com` host,
+ *  which needs the credential bound to that host rather than dev.azure.com.
+ *  Returns null for anything parseRepoRef() rejects. */
+function classifyRemote(remoteUrl) {
+    if (typeof remoteUrl !== 'string' || !remoteUrl.trim()) return null;
+    const split = splitRemote(remoteUrl.trim());
+    if (!split || !matchesHost(split.host)) return null;
+    const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(remoteUrl.trim())
+        ? remoteUrl.trim().replace(/:\/\/.*$/, '').toLowerCase()
+        : 'ssh';
+    const transport = scheme === 'ssh' ? 'ssh' : 'https';
+    const legacy = /visualstudio\.com$/i.test(split.host);
+    const sshHost = /^(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com)$/i.test(split.host);
+    return { host: split.host, transport, legacy, legacyHttpsHost: legacy && !sshHost && transport === 'https' };
+}
 
 /**
  * Build the provision_vcs_auth argument object for an Azure DevOps member
@@ -316,7 +336,7 @@ const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO';
  * meaningless. Expressing that as a descriptor hook keeps the difference in
  * this file instead of adding a provider branch to the shared caller.
  *
- * SECRET TRANSPORT: the PAT is passed as a `{{secure.NAME}}` PLACEHOLDER, never
+ * SECRET TRANSPORT: the PAT is passed as a `{{secret.NAME}}` PLACEHOLDER, never
  * a value. Resolution happens hub-side inside the fleet server; the orchestrator
  * process that calls this hook never holds, logs or transports the plaintext,
  * and a remote member (which has no secret store of its own) never has to.
@@ -324,22 +344,43 @@ const REPO_REF_HINT = 'https://dev.azure.com/ORG/PROJECT/_git/REPO';
  * an unattended preflight/self-heal has no operator attached, and an
  * out-of-band prompt there would stall the sprint instead of failing it.
  *
+ * HOST BINDING: the server binds the PAT's git credential helper to the host
+ * named by `scope_url` (default dev.azure.com). git looks credentials up by
+ * the remote's OWN hostname, so a member whose remote is on the legacy
+ * `<org>.visualstudio.com` host gets `scope_url` set to that host here;
+ * otherwise the argument is omitted and the server default applies, which
+ * keeps the modern-host call byte-identical to what it was. An ssh remote
+ * cannot take a PAT at all: the PAT is still deployed (the REST
+ * pull-request call reads it), and `note` says that git push relies on the
+ * member's SSH key instead.
+ *
  * @param {{ base: object, repoRef: ({ org: string }|null|undefined),
- *           availableSecrets: string[]|null, secretName?: string }} ctx
+ *           availableSecrets: string[]|null, secretName?: string,
+ *           remoteUrl?: string, remoteReadError?: string|null }} ctx
  *   `base` is the shared argument object the caller would otherwise send;
  *   `repoRef` is this provider's own parseRepoRef() output for the member's
  *   remote; `availableSecrets` is the credential-store entry names the caller
  *   observed (null when it could not be read -- then the check is skipped
  *   rather than guessed, and a genuinely missing secret still fails loudly
- *   server-side).
- * @returns {{ args: object }|{ error: string }}
+ *   server-side). `remoteUrl` is the raw remote the caller read (used only to
+ *   pick the credential host and to word the error precisely) and
+ *   `remoteReadError` the reason it could not be read, when that is why
+ *   `repoRef` is null -- a read failure is NOT a malformed remote and the
+ *   error must not tell the operator to fix their URL.
+ * @returns {{ args: object, note?: string }|{ error: string }}
  */
 function buildProvisionArgs(ctx) {
-    const { base = {}, repoRef, availableSecrets, secretName } = ctx || {};
+    const { base = {}, repoRef, availableSecrets, secretName, remoteUrl, remoteReadError } = ctx || {};
     const org = repoRef && typeof repoRef.org === 'string' ? repoRef.org.trim() : '';
     if (!org) {
+        const raw = typeof remoteUrl === 'string' ? remoteUrl.trim() : '';
+        const why = remoteReadError
+            ? `the member's git remote could not be read (${remoteReadError})`
+            : raw
+                ? `the member's git remote '${raw}' is not a recognized Azure DevOps repository URL`
+                : `no organization could be derived from the member's git remote`;
         return {
-            error: `ERROR: cannot provision Azure DevOps auth for member '${base.member_name}': no organization could be derived from the member's git remote; expected a remote of the shape ${REPO_REF_HINT}`,
+            error: `ERROR: cannot provision Azure DevOps auth for member '${base.member_name}': ${why}; expected a remote of the shape ${REPO_REF_HINT}`,
         };
     }
 
@@ -350,19 +391,28 @@ function buildProvisionArgs(ctx) {
         };
     }
 
-    return {
-        args: {
-            member_name: base.member_name,
-            provider: base.provider,
-            // Base org URL with no trailing path -- see auth-azdevops.md's
-            // "Org URL must be base URL without trailing path" note and the
-            // TF400813 troubleshooting row, which is what a wrong org URL
-            // surfaces as.
-            org_url: `https://dev.azure.com/${org}`,
-            // Placeholder, NOT a value. See SECRET TRANSPORT above.
-            pat: `{{secure.${name}}}`,
-        },
+    const shape = classifyRemote(remoteUrl);
+    const args = {
+        member_name: base.member_name,
+        provider: base.provider,
+        // Base org URL with no trailing path -- see auth-azdevops.md's
+        // "Org URL must be base URL without trailing path" note and the
+        // TF400813 troubleshooting row, which is what a wrong org URL
+        // surfaces as. Always the MODERN host: the REST API serves every
+        // org there, legacy-hosted or not.
+        org_url: `https://dev.azure.com/${org}`,
+        // Placeholder, NOT a value. See SECRET TRANSPORT above.
+        pat: `{{secret.${name}}}`,
     };
+    if (shape && shape.legacyHttpsHost) {
+        // See HOST BINDING above: bind the credential helper to the legacy
+        // host the member actually pushes to.
+        args.scope_url = `https://${shape.host}`;
+    }
+    const note = shape && shape.transport === 'ssh'
+        ? `member '${base.member_name}' pushes over ssh (${shape.host}); the Azure DevOps PAT is deployed for REST pull-request calls only and git push authenticates with the member's own SSH key, which the fleet does not manage`
+        : undefined;
+    return note ? { args, note } : { args };
 }
 
 // ---------------------------------------------------------------------------

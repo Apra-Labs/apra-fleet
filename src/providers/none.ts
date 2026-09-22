@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import type { MemberShell } from '../os/os-commands.js';
@@ -61,6 +61,14 @@ export class NoneProvider implements ProviderAdapter {
     throw new Error(NO_LLM_ERROR);
   }
 
+  // No-LLM members never run a prompt, so there is no usage/quota limit concept.
+  // Unlike the throwing methods above, detectUsageLimit is reachable from call
+  // sites that iterate all members regardless of provider, so it returns null
+  // rather than throwing.
+  detectUsageLimit(_result: SSHExecResult, _parsed: ParsedResponse): UsageLimitSignal | null {
+    return null;
+  }
+
   supportsResume(): boolean {
     return false;
   }
@@ -71,6 +79,13 @@ export class NoneProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: the no-LLM member runs plain commands, which do stream
+  // on the exec channel -- so the caller's timeout_s IS a meaningful inactivity
+  // deadline here, and this also keeps its behaviour unchanged.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
   }
 
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {

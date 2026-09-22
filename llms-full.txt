@@ -296,8 +296,9 @@ When NOT to use it: a one-off single-file change needs no fleet.
 ## Security model, in one paragraph
 
 Secrets are entered out-of-band into a credential store and referenced as
-`{{secure.NAME}}` -- resolved server-side at execution, never visible to
-any LLM or log. Credentials scope to members, expire on TTL, and can carry
+`{{secret.NAME}}` -- resolved server-side at execution, never visible to
+any LLM or log; see [docs/secret-variables.md](docs/secret-variables.md).
+Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
 god-mode. VCS access is provisioned and revocable per member, across GitHub,
@@ -305,7 +306,12 @@ Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
 auth pattern, error vocabulary) are hidden behind a per-provider descriptor
 rather than leaking into shared code; see
 `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-credential-assembly and PAT-lifetime details. Permission
+credential-assembly and PAT-lifetime details. A credential-requiring VCS
+command can be handed to the server for execution (`vcs_credential_exec`)
+rather than the orchestrator learning the plaintext token itself: the
+server substitutes the credential into the command, runs it on the member,
+and redacts the token from every field of the result -- the plaintext never
+transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
@@ -426,7 +432,7 @@ third-party verticals.
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
-| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
@@ -730,6 +736,7 @@ These invariants apply across all providers that can terminate a dispatch withou
 - **A busy-lock rejection is verified against process liveness before being honored.** `execute_prompt`'s in-flight lock (`inFlightAgents`, `src/tools/execute-prompt.ts`) can outlive the process it was guarding (a child reaped without its exit handler firing, or an interactive session's underlying CLI process dying after registration). Before returning a `busy` rejection, the dispatch path probes the locked session's pid for liveness -- locally via a direct signal-0 check, remotely via a fresh independent liveness round trip (never the possibly-wedged channel that produced the stale lock), and via the session registry's last-known pid for interactive sessions -- and self-heals (releases the lock, warns, and proceeds with the new dispatch) only on a **definitive** dead-pid reading. Ambiguity (no pid captured at all, e.g. a dispatch that hasn't reached its pid-capture step yet) is always treated as still-busy, never as staleness evidence, so a self-heal attempt can never race a dispatch that is still starting up. This keeps `fleet_status`'s independently-computed busy/idle view and the dispatch gate's busy/idle view from ever disagreeing for longer than one dead-lock detection cycle.
 - **A confirmed stall cancels the in-flight dispatch, not just the remote process.** Killing the remote pid a stalled dispatch was running is necessary but not sufficient -- the MCP `tools/call` that dispatched it can still be sitting on a pending `execCommand()` promise with no way to reject it, so the client falls back to waiting out its own hard deadline even though the server-side work died minutes earlier. The stall path now threads an `AbortController` through `onStall` that is wired into the same strategy-level `execCommand()` abort signal remote strategies already accept, so a confirmed stall settles the pending call immediately with a typed `stalled` dispatch error instead of silently degrading into a multi-thousand-second client-side timeout wait.
 - **The client's dispatch deadline must cover every server-side retry the request can trigger, not just the first attempt.** When the server's own inactivity-timeout handling retries a dispatch once with a fresh session (same `timeout_s`/`max_total_s`), the total server-side worst case is a multiple of the value the client's deadline was derived from. A client deadline sized for only the first attempt can fire before the server's own retry-and-report-cleanly path gets a chance to run, which surfaces a raw transport timeout to the caller instead of a clean typed error. The fix is a single shared retry-budget helper that both sides size their deadlines from, so "the client waits at least as long as the server's own worst-case retry sequence" is a property of one function, not something every dispatch call site has to remember to compute correctly.
+- **A provider usage/quota limit is a terminal signal in its own right, distinct from `overloaded`.** Every `ProviderAdapter` exposes `detectUsageLimit(result, parsed)` (`src/providers/provider.ts`), which recognizes a plan/quota exhaustion (e.g. Claude's 429) and returns a `UsageLimitSignal { resumeAt, resumeAtSource: 'parsed' | 'guessed', message }` -- never `null` for a genuine limit, since even an unreadable reset time still yields a guessed resume window. `execute_prompt` (`src/tools/execute-prompt.ts`) runs this check immediately after every `provider.parseResponse()` call in the dispatch path (initial dispatch, stale-session retry, server-overloaded retry, orphan recovery, and the workspace-trust self-heal retry), regardless of exit code -- a 0-exit result event whose text carries the limit message is a limit, not a success. A detected signal short-circuits the stale-session and server-overloaded retries below it: a fresh session cannot cure a plan limit, so retrying would only burn the shared retry budget waiting out a window that is already known. The dispatch returns a structured `reason: 'usage_limit'` result carrying the signal verbatim (`structuredContent.usageLimit`) plus the session id when present, so a caller can resume the *same* session once `resumeAt` passes instead of losing context to a fresh one. `packages/apra-fleet-workflow` passes `usageLimit` and `sessionId` through onto `AgentDispatchError.details` unchanged (no policy decisions in that layer), and the fleet-sprint engine's pause/resume policy (`packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs`) is the sole consumer that decides how long to pause and when to re-probe.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
@@ -748,6 +755,8 @@ Guards enforcing whichever mode is selected:
 2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
+
+**Beads identity is verified, not overridden.** The supervisor discovers its own `.beads` by walking up from its cwd (exactly like `bd`) and passes that identity to every sprint it launches (`--expect-beads`, env `FLEET_SPRINT_EXPECT_BEADS`); the engine then probes each member's own `bd where`/`sync.remote`/git origin and aborts before any `bd` mutation on a mismatch. Severity is deliberate: a **mismatch** (a field that resolved on both sides and differs) is fatal, because mutating the wrong tracker is data corruption; a **probe failure** (no `.beads` found, `bd` not installed, `sync.remote` unset, no git origin) is a visible warning that names the fix -- the supervisor still starts (health `beads: null` + `beadsWarning`, amber dashboard line, no `--expect-beads` handed down until `GET /api/health?refresh=1` recovers it; a nonexistent `--beads-dir` is still a startup error), and the engine leaves the unresolved field out of the comparison and proceeds (the first real `bd` on a broken member surfaces it). `BEADS_DIR` is deliberately never set on a member: `bd` ignores an invalid `BEADS_DIR` silently and falls back to cwd discovery, so setting it would look authoritative while doing nothing -- verification against the member's real, independently-discovered identity is the only way to catch a member pointed at the wrong project.
 
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
@@ -1262,6 +1271,41 @@ both the initial signal and the escalation, install reports a clear error
 proceeding into a copy that would fail anyway or claiming success it can't
 back up.
 
+**A launchd/systemd/Windows-service-managed server defeats a pkill-first
+approach entirely**, not just slows it down. On macOS, the LaunchAgent
+installed for the server (`~/Library/LaunchAgents/com.apra-fleet.server.plist`)
+is registered with `KeepAlive` set for a non-successful exit, so the service
+manager relaunches the server (as a new PID) the instant a `SIGTERM`/
+`SIGKILL` reaches it -- signalling the process by name after that point
+cannot win the race, since the pid it is tracking is already stale, and a
+liveness poll racing the relaunch would report the same "could not stop the
+running server" failure no matter how long the grace windows are.
+
+`install --force` avoids this by stopping the registered **service** first,
+never signalling the bare process as the first move: it snapshots the
+currently-running apra-fleet pids *before* touching anything, then (when a
+service is registered) calls the platform `ServiceManager.stop()` for a
+graceful shutdown, and only escalates to a direct kill signal if a poll
+afterward still finds a process alive **with the same pid it snapshotted
+before stopping** -- i.e. nothing relaunched and there is no supervisor race
+to lose. If a pid appears that was not in the original snapshot, that is
+conclusive evidence of a supervisor relaunch (not a process refusing to
+die), and install reports it as exactly that, with the platform's service-
+stop command, instead of retrying a signal against a name that will keep
+being relaunched forever. The server's own log corroborates this case with
+consecutive startup lines under a different PID each time a kill was
+attempted. Killing the process without first stopping its service
+registration is still not a valid workaround for any code path that has to
+solve this problem elsewhere -- it reproduces the exact race above.
+
+If the guard stopped a registered service to win the copy, install restarts
+that service again once the new binary is in place -- the stop above exists
+only to release the file lock for the overwrite, not to leave the operator's
+previously-running server down. This restart is conditional on the service
+having actually been stopped by this guard; a plain `apra-fleet install`
+run that never touched a running service does not attempt to start one that
+was never asked to stop.
+
 ### Replaying the npm-publish smoke step locally with an unrelated server running
 
 CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
@@ -1593,7 +1637,7 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet secret --set <memberName>`.
 4. The launched process prompts the user, reads input with masked display (LLM cannot see it), and sends the value over the UDS as a JSON message.
 5. `collectOobInput` **blocks** -- `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
-6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
+6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
 
 **Key property:** The UDS socket is a filesystem object -- no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
 
@@ -1663,7 +1707,7 @@ fallback:No graphical display detected (SSH or headless session).
 Run this in a separate terminal to provide the credential:
   ! apra-fleet secret --set <memberName>
 
-Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```
 
 **Full fallback message text (Linux headless, egress-confirm mode):**
@@ -1673,7 +1717,7 @@ fallback:No graphical display detected (SSH or headless session).
 Run this in a separate terminal to confirm:
   ! apra-fleet secret --confirm <memberName>
 
-Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```
 
 The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to distinguish the fallback path from a successful terminal launch. It is stripped before the message reaches the user.
@@ -1755,6 +1799,61 @@ members:
 | `admin` | read + push + force-push + tags + releases | CI/CD triggers |
 | `issues` | - (no code access) | issues, PRs, projects, comments |
 | `full` | admin + issues | Everything |
+
+Any level that can push commits (`push`, `push+pr`, `admin`, `full`) also
+requests the fine-grained `workflows` GitHub App permission, distinct from
+`actions`, so a member with one of those levels can push a change under
+`.github/workflows/**`. Without it, GitHub rejects the push outright
+("refusing to allow a GitHub App to create or update workflow ... without
+workflows permission") regardless of which of those levels minted the token
+-- there is no level that grants push but withholds `workflows`. `issues`
+stays code-access-only and never requests it. Like `discussions`
+(also scoped to `issues`/`full`), requesting `workflows` only succeeds once
+the App's own permission set (an org-admin action outside this codebase's
+reach) has granted Workflows and the installation has accepted that grant --
+this constraint holds independent of which fleet access level requests it.
+
+A token-mint request for a permission the App's own permission set doesn't
+grant fails with an HTTP 422 (not 403), distinguishable by GitHub's
+"not granted to this installation" message text. On that specific failure,
+`mintGitToken` surfaces an actionable operator referral naming the missing
+permission(s) and the App/installation involved -- instead of the raw API
+text -- and never silently retries with a reduced permission set: quietly
+dropping a requested permission would mask the misconfiguration rather than
+surface it. Any code that classifies a push rejection caused by a missing
+fine-grained permission (as opposed to an expired/invalid credential) must
+treat it as a **permission-scope** failure, not a re-mintable auth failure --
+re-minting reproduces the exact same permission set and cannot fix it. See
+`runner-error-classification.md` and `dispatch-reliability-hardening.md` for
+how the fleet-sprint orchestrator's git-failure classifier and post-dispatch
+handling route this case.
+
+### VCS provider resolution
+
+A member's VCS provider (`github` | `bitbucket` | `azure-devops` | `none`)
+determines which credential backend `provision_vcs_auth` targets and which
+PR-shaped command `fleet-sprint` builds for it. `register_member` accepts an
+explicit `vcs_provider`; when omitted, registration reads the member's git
+`origin` remote (best effort) and maps its host to a provider
+(`github.com` -> `github`, `bitbucket.org` -> `bitbucket`, `dev.azure.com` /
+`*.visualstudio.com` -> `azure-devops`). A GitHub Enterprise host has no
+fixed domain and is never auto-detected -- register those members with an
+explicit `vcs_provider`.
+
+Auto-detection commonly fails at registration time, because the ordinary
+flow is register-then-clone: the member's work folder has no git repo yet,
+so there is no `origin` to read. Registration still succeeds in that case
+(a missing VCS provider does not block onboarding), but emits a loud warning
+that the member cannot push or open a PR until one is set. There are three
+ways to resolve it after the fact: call `provision_vcs_auth` with an explicit
+`provider` (this also records `vcsProvider` as a side effect of provisioning
+credentials); call `update_member` with `vcs_provider` set, to record the
+provider directly without provisioning credentials; or rely on
+`fleet-sprint`'s dispatch-time fallback, which re-attempts the same
+remote-based detection once a git remote exists and self-heals the
+registry entry automatically. Re-registering the same folder path is
+rejected as a duplicate registration, so it is never the remedy for a wrong
+or missing auto-detect.
 
 ### Backend: GitHub App Token Minting
 
@@ -1902,8 +2001,92 @@ credential `label` and `scope_url`, and a per-provider credential group:
 - **Bitbucket**: `email`, `api_token`, `workspace`.
 - **Azure DevOps**: `org_url`, `pat`, `pat_expires_at`.
 
-Secret-bearing fields accept a `{{secure.NAME}}` token, resolved from the
+Secret-bearing fields accept a `{{secret.NAME}}` token, resolved from the
 credential store server-side so no secret passes through a model's context.
+
+### Structured provisioning responses
+
+`provision_vcs_auth`, `provision_auth` (the LLM-credential counterpart) and
+`member_reservation` all return a structured MCP result (an `ok`/`failed`
+discriminator, a machine-readable `reason` code, and tool-specific fields)
+rather than emoji-prefixed prose. This matters for any orchestrator-side
+consumer: `reason` values include benign-but-not-fully-successful outcomes
+(for example `provision_auth`'s `skipped_local_member`) that still report
+`ok: true`, so a consumer that only checks `ok` cannot distinguish "actually
+provisioned" from "correctly skipped." Always branch on `reason` before
+falling back to the generic `ok`/`failed` split. Any caller that stubs these
+tools in a test must stub the structured shape (`{ text, structuredContent }`),
+not the old string return -- a stub still shaped like the old prose return
+passes type-checking (both are just objects) but throws at the first
+`.structuredContent.ok` read, and if that call site is wrapped in a
+best-effort `catch`, the throw is silently swallowed and the mismatch never
+surfaces as a test failure.
+
+### Server-side credential handoff (`vcs_credential_exec`)
+
+Before this tool existed, the only way an orchestrator-side caller could run
+a credential-requiring git/VCS command was to first learn the token itself:
+dispatch the deployed git-credential-helper as a member command and parse
+`password=<token>` out of the captured stdout. Even dispatched with a
+silent flag, the plaintext token still round-trips through a command result
+the orchestrator process reads.
+
+`vcs_credential_exec` (`src/tools/vcs-credential-exec.ts`) removes that
+round-trip. The caller sends a command containing one of two literal
+placeholders where the credential belongs, and the server performs the
+whole handoff in one call:
+
+- `{{vcs_token}}` -- a **bare** reference, never inside the caller's own
+  quotes. The substituted value arrives already shell-escaped and fully
+  quoted for the member's shell, the same convention `execute_command`'s
+  `{{secret.NAME}}` tokens use.
+- `{{vcs_token_inline}}` -- for a placement **inside the caller's own single
+  quotes** (e.g. `'Authorization: Bearer {{vcs_token_inline}}'`). The
+  substituted value here is the bare interior escaping only, not the fully
+  quoted form -- using `{{vcs_token}}` in that position would double-escape
+  the token and produce a broken command. Callers pick whichever placeholder
+  matches the syntactic position the token needs to land in.
+
+The handoff itself:
+
+1. Runs the member's deployed credential helper through `strategy.execCommand`
+   -- that output is consumed in-process and is never part of this tool's
+   result.
+2. Substitutes `{{vcs_token}}` with the token, shell-escaped per
+   `isPosixShell(agentOs, agentShell)` -- never assumed to be POSIX.
+3. Dispatches the substituted command.
+4. Redacts any occurrence of the token from stdout/stderr before returning,
+   the same defense `execute-command.ts`'s output redaction applies.
+
+The tool refuses any command containing **neither** placeholder, so it
+cannot degrade into a second, unguarded `execute_command`. The plaintext
+token appears in no field of any result an orchestrator-side caller can
+read. `readMemberVcsCredentialToken` (the old prose-scraping path that
+dispatched the credential helper as a plain member command and parsed the
+token out of its stdout) has been retired from production entirely -- every
+caller now routes through `vcs_credential_exec`. `buildCredentialReadCommand`
+(the per-shell command string builder `readMemberVcsCredentialToken` used to
+call) is kept: it is still `vcs_credential_exec`'s own in-process building
+block for constructing the credential-read step of the handoff, so it stays
+exported and tested even though nothing outside this tool calls it as a
+standalone helper anymore.
+
+An OS/shell combination with no credential-read implementation is a hard
+failure, not a soft warning: the tool reports `reason: "unsupported_member_os"`
+and refuses to run rather than falling through to a credential-less dispatch
+that would silently fail downstream for a less diagnosable reason. Dialect
+selection for the substituted command routes through the same
+`isPosixShell(agentOs, agentShell)` helper the rest of the codebase uses, so
+a Windows member on Git Bash correctly gets POSIX-style escaping rather than
+being assumed cmd/PowerShell just because its OS is Windows.
+
+Redaction must cover every exit path the substituted command can take, not
+just its successful stdout/stderr -- a dispatch failure that throws (the
+`dispatch_failed` catch branch) can still carry the token verbatim inside
+the thrown error's own message (many transport layers echo the failed
+command back into the error text). A redaction pass applied only to the
+success path leaves that throw path as an unguarded leak of exactly the
+secret the tool exists to protect.
 
 ### Security Properties
 
@@ -2635,7 +2818,7 @@ A dispatch can end in two distinct ways:
 **A token or password appeared in command output**
 
 Store the secret with `credential_store_set`, then reference it as
-`{{secure.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
+`{{secret.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
 before the LLM ever sees the output. See
 [docs/features/oob-auth.md](features/oob-auth.md).
 
@@ -2643,7 +2826,7 @@ before the LLM ever sees the output. See
 
 Run `credential_store_delete name=<NAME>` then `credential_store_set
 name=<NAME>`. The new value is picked up immediately on the next
-`execute_command` that references `{{secure.NAME}}`.
+`execute_command` that references `{{secret.NAME}}`.
 
 ## Git
 
@@ -2670,7 +2853,7 @@ calling it, rather than treating the error as a failure.
 
 ## Build & native dependencies
 
-**`npm ci`/`npm install` fails compiling a native module (e.g. `better-sqlite3`) via `node-gyp`**
+**`npm ci`/`npm install` fails compiling a native module (e.g. `cpu-features`, an optional dependency of `ssh2`) via `node-gyp`**
 
 This is a toolchain/environment incompatibility, not a code defect -- do not
 patch the deploy or build scripts to work around it. On macOS it shows up as

@@ -76,9 +76,76 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `serviceUrl`, `run_id`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+
+`expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
+`validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
+validation, before any dispatch. Argv resolution order: `--expect-beads`
+flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the orchestrator
+member's own `bd where` becomes the expectation). Before any `bd` mutation,
+`verifyBeadsIdentity()` probes the orchestrator member then every other
+member (`bd where --json`, `bd config get sync.remote --json`, `git remote
+get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
+`Beads identity check failed: member '<member>' resolves to a different beads
+database than expected (...) -- <field>: expected '<x>', actual '<y>'.
+Refusing to mutate beads on it.` -- on the first field that resolved on BOTH
+sides and differs. No bypass flag. A probe that fails or resolves nothing is
+NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
+<field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
+no beads database in its workFolder ...` when `bd where` itself fails, in
+which case that member has no identity entry at all), leaves that field out
+of the comparison, and the sprint proceeds. When no expectation was supplied
+and the orchestrator's own probe resolved nothing, one warning says no
+cross-member check happens this sprint and how to restore it. The published
+`beadsIdentity` state carries `warnings: string[]` plus a per-member
+`unresolved: string[]`.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
+
+### Dormant argument audit (apra-fleet-3swo.7.13)
+
+Three `KNOWN_ARG_KEYS` -- `assignee`, `doer_worklist_mode`, `resume_model_switch`
+-- are validated and fully wired to a real consumer, but have no CLI flag and
+no caller in this repo (`bin/cli.mjs`'s `buildRunnerArgs()` does not set any of
+them, and no workflow under `packages/apra-fleet-se/apra-pm` does either --
+both verified by a repo-wide search). Each was audited and PRODUCTIZED, not
+pruned: all three are load-bearing, tested engine capabilities reachable
+through `WorkflowEngine.executeFile()` -- the same invocation path
+`bin/cli.mjs` and the supervisor use -- for any caller that sets them
+programmatically (a future CLI flag, the supervisor's own `POST /api/sprints`
+body, or a direct engine invocation), not dead code left over from an
+abandoned feature.
+
+- **`assignee`** -- narrows the shared `bd list` query to `--assignee <id>`
+  (`fleet-sprint/beads-scope.mjs`) and drives the develop-phase claiming
+  branch's batched `bd update <ids...> --claim --json`
+  (`fleet-sprint/phases/develop.mjs`), which can narrow a streak down to only
+  the beads it actually won. Exercised directly against the real
+  `beadsScopeConfig()`/`claimBeadsBatched()` functions by
+  `test/beads-scope-extraction.test.mjs` ("`--assignee` narrows a filtered
+  read, and scope still filters the result") and
+  `test/claim-beads-batched.test.mjs`. Intended use: a deployment running more
+  than one sprint against the same beads project, so two sprints never select
+  the same bead -- a scenario this repo's single-sprint CLI does not exercise
+  today, hence no flag.
+- **`doer_worklist_mode: 'batch'`** -- one dispatch carries a doer's whole
+  ordered worklist instead of one dispatch per streak. Exercised end-to-end
+  through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-batch.test.mjs`.
+- **`resume_model_switch`** -- lets a resumed-sequence worklist carry mixed
+  model tiers when the doer pool's provider supports changing model on a
+  resumed session (`fleet-sprint/worklists.mjs`'s `resolveWorklistTierPolicy`).
+  Exercised end-to-end through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-resume.test.mjs`, and unit-tested against the real
+  `resolveWorklistTierPolicy()` by `test/worklist-assignment.test.mjs`.
+
+None of the three needed a CLI flag added to satisfy "productize": the bar is
+documentation + a real test against the real consumer + a real invocation
+path, and `WorkflowEngine.executeFile()` (not `bin/cli.mjs` specifically) is
+that path for a programmatic caller. A future CLI flag remains a legitimate,
+separately-scoped follow-up if a real operator need for `--assignee`/
+`--doer-worklist-mode`/`--resume-model-switch` shows up; nothing about this
+audit blocks it.
 
 ## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js`)
 

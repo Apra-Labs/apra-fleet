@@ -239,37 +239,53 @@ describe('wrapUntrustedBlock', () => {
         assert.throws(() => wrapUntrustedBlock('label', 42));
     });
 
-    // The same pattern src/tools/execute-prompt.ts uses to reject a dispatch
+    // The same pattern src/services/secret-token.ts uses to reject a dispatch
     // outright. Kept as a literal copy rather than an import: contracts.mjs
     // deliberately has no dependency on the fleet server sources, and this
-    // test's whole point is that the two stay compatible.
-    const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
+    // test's whole point is that the two stay compatible. Both the canonical
+    // {{secret.NAME}} spelling and the deprecated {{secure.NAME}} one match.
+    const SECRET_TOKEN_RE = /\{\{(secret|secure)\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
-    test('redacts braced secure tokens so injected content can never trip the execute_prompt guard', () => {
-        const entry = 'execute_command replaces each {{secure.NAME}} token, e.g. {{secure.github_pat}}, '
+    test('redacts braced secret tokens so injected content can never trip the execute_prompt guard', () => {
+        const entry = 'execute_command replaces each {{secret.NAME}} token, e.g. {{secret.github_pat}}, '
             + 'with an already-escaped value.';
         const wrapped = wrapUntrustedBlock('kb_session_prime --top_entries', entry);
 
         // execute_prompt rejects the WHOLE prompt on a single match, without
         // calling the LLM, so no wrapped block may ever contain one.
-        assert.doesNotMatch(wrapped, SECURE_TOKEN_RE);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
     });
 
-    test('redaction preserves the token name so the entry stays readable', () => {
-        const wrapped = wrapUntrustedBlock('kb', 'reference {{secure.github_pat}} bare');
+    test('redacts braced legacy {{secure.NAME}} tokens the same way', () => {
+        const entry = 'legacy reference {{secure.github_pat}} still resolves.';
+        const wrapped = wrapUntrustedBlock('kb_session_prime --top_entries', entry);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
         assert.match(wrapped, /secure\.github_pat/);
     });
 
+    test('redacts a mix of {{secret.NAME}} and {{secure.NAME}} tokens in the same content', () => {
+        const entry = 'use {{secret.new_token}} and {{secure.old_token}} together';
+        const wrapped = wrapUntrustedBlock('kb', entry);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
+        assert.match(wrapped, /secret\.new_token/);
+        assert.match(wrapped, /secure\.old_token/);
+    });
+
+    test('redaction preserves the token name so the entry stays readable', () => {
+        const wrapped = wrapUntrustedBlock('kb', 'reference {{secret.github_pat}} bare');
+        assert.match(wrapped, /secret\.github_pat/);
+    });
+
     test('redacts to a fixed point, so surrounding braces cannot re-form a token', () => {
-        // A single replace pass turns {{{{secure.A}}}} into {{secure.A}} --
+        // A single replace pass turns {{{{secret.A}}}} into {{secret.A}} --
         // the outer braces close over the redacted name and rebuild exactly
         // the pattern execute_prompt rejects. Untrusted agent free-text is
         // attacker-influenced, so one pass is not enough.
-        const wrapped = wrapUntrustedBlock('reviewer.notes', 'x {{{{secure.github_pat}}}} y');
-        assert.doesNotMatch(wrapped, SECURE_TOKEN_RE);
+        const wrapped = wrapUntrustedBlock('reviewer.notes', 'x {{{{secret.github_pat}}}} y');
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
     });
 
-    test('leaves ordinary braces and non-secure templating untouched', () => {
+    test('leaves ordinary braces and non-secret templating untouched', () => {
         const wrapped = wrapUntrustedBlock('doer', 'use {{branch}} and {"json": true}');
         assert.match(wrapped, /\{\{branch\}\}/);
         assert.match(wrapped, /\{"json": true\}/);

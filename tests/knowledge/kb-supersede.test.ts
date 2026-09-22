@@ -80,7 +80,7 @@ describe('implicit capture does NOT supersede', () => {
     // getLinked() does not expose link_type, and wireLinks already creates
     // shares_symbol/shares_file edges between these two. Assert the 'refines'
     // edge directly. (TS `private` is compile-time only.)
-    const db = (provider as unknown as { db: import('better-sqlite3').Database }).db;
+    const db = (provider as unknown as { db: import('node:sqlite').DatabaseSync }).db;
     const row = db.prepare(
       'SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND link_type = ?'
     ).get(second.id, first.id, 'refines');

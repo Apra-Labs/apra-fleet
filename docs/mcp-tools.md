@@ -34,7 +34,7 @@ this pair as "member identifier" rather than repeating it.
 **Execution:** `execute_prompt`, `execute_command`, `stop_prompt`, `monitor_task`.
 
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
-`provision_vcs_auth`, `revoke_vcs_auth`.
+`provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
 **Status and maintenance:** `fleet_status`, `member_detail`, `update_llm_cli`,
 `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
@@ -75,7 +75,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `port` | number | no | SSH port, default 22 |
 | `username` | string | remote only | SSH username. Spaces are allowed - the value is passed to SSH, never shell-interpolated |
 | `auth_type` | `"password"` \| `"key"` | remote only | Authentication method. Cloud members default to `"key"` |
-| `password` | string | conditional | SSH password. Omit for secure out-of-band entry (a prompt opens in a separate terminal). Supports the `{{secure.NAME}}` credential-store token |
+| `password` | string | conditional | SSH password. Omit for out-of-band entry (a prompt opens in a separate terminal). Supports the `{{secret.NAME}}` credential-store token |
 | `key_path` | string | conditional | Path to SSH private key. Also used for cloud instance lifecycle |
 | `work_folder` | string | yes | Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected |
 | `llm_provider` | `"claude"` \| `"codex"` \| `"copilot"` \| `"agy"` \| `"opencode"` \| `"none"` | no | Default: `"claude"`. `"none"` is a plain command executor: `execute_prompt` is rejected for such members, use `execute_command` |
@@ -149,7 +149,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `port` | number | no | New SSH port (remote only) |
 | `username` | string | no | New SSH username (remote only) |
 | `auth_type` | `"password"` \| `"key"` | no | New auth method (remote only) |
-| `password` | string | no | New password (encrypted before storage). Omit to trigger secure out-of-band entry. Supports `{{secure.NAME}}` |
+| `password` | string | no | New password (encrypted before storage). Omit to trigger out-of-band entry. Supports `{{secret.NAME}}` |
 | `rotate_password` | boolean | no | Re-open the out-of-band password prompt for a member already on password auth. Ignored unless `auth_type` is password |
 | `key_path` | string | no | New private key path |
 | `work_folder` | string | no | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- `~` and relative paths are rejected |
@@ -411,7 +411,7 @@ Authenticates a fleet member for LLM CLI usage. Two flows: copy master's OAuth c
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | member identifier | string | yes | `member_id` or `member_name` |
-| `api_key` | string | no | API key for the member's LLM provider. If provided, deploys this key instead of copying OAuth credentials. Supports the `{{secure.NAME}}` credential-store token |
+| `api_key` | string | no | API key for the member's LLM provider. If provided, deploys this key instead of copying OAuth credentials. Supports the `{{secret.NAME}}` credential-store token |
 
 The correct env var name is automatically determined from the member's
 `llm_provider` (`authEnvVar` in `src/providers/*.ts`):
@@ -502,3 +502,4 @@ Assembles a multi-section report covering:
 - **System Resources:** CPU load, memory usage, and working folder disk space.
 - **Git:** Current branch in the member's working folder.
 - **Token Usage:** Accumulated lifetime token totals.
+- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), and git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`). `member_detail` is the only MCP surface exposing these, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission).

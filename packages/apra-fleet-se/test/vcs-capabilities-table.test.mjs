@@ -9,6 +9,11 @@ import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+// apra-fleet-3swo.3.6 moved finalizeAbort() (and its vcsCapabilities() call
+// site) out of runner.js into abort.mjs -- the source assertion below reads
+// both files so the "Publish-PR + finalizeAbort" invariant still covers the
+// moved call site.
+const ABORT_PATH = path.join(__dirname, '../fleet-sprint/abort.mjs');
 
 // =============================================================================
 // apra-fleet-647.1.4.2 -- VCS capability decisions come from the provider, not
@@ -159,13 +164,22 @@ test('finalizeAbort: a file:// origin remote is gated by capabilities() -- skips
 // fail at least one assertion below.
 // -----------------------------------------------------------------------------
 
+// apra-fleet-3swo.6.9 sliced the Publish PR phase out of runner.js into
+// fleet-sprint/phases/publish-pr.mjs, and its capability decision -- the
+// vcsCapabilities(originUrl) call, the import behind it and the host literals
+// it must NOT contain -- went with it. Scanning runner.js alone from here
+// would have gone green-but-vacuous over a decision in a file nothing read, so
+// every assertion below reads BOTH sources: runner.js is kept in the set (with
+// a pinned zero, so a reinstated copy still fails) and the module is added.
+const PUBLISH_PR_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/publish-pr.mjs');
+
 test('source: runner.js defines no isHostedGithubRemote() -- both call sites must go through VCSModule.capabilities()', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    assert.ok(!/isHostedGithubRemote/.test(src), 'runner.js must not reference isHostedGithubRemote in any form (definition or call)');
+    const src = fs.readFileSync(RUNNER_PATH, 'utf8') + '\n' + fs.readFileSync(PUBLISH_PR_PHASE_PATH, 'utf8');
+    assert.ok(!/isHostedGithubRemote/.test(src), 'neither runner.js nor phases/publish-pr.mjs may reference isHostedGithubRemote in any form (definition or call)');
 });
 
 test('source: runner.js contains no quoted github.com (or other VCS host) literal used for a capability decision', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const src = fs.readFileSync(RUNNER_PATH, 'utf8') + '\n' + fs.readFileSync(PUBLISH_PR_PHASE_PATH, 'utf8');
     // Any quoted (single/double/backtick) string literal containing a known
     // VCS host name would be a smoking gun for host-literal sniffing sneaking
     // back into a capability decision -- capabilities() is the only place
@@ -173,12 +187,29 @@ test('source: runner.js contains no quoted github.com (or other VCS host) litera
     // vcs-providers/*, not runner.js.
     const hostLiteralPattern = /['"`][^'"`\n]*(github\.com|gitlab\.com|dev\.azure\.com|bitbucket\.org)[^'"`\n]*['"`]/gi;
     const matches = src.match(hostLiteralPattern) || [];
-    assert.deepEqual(matches, [], `runner.js must not contain a quoted VCS host literal, found: ${JSON.stringify(matches)}`);
+    assert.deepEqual(matches, [], `runner.js / phases/publish-pr.mjs must not contain a quoted VCS host literal, found: ${JSON.stringify(matches)}`);
 });
 
 test('source: both Publish-PR and finalizeAbort call sites resolve capabilities via the imported vcsCapabilities (VCSModule.capabilities), not a local reimplementation', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    assert.match(src, /capabilities as vcsCapabilities.*from '\.\/vcs-module\.mjs'/, 'runner.js must import capabilities as vcsCapabilities from vcs-module.mjs');
-    const callSites = src.match(/vcsCapabilities\([^)]*\)/g) || [];
-    assert.ok(callSites.length >= 2, `expected at least 2 vcsCapabilities(...) call sites (Publish-PR + finalizeAbort), found ${callSites.length}`);
+    const runnerSrc = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const abortSrc = fs.readFileSync(ABORT_PATH, 'utf8');
+    const publishPrSrc = fs.readFileSync(PUBLISH_PR_PHASE_PATH, 'utf8');
+    assert.match(publishPrSrc, /capabilities as vcsCapabilities.*from '\.\.\/vcs-module\.mjs'/, 'phases/publish-pr.mjs must import capabilities as vcsCapabilities from vcs-module.mjs');
+    assert.match(abortSrc, /capabilities as vcsCapabilities.*from '\.\/vcs-module\.mjs'/, 'abort.mjs must import capabilities as vcsCapabilities from vcs-module.mjs');
+    // finalizeAbort()'s call site moved to abort.mjs (apra-fleet-3swo.3.6) and
+    // Publish-PR's moved to phases/publish-pr.mjs (apra-fleet-3swo.6.9) -- one
+    // real call site in each of those two files now, and NONE left in
+    // runner.js. runner.js stays in this census with an asserted ZERO rather
+    // than being dropped, so a reinstated capability decision there fails here
+    // instead of quietly escaping the pin.
+    const runnerCallSites = runnerSrc.match(/vcsCapabilities\([^)]*\)/g) || [];
+    const abortCallSites = abortSrc.match(/vcsCapabilities\([^)]*\)/g) || [];
+    const publishPrCallSites = publishPrSrc.match(/vcsCapabilities\([^)]*\)/g) || [];
+    assert.equal(
+        runnerCallSites.length,
+        0,
+        `runner.js must no longer resolve VCS capabilities itself -- the Publish-PR call site belongs to phases/publish-pr.mjs, found ${runnerCallSites.length}`
+    );
+    const totalCallSites = publishPrCallSites.length + abortCallSites.length;
+    assert.ok(totalCallSites >= 2, `expected at least 2 vcsCapabilities(...) call sites across phases/publish-pr.mjs + abort.mjs (Publish-PR + finalizeAbort), found ${totalCallSites}`);
 });

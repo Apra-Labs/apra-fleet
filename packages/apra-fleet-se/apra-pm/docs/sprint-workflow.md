@@ -38,8 +38,11 @@ One sprint may target several related sprint goals.
 feature is verifiable: integration tests either pass or fail against it.
 
 **Task** -- the smallest unit of work. A task belongs to exactly one feature
-and is sized to complete in a single agent session (roughly 1-3 file changes).
+and is sized to complete in a single agent session (roughly 1-4 file changes).
 Tasks carry an assigned model tier chosen by the planner based on complexity.
+A **lane** (streak) groups the tasks that should be dispatched to one doer and
+reviewed together in one review round -- see `agents/planner.md`'s "Lanes are
+review units" section; a task is not split into several just to stay small.
 
 **Goal** -- the exit criterion, expressed as a priority threshold:
 - `P1` -- exits when no P1 issues remain open
@@ -243,7 +246,7 @@ The plan-reviewer then inspects the full DAG:
 - Does `bd ready` return only tasks (not features or sprint goals)?
 - Does every feature have both an impl task and a `[test]` task?
 - Does every task have clear acceptance criteria?
-- Is every task sized to 1-3 file changes?
+- Is every task sized to roughly 1-4 file changes with crisp acceptance criteria?
 - Does every task appear in exactly one feature's subtree?
 - Does every task have a model assignment?
 

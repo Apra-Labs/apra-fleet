@@ -14,8 +14,24 @@ import {
     preflightBeadsHealthGate,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
-import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
+import {
+    invalidateSyncRemoteCache,
+    clearLastSyncedTip,
+    clearTipProbeFailures,
+    extractDoltRemoteUrl,
+} from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-3swo.5.7: the D-push flags now live in the policy table, so the
+// census below reads them from there rather than from runner.js source.
+import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+import {
+    loadVcsStderrCorpus,
+    stderrSamples,
+    stderrSample,
+    stderrText,
+    recordedKinds,
+    provenance,
+} from './helpers/vcs-stderr-corpus.mjs';
 
 // The sync.remote probe memo and the remote-tip fingerprint are both
 // module-level, process-lifetime caches keyed by member name (apra-fleet-akuv,
@@ -79,21 +95,105 @@ const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
 
 // -----------------------------------------------------------------------------
-// classifyDoltFailure: the transient-vs-diverged split the reconcile hinges on.
+// apra-fleet-j918.6.2 -- failure texts driven into the command() mocks below
+// are RECORDED from real `bd dolt` runs, not typed from memory. See
+// test/fixtures/vcs-stderr/README.md for the recorder and re-record steps.
 // -----------------------------------------------------------------------------
-test('classifyDoltFailure: conflict / non-fast-forward outputs classify as diverged', () => {
-    assert.equal(classifyDoltFailure('cannot fast-forward: divergent branches'), 'diverged');
-    assert.equal(classifyDoltFailure('merge conflict detected in table issues'), 'diverged');
-    assert.equal(classifyDoltFailure('Updates were rejected because the remote contains work'), 'diverged');
+const REAL_DOLT_AUTH_ID = 'dolt/auth/could-not-read-username-prompts-disabled';
+const REAL_DOLT_AUTH = stderrText(REAL_DOLT_AUTH_ID);
+const REAL_DOLT_DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+const REAL_DOLT_TRANSIENT_REFUSED = stderrText('dolt/transient/connection-refused');
+const REAL_DOLT_NO_REMOTE = stderrText('dolt/no-remote/pull-with-no-remote-configured');
+const REAL_DOLT_EMPTY_REMOTE = stderrText('dolt/empty-remote/pull-git-remote-without-dolt-data');
+const REAL_DOLT_REMOTE_UNREACHABLE = stderrText('dolt/remote-unreachable/push-to-nonexistent-path');
+
+// -----------------------------------------------------------------------------
+// classifyDoltFailure -- asserted against RECORDED real `bd dolt` output
+// (apra-fleet-j918.6.2). The corpus lives in test/fixtures/vcs-stderr/ and is
+// produced by that directory's record-vcs-stderr.mjs; see its README.md.
+//
+// Recorded through `bd dolt`, NOT the raw `dolt` CLI, because that is the only
+// surface dolt-sync.mjs ever parses: bd re-surfaces dolt's error as
+// `Error 1105: ...` out of dolt_pull()/dolt_push(), and the raw CLI wording is
+// different text entirely.
+//
+// NON-OBVIOUS RISK this guards, and why the assertions are written by
+// DIRECTION rather than as a bag of equalities: the realistic defect is a
+// message REWORD (dolt's or bd's), not a deleted rule, and the two directions
+// that hurt are:
+//
+//   diverged -> unknown    fail-fast is disabled: doltPushAfter stops raising
+//                          DoltDivergedError, so an independent-history
+//                          divergence is papered over instead of surfaced for
+//                          reconcile.
+//   diverged -> transient  worse: the D-push bracket RETRIES a divergence,
+//                          turning a hard stop into a retry loop against a
+//                          remote that refuses it identically every time.
+//
+// REAL-CAPTURE FINDING worth keeping: the recorded divergence sample earns its
+// 'diverged' verdict from "histories have diverged" on its FOURTH line. Its
+// first line is `Error 1105: unknown push error; no common ancestor`, which
+// matches no rule at all -- so any change that truncates or first-lines dolt
+// output before classifying flips the verdict to 'unknown' and silently
+// disables fail-fast. That is asserted explicitly below.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure assigns every RECORDED real-dolt sample to its recorded bucket', () => {
+    const corpus = loadVcsStderrCorpus();
+    const samples = stderrSamples('dolt');
+    assert.ok(samples.length > 0, 'the recorded dolt corpus must not be empty');
+    assert.match(String(corpus.tools.dolt), /^dolt version /, 'the corpus must record the dolt version');
+    assert.match(String(corpus.tools.bd), /^bd version /, 'the corpus must record the bd version that wrapped dolt');
+    for (const s of samples) {
+        assert.equal(classifyDoltFailure(s.stderr), s.expect, provenance(s));
+    }
 });
 
-test('classifyDoltFailure: network / lock outputs classify as transient', () => {
-    assert.equal(classifyDoltFailure('connection refused'), 'transient');
-    assert.equal(classifyDoltFailure('could not resolve host: dolthub.com'), 'transient');
+test('the recorded dolt corpus covers every bucket classifyDoltFailure can return', () => {
+    // A new bucket must not be able to arrive with only hand-typed coverage:
+    // this fails until record-vcs-stderr.mjs grows a recipe that provokes it.
+    assert.deepEqual(
+        recordedKinds('dolt'),
+        ['auth', 'diverged', 'empty-remote', 'no-remote', 'remote-unreachable', 'transient', 'unknown'],
+        'every classifyDoltFailure verdict needs at least one recorded real-dolt sample',
+    );
+});
+
+test('classifyDoltFailure: recorded divergence is never softened to unknown or hardened into a retry', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'diverged')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'unknown', `${provenance(s)}: diverged read as unknown DISABLES fail-fast`);
+        assert.notEqual(got, 'transient', `${provenance(s)}: diverged read as transient turns a hard stop into a RETRY LOOP`);
+        assert.notEqual(got, 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
+        assert.equal(got, 'diverged', provenance(s));
+    }
+    // The load-bearing line is NOT the first one. Pin that explicitly so a
+    // future "just log the first line" change fails here rather than in
+    // production.
+    const div = stderrSample('dolt/diverged/push-no-common-ancestor');
+    const firstLine = div.stderr.split('\n').find((l) => l.includes('Error 1105'));
+    assert.equal(
+        classifyDoltFailure(firstLine),
+        'unknown',
+        `${provenance(div)}: precondition -- the Error 1105 line alone classifies as unknown, so the verdict depends on NOT truncating`,
+    );
+    assert.equal(classifyDoltFailure(div.stderr), 'diverged', `${provenance(div)}: the full recorded output must classify diverged`);
+});
+
+test('classifyDoltFailure: recorded transient output is never hardened into diverged', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'transient')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'diverged', `${provenance(s)}: transient read as diverged would ABORT the sprint on a network blip`);
+        assert.equal(got, 'transient', provenance(s));
+    }
 });
 
 test('classifyDoltFailure: unclassifiable output is unknown (never silently transient)', () => {
-    assert.equal(classifyDoltFailure('some brand-new dolt failure text'), 'unknown');
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'unknown')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'transient', `${provenance(s)}: unrecognized output must NOT be silently retried as transient`);
+        assert.equal(got, 'unknown', provenance(s));
+    }
+    // No real invocation produces empty output, so this edge stays synthetic.
     assert.equal(classifyDoltFailure(''), 'unknown');
 });
 
@@ -104,6 +204,13 @@ test('classifyDoltFailure: unclassifiable output is unknown (never silently tran
 // classifyGitFailure, checked after 'diverged' but before 'transient'.
 // -----------------------------------------------------------------------------
 test('classifyDoltFailure: credential-style outputs classify as a new "auth" kind, checked after diverged but before transient', () => {
+    // RECORDED: a real `bd dolt pull` against an HTTPS remote with no usable
+    // credential helper and GIT_TERMINAL_PROMPT=0 (apra-fleet-j918.6.2).
+    assert.equal(classifyDoltFailure(REAL_DOLT_AUTH), 'auth', provenance(stderrSample(REAL_DOLT_AUTH_ID)));
+    // The literal text from the 2026-08-02 fleet-mac live incident, kept
+    // verbatim: it is real observed output, and it is the exact string whose
+    // misclassification as 'diverged' hard-aborted a healthy sprint and made
+    // dolt.mjs check AUTH before DIVERGED (see that provider's header).
     assert.equal(
         classifyDoltFailure("fatal: could not read Username for 'https://github.com': Device not configured"),
         'auth',
@@ -111,10 +218,11 @@ test('classifyDoltFailure: credential-style outputs classify as a new "auth" kin
     );
     assert.equal(classifyDoltFailure('remote: Bad credentials'), 'auth');
     assert.equal(classifyDoltFailure('remote: Authentication failed'), 'auth');
-    // Divergence must never be misclassified as auth.
-    assert.equal(classifyDoltFailure('cannot fast-forward: divergent branches'), 'diverged');
+    // Divergence must never be misclassified as auth -- asserted against the
+    // RECORDED divergence, not a hand-typed approximation of one.
+    assert.equal(classifyDoltFailure(REAL_DOLT_DIVERGED), 'diverged');
     // Transient stays transient, unaffected.
-    assert.equal(classifyDoltFailure('connection refused'), 'transient');
+    assert.equal(classifyDoltFailure(REAL_DOLT_TRANSIENT_REFUSED), 'transient');
 });
 
 // -----------------------------------------------------------------------------
@@ -126,15 +234,46 @@ test('classifyDoltFailure: credential-style outputs classify as a new "auth" kin
 // skip is not over-broad).
 // -----------------------------------------------------------------------------
 test("classifyDoltFailure: 'Error 1105: no remote' and 'no remote' fetch text classify as no-remote", () => {
-    assert.equal(
-        classifyDoltFailure("fetch from origin/main: Error 1105: no remote"),
-        'no-remote',
+    // RECORDED: `bd dolt pull` in a beads clone with no Dolt remote at all.
+    assert.equal(classifyDoltFailure(REAL_DOLT_NO_REMOTE), 'no-remote', provenance(stderrSample('dolt/no-remote/pull-with-no-remote-configured')));
+    assert.match(
+        REAL_DOLT_NO_REMOTE,
+        /Error 1105: no remote/,
+        'the recorded sample is the real "Error 1105: no remote" wording this bucket was written for',
     );
-    assert.equal(
-        classifyDoltFailure("[Command Failed] Error: fetch from origin/main: Error 1105: no remote"),
-        'no-remote',
-    );
+    // The `[Command Failed] Error: ` prefix is added by the fleet command()
+    // layer, not by bd, so it cannot be recorded from a bd invocation -- wrap
+    // the RECORDED text rather than re-typing a whole fake message.
+    assert.equal(classifyDoltFailure(`[Command Failed] Error: ${REAL_DOLT_NO_REMOTE}`), 'no-remote');
     assert.equal(classifyDoltFailure('no remote configured for this repository'), 'no-remote');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2: the two remaining benign/fatal non-error buckets
+// (empty-remote, remote-unreachable) had no recorded coverage either. Both are
+// ROUTING decisions -- empty-remote is a benign skip, remote-unreachable is a
+// named permanent diagnosis -- so a reword that collapses either into
+// 'unknown' or 'transient' changes behavior silently.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure: recorded empty-remote and remote-unreachable keep their distinct buckets', () => {
+    const empty = stderrSample('dolt/empty-remote/pull-git-remote-without-dolt-data');
+    assert.equal(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'empty-remote', provenance(empty));
+    assert.notEqual(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'transient', `${provenance(empty)}: an empty remote must never be retried`);
+
+    const unreachable = stderrSample('dolt/remote-unreachable/push-to-nonexistent-path');
+    assert.equal(classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE), 'remote-unreachable', provenance(unreachable));
+    assert.notEqual(
+        classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE),
+        'diverged',
+        `${provenance(unreachable)}: a dead remote must never be reported to the operator as data divergence`,
+    );
+    // extractDoltRemoteUrl feeds the named diagnosis for this bucket, so it
+    // must survive the real wrapper text too, not just a hand-typed one.
+    assert.match(
+        String(extractDoltRemoteUrl(REAL_DOLT_REMOTE_UNREACHABLE)),
+        /this-path-does-not-exist\.git$/,
+        `${provenance(unreachable)}: extractDoltRemoteUrl must recover the remote URL from the REAL wrapper text`,
+    );
 });
 
 test('doltPullBefore: a no-remote failure returns a benign skip, never throws', async () => {
@@ -148,17 +287,17 @@ test('doltPullBefore: a no-remote failure returns a benign skip, never throws', 
 
 test('doltPullBefore: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-pull failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-pull failures are not swallowed by the no-remote skip',
     );
@@ -175,17 +314,17 @@ test('doltPushAfter: a no-remote failure returns a benign skip, never throws, an
 
 test('doltPushAfter: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command, sleep: async () => {} }),
         DoltDivergedError,
         'diverged D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'transient-exhausted D-push failures are not swallowed by the no-remote skip',
     );
     await assert.rejects(
-        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command }),
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
         DoltSyncError,
         'unknown D-push failures are not swallowed by the no-remote skip',
     );
@@ -262,7 +401,7 @@ test('doltPushAfter: still rejected after the one reconcile raises typed DoltDiv
 
 test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDivergedError), no reconcile', async () => {
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail('connection refused')] });
-    await assert.rejects(() => doltPushAfter('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => doltPushAfter('memberA', { command, sleep: async () => {} }), DoltSyncError);
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
 });
 
@@ -617,7 +756,7 @@ test('preflightBeadsHealthGate: no-remote skip passes through unchanged (not tre
 
 test('preflightBeadsHealthGate: a non-diverged (transient-exhausted/unknown) failure is re-thrown unchanged, not rewritten', async () => {
     const { command } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] });
-    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command }), DoltSyncError);
+    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command, sleep: async () => {} }), DoltSyncError);
 });
 
 test('preflightBeadsHealthGate: on divergence, composes a one-line cause naming workspace, table(s), and remediation, then throws DoltDivergedError', async () => {
@@ -948,43 +1087,63 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
     // (pushBeads:true): the runner files parent-less
     // `[regression][carry-over]` bug beads that must reach the shared remote.
-    assert.equal(sites.length, 20, `expected 20 withGitSync(...) dispatch brackets, found ${sites.length}`);
-
-    // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
-    // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
-    // sync skip), so match pushBeads: true anywhere inside the options object
-    // literal rather than requiring it to be the object's only property.
-    const hasPushBeads = (t) => /\{[^{}]*\bpushBeads:\s*true\b[^{}]*\}/.test(t);
-    const pushBeadsSites = sites.filter(hasPushBeads);
-
-    // Four roles mutate beads: planner (new tasks), doer (closes),
-    // integ-test-runner (feature-close + bug-file), harvester (issue-defer).
-    // Doer and integ-test-runner each have TWO pushBeads:true sites
-    // (dispatch + same-session turn-exhaustion resume), so 8 base sites.
-    // apra-fleet-eft.68.1: the in-cycle SCOPED replan's planner dispatch is a
-    // ninth pushBeads:true bracket (it mutates beads by re-scoping the flagged
-    // subtree); the paired scoped plan-review is read-side (no pushBeads).
-    // 9 -> 11 (integ/regression split): the once-per-sprint
-    // regression-test-runner is a fifth beads-mutating role (it files
-    // parent-less carry-over bug beads), and like the doer/integ runner it
-    // has TWO pushBeads:true sites -- dispatch and same-session resume.
+    // 20 -> 18 (apra-fleet-3swo.5.3): the planner's two brackets -- its
+    // interactive dispatch and its max_turns-exhaustion resume -- moved out of
+    // runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs),
+    // which opens the SAME bracket (pushCode:false, pushBeads:true) from one
+    // generic place driven by role-policies.mjs. The scoped-replan planner
+    // bracket, which is still inline, is what keeps the planner role
+    // represented in the roleMarkers check below.
+    // 18 -> 16 (same bead): the plan-reviewer's two read-side brackets
+    // followed the planner onto the engine. Both were read-side with no
+    // pushBeads, so the pushBeads count below is unchanged.
+    // 16 -> 15 (same bead): the scoped-replan planner's bracket followed them,
+    // taking the last planner-role pushBeads:true bracket with it.
+    // 15 -> 14 (same bead): the scoped-replan plan-reviewer's read-side
+    // bracket followed them; it carried no pushBeads, so the count below is
+    // unchanged.
+    // 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch+resume pair
+    // moved onto the engine, starting the execution-side migration. Both were
+    // pushCode:true / pushBeads:true, so the pushBeads count below drops by
+    // two with them.
+    // 12 -> 10 (same bead): the deployer's two read-side brackets followed
+    // them. Neither carried pushBeads, so the count below is unchanged.
+    // 10 -> 8 (same bead): the regression runner's two brackets followed
+    // them; both carried pushBeads:true, so the count below drops by two.
+    // 8 -> 6 (same bead): the integ runner's two brackets followed them; both
+    // carried pushBeads:true, so the count below drops by two.
+    // 6 -> 4 (same bead): the final review's two read-side brackets followed
+    // them; neither carried pushBeads, so the count below is unchanged.
+    // 4 -> 2 (same bead): the per-round reviewer's two read-side brackets
+    // followed them; neither carried pushBeads, so the count below is
+    // unchanged. Only the doer pair is left inline.
+    // apra-fleet-3swo.5.7: RE-ANCHORED, not deleted. Every dispatch ladder has
+    // migrated onto fleet-sprint/dispatch-role.mjs, whose single withGitSync
+    // call passes `pushBeads` as an EXPRESSION read out of the policy row, so
+    // runner.js has no dispatch bracket left for a text scan to find -- a scan
+    // that stayed here would pass vacuously forever.
+    //
+    // The FACT it pinned -- WHICH roles mutate beads and therefore D-push --
+    // is unchanged and is asserted against the policy table that now carries
+    // it. That the flag is really PASSED to a real bracket is proved
+    // behaviourally by the two dispatch-pin files, which run the engine.
     assert.equal(
-        pushBeadsSites.length,
-        11,
-        `expected exactly 11 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
+        sites.length,
+        0,
+        `expected 0 INLINE withGitSync(...) dispatch brackets now that every ladder runs on the engine, found ${sites.length}`,
     );
 
-    const roleMarkers = [
-        { name: 'planner', re: /getMemberForRole\('planner'\)|agentType:\s*'planner'/ },
-        { name: 'doer', re: /agentType:\s*'doer'/ },
-        { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
-        { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },
-        { name: 'harvester', re: /getMemberForRole\('harvester'\)|agentType:\s*'harvester'/ },
-    ];
-    for (const { name, re } of roleMarkers) {
-        assert.ok(
-            pushBeadsSites.some((t) => re.test(t)),
-            `the ${name} dispatch must be one of the pushBeads:true brackets (its beads mutations must be D-pushed)`,
-        );
+    // Five roles mutate beads: planner (new tasks, plus the scoped replan),
+    // doer (closes), integ-test-runner (feature-close + bug-file),
+    // regression-test-runner (carry-over bugs) and harvester (issue-defer).
+    const beadPushers = allDispatchPolicies().filter((p) => p.bracket.pushBeads === true);
+    assert.deepEqual(
+        [...new Set(beadPushers.map((p) => p.ladder))].sort(),
+        ['doer', 'harvester', 'integ-test-runner', 'planner', 'regression-test-runner', 'scoped-replan-planner'],
+        'exactly the beads-mutating roles may D-push; a read-only role that starts pushing beads is the regression this pins',
+    );
+    for (const p of allDispatchPolicies()) {
+        if (p.bracket.wrapped) continue;
+        assert.equal(p.bracket.pushBeads, null, `${p.role}: an unbracketed dispatch carries no push flags`);
     }
 });

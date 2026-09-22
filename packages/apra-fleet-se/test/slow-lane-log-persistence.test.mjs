@@ -3,7 +3,75 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
+
+// On Windows, `child.kill('SIGTERM')` (Node emulates it via TerminateProcess)
+// only terminates the top-level bash.exe handle -- it does not propagate to
+// bash's own children (the subshell running the loop, sleep.exe, etc), so
+// they keep running and racing with the test's log-file assertions. Killing
+// the whole process tree via `taskkill /t` is the Windows equivalent of the
+// POSIX `process.kill(-pid, 'SIGTERM')` process-group kill below.
+function killProcessTree(child) {
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /pid ${child.pid} /t /f`, { stdio: 'ignore' });
+    } catch (e) {
+      // Process (or its tree) may have already exited; that's ok.
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch (e) {
+    // If kill fails, the process may have already exited; that's ok
+  }
+}
+
+// apra-fleet-j918.8.13: polls `check()` until it returns truthy or
+// `timeoutMs` elapses, instead of a fixed-duration sleep. Used before
+// interrupting the child below so the wait is driven by the actual
+// condition we care about (has the child produced output yet?) rather than
+// a guessed duration that can flake when the machine is under load (too
+// little accumulated output by the time we kill) or waste wall time when
+// it isn't (the guessed duration was longer than necessary).
+function waitForCondition(check, { timeoutMs = 5000, intervalMs = 20 } = {}) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    function poll() {
+      let result;
+      try { result = check(); } catch { result = false; }
+      if (result) { resolve(true); return; }
+      if (Date.now() >= deadline) { resolve(false); return; }
+      setTimeout(poll, intervalMs);
+    }
+    poll();
+  });
+}
+
+// apra-fleet-j918.8.13: waits for the child to settle (exit or error),
+// falling back to `timeoutMs` only if neither ever fires -- matching the
+// `waitForExit()` pattern already used in installed-supervisor.test.mjs.
+// Unlike a bare `Promise.race([exitEvent, sleep(timeoutMs)])`, the losing
+// timer is cleared the instant the winning event fires, so a child that
+// exits quickly (the expected case here, right after killProcessTree())
+// does not leave a dangling timer keeping the event loop alive for the
+// full fallback duration.
+function waitForChildSettled(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onDone);
+      child.removeListener('error', onDone);
+      resolve();
+    }, timeoutMs);
+    function onDone() {
+      clearTimeout(timer);
+      resolve();
+    }
+    child.once('exit', onDone);
+    child.once('error', onDone);
+  });
+}
 
 // =============================================================================
 // apra-fleet-f28t.2: Verify slow-lane log persistence survives an interrupted run
@@ -146,30 +214,21 @@ test('slow-lane log persistence', async (t) => {
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
       });
 
-      const childPid = child.pid;
-
-      // Wait for some output to be written (500ms = ~5-6 lines out of 100)
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Interrupt the process
-      try {
-        if (process.platform === 'win32') {
-          // On Windows, use a direct kill since detached groups don't work the same way
-          child.kill('SIGTERM');
-        } else {
-          // On POSIX, kill the process group
-          process.kill(-childPid, 'SIGTERM');
-        }
-      } catch (e) {
-        // If kill fails, the process may have already exited; that's ok
-      }
-
-      // Wait for process to exit
-      await new Promise((resolve) => {
-        child.on('exit', resolve);
-        child.on('error', resolve);
-        setTimeout(resolve, 2000); // Timeout after 2s
+      // Wait for the log to actually gain output before interrupting,
+      // rather than guessing a fixed duration is enough (apra-fleet-
+      // j918.8.13) -- driven by the real condition, bounded so a genuinely
+      // stuck process still fails within a reasonable ceiling.
+      await waitForCondition(() => {
+        try { return fs.readFileSync(logFilePath, 'utf-8').includes('Output line'); }
+        catch { return false; }
       });
+
+      // Interrupt the process (and its whole tree -- see killProcessTree)
+      killProcessTree(child);
+
+      // Wait for process to exit, event-driven with a bounded fallback
+      // (apra-fleet-j918.8.13).
+      await waitForChildSettled(child, 2000);
 
       // Verify criterion 1: log exists and has content
       assert.ok(fs.existsSync(logFilePath), `Log file should exist at ${logFilePath}`);
@@ -222,27 +281,20 @@ test('slow-lane log persistence', async (t) => {
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
       });
 
-      const childPid = child.pid;
+      // Unlike test 1 (where the script's own `>` redirect sends everything
+      // straight to the log file, bypassing Node's piped stdio), this bare
+      // script is NOT redirected, so its output actually arrives on
+      // `child.stdout`. Wait for that real signal that the process has
+      // started producing output before interrupting it, instead of
+      // guessing a fixed duration (apra-fleet-j918.8.13).
+      let sawOutput = false;
+      child.stdout.on('data', () => { sawOutput = true; });
+      await waitForCondition(() => sawOutput);
 
-      // Wait a bit (same 500ms as test 1) then interrupt
-      await new Promise(resolve => setTimeout(resolve, 500));
+      killProcessTree(child);
 
-      try {
-        if (process.platform === 'win32') {
-          child.kill('SIGTERM');
-        } else {
-          process.kill(-childPid, 'SIGTERM');
-        }
-      } catch (e) {
-        // Process may have already exited
-      }
-
-      // Wait for exit
-      await new Promise((resolve) => {
-        child.on('exit', resolve);
-        child.on('error', resolve);
-        setTimeout(resolve, 2000);
-      });
+      // Wait for exit, event-driven with a bounded fallback (apra-fleet-j918.8.13).
+      await waitForChildSettled(child, 2000);
 
       // Criterion 4: Without redirection to the specific file, no log file is created
       // at the expected location

@@ -13,6 +13,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
@@ -156,23 +157,62 @@ interface Ledger {
   granted: Array<{ permission: string; reason: string; date: string }>;
 }
 
-function findProfilesDir(): string {
-  // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
-  const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
-  if (fs.existsSync(installedFleet)) return installedFleet;
+function isCompleteProfilesDir(profilesDir: string): boolean {
+  try {
+    return ['base-dev.json', 'base-reviewer.json']
+      .every(file => fs.statSync(path.join(profilesDir, file)).isFile());
+  } catch {
+    return false;
+  }
+}
+
+export function findProfilesDir(homeDir = os.homedir(), startDir = __dirname): string {
+  const searched: string[] = [];
+  const installConfig = readInstallConfig(path.join(homeDir, '.apra-fleet', 'data', 'install-config.json'));
+  const providerIndex = new Map<string, number>(
+    INSTALLABLE_LLM_PROVIDERS.map((provider, index) => [provider, index] as const),
+  );
+  const installedProviders = Object.entries(installConfig.providers)
+    .filter(([provider, config]) => providerIndex.has(provider) && config !== null && typeof config === 'object')
+    .map(([provider, config]) => ({
+      provider: provider as typeof INSTALLABLE_LLM_PROVIDERS[number],
+      installedAt: typeof config.installedAt === 'string' ? Date.parse(config.installedAt) : NaN,
+    }))
+    .sort((a, b) => {
+      const aValid = !Number.isNaN(a.installedAt);
+      const bValid = !Number.isNaN(b.installedAt);
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (aValid && a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
+      return providerIndex.get(a.provider)! - providerIndex.get(b.provider)!;
+    })
+    .map(({ provider }) => provider);
+  const installedSet = new Set(installedProviders);
+  const providers = [
+    ...installedProviders,
+    ...INSTALLABLE_LLM_PROVIDERS.filter(provider => !installedSet.has(provider)),
+  ];
+
+  for (const provider of providers) {
+    const candidate = path.join(getProviderInstallConfig(provider, homeDir).fleetSkillsDir, 'profiles');
+    searched.push(candidate);
+    if (isCompleteProfilesDir(candidate)) return candidate;
+  }
   // Installed (legacy): ~/.claude/skills/pm/profiles/
-  const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
-  if (fs.existsSync(installedPm)) return installedPm;
+  const installedPm = path.join(homeDir, '.claude', 'skills', 'pm', 'profiles');
+  searched.push(installedPm);
+  if (isCompleteProfilesDir(installedPm)) return installedPm;
   // Dev: walk up from __dirname looking for skills/fleet/profiles/
-  let dir = __dirname;
+  let dir = startDir;
   for (let i = 0; i < 6; i++) {
     const candidateFleet = path.join(dir, 'skills', 'fleet', 'profiles');
-    if (fs.existsSync(candidateFleet)) return candidateFleet;
+    searched.push(candidateFleet);
+    if (isCompleteProfilesDir(candidateFleet)) return candidateFleet;
     const candidatePm = path.join(dir, 'skills', 'pm', 'profiles');
-    if (fs.existsSync(candidatePm)) return candidatePm;
+    searched.push(candidatePm);
+    if (isCompleteProfilesDir(candidatePm)) return candidatePm;
     dir = path.dirname(dir);
   }
-  throw new Error('Cannot find profiles directory');
+  throw new Error(`No complete profiles directory (base-dev.json + base-reviewer.json) found. Searched: ${searched.join(', ')}`);
 }
 
 function loadProfile(profilesDir: string, name: string): any {

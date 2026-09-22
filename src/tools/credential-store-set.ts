@@ -33,5 +33,5 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     : input.members.split(',').map(s => s.trim()).filter(Boolean);
   const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
   logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
-  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secure.${meta.name}}} in commands.`;
+  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.`;
 }

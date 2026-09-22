@@ -104,7 +104,7 @@ test('source: no token/secret VALUE literal appears in the harness module (names
     const here = path.dirname(fileURLToPath(import.meta.url));
     const src = fs.readFileSync(path.join(here, 'helpers', 'azure-devops-real-e2e.mjs'), 'utf8');
     // Every credential reference in this module must be either a
-    // `{{secure.*}}` placeholder or a bare variable/env name -- never a
+    // `{{secret.*}}` placeholder or a bare variable/env name -- never a
     // realistic-looking PAT/token literal. Azure DevOps PATs are long
     // base64-ish strings with no spaces; this is a loose but effective
     // smoke check that nothing resembling one was pasted in.

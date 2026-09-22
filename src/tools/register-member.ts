@@ -16,7 +16,8 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
@@ -38,7 +39,7 @@ export const registerMemberSchema = z.object({
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
   username: z.string().optional().describe('SSH username (required for remote members). Spaces are allowed (e.g. "tester tester" on Windows) — passed directly to SSH, never shell-interpolated.'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
-  password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  password: z.string().optional().describe('SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
   work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
@@ -157,22 +158,21 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT registered.');
   }
 
-  // Resolve {{secure.NAME}} tokens in password field
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
+  let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-    let match: RegExpExecArray | null;
+    const tokens = findSecretTokens(resolvedPassword);
     let resolved = resolvedPassword;
-    const tokenNames = new Set<string>();
-    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
-      tokenNames.add(match[1]);
-    }
+    const tokenNames = new Set(tokens.map((t) => t.name));
+    passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
       const entry = credentialResolve(name, input.friendly_name);
       if (entry && 'denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
       if (entry && 'expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
       if (entry) {
-        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+        resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
+        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
         continue;
       }
       // Credential not found — auto-create via OOB
@@ -181,9 +181,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       if (!oob.password) return `❌ No credential received for "${name}". Member was NOT registered.`;
       const plaintext = decryptPassword(oob.password);
       credentialSet(name, plaintext, !!oob.persist, 'deny');
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext);
+      resolved = resolved.replaceAll(`{{secret.${name}}}`, plaintext);
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext); // legacy spelling
     }
     resolvedPassword = resolved;
+    if (passwordLegacyNames.length > 0) {
+      logWarn('register_member', legacyTokenWarning(passwordLegacyNames), { id: input.friendly_name, friendlyName: input.friendly_name });
+      warnings.push(legacyTokenWarning(passwordLegacyNames));
+    }
   }
 
   // Out-of-band password collection for remote password auth without inline password

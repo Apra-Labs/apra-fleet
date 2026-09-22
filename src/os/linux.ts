@@ -276,6 +276,17 @@ export class LinuxCommands implements OsCommands {
     return `rm -f "$HOME/.fleet-git-credential"`;
   }
 
+  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // Same $HOME-not-`~` reasoning as gitCredentialHelperWrite above: the path
+    // is resolved by the member's own shell from $HOME, never by a caller
+    // supplying an expansion of its own, and the label is escaped for the
+    // double-quoted context it lands in.
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
+    // The helper is an executable script that prints
+    // "protocol=/host=/username=/password=" when run with no arguments.
+    return { command: `"${credFile}"`, path: credFile };
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
