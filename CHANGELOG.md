@@ -487,6 +487,12 @@ What shipped:
   nine SqliteProvider-only call sites; the ninth, `kb_stats`, deliberately
   degrades instead, using the non-throwing `isSqliteProject` guard to report
   a not-computable bible block over a remote provider.
+- **`kb_setup` validates `remote`.** A value that is not an `http://` or
+  `https://` URL is rejected before any hook or config is written, and plain
+  `http://` to a non-loopback host returns a `warnings` entry (and logs one),
+  because the bearer token would travel in cleartext. Loopback http
+  (`localhost`, `127.0.0.0/8`, `[::1]`) does not warn. It warns rather than
+  refuses so existing LAN deployments keep working.
 - Test coverage is against real implementations only, including an
   end-to-end test that runs `kb_setup` for real against a live local HTTP
   server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`
