@@ -1079,11 +1079,17 @@ local user or process on a shared/multi-tenant host. The guard lives in
 `src/supervisor/auth.mjs`, deliberately free of any HTTP dependency so it is
 unit-testable and reusable by both the server and any future CLI probe.
 
-**Token lifecycle.** A 32-byte random hex token is minted on first start under
-`<supervisor-data-root>/private/token` and reused by every subsequent start
-against the same data root (`loadOrCreateToken`). Minting is exclusive-create
-(`wx`) so two supervisors racing a cold data root converge on one token -- the
-loser of the create race adopts the winner's token instead of clobbering it.
+**Token lifecycle.** `resolveServiceToken()` prefers the shared
+`~/.apra-fleet/fleet.key` (the same file `src/services/jwt.ts` signs with) so
+the supervisor and the rest of the fleet's JWT-authenticated surface agree on
+one credential without any extra provisioning step; only when that file is
+absent or malformed does it fall through to `loadOrCreateToken()`, which mints
+a 32-byte random hex token under `<supervisor-data-root>/private/token` and
+reuses it on every subsequent start against the same data root. Minting is
+exclusive-create (`wx`) so two supervisors racing a cold data root converge on
+one token -- the loser of the create race adopts the winner's token instead of
+clobbering it. Whichever source wins, its name (`fleet-key` or `private-token`)
+is logged at startup; the token value itself is never logged.
 The one race this does not close: a peer reading the file in the open-then-
 write microsecond window between `wx`-create and the write sees it blank,
 treats it as a torn mint, and re-mints -- accepted as a bounded exception
@@ -1715,3 +1721,41 @@ added to this family must reuse the shared `maskComments()` /
 this heuristic locally -- two independent guards got this wrong before
 converging on the shared helpers, which is a strong signal it is not safe
 to hand-roll again.
+
+## Integration-branch merge gate (fleet-integrator)
+
+Multi-track sprints that all target one integration branch need something
+watching the resulting pull requests and merging the ones that are actually
+green, without a human polling GitHub. `fleet-integrator`
+(`fleet-sprint/skills/fleet-integrator/SKILL.md` +
+`scripts/integration-gate-status.mjs`) fills that role as a deliberately thin
+split between a read-only status script and an agent loop:
+
+- **Status computation is a pure, read-only script, not agent logic.** Given
+  `--repo`, `--base`, `--title-prefix` and `--required-checks`,
+  `integration-gate-status.mjs` calls `gh` to list candidate PRs and prints
+  one JSON object per PR with a computed `decision` (`merge` / `repair` /
+  `wait` / `skip`) and its `mergeStateStatus`/check results. It never mutates
+  anything -- no merge, no comment, no push -- which is what makes it
+  independently testable with fixtures instead of needing a live PR to
+  exercise the decision logic.
+- **The agent owns exactly one action per decision, per loop iteration.**
+  The SKILL.md loop reads the script's output and maps each decision to one
+  `gh` action (`merge`: squash-merge and delete the branch; `repair`: send a
+  fixed prompt to the sprint's own doer, once per head sha, tracked in a
+  local ledger so a slow-to-resolve PR isn't re-prompted every iteration;
+  `wait`: no-op; `skip`: report to the owner, never merge). Keeping the
+  mutating step outside the script means a bug in the agent's loop (a bad
+  prompt, a missed ledger write) cannot corrupt the status computation, and
+  a bug in the status script cannot accidentally trigger a merge.
+- **Identity is a short-lived GitHub App installation token, not a personal
+  PAT.** The loop authenticates via `provision_vcs_auth` so every merge is
+  attributable to the gate's bot identity and re-provisions automatically on
+  a 401 rather than falling back to a human's credentials -- a merge gate
+  that can silently start acting as a specific person is a worse failure
+  mode than one that stops and asks to be re-authenticated.
+- **The skill is written generic** (parameters supplied by the target's own
+  deploy.md/CLAUDE.md, never a hardcoded repo/branch/check-name) per the
+  [generic engine boundary](../../../docs/generic-engine-boundary.md) rule:
+  apra-fleet using this gate on its own integration branch is one target
+  among any number the same skill and script must serve unmodified.
