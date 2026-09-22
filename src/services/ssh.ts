@@ -333,6 +333,29 @@ export async function execCommand(
             // processes -- see killRemoteTree above for why that is deliberate).
             try { stream.close(); } catch { /* best-effort */ }
           }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // The handle that always outlives the drain window here is the ssh2
+          // Client's TCP socket: the channel is still open (that is why the
+          // drain is running at all), so its connection socket is live, and
+          // ssh2 never unrefs it -- `unref` appears nowhere in
+          // node_modules/ssh2/lib/client.js (only in http-agents.js and
+          // server.js). Measured standalone that this is sufficient: a
+          // connected, reading net.Socket with the helper listener process
+          // unref-ed gave getActiveResourcesInfo() = [TCPSocketWrap] and an
+          // unref-ed 3000 ms timer still fired at 3014 ms -- i.e. the socket
+          // alone kept the loop alive with no ref-ed timer present. If the
+          // channel had already closed instead, `close` would have settled the
+          // promise without this timer. The connection-pool idle timers
+          // (resetIdleTimer above) are all unref-ed and are deliberately NOT
+          // part of this argument. Caller paths enumerated as for the
+          // strategy.ts twin: every execCommand() call site runs inside the
+          // long-lived MCP server, except src/cli/watch.ts, which holds a
+          // ref-ed setInterval for its watch loop.
+          // Residual risk: if the TCP socket dies during the drain window the
+          // callback is skipped -- but that path emits 'error', which settles
+          // via reject(), so the promise still settles. The narrow uncovered
+          // case is a socket destroyed with no 'error' and no 'close'.
           exitDrainTimer.unref();
         });
       }
