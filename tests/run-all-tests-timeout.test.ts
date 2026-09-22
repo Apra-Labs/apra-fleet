@@ -405,6 +405,91 @@ describe.skipIf(isWindows)('run-all-tests.mjs reaps a nested detached grandchild
 });
 
 /**
+ * apra-fleet-qe83.3.2 rework (reviewer round 3): a SIGTERM delivered to
+ * run-all-tests.mjs ITSELF (e.g. a supervisor's stall-kill of a hung `npm
+ * test`, as opposed to the runner's own internal per-suite timeout exercised
+ * above) used to leave a `terminating`-unaware suite loop free to launch the
+ * NEXT suite once the group SIGTERM reaped the CURRENT suite well inside
+ * SOFT_KILL_GRACE_MS -- the deferred hard-kill timer then fired against the
+ * now-stale pid of the suite that already exited, never touching the suite
+ * that had since started, orphaning its whole tree still holding this
+ * process's inherited stdio open. POSIX-only: the Windows branch of
+ * handleTerminatingSignal calls process.exit() synchronously before the
+ * suite loop's `await` can ever resume, so it has no such window.
+ */
+describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite after an outer SIGTERM (apra-fleet-qe83.3.2 rework)', () => {
+  const spawnedPids: number[] = [];
+  let hangScriptDir: string;
+
+  afterEach(() => {
+    for (const pid of spawnedPids.splice(0)) killTree(pid);
+    if (hangScriptDir) fs.rmSync(hangScriptDir, { recursive: true, force: true });
+  });
+
+  it('a SIGTERM sent to the runner while suite 1 is running kills suite 1 and never starts suite 2', async () => {
+    const marker1 = `APRA_QE83_3_2_SIGTERM_S1_${process.pid}_${Date.now()}`;
+    const marker2 = `APRA_QE83_3_2_SIGTERM_S2_${process.pid}_${Date.now()}`;
+    hangScriptDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'qe83-3-2-sigterm-'));
+    const file1 = path.join(hangScriptDir, `hang-forever-${marker1}.mjs`);
+    const file2 = path.join(hangScriptDir, `hang-forever-${marker2}.mjs`);
+    fs.writeFileSync(file1, 'setInterval(function () {}, 1000);\n');
+    fs.writeFileSync(file2, 'setInterval(function () {}, 1000);\n');
+
+    // A generous per-suite timeout (30s) so the runner's OWN timeout path
+    // never fires during this test -- only the externally-delivered SIGTERM
+    // below should end suite 1, which is the exact path the bug was in.
+    const suites = JSON.stringify([
+      { name: 'suite-1', cmd: 'node', args: [file1] },
+      { name: 'suite-2', cmd: 'node', args: [file2] },
+    ]);
+
+    const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        APRA_TEST_SUITES_JSON: suites,
+        APRA_TEST_TIMEOUT_MS: '30000',
+        APRA_TEST_SOFT_KILL_GRACE_MS: '1200',
+      },
+    });
+    if (child.pid) spawnedPids.push(child.pid);
+
+    let exitCode: number | null = null;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+    });
+
+    // Suite 1 really is alive before the signal is sent.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(countMarkerProcesses(marker1)).toBeGreaterThan(0);
+
+    child.kill('SIGTERM');
+
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
+
+    // A short extra wait past the runner's own exit: if the pre-fix bug
+    // regressed, suite 2 would be launched by the suite loop BEFORE the
+    // deferred hard-kill timer fires, so it could still be starting up right
+    // around when the runner process itself exits.
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    const survivorsSuite1 = countMarkerProcesses(marker1);
+    const survivorsSuite2 = countMarkerProcesses(marker2);
+    if (timedOut && child.pid) killTree(child.pid);
+    killMarkerProcesses(marker1);
+    killMarkerProcesses(marker2);
+
+    expect(timedOut).toBe(false); // run-all-tests.mjs must have exited on its own
+    expect(exitCode).not.toBe(0);
+    expect(survivorsSuite1).toBe(0); // suite 1's tree was reaped by the SIGTERM cascade
+    expect(survivorsSuite2).toBe(0); // suite 2 must NEVER have been launched
+  }, 9_000);
+});
+
+/**
  * apra-fleet-qe83.4: killTree (and now the belt-and-braces child.kill()
  * alongside it) is best-effort -- if taskkill is unavailable/denied, or the
  * POSIX group kill fails for both -pid and pid, no 'exit' event ever fires
