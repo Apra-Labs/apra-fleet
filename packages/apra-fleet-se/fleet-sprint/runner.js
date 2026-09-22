@@ -89,6 +89,7 @@ import {
     // facade (test/vcs-auth-extraction-facade.test.mjs pins it as private).
     buildCredentialReadCommand, PR_SKIPPED_NO_MCP_CLIENT,
     createMemberVcsProviderResolver, createVcsAuthSelfHealCallback, createVcsAuthPreflightCallback,
+    createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
@@ -1106,6 +1107,24 @@ async function runSprintCycle(context) {
             : async () => {}
     );
 
+    // Sync-step "does this push touch .github/workflows without the
+    // 'workflows' permission?" preflight (apra-fleet-2wdc.6). Same
+    // three-way precedence shape as ensureVcsAuthFresh just above:
+    //   1. `context.warnWorkflowsPermissionMissing` -- an explicitly-injected
+    //      callback (tests wire an in-process one to prove the warning
+    //      fires/skips without a live fleet server).
+    //   2. `args.callTool` -- createWorkflowsPermissionPreflightCallback
+    //      (vcs-auth.mjs).
+    //   3. neither -- a no-op: withGitSync's pushCode-gated call site
+    //      guards on `typeof warnWorkflowsPermissionMissing === 'function'`
+    //      already, but this keeps the shape identical to every other
+    //      optional callback bound here.
+    const warnWorkflowsPermissionMissing = context.warnWorkflowsPermissionMissing ?? (
+        (args && typeof args.callTool === 'function')
+            ? createWorkflowsPermissionPreflightCallback({ callTool: args.callTool, command, log })
+            : async () => {}
+    );
+
     // LLM-auth counterpart to onAuthFailure above, same precedence shape.
     // Dispatch-site catch handlers call this (via isAuthDispatchError(err))
     // before deciding whether to retry an otherwise non-retryable dispatch
@@ -1393,9 +1412,10 @@ async function runSprintCycle(context) {
     // rather than imported -- importing them there would be a module cycle.
     const gitSync = createGitSync({
         brackets: syncBrackets,
-        command, log, branch: validated.branch, args, agent,
+        command, log, branch: validated.branch, baseBranch: validated.baseBranch, args, agent,
         doltPushMutex, sprintId: sprintMutexId,
         onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
+        warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
