@@ -102,19 +102,29 @@ test('mock sprint: a stale APPROVED verdict must not back a later cycle\'s exit 
 });
 
 // =============================================================================
-// apra-fleet-unw2.18 (N18) fix (a): a goal-priority bead with 'deferred'
-// status must be counted as NOT done for the sprint's exit-check logic.
-// A deferred bead AT goal priority (P1/P2, the default task priority)
-// must prevent exit success -- unlike an out-of-goal (P3) bead, which is
-// legitimately never counted regardless of its status (see the
-// "goalpriority" scenario below in this file).
-// `bd list --priority-max=<goalMax>` only includes P3 and worse. Get a
-// bead at goal priority DEFERRED (not closed) so it lands in
-// NOT_DONE_STATUSES's `--priority-max` window.
+// A goal-priority bead that is DEFERRED is out of the sprint's outstanding
+// set, and the sprint exits on the normal goal-priority path -- naming it.
+//
+// THIS REPLACES THE OPPOSITE PIN, DELIBERATELY. The earlier rule here was "a
+// deferred goal-priority bead must not allow exit success", which read
+// `deferred` as just another flavour of "not finished". Run against a real
+// sprint that deferred a bead on purpose, that rule wedged the run twice
+// over: the completion check could never reach zero (nobody dispatches a
+// deferred bead, so nothing could ever close it) and the deferred bead
+// contributed nothing to the progress score, so every later cycle also read
+// as stagnation -- a sprint whose work was genuinely finished died as
+// SPRINT_STALLED. `deferred` is a decision, not a state of incompleteness.
+//
+// What the exit still requires is unchanged and is asserted below: an
+// APPROVED reviewer verdict from the exiting cycle, the verify-closure gate,
+// and a named report of what was parked. Deferring buys an exit from the
+// dispatch loop, never an exemption from review. An out-of-goal (P3) bead is
+// still never counted regardless of status (the "goalpriority" scenario
+// below), and blocked/in_progress beads still count exactly as before.
 // =============================================================================
-test('mock sprint: a deferred goal-priority bead must not allow exit success', async () => {
+test('mock sprint: a deferred goal-priority bead is out of scope and the sprint exits PASS, naming it', async () => {
     await withScenarioMarkers('deferredgoalpriority', async () => {
-        console.log('Running mock sprint scenario (deferred goal-priority bead must not allow exit success)...');
+        console.log('Running mock sprint scenario (deferred goal-priority bead is out of scope, sprint exits and names it)...');
         const deferredGoalPriority = await runDevelopLoopScenario('deferredgoalpriority', {
             members: ['local'],
             taskSpecs: [
@@ -147,8 +157,12 @@ test('mock sprint: a deferred goal-priority bead must not allow exit success', a
         });
         check(!deferredGoalPriority.error, `Deferred goal-priority scenario should not throw: ${deferredGoalPriority.error ? deferredGoalPriority.error.message : ''}`);
         check(
-            !(deferredGoalPriority.result && deferredGoalPriority.result.status === 'success'),
-            `Expected the sprint to NOT exit as success while a goal-priority bead remains deferred (never closed), got: ${JSON.stringify(deferredGoalPriority.result)}`
+            deferredGoalPriority.result && deferredGoalPriority.result.status === 'success',
+            `Expected the sprint to exit on the normal goal-priority path once its only remaining not-done bead was deferred, got: ${JSON.stringify(deferredGoalPriority.result)}`
+        );
+        check(
+            !deferredGoalPriority.logs.some((m) => /Sprint stalled/.test(m)),
+            `A sprint whose only remaining not-done bead is deferred must never be reported as stalled, logs: ${JSON.stringify(deferredGoalPriority.logs.filter((m) => /stall/i.test(m)))}`
         );
         const deferredTaskA = deferredGoalPriority.tasks.find((t) => t.title === 'Task: A closes normally (deferred-goal-priority scenario)');
         const deferredTaskB = deferredGoalPriority.tasks.find((t) => t.title === 'Task: B deferred, never closed (deferred-goal-priority scenario)');
@@ -159,6 +173,18 @@ test('mock sprint: a deferred goal-priority bead must not allow exit success', a
         check(
             deferredGoalPriority.finalBeadsById.get(deferredTaskB.id) && deferredGoalPriority.finalBeadsById.get(deferredTaskB.id).status === 'deferred',
             `Expected task B to remain deferred (never closed), got: ${JSON.stringify(deferredGoalPriority.finalBeadsById.get(deferredTaskB.id))}`
+        );
+        // Out of scope is not the same as out of sight: the exit must NAME
+        // what it parked, in the log and in the sprint's own summary, or a
+        // PASS is indistinguishable from work that quietly went missing.
+        check(
+            deferredGoalPriority.logs.some((m) => m.includes('DEFERRED') && m.includes(deferredTaskB.id))
+            || deferredGoalPriority.logs.some((m) => m.includes('deferred') && m.includes(deferredTaskB.id)),
+            `Expected the exit path to name the deferred bead ${deferredTaskB.id}, logs: ${JSON.stringify(deferredGoalPriority.logs.filter((m) => /defer/i.test(m)))}`
+        );
+        check(
+            Array.isArray(deferredGoalPriority.result.deferredIds) && deferredGoalPriority.result.deferredIds.includes(deferredTaskB.id),
+            `Expected the sprint summary to enumerate the deferred bead ${deferredTaskB.id}, got: ${JSON.stringify(deferredGoalPriority.result)}`
         );
     });
 

@@ -83,6 +83,10 @@ import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
+// The deferred/active split every exit-condition read applies -- see
+// runner.js's NOT_DONE_STATUSES header for why a deferred bead is fetched
+// and then excluded rather than never fetched.
+import { partitionDeferred } from '../beads-scope.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -119,6 +123,10 @@ export async function runFinalReviewPhase({
     integFailures,
     rejectedNewTasks,
     verifyEverIds,
+    // Every id this sprint saw deferred, for the closing summary. Reporting
+    // only: the exclusion below is decided off the LIVE status, never off
+    // this set. Defaulted so a caller that predates it still works.
+    deferredEverIds = new Set(),
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -152,7 +160,22 @@ export async function runFinalReviewPhase({
         decomposedParentIds(),
         bdListScoped('--status=closed --json'),
     ]);
-    const finalOpenAtGoal = finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id));
+    // Deferred beads are excluded from the sprint's CLOSING count for exactly
+    // the reason Cycle Evaluation excludes them: nobody was ever going to
+    // dispatch them, so reporting them as "still open at goal priority" would
+    // hand the final reviewer a FAIL it has no way to act on. The ids are
+    // named in the log line below instead of vanishing.
+    const { active: finalOpenAtGoal, deferredIds: finalDeferredIds } = partitionDeferred(
+        finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id))
+    );
+    const allDeferredIds = [...new Set([...(deferredEverIds || []), ...finalDeferredIds])];
+    if (allDeferredIds.length > 0) {
+        log(
+            `Final Review C${finalCycleLabel}: ${allDeferredIds.length} bead(s) were deferred during this sprint and are `
+            + `excluded from the closing open-at-goal count: [${allDeferredIds.join(', ')}]. `
+            + 'A deferred bead is never dispatched, so it is reported as parked work rather than as an open blocker.'
+        );
+    }
     const finalClosedCount = finalClosedBeads.length;
     // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
     // check -- verify-routed beads are decomposed parents, so they never
@@ -374,5 +397,5 @@ export async function runFinalReviewPhase({
         await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });
     }
 
-    return { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount: finalOpenAtGoal.length };
+    return { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount: finalOpenAtGoal.length, deferredIds: allDeferredIds };
 }

@@ -246,6 +246,10 @@ import {
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
     parseBdJson, goalPriorityMax, partitionByGoalMembership,
+    // The deferred/active split every exit-condition read applies -- see
+    // NOT_DONE_STATUSES below for why a deferred bead is fetched and then
+    // excluded rather than never fetched.
+    partitionDeferred,
 } from './beads-scope.mjs';
 // The child-bead allocation and batched-claim command surface: computeChildFloor,
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and claimBeadsBatched.
@@ -656,6 +660,21 @@ export const meta = { name: 'fleet-sprint-runner' };
 // deliberately NOT `--ready`, which only reflects "dispatchable right now" and
 // silently excludes blocked and orphaned in_progress beads, so an empty
 // `--ready` list must never be read as "the sprint is done".
+//
+// DEFERRED IS IN THIS QUERY BUT OUT OF THE SPRINT'S OUTSTANDING SET. `bd`
+// reports a deferred bead as not-done, and that is correct for a backlog: the
+// work still exists. It is wrong for a sprint's exit condition, because a
+// deferred bead is never dispatched by anyone. Counting it as work
+// outstanding produces a sprint that can never complete and that reads every
+// remaining cycle as zero progress -- a finished sprint reported as stalled.
+// So this constant keeps fetching deferred beads (the query must stay honest
+// about what exists), and Cycle Evaluation / the stall detector / Final
+// Review strip them with partitionDeferred() (./beads-scope.mjs), naming the
+// ids they dropped. The rule is origin-blind: planner, plan reviewer,
+// reviewer, the verify-route bounce cap and the sprint doctor all mean the
+// same thing by it. ONLY `deferred` changes meaning -- blocked and
+// in_progress keep counting exactly as before, which is the whole point of
+// not using `--ready`.
 // The value is quoted, not a bare comma list: on Windows commands dispatch via
 // `spawn(command, { shell: 'powershell.exe' })`, and PowerShell's parser treats
 // an unquoted comma-separated value as an array literal, re-stringifying it
@@ -2933,6 +2952,17 @@ async function runSprintCycle(context) {
     // chose to leave behind.
     const doctorDeferredIds = new Set();
 
+    // Every bead this sprint saw in the `deferred` status at a goal-priority
+    // read, WHOEVER deferred it -- the planner, the plan reviewer, a
+    // reviewer, the verify-route bounce cap or the doctor. Monotone (it only
+    // ever grows) and used for REPORTING only: the exit log, the stall
+    // detail and the final summary name these ids so "the sprint finished
+    // with 3 beads open" can never hide "...and they were all deliberately
+    // parked". The exclusion itself is decided per read, off the live status
+    // via partitionDeferred(), never off this set -- a bead un-deferred by a
+    // human mid-sprint must immediately count as outstanding again.
+    const deferredEverIds = new Set();
+
     // apra-fleet-mduk.2: the subset of the above that is waiting on a HUMAN
     // grant. Named separately from doctorCreditIds because the stall-abort
     // message must distinguish "still open and nobody is coming" from "still
@@ -3741,7 +3771,30 @@ async function runSprintCycle(context) {
             bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
             decomposedParentIds(),
         ]);
-        const openAtGoal = openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id));
+        // A DEFERRED bead is excluded here on exactly the same footing, and
+        // for the same reason, as a decomposed parent: neither is ever
+        // dispatched, so neither is work this sprint is still outstanding on.
+        // Origin-blind -- planner, plan reviewer, reviewer, the verify-route
+        // bounce cap and the sprint doctor all mean "this sprint is not doing
+        // this bead" by it. Without this, a legitimate defer wedged the
+        // sprint twice over: the completion check could never reach zero, and
+        // the deferred bead contributed nothing to the progress score, so
+        // every subsequent cycle also read as stagnation and the run died as
+        // SPRINT_STALLED with its work actually finished. The ids are kept
+        // (not just dropped) so every exit path can NAME what it treated as
+        // out of scope.
+        const { active: openAtGoalActive, deferredIds: deferredAtGoalIds } = partitionDeferred(
+            openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id))
+        );
+        const openAtGoal = openAtGoalActive;
+        for (const id of deferredAtGoalIds) deferredEverIds.add(id);
+        if (deferredAtGoalIds.length > 0) {
+            log(
+                `Cycle ${cycle} evaluation: ${deferredAtGoalIds.length} bead(s) at/above goal priority ${goalMax} are DEFERRED and are `
+                + `treated as out of scope for the completion and stall checks: [${deferredAtGoalIds.join(', ')}]. `
+                + 'A deferred bead is never dispatched, so counting it as outstanding work could only wedge the sprint.'
+            );
+        }
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
         // scope (not just goal-priority) so zero forward progress on ANY bead
@@ -3930,8 +3983,22 @@ async function runSprintCycle(context) {
                     // design doc calls out by name.
                     for (const id of applied.deferredIds) {
                         doctorDeferredIds.add(id);
+                        // Named in the exit log, the stall detail and the
+                        // closing summary from this moment on, without
+                        // waiting for the next goal-priority read to observe
+                        // the new status.
+                        deferredEverIds.add(id);
+                        // Excluded from re-lane for the rest of the sprint
+                        // the same way a BLOCKED bead is: `deferred` already
+                        // keeps it out of `bd --ready`, and this keeps it out
+                        // of the runner's own ready filters too, so nothing
+                        // can hand a parked bead back to a doer.
                         doctorBlockedIds.add(id);
                     }
+                    // Stagnation credit, through the SAME monotone set the
+                    // re-plan lane uses: a legitimate defer counts as
+                    // progress exactly once and can never be re-earned by
+                    // oscillating a bead in and out of the deferred status.
                     if (applied.credit) for (const id of applied.deferredIds) doctorCreditIds.add(id);
                 }
             }
@@ -3952,6 +4019,14 @@ async function runSprintCycle(context) {
             const blockerSuffix = blockerIds.length > 0
                 ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
                 : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
+            // `blockerIds` is already deferred-free (openAtGoal is), so the
+            // deferred ids are reported here as what they are -- work the
+            // sprint chose to stop attempting -- instead of being named as
+            // blockers an operator should go and unstick.
+            const deferredSuffix = deferredEverIds.size > 0
+                ? ` ${deferredEverIds.size} bead(s) were DEFERRED during this sprint and are excluded from both the `
+                  + `completion count and the stall blockers: [${[...deferredEverIds].join(', ')}].`
+                : '';
             const grantSuffix = grantAwaitingBlockers.length > 0
                 ? ` ${grantAwaitingBlockers.length} bead(s) are held awaiting a human access grant the sprint cannot make `
                   + `itself and are excluded from the stagnation math: [${grantAwaitingBlockers.join(', ')}] -- see each `
@@ -3986,9 +4061,9 @@ async function runSprintCycle(context) {
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                blockerSuffix + grantSuffix + thrashSuffix + verifySuffix +
+                blockerSuffix + deferredSuffix + grantSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, deferredIds: [...deferredEverIds], thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle }
             );
         }
 
@@ -4054,14 +4129,26 @@ async function runSprintCycle(context) {
             stillOpenVerifyIds = [...verifyEverIds].filter((id) => !closedIdsForExitCheck.has(id));
         }
 
+        // THE NORMAL GOAL-PRIORITY EXIT, and the one a deferred-only
+        // remainder must be able to reach. `openAtGoal` is deferred-free, so
+        // a scope whose only not-done beads are deferred reads 0 here and
+        // exits PASS -- while still requiring BOTH of the gates that were
+        // always required: an APPROVED reviewer verdict from THIS cycle, and
+        // every verify-routed bead actually closed. Deferring a bead buys an
+        // exit from the DISPATCH loop, never an exemption from review or
+        // verification.
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
-            log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`);
+            const deferredExitSuffix = deferredEverIds.size > 0
+                ? ` ${deferredEverIds.size} bead(s) were deferred during this sprint and were treated as out of scope: [${[...deferredEverIds].join(', ')}].`
+                : '';
+            log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED.${deferredExitSuffix} Exiting cycle loop.`);
             endGroup();
             break;
         }
 
         log(
             `Cycle ${cycle} evaluation: ${openAtGoal.length} bead(s) still open at/above goal priority ${goalMax}, ` +
+            (deferredEverIds.size > 0 ? `${deferredEverIds.size} deferred and out of scope (${[...deferredEverIds].join(', ')}), ` : '') +
             `last reviewer verdict: ${lastReviewVerdict ?? '(none this cycle)'}` +
             (stillOpenVerifyIds.length > 0
                 ? `, ${stillOpenVerifyIds.length} verify-routed bead(s) still open and unverified ` +
@@ -4099,11 +4186,15 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
-    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({
+    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, deferredIds: finalDeferredIds } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, orchestratorMember, finalCycleLabel, sprintState,
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
+        // Reporting only -- the closing count excludes deferred beads off
+        // their LIVE status, exactly as Cycle Evaluation does; this set is
+        // what lets the closing summary NAME them.
+        deferredEverIds,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         kbPriming, kbWork, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
@@ -4217,10 +4308,23 @@ async function runSprintCycle(context) {
     // `pushed` comes from the Publish PR phase above and is the ONLY thing it
     // contributes here: a failed branch push reports pushed:false, and the
     // verdict it is reported alongside is still the sprint's own computed one.
+    // The closing summary NAMES what the sprint deliberately left behind. A
+    // run that reports PASS while three beads sit deferred is a correct
+    // outcome, but only if the summary says so -- an unnamed deferral is
+    // indistinguishable from work that quietly went missing.
+    const deferredForSummary = [...new Set([...deferredEverIds, ...(finalDeferredIds || [])])];
+    const deferredNote = deferredForSummary.length > 0
+        ? ` ${deferredForSummary.length} bead(s) were deferred during this sprint and excluded from the `
+          + `completion and stall checks: ${deferredForSummary.join(', ')}.`
+        : '';
+    if (deferredForSummary.length > 0) {
+        log(`Sprint summary: deferred and treated as out of scope: [${deferredForSummary.join(', ')}].`);
+    }
     return {
         status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
         verdict: finalVerdictResult.verdict,
-        notes: finalVerdictResult.notes,
+        notes: `${finalVerdictResult.notes}${deferredNote}`,
+        deferredIds: deferredForSummary,
         branch: validated.branch,
         baseBranch: validated.baseBranch,
         goal: validated.goal,

@@ -583,3 +583,43 @@ export function createBeadsScope(opts = {}) {
         bdListScoped,
     };
 }
+
+/**
+ * Splits a not-done bead list into the beads the sprint is still TRYING to
+ * finish and the ids it has deliberately parked.
+ *
+ * WHY THIS EXISTS AT ALL. The tracker's "not done" statuses
+ * (open/in_progress/blocked/deferred) answer "is this bead finished?", which
+ * is the right question for a backlog and the WRONG one for a sprint's exit
+ * condition. `deferred` is the one status among them that means "no longer
+ * being attempted": a deferred bead is never dispatched, so counting it as
+ * work still outstanding produces a sprint that can never complete and whose
+ * every remaining cycle reads as stagnation -- a finished sprint reported as
+ * stalled. Excluding it is not a relaxation of the exit condition; it is the
+ * exit condition finally matching what the dispatcher actually does.
+ *
+ * ORIGIN-BLIND ON PURPOSE. It does not matter WHO deferred the bead -- the
+ * planner, the plan reviewer, a reviewer, the verify-route bounce cap or the
+ * sprint doctor. They are all the same statement ("this sprint is not doing
+ * this bead"), and a rule that only recognised one of them would leave the
+ * same trap open for the other four.
+ *
+ * ONLY `deferred` CHANGES MEANING. blocked and in_progress stay in the
+ * outstanding set exactly as before -- a blocked bead is work the sprint
+ * still wants and cannot start, and an orphaned in_progress bead is the
+ * precise case reading `bd list --ready` would silently swallow. That
+ * deliberate "not --ready" stance is unchanged by this helper.
+ *
+ * @param {Array<{id?: string, status?: string}>} beads a not-done bead list
+ * @returns {{ active: object[], deferred: object[], deferredIds: string[] }}
+ */
+export function partitionDeferred(beads) {
+    const active = [];
+    const deferred = [];
+    for (const bead of Array.isArray(beads) ? beads : []) {
+        const status = bead && typeof bead.status === 'string' ? bead.status.trim().toLowerCase() : '';
+        if (status === 'deferred') deferred.push(bead);
+        else active.push(bead);
+    }
+    return { active, deferred, deferredIds: deferred.map((b) => String(b.id)) };
+}

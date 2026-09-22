@@ -94,7 +94,14 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
     // below plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs; the Final Review
     // destructuring only documents the intended order for a reader.
-    const finalVerdictIdx = runnerSource.indexOf('const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount } = await runFinalReviewPhase({');
+    // Anchored on the CALL, not on the full destructuring pattern: the
+    // ordering guarantee this pin protects is "Final Review has run before
+    // Regression Test starts", which is a statement about the await, not
+    // about how many values the phase happens to return. Pinning the whole
+    // destructuring made this test fail every time the phase gained a return
+    // field (e.g. the deferred-id list the closing summary enumerates) --
+    // noise that teaches people to edit the pin rather than read it.
+    const finalVerdictIdx = runnerSource.indexOf('= await runFinalReviewPhase({');
     // apra-fleet-3swo.6.9: Harvest moved into phases/harvest.mjs, taking its
     // phase(`Harvest C...`) literal with it, so the old runner.js anchor no
     // longer resolves. Re-anchored onto the Harvest CALL SITE -- the same
