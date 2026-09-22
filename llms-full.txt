@@ -1792,6 +1792,34 @@ members:
 | `issues` | - (no code access) | issues, PRs, projects, comments |
 | `full` | admin + issues | Everything |
 
+Any level that can push commits (`push`, `push+pr`, `admin`, `full`) also
+requests the fine-grained `workflows` GitHub App permission, distinct from
+`actions`, so a member with one of those levels can push a change under
+`.github/workflows/**`. Without it, GitHub rejects the push outright
+("refusing to allow a GitHub App to create or update workflow ... without
+workflows permission") regardless of which of those levels minted the token
+-- there is no level that grants push but withholds `workflows`. `issues`
+stays code-access-only and never requests it. Like `discussions`
+(also scoped to `issues`/`full`), requesting `workflows` only succeeds once
+the App's own permission set (an org-admin action outside this codebase's
+reach) has granted Workflows and the installation has accepted that grant --
+this constraint holds independent of which fleet access level requests it.
+
+A token-mint request for a permission the App's own permission set doesn't
+grant fails with an HTTP 422 (not 403), distinguishable by GitHub's
+"not granted to this installation" message text. On that specific failure,
+`mintGitToken` surfaces an actionable operator referral naming the missing
+permission(s) and the App/installation involved -- instead of the raw API
+text -- and never silently retries with a reduced permission set: quietly
+dropping a requested permission would mask the misconfiguration rather than
+surface it. Any code that classifies a push rejection caused by a missing
+fine-grained permission (as opposed to an expired/invalid credential) must
+treat it as a **permission-scope** failure, not a re-mintable auth failure --
+re-minting reproduces the exact same permission set and cannot fix it. See
+`runner-error-classification.md` and `dispatch-reliability-hardening.md` for
+how the fleet-sprint orchestrator's git-failure classifier and post-dispatch
+handling route this case.
+
 ### VCS provider resolution
 
 A member's VCS provider (`github` | `bitbucket` | `azure-devops` | `none`)
