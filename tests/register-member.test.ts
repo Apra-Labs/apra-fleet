@@ -41,7 +41,13 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
 
   afterEach(() => {
     restoreRegistry();
-    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // my-beads-db-0cd.26: registerMember/compose_permissions spawn several real
+    // subprocesses with cwd=workFolder; on Windows the OS can briefly hold the
+    // directory handle past the child's reported exit (most visibly when AC2's
+    // async work is still unwinding after its own timeout fires), producing a
+    // transient EBUSY on rmdir. Widen Node's built-in retry budget (not a custom
+    // loop) rather than let that timing race fail the next test in the file.
+    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     vi.resetModules();
   });
 
@@ -96,7 +102,12 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // partially written by a later step that assumed provisioning succeeded.
     const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
     expect(fs.existsSync(settingsPath)).toBe(false);
-  });
+  // my-beads-db-0cd.26: registerMember's real pre-compose subprocess work
+  // (connection/version checks, agent provisioning, workspace-trust seeding)
+  // reliably exceeds vitest's 5000ms default under full-suite load even though
+  // compose_permissions itself is mocked here -- sized to the same 15000ms
+  // already used by the AC1/AC3 cases in this file.
+  }, 15000);
 
   it('AC3: re-running compose_permissions for the same member is idempotent -- no duplicate allow entries, unrelated settings keys preserved', async () => {
     // Runs a full registerMember() (which itself invokes the real compose_permissions

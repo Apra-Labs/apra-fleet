@@ -92,7 +92,11 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
 
     const listed = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
     expect(listed.results.some((e: any) => e.title === title)).toBe(true);
-  });
+  // my-beads-db-0cd.26: this case's real kbCapture/kbSessionPrime work (git init
+  // + sqlite writes) reliably exceeds vitest's 5000ms default under full-suite
+  // load though it passes in ~1s isolated -- sized like the register-member.test.ts
+  // AC1/AC3 precedent.
+  }, 15000);
 
   it('B: the same prime from the REAL local clone still stales an entry whose basis file changed', async () => {
     const remoteUrl = `git@github.com:acme/anchor-b-${tok}.git`;
@@ -120,7 +124,9 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
     } as any);
 
     expect(await rawStale(localClone, title)).toBe(1);
-  });
+  // my-beads-db-0cd.26: same load-flake as case A above -- explicit timeout
+  // sized like the register-member.test.ts AC1/AC3 precedent.
+  }, 15000);
 });
 
 describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
