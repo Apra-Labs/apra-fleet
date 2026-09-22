@@ -278,9 +278,19 @@ The durable fix has two independent halves, and both matter:
 - **Read side:** completion is keyed off the dispatched process's own EXIT
   event, not pipe EOF, **gated strictly to Windows** (a string comparison
   against the resolved agent OS). A short bounded grace window after exit
-  still drains whatever output is already buffered in the pipe before the
-  read side settles, so transcript/last-turn capture isn't truncated by
-  reacting to exit a moment too early.
+  is meant to drain whatever output is already buffered in the pipe before
+  the read side settles, so transcript/last-turn capture isn't truncated by
+  reacting to exit a moment too early. **This depends on a strict ordering
+  invariant that every completion-on-exit call site must honor identically:
+  the drain must be allowed to finish, and the settle/finalize step must run
+  AFTER it, never before.** A call site that tears down the readable stream
+  (destroying/closing it) before finalizing discards whatever was still
+  buffered and unread at that instant -- any output landing late inside the
+  grace window is then silently and permanently lost, with no error and no
+  signal that it happened. Whenever a new transport or provider adds its own
+  completion-on-exit path, the finalize-then-teardown ordering has to be
+  verified explicitly for that call site; it is not implied by getting the
+  Windows-only gate and the grace-window duration right.
 
 **This asymmetry is intentional and must not be "simplified" to one
 behavior for both platforms.** On POSIX, the existing process tree reaches a

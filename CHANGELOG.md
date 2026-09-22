@@ -11,6 +11,13 @@ never fired against a frozen transcript whose tail ended in an
 untimestamped entry, and a root test-runner chain with no wall-clock bound
 that could hang the whole dispatch behind it.
 
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.4256.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4256 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 44 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 - **Windows dispatch completion now keys off the dispatched process's own
   exit, not pipe EOF.** A grandchild started by a dispatched CLI (a sandbox
   server, a nested test runner) can hold the dispatch's stdout/stderr pipe
@@ -44,11 +51,20 @@ internal timer used by the exit-drain grace window can end up as a
 process's last live handle, and gitignoring a local tooling lock file that
 was observed left behind in the repo root.
 
-One item is explicitly carried forward, not resolved by this release: the
-POSIX-only coverage for the test-runner wall-clock-bound and outer-signal
-exit-code fixes has not yet executed on a Linux or macOS runner -- the fix
-is landed and covered by tests, but the platform parity claimed by this
-work has not yet been independently confirmed off Windows.
+Two items are explicitly carried forward, not resolved by this release:
+
+- The POSIX-only coverage for the test-runner wall-clock-bound and
+  outer-signal exit-code fixes has not yet executed on a Linux or macOS
+  runner -- the fix is landed and covered by tests, but the platform parity
+  claimed by this work has not yet been independently confirmed off
+  Windows.
+- A known ordering defect remains open in the Windows completion-on-exit
+  path: the two call sites that implement it order their teardown of the
+  readable stream differently relative to when the dispatch is finalized,
+  and the unsafe ordering can silently and permanently drop output that
+  arrives late inside the drain grace window, with no error and no signal
+  that it happened. See `docs/dispatch-reliability-hardening.md` for the
+  invariant this must satisfy once fixed.
 
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
 Tracked spend (priced dispatches only): $23.4256.
