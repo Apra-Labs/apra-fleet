@@ -689,8 +689,14 @@ describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics u
 //      branch and workflow path(s); never throws (advisory only).
 //   2. no-warn: the SAME diff with a gitAccess level that DOES carry
 //      'workflows' -> no warning, and -- per the function's own
-//      cheapest-check-first contract -- no provider lookup or git command is
-//      even attempted.
+//      cheap-exit contract -- no git command is even attempted. (The
+//      member_detail reads that establish the member's provider and effective
+//      level are NOT skippable: apra-fleet-rp7a.4 moved the level's source
+//      from the caller-supplied constant to the member registry, so the
+//      lookup is what the access-level decision is made FROM. They do not
+//      repeat per dispatch -- a "nothing to warn about" verdict is cached per
+//      member. The paired [test] bead covers the registered-vs-default level
+//      behaviour itself.)
 //   3. no-op: zero commits ahead of base skips the diff command entirely
 //      (asserted on the recorded command list); a nonzero-ahead diff with NO
 //      workflow paths runs the diff but still logs no warning.
@@ -698,11 +704,13 @@ describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics u
 //      command) throwing is swallowed -- logged as a degraded-check line,
 //      never rethrown.
 //
-// `gitAccess` defaults to DEFAULT_SYNC_GIT_ACCESS ('push'), which apra-fleet-
-// 2wdc.1 already grants 'workflows' -- every case below that wants to reach
-// the warning path passes an explicit non-carrying level ('read') so it does
-// not trip the cheapest-check-first short-circuit before ever reaching the
-// git commands under test.
+// `gitAccess` is now the FALLBACK level, used when the member record carries
+// none (MEMBER_DETAIL_GITHUB below deliberately carries none), and defaults to
+// DEFAULT_SYNC_GIT_ACCESS ('push'), which apra-fleet-2wdc.1 already grants
+// 'workflows' -- every case below that wants to reach the warning path passes
+// an explicit non-carrying level ('read') so it does not trip the
+// grants-workflows short-circuit before ever reaching the git commands under
+// test.
 // =============================================================================
 describe('createWorkflowsPermissionPreflightCallback', () => {
     const memberDetailGithub = async (name) => (name === 'member_detail' ? MEMBER_DETAIL_GITHUB : null);
@@ -731,7 +739,7 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
         assert.ok(calls.some((c) => c.cmd.includes('git diff --name-only')), 'expected the local workflow-path diff to run');
     });
 
-    test('(case 2: no-warn) the SAME diff with a gitAccess level that already carries "workflows" (the default) logs no warning and skips the provider lookup and every git command entirely', async () => {
+    test('(case 2: no-warn) the SAME diff with a gitAccess level that already carries "workflows" (the default) logs no warning and skips every git command entirely, after a single member_detail read', async () => {
         const { command, calls } = makeCommandMock({
             'git rev-list --count': [{ ok: true, output: '3', error: null }],
             'git diff --name-only': [{ ok: true, output: '.github/workflows/ci.yml', error: null }],
@@ -742,15 +750,21 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
             return memberDetailGithub(name, args);
         };
         const logs = [];
-        // gitAccess omitted -> defaults to DEFAULT_SYNC_GIT_ACCESS ('push'),
-        // which apra-fleet-2wdc.1 grants 'workflows' -- the cheapest check
-        // alone must short-circuit before any provider lookup or git command.
+        // gitAccess omitted and the member record carries no level of its own
+        // -> falls back to DEFAULT_SYNC_GIT_ACCESS ('push'), which
+        // apra-fleet-2wdc.1 grants 'workflows' -- so the access-level check
+        // short-circuits before any git command. The member_detail read that
+        // ESTABLISHES that level still happens (apra-fleet-rp7a.4): it is the
+        // input to the decision, not something the decision can skip.
         const warn = createWorkflowsPermissionPreflightCallback({ callTool, command, log: (m) => logs.push(m) });
 
         await warn('fleet-mac', 'feat/touches-workflows', 'main');
+        // Second dispatch for the same member: the "nothing to warn about"
+        // verdict is cached, so no further member_detail read at all.
+        await warn('fleet-mac', 'feat/touches-workflows', 'main');
 
         assert.equal(logs.length, 0, `expected no warning log at all, got: ${JSON.stringify(logs)}`);
-        assert.equal(providerCalls.length, 0, 'expected NO member_detail/provider-resolution call -- the access-level check alone must short-circuit');
+        assert.deepStrictEqual(providerCalls, ['member_detail', 'member_detail'], `expected the member_detail reads (provider, then registered level) to happen once for the FIRST dispatch only -- the silent verdict is cached for the second, got: ${JSON.stringify(providerCalls)}`);
         assert.equal(calls.length, 0, `expected NO git command at all (no rev-list, no diff), got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
     });
 
