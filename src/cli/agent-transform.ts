@@ -4,8 +4,22 @@
  * Claude frontmatter: name, description, tools (comma/list)
  * OpenCode frontmatter: description, mode: subagent, permission map (no name)
  *
- * NOTE: This mirrors apra-pm/install.mjs:transformAgentForOpenCode -- keep both in sync
- * when adding new tool mappings or frontmatter fields.
+ * NOTE: packages/apra-fleet-se/apra-pm/install.mjs is NOT an npm workspace (see the
+ * comment at its own transformAgentForAgy/transformAgentForOpenCode) and carries its
+ * own copies of the following symbols from this file -- keep BOTH sides in sync
+ * whenever adding new tool mappings or frontmatter fields:
+ *   - transformAgentForOpenCode
+ *   - transformAgentForAgy
+ *   - agyToolMap
+ *   - OPENCODE_NATIVE_TOOLS
+ *   - CONDITIONAL_MARKER_RE
+ *   - resolveConditionalBody
+ *   - toolAvailability
+ *   - readFrontmatterTools
+ * tests/agent-transform-apra-pm-sync.test.ts asserts agyToolMap and
+ * OPENCODE_NATIVE_TOOLS stay byte-identical between the two files, so drift in
+ * those two fails a suite instead of shipping; the rest of the list above has no
+ * automated guard -- update both files by hand.
  */
 
 interface PermissionMap {
