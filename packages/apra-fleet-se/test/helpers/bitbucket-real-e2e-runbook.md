@@ -97,6 +97,12 @@ The gated scenario itself -- provision, `git ls-remote` verify, then the
 publish path that opens the real pull request above -- lives in
 `../bitbucket-real-e2e.test.mjs` (same `test/` directory as this file's
 parent), enable it exactly as described in "Why this lane is opt-in" above.
+The publish path builds the create-pull-request command with the
+`{{vcs_username_inline}}`/`{{vcs_token_inline}}` placeholders (the same
+production handoff `vcs-auth.mjs`'s "Publish PR" step uses) and dispatches it
+through `vcs_credential_exec`, which substitutes and redacts the app
+password and username server-side -- the scenario itself never reads either
+credential half back out of the deployed git-credential-helper.
 
 ## Rotation (any time, no code change)
 
