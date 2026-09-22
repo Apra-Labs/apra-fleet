@@ -19,9 +19,9 @@ import { buildCreatePrCommand, capabilities } from '../fleet-sprint/vcs-module.m
 //   4. pullRequestResponse.map reads the flat `id` and the NESTED
 //      `links.html.href`, and degrades to url:null (never throws) when that
 //      nested path is missing;
-//   5. capabilitiesForHost is still absent (a separate, later task), so
-//      VCSModule.capabilities() keeps reporting canOpenPullRequest:false for
-//      every bitbucket.org remote.
+//   5. capabilitiesForHost is now present (apra-fleet-qeq1.4), so
+//      VCSModule.capabilities() reports canOpenPullRequest:true for every
+//      bitbucket.org remote.
 // =============================================================================
 
 const REPO_REF = Object.freeze({ workspace: 'kumaakh', repo: 'apra-analytics' });
@@ -221,12 +221,12 @@ test('bitbucket pullRequestResponse.map: a missing nested links.html.href degrad
 });
 
 // -----------------------------------------------------------------------------
-// (5) capabilities() -- canOpenPullRequest stays false; capabilitiesForHost
-// is a separate, later task.
+// (5) capabilities() -- canOpenPullRequest is now true; capabilitiesForHost
+// is now available (apra-fleet-qeq1.4).
 // -----------------------------------------------------------------------------
 
-test('capabilities: a bitbucket.org remote still reports canOpenPullRequest:false (capabilitiesForHost not yet added)', () => {
+test('capabilities: a bitbucket.org remote now reports canOpenPullRequest:true (capabilitiesForHost available)', () => {
     for (const url of ['https://bitbucket.org/kumaakh/apra-analytics.git', 'git@bitbucket.org:kumaakh/apra-analytics.git']) {
-        assert.deepEqual(capabilities(url), { hasRemote: true, canOpenPullRequest: false, host: 'bitbucket.org' }, url);
+        assert.deepEqual(capabilities(url), { hasRemote: true, canOpenPullRequest: true, host: 'bitbucket.org' }, url);
     }
 });

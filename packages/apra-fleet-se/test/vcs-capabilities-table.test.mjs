@@ -70,6 +70,13 @@ test('capabilities: an Azure DevOps URL has a remote and IS PR-capable (register
     assert.equal(caps.host, 'dev.azure.com');
 });
 
+test('capabilities: a Bitbucket URL has a remote and IS PR-capable (registered provider)', () => {
+    const caps = capabilities('git@bitbucket.org:kumaakh/apra-analytics.git');
+    assert.equal(caps.hasRemote, true);
+    assert.equal(caps.canOpenPullRequest, true, 'Bitbucket has a registered provider (see vcs-providers/bitbucket.mjs) and must be PR-capable');
+    assert.equal(caps.host, 'bitbucket.org');
+});
+
 test('capabilities: a GitLab URL has a remote but is NOT PR-capable (no registered provider yet)', () => {
     const caps = capabilities('https://gitlab.com/o/r.git');
     assert.equal(caps.hasRemote, true);

@@ -23,9 +23,8 @@ import { capabilities } from '../fleet-sprint/vcs-module.mjs';
 //   3. parseRepoRef() returns { workspace, repo, canonical } for both the ssh
 //      scp-like and https remote shapes, and null -- never a throw -- for
 //      garbage;
-//   4. capabilitiesForHost() is still absent (builders land in a later task),
-//      so VCSModule.capabilities() never advertises an action this provider
-//      cannot build.
+//   4. capabilitiesForHost() is now present (apra-fleet-qeq1.4), so
+//      VCSModule.capabilities() advertises canOpenPullRequest:true.
 // =============================================================================
 
 const CANONICAL = { workspace: 'kumaakh', repo: 'apra-analytics', canonical: 'kumaakh/apra-analytics' };
@@ -150,9 +149,9 @@ test('parseRepoRef: unparseable, non-Bitbucket or lookalike input returns null a
 // (4) capabilities
 // -----------------------------------------------------------------------------
 
-// Builders (and capabilitiesForHost) are added in a later task: this task
-// only owes parseRepoRef/repoRefHint, so canOpenPullRequest must stay false.
-test('capabilities: a bitbucket.org remote is recognized (host + hasRemote) but canOpenPullRequest is still false (builders not yet added)', () => {
+// capabilitiesForHost now available (apra-fleet-qeq1.4): this provider can
+// open a pull request and advertises it via VCSModule.capabilities().
+test('capabilities: a bitbucket.org remote is recognized (host + hasRemote) and IS PR-capable', () => {
     for (const [url, host] of [
         ['https://bitbucket.org/kumaakh/apra-analytics.git', 'bitbucket.org'],
         ['git@bitbucket.org:kumaakh/apra-analytics.git', 'bitbucket.org'],
@@ -160,6 +159,6 @@ test('capabilities: a bitbucket.org remote is recognized (host + hasRemote) but 
         const caps = capabilities(url);
         assert.equal(caps.hasRemote, true, url);
         assert.equal(caps.host, host);
-        assert.equal(caps.canOpenPullRequest, false);
+        assert.equal(caps.canOpenPullRequest, true, 'Bitbucket provider now has capabilitiesForHost and is PR-capable');
     }
 });
