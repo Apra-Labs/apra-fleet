@@ -16,6 +16,20 @@ import {
     openStore,
     readSchemaVersion,
 } from '../src/projects/store/db.mjs';
+import {
+    StoreValidationError,
+    createProject,
+    deleteProject,
+    getProject,
+    listProjects,
+    updateProject,
+} from '../src/projects/store/projects.mjs';
+import {
+    deleteMemberGit,
+    getMemberGit,
+    listMemberGit,
+    upsertMemberGit,
+} from '../src/projects/store/member-git.mjs';
 
 // =============================================================================
 // supervisor.sqlite store skeleton: db.mjs + migration runner + 001-projects.
@@ -376,6 +390,261 @@ describe('applyMigrations', { skip }, () => {
             () => openStore({ dataDir: dir, migrations: [{ version: 0, name: 'a', up: () => {} }] }),
             /integer version >= 1/,
         );
+    });
+});
+
+describe('projects repository', { skip }, () => {
+    /** @type {{db: any, close: () => void}} */
+    let store;
+
+    before(async () => {
+        const dir = await tempDataDir();
+        store = openStore({ dataDir: dir });
+    });
+
+    after(() => {
+        store?.close();
+    });
+
+    test('createProject round-trips through getProject', () => {
+        const created = createProject(store.db, {
+            id: 'crud-1',
+            name: 'CRUD One',
+            backlogMember: 'member-a',
+            beads: { kind: 'clone', dir: '/tmp/crud-1/.beads', remote: 'git@example.com:o/beads.git', prefix: 'c1' },
+            operator: 'op-a',
+        });
+        assert.equal(created.id, 'crud-1');
+        assert.equal(created.beads.kind, 'clone');
+        assert.equal(typeof created.createdAt, 'string');
+        assert.equal(created.createdAt, created.updatedAt);
+
+        const fetched = getProject(store.db, 'crud-1');
+        assert.deepEqual(fetched, created);
+    });
+
+    test('createProject defaults beads.kind to clone when omitted', () => {
+        const created = createProject(store.db, {
+            id: 'crud-default-kind',
+            name: 'Default Kind',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/crud-default-kind/.beads' },
+        });
+        assert.equal(created.beads.kind, 'clone');
+        assert.equal(created.beads.remote, null);
+        assert.equal(created.operator, null);
+    });
+
+    test('getProject returns null for a missing id', () => {
+        assert.equal(getProject(store.db, 'no-such-project'), null);
+    });
+
+    test('listProjects returns every project ordered by id', () => {
+        createProject(store.db, {
+            id: 'crud-list-b',
+            name: 'List B',
+            backlogMember: 'member-b',
+            beads: { dir: '/tmp/list-b/.beads' },
+        });
+        createProject(store.db, {
+            id: 'crud-list-a',
+            name: 'List A',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/list-a/.beads' },
+        });
+        const ids = listProjects(store.db).map((p) => p.id);
+        const listIndexA = ids.indexOf('crud-list-a');
+        const listIndexB = ids.indexOf('crud-list-b');
+        assert.ok(listIndexA >= 0 && listIndexB >= 0);
+        assert.ok(listIndexA < listIndexB, 'expected ascending id order');
+    });
+
+    test('createProject rejects a missing required field with {field, reason}', () => {
+        assert.throws(
+            () => createProject(store.db, { id: 'bad', name: '', backlogMember: 'm', beads: { dir: '/tmp/bad' } }),
+            (err) => {
+                assert.ok(err instanceof StoreValidationError);
+                assert.ok(err.errors.some((e) => e.field === 'name'));
+                return true;
+            },
+        );
+    });
+
+    test('createProject rejects a missing beads.dir', () => {
+        assert.throws(
+            () => createProject(store.db, { id: 'bad2', name: 'Bad Two', backlogMember: 'm', beads: {} }),
+            (err) => {
+                assert.ok(err instanceof StoreValidationError);
+                assert.ok(err.errors.some((e) => e.field === 'beads.dir'));
+                return true;
+            },
+        );
+    });
+
+    test('createProject rejects a duplicate id', () => {
+        createProject(store.db, {
+            id: 'dup-1', name: 'Dup', backlogMember: 'm', beads: { dir: '/tmp/dup-1' },
+        });
+        assert.throws(() => createProject(store.db, {
+            id: 'dup-1', name: 'Dup Again', backlogMember: 'm', beads: { dir: '/tmp/dup-1' },
+        }));
+    });
+
+    test('updateProject patches only the given fields and bumps updated_at', async () => {
+        const created = createProject(store.db, {
+            id: 'upd-1',
+            name: 'Update One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/upd-1/.beads', remote: 'git@example.com:o/r.git' },
+            operator: 'op-a',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const updated = updateProject(store.db, 'upd-1', { name: 'Update One Renamed' });
+        assert.equal(updated.name, 'Update One Renamed');
+        assert.equal(updated.backlogMember, created.backlogMember);
+        assert.equal(updated.beads.remote, created.beads.remote);
+        assert.equal(updated.operator, created.operator);
+        assert.notEqual(updated.updatedAt, created.updatedAt);
+        assert.equal(updated.createdAt, created.createdAt);
+    });
+
+    test('updateProject rejects a malformed field', () => {
+        createProject(store.db, { id: 'upd-bad', name: 'Upd Bad', backlogMember: 'm', beads: { dir: '/tmp/upd-bad' } });
+        assert.throws(
+            () => updateProject(store.db, 'upd-bad', { name: '' }),
+            (err) => {
+                assert.ok(err instanceof StoreValidationError);
+                assert.ok(err.errors.some((e) => e.field === 'name'));
+                return true;
+            },
+        );
+    });
+
+    test('updateProject throws ERR_PROJECT_NOT_FOUND for a missing id', () => {
+        assert.throws(
+            () => updateProject(store.db, 'no-such-project', { name: 'x' }),
+            { code: 'ERR_PROJECT_NOT_FOUND' },
+        );
+    });
+
+    test('deleteProject removes the row and cascades member_git (delete cascades, per doc s4.3)', () => {
+        createProject(store.db, { id: 'del-1', name: 'Del One', backlogMember: 'm', beads: { dir: '/tmp/del-1' } });
+        upsertMemberGit(store.db, { projectId: 'del-1', member: 'm' });
+        assert.equal(listMemberGit(store.db, 'del-1').length, 1);
+
+        const result = deleteProject(store.db, 'del-1');
+        assert.equal(result, true);
+        assert.equal(getProject(store.db, 'del-1'), null);
+        assert.equal(listMemberGit(store.db, 'del-1').length, 0, 'member_git rows must cascade-delete with their project');
+    });
+
+    test('deleteProject returns false for a missing id', () => {
+        assert.equal(deleteProject(store.db, 'no-such-project'), false);
+    });
+});
+
+describe('member_git repository', { skip }, () => {
+    /** @type {{db: any, close: () => void}} */
+    let store;
+
+    before(async () => {
+        const dir = await tempDataDir();
+        store = openStore({ dataDir: dir });
+        createProject(store.db, { id: 'mg-p1', name: 'MG P1', backlogMember: 'member-a', beads: { dir: '/tmp/mg-p1' } });
+    });
+
+    after(() => {
+        store?.close();
+    });
+
+    test('upsertMemberGit inserts then round-trips through getMemberGit', () => {
+        const row = upsertMemberGit(store.db, {
+            projectId: 'mg-p1',
+            member: 'member-a',
+            originSlug: 'example.com/o/r',
+            originUrl: 'git@example.com:o/r.git',
+            checkoutPath: '/home/member-a/r',
+            branch: 'main',
+            upstream: 'origin/main',
+            dirty: true,
+            worktrees: [{ path: '/home/member-a/r', branch: 'main' }],
+            playbooks: ['deploy.md'],
+            bibleCommit: 'abc123',
+            statusJson: { ok: true },
+            probedAt: '2026-01-01T00:00:00.000Z',
+        });
+        assert.equal(row.projectId, 'mg-p1');
+        assert.equal(row.member, 'member-a');
+        assert.equal(row.dirty, true);
+        assert.deepEqual(row.worktrees, [{ path: '/home/member-a/r', branch: 'main' }]);
+        assert.deepEqual(row.playbooks, ['deploy.md']);
+        assert.deepEqual(row.statusJson, { ok: true });
+
+        const fetched = getMemberGit(store.db, 'mg-p1', 'member-a');
+        assert.deepEqual(fetched, row);
+    });
+
+    test('upsertMemberGit on the same (project, member) replaces the row rather than duplicating it', () => {
+        upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'member-upsert', branch: 'main', dirty: false });
+        upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'member-upsert', branch: 'feature-x', dirty: true });
+
+        const rows = listMemberGit(store.db, 'mg-p1').filter((r) => r.member === 'member-upsert');
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].branch, 'feature-x');
+        assert.equal(rows[0].dirty, true);
+    });
+
+    test('upsertMemberGit represents a member with no checkout (nullable columns)', () => {
+        const row = upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'member-nocheckout', probedAt: 'now' });
+        assert.equal(row.originSlug, null);
+        assert.equal(row.checkoutPath, null);
+        assert.equal(row.worktrees, null);
+        assert.equal(row.probedAt, 'now');
+    });
+
+    test('getMemberGit returns null for a missing composite key', () => {
+        assert.equal(getMemberGit(store.db, 'mg-p1', 'no-such-member'), null);
+    });
+
+    test('listMemberGit returns every row for a project ordered by member', () => {
+        upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'z-member' });
+        upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'a-member' });
+        const members = listMemberGit(store.db, 'mg-p1').map((r) => r.member);
+        assert.ok(members.indexOf('a-member') < members.indexOf('z-member'));
+    });
+
+    test('upsertMemberGit rejects a missing required field with {field, reason}', () => {
+        assert.throws(
+            () => upsertMemberGit(store.db, { projectId: 'mg-p1' }),
+            (err) => {
+                assert.ok(err instanceof StoreValidationError);
+                assert.ok(err.errors.some((e) => e.field === 'member'));
+                return true;
+            },
+        );
+    });
+
+    test('upsertMemberGit rejects a row whose project does not exist (FK violation surfaced as {field, reason})', () => {
+        assert.throws(
+            () => upsertMemberGit(store.db, { projectId: 'no-such-project', member: 'member-x' }),
+            (err) => {
+                assert.ok(err instanceof StoreValidationError);
+                assert.equal(err.field, 'projectId');
+                assert.match(err.reason, /does not exist/);
+                return true;
+            },
+        );
+    });
+
+    test('deleteMemberGit removes a single row without touching its project', () => {
+        upsertMemberGit(store.db, { projectId: 'mg-p1', member: 'member-del' });
+        assert.equal(deleteMemberGit(store.db, 'mg-p1', 'member-del'), true);
+        assert.equal(getMemberGit(store.db, 'mg-p1', 'member-del'), null);
+        assert.notEqual(getProject(store.db, 'mg-p1'), null, 'deleting a member_git row must not delete its project');
+    });
+
+    test('deleteMemberGit returns false for a missing composite key', () => {
+        assert.equal(deleteMemberGit(store.db, 'mg-p1', 'no-such-member'), false);
     });
 });
 
