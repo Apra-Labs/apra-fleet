@@ -81,7 +81,7 @@
  *                                          // literal -- out of the shared
  *                                          // callers. Only meaningful
  *                                          // alongside parseRepoRef.
- *     buildProvisionArgs: (ctx) => { args }|{ error }   // OPTIONAL;
+ *     buildProvisionArgs: (ctx) => { args, note? }|{ error }   // OPTIONAL;
  *                                          // provisioning axis. Build the
  *                                          // provision_vcs_auth argument
  *                                          // object for a member of this
@@ -105,6 +105,13 @@
  *                                          // {{secret.NAME}} placeholder,
  *                                          // never a value -- resolution is
  *                                          // hub-side (see ./azure-devops.mjs).
+ *                                          // ctx also carries the raw
+ *                                          // `remoteUrl` the caller read and
+ *                                          // `remoteReadError` (why it could
+ *                                          // not be read, else null). An
+ *                                          // optional `note` string next to
+ *                                          // `args` is logged as an advisory,
+ *                                          // never treated as a failure.
  *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
  *                                          // as null) is what makes a provider
  *                                          // part of resolveProvider()'s/
