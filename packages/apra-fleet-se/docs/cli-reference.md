@@ -56,6 +56,8 @@ allowed.
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
+| `--deploy-target-self-hosted` | | no | boolean flag | off | Declares that this sprint's target repo IS the software running the sprint's own infrastructure, so its production deploy path would replace the instance executing the sprint. Forwarded as `deploy_target.self_hosted`, consumed by `phases/deploy.mjs`'s `resolveDeployMode()` guard, which then routes the deploy phase to the target's isolated mode (`--isolated-deploy-mode`) instead of the production path. Omitted (default): the guard is inert and the deploy runbook is followed as written -- see `docs/fleet-sprint-cli-contract.md`. |
+| `--isolated-deploy-mode <name>` | | no (required when `--deploy-target-self-hosted` is passed; the CLI rejects it otherwise) | string | -- | The target's own name for the sandbox/isolated deploy mode its runbook offers (e.g. `"Isolated Test Deploy"`). Forwarded as `deploy_target.isolated_deploy_mode` -- target-authored data, never an engine literal. |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
@@ -92,7 +94,8 @@ argument audit" section specifically for the productize-or-prune decision on
 - `1` -- any precondition or validation failure (missing required flags,
   malformed issue id/branch/role-map, out-of-range `--max-cycles`/
   `--viewer-port`/`--dispatch-timeout-s`/`--usage-limit-max-wait-s`/
-  `--usage-limit-max-reprobes`/`--budget`, unreachable fleet
+  `--usage-limit-max-reprobes`/`--budget`, `--isolated-deploy-mode` passed
+  without `--deploy-target-self-hosted`, unreachable fleet
   server, member validation failure, missing target issue, topology
   mismatch, viewer `listen` failure), and any sprint failure.
 - `130` -- SIGINT received while a sprint was in flight.

@@ -2589,6 +2589,8 @@ async function runSprintCycle(context) {
             ({ deployedThisCycle } = await runDeployPhase({
                 phase, log, dispatchCtx,
                 cycle, sprintSelfIdLine,
+                // Target config for the deploy-mode guard (deploy_target.self_hosted).
+                deployTarget: validated.deployTarget,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
                 deployFailures, deployedThisCycle,
             }));

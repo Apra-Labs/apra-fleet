@@ -13,6 +13,7 @@ import {
     checkIssuesExistOnMember,
     formatViewerListenError,
     attachViewerErrorHandler,
+    isolatedDeployModeRequiresSelfHosted,
 } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/runner.js';
 
@@ -409,6 +410,89 @@ describe('--run-id flag (apra-fleet-k7b.1)', () => {
         const { values } = parseCliArgs(BASE_ARGV);
         const effectiveRunId = values['run-id'] || values.branch;
         assert.strictEqual(effectiveRunId, 'auto-sprint/x');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// my-beads-db-0cd.24: --deploy-target-self-hosted / --isolated-deploy-mode
+// surface sprint-args.mjs's deploy_target through the CLI so the self-hosted
+// deploy guard (resolveDeployMode(), my-beads-db-0cd.17/.22) can actually
+// engage from a real sprint launch, not just a test/programmatic caller.
+// ---------------------------------------------------------------------------
+
+describe('--deploy-target-self-hosted / --isolated-deploy-mode flags (my-beads-db-0cd.24)', () => {
+    test('parseCliArgs accepts both flags', () => {
+        const { values } = parseCliArgs([
+            ...BASE_ARGV,
+            '--deploy-target-self-hosted',
+            '--isolated-deploy-mode', 'Isolated Test Deploy',
+        ]);
+        assert.strictEqual(values['deploy-target-self-hosted'], true);
+        assert.strictEqual(values['isolated-deploy-mode'], 'Isolated Test Deploy');
+    });
+
+    test('buildRunnerArgs threads both through as args.deploy_target, and it round-trips through validateArgs', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            deployTargetSelfHosted: true, isolatedDeployMode: 'Isolated Test Deploy',
+        });
+        assert.deepStrictEqual(args.deploy_target, { self_hosted: true, isolated_deploy_mode: 'Isolated Test Deploy' });
+
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.deployTarget, { selfHosted: true, isolatedDeployMode: 'Isolated Test Deploy' });
+    });
+
+    test('buildRunnerArgs omits args.deploy_target entirely when neither flag is passed (guard stays inert, unchanged default)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            deployTargetSelfHosted: false, isolatedDeployMode: undefined,
+        });
+        assert.strictEqual('deploy_target' in args, false);
+
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.deployTarget, { selfHosted: false, isolatedDeployMode: undefined });
+    });
+
+    test('the CLI rejects --isolated-deploy-mode without --deploy-target-self-hosted (calls the exported predicate main() actually uses)', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--isolated-deploy-mode', 'Isolated Test Deploy']);
+        const deployTargetSelfHosted = Boolean(values['deploy-target-self-hosted']);
+        const isolatedDeployMode = values['isolated-deploy-mode'];
+        assert.strictEqual(deployTargetSelfHosted, false);
+        // Exercises the real production predicate (isolatedDeployModeRequiresSelfHosted,
+        // exported from bin/cli.mjs and called directly by main()'s guard) rather than
+        // re-deriving its condition here -- deleting/breaking the guard in cli.mjs
+        // would make this assertion fail.
+        assert.strictEqual(
+            isolatedDeployModeRequiresSelfHosted({ deployTargetSelfHosted, isolatedDeployMode }),
+            true
+        );
+    });
+
+    test('isolatedDeployModeRequiresSelfHosted returns false when --deploy-target-self-hosted is also passed', () => {
+        assert.strictEqual(
+            isolatedDeployModeRequiresSelfHosted({ deployTargetSelfHosted: true, isolatedDeployMode: 'Isolated Test Deploy' }),
+            false
+        );
+    });
+
+    test('isolatedDeployModeRequiresSelfHosted returns false when --isolated-deploy-mode is absent entirely', () => {
+        assert.strictEqual(
+            isolatedDeployModeRequiresSelfHosted({ deployTargetSelfHosted: false, isolatedDeployMode: undefined }),
+            false
+        );
+    });
+
+    test('--deploy-target-self-hosted alone (no isolated mode) reaches validateArgs, which is where the refusal actually fires at deploy time', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            deployTargetSelfHosted: true, isolatedDeployMode: undefined,
+        });
+        assert.deepStrictEqual(args.deploy_target, { self_hosted: true });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.deployTarget, { selfHosted: true, isolatedDeployMode: undefined });
     });
 });
 

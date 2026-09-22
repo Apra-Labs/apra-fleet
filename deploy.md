@@ -42,6 +42,33 @@ additionally needs exactly one more:
 > section replaces the machine's shared production singleton and is only for
 > a real production rollout. A test deploy must not restart production
 > infrastructure; the sandbox runs alongside it.
+>
+> **This includes every fleet-sprint `Deploy C<N>` phase.** That phase exists
+> to stand up a build for the `Integ Test C<N>` that always follows it, so it
+> is an integration deploy even though the dispatch label says only "Deploy".
+> Use `## Sandbox Deploy`. Reach for this section only when a human is
+> deliberately rolling out to this machine's live singleton.
+>
+> This is not a style preference -- on a self-hosted repo the production path
+> **cannot succeed**. apra-fleet builds apra-fleet, so `## Deploy` tries to
+> replace the very server running the sprint: `install --force` stops the
+> singleton and deletes `~/.apra-fleet/data/server.json` (deregistering it),
+> the new instance cannot bind 7523 because the old one still holds it and
+> lands on a random port instead, and the runbook's "poll port 7523 to
+> confirm it came up" then waits for something that will never appear.
+> Observed 2026-09-16 on sprint 1fb1d292: a silent 46-minute stall in
+> `Deploy C1`, a stray server orphaned on port 31821, and `server.json`
+> destroyed while the live server kept serving unregistered.
+>
+> **This routing is machine-enforced, not advisory.** fleet-sprint's Deploy
+> phase (`packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs`,
+> `resolveDeployMode()`) reads the deploy-target config it is launched with:
+> when `deploy_target.self_hosted` is true it pins the dispatch to the
+> `deploy_target.isolated_deploy_mode` the target declares (for this repo,
+> `Sandbox Deploy`) and forbids this section outright; with `self_hosted` true
+> and no isolated mode declared it refuses to dispatch at all
+> (`SelfHostedProductionDeployRefusedError`). A target that does not set
+> `deploy_target` is unaffected and follows its runbook as written.
 
 Builds from source, then installs with the `./dist` installer binary and
 `install --force`.

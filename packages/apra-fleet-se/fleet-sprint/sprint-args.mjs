@@ -29,6 +29,9 @@ import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 const ISSUE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const BRANCH_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/;
 const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
+// A target-authored deploy-mode label (see KNOWN_ARG_KEYS' deploy_target).
+// Interpolated into the deployer prompt, so: one line, no quotes/backticks.
+const DEPLOY_MODE_LABEL_PATTERN = /^[A-Za-z0-9 ()._\/-]{1,80}$/;
 
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
@@ -139,6 +142,19 @@ const KNOWN_ARG_KEYS = new Set([
     // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
     // pass it.
     'azdevops_pat_secret_name',
+    // Deploy-target configuration, consumed by phases/deploy.mjs's
+    // resolveDeployMode() guard:
+    //   { self_hosted: boolean, isolated_deploy_mode?: string }
+    // `self_hosted` means the target repo IS the software running this sprint's
+    // own infrastructure, so the target's production deploy path would replace
+    // the instance executing the sprint and can never succeed from inside it.
+    // `isolated_deploy_mode` is the TARGET's own name for the sandbox/isolated
+    // deploy mode its runbook offers; it is target-authored data, never an
+    // engine literal, which is what keeps the guard generic.
+    // Omitted (the default for every target that has not opted in): the guard
+    // is inert and the runbook is followed as written.
+    // No CLI flag sets this today; only test/programmatic callers pass it.
+    'deploy_target',
 ]);
 
 /**
@@ -390,6 +406,33 @@ export function validateArgs(args) {
         validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
     }
 
+    // --- deploy_target (optional) ------------------------------------------
+    // Normalized to the { selfHosted, isolatedDeployMode } shape
+    // phases/deploy.mjs's resolveDeployMode() reads. `isolated_deploy_mode` is
+    // interpolated into the deployer prompt, so it is constrained to a plain
+    // one-line label (no quotes, backticks or newlines) the same way ids and
+    // branch names are constrained before they reach a command string.
+    const deployTarget = { selfHosted: false, isolatedDeployMode: undefined };
+    if (args.deploy_target !== undefined) {
+        const dt = args.deploy_target;
+        if (typeof dt !== 'object' || dt === null || Array.isArray(dt)) {
+            throw new Error('[Arg Contract] Invalid deploy_target: must be an object { self_hosted: boolean, isolated_deploy_mode?: string }.');
+        }
+        const unknownDeployKeys = Object.keys(dt).filter((k) => k !== 'self_hosted' && k !== 'isolated_deploy_mode');
+        if (unknownDeployKeys.length > 0) {
+            throw new Error(`[Arg Contract] Unknown deploy_target key(s): ${unknownDeployKeys.join(', ')}. Known keys: self_hosted, isolated_deploy_mode.`);
+        }
+        if (dt.self_hosted !== undefined && typeof dt.self_hosted !== 'boolean') {
+            throw new Error(`[Arg Contract] Invalid deploy_target.self_hosted "${dt.self_hosted}": must be a boolean.`);
+        }
+        if (dt.isolated_deploy_mode !== undefined
+            && (typeof dt.isolated_deploy_mode !== 'string' || !DEPLOY_MODE_LABEL_PATTERN.test(dt.isolated_deploy_mode))) {
+            throw new Error(`[Arg Contract] Invalid deploy_target.isolated_deploy_mode "${dt.isolated_deploy_mode}": must match ${DEPLOY_MODE_LABEL_PATTERN} (a one-line label, no quotes or backticks).`);
+        }
+        deployTarget.selfHosted = dt.self_hosted === true;
+        deployTarget.isolatedDeployMode = dt.isolated_deploy_mode;
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -410,5 +453,6 @@ export function validateArgs(args) {
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
+        deployTarget,
     };
 }

@@ -168,6 +168,16 @@ export function buildOptionsSpec() {
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
         // shared-workspace mode (same-HEAD). Mode is never inferred silently.
         sync: { type: 'boolean' },
+        // my-beads-db-0cd.24: surfaces sprint-args.mjs's deploy_target
+        // (consumed by phases/deploy.mjs's resolveDeployMode() guard) through
+        // the CLI. Before this, only a test/programmatic caller of
+        // engine.executeFile() could set deploy_target, so the self-hosted
+        // deploy guard (my-beads-db-0cd.17/.22) was unreachable from any real
+        // sprint launch. `isolated-deploy-mode` is the TARGET's own name for
+        // its sandbox/isolated deploy path -- target-authored data, never an
+        // engine literal, which is what keeps the guard generic.
+        'deploy-target-self-hosted': { type: 'boolean' },
+        'isolated-deploy-mode': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -212,6 +222,21 @@ Options:
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
                                 uses legacy shared-workspace mode (all members on the same HEAD).
+      --deploy-target-self-hosted  Declare that this sprint's target repo IS the software
+                                running the sprint's own infrastructure, so its production
+                                deploy path would replace the instance executing the sprint.
+                                Routes the deploy phase to the target's isolated/sandbox mode
+                                (see --isolated-deploy-mode) instead, refusing the production
+                                path. Omitted (default): the deploy runbook is followed as
+                                written, unchanged.
+      --isolated-deploy-mode <name>  The target's own name for the sandbox/isolated deploy
+                                mode its runbook offers (e.g. "Isolated Test Deploy"). Rejected
+                                at parse time if --deploy-target-self-hosted is absent (the CLI
+                                exits 1). Passing --deploy-target-self-hosted WITHOUT this flag
+                                still parses, but the Deploy phase then refuses at dispatch time
+                                (SelfHostedProductionDeployRefusedError) since there is no isolated
+                                mode to route to -- so in practice this flag is required whenever
+                                --deploy-target-self-hosted is passed, just not enforced that early.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -300,6 +325,22 @@ export async function resolveRoleMap(rawValue, deps = {}) {
 }
 
 /**
+ * True when `--isolated-deploy-mode` was passed without `--deploy-target-self-hosted`
+ * -- `resolveDeployMode()` (fleet-sprint/phases/deploy.mjs) only reads
+ * `isolatedDeployMode` when `selfHosted` is true, so that combination can never
+ * take effect. Pulled into its own pure, exported predicate (rather than an
+ * inline condition in `main()`) so a test can assert the CLI's actual rejection
+ * logic instead of re-deriving the same condition independently (my-beads-db-0cd.24
+ * reopen: the prior test asserted on its own copy of this expression, which would
+ * stay green even if `main()`'s guard were deleted).
+ * @param {{ deployTargetSelfHosted: boolean, isolatedDeployMode: string|undefined }} opts
+ * @returns {boolean}
+ */
+export function isolatedDeployModeRequiresSelfHosted({ deployTargetSelfHosted, isolatedDeployMode }) {
+    return isolatedDeployMode !== undefined && !deployTargetSelfHosted;
+}
+
+/**
  * Builds the exact args object handed to `engine.executeFile()`, i.e. the
  * object `fleet-sprint/runner.js`'s `validateArgs()` consumes. Pulled into its
  * own pure function so a test can assert `--requirements-file`/`--role-map`
@@ -312,7 +353,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, deployTargetSelfHosted, isolatedDeployMode }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -341,6 +382,14 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // dispatch so deploy.md's active-sprints gate can recognize this sprint's
     // OWN reservation instead of stopping on it.
     if (runId !== undefined) args.run_id = runId;
+    // my-beads-db-0cd.24: forwarded to runner.js's validateArgs() as
+    // args.deploy_target, consumed by phases/deploy.mjs's resolveDeployMode()
+    // guard. Omitted entirely (both undefined/false) when the sprint never
+    // opted in -- unchanged default (guard inert, runbook as written).
+    if (deployTargetSelfHosted || isolatedDeployMode !== undefined) {
+        args.deploy_target = { self_hosted: Boolean(deployTargetSelfHosted) };
+        if (isolatedDeployMode !== undefined) args.deploy_target.isolated_deploy_mode = isolatedDeployMode;
+    }
     return args;
 }
 
@@ -538,6 +587,9 @@ async function main() {
     // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
     const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
     const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
+    // my-beads-db-0cd.24: surfaces deploy_target (self-hosted deploy guard).
+    const deployTargetSelfHosted = Boolean(values['deploy-target-self-hosted']);
+    const isolatedDeployMode = values['isolated-deploy-mode'];
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -592,6 +644,15 @@ async function main() {
 
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
         console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
+        process.exit(1);
+    }
+
+    // my-beads-db-0cd.24: --isolated-deploy-mode is meaningless without
+    // --deploy-target-self-hosted (resolveDeployMode() only reads it when
+    // selfHosted is true) -- fail fast here instead of silently accepting a
+    // flag combination that can never take effect.
+    if (isolatedDeployModeRequiresSelfHosted({ deployTargetSelfHosted, isolatedDeployMode })) {
+        console.error('Error: --isolated-deploy-mode requires --deploy-target-self-hosted.');
         process.exit(1);
     }
 
@@ -929,6 +990,8 @@ async function main() {
                 usageLimitMaxReprobes,
                 serviceUrl,
                 runId: effectiveRunId,
+                deployTargetSelfHosted,
+                isolatedDeployMode,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

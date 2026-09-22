@@ -44,6 +44,68 @@
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 
 /**
+ * Thrown when the deploy dispatch would have to reach the target's production
+ * deploy path on a SELF-HOSTED target -- i.e. a target whose own production
+ * deploy replaces the very instance running this sprint, so that path cannot
+ * succeed from inside the sprint and must never be attempted.
+ *
+ * Named (not a bare Error) so the refusal is distinguishable from a deploy
+ * that merely failed: this is a configuration refusal raised BEFORE any
+ * dispatch, with no agent turn spent.
+ */
+export class SelfHostedProductionDeployRefusedError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'SelfHostedProductionDeployRefusedError';
+    }
+}
+
+/**
+ * Decides, from TARGET CONFIGURATION alone, which deploy mode this dispatch is
+ * allowed to use. This is the machine-enforced half of what used to be advisory
+ * prose in the deployer prompt ("use a sandbox mode if the runbook has one"),
+ * which an agent could and did ignore.
+ *
+ * The deciding input is `deploy_target.self_hosted` (fleet-sprint/
+ * sprint-args.mjs), normalized to `selfHosted` here:
+ *   - false / absent (every target that has not opted in): the runbook is
+ *     followed as written and the production path stays reachable. No
+ *     over-blocking -- an ordinary remote target is unaffected.
+ *   - true, with `isolated_deploy_mode` naming the mode the TARGET's own
+ *     runbook offers for isolated/test deploys: the dispatch is pinned to that
+ *     mode and the production path is forbidden.
+ *   - true, with no isolated mode declared: there is no safe path, so this
+ *     throws instead of dispatching.
+ *
+ * The isolated mode's NAME is target-authored data threaded through config; the
+ * engine never carries a literal for it, which is what keeps this generic
+ * across targets (scripts/check-generic-boundary.mjs).
+ *
+ * Pure and side-effect-free: no dispatch, no process, no I/O.
+ *
+ * @param {{ selfHosted?: boolean, isolatedDeployMode?: string }} [deployTarget]
+ * @returns {{ mode: 'runbook-as-written' | 'isolated', isolatedDeployMode: string | null }}
+ * @throws {SelfHostedProductionDeployRefusedError}
+ */
+export function resolveDeployMode(deployTarget = {}) {
+    const selfHosted = (deployTarget && deployTarget.selfHosted) === true;
+    if (!selfHosted) return { mode: 'runbook-as-written', isolatedDeployMode: null };
+    const isolated = typeof deployTarget.isolatedDeployMode === 'string'
+        ? deployTarget.isolatedDeployMode.trim()
+        : '';
+    if (!isolated) {
+        throw new SelfHostedProductionDeployRefusedError(
+            'deploy: this sprint\'s target is configured as self-hosted (deploy_target.self_hosted), so its '
+            + 'production deploy path would replace the very instance that is running this sprint and cannot '
+            + 'succeed. Refusing to dispatch the deploy: the target declares no isolated deploy mode '
+            + '(deploy_target.isolated_deploy_mode is unset). Set it to the isolated/test deploy mode the '
+            + 'target\'s own runbook offers, or clear deploy_target.self_hosted if the target is not self-hosted.'
+        );
+    }
+    return { mode: 'isolated', isolatedDeployMode: isolated };
+}
+
+/**
  * Runs the per-cycle Deploy phase.
  *
  * @param {object} state Explicit phase state; see this file's header.
@@ -60,6 +122,8 @@ export async function runDeployPhase({
     // Sprint identity/config.
     cycle,
     sprintSelfIdLine,
+    // Target configuration for the deploy-mode guard; see resolveDeployMode().
+    deployTarget,
     // runSprintCycle-scoped locals, injected rather than imported (see header).
     getMemberForRole,
     ensureUnattendedAuto,
@@ -69,6 +133,10 @@ export async function runDeployPhase({
     deployedThisCycle,
 }) {
     phase(`Deploy C${cycle}`);
+    // BEFORE anything is dispatched or provisioned: a self-hosted target may
+    // not reach its production deploy path (see resolveDeployMode()). Throws
+    // on a self-hosted target with no isolated mode declared.
+    const deployMode = resolveDeployMode(deployTarget);
     await ensureUnattendedAuto(getMemberForRole('deployer'));
     await ensureDeployPermissions(getMemberForRole('deployer'));
     let deployResult;
@@ -100,15 +168,26 @@ export async function runDeployPhase({
     // preDispatch step -- the engine VERIFIES the id is really in the
     // prompt before dispatching, rather than trusting this string to
     // stay assembled correctly.
+    // The mode line the guard above decided. The default (not self-hosted) is
+    // the historical advisory wording, byte-identical. The self-hosted line is
+    // a REQUIREMENT, not advice, and it names the target's own isolated mode
+    // from config -- the engine carries no literal for it.
+    const deployModeLine = deployMode.mode === 'isolated'
+        ? 'This deploy is for INTEGRATION/REGRESSION TESTING, not a production rollout. This target is '
+          + 'SELF-HOSTED: its production deploy would replace the very instance running this sprint, so that '
+          + `path is FORBIDDEN here. Use deploy.md's "${deployMode.isolatedDeployMode}" mode and nothing else. `
+          + 'If that mode is missing or unusable, do NOT fall back to the production path -- return a report '
+          + 'with deployed set to false, saying so.\n'
+        : 'This deploy is for INTEGRATION/REGRESSION TESTING, not a production rollout. If deploy.md '
+          + 'distinguishes a sandbox/isolated deploy mode for testing from its production deploy, use '
+          + 'that mode; otherwise follow deploy.md as written.\n';
     const deployerPrompt =
         'Deploy to test env using deploy.md.\n' +
         `${sprintSelfIdLine}\n` +
         "Use it for deploy.md's active-sprints gate: a reservation whose sprintId is EXACTLY " +
         'this string is your own sprint, not a foreign one, so the deploy proceeds. Stop only ' +
         'for a reservation with a different sprintId.\n' +
-        'This deploy is for INTEGRATION/REGRESSION TESTING, not a production rollout. If deploy.md ' +
-        'distinguishes a sandbox/isolated deploy mode for testing from its production deploy, use ' +
-        'that mode; otherwise follow deploy.md as written.\n' +
+        deployModeLine +
         'If you stood up an isolated test instance, leave it RUNNING when you return: the test phase ' +
         "that follows locates it from the sprintId above (per the repo's own runbook) and owns its " +
         'teardown. Tear down what you started only if the deploy itself fails.';
