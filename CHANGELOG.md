@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Groundwork for the v0.5 console integration branch: follow-up pass on the open P1 gaps
+
+A follow-up pass on the same v0.5 console groundwork branch, closing most of
+the P1 gaps the previous pass left open and confirming the branch's CI
+blocker is now isolated to two Windows-only test failures.
+
+What shipped since the previous pass:
+
+- **The base-reviewer permission profile now grants `Bash(curl:*)`**,
+  matching what the integ-test-playbook's own Permissions section already
+  required; the reviewer stack can now run the playbook's curl-based
+  supervisor checks instead of failing on a missing grant.
+- **The sandbox-deploy smoke test now exercises the real `/ui` 404 branch**
+  instead of failing earlier at the `/health` check, closing the gap where
+  that branch was previously untested.
+- **`resolveServiceToken()` gained a read-only mode** (`createIfMissing:
+  false`): probes that only need to check whether the supervisor is
+  configured (`check-foreign-sprints.mjs`, `sandbox-deploy.mjs`'s
+  snapshot/verify/teardown checks) no longer mint a `private/token` file as
+  a side effect of a passive read.
+- **The documented sandbox service-token path was corrected** in `deploy.md`
+  and `integ-test-playbook.md` to match what `resolveServiceToken()` and
+  `jwt.ts` actually resolve (the real home directory, not a sandbox-local
+  path), and the root `package.json` trailing newline lost in an earlier
+  pass was restored.
+
+What is still open, and why the branch cannot merge yet:
+
+- **CI has never been green on this branch.** The `ubuntu-latest` and
+  `macos-latest` required checks pass; `windows-latest` fails, which is
+  enough by itself to block the PR under the integration branch's ruleset.
+- **Both Windows failures are in tests this branch added, and both are
+  root-caused, not flaky:**
+  - `integration-gate-status.mjs`'s ESM entry-point guard compares
+    `import.meta.url` against a raw `file://` string built from
+    `process.argv[1]`, which never matches on win32 (backslash path vs.
+    percent-encoded URL) -- so `main()` silently never runs on Windows. See
+    [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md#windows-pitfalls-in-local-node-tooling-not-member-transport-but-the-same-failure-shape)
+    for the fix pattern (`pathToFileURL(process.argv[1]).href`) already used
+    by every other script in this repo.
+  - The supervisor guard end-to-end test's real `serve.mjs` boot hits a 5s
+    HTTP timeout on Windows after the process reports it is listening; not
+    yet root-caused.
+- A known, already-tracked, deliberately-deferred gap remains: `GET /` on
+  the supervisor hands its bearer token to any loopback caller via the
+  `se_token` cookie, because the same route must stay unauthenticated for
+  the dashboard shell to load. No new work item was filed for this pass
+  since it is already tracked.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.0216.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3167 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Groundwork for the v0.5 console integration branch
 
 Sprint goal: prepare every shared file the v0.5 console tracks will build on
