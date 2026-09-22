@@ -15,6 +15,15 @@ const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 
+// Bounds how long collectOobUrl waits for launchAuthWeb's openUrl callback
+// before treating the listen as failed (apra-fleet-972p.7). launchAuthWeb
+// returns {kind:'launched'} synchronously right after calling
+// server.listen(), BEFORE listen has actually succeeded — on a listen
+// failure server.on('error') tears the server down without ever invoking
+// openUrl. In practice a successful listen() fires within the same tick or
+// two, so this only ever trips on a genuine failure, never the happy path.
+export const OOB_URL_LISTEN_TIMEOUT_MS = 5000;
+
 interface PendingAuth {
   encryptedPassword?: string;
   createdAt: number;
@@ -333,17 +342,37 @@ function collectOobUrl(
 
   return new Promise((resolve) => {
     let settled = false;
+    let listenTimer: ReturnType<typeof setTimeout> | undefined;
+    const settleFallback = () => {
+      if (settled) return;
+      settled = true;
+      if (listenTimer) clearTimeout(listenTimer);
+      resolve({ fallback: `❌ Could not start the local credential-entry web server for ${memberName}.` });
+    };
+
     const outcome = launchAuthWeb(memberName, webMode, webPrompt, onSubmit, {
       openUrl: (url) => {
         if (settled) return;
         settled = true;
+        if (listenTimer) clearTimeout(listenTimer);
         resolve({ url, expiresAt: new Date(Date.now() + AUTH_WEB_TTL_MS).toISOString() });
       },
     });
-    if (outcome.kind !== 'launched' && !settled) {
-      settled = true;
-      resolve({ fallback: `❌ Could not start the local credential-entry web server for ${memberName}.` });
+
+    if (outcome.kind !== 'launched') {
+      settleFallback();
+      return;
     }
+
+    // Backstop for a listen failure that happens after launchAuthWeb already
+    // returned {kind:'launched'} synchronously (see OOB_URL_LISTEN_TIMEOUT_MS
+    // above) — without this, a failed listen() leaves this promise unsettled
+    // forever, which is the exact blocking behaviour return_url/F3 exists to
+    // eliminate.
+    listenTimer = setTimeout(() => {
+      outcome.close();
+      settleFallback();
+    }, OOB_URL_LISTEN_TIMEOUT_MS);
   });
 }
 

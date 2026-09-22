@@ -17,6 +17,7 @@ import {
   hasInteractiveDesktop,
   launchAuthTerminal,
   submitPassword,
+  OOB_URL_LISTEN_TIMEOUT_MS,
 } from '../src/services/auth-socket.js';
 import { TTL_MS as AUTH_WEB_TTL_MS } from '../src/services/auth-web.js';
 
@@ -693,6 +694,60 @@ describe('auth-socket', () => {
       expect(result.password).toBeUndefined();
       expect(result.fallback).toContain('Could not start the local credential-entry web server');
       expect(result.fallback).toContain('unavailable-member');
+    });
+
+    it('resolves with the fallback (does not hang) when the server never listens after a synchronous "launched" outcome', async () => {
+      // Reproduces apra-fleet-972p.7: launchAuthWeb can return {kind:'launched'}
+      // synchronously (right after calling server.listen(), before listen has
+      // actually succeeded or failed) and then never call openUrl at all if the
+      // subsequent listen fails (server.on('error') tears the server down
+      // without invoking it). Without a bounded backstop, collectOobUrl's
+      // promise would never settle.
+      vi.useFakeTimers();
+      try {
+        const closeFn = vi.fn();
+        mockLaunchAuthWeb.mockImplementation(() => ({ kind: 'launched', close: closeFn }));
+        // openUrl deliberately never invoked -- simulates the listen failure.
+
+        const resultPromise = collectOobApiKey('listen-fail-member', 'credential_store_set', { returnUrl: true });
+
+        await vi.advanceTimersByTimeAsync(OOB_URL_LISTEN_TIMEOUT_MS);
+
+        const result = await resultPromise;
+        expect(result.url).toBeUndefined();
+        expect(result.password).toBeUndefined();
+        expect(result.fallback).toContain('Could not start the local credential-entry web server');
+        expect(result.fallback).toContain('listen-fail-member');
+        // The backstop must tear down the server it gave up waiting on.
+        expect(closeFn).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not resolve with the fallback before the listen-timeout backstop elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const closeFn = vi.fn();
+        mockLaunchAuthWeb.mockImplementation(() => ({ kind: 'launched', close: closeFn }));
+
+        const resultPromise = collectOobApiKey('listen-pending-member', 'credential_store_set', { returnUrl: true });
+
+        let settled = false;
+        resultPromise.then(() => { settled = true; });
+
+        await vi.advanceTimersByTimeAsync(OOB_URL_LISTEN_TIMEOUT_MS - 1);
+        // Flush microtasks without advancing real time further.
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(closeFn).not.toHaveBeenCalled();
+
+        // Let the backstop fire so the promise doesn't leak into later tests.
+        await vi.advanceTimersByTimeAsync(1);
+        await resultPromise;
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
