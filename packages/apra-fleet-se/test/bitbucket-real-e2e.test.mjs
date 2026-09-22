@@ -14,15 +14,15 @@ import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
-// Reused, not re-implemented: the SAME provider-dispatched command builders
+// Reused, not re-implemented: the SAME provider-dispatched command builder
 // runner.js's real "Publish PR" step calls (buildCreatePrCommand,
-// parseProviderRepoRef, getVcsProvider) and the same credential-read command
-// builder it uses to learn the just-provisioned app password
-// (buildCredentialReadCommand) -- see fleet-sprint/runner.js's
-// raiseVcsPrForMember/readMemberVcsCredentialToken for the production call
-// site this scenario mirrors at the VCSModule level.
+// parseProviderRepoRef, getVcsProvider) -- see fleet-sprint/vcs-auth.mjs's
+// raiseVcsPrForMember for the production call site this scenario mirrors at
+// the VCSModule level, including its `{{vcs_username_inline}}` /
+// `{{vcs_token_inline}}` placeholder handoff through vcs_credential_exec
+// (apra-fleet-qeq1.10) instead of reading the credential back out of the
+// deployed git-credential-helper.
 import { buildCreatePrCommand, parseProviderRepoRef, getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
-import { buildCredentialReadCommand } from '../fleet-sprint/runner.js';
 
 // =============================================================================
 // apra-fleet-qeq1.6.1 -- the opt-in REAL Bitbucket end-to-end scenario,
@@ -42,18 +42,20 @@ import { buildCredentialReadCommand } from '../fleet-sprint/runner.js';
 //   2. `git ls-remote` against the designated test repo, to prove the
 //      provisioned credential actually authenticates;
 //   3. the publish path -- create a branch with a real change, push it, then
-//      build+dispatch the actual Bitbucket create-pull-request REST call
-//      (VCSModule's buildCreatePrCommand, the same builder runner.js's
-//      "Publish PR" step calls, carrying BOTH the username and token halves)
-//      and assert a pull request URL comes back.
+//      build the actual Bitbucket create-pull-request REST call (VCSModule's
+//      buildCreatePrCommand, the same builder vcs-auth.mjs's "Publish PR"
+//      step calls) carrying the `{{vcs_username_inline}}` / `{{vcs_token_inline}}`
+//      placeholders, and dispatch it through vcs_credential_exec -- the SAME
+//      server-side credential handoff production uses -- then assert a pull
+//      request URL comes back.
 //
 // Every step is dispatched over a REAL MCP connection to a REAL apra-fleet
 // server (spawned via `apra-fleet run --transport stdio`, i.e. dist/index.js
 // --stdio -- the exact production stdio entry point), using a throwaway
 // LOCAL fleet member registered and torn down by this scenario itself.
-// Nothing here re-derives provision_vcs_auth's or execute_command's
-// behavior -- it calls the real tools exactly the way any MCP client
-// (including fleet-sprint's own runner.js) would.
+// Nothing here re-derives provision_vcs_auth's, execute_command's or
+// vcs_credential_exec's behavior -- it calls the real tools exactly the way
+// any MCP client (including fleet-sprint's own vcs-auth.mjs) would.
 //
 // DEFAULT BEHAVIOR: with the enable flag unset (the default), this whole
 // file does exactly one thing -- report resolveRealBitbucketE2eConfig()'s
@@ -129,6 +131,19 @@ function assertToolSucceeded(result, label) {
     assert.ok(!(result && result.isError), `${label} failed: ${toolText(result)}`);
 }
 
+// vcs_credential_exec (src/tools/vcs-credential-exec.ts) never sets isError
+// on a dispatch/credential failure -- it reports success/failure only via
+// structuredContent.ok/.exitCode, so assertToolSucceeded's isError check
+// cannot catch it here.
+function assertVcsCredentialExecSucceeded(result, label) {
+    const handoff = (result && result.structuredContent) || {};
+    assert.ok(handoff.ok, `${label} failed (vcs_credential_exec reason: ${handoff.reason || '(none)'}): ${toolText(result)}`);
+    assert.ok(
+        handoff.exitCode === 0,
+        `${label} dispatched but the command exited non-zero (exitCode=${handoff.exitCode}): ${handoff.stderr || toolText(result)}`,
+    );
+}
+
 // provision_vcs_auth/register_member/remove_member never throw on failure --
 // they return plain text starting with the failure emoji.
 function assertNotFailureText(text, label) {
@@ -200,8 +215,9 @@ test(
             // --- 3. the publish path: a real branch with a real change,
             // pushed, then a real Bitbucket create-pull-request REST call
             // via VCSModule's buildCreatePrCommand -- the same builder
-            // runner.js's "Publish PR" step dispatches, carrying BOTH the
-            // username and token halves. ---
+            // vcs-auth.mjs's "Publish PR" step dispatches -- carrying the
+            // {{vcs_username_inline}}/{{vcs_token_inline}} placeholder pair,
+            // sent through vcs_credential_exec below. ---
             const cloneRes = await apraFleet.executeCommand({
                 member_name: memberName,
                 command: `git clone --branch ${cfg.baseBranch} --single-branch ${cfg.remoteUrl} repo-checkout`,
@@ -251,27 +267,12 @@ test(
             const detail = JSON.parse(toolText(detailRes));
             const target = { os: detail.os, shell: detail.shell };
 
-            // Read the raw app password AND username back out of the
-            // git-credential-helper script provision_vcs_auth just deployed
-            // -- the ONLY way an orchestrator-side caller ever learns either
-            // value (see buildCredentialReadCommand's doc comment in
-            // runner.js). Never logged: this scenario keeps both in-process
-            // only, to build the one curl command below.
-            const { command: credReadCommand, descriptor: credFile } = buildCredentialReadCommand(target, BITBUCKET_CREDENTIAL_LABEL);
-            const credRes = await apraFleet.executeCommand({
-                member_name: memberName,
-                command: credReadCommand,
-                timeout_s: 30,
-            });
-            assertToolSucceeded(credRes, `read git-credential-helper (${credFile})`);
-            const credOutput = commandStdout(credRes);
-            const tokenMatch = /^password=(.*)$/m.exec(credOutput);
-            const token = tokenMatch ? tokenMatch[1].trim() : '';
-            assert.ok(token, `expected a non-empty app password read back from ${credFile}`);
-            const usernameMatch = /^username=(.*)$/m.exec(credOutput);
-            const username = usernameMatch ? usernameMatch[1].trim() : '';
-            assert.ok(username, `expected a non-empty username read back from ${credFile} (Bitbucket REST needs 'username:token' Basic auth)`);
-
+            // The command carries the {{vcs_username_inline}} / {{vcs_token_inline}}
+            // placeholders -- substituted and redacted SERVER-SIDE by
+            // vcs_credential_exec below (apra-fleet-qeq1.10). This scenario
+            // never reads either credential half back out of the deployed
+            // git-credential-helper; it mirrors vcs-auth.mjs's
+            // raiseVcsPrForMember production call exactly.
             const built = buildCreatePrCommand({
                 provider: 'bitbucket',
                 repoRef: providerRef.ref,
@@ -279,18 +280,23 @@ test(
                 head: headBranch,
                 title: `apra-fleet real Bitbucket E2E (${headBranch})`,
                 body: 'Opened by the opt-in real Bitbucket end-to-end test scenario. Safe to close/decline.',
-                token,
-                username,
+                token: '{{vcs_token_inline}}',
+                username: '{{vcs_username_inline}}',
                 os: target.os,
                 shell: target.shell,
             });
 
-            const prRes = await apraFleet.executeCommand({
+            // Dispatch through vcs_credential_exec -- the SAME server-side
+            // credential handoff production uses (vcs-auth.mjs's
+            // raiseVcsPrForMember) -- instead of executeCommand with real
+            // substituted values. The plaintext token/username never
+            // transit this process.
+            const prRes = await apraFleet.vcsCredentialExec({
                 member_name: memberName,
+                label: BITBUCKET_CREDENTIAL_LABEL,
                 command: built.command,
-                timeout_s: 60,
             });
-            assertToolSucceeded(prRes, 'create-pull-request (publish step)');
+            assertVcsCredentialExecSucceeded(prRes, 'create-pull-request (publish step, via vcs_credential_exec)');
 
             const prOutput = commandStdout(prRes);
             const prLines = prOutput.split('\n');
