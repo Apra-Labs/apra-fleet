@@ -93,6 +93,12 @@ export async function runHarvestPhase({
     finalClosedCount,
     finalOpenAtGoalCount,
     regressionResult,
+    // apra-fleet-iiny.3.2 (design doc section 4.3): the sprint-doctor's
+    // consults, executed remedies (with verify results) and any captured
+    // proposedRegistryEntry this sprint -- see buildAnalysisText's own doc
+    // comment in sprint-report.mjs. Defaults to null (no doctor activity),
+    // which renders no "## Sprint Doctor" section at all.
+    doctorSummary = null,
     // Defined BY runner.js; injected to avoid a circular import (see header).
     computeBranchSlug,
     buildAnalysisText,
@@ -125,6 +131,7 @@ export async function runHarvestPhase({
         finalClosedCount,
         finalOpenAtGoalCount,
         regressionResult,
+        doctorSummary,
     });
     const costAnalysis = buildCostAnalysis(budget, {
         spend: integTestRunnerSpend,

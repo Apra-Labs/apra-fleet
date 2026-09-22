@@ -64,14 +64,59 @@ export function sanitizePrText(text) {
 // Finalization prompt builders
 // ---------------------------------------------------------------------------
 
+// apra-fleet-iiny.3.2: the "## Sprint Doctor" section's three per-item line
+// formatters, each its OWN function rather than inlined into an array
+// literal. Every optional clause is built into its own local first and only
+// joined at the end -- no template literal here nests a second backtick-
+// delimited template inside it, which the package's shell-command-guard
+// invariant misparses as "a braced ${...} survived into a quoted string" the
+// moment a literal quote character sits between the two backticks (its
+// single-line JS-quote scanner has no notion of nested template literals).
+// Splitting the interpolation into flat, non-nested template literals like
+// these is the same fix the guard's own violation text prescribes --
+// "interpolate the value in JavaScript instead" -- applied to this module's
+// own (non-command) text, not just to a member-bound command string.
+
+/** One `## Sprint Doctor` consult line from a doctor.verdicts() entry. */
+function formatDoctorConsultLine(c) {
+    const registryPart = c.matchedRegistryEntry ? `, registry entry '${c.matchedRegistryEntry}'` : '';
+    const overriddenPart = c.overridden ? ' [overridden by no-repeat rule]' : '';
+    const beadsPart = (c.beadIds && c.beadIds.length > 0) ? ` (beads: ${c.beadIds.join(', ')})` : '';
+    const memberPart = c.member ? ` (member: ${c.member})` : '';
+    const actionKind = (c.action && c.action.kind) || 'none';
+    return `- ${c.trigger || '(unknown trigger)'}: ${c.classification} (confidence ${c.confidence}) -> action ${actionKind}`
+        + registryPart + overriddenPart + beadsPart + memberPart;
+}
+
+/** One `## Sprint Doctor` remedy line from a doctorRemedyLog entry. */
+function formatDoctorRemedyLine(r) {
+    const reasonPart = r.reason ? ` (${r.reason})` : '';
+    const verifiedWord = r.verified ? 'VERIFIED' : 'FAILED';
+    return `${r.verb} on '${r.member || '(fleet)'}': ${verifiedWord}${reasonPart}`;
+}
+
+/** One `## Sprint Doctor` proposal line from a captureDoctorProposal() row. */
+function formatDoctorProposalLine(p) {
+    return `'${p.proposedRegistryEntry.id}' (${p.proposedRegistryEntry.classification}) -- see doctor-proposals.jsonl`;
+}
+
 /**
  * Assembles the `analysisText` block for the Harvester dispatch from this
  * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
  * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,
- * and the regression pass. Pure formatting -- every value is computed
+ * the regression pass, and (apra-fleet-iiny.3.2) the sprint-doctor's own
+ * activity this sprint. Pure formatting -- every value is computed
  * elsewhere. harvester.md requires this content be written verbatim to
  * `analysisArtifactFile`.
  * @param {object} opts
+ * @param {{consults?: object[], remedies?: object[], proposals?: object[]}|null} [opts.doctorSummary]
+ *   apra-fleet-iiny.3.2 (design doc section 4.3): the sprint-doctor's
+ *   consults, the remedies its verdicts caused to be executed (with verify
+ *   results), and any `proposedRegistryEntry` it captured this sprint --
+ *   NEVER auto-applied to doctor-registry.mjs, only surfaced here so a PASS
+ *   with several doctor saves does not read like a clean PASS. Omit or pass
+ *   null/all-empty-arrays to render no section at all (the common case: most
+ *   sprints never trigger the doctor).
  * @returns {string}
  */
 export function buildAnalysisText({
@@ -80,6 +125,7 @@ export function buildAnalysisText({
     deployFailures, integFailures, rejectedNewTasks,
     finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
     regressionResult = null,
+    doctorSummary = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -96,6 +142,33 @@ export function buildAnalysisText({
             'Informational only -- this pass ran after the final verdict and did not gate it; any bead '
             + 'above is parent-less by design and carries over to a future sprint.',
         ];
+    // apra-fleet-iiny.3.2 (design doc section 4.3): the sprint-doctor's own
+    // activity this sprint -- consults, the remedies its verdicts caused to
+    // be executed (with verify results), and any proposedRegistryEntry it
+    // captured. Rendered as ONE section so a PASS with several doctor saves
+    // does not read like a clean PASS; omitted entirely (no heading, no
+    // blank-line scar) when the doctor never fired, which is the overwhelming
+    // majority of sprints.
+    const doctorConsults = (doctorSummary && Array.isArray(doctorSummary.consults)) ? doctorSummary.consults : [];
+    const doctorRemedies = (doctorSummary && Array.isArray(doctorSummary.remedies)) ? doctorSummary.remedies : [];
+    const doctorProposals = (doctorSummary && Array.isArray(doctorSummary.proposals)) ? doctorSummary.proposals : [];
+    const hasDoctorActivity = doctorConsults.length > 0 || doctorRemedies.length > 0 || doctorProposals.length > 0;
+    const doctorSectionLines = !hasDoctorActivity ? [] : [
+        '',
+        '## Sprint Doctor',
+        '',
+        `${doctorConsults.length} consult(s) this sprint` + (doctorConsults.length > 0 ? ':' : '.'),
+        ...doctorConsults.map(formatDoctorConsultLine),
+        '',
+        doctorRemedies.length > 0
+            ? `Remedies executed (${doctorRemedies.length}): ` + doctorRemedies.map(formatDoctorRemedyLine).join(' | ')
+            : 'No remedies executed this sprint.',
+        '',
+        doctorProposals.length > 0
+            ? 'Proposed registry entries captured (human review required; NEVER auto-applied to doctor-registry.mjs): '
+                + doctorProposals.map(formatDoctorProposalLine).join(' | ')
+            : 'No proposed registry entries this sprint.',
+    ];
     const lines = [
         `# Sprint Analysis: ${branch}`,
         '',
@@ -124,6 +197,7 @@ export function buildAnalysisText({
         rejectedNewTasks.length > 0
             ? `${rejectedNewTasks.length} newTask(s) rejected before reaching bd create: ` + rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
             : 'None.',
+        ...doctorSectionLines,
         '',
         '## Final verdict',
         '',

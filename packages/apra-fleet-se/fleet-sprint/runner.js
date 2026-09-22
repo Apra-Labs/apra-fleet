@@ -317,6 +317,11 @@ import {
     resolveTelemetryTracker,
     buildTelemetryDashboardState,
 } from './doctor-telemetry.mjs';
+// apra-fleet-iiny.3.2 (design doc section 4.3): captures a verdict's
+// `proposedRegistryEntry` to a `doctor-proposals.jsonl` artifact for human
+// review. NEVER merges into doctor-registry.mjs's REGISTRY_ENTRIES -- see
+// that module's own header for why this capture lives here instead of there.
+import { captureDoctorProposal } from './doctor-proposals.mjs';
 // The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
 // path all three verdict sites (per-round reviewer, Final Review, Re-Review)
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
@@ -907,14 +912,18 @@ const DOCTOR_LOG_PREFIX = '[sprint-doctor]';
  *   caps?: { maxConsults?: number, maxDefers?: number, maxPerClass?: number },
  *   limits?: Partial<typeof DEFAULT_CONSULT_LIMITS>,
  *   artifactPath?: string|null,
+ *   proposalsArtifactPath?: string|null,
  *   log?: (msg: string) => void,
  * }} opts
  */
-function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, artifactPath = null, log = () => {} } = {}) {
+function createSprintDoctor({
+    enabled, thresholds = {}, caps = {}, limits = {}, artifactPath = null, proposalsArtifactPath = null, log = () => {},
+} = {}) {
     if (!enabled) {
         return Object.freeze({
             enabled: false,
             artifactPath: null,
+            proposalsArtifactPath: null,
             caps: Object.freeze({}),
             record: () => null,
             evaluate: () => [],
@@ -922,6 +931,7 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
             consults: () => [],
             consult: async () => null,
             verdicts: () => [],
+            proposals: () => [],
         });
     }
 
@@ -955,6 +965,13 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
         maxPerClass: effectiveCaps.maxPerClass,
     };
     const verdicts = [];
+    // apra-fleet-iiny.3.2 (design doc section 4.3): every `proposedRegistryEntry`
+    // this sprint's verdicts carried, ALREADY sanitized and captured to
+    // `proposalsArtifactPath` by captureDoctorProposal() below -- kept
+    // in-memory too so the Harvest phase can surface it in the analysis text
+    // without re-reading the JSONL artifact. Never merged into
+    // doctor-registry.mjs's REGISTRY_ENTRIES.
+    const proposals = [];
     // Per-member tail of the raw failure text the H1 record sites already
     // carry. This is where the consult's "relevant member-side dispatch
     // output" comes from: the message is ALREADY flowing through record()
@@ -1186,17 +1203,53 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
             classification: finalVerdict.classification,
             confidence: finalVerdict.confidence,
             action: finalVerdict.action,
+            matchedRegistryEntry: finalVerdict.matchedRegistryEntry || null,
             overridden,
             // No outcome yet: nothing executes a verdict in this lane, and
             // recording an optimistic one would lie to the next consult.
             outcome: 'not_executed',
         });
+
+        // apra-fleet-iiny.3.2 (design doc section 4.3): the doctor MAY
+        // return `proposedRegistryEntry` for a novel, recurring-looking
+        // symptom. Sanitized and appended to `proposalsArtifactPath` here --
+        // and ONLY here -- never merged into doctor-registry.mjs's
+        // REGISTRY_ENTRIES, which this file never imports or mutates. A
+        // human reviews the artifact and lands it as a normal PR.
+        if (finalVerdict.proposedRegistryEntry) {
+            const proposalRow = captureDoctorProposal({
+                artifactPath: proposalsArtifactPath,
+                proposedRegistryEntry: finalVerdict.proposedRegistryEntry,
+                trigger: pending.trigger,
+                beadIds: triggeringBeadIds,
+                member,
+                classification: finalVerdict.classification,
+                confidence: finalVerdict.confidence,
+                log,
+            });
+            if (proposalRow) {
+                proposals.push(proposalRow);
+                // Flat, non-nested template literals throughout (see
+                // sprint-report.mjs's formatDoctorConsultLine() header
+                // comment for why): a template literal nesting a second
+                // backtick-delimited template inside it, with a literal
+                // quote character on either side of the split, is what the
+                // shell-command-guard invariant's single-line JS-quote
+                // scanner misparses.
+                const destinationPart = proposalsArtifactPath ? `to ${proposalsArtifactPath}` : '(in-memory only, no artifact path)';
+                log(
+                    `${DOCTOR_LOG_PREFIX} proposedRegistryEntry '${proposalRow.proposedRegistryEntry.id}' captured `
+                    + `${destinationPart} for human review -- NEVER auto-applied to the registry.`
+                );
+            }
+        }
         return finalVerdict;
     }
 
     return {
         enabled: true,
         artifactPath: artifactPath || null,
+        proposalsArtifactPath: proposalsArtifactPath || null,
         caps: effectiveCaps,
         record,
         evaluate,
@@ -1204,6 +1257,7 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
         rows: ledger.rows,
         consults: () => consults.slice(),
         verdicts: () => verdicts.slice(),
+        proposals: () => proposals.slice(),
     };
 }
 export { createSprintDoctor };
@@ -1226,6 +1280,22 @@ function resolveDoctorArtifactPath(runId) {
     return nodePath.join(getFleetDataDir(), 'doctor', `${sanitizeRunIdForFilename(runId)}-health-ledger.jsonl`);
 }
 export { resolveDoctorArtifactPath };
+
+/**
+ * Where this run's `doctor-proposals.jsonl` artifact is written (apra-fleet-
+ * iiny.3.2, design doc section 4.3), or null to keep proposal capture
+ * in-memory only. Same run-identity keying and same "no run id, no file"
+ * degrade as resolveDoctorArtifactPath() above -- a proposal is still
+ * captured in memory (createSprintDoctor's own `proposals` array) and can
+ * still reach the Harvest phase's analysis text either way.
+ * @param {string|undefined} runId
+ * @returns {string|null}
+ */
+function resolveDoctorProposalsArtifactPath(runId) {
+    if (typeof runId !== 'string' || runId.length === 0) return null;
+    return nodePath.join(getFleetDataDir(), 'doctor', `${sanitizeRunIdForFilename(runId)}-proposals.jsonl`);
+}
+export { resolveDoctorProposalsArtifactPath };
 
 // WHY THIS FUNCTION IS STILL LARGE, AND WHY ITS PRELUDE WAS NOT SLICED
 // (apra-fleet-3swo.6.17). Everything from this header down to the first
@@ -2769,6 +2839,7 @@ async function runSprintCycle(context) {
             maxPerClass: validated.doctorMaxPerClass,
         },
         artifactPath: resolveDoctorArtifactPath(validated.runId),
+        proposalsArtifactPath: resolveDoctorProposalsArtifactPath(validated.runId),
         log,
     });
     // --- sprint-doctor ACTION EXECUTOR (design doc section 2.5) -----------
@@ -2988,6 +3059,14 @@ async function runSprintCycle(context) {
     // every sprint today, since the consult's action-executor lane is
     // separate, later work; this array's plumbing is correct either way.
     const engineFlawTelemetryReports = [];
+    // apra-fleet-iiny.3.2 (design doc section 4.3): this sprint's collected
+    // remedy-execution results -- one entry per remedy verb an incident
+    // verdict's `repair_environment_then_retry` caused doctorActions.apply()
+    // to actually run, with its verify() outcome -- populated at THE
+    // EXECUTOR CALL SITE below, right after `applied` is computed. Read only
+    // by the Harvest phase's doctorSummary, so a PASS with several doctor
+    // saves does not read like a clean PASS in the sprint-analysis document.
+    const doctorRemedyLog = [];
     // Resolved ONCE per sprint from fleet config (never per-sprint args,
     // per this bead's own requirement) -- both are cheap, side-effect-free
     // reads, so re-resolving per report would be needless repeated I/O for
@@ -4009,6 +4088,22 @@ async function runSprintCycle(context) {
                     // progress exactly once and can never be re-earned by
                     // oscillating a bead in and out of the deferred status.
                     if (applied.credit) for (const id of applied.deferredIds) doctorCreditIds.add(id);
+                    // apra-fleet-iiny.3.2 (design doc section 4.3): every
+                    // remedy verb `repair_environment_then_retry` actually
+                    // ran, with its verify() outcome, so the Harvest phase's
+                    // doctor section can report it -- `applied.remedies` is
+                    // empty for every OTHER incident action kind (retry_same,
+                    // defer_bead, etc.), which run no remedy verb.
+                    for (const remedy of applied.remedies || []) {
+                        doctorRemedyLog.push({
+                            cycle,
+                            action: incidentAction.kind,
+                            member: incidentPending.member || null,
+                            verb: remedy.verb,
+                            verified: remedy.verified,
+                            reason: remedy.reason || null,
+                        });
+                    }
                 }
             }
         }
@@ -4275,6 +4370,11 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, regressionResult,
+        // apra-fleet-iiny.3.2 (design doc section 4.3): this sprint's doctor
+        // consults, executed remedies (with verify results) and any captured
+        // proposedRegistryEntry -- empty on every sprint that never triggers
+        // the doctor, which renders no "## Sprint Doctor" section at all.
+        doctorSummary: { consults: doctor.verdicts(), remedies: doctorRemedyLog, proposals: doctor.proposals() },
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

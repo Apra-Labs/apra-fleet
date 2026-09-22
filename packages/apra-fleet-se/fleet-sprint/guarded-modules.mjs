@@ -438,6 +438,13 @@ export const GUARDED_MODULES = [
     // kind -- so it gets the same ZERO baseline as doctor-ledger.mjs/
     // doctor-triggers.mjs/doctor-telemetry.mjs above.
     'doctor-registry.mjs',
+    // apra-fleet-iiny.3.2: proposedRegistryEntry capture (design doc section
+    // 4.3) -- sanitizeProposedRegistryEntry, captureDoctorProposal. A pure
+    // sanitizer plus one local JSONL append under the fleet data dir (never
+    // into doctor-registry.mjs itself) -- no command()/agent() call, no
+    // dolt/git literal, no shell-command string -- so it gets the same ZERO
+    // baseline as doctor-ledger.mjs/doctor-telemetry.mjs above.
+    'doctor-proposals.mjs',
 ];
 
 /**
