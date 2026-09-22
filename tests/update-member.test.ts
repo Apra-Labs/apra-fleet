@@ -7,6 +7,10 @@ import { ClaudeProvider } from '../src/providers/claude.js';
 import { invalidatePreflightCache } from '../src/services/preflight-check.js';
 import type { SSHExecResult } from '../src/types.js';
 
+// GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
+// out-of-band file channel for a large ~/.claude.json) for every non-relay member.
+const TRUST_TRANSPORT = expect.objectContaining({ writeHomeFile: expect.any(Function) });
+
 // tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
 const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
@@ -440,7 +444,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
     spy.mockRestore();
   });
 
@@ -471,7 +475,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });

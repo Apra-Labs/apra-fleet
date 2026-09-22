@@ -1,9 +1,48 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Agent } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import { getStrategy } from '../services/strategy.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 import { getProvider } from '../providers/index.js';
+import type { WorkspaceTrustTransport } from '../providers/provider.js';
 import { getAgentShell } from './agent-helpers.js';
 import { logLine, logWarn } from './log-helpers.js';
+
+/**
+ * Out-of-band file channel for ensureWorkspaceTrusted (GitHub #499): places
+ * `content` at `~/<relPath>` on the member WITHOUT embedding it in a command
+ * line, by composing two primitives the codebase already has --
+ * getMemberHomeDir (os.homedir() for a local member, the cached probe for a
+ * remote one) and AgentStrategy.transferFiles (fs copy locally, SFTP over
+ * SSH). The content is staged in a private temp dir on this host only long
+ * enough for the transfer.
+ *
+ * Returns undefined for a relay member: RelayStrategy.transferFiles lands in
+ * the receiving spoke's received-files sandbox, not its home, so the adapter
+ * must use exec-based (chunked) delivery there instead.
+ */
+export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): WorkspaceTrustTransport | undefined {
+  if (agent.agentType === 'relay') return undefined;
+  return {
+    writeHomeFile: async (relPath: string, content: string): Promise<void> => {
+      const home = await getMemberHomeDir(agent);
+      if (!home) throw new Error('member home directory could not be resolved');
+      const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-trust-'));
+      const local = path.join(staging, path.basename(relPath));
+      try {
+        fs.writeFileSync(local, content, { encoding: 'utf8' });
+        const result = await strat.transferFiles([local], home);
+        if (result.failed.length > 0) {
+          throw new Error(`transfer of ~/${relPath} failed: ${result.failed[0].error}`);
+        }
+      } finally {
+        fs.rmSync(staging, { recursive: true, force: true });
+      }
+    },
+  };
+}
 
 /**
  * Idempotently seeds Claude workspace trust for `agent`'s work folder
@@ -36,6 +75,9 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
       // The member's REGISTERED shell, not just its OS: a gitbash Windows
       // member needs POSIX trust-seeding strings (apra-fleet-7dir.2.8).
       getAgentShell(agent),
+      // File channel so a large merged ~/.claude.json never rides a Windows
+      // command line (GitHub #499); the adapter falls back to exec delivery.
+      workspaceTrustTransportFor(agent, strat),
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {
