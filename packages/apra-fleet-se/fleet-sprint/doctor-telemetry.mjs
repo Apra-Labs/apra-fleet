@@ -92,7 +92,12 @@ const HOME_POSIX = '\\/(?:Users|home)\\/[^\\s]+';
 const HOME_WIN = '[A-Za-z]:\\\\Users\\\\[^\\s]+';
 const OTHER_WIN = '[A-Za-z]:\\\\[^\\s]+';
 const OTHER_POSIX = '\\/[^\\s]+';
-const PATH_RE = new RegExp(`(${HOME_POSIX})|(${HOME_WIN})|(${OTHER_WIN})|(${OTHER_POSIX})`, 'g');
+// (?<!\w) -- a path must start at a non-word boundary (start of string,
+// whitespace, quote, bracket, ...), NEVER mid-word. Without this, a branch
+// name like "feat/my-branch" -- a perfectly ordinary, non-path identifier
+// that merely CONTAINS a slash -- gets its "/my-branch" tail matched as if
+// it were an absolute path and mangled into "feat<work-folder>/...".
+const PATH_RE = new RegExp(`(?<!\\w)(?:(${HOME_POSIX})|(${HOME_WIN})|(${OTHER_WIN})|(${OTHER_POSIX}))`, 'g');
 
 function redactPaths(text) {
     return text.replace(PATH_RE, (_match, homePosix, homeWin) => {
@@ -422,8 +427,11 @@ export function buildTelemetryReport(report, options = {}) {
 // 4.4) forbids. The tracker is a single config field, a FULL new-issue URL
 // TEMPLATE (`{title}`/`{body}` placeholders substituted at build time) --
 // deliberately NOT an "owner/repo" shorthand that would need this module to
-// bake in a specific host's URL shape (github.com, dev.azure.com, ...) for
-// the convenience of filling it in. This engine is VCS-provider-agnostic
+// bake in a specific host's URL shape for the convenience of filling it in
+// (there are several such hosts this engine's own VCS layer already talks
+// to -- see vcs-providers/* -- and picking any one of their URL shapes as a
+// built-in convention would be exactly the same non-generic assumption).
+// This engine is VCS-provider-agnostic
 // (vcs-module.mjs/vcs-providers/*) and telemetry upstreaming stays agnostic
 // the same way: the operator supplies the whole URL shape for whatever
 // tracker they use, and with none configured the feature is simply off.
