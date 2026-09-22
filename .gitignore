@@ -81,6 +81,12 @@ COPILOT-INSTRUCTIONS.md
 # Fleet-sprint orchestrator run artifacts left in repo root
 /fleet-sprint-eft-*.log*
 
+# Sprint orchestrator run transcripts and lock files left in repo root
+# (not under sprint-logs/ -- contrast with the tracked sprint-logs/ directory
+# documented above, which is never blanket-ignored)
+/sprint-*.log
+/.beads.gate.lock
+
 # Fleet log dumps (e.g. .fleet-log-win-excerpt.txt) -- local debug artifacts, never commit
 .fleet-log-*
 
