@@ -66,6 +66,112 @@ const ARGS_SKILL_NAME = 'auto-sprint-args';
 function argsSkillSrc(root) { return path.join(root, '.claude', 'skills', ARGS_SKILL_NAME); }
 function argsSkillDest(cfg) { return path.join(cfg.configDir, 'skills', ARGS_SKILL_NAME); }
 
+// --- provider-conditional body blocks ---------------------------------------
+// Mirrors resolveConditionalBody in apra-fleet src/cli/agent-transform.ts -- keep
+// both in sync; the marker convention is a shared contract between the two
+// installers, and a prompt that renders correctly through one and ships raw
+// markers through the other is the bug this mechanism exists to prevent.
+//
+//   <!-- if-tool: SomeTool -->  ... <!-- else-tool: SomeTool --> ... <!-- end-tool: SomeTool -->
+//
+// Tool available -> keep the if-branch; unavailable -> keep the else-branch; either
+// way the markers go. Malformed markers are a hard error, never a silent pass-through.
+const CONDITIONAL_MARKER_RE =
+  /[ \t]*<!--[ \t]*(if-tool|else-tool|end-tool):[ \t]*([^\s>]+)[ \t]*-->[ \t]*(?:\r?\n)?/g;
+
+// OpenCode's native subagent toolset, in Claude tool names. transformAgentForOpenCode
+// emits no `tools:` line, so availability has to be stated explicitly rather than read
+// back off the emitted frontmatter. Mirrors OPENCODE_NATIVE_TOOLS in agent-transform.ts.
+const OPENCODE_NATIVE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit', 'Agent'];
+
+function resolveConditionalBody(text, isAvailable, label) {
+  const re = new RegExp(CONDITIONAL_MARKER_RE.source, 'g');
+  const markers = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    markers.push({ kind: m[1], tool: m[2], start: m.index, end: m.index + m[0].length });
+  }
+  if (markers.length === 0) return text;
+
+  const stack = [];
+  let root = '';
+  const append = (chunk) => {
+    if (!chunk) return;
+    const top = stack[stack.length - 1];
+    if (!top) root += chunk;
+    else if (top.seenElse) top.elseBuf += chunk;
+    else top.ifBuf += chunk;
+  };
+  const fail = (detail) => {
+    throw new Error(`[agent-transform] ${label}: ${detail}`);
+  };
+
+  let cursor = 0;
+  for (const marker of markers) {
+    append(text.slice(cursor, marker.start));
+    cursor = marker.end;
+
+    const top = stack[stack.length - 1];
+    if (marker.kind === 'if-tool') {
+      stack.push({ tool: marker.tool, seenElse: false, ifBuf: '', elseBuf: '' });
+      continue;
+    }
+    if (!top) {
+      fail(`<!-- ${marker.kind}: ${marker.tool} --> has no matching <!-- if-tool: ${marker.tool} -->`);
+    }
+    if (top.tool !== marker.tool) {
+      fail(`<!-- ${marker.kind}: ${marker.tool} --> does not match the open <!-- if-tool: ${top.tool} -->`);
+    }
+    if (marker.kind === 'else-tool') {
+      if (top.seenElse) fail(`duplicate <!-- else-tool: ${marker.tool} --> in one conditional block`);
+      top.seenElse = true;
+      continue;
+    }
+    stack.pop();
+    append(isAvailable(top.tool) ? top.ifBuf : top.elseBuf);
+  }
+  append(text.slice(cursor));
+
+  if (stack.length > 0) {
+    const unclosed = stack[stack.length - 1];
+    fail(`unclosed <!-- if-tool: ${unclosed.tool} --> (missing <!-- end-tool: ${unclosed.tool} -->)`);
+  }
+  return root;
+}
+
+/** Source (Claude-format) frontmatter tools, or null when the file declares none. */
+function readFrontmatterTools(content) {
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!fmMatch) return null;
+  for (const line of fmMatch[1].split('\n')) {
+    const toolsMatch = line.match(/^tools:\s*(.+)/);
+    if (toolsMatch) {
+      return toolsMatch[1].trim().replace(/^\[/, '').replace(/\]$/, '')
+        .split(',').map(t => t.trim()).filter(Boolean);
+    }
+  }
+  return null;
+}
+
+function toolAvailability(declared, supported) {
+  const declaredSet = declared === null || declared.some(t => t === '*') ? null : new Set(declared);
+  const supportedSet = supported === null ? null : new Set(supported);
+  return (tool) =>
+    (declaredSet === null || declaredSet.has(tool)) &&
+    (supportedSet === null || supportedSet.has(tool));
+}
+
+/**
+ * Resolve conditional blocks for whichever provider this install is writing.
+ * Runs on EVERY provider path, including the non-opencode passthrough -- otherwise
+ * markers ship verbatim into the installed agent file (apra-fleet-oomh.1).
+ */
+function resolveAgentConditionals(content, llm, label) {
+  const declared = readFrontmatterTools(content);
+  const supported = llm === 'opencode' ? OPENCODE_NATIVE_TOOLS : null;
+  return resolveConditionalBody(content, toolAvailability(declared, supported), label);
+}
+
 // --- opencode agent transform -----------------------------------------------
 // OpenCode uses a different agent frontmatter schema:
 //   description, mode: subagent, permission: { edit, write, bash, external_directory }
@@ -365,6 +471,13 @@ function main() {
   const agents = fs.readdirSync(agentsSrc).filter(f => f.endsWith('.md'));
   for (const a of agents) {
     let content = fs.readFileSync(path.join(agentsSrc, a), 'utf-8');
+    // Conditional blocks resolve FIRST, while the source frontmatter tools list is
+    // still readable -- transformAgentForOpenCode replaces that frontmatter. Runs on
+    // every --llm value, so no provider path can ship raw markers.
+    // NOTE: --llm agy gets Claude semantics here because this installer has no agy
+    // frontmatter transform at all (it writes the Claude tools list unchanged), so
+    // body and frontmatter stay consistent with each other. See apra-fleet-oomh.
+    content = resolveAgentConditionals(content, args.llm, a);
     if (args.llm === 'opencode') content = transformAgentForOpenCode(content);
     fs.writeFileSync(path.join(agentsDest, a), content);
   }

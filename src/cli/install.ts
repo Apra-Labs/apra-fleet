@@ -20,7 +20,7 @@ import {
   INSTALLABLE_LLM_PROVIDERS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
@@ -1538,11 +1538,15 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
+      // Every branch runs a transform -- the default one is NOT a passthrough. Claude
+      // keeps the source frontmatter and every conditional's if-branch, but the
+      // conditional markers themselves still have to be stripped or they ship
+      // verbatim into the installed agent file (apra-fleet-oomh.1).
       const content = llm === 'opencode'
         ? transformAgentForOpenCode(rawContent, relPath)
         : llm === 'agy'
         ? transformAgentForAgy(rawContent, relPath)
-        : rawContent;
+        : transformAgentForClaude(rawContent, relPath);
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
