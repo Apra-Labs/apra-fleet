@@ -1,11 +1,18 @@
 import path from 'path';
 import fs from 'fs';
 import { SqliteProvider } from './sqlite-provider.js';
+import { HttpKbProvider } from './http-provider.js';
+import { readKbConfigFromDisk } from './kb-config.js';
+import type { KbConfigResult } from './kb-config.js';
 import { resolveProjectSlug } from './project-slug.js';
+import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
 
 export interface KbProviders {
-  project: SqliteProvider;
+  // Widened from SqliteProvider so a config-selected HttpKbProvider can be
+  // returned here. `global` stays SqliteProvider on purpose: there is exactly
+  // one shared global KB and no remote story for it.
+  project: MemoryProvider;
   global: SqliteProvider;
   projectSlug: string;
 }
@@ -43,7 +50,67 @@ async function createKbProvidersForSlug(slug: string, repoPath: string): Promise
   const projectProvider = new SqliteProvider(path.join(projectDir, 'kb.sqlite'), repoPath);
   await projectProvider.init();
   const globalProvider = await getGlobalProvider();
-  return { project: projectProvider, global: globalProvider, projectSlug: slug };
+  return {
+    project: selectProjectProvider(projectProvider),
+    global: globalProvider,
+    projectSlug: slug,
+  };
+}
+
+// Every HttpKbProvider this module builds, so resetKbProviders can dispose them.
+// SqliteProvider has no dispose() (it has close()), so disposal must be narrowed
+// to HTTP providers -- and _providers holds unresolved Promises, which a sync
+// resetKbProviders cannot read .project off of. Hence a side-list.
+const _httpProviders: HttpKbProvider[] = [];
+
+// my-beads-db-0cd.12: parent bead .0cd criterion 1 requires getKbProviders to
+// return SqliteProvider unchanged "in every other case, including
+// missing/malformed config" -- but readKbConfigFromDisk (bead .1) throws by
+// design on malformed JSON, provider "http" without a url/token_encrypted, or
+// an undecryptable token. Resolving the conflict per bead .12's decision:
+// readKbConfigFromDisk keeps throwing (bead .1's contract is unchanged), and
+// THIS call site catches it, degrades to the already-built SqliteProvider, and
+// logs a loud one-time warning -- never a silent downgrade, never a hard
+// failure of every kb_* tool over one bad config file.
+let _warnedMalformedKbConfig = false;
+
+/**
+ * Return the project provider the KB config selects. Stock path (no config file,
+ * or provider "sqlite") returns the already-built SqliteProvider untouched.
+ * A config file that fails to read (malformed JSON, http-without-url,
+ * http-without-token, undecryptable token) degrades to the same SqliteProvider,
+ * after a one-time warning -- see the note above _warnedMalformedKbConfig.
+ *
+ * The HTTP branch passes that same SqliteProvider as the explicit fallback:
+ * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
+ * database from process.cwd() rather than this repo's path.
+ */
+function selectProjectProvider(projectProvider: SqliteProvider): MemoryProvider {
+  let config: KbConfigResult;
+  try {
+    config = readKbConfigFromDisk();
+  } catch (err) {
+    if (!_warnedMalformedKbConfig) {
+      _warnedMalformedKbConfig = true;
+      console.error(
+        `[kb-providers] KB config error, falling back to SqliteProvider: ${(err as Error).message}`,
+      );
+    }
+    return projectProvider;
+  }
+  if (config.provider !== 'http') {
+    return projectProvider;
+  }
+  // INIT OWNERSHIP: createKbProvidersForSlug's `await projectProvider.init()` is
+  // the one and only init call site on this path. HttpKbProvider.init() does
+  // nothing but `await this.fallback.init()`, and that fallback IS this
+  // already-init'd projectProvider -- so init'ing the HTTP provider here would be
+  // a double-init of the same instance. The returned HttpKbProvider is therefore
+  // deliberately not init'd; it is not an un-inited provider.
+  // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
+  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider);
+  _httpProviders.push(httpProvider);
+  return httpProvider;
 }
 
 // Keyed by (slug, repoPath), NOT slug alone and NOT a single slot. The fleet
@@ -95,12 +162,34 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
     // sets WAL + busy_timeout=5000.
     pending = createKbProvidersForSlug(slug, repoPath);
     _providers.set(key, pending);
+    // my-beads-db-0cd.12: do NOT cache a rejected promise. Without this, one
+    // failed build (e.g. a disk error, not the config-read case above which no
+    // longer throws) permanently poisons this cache key: every later call for
+    // the same (slug, repoPath) gets the same rejected promise back, and
+    // fixing whatever caused the failure never recovers without a full
+    // resetKbProviders() or process restart. This .catch() is attached purely
+    // for cleanup -- it does not consume the rejection for `pending` itself,
+    // so the original caller (and every other awaiter of this same promise)
+    // still observes the rejection normally.
+    pending.catch(() => {
+      if (_providers.get(key) === pending) {
+        _providers.delete(key);
+      }
+    });
   }
   return pending;
 }
 
 export function resetKbProviders(): void {
+  // HttpKbProvider registers a process 'beforeExit' listener in its constructor;
+  // clearing the maps alone leaks one listener per reset, and a suite that resets
+  // repeatedly hits MaxListenersExceededWarning.
+  for (const httpProvider of _httpProviders) {
+    httpProvider.dispose();
+  }
+  _httpProviders.length = 0;
   _providers.clear();
   _slugCache.clear();
   _globalProvider = null;
+  _warnedMalformedKbConfig = false;
 }
