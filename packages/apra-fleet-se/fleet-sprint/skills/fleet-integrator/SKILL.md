@@ -75,8 +75,9 @@ Take exactly one action per PR, per iteration:
 - **wait** -- required checks are still pending or otherwise non-terminal.
   Take no action this iteration; re-check next loop.
 - **skip** -- the title carries `[FAIL]` or `[ABORTED]`, or lacks the
-  configured prefix. Never merge this PR. Add it to the owner report (below)
-  and move on.
+  configured prefix, or any required check failed outright (not merely still
+  running). Never merge this PR. Add it to the owner report (below) and move
+  on.
 
 Sleep interval guidance: poll on an interval that matches how often sprint
 branches push to their PRs -- a steady default (for example, once a minute)

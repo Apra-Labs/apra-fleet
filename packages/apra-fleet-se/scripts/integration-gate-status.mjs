@@ -154,18 +154,20 @@ function summarizeChecks(pr, requiredChecks) {
     return { required: requiredChecks, success, pending: pendingList, failed: failedList };
 }
 
+// The CLI's accepted --flags. Exported so a consumer (the fleet-integrator
+// SKILL.md genericness test) can assert every flag the skill shows for this
+// script is actually accepted here, instead of hand-duplicating the list.
+export const CLI_OPTION_SPECS = {
+    repo: { type: 'string' },
+    base: { type: 'string' },
+    'title-prefix': { type: 'string' },
+    'required-checks': { type: 'string' },
+    gh: { type: 'string', default: 'gh' },
+    input: { type: 'string' },
+};
+
 function parseCliArgs(argv) {
-    const { values } = parseArgs({
-        args: argv,
-        options: {
-            repo: { type: 'string' },
-            base: { type: 'string' },
-            'title-prefix': { type: 'string' },
-            'required-checks': { type: 'string' },
-            gh: { type: 'string', default: 'gh' },
-            input: { type: 'string' },
-        },
-    });
+    const { values } = parseArgs({ args: argv, options: CLI_OPTION_SPECS });
     return values;
 }
 
