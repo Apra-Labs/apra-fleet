@@ -92,3 +92,31 @@ Agy supports session resumption via the "--conversation <sessionId>" flag. Howev
 
 - The full vitest suite ("npm test") must pass, confirming the "agy" adapter introduces no regressions to Claude, Codex, Copilot, or OpenCode.
 - The single-executable installer build ("npm run build:binary") must compile with all multi-provider config modifications packaged.
+
+---
+
+## 8. Role-prompt body text, not just frontmatter (agent-transform.ts)
+
+### Change Rationalization
+Dropping an unmapped tool from an agent's frontmatter `tools:` list is only half
+a fix if the role prompt's own prose still instructs the agent to call that tool
+by name. A provider-conditional marker mechanism in the agent transform pipeline
+(`<!-- if-tool: X --> ... <!-- else-tool: X --> ... <!-- end-tool: X -->`) resolves
+body prose against the same tool-availability decision that drives the
+frontmatter rewrite, so a tool dropped from `tools:` has its instructions dropped
+(or swapped for provider-neutral prose) too. See
+[docs/features/agent-transform-provider-conditionals.md](features/agent-transform-provider-conditionals.md)
+for the full mechanism, including why `packages/apra-fleet-se/apra-pm/install.mjs`
+carries a second, hand-synced copy of it.
+
+### Safety Mechanisms
+- Malformed markers (unclosed, unmatched, mismatched, duplicated) are a hard
+  install-time error naming the offending file, never a silent pass-through.
+- The Claude/raw install path also resolves and strips markers, even though it
+  changes no tool mapping -- an unfiltered passthrough on that path is exactly
+  what let provider-specific prose leak into every downstream provider before
+  this mechanism existed.
+- Static tests prove the transform drops the right prose for a given tool set;
+  they do not by themselves prove a live sprint on Antigravity completes a
+  review cycle without a tool-not-found error. Both are required evidence when
+  extending this mechanism, not just the static half.
