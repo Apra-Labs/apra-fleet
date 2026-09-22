@@ -2022,6 +2022,16 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // apra-fleet-iiny.1.5: optional passthroughs for the sprint-doctor
+    // observation layer's args (validateArgs: doctor_enabled boolean,
+    // doctor_streak_limit integer >= 2, doctor_spend_trigger_usd positive
+    // number, doctor_max_consults/doctor_max_defers/doctor_max_per_class
+    // integers) and for `args.run_id`. `doctorArgs` is spread verbatim into
+    // the executeFile args, so a scenario passes the SAME raw keys a real CLI
+    // launch would and the real arg contract validates them. `runId` matters
+    // to the doctor specifically: the health-ledger JSONL artifact is keyed by
+    // it, and a run without one deliberately keeps the ledger in memory only.
+    doctorArgs, runId,
     // Beads identity precondition passthroughs: `beadsIdentity` is
     // buildMockFleetApi's per-member probe override map (see its option
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
@@ -2134,6 +2144,8 @@ export async function runDevelopLoopScenario(tag, {
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(runId !== undefined ? { run_id: runId } : {}),
+                ...(doctorArgs !== undefined ? doctorArgs : {}),
             }, true);
         } catch (err) {
             error = err;
