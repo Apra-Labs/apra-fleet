@@ -56,7 +56,18 @@ export function buildOrphanPipeParentScript(grandchildCommand = DEFAULT_GRANDCHI
   ].join('; ');
 }
 
-/** True if a pid is currently running (tasklist on Windows, kill -0 elsewhere). */
+/**
+ * True if a pid is currently running (tasklist on Windows, kill -0 plus a
+ * zombie check elsewhere).
+ *
+ * On POSIX, `process.kill(pid, 0)` succeeds for a ZOMBIE too -- a process
+ * that already received SIGKILL but has not yet been reaped by its parent --
+ * so on its own it cannot tell "still running" from "doomed, waiting to be
+ * reaped". `ps -o stat=` disambiguates: a zombie's state starts with 'Z'.
+ * A genuinely live process is unaffected (its state never starts with 'Z'),
+ * so this can only ever turn a false "alive" into a true "not alive" -- it
+ * never weakens the check into reporting a live process as gone.
+ */
 export function isPidAlive(pid) {
   try {
     if (process.platform === 'win32') {
@@ -64,20 +75,44 @@ export function isPidAlive(pid) {
       return out.includes(String(pid));
     }
     process.kill(pid, 0);
+    try {
+      const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      if (stat.startsWith('Z')) return false;
+    } catch {
+      // ps failed (e.g. the pid vanished between the kill(0) probe above and
+      // this ps call) -- fall through and trust the kill(0) result.
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-/** Best-effort kill of a pid and its descendants. */
+/**
+ * Best-effort kill of a pid and its descendants; never throws, even when the
+ * target is already gone.
+ *
+ * On POSIX a plain `process.kill(pid, 'SIGKILL')` only ever reaches the
+ * single given pid despite the function's name -- any descendant survives.
+ * A `detached: true` child (see buildLateOutputParentScript above and the
+ * Windows CIM launch wrapper this reproduces) becomes the leader of its own
+ * new process group, so signalling the negative pid (`-pid`) reaches that
+ * whole group -- the leader plus any descendant that did not itself detach
+ * into a further group. The direct `kill(pid, ...)` is kept alongside it for
+ * a pid that was never a process-group leader (e.g. not spawned detached).
+ */
 export function killPidTree(pid) {
-  try {
-    if (process.platform === 'win32') {
+  if (process.platform === 'win32') {
+    try {
       execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
-    } else {
-      process.kill(pid, 'SIGKILL');
-    }
+    } catch { /* already gone */ }
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch { /* no such process group (already gone, or pid never led one) */ }
+  try {
+    process.kill(pid, 'SIGKILL');
   } catch { /* already gone */ }
 }
 
