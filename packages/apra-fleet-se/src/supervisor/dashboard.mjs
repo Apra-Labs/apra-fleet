@@ -203,6 +203,7 @@ function renderSprintProgressHtml(progress) {
 export function renderSprintSection(view) {
     const sprintId = escapeHtml(view.sprintId);
     const branch = view.branch ? escapeHtml(view.branch) : 'unknown';
+    const base = view.base ? escapeHtml(view.base) : '';
     const goal = view.goal ? escapeHtml(view.goal) : 'unknown';
     const beadCount = Number.isInteger(view.beadCount) ? String(view.beadCount) : 'unknown';
     const progressHtml = renderSprintProgressHtml(view.progress);
@@ -275,7 +276,7 @@ export function renderSprintSection(view) {
         '</div>' +
         progressHtml +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
-        '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
+        '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + (base ? ' -> ' + base : '') + '</div>' +
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
         // apra-fleet-vk0a.3: explicitly labeled 'total in scope' -- distinct
         // from the progress bar's OWN, differently-scoped 'Required: M/N'
