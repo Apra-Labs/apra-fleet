@@ -106,6 +106,12 @@ export const LEDGER_FILENAME = 'reservations.json';
  *                                   SAME claim() call that sets childPid;
  *                                   null only for a reservation claimed
  *                                   before this field existed.
+ * @property {boolean} sync          apra-fleet-ky2l.3.1 (DQ-11): whether this
+ *                                   launch requested synced topology
+ *                                   (`--sync` forwarded to the runner).
+ *                                   Always a concrete boolean -- absent on a
+ *                                   pre-existing on-disk entry normalizes to
+ *                                   `false`, same as an explicit `false`.
  *
  * @typedef {object} LedgerDocument
  * @property {number} version                              Equals LEDGER_VERSION.
@@ -151,6 +157,12 @@ export const LEDGER_SCHEMA = Object.freeze({
                     exitedAt: { type: ['string', 'null'] },
                     // apra-fleet-ou7.1: same optional/null-defaulted convention.
                     logPath: { type: ['string', 'null'] },
+                    // apra-fleet-ky2l.3.1: optional (not in `required`) so a
+                    // ledger file persisted before this field existed still
+                    // loads -- normalizeReservation() defaults it to `false`
+                    // when absent, never null (no meaningful "unknown" state
+                    // for a topology flag).
+                    sync: { type: 'boolean' },
                 },
             },
         },
@@ -257,7 +269,17 @@ function normalizeReservation(input, now) {
     // predating this field, same convention as above.
     const beads = normalizeBeadsSummary(input.beads);
 
-    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads };
+    // apra-fleet-ky2l.3.1 (DQ-11): whether this launch requested synced
+    // topology (`--sync` forwarded to the runner). Unlike branch/base/goal
+    // this coerces straight to a boolean rather than null-for-absent -- there
+    // is no meaningful "unknown" state for a topology flag, so a pre-existing
+    // on-disk entry written before this field existed (input.sync ===
+    // undefined) and an explicit `sync: false` both normalize identically to
+    // `false`. Persisted so a future Restart control reproduces the same
+    // topology mode.
+    const sync = input.sync === true;
+
+    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads, sync };
 }
 
 /** @param {unknown} v @returns {{ dir: string, prefix: string, syncRemote: string, repoRemote: string }|null} */
@@ -288,6 +310,7 @@ function cloneReservation(r) {
         logPath: r.logPath ?? null,
         exitedAt: r.exitedAt ?? null,
         beads: r.beads ? { ...r.beads } : null,
+        sync: r.sync === true,
     };
 }
 
@@ -475,7 +498,7 @@ export function createLedger(deps = {}) {
          * Claim BOTH axes for a sprint in one atomic write. Storage-level only:
          * overlap rejection is layered on by eft.5.2/eft.5.3 before calling this.
          * @param {string} sprintId
-         * @param {{ members?: string[], issueRoots?: string[], childPid?: number|null, reservedAt?: string, branch?: string|null, base?: string|null, goal?: string|null }} claimInput
+         * @param {{ members?: string[], issueRoots?: string[], childPid?: number|null, reservedAt?: string, branch?: string|null, base?: string|null, goal?: string|null, sync?: boolean }} claimInput
          * @returns {Promise<Reservation>} a clone of the stored reservation
          */
         async claim(sprintId, claimInput = {}) {

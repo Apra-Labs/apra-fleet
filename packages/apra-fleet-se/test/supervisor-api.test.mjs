@@ -201,6 +201,69 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-ky2l.3.1 (DQ-11): POST /api/sprints forwards body.sync into
+    // the child argv as --sync (via spawnOpts.extraArgs, consumed by
+    // spawner.mjs's buildSprintArgv) so a multi-machine roleMap can pass the
+    // runner's synced-topology check.
+    test('apra-fleet-ky2l.3.1: body {sync:true} forwards exactly one --sync into the child argv', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main', sync: true,
+        });
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        assert.equal(args.filter((a) => a === '--sync').length, 1, 'child argv must contain exactly one --sync');
+        // Also persisted on the ledger reservation so a future Restart
+        // reproduces the same topology mode.
+        assert.equal(ledger.get(result.sprintId).sync, true);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ky2l.3.1: body without sync, and body {sync:false}, forward no --sync anywhere', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const r1 = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        const r2 = await controller.launch({ issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main', sync: false });
+        assert.equal(captured.length, 2);
+        for (const c of captured) {
+            assert.equal(c.args.includes('--sync'), false);
+        }
+        assert.equal(ledger.get(r1.sprintId).sync, false);
+        assert.equal(ledger.get(r2.sprintId).sync, false);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ky2l.3.1: body {sync:"yes"} => 400 naming sync and boolean, spawner never called', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main', sync: 'yes' }),
+            (err) => err instanceof ApiError
+                && err.status === 400
+                && err.field === 'sync'
+                && /sync/.test(err.message)
+                && /boolean/.test(err.message),
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('apra-fleet-3i3.2: launch() persists branch/base/goal on the ledger reservation', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);

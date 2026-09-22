@@ -386,6 +386,7 @@ Field names, exactly as the API expects them:
 | `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. |
 | `budget` | no | USD cap. |
 | `overrideRelaunchGate` | no | bool. See below. |
+| `sync` | no | bool. Passes `--sync` so members in separate checkouts pass the topology check. |
 
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`.
 **A 201 response does NOT mean the sprint is alive** -- it can crash in the

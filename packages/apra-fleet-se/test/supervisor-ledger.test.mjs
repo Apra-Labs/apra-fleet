@@ -62,6 +62,9 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             beads: null,
             // apra-fleet-ou7.1: null unless claim() is given a logPath.
             logPath: null,
+            // apra-fleet-ky2l.3.1: always a concrete boolean, defaulting to
+            // false when the claim() call, as here, omits it.
+            sync: false,
         });
 
         await fsp.rm(dir, { recursive: true, force: true });
