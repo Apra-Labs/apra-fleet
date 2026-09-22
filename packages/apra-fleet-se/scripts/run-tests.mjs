@@ -80,9 +80,35 @@ const FORCE_EXIT_GRACE_MS = (() => {
 
 const extraArgs = process.argv.slice(3);
 
+// apra-fleet-qe83.3.2 rework: this process's own `node --test` child below is
+// spawned with detached:true on POSIX (so THIS process's own killTree(-pid)
+// can reach a grandchild tree), which makes it the leader of its own,
+// separate process group/session. If this process is itself invoked inside
+// an OUTER bounded runner (scripts/run-all-tests.mjs, via
+// `npm test --workspace=...`) that outer runner's own group-wide kill on
+// timeout cannot reach that disjoint group -- only THIS process (which is
+// still a member of the outer group) can. Track the live child pid so a
+// trapped SIGTERM (see below) can reap it before this process exits.
+let activeChildPid = null;
+
+// See the comment above: an outer bounded runner facing its own timeout
+// broadcasts SIGTERM to its whole process group before escalating to
+// SIGKILL, specifically to give a nested runner like this one a chance to
+// reap its OWN detached child first. Without this handler, that outer
+// SIGKILL only reaps this process and anything still inside ITS group --
+// never the disjoint `node --test` group -- orphaning it still holding the
+// outer dispatch's stdout/stderr pipe open (the recorded 45-minute
+// pipe-hold bug, reintroduced on POSIX by the npm test --workspace=... ->
+// run-tests.mjs -> node --test nesting).
+process.on('SIGTERM', () => {
+    if (activeChildPid) killTree(activeChildPid);
+    process.exit(1);
+});
+
 function runBounded(cmd, args, opts) {
     return new Promise(resolve => {
         const child = spawn(cmd, args, { ...opts, detached: !isWindows });
+        activeChildPid = child.pid;
 
         let timedOut = false;
         let settled = false;
