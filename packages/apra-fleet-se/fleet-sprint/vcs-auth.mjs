@@ -738,6 +738,15 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // top-level declarations symbol-for-symbol and a new const desyncs that
     // census.
     const token = '{{vcs_token_inline}}';
+    // apra-fleet-qeq1.3: Bitbucket REST needs basic auth 'username:token'
+    // (unlike Azure DevOps/GitHub, which pass an empty or no username at
+    // all) -- see the PLANNER DECISION note on the epic apra-fleet-qeq1.
+    // Passed the same INLINE-placeholder way as `token` above: a provider
+    // that does not read `username` (github.mjs, azure-devops.mjs) simply
+    // ignores it, so this is additive. Inlined here rather than hoisted to a
+    // module constant for the SAME reason `token` is -- see the comment
+    // above it.
+    const username = '{{vcs_username_inline}}';
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -777,7 +786,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         const built = buildCreatePrCommand({
             provider,
             ...(repoRef ? { repoRef } : { repo }),
-            base, head, title, body, token, os, shell,
+            base, head, title, body, token, username, os, shell,
         });
 
         if (built.descriptionTruncated && !truncationWarned) {
