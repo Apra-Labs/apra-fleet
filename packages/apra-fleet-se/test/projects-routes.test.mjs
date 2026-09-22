@@ -250,6 +250,81 @@ describe('GET /api/projects/:id -- unknown id (404)', { skip }, () => {
     });
 });
 
+describe('PUT /api/projects/:id -- round-trip', { skip }, () => {
+    test('a patch of non-remote fields returns 200 with the patched body, and GET reflects it', async () => {
+        const { supervisor } = await setup();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects', validBody()), mockRes());
+
+        const putRes = mockRes();
+        await supervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { name: 'Project One Renamed' }),
+            putRes,
+        );
+        assert.equal(putRes.statusCode, 200);
+        const patched = payloadOf(putRes);
+        assert.equal(patched.id, 'proj-1');
+        assert.equal(patched.name, 'Project One Renamed');
+
+        const getRes = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects/proj-1'), getRes);
+        assert.equal(getRes.statusCode, 200);
+        assert.equal(payloadOf(getRes).name, 'Project One Renamed');
+    });
+
+    test('an unknown id 404s', async () => {
+        const { supervisor } = await setup();
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('PUT', '/api/projects/does-not-exist', { name: 'New Name' }),
+            res,
+        );
+        assert.equal(res.statusCode, 404);
+        assert.match(payloadOf(res).error, /does-not-exist/);
+    });
+});
+
+describe('DELETE /api/projects/:id -- round-trip', { skip }, () => {
+    test('deleting an existing project returns 200 {deleted:true, id}, then GET 404s', async () => {
+        const { supervisor } = await setup();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects', validBody()), mockRes());
+
+        const delRes = mockRes();
+        await supervisor.handleRequest(mockReq('DELETE', '/api/projects/proj-1'), delRes);
+        assert.equal(delRes.statusCode, 200);
+        assert.deepEqual(payloadOf(delRes), { deleted: true, id: 'proj-1' });
+
+        const getRes = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects/proj-1'), getRes);
+        assert.equal(getRes.statusCode, 404);
+    });
+
+    test('an unknown id 404s', async () => {
+        const { supervisor } = await setup();
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('DELETE', '/api/projects/does-not-exist'), res);
+        assert.equal(res.statusCode, 404);
+        assert.match(payloadOf(res).error, /does-not-exist/);
+    });
+});
+
+describe('registerProjectRoutes is still NOT mounted on the live supervisor', () => {
+    test('no file under src/supervisor/ imports or calls registerProjectRoutes', async () => {
+        const supervisorDir = path.join(import.meta.dirname, '..', 'src', 'supervisor');
+        const entries = await fsp.readdir(supervisorDir, { withFileTypes: true, recursive: true });
+        const files = entries
+            .filter((e) => e.isFile() && e.name.endsWith('.mjs'))
+            .map((e) => path.join(e.parentPath ?? e.path, e.name));
+        assert.ok(files.length > 0, 'expected at least one .mjs file under src/supervisor/');
+        for (const file of files) {
+            const contents = await fsp.readFile(file, 'utf8');
+            assert.ok(
+                !contents.includes('registerProjectRoutes'),
+                `${path.relative(supervisorDir, file)} must not reference registerProjectRoutes`,
+            );
+        }
+    });
+});
+
 describe('POST /api/projects -- failed remote probe (400, DQ-12)', { skip }, () => {
     test('an MCP-level isError probe result 400s on field beads.remote and creates nothing', async () => {
         const { supervisor, client, store } = await setup('error');
