@@ -38,6 +38,7 @@
 // parsed (vcs-module.mjs's own header comment). These two names were imported
 // by runner.js for exactly this call before the move.
 import { classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { VCS_FAILURE_KINDS } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Multi-member topology precondition
@@ -330,7 +331,47 @@ export function classifyGitFailure(output, provider) {
  * 'github' chain -- no throw, no new failure mode, no verdict change for
  * GitHub members.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
+ * PERMISSION-SCOPE REFUSALS ARE NEVER SELF-HEALED AND NEVER RETRIED (the
+ * AUTH_DENIED/AUTH_EXPIRED split at the self-heal gate). classifyFailure()
+ * reports `permissionScope: true` when a provider's own permission-scope rule
+ * matched -- the identity was understood and the PRINCIPAL was never granted
+ * the permission (GitHub's workflow-file refusal is the motivating case; see
+ * vcs-providers/github.mjs). provision_vcs_auth re-mints a credential for the
+ * SAME principal with the SAME permission set, so a self-heal there is
+ * guaranteed to fail and the retry after it is guaranteed to be refused
+ * identically -- every cycle, forever. Such a failure is returned IMMEDIATELY,
+ * exactly the way 'diverged' is, with the provider's operator referral
+ * appended to `error` so the caller's typed GitSyncError names the member, the
+ * refused command (hence its remote/branch), the refused resource and the
+ * missing permission.
+ *
+ * The gate reads the NEUTRAL classification (kind + permissionScope), never a
+ * regex over stderr here -- classification stays the single place VCS stderr
+ * is interpreted (vcs-module.mjs's header).
+ *
+ * WHY THE GATE IS "AUTH_DENIED + permissionScope" AND NOT "AUTH_DENIED"
+ * ALONE -- a census of every AUTH_DENIED producer in the tree, so this stays
+ * a no-regression change rather than a silent verdict flip for the others:
+ *   - vcs-providers/github.mjs, the workflow-file refusal: permission-scope.
+ *     NEW behavior, and the point of this gate -- no self-heal, no retry.
+ *   - vcs-providers/generic-git.mjs, /Permission denied \(publickey\)/ and
+ *     /HTTP Basic:\s*Access denied/: UNCHANGED (still self-healed). Both are
+ *     reached in practice with git's generic "Authentication failed" tail in
+ *     the same stderr, which AUTH_EXPIRED outranks, so the observable path for
+ *     them is AUTH_EXPIRED anyway; and a publickey refusal after a credential
+ *     was mis-deployed IS sometimes fixed by re-provisioning. Flipping them
+ *     would be an unrelated behavior change.
+ *   - vcs-providers/azure-devops.mjs, TF401019 and a REST 403: UNCHANGED
+ *     (still self-healed). The self-heal is also that provider's ONLY vehicle
+ *     for printing its `authRemedy` hint to the operator
+ *     (vcs-auth.mjs's createVcsAuthSelfHealCallback), and re-deploying a
+ *     stored PAT that simply never reached the member does fix it. Pinned by
+ *     test/vcs-nongithub-auth-selfheal.test.mjs and
+ *     test/mock-sprint-vcs-selfheal-remedy.test.mjs.
+ * No existing AUTH_DENIED producer changes verdict or self-heal treatment;
+ * only a provider that OPTS IN via `permissionScope` does.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown', permissionScope?: boolean }>}
  */
 export async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, provider }) {
     let attempt = 0;
@@ -340,7 +381,27 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
         if (res && res.ok) return res;
         const error = res ? res.error : 'unknown command failure';
-        const kind = classifyGitFailure(error, provider);
+        // ONE classification per attempt, read both ways: the neutral kind
+        // (for the permission-scope gate) and this module's legacy verdict
+        // (for the transient/auth routing below). classifyGitFailure() is
+        // exactly toGitVerdict(classifyFailure(...).kind), so the two readings
+        // can never disagree -- see that function's own doc comment.
+        const classified = classifyFailure(error, provider ? { provider } : undefined);
+        const kind = toGitVerdict(classified.kind);
+        if (classified.kind === VCS_FAILURE_KINDS.AUTH_DENIED && classified.permissionScope) {
+            const referral =
+                `[Sync] permission-scope git failure for member '${member}' (${label}): the command "${cmd}" was refused because the ` +
+                "member's VCS credential lacks a required permission. Not self-healing and not retrying -- re-provisioning mints the same " +
+                `permission set. ${classified.operatorReferral || 'An operator must grant the missing permission before this command can succeed.'}`;
+            log(referral);
+            return {
+                ok: false,
+                output: res ? res.output : '',
+                error: `${error}\n${referral}`,
+                kind,
+                permissionScope: true,
+            };
+        }
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);

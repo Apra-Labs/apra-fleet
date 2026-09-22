@@ -363,10 +363,21 @@ describe('VCSModule.classifyFailure -- purity (AC3)', () => {
         }
     });
 
-    test('the return shape is exactly { kind, providerCode, retryable, raw }', () => {
+    // The shape gained `permissionScope`/`operatorReferral` when the
+    // permission-scope axis landed (see vcs-module.mjs's PERMISSION SCOPE note
+    // and vcs-providers/index.mjs's descriptor contract). They are ALWAYS
+    // present -- false/null for every non-permission-scope classification --
+    // so a caller never has to distinguish "absent" from "not a scope
+    // refusal".
+    test('the return shape is exactly { kind, providerCode, retryable, permissionScope, operatorReferral, raw }', () => {
         const result = classifyFailure('fatal: Authentication failed');
-        assert.deepStrictEqual(Object.keys(result).sort(), ['kind', 'providerCode', 'raw', 'retryable']);
+        assert.deepStrictEqual(
+            Object.keys(result).sort(),
+            ['kind', 'operatorReferral', 'permissionScope', 'providerCode', 'raw', 'retryable'],
+        );
         assert.strictEqual(result.raw, 'fatal: Authentication failed');
+        assert.strictEqual(result.permissionScope, false, 'a plain credential failure is not a permission-scope refusal');
+        assert.strictEqual(result.operatorReferral, null, 'no operator referral without a permission-scope match');
     });
 
     test('classifyFailure is reachable both as a named export and off VCSModule', () => {
