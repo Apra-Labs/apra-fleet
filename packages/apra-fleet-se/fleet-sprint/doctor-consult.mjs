@@ -279,6 +279,136 @@ export function buildConsultInput(parts = {}, limits = {}) {
     return input;
 }
 
+// ---------------------------------------------------------------------------
+// 1b. Re-plan mode: the same consult, asked a different question
+// ---------------------------------------------------------------------------
+//
+// A doer that returns status BLOCKED has FINISHED its turn and is stating it
+// cannot do the work from its seat. That is a planning/design defect, not a
+// flaky dispatch, so none of the incident actions (retry, re-lane, repair)
+// can answer it -- the bead itself has to change. This section adds the
+// INPUT and PROMPT framing for that question.
+//
+// IT DELIBERATELY ADDS NO SECOND DISPATCH PATH. buildReplanConsultInput()
+// returns the same shape buildConsultInput() does (it calls it), plus one
+// extra `replan` block; buildConsultPrompt() notices that block and swaps its
+// framing paragraph. runConsult() -- the zero-tool, premium, one-probe-round,
+// schema-validated, never-throws dispatch -- is reused verbatim, so every
+// bound and every failure-is-a-logged-null guarantee documented at the top of
+// this file applies to a re-plan consult without being restated or
+// re-implemented anywhere.
+
+/**
+ * The five re-plan action kinds, mirroring sprint-doctor-output.json's
+ * `action.kind` enum. Frozen and exported so the executor's dispatch table
+ * and this module read ONE list rather than two that can drift.
+ */
+export const REPLAN_ACTION_KINDS = Object.freeze([
+    'replan_rewrite',
+    'replan_rescope',
+    'replan_route',
+    'replan_grant',
+    'replan_defer_with_credit',
+]);
+
+/**
+ * What each role seat can actually DO, and what access it holds.
+ *
+ * This is the fact the doctor cannot otherwise have: "rewrite the bead so a
+ * doer can finish it" and "route it to a test-runner that closes on
+ * evidence" are only distinguishable if you know what the two seats differ
+ * in. Without it a re-plan consult degenerates into rewording.
+ *
+ * GENERIC BY CONSTRUCTION: these are ENGINE role seats, described in engine
+ * terms only. Nothing here names a target repo, a build command, a tracker
+ * prefix or a credential provider -- a target's own specifics reach the
+ * doctor through the bead text and the log tails, never through this map.
+ */
+export const ROLE_CAPABILITY_MAP = Object.freeze({
+    doer: Object.freeze({
+        can: Object.freeze([
+            'read and edit source files in the sprint worktree',
+            'run the target project build, linter and test commands',
+            'commit to the sprint branch and push it',
+            'claim and close the task beads it was assigned',
+        ]),
+        cannot: Object.freeze([
+            'close a bead it was not assigned',
+            'close a bead whose acceptance is evidence a test run must produce',
+            'reach any environment outside its own member worktree',
+        ]),
+        access: Object.freeze(['repository write via the member VCS credential', 'the tracker on its own clone']),
+    }),
+    'integ-test-runner': Object.freeze({
+        can: Object.freeze([
+            'run the target integration-test playbook end to end',
+            'own the test sandbox lifecycle (setup, reset, teardown)',
+            'close a verify-set bead on observed evidence',
+            'file a bug bead for a failure it observed',
+        ]),
+        cannot: Object.freeze(['write product source', 'commit to the sprint branch']),
+        access: Object.freeze(['the test sandbox', 'the tracker on its own clone']),
+    }),
+    'regression-test-runner': Object.freeze({
+        can: Object.freeze([
+            'run the target regression playbook once per sprint',
+            'own the test sandbox lifecycle',
+            'file carry-over bug beads for failures',
+        ]),
+        cannot: Object.freeze(['write product source', 'gate the sprint (its phase is informational only)']),
+        access: Object.freeze(['the test sandbox', 'the tracker on its own clone']),
+    }),
+    deployer: Object.freeze({
+        can: Object.freeze([
+            'follow the target deploy document and deploy the built software',
+            'run the documented smoke test and report its result',
+        ]),
+        cannot: Object.freeze(['write product source', 'change the deploy document itself']),
+        access: Object.freeze(['the deploy target environment and whatever credentials the target document provisions']),
+    }),
+});
+
+/**
+ * Assembles the consult input for a BLOCKED-bead re-plan.
+ *
+ * Everything buildConsultInput() already bounds (log tails, ledger rows,
+ * evidence rows, consult history, registry) is bounded here identically --
+ * this is that function plus ONE block. The added block carries the three
+ * facts a re-plan needs and an incident consult does not:
+ *
+ *   1. `blockedReason` -- the doer's OWN stated reason, captured verbatim
+ *      into the health ledger by the BLOCKED-capture lane. This is the
+ *      primary evidence; everything else is context around it.
+ *   2. `roleCapabilities` -- ROLE_CAPABILITY_MAP, injected as data.
+ *   3. `allowedActionKinds` -- the five re-plan kinds, stated so the doctor
+ *      is not left inferring from the schema alone which subset applies.
+ *
+ * @param {object} parts the same parts buildConsultInput() takes, plus
+ *   `blockedReason` (string) and optionally `beadId` (string) and
+ *   `roleCapabilities` (an override for tests).
+ * @param {Partial<typeof DEFAULT_CONSULT_LIMITS>} [limits]
+ * @returns {object}
+ */
+export function buildReplanConsultInput(parts = {}, limits = {}) {
+    const input = buildConsultInput(parts, limits);
+    const beadId = parts.beadId
+        ? String(parts.beadId)
+        : (input.triggeringBeadIds && input.triggeringBeadIds[0]) || '';
+    input.replan = {
+        beadId,
+        // Wrapped and sanitized exactly like a log tail: the doer's notes are
+        // model-authored text arriving from a member, so it is the same
+        // prompt-injection surface, and fencing it costs nothing.
+        blockedReason: wrapUntrustedBlock(
+            'doer-stated blocked reason',
+            truncateLogTail(parts.blockedReason, { ...DEFAULT_CONSULT_LIMITS, ...limits }.logTailBytes).text,
+        ),
+        roleCapabilities: parts.roleCapabilities || ROLE_CAPABILITY_MAP,
+        allowedActionKinds: [...REPLAN_ACTION_KINDS],
+    };
+    return input;
+}
+
 /**
  * Loads the symptom/remedy registry (design doc section 4) if that lane has
  * landed, and returns [] if it has not. Deliberately lazy and optional: the
@@ -319,19 +449,47 @@ export async function loadRegistryEntries(deps = {}) {
 export function buildConsultPrompt(input, opts = {}) {
     const schema = opts.schema || sprintDoctorVerdict;
     const { logTails, ...structured } = input;
-    const sections = [
-        'You are being consulted about a sprint that its own deterministic handlers and retry '
-        + 'ladders have already failed to resolve. You have NO tools: every fact you may use is '
-        + 'below. Diagnose it and return one schema-valid verdict.',
-        '',
-        '## Incident context (runner-assembled, trusted)',
-        '```json',
-        JSON.stringify(structured, null, 2),
-        '```',
-        '',
-        '## Runner sprint log tail',
-        logTails.sprintLog,
-    ];
+    // ONE prompt builder, two framings. A re-plan input is recognized by the
+    // `replan` block buildReplanConsultInput() adds -- nothing else about the
+    // rendering, the schema instruction or the probe-round handling differs,
+    // which is what keeps re-plan a MODE of this consult rather than a second
+    // consult implementation that could drift from this one.
+    const replan = structured.replan || null;
+    const sections = replan
+        ? [
+            'A doer has reported BLOCKED on a bead: it finished its turn and is stating it CANNOT '
+            + 'do the work from its seat. That is a planning defect in the bead, not a flaky '
+            + 'dispatch, so retrying or re-laning it cannot help -- the bead itself has to change. '
+            + 'You have NO tools: every fact you may use is below, including the doer\'s own stated '
+            + 'reason and a map of what each role seat can do. Return ONE schema-valid verdict whose '
+            + 'action.kind is one of the re-plan kinds listed in the context, carrying action.replan.',
+            '',
+            'Two bounds: the runner applies exactly ONE re-plan to this bead this cycle, and it '
+            + 're-dispatches the bead ONLY if your payload actually changed it. Restating the bead '
+            + 'as it already reads buys nothing and costs a dispatch -- if nothing available to this '
+            + 'sprint can unblock it, say so with replan_defer_with_credit and a reason.',
+            '',
+            '## Re-plan context (runner-assembled, trusted)',
+            '```json',
+            JSON.stringify(structured, null, 2),
+            '```',
+            '',
+            '## Runner sprint log tail',
+            logTails.sprintLog,
+        ]
+        : [
+            'You are being consulted about a sprint that its own deterministic handlers and retry '
+            + 'ladders have already failed to resolve. You have NO tools: every fact you may use is '
+            + 'below. Diagnose it and return one schema-valid verdict.',
+            '',
+            '## Incident context (runner-assembled, trusted)',
+            '```json',
+            JSON.stringify(structured, null, 2),
+            '```',
+            '',
+            '## Runner sprint log tail',
+            logTails.sprintLog,
+        ];
     if (logTails.memberDispatchOutput) {
         sections.push('', '## Member-side dispatch output tail', logTails.memberDispatchOutput);
     }

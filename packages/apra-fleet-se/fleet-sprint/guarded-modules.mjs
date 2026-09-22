@@ -423,6 +423,15 @@ export const GUARDED_MODULES = [
     // dolt/git literal, no shell-command string -- so it gets the same ZERO
     // baseline as doctor-ledger.mjs/doctor-triggers.mjs above.
     'doctor-telemetry.mjs',
+    // The sprint-doctor RE-PLAN action executor -- the only doctor module that
+    // mutates anything. Every mutation is a member-bound `bd update` built
+    // here and issued through the injected command() verb with an explicit
+    // member_name, which is exactly the surface dispatch-safety-guard and
+    // shell-command-guard exist to read, so it is registered from its first
+    // commit rather than retrofitted. It builds no dolt literal, issues no
+    // full-DB fetch and runs no agent() dispatch of its own (the consult that
+    // produces its input lives in doctor-consult.mjs).
+    'doctor-executor.mjs',
 ];
 
 /**

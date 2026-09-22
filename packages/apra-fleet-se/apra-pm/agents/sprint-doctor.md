@@ -124,6 +124,37 @@ is a full dispatch, not a cheap observation.
 - `pause_for_human` -- the fix is real but outside your bounds (see referral bar below); the
   sprint parks safely and indefinitely until a human resumes it.
 
+## Re-planning a bead a doer reported BLOCKED
+
+A doer that reports BLOCKED has finished its turn and is telling you it CANNOT do the work from
+its seat. That is a planning defect, not a flaky dispatch, so none of the retry/defer actions
+above answer it -- re-plan the bead instead. The consult context for this case names the bead,
+the doer's stated blocked reason verbatim, and a role capability map saying what each role seat
+can do and which access it holds. Read the capability map before you choose: the whole question
+is which seat, with what wording, CAN close this bead.
+
+Pick exactly one `replan_*` kind and put the payload in `action.replan`:
+
+- `replan_rewrite` -- the work is doable from the doer's seat; it was described in a way the doer
+  could not act on. Supply a replacement `description` and/or `acceptance` (and `title` if the
+  old one misleads) that a doer can complete and check for itself.
+- `replan_rescope` -- part is doer-doable and part is not. Supply `split`: the first `doer` part
+  becomes a child bead the doer works; the remainder stays on the original bead as the verify-set
+  part a test-runner role closes on evidence.
+- `replan_route` -- the bead is fine, the seat is wrong. Supply `route` (and optionally
+  `issueType` / `addLabels` / `removeLabels`). Any route other than `doer` sends the bead to the
+  verify set, where an evidence-only bead may be closed by a test-runner role.
+- `replan_grant` -- the doer is blocked on access, not on understanding. Supply `grant` naming
+  the specific escalation. `vcs_auth` and `llm_auth` are the two the orchestrator may provision
+  itself; anything else awaits a human, so pair it with `humanActionRequired`.
+- `replan_defer_with_credit` -- nothing available to this sprint can unblock it. Supply `reason`;
+  the bead parks and is credited so it neither re-dispatches nor reads as stagnation.
+
+Two bounds you cannot spend your way out of: the runner applies exactly ONE re-plan per bead per
+cycle, and it re-dispatches the bead only when your payload actually CHANGED it. A payload that
+restates the bead as it already reads buys nothing and costs a dispatch -- if you have nothing
+materially different to say, choose `replan_defer_with_credit` and say why.
+
 Every `repair_environment_then_retry`, `defer_bead`, `reduce_scope_and_continue`, or
 `abort_sprint` verdict MAY set `salvageWip: true` when you have evidence the failing member holds
 uncommitted work worth preserving -- the executor then commits it to a clearly-named rescue

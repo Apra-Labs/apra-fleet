@@ -707,6 +707,11 @@ export const FALLBACK_sprintDoctorVerdict = {
                         'reduce_scope_and_continue',
                         'abort_sprint',
                         'pause_for_human',
+                        'replan_rewrite',
+                        'replan_rescope',
+                        'replan_route',
+                        'replan_grant',
+                        'replan_defer_with_credit',
                     ],
                 },
                 repairs: {
@@ -723,6 +728,48 @@ export const FALLBACK_sprintDoctorVerdict = {
                 beadIds: { type: 'array', items: { type: 'string' } },
                 reason: { type: 'string' },
                 salvageWip: { type: 'boolean' },
+                replan: { $ref: '#/definitions/replan' },
+            },
+        },
+        // The re-plan payload every `replan_*` action carries (apra-fleet
+        // sprint-doctor re-plan lane). Mirrors the vendored schema's
+        // `definitions.replan` exactly -- doctor-contract.test.mjs pins that
+        // the two agree on every required/enum set.
+        replan: {
+            type: 'object',
+            properties: {
+                beadId: { type: 'string' },
+                title: { type: 'string' },
+                description: { type: 'string' },
+                acceptance: { type: 'string' },
+                issueType: { type: 'string', enum: ['task', 'bug', 'feature', 'chore', 'epic'] },
+                addLabels: { type: 'array', items: { type: 'string' } },
+                removeLabels: { type: 'array', items: { type: 'string' } },
+                route: { type: 'string', enum: ['doer', 'integ-test-runner', 'regression-test-runner', 'deployer'] },
+                split: {
+                    type: 'array',
+                    minItems: 2,
+                    items: {
+                        type: 'object',
+                        required: ['role', 'title', 'description', 'acceptance'],
+                        properties: {
+                            role: { type: 'string', enum: ['doer', 'integ-test-runner', 'regression-test-runner', 'deployer'] },
+                            title: { type: 'string' },
+                            description: { type: 'string' },
+                            acceptance: { type: 'string' },
+                        },
+                    },
+                },
+                grant: {
+                    type: 'object',
+                    required: ['kind', 'summary'],
+                    properties: {
+                        kind: { type: 'string', enum: ['vcs_auth', 'llm_auth', 'member_permission', 'human_secret'] },
+                        summary: { type: 'string', minLength: 1 },
+                        member: { type: 'string' },
+                    },
+                },
+                reason: { type: 'string' },
             },
         },
         engineFlawReport: {
@@ -792,6 +839,67 @@ export const FALLBACK_sprintDoctorVerdict = {
                 required: ['action'],
             },
             then: { required: ['humanActionRequired'] },
+        },
+        // The five re-plan action kinds and their payload requirements. Each
+        // block mirrors the vendored schema's own allOf entry at the SAME
+        // index -- the drift guard keys its facts by structural path, so
+        // order is part of the contract, not incidental formatting.
+        {
+            if: {
+                properties: {
+                    action: {
+                        properties: {
+                            kind: { enum: ['replan_rewrite', 'replan_rescope', 'replan_route', 'replan_grant', 'replan_defer_with_credit'] },
+                        },
+                        required: ['kind'],
+                    },
+                },
+                required: ['action'],
+            },
+            then: { properties: { action: { required: ['replan'] } } },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'replan_rewrite' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: {
+                properties: {
+                    action: {
+                        properties: {
+                            replan: { anyOf: [{ required: ['description'] }, { required: ['acceptance'] }, { required: ['title'] }] },
+                        },
+                    },
+                },
+            },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'replan_rescope' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: { properties: { action: { properties: { replan: { required: ['split'] } } } } },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'replan_route' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: { properties: { action: { properties: { replan: { required: ['route'] } } } } },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'replan_grant' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: { properties: { action: { properties: { replan: { required: ['grant'] } } } } },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'replan_defer_with_credit' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: { properties: { action: { properties: { replan: { required: ['reason'] } } } } },
         },
         {
             if: {

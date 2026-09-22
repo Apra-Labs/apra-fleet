@@ -77,8 +77,14 @@
             "defer_bead",
             "reduce_scope_and_continue",
             "abort_sprint",
-            "pause_for_human"
-          ]
+            "pause_for_human",
+            "replan_rewrite",
+            "replan_rescope",
+            "replan_route",
+            "replan_grant",
+            "replan_defer_with_credit"
+          ],
+          "description": "The eight incident actions, plus the five re-plan actions (prefix replan_) that answer a doer BLOCKED report. A re-plan action MUST carry `replan` (enforced below); the runner applies it through existing verbs and re-dispatches the bead only when its content actually changed."
         },
         "repairs": {
           "type": "array",
@@ -119,7 +125,74 @@
         "salvageWip": {
           "type": "boolean",
           "description": "Opt-in rescue-branch commit of uncommitted member WIP before defer/abort (design doc section 2.5 salvage pre-step)."
+        },
+        "replan": {
+          "$ref": "#/definitions/replan",
+          "description": "Required by every replan_* action kind (enforced below); meaningless on any other kind."
         }
+      }
+    },
+    "replan": {
+      "type": "object",
+      "description": "The re-plan payload for a bead a doer reported BLOCKED on. Every field is DATA the runner applies through an existing verb -- the doctor never edits a bead itself. Free text is runner-sanitized before it reaches any command string, so keep it plain and single-paragraph.",
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "description": "The bead this re-plan is for. Omit when the action's beadIds already names exactly one."
+        },
+        "title": { "type": "string" },
+        "description": {
+          "type": "string",
+          "description": "Replacement description the doer CAN complete from its seat. Applied as the bead's new body."
+        },
+        "acceptance": {
+          "type": "string",
+          "description": "Replacement acceptance criteria, checkable from the seat that will do the work."
+        },
+        "issueType": {
+          "type": "string",
+          "enum": ["task", "bug", "feature", "chore", "epic"],
+          "description": "New issue type, for a retype."
+        },
+        "addLabels": { "type": "array", "items": { "type": "string" } },
+        "removeLabels": { "type": "array", "items": { "type": "string" } },
+        "route": {
+          "type": "string",
+          "enum": ["doer", "integ-test-runner", "regression-test-runner", "deployer"],
+          "description": "The role seat this bead should be worked from. Anything other than `doer` routes it to the verify set, where a test-runner role may close it on evidence."
+        },
+        "split": {
+          "type": "array",
+          "minItems": 2,
+          "description": "For replan_rescope: exactly the parts the original bead decomposes into. The FIRST doer-role part becomes a child bead the doer can complete; the remainder stays on the original bead as the verify-set part a test-runner closes with evidence.",
+          "items": {
+            "type": "object",
+            "required": ["role", "title", "description", "acceptance"],
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["doer", "integ-test-runner", "regression-test-runner", "deployer"]
+              },
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "acceptance": { "type": "string" }
+            }
+          }
+        },
+        "grant": {
+          "type": "object",
+          "required": ["kind", "summary"],
+          "description": "A specific access escalation. `vcs_auth` and `llm_auth` are the two the orchestrator may perform itself through its existing provisioning path; the others await a human and the bead is excluded from the stagnation math until then.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["vcs_auth", "llm_auth", "member_permission", "human_secret"]
+            },
+            "summary": { "type": "string", "minLength": 1 },
+            "member": { "type": "string" }
+          }
+        },
+        "reason": { "type": "string" }
       }
     },
     "engineFlawReport": {
@@ -247,6 +320,96 @@
         "required": ["action"]
       },
       "then": { "required": ["humanActionRequired"] }
+    },
+    {
+      "description": "Every replan_* action carries its replan payload.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": {
+              "kind": {
+                "enum": ["replan_rewrite", "replan_rescope", "replan_route", "replan_grant", "replan_defer_with_credit"]
+              }
+            },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "properties": { "action": { "required": ["replan"] } } }
+    },
+    {
+      "description": "replan_rewrite must say what the bead becomes: a replacement description, acceptance or title.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "replan_rewrite" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "properties": {
+              "replan": { "anyOf": [{ "required": ["description"] }, { "required": ["acceptance"] }, { "required": ["title"] }] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "replan_rescope must supply the split.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "replan_rescope" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "properties": { "action": { "properties": { "replan": { "required": ["split"] } } } } }
+    },
+    {
+      "description": "replan_route must name the role seat to route to.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "replan_route" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "properties": { "action": { "properties": { "replan": { "required": ["route"] } } } } }
+    },
+    {
+      "description": "replan_grant must name the specific access escalation.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "replan_grant" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "properties": { "action": { "properties": { "replan": { "required": ["grant"] } } } } }
+    },
+    {
+      "description": "replan_defer_with_credit must state why the bead is being parked.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "replan_defer_with_credit" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "properties": { "action": { "properties": { "replan": { "required": ["reason"] } } } } }
     },
     {
       "description": "action.kind abort_sprint with classification ENGINE_FLAW or UNCLEAR requires humanActionRequired.",

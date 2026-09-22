@@ -39,6 +39,10 @@
 // its repo layout, its tracker prefix or its build commands.
 // =============================================================================
 
+// Used by runBlockedReplanPhase at the bottom of this file -- the re-plan
+// lane's action executor, the only doctor module that mutates anything.
+import { applyReplanVerdict, isReplanAction, REPLAN_ACTION_KINDS } from '../doctor-executor.mjs';
+
 /**
  * Runs ONE sprint-doctor consult for the highest-priority pending trigger.
  *
@@ -116,5 +120,114 @@ export async function runSprintDoctorPhase(state) {
         sprintLogText,
         registry,
         label: `Sprint Doctor C${cycle}`,
+    });
+}
+
+// =============================================================================
+// PHASE MODULE: Sprint Doctor Re-plan (design: ../docs/escalate-to-llm-
+// design.md sections 2.1 and 2.5).
+//
+// THE SECOND doctor phase body, and the FIRST one that is allowed to act.
+// runSprintDoctorPhase above may only ASK; this one asks and then APPLIES,
+// because the incident it answers is different in kind.
+//
+// A doer that reports BLOCKED has finished its turn and is stating it cannot
+// do the work from its seat. Nothing the observation lane can do helps: a
+// retry re-runs the same refusal, a re-lane runs it on another member, and
+// leaving the bead in the ready pool re-dispatches it unchanged until the
+// sprint stalls. The only answer is to change the BEAD -- so this phase is
+// deliberately not strictly-additive, and its acting half is confined to the
+// executor's table of existing verbs.
+//
+// WHAT IT STILL MAY NOT DO. It does not edit a bead itself: it dispatches the
+// zero-tool doctor, receives a schema-validated payload, and hands that to
+// doctor-executor.mjs, which is the single actor. It runs at most ONE consult
+// per bead per cycle (the caller's own per-cycle set), it re-dispatches a
+// bead only when the executor reports its content actually changed, and every
+// failure -- no verdict, a non-re-plan action, a refused application -- leaves
+// the bead exactly as excluded as it already was.
+// =============================================================================
+
+
+/**
+ * Consults the doctor about ONE bead a doer reported BLOCKED on, then applies
+ * the verdict through existing verbs.
+ *
+ * @param {{
+ *   phase: Function, log: Function, agent: Function, command: Function,
+ *   callTool?: Function,
+ *   doctor: { consult: Function },
+ *   pending: object,
+ *   beadId: string,
+ *   blockedReason: string,
+ *   cycle: number|string,
+ *   roundLabel?: string,
+ *   position: object,
+ *   beadDetails?: object[],
+ *   scopeSummary?: object,
+ *   consultMember: string|undefined,
+ *   orchestratorMember: string|undefined,
+ *   sprintLogText: string,
+ *   registry?: object[],
+ *   stageBody?: Function,
+ *   createChild?: Function,
+ *   provisionGrant?: Function,
+ * }} state
+ * @returns {Promise<object|null>} the executor result, or null when no re-plan
+ *   was produced (in which case the caller changes nothing)
+ */
+export async function runBlockedReplanPhase(state) {
+    const {
+        phase, log, doctor, pending, beadId, blockedReason, cycle, roundLabel,
+        position, beadDetails, scopeSummary,
+        agent, command, callTool, consultMember, orchestratorMember,
+        sprintLogText, registry = [],
+        stageBody, createChild, provisionGrant,
+    } = state;
+
+    const label = `Sprint Doctor Re-plan C${cycle}${roundLabel ? ` ${roundLabel}` : ''}`;
+    phase(label);
+
+    const verdict = await doctor.consult(pending, {
+        agent,
+        command,
+        callTool,
+        consultMember,
+        orchestratorMember,
+        position: { ...position, phaseLabel: label },
+        beadDetails: beadDetails || [],
+        scopeSummary,
+        fallbackBeadIds: [beadId],
+        sprintLogText,
+        registry,
+        label,
+        // The one field that makes this a re-plan rather than an incident
+        // consult (see doctor-consult.mjs's buildReplanConsultInput).
+        replan: { beadId, blockedReason },
+    });
+
+    // Every consult failure path already logged its own reason and returned
+    // null. Nothing changes here: the bead stays excluded from re-lane, which
+    // is exactly the behaviour the BLOCKED capture lane established.
+    if (!verdict) return null;
+
+    if (!isReplanAction(verdict.action && verdict.action.kind)) {
+        log(
+            `[sprint-doctor] re-plan consult for ${beadId} returned action `
+            + `'${(verdict.action && verdict.action.kind) || 'none'}', which is not one of the re-plan kinds `
+            + `[${REPLAN_ACTION_KINDS.join(', ')}]. Nothing is applied and the bead stays excluded from re-lane.`
+        );
+        return null;
+    }
+
+    return applyReplanVerdict(verdict, {
+        command,
+        member: orchestratorMember,
+        log,
+        cycle,
+        beadIds: [beadId],
+        stageBody,
+        createChild,
+        provisionGrant,
     });
 }

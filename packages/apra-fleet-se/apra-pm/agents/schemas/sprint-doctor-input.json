@@ -99,6 +99,29 @@
       "type": "array",
       "items": { "type": "object" },
       "description": "The symptom/remedy registry (design doc section 4), injected as data, never baked into the prompt text."
+    },
+    "replan": {
+      "type": "object",
+      "description": "Present ONLY for a BLOCKED-bead re-plan consult, and what switches the prompt from incident framing to re-plan framing. Its presence means the question is \"what must this bead become so some role seat can close it\", not \"what went wrong\".",
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "description": "The bead the doer refused."
+        },
+        "blockedReason": {
+          "type": "string",
+          "description": "The doer's OWN stated reason, captured verbatim into the health ledger and fenced as untrusted member-authored text. Primary evidence for this consult."
+        },
+        "roleCapabilities": {
+          "type": "object",
+          "description": "What each role seat can do, cannot do, and what access it holds -- the fact that makes 'rewrite for the doer' and 'route to a test-runner' distinguishable."
+        },
+        "allowedActionKinds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The re-plan action kinds this consult may answer with."
+        }
+      }
     }
   }
 }

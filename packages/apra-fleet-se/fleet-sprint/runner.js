@@ -177,7 +177,7 @@ import { runReReviewPhase } from './phases/re-review.mjs';
 // already fired, so a healthy sprint never emits its label at all. Its body
 // lives in a phase module for the same reason every other phase body does --
 // runSprintCycle builds no phase() label of its own.
-import { runSprintDoctorPhase } from './phases/sprint-doctor.mjs';
+import { runSprintDoctorPhase, runBlockedReplanPhase } from './phases/sprint-doctor.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
 // its own phase() call to the findings D-push and RETURNS the sprint verdict
@@ -274,6 +274,7 @@ import { evaluateTriggers, DEFAULT_THRESHOLDS } from './doctor-triggers.mjs';
 // throwing into the cycle loop.
 import {
     buildConsultInput,
+    buildReplanConsultInput,
     runConsult,
     createConsultLimiter,
     createLogTailBuffer,
@@ -281,6 +282,13 @@ import {
     loadRegistryEntries,
     DEFAULT_CONSULT_LIMITS,
 } from './doctor-consult.mjs';
+// The sprint-doctor RE-PLAN action executor: the only doctor module that
+// mutates anything, and the answer to a doer that reported BLOCKED. It maps
+// each of the five re-plan action kinds to an EXISTING verb (bd update, the
+// child-bead create, the credential provisioning path) and reports back what
+// it actually changed, so the re-dispatch decision below is made from a fact
+// rather than from the verdict's intent.
+import { applyReplanVerdict, isReplanAction } from './doctor-executor.mjs';
 // apra-fleet-iiny.7.2: consent-gated engine-flaw telemetry (design doc
 // section 4.4) -- sanitize a consult verdict's engineFlawReport BEFORE it is
 // held in memory or surfaced anywhere, resolve the fleet-config-driven
@@ -1054,8 +1062,17 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
         }
 
         const member = pending.member || null;
-        const input = buildConsultInput({
+        // ONE consult path, two questions. A `deps.replan` block switches the
+        // assembly (and, through it, the prompt framing) to the BLOCKED-bead
+        // re-plan; everything else -- the limiter, the pre-flight input
+        // validation, the zero-tool premium dispatch, the single probe round,
+        // the no-repeat override, the verdict log -- is the SAME code below.
+        // A second dispatch path for re-plan would be a second place for all
+        // of those bounds to drift out of agreement.
+        const assembleInput = deps.replan ? buildReplanConsultInput : buildConsultInput;
+        const input = assembleInput({
             ...(deps.position || {}),
+            ...(deps.replan || {}),
             trigger: {
                 id: pending.trigger,
                 evidenceRows,
@@ -2729,12 +2746,44 @@ async function runSprintCycle(context) {
     // (unlike `replanIds`/`replannedThisCycle` below, which reset every
     // cycle), because the doctrine is "do not re-dispatch this bead
     // unchanged for the rest of the sprint", not just for the rest of the
-    // cycle. A bead becomes eligible again only once a re-plan verdict has
-    // been applied to it (apra-fleet-mduk.2 -- not yet wired here); nothing
-    // in this run clears an id out of this set. Populated only when
-    // doctor.enabled (there is no health ledger to have raised the red-state
-    // trigger from otherwise); every ready-bead query below filters it out.
+    // cycle. A bead becomes eligible again ONLY once a re-plan verdict has
+    // been applied to it and the executor reported its content actually
+    // changed -- that delete is the ONE place an id leaves this set (see the
+    // re-plan call site below). Populated only when doctor.enabled (there is
+    // no health ledger to have raised the red-state trigger from otherwise);
+    // every ready-bead query below filters it out.
     const doctorBlockedIds = new Set();
+
+    // apra-fleet-mduk.2: the doer's own stated blocked reason, per bead. This
+    // is the PRIMARY evidence a re-plan consult reads -- the bead text says
+    // what was asked, and only this says why the seat could not do it -- so
+    // it is kept alongside the exclusion set rather than re-derived from the
+    // ledger at consult time.
+    const doctorBlockedReasons = new Map();
+
+    // apra-fleet-mduk.2: the re-plan lane's MONOTONE STAGNATION CREDIT SET,
+    // built on exactly the `verifyEverIds` pattern (only ever grows, so a
+    // bead cannot re-earn credit by oscillating, and the high-water-mark
+    // oscillation-proofing survives). Two kinds land here: a bead the doctor
+    // deferred with credit, and a bead held for a grant only a human can
+    // make. Both are states the sprint chose ON PURPOSE, and a sprint must
+    // not abort for "no progress" while it is correctly waiting on a person
+    // -- so they are credited to the progress score instead of counting as
+    // open blockers.
+    //
+    // A SEPARATE set from verifyEverIds, deliberately: verifyEverIds also
+    // drives the per-cycle verify-set exit gate (`stillOpenVerifyIds`), which
+    // refuses to finish a sprint while a verify-routed bead is open and hands
+    // it to the integration-test runner. A deferred or grant-blocked bead is
+    // precisely the bead no test-runner can close, so folding it into that
+    // set would trade a false stall for a guaranteed one.
+    const doctorCreditIds = new Set();
+
+    // apra-fleet-mduk.2: the subset of the above that is waiting on a HUMAN
+    // grant. Named separately from doctorCreditIds because the stall-abort
+    // message must distinguish "still open and nobody is coming" from "still
+    // open and waiting on a person" -- those need different operator actions.
+    const doctorGrantAwaitingIds = new Set();
 
     // apra-fleet-iiny.7.2: this sprint's collected, ALREADY-SANITIZED
     // engine-flaw telemetry reports (buildTelemetryReport() outputs) --
@@ -3012,6 +3061,13 @@ async function runSprintCycle(context) {
         // so a defective bead can never ping-pong replan<->develop endlessly
         // within a cycle. Scoped to the cycle, like replanIds.
         const replannedThisCycle = new Set();
+        // apra-fleet-mduk.2: bead ids that have already had their ONE
+        // sprint-doctor re-plan consult this cycle. Per-cycle (reset here,
+        // beside the scoped-replan set it mirrors) rather than per-sprint: a
+        // bead whose re-plan did not stick deserves one more look next cycle
+        // with a cycle's worth of new evidence, but never a second premium
+        // consult inside the same cycle on the same evidence.
+        const replanConsultedThisCycle = new Set();
 
         const doerPool = getMembersForRole(ROLE_DOER);
 
@@ -3152,6 +3208,7 @@ async function runSprintCycle(context) {
                     for (const beadId of outcome.beadIds) {
                         if (doctorBlockedIds.has(beadId)) continue;
                         doctorBlockedIds.add(beadId);
+                        doctorBlockedReasons.set(beadId, blockedReason);
                         log(
                             `${DOCTOR_LOG_PREFIX} doer on member '${outcome.doerMember}' reported BLOCKED for bead ${beadId}: ` +
                             `${blockedReason} -- excluding it from re-lane for the rest of this sprint (a re-plan ` +
@@ -3168,10 +3225,128 @@ async function runSprintCycle(context) {
                     }
                 }
                 if (blockedRedStateEvents.length > 0) {
-                    doctor.evaluate(
+                    const acceptedBlockedConsults = doctor.evaluate(
                         { isNewHighWaterMark: false, redStateEvents: blockedRedStateEvents },
                         { only: ['T5'], hook: `Develop C${cycle} R${devRounds}` }
                     );
+
+                    // apra-fleet-mduk.2: ANSWER the BLOCKED report instead of
+                    // merely recording it. A doer that reported BLOCKED is
+                    // stating the bead cannot be done from its seat, so the
+                    // bead has to change -- and the only actor allowed to
+                    // change it is this runner, applying a schema-validated
+                    // payload from a zero-tool consult through existing verbs
+                    // (phases/sprint-doctor.mjs -> doctor-executor.mjs).
+                    //
+                    // EXACTLY ONE RE-PLAN CONSULT PER BEAD PER CYCLE, enforced
+                    // by `replanConsultedThisCycle` below. The per-sprint
+                    // consult cap and the per-error-class cap inside
+                    // doctor.consult() still apply on top of it, so a sprint
+                    // full of BLOCKED beads cannot spend itself dry on
+                    // premium re-plans.
+                    //
+                    // WHY HERE and not at the H2 consult point: this is the
+                    // first serialized moment after the round that knows
+                    // WHICH beads were refused and why, and re-planning here
+                    // means the very next Develop round of the SAME cycle can
+                    // pick up a successfully rewritten bead -- whereas a
+                    // cycle-boundary consult would idle the bead for a whole
+                    // cycle before anyone could act on the answer.
+                    for (const pendingReplan of acceptedBlockedConsults) {
+                        const replanBead = (pendingReplan.beadIds || [])[0];
+                        if (!replanBead || replanConsultedThisCycle.has(replanBead)) continue;
+                        replanConsultedThisCycle.add(replanBead);
+
+                        const applied = await runBlockedReplanPhase({
+                            phase, log, agent, command,
+                            callTool: args && typeof args.callTool === 'function' ? args.callTool : undefined,
+                            doctor,
+                            pending: pendingReplan,
+                            beadId: replanBead,
+                            blockedReason: doctorBlockedReasons.get(replanBead) || '',
+                            cycle,
+                            roundLabel: `R${devRounds}`,
+                            position: {
+                                branch: validated.branch,
+                                base: validated.baseBranch,
+                                goal: validated.goal,
+                                cycle,
+                                maxCycles: MAX_CYCLES,
+                                members: validated.members,
+                                roleMap: validated.roleMap,
+                                budget: { total: budget ? budget.total : null, spent: budget ? budget.spent() : 0 },
+                            },
+                            beadDetails: currentReady.filter((b) => b.id === replanBead),
+                            // Borrows a premium-tier role's member for routing
+                            // only, preferring one not implicated by the
+                            // refusal -- the same convention the H2 consult
+                            // point uses.
+                            consultMember: resolveDoctorConsultMember(pendingReplan.member),
+                            orchestratorMember,
+                            sprintLogText: sprintLogTail.text(),
+                            registry: await loadRegistryEntries(),
+                            // The three EXISTING verbs the executor's table
+                            // maps onto, injected rather than imported so the
+                            // executor stays free of allocator/provider
+                            // wiring and can be unit-tested with fakes.
+                            stageBody: (content, stageLabel) => stageCommandBodyMemberSide({
+                                command, member: orchestratorMember, content, label: stageLabel,
+                            }),
+                            createChild: async (part) => {
+                                const floor = await computeChildFloor({
+                                    command, member: orchestratorMember, parentId: part.parentId, log,
+                                });
+                                return createChildBeadWithAllocatedId({
+                                    command, allocator: childIdAllocator, member: orchestratorMember,
+                                    title: part.title, description: part.description,
+                                    priority: goalMax, parentId: part.parentId,
+                                    sprintId: sprintMutexId, floor, log,
+                                    label: `Sprint Doctor re-plan: create the doer-doable part of ${part.parentId}`,
+                                });
+                            },
+                            provisionGrant: typeof onAuthFailure === 'function'
+                                ? async (grant) => {
+                                    if (grant.kind !== 'vcs_auth') return false;
+                                    await onAuthFailure({
+                                        member: grant.member || orchestratorMember,
+                                        label: `Sprint Doctor grant for ${replanBead}`,
+                                        error: grant.summary,
+                                    });
+                                    return true;
+                                }
+                                : undefined,
+                        });
+
+                        if (!applied) continue;
+
+                        // The re-dispatch gate, and the ONLY place a bead
+                        // leaves the BLOCKED exclusion set. `redispatch`
+                        // implies the executor actually mutated the bead's
+                        // content (doctor-executor.mjs invariant 3), so a
+                        // verdict that restated the bead as it already reads
+                        // can never hand it back to a doer to fail the same
+                        // way again.
+                        if (applied.redispatch) {
+                            doctorBlockedIds.delete(replanBead);
+                            log(`${DOCTOR_LOG_PREFIX} bead ${replanBead} was re-planned and its content changed -- it is eligible for dispatch again this sprint.`);
+                        }
+                        // Verify-set routing: the bead leaves the doer lane
+                        // for good and joins the set the engine already
+                        // credits as progress and already refuses to exit the
+                        // sprint on while it is open.
+                        if (applied.verifyRouted) verifyEverIds.add(replanBead);
+                        // Stagnation credit (deferred-with-credit, or held
+                        // for a human grant) -- see doctorCreditIds above.
+                        if (applied.credit) doctorCreditIds.add(replanBead);
+                        if (applied.grantAwaiting) doctorGrantAwaitingIds.add(replanBead);
+                        if (applied.createdChildId) {
+                            // The child is brand-new beads state created
+                            // outside the command() wrapper's view of this
+                            // round's ready list; drop the shared snapshot so
+                            // the next readiness read actually sees it.
+                            invalidateAllBeadsCache();
+                        }
+                    }
                 }
             }
 
@@ -3446,7 +3621,16 @@ async function runSprintCycle(context) {
         // apra-fleet-2sn. `verifyEverIds` is monotone (only ever grows), so a
         // bead cannot re-earn credit by oscillating in and out of
         // eligibility -- the high-water-mark oscillation-proofing survives.
-        const progressScore = closedCount + verifyEverIds.size;
+        //
+        // apra-fleet-mduk.2: the re-plan lane's own monotone credit set is
+        // added on exactly the same footing. A bead the doctor deferred with
+        // credit, or one held for a grant only a human can make, is a state
+        // the sprint chose on purpose -- counting it as "no progress" would
+        // abort a sprint for correctly waiting on a person. Ids already
+        // credited as verify-routed are subtracted so a bead that is in both
+        // sets cannot be paid twice.
+        const uncountedCreditIds = [...doctorCreditIds].filter((id) => !verifyEverIds.has(id));
+        const progressScore = closedCount + verifyEverIds.size + uncountedCreditIds.length;
         // High-water-mark progress. A cycle only counts as progress when it sets
         // a NEW all-time high for this sprint -- returning to a previously-seen
         // value (even one different from the immediately prior cycle, e.g.
@@ -3556,10 +3740,21 @@ async function runSprintCycle(context) {
             // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
             // tell an operator WHAT is holding the sprint open, which is
             // precisely what they need to intervene. Name the blocking beads.
-            const blockerIds = openAtGoal.map((b) => b.id);
+            // apra-fleet-mduk.2: a bead waiting on a human grant is NOT a
+            // blocker in the sense this message means -- naming it alongside
+            // the genuinely stuck beads tells an operator to go look at work
+            // that is already correctly parked on them. It is reported
+            // separately, with what it is actually waiting for.
+            const blockerIds = openAtGoal.map((b) => b.id).filter((id) => !doctorGrantAwaitingIds.has(id));
+            const grantAwaitingBlockers = openAtGoal.map((b) => b.id).filter((id) => doctorGrantAwaitingIds.has(id));
             const blockerSuffix = blockerIds.length > 0
                 ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
                 : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
+            const grantSuffix = grantAwaitingBlockers.length > 0
+                ? ` ${grantAwaitingBlockers.length} bead(s) are held awaiting a human access grant the sprint cannot make `
+                  + `itself and are excluded from the stagnation math: [${grantAwaitingBlockers.join(', ')}] -- see each `
+                  + 'bead\'s own sprint-doctor note for the specific escalation it needs.'
+                : '';
             const thrashSuffix = thrashIds.length > 0
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
@@ -3589,9 +3784,9 @@ async function runSprintCycle(context) {
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                blockerSuffix + thrashSuffix + verifySuffix +
+                blockerSuffix + grantSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle }
             );
         }
 
