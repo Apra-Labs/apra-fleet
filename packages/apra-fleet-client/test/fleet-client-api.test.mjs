@@ -580,11 +580,55 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
             `ApraFleet methods missing from docs/api-reference.md: ${missing.join(', ')}`,
         );
 
-        const documentedMethodCount = [...documented].filter((name) => methods.has(name)).length;
-        assert.strictEqual(
-            documentedMethodCount,
-            methods.size,
-            'docs/api-reference.md method-doc count must match the number of exported ApraFleet methods',
+        // apra-fleet-972p.9: catch the OTHER direction -- a method documented
+        // in docs/api-reference.md that has since been removed from
+        // ApraFleet in api.mjs (stale docs), which the two checks above
+        // cannot detect: `missing` only walks real methods looking for their
+        // docs, and the old `documentedMethodCount === methods.size`
+        // assertion it replaces was tautological (it only ever counted
+        // documented names that are ALSO real methods -- a subset the
+        // `missing` check above already forces to equal methods.size no
+        // matter what else is documented).
+        //
+        // Scope the reverse check to the ApraFleet class's own doc section --
+        // everything from its "### `class ApraFleet`" heading up to the next
+        // top-level "## " heading -- and only that section's "#### " method
+        // headings (a combined heading like the credentialStore* group still
+        // yields all of its names). This needs no allowlist for unrelated
+        // backtick-wrapped names elsewhere in the doc (parseToolJson(),
+        // deriveTimeoutMs(), McpClient/transport internals,
+        // server-resolution.mjs's own `#### ` functions, etc.): they simply
+        // live outside this slice, or outside a heading line within it.
+        const classHeadingIdx = docsSrc.indexOf('### `class ApraFleet`');
+        assert.notStrictEqual(classHeadingIdx, -1, '"### `class ApraFleet`" section heading not found in docs/api-reference.md');
+        const nextTopLevelOffset = docsSrc.slice(classHeadingIdx).search(/\n## /);
+        const apraFleetSection = nextTopLevelOffset === -1
+            ? docsSrc.slice(classHeadingIdx)
+            : docsSrc.slice(classHeadingIdx, classHeadingIdx + nextTopLevelOffset);
+
+        const methodHeadingRe = /^#### .*$/gm;
+        const documentedAsApraFleetMethods = new Set();
+        let h;
+        while ((h = methodHeadingRe.exec(apraFleetSection))) {
+            const headingNameRe = /`([a-zA-Z_][a-zA-Z0-9_]*)\(/g;
+            let hm;
+            while ((hm = headingNameRe.exec(h[0]))) {
+                documentedAsApraFleetMethods.add(hm[1]);
+            }
+        }
+
+        // Sanity: a scoping/regex drift here would otherwise let the stale
+        // check below pass vacuously against an (almost) empty set.
+        assert.ok(
+            documentedAsApraFleetMethods.size > 25,
+            `expected many ApraFleet method headings, parsed ${documentedAsApraFleetMethods.size}`,
+        );
+
+        const stale = [...documentedAsApraFleetMethods].filter((name) => !methods.has(name)).sort();
+        assert.deepStrictEqual(
+            stale,
+            [],
+            `docs/api-reference.md documents ApraFleet method(s) with no corresponding export in api.mjs (stale docs): ${stale.join(', ')}`,
         );
     });
 });
