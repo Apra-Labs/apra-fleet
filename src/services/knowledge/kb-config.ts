@@ -14,7 +14,7 @@ export interface KbConfigResult {
   token?: string;
 }
 
-const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
 /**
  * Read the KB provider config kb_setup wrote (provider/url/token_encrypted). Nothing

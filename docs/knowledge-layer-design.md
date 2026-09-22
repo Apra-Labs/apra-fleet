@@ -605,7 +605,14 @@ quarantined on the HTTP path, and a CONFIRMED user-directive no longer receives
 an INFERRED clamp note while being stored UNVERIFIED (`src/tools/kb-capture.ts`).
 And `kb serve`'s behaviour is decided: it refuses to bind when the project
 provider is remote, rather than silently becoming a self-proxy
-(`src/commands/kb-server.ts`).
+(`src/commands/kb-server.ts`). The refusal names the config file that caused
+it and both remedies: set that file's provider to `sqlite`, or pass
+`--db <path>`. `--db` is a deliberate escape hatch, not a bypass: an explicit
+`--db` names the local database to serve, so no self-proxy can arise, and the
+check therefore only refuses when `--db` is absent. In both cases the
+`HttpKbProvider` built during provider selection is disposed before the server
+continues or throws, so a refused start does not leak its `beforeExit`
+listener.
 
 ---
 

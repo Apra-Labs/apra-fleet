@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from '../paths.js';
 import { createKbProviders } from '../services/knowledge/kb-providers.js';
+import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
@@ -109,21 +110,39 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
 
   const serverToken = getOrCreateToken();
   const providers = await createKbProviders();
-  // If --db flag provided, override the project DB path
-  if (dbPath) {
-    const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
-    // Same repo anchor createKbProviders() defaults to, so the capture basis
-    // check behaves identically with and without the --db override.
-    const overrideProvider = new SqliteProvider(dbPath, process.cwd());
-    await overrideProvider.init();
-    (providers as any).project = overrideProvider;
-  }
   // KB server is a server, not a client: it must never silently become a
   // self-proxying HttpKbProvider just because the local KB config selects
   // provider=http. Fail fast with a single named error before binding rather
   // than accept remote hop behavior no caller of this server asked for.
+  //
+  // my-beads-db-u00.2: --db is a DELIBERATE escape hatch. An explicit --db
+  // names the local database to serve, so the server serves that sqlite file
+  // and never self-proxies -- the hazard this refusal exists for cannot arise.
+  // The check therefore reads the CONFIG-selected provider, before the --db
+  // override replaces it, and only refuses when there is no --db. Either way
+  // the HttpKbProvider createKbProviders() already built is disposed first:
+  // its constructor registers a process 'beforeExit' listener that only
+  // dispose() removes, so dropping it undisposed would leak one per start.
   if (providers.project instanceof HttpKbProvider) {
-    throw new KbServerHttpProviderRefusedError('KB server refuses an http project provider');
+    providers.project.dispose();
+    if (!dbPath) {
+      throw new KbServerHttpProviderRefusedError(
+        `KB server refuses an http project provider: the KB config at ${KB_CONFIG_PATH} ` +
+        `selects provider "http", and kb serve must serve a local database rather than ` +
+        `proxy to a remote one. To proceed, either set provider to "sqlite" in that file ` +
+        `(or re-run kb_setup with provider=sqlite), or pass --db <path> to serve an ` +
+        `explicit local database.`,
+      );
+    }
+  }
+  if (dbPath) {
+    const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
+    // Anchor capture basis checks at process.cwd(), the same repo root
+    // createKbProviders() defaults to, so capture behaves identically with
+    // and without --db.
+    const overrideProvider = new SqliteProvider(dbPath, process.cwd());
+    await overrideProvider.init();
+    (providers as any).project = overrideProvider;
   }
   const provider = providers.project;
   process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');

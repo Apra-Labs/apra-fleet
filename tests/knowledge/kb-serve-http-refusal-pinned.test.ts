@@ -252,3 +252,113 @@ describe('kb serve with a stock KB config still starts and serves as today (my-b
     }
   });
 });
+
+// my-beads-db-u00.2: the refusal must name its cause and remedy, must not leak
+// the 'beforeExit' listener of the HttpKbProvider createKbProviders() already
+// built, and --db is a DELIBERATE escape hatch (an explicit local database is
+// served, so no self-proxy can arise). Listener counts are measured inside
+// each test body because afterEach's resetKbProviders() disposes every
+// provider and would hide a leak.
+describe('kb serve refusal: remedy text, no listener leak, and the --db escape hatch (my-beads-db-u00.2)', () => {
+  function writeHttpConfigToRemote(remoteUrl: string): void {
+    fs.mkdirSync(KB_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(
+      KB_CONFIG_PATH,
+      JSON.stringify({ provider: 'http', url: remoteUrl, token_encrypted: encryptPassword(FAKE_TOKEN) }, null, 2),
+    );
+  }
+
+  async function startCountingRemote(): Promise<{ url: string; count: () => number; close: () => Promise<void> }> {
+    let requests = 0;
+    const remote = http.createServer((_req, res) => {
+      requests++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'this remote must never be contacted' }));
+    });
+    await new Promise<void>((resolve) => remote.listen(0, '127.0.0.1', resolve));
+    const address = remote.address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('kb-serve-http-refusal-pinned: remote stub did not bind to a TCP port');
+    }
+    return {
+      url: `http://127.0.0.1:${address.port}`,
+      count: () => requests,
+      close: () => new Promise<void>((resolve) => remote.close(() => resolve())),
+    };
+  }
+
+  it('the refusal message names the config file path and both ways to proceed', async () => {
+    const remote = await startCountingRemote();
+    try {
+      writeHttpConfigToRemote(remote.url);
+      let message = '';
+      try {
+        await startKbServer(17924, false);
+      } catch (err) {
+        expect(err).toBeInstanceOf(KbServerHttpProviderRefusedError);
+        message = (err as Error).message;
+      }
+      expect(message).toContain('KB server refuses an http project provider');
+      expect(message).toContain(KB_CONFIG_PATH);
+      expect(message).toContain('"sqlite"');
+      expect(message).toContain('--db <path>');
+      // The configured URL is never echoed (it could carry credentials).
+      expect(message).not.toContain(remote.url);
+      expect(remote.count()).toBe(0);
+    } finally {
+      await remote.close();
+    }
+  });
+
+  it('a refused start leaves no beforeExit listener behind', async () => {
+    const remote = await startCountingRemote();
+    try {
+      writeHttpConfigToRemote(remote.url);
+      const before = process.listenerCount('beforeExit');
+      await expect(startKbServer(17925, false)).rejects.toThrow(KbServerHttpProviderRefusedError);
+      await expect(startKbServer(17925, false)).rejects.toThrow(KbServerHttpProviderRefusedError);
+      expect(process.listenerCount('beforeExit')).toBe(before);
+    } finally {
+      await remote.close();
+    }
+  });
+
+  it('--db with an http config: starts, serves the explicit local database, never contacts the remote, leaks no listener', async () => {
+    const remote = await startCountingRemote();
+    // Under the test FLEET_DIR, not os.tmpdir(): the served SqliteProvider
+    // keeps its handle open after server.close(), and Windows refuses to
+    // unlink an open file, so this file cannot join tempDataDirs' cleanup.
+    const dbPath = path.join(KB_CONFIG_DIR, `kb-serve-db-hatch-${crypto.randomUUID()}.sqlite`);
+    try {
+      writeHttpConfigToRemote(remote.url);
+      const before = process.listenerCount('beforeExit');
+      const port = 17926;
+      const server = await startKbServer(port, false, dbPath);
+      try {
+        expect(process.listenerCount('beforeExit')).toBe(before);
+        expect(fs.existsSync(dbPath)).toBe(true);
+
+        const { decryptPassword } = await import('../../src/utils/crypto.js');
+        const token = decryptPassword(fs.readFileSync(TOKEN_PATH, 'utf-8').trim());
+        const queryResult = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+          http.get(
+            `http://127.0.0.1:${port}/api/kb/query?query=test`,
+            { headers: { Authorization: `Bearer ${token}` } },
+            (res) => {
+              let body = '';
+              res.on('data', (c) => { body += c; });
+              res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(body) }));
+            },
+          ).on('error', reject);
+        });
+        expect(queryResult.status).toBe(200);
+        expect(Array.isArray(queryResult.body.results)).toBe(true);
+        expect(remote.count()).toBe(0);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    } finally {
+      await remote.close();
+    }
+  });
+});
