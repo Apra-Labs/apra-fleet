@@ -10,6 +10,7 @@ import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import { getActiveLogFile, logLine } from '../../src/utils/log-helpers.js';
+import { kbSetup } from '../../src/tools/kb-setup.js';
 
 // FLEET_DIR is pinned to a per-run tmpdir by tests/setup.ts, and vitest.config.ts
 // sets fileParallelism:false, so writing the single global KB config file here
@@ -68,6 +69,30 @@ function writeHttpConfigMissingToken(): void {
 // SqliteProvider getKbProviders built, with no mock or subclass involved.
 function fallbackOf(provider: HttpKbProvider): SqliteProvider {
   return (provider as unknown as { fallback: SqliteProvider }).fallback;
+}
+
+// Real fleet log file logWarn writes (no console spy). It is an async
+// WriteStream, so a test writes its own sentinel line last via logLine and
+// polls until the sentinel lands -- everything written before it on the same
+// stream is then guaranteed to be on disk too.
+function readLogLines(): Array<{ level: string; tag: string; msg: string }> {
+  const logFile = getActiveLogFile();
+  if (!logFile) throw new Error('u00.5 test: no active fleet log file (FLEET_DIR/logs unavailable)');
+  if (!fs.existsSync(logFile)) return [];
+  return fs.readFileSync(logFile, 'utf-8')
+    .split('\n')
+    .filter(line => line.trim().length > 0)
+    .map(line => JSON.parse(line));
+}
+
+async function flushLogWithSentinel(): Promise<void> {
+  const sentinel = `u00.5-sentinel-${crypto.randomUUID()}`;
+  logLine('kb-providers-test', sentinel);
+  const deadline = Date.now() + 5000;
+  while (!readLogLines().some(l => l.msg === sentinel)) {
+    if (Date.now() > deadline) throw new Error(`u00.5 test: log sentinel ${sentinel} never reached the log file`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
 }
 
 beforeEach(() => {
@@ -164,6 +189,96 @@ describe('getKbProviders project provider selection', () => {
     const other = await getKbProviders(otherRepoPath, REMOTE_REPO_URL);
     expect(other).not.toBe(first);
     expect(other.project).not.toBe(first.project);
+  });
+});
+
+// my-beads-db-0d3.1: selection used to run once per (slug, repoPath) inside
+// the memoised build, so on a long-lived fleet server kb_setup changed nothing
+// until a restart. These run the real kb_setup tool in this process and prove
+// the very next getKbProviders call honours what it wrote.
+describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
+  it('switches a cached repo sqlite -> http -> sqlite without a reset, reusing the same project SqliteProvider', async () => {
+    const repoPath = makeRepoPath();
+
+    const before = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    expect(before.project).toBeInstanceOf(SqliteProvider);
+    expect(before.project).not.toBeInstanceOf(HttpKbProvider);
+
+    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    expect(remote.project).toBeInstanceOf(HttpKbProvider);
+    // The remote provider falls back to the SAME project SqliteProvider the
+    // sqlite-mode call returned: the switch reselects, it does not reopen.
+    expect(fallbackOf(remote.project as HttpKbProvider)).toBe(before.project);
+    expect(remote.global).toBe(before.global);
+    expect(remote.projectSlug).toBe(before.projectSlug);
+
+    await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+    const after = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    expect(after.project).toBeInstanceOf(SqliteProvider);
+    expect(after.project).not.toBeInstanceOf(HttpKbProvider);
+    expect(after.project).toBe(before.project);
+  });
+
+  it('an unchanged config still returns the identical cached object after a switch', async () => {
+    const repoPath = makeRepoPath();
+    await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    const first = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    const second = await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    expect(second).toBe(first);
+    expect(second.project).toBe(first.project);
+  });
+
+  it('accumulates no beforeExit listener across repeated http <-> sqlite switches', async () => {
+    const repoPath = makeRepoPath();
+    const baseline = process.listenerCount('beforeExit');
+
+    for (let i = 0; i < 5; i++) {
+      await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+      const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
+      expect(remote.project).toBeInstanceOf(HttpKbProvider);
+      expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
+
+      await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+      const local = await getKbProviders(repoPath, REMOTE_REPO_URL);
+      expect(local.project).not.toBeInstanceOf(HttpKbProvider);
+      expect(process.listenerCount('beforeExit')).toBe(baseline);
+    }
+  });
+
+  it('warns, naming the count and kb_harvest, when a replaced HttpKbProvider still had queued captures', async () => {
+    const repoPath = makeRepoPath();
+    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
+    const httpProvider = remote.project as HttpKbProvider;
+    httpProvider.offlineQueue.push({ op: 'invalidate', files: ['a.ts'] }, { op: 'invalidate', files: ['b.ts'] });
+
+    await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+    await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    await flushLogWithSentinel();
+    const warnings = readLogLines().filter(l => l.level === 'warn' && l.tag === 'kb-providers' && l.msg.includes('offline queue'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].msg).toContain('2 unsent captures');
+    expect(warnings[0].msg).toContain('kb_harvest');
+  });
+
+  it('re-running kb_setup with a different http config replaces the old HttpKbProvider and disposes it', async () => {
+    const repoPath = makeRepoPath();
+    const baseline = process.listenerCount('beforeExit');
+
+    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    const first = await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    await kbSetup({ repo_path: repoPath, provider: 'http', remote: `${REMOTE_KB_URL}/v2`, token: FAKE_TOKEN });
+    const second = await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    expect(second.project).toBeInstanceOf(HttpKbProvider);
+    expect(second.project).not.toBe(first.project);
+    expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
   });
 });
 
@@ -390,28 +505,8 @@ describe('getKbProviders evicts a rejected provider-build promise from its cache
 describe('malformed-config warning is keyed by config content, not suppressed per process (my-beads-db-u00.5)', () => {
   const WARN_TEXT = 'KB config error, falling back to SqliteProvider';
 
-  function readLogLines(): Array<{ level: string; tag: string; msg: string }> {
-    const logFile = getActiveLogFile();
-    if (!logFile) throw new Error('u00.5 test: no active fleet log file (FLEET_DIR/logs unavailable)');
-    if (!fs.existsSync(logFile)) return [];
-    return fs.readFileSync(logFile, 'utf-8')
-      .split('\n')
-      .filter(line => line.trim().length > 0)
-      .map(line => JSON.parse(line));
-  }
-
   function countConfigWarnings(): number {
     return readLogLines().filter(l => l.level === 'warn' && l.tag === 'kb-providers' && l.msg.includes(WARN_TEXT)).length;
-  }
-
-  async function flushLogWithSentinel(): Promise<void> {
-    const sentinel = `u00.5-sentinel-${crypto.randomUUID()}`;
-    logLine('kb-providers-test', sentinel);
-    const deadline = Date.now() + 5000;
-    while (!readLogLines().some(l => l.msg === sentinel)) {
-      if (Date.now() > deadline) throw new Error(`u00.5 test: log sentinel ${sentinel} never reached the log file`);
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
   }
 
   function writeRawConfig(content: string): void {

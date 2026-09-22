@@ -548,7 +548,13 @@ and descope Codebase Plane to v2.
 
 `getKbProviders` (the single accessor every KB tool goes through) reads
 `FLEET_DIR/knowledge/config.json` and decides between `SqliteProvider` and
-`HttpKbProvider` for the **project** provider on every call. `global` is never
+`HttpKbProvider` for the **project** provider on every call. Each call hashes
+the config file's content; while the hash is unchanged the cached providers
+for that (slug, repo path) are returned as-is, and once it changes -- e.g.
+`kb_setup` just ran, in this process or any other -- the next call selects
+again, reusing the already-open `SqliteProvider`s and disposing any
+`HttpKbProvider` it replaces. A long-lived fleet server therefore needs no
+restart after `kb_setup`. `global` is never
 selected this way -- there is exactly one shared global KB and no remote story
 for it, so it always stays `SqliteProvider`.
 
