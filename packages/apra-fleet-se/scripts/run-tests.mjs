@@ -135,6 +135,15 @@ function runBounded(cmd, args, opts) {
             settled = true;
             clearTimeout(timer);
             if (forceExitTimer) clearTimeout(forceExitTimer);
+            // apra-fleet-qe83.3.2 rework (round 3 fix): mirror
+            // scripts/run-all-tests.mjs's `if (currentChild === child)
+            // currentChild = null` -- without this, a SIGTERM arriving after
+            // this child has already exited still finds a stale
+            // activeChildPid in the trap above and calls killTree() on a
+            // pid that may have been recycled by the OS, i.e.
+            // process.kill(-pid, 'SIGKILL') against an unrelated process
+            // group.
+            if (activeChildPid === child.pid) activeChildPid = null;
             resolve(result);
         };
 

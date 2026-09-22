@@ -111,6 +111,20 @@ const SOFT_KILL_GRACE_MS = (() => {
 // up. Trap both signals here and tree-kill the live child before exiting.
 let currentChild = null;
 let signalHandled = false;
+// apra-fleet-qe83.3.2 rework (round 3 fix): true from the instant a
+// terminating signal is handled until process exit. Without this, the
+// group SIGTERM sent below normally kills the running suite well inside
+// SOFT_KILL_GRACE_MS -- its 'exit' event fires, finish() resolves, and the
+// suite loop's `await runBounded(suite)` returns with nothing stopping it
+// from launching the NEXT suite before the deferred hard-kill timer below
+// even runs. That next suite's whole tree (and its own detached
+// grandchildren, e.g. run-tests.mjs's `node --test` child) is then never
+// targeted by this signal at all -- only the stale `currentChild` binding
+// the timer captures is, orphaning the new suite with stdio still
+// inherited: the exact pipe-hold bug this runner exists to prevent, one
+// suite later. Both the suite loop and runBounded() check this flag before
+// starting anything new.
+let terminating = false;
 
 function handleTerminatingSignal(signal) {
     // A second Ctrl-C (or another signal) during the grace window below
@@ -121,6 +135,7 @@ function handleTerminatingSignal(signal) {
         process.exit(1);
     }
     signalHandled = true;
+    terminating = true;
     console.error(`\n> received ${signal} -- killing the current suite's child tree before exiting\n`);
     const pid = currentChild && currentChild.pid;
     if (!pid) {
@@ -145,8 +160,19 @@ function handleTerminatingSignal(signal) {
     // SIGKILL-the-group path this is replacing.
     try { process.kill(-pid, 'SIGTERM'); } catch { /* already gone or no group */ }
     setTimeout(() => {
-        killTree(pid);
-        try { currentChild.kill('SIGKILL'); } catch { /* already gone */ }
+        // Re-read currentChild instead of closing over the `pid`/child
+        // captured above: by the time this timer fires, the group SIGTERM
+        // may already have reaped the suite that was running when the
+        // signal arrived (finish() nulls currentChild on exit). The
+        // `terminating` guard above stops the suite loop from starting a
+        // new suite in that window, but if it somehow still did, killing
+        // the stale pid here (possibly already recycled on POSIX) would
+        // silently miss whatever is actually running now.
+        const livePid = currentChild && currentChild.pid;
+        if (livePid) {
+            killTree(livePid);
+            try { currentChild.kill('SIGKILL'); } catch { /* already gone */ }
+        }
         process.exit(1);
     }, SOFT_KILL_GRACE_MS);
 }
@@ -160,6 +186,15 @@ process.on('SIGTERM', () => handleTerminatingSignal('SIGTERM'));
  */
 function runBounded(suite) {
     return new Promise(resolve => {
+        // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal can
+        // land in the brief window between the suite loop's `terminating`
+        // check and this call actually spawning -- refuse to start a new
+        // suite tree here too, so there is no gap where a signal handled
+        // just before this executes still results in an orphaned spawn.
+        if (terminating) {
+            resolve({ status: 1, timedOut: false });
+            return;
+        }
         // shell: true is required on Windows: Node refuses to spawn a
         // .cmd/.bat file directly (EINVAL) since the CVE-2024-27980 fix --
         // npm ships as npm.cmd there. Harmless on POSIX where cmd is plain
@@ -255,8 +290,15 @@ function runBounded(suite) {
 
 let failed = false;
 for (const suite of suites) {
+    // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal handled
+    // while the previous suite's own 'exit' event resolved runBounded()
+    // must stop this loop from launching the next suite -- see the
+    // `terminating` flag's comment above for why launching it here would
+    // orphan it outside the signal's own kill cascade.
+    if (terminating) break;
     console.log(`\n> running ${suite.name} suite...\n`);
     const result = await runBounded(suite);
+    if (terminating) break;
     if (result.timedOut) {
         failed = true;
         console.error(`\n> ${suite.name} suite TIMED OUT after ${timeoutMs}ms and was killed\n`);
