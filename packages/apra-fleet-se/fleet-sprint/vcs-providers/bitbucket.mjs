@@ -14,11 +14,11 @@
  * ./index.mjs's isAuthBackend().
  *
  * apra-fleet-qeq1.3: the create-pull-request builder + response dialect are
- * added below. `capabilitiesForHost` is still DELIBERATELY absent -- it is a
- * separate task in a separate lane, landed only after this builder has been
- * reviewed, so buildVcsCommand() and VCSModule.capabilities() keep failing
- * closed until then (see ./index.mjs's REQUIRED EXPORT SHAPE: a host never
- * ADVERTISES a pull request it cannot actually deliver).
+ * added below. apra-fleet-qeq1.4 adds capabilitiesForHost() returning
+ * {canOpenPullRequest: true}, mirroring github.mjs and azure-devops.mjs, so
+ * the Publish PR phase can now dispatch the builder (see ./index.mjs's
+ * REQUIRED EXPORT SHAPE: a host never ADVERTISES a pull request it cannot
+ * actually deliver).
  *
  * Extends GenericGitVCS for stderr classification (Bitbucket speaks plain
  * git-over-HTTPS/SSH; it had no vendor-specific auth literal in the parity
@@ -57,10 +57,9 @@ const AUTH_EXPIRED = [
  *
  *  apra-fleet-5oo: declaring this makes resolveVcsProviderForHost() name
  *  'bitbucket' for a Bitbucket remote, which is what lets runner.js's
- *  dispatch-time VCS-provider fallback detect it. Behaviour-neutral for
- *  VCSModule.capabilities(): this provider declares no capabilitiesForHost,
- *  and the caller's default (canOpenPullRequest:false) matches what
- *  GenericGitVCS returned for these hosts before.
+ *  dispatch-time VCS-provider fallback detect it. VCSModule.capabilities()
+ *  now reports canOpenPullRequest:true via this provider's capabilitiesForHost
+ *  (apra-fleet-qeq1.4), allowing the Publish PR phase to dispatch the builder.
  *
  *  Kept character-for-character in step with
  *  src/utils/vcs-provider-detect.ts's BITBUCKET_HOST_RE -- the two halves of
@@ -69,6 +68,13 @@ const HOST_RE = /^(?:www\.|altssh\.)?bitbucket\.org$/i;
 
 function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
+}
+
+/** Every host this provider matches can open a PR via the REST call
+ *  buildBitbucketCreatePrCommand() builds -- bitbucket.org and its aliases
+ *  all speak the same `/repositories/{workspace}/{repo}/pullrequests` shape. */
+function capabilitiesForHost(_host) {
+    return { canOpenPullRequest: true };
 }
 
 /** Split a remote URL into { host, path } for BOTH shapes git speaks: a real
@@ -332,15 +338,15 @@ export const BitbucketVCS = Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
     matchesHost,
+    capabilitiesForHost,
     // remote-URL -> { workspace, repo, canonical }, mirroring
     // ./azure-devops.mjs's own parseRepoRef axis (apra-fleet-qeq1.2).
     parseRepoRef,
     repoRefHint: REPO_REF_HINT,
     defaultAuthMode: null,
     // apra-fleet-qeq1.3: the create-pull-request builder. capabilitiesForHost
-    // is still absent -- see the header note above -- so buildVcsCommand()
-    // is reachable directly (e.g. from a test) but the Publish PR phase
-    // still cannot dispatch it until a later task flips the gate.
+    // is now available (apra-fleet-qeq1.4), so the Publish PR phase can
+    // dispatch the builder via VCSModule.capabilities().
     builders: Object.freeze({
         'create-pull-request': buildBitbucketCreatePrCommand,
     }),

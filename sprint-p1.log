@@ -1,0 +1,321 @@
+[warn] workflows in /home/kashyap/.apra-fleet/workflows were installed by apra-fleet v0.4.1_560f94, but this binary is v0.4.1_74a051.
+       Run 'apra-fleet install' to refresh the workflow runtime and built-in workflows.
+[workflow] fleet server: attached to HTTP singleton at http://127.0.0.1:7523/mcp (pid 1456034)
+Starting Auto-Sprint
+Target Issues: apra-fleet-tm7, apra-fleet-le1
+Sprint Branch: fix/kb-repo-blindness-and-codeintel-optout (Base: feat/code-intelligence-abstraction)
+Goal Constraint: P1
+Max Cycles: 5
+Active Members (1): local-apra-fleet
+Dashboard live at http://localhost:8080
+[Viewer] Workflow Dashboard live at http://localhost:8080
+[VettingEngine] Script flagged with risk score 80/100 (advisory only -- workflow scripts run with full Node privileges and must be trusted; see docs/apra-fleet-workflow-architecture.md).
+  - WARNING: Imports a core Node.js system module -- worth a review pass, but not blocked (workflow scripts are trusted code with full Node privileges).
+  - WARNING: Accesses process environment variables directly.
+[Workflow Log] [dolt-mutex] no supervisor serviceUrl; coordinating the global push mutex through the fleet MCP server's dolt_push_mutex tool (sprint 'fix/kb-repo-blindness-and-codeintel-optout').
+[Workflow Log] [id-allocator] no supervisor serviceUrl; minting child ids through the fleet MCP server's child_id_allocator tool (sprint 'fix/kb-repo-blindness-and-codeintel-optout').
+[Workflow Log] [kb-prime] primed 1 member repo(s)
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+
+=== Group: Sprint Setup ===
+--- Phase: Ensure Sprint Branch ---
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Command API Error] [Command Failed] Exit code 1: Exit code: 1
+(no output)
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+
+=== Group: Sprint Cycle 1 ===
+--- Phase: Plan C1 R1 ---
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=false, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Sync] preflight: ensuring member 'local-apra-fleet' has a fresh VCS credential before dispatch; calling provision_vcs_auth.
+[Workflow Log] [Sync] preflight: provision_vcs_auth succeeded for member 'local-apra-fleet' (expires 2026-08-18T08:10:08.000Z).
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R1 | member: local-apra-fleet | label: none
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R1 | member: local-apra-fleet | label: none
+--- Phase: Plan C1 R2 ---
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=false, pushBeads=true, needsVcsAuth=true).
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R2 | member: local-apra-fleet | label: none
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R2 | member: local-apra-fleet | label: none
+--- Phase: Plan C1 R3 ---
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=false, pushBeads=true, needsVcsAuth=true).
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R3 | member: local-apra-fleet | label: none
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R3 | member: local-apra-fleet | label: none
+--- Phase: Develop C1 R1 ---
+[Workflow Log] Streak grouping: deterministic from lane metadata -- 2 streak(s), no Streak Assignment dispatch ([apra-fleet-le1.1.1] [apra-fleet-tm7.20]).
+[Workflow Log] Doer worklists: 2 ready streak(s) > 1 doer(s) -- packed into per-doer ordered worklists (mode: resume, tier-homogeneous): doer 'local-apra-fleet': [(apra-fleet-tm7.20)]; doer 'local-apra-fleet': [(apra-fleet-le1.1.1)]
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] unknown git failure for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); invoking self-heal (provision_vcs_auth) once before a single bounded retry: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: auth failure detected for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); calling provision_vcs_auth to re-provision credentials: [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] self-heal: provision_vcs_auth succeeded for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet'); the failed command will be retried once.
+[Workflow Log] [Sync] self-heal for member 'local-apra-fleet' (G-pull fetch for 'local-apra-fleet') completed; retrying the failed git command once.
+[Command API Error] [Command Failed] Exit code 128: Exit code: 128
+[stderr]
+fatal: couldn't find remote ref fix/kb-repo-blindness-and-codeintel-optout
+
+[Workflow Log] [Sync] G-pull for member 'local-apra-fleet': branch 'fix/kb-repo-blindness-and-codeintel-optout' does not exist on 'origin' yet (not pushed); skipping pull (nothing to sync down).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R1 | member: local-apra-fleet | label: Streak [apra-fleet-tm7.20]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] [kb-work] doer: captured 3, promoted 0
+[Workflow Log] Doer streak attribution [apra-fleet-tm7.20]: closed=[apra-fleet-tm7.20] failed=[].
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R1 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.1]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.1]: closed=[apra-fleet-le1.1.1] failed=[].
+[Workflow Log] Develop C1 R1 streak outcomes: [{"beadIds":["apra-fleet-tm7.20"],"outcome":"success"},{"beadIds":["apra-fleet-le1.1.1"],"outcome":"success"}]
+--- Phase: Review C1 R1 ---
+[Workflow Log] [kb-work] offering 12 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R1 | member: local-apra-fleet | label: none
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 6 beads still open/ready. Looping back to develop.
+--- Phase: Develop C1 R2 ---
+[Workflow Log] Streak grouping: no lane metadata on this round's ready beads -- falling back to LLM Streak Assignment dispatch (back-compat with pre-eft.76 plans).
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak Assignment
+[Workflow Log] Doer worklists: 2 ready streak(s) > 1 doer(s) -- packed into per-doer ordered worklists (mode: resume, tier-homogeneous): doer 'local-apra-fleet': [(apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21) -> (apra-fleet-le1.1.1)]
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Sync] preflight: ensuring member 'local-apra-fleet' has a fresh VCS credential before dispatch; calling provision_vcs_auth.
+[Workflow Log] [Sync] preflight: provision_vcs_auth succeeded for member 'local-apra-fleet' (expires 2026-08-18T09:04:20.000Z).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak [apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21] spans beads with different declared models (cheap, standard) -- pricing this dispatch as 'standard'.
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak [apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21]
+[Agent API Error] [FAIL] Prompt on "local-apra-fleet" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
+{"is_error":true,"duration_api_ms":750265,"num_turns":101,"stop_reason":"tool_use","session_id":"c6ff5ac0-3d08-453c-a812-4f3547785746","total_cost_usd":6.0137781,"usage":{"input_tokens":200,"cache_creation_input_tokens":208271,"cache_read_input_tokens":12527557,"output_tokens":67019,"output_tokens_details":{"thinking_tokens":36972},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":208271,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":260,"cache_read_input_tokens":221867,"cache_creation_input_tokens":714,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":714},"type":"message"}],"speed":"standard"},"modelUsage":{"claude-sonnet-5":{"inputTokens":200,"outputTokens":67019,"cacheReadInputTokens":12527557,"cacheCreationInputTokens":208271,"webSearchRequests":0,"costUSD":6.0137781,"contextWindow":1000000,"maxOutputTokens":64000,"canonicalModel":"claude-sonnet-5","provider":"firstParty"}},"permission_denials":[],"terminal_reason":"max_turns","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subtype":"error_max_turns","errors":["Reached maximum number of turns (100)"],"type":"result","duration_ms":1624643,"uuid":"281ec411-fbc9-45a6-9676-97c81e7c7673"}
+
+[Agent API Error] [Workflow Error] Agent dispatch failed (max_turns_exhausted): [FAIL] Prompt on "local-apra-fleet" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
+{"is_error":true,"duration_api_ms":750265,"num_turns":101,"stop_reason":"tool_use","session_id":"c6ff5ac0-3d08-453c-a812-4f3547785746","total_cost_usd":6.0137781,"usage":{"input_tokens":200,"cache_creation_input_tokens":208271,"cache_read_input_tokens":12527557,"output_tokens":67019,"output_tokens_details":{"thinking_tokens":36972},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":208271,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":260,"cache_read_input_tokens":221867,"cache_creation_input_tokens":714,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":714},"type":"message"}],"speed":"standard"},"modelUsage":{"claude-sonnet-5":{"inputTokens":200,"outputTokens":67019,"cacheReadInputTokens":12527557,"cacheCreationInputTokens":208271,"webSearchRequests":0,"costUSD":6.0137781,"contextWindow":1000000,"maxOutputTokens":64000,"canonicalModel":"claude-sonnet-5","provider":"firstParty"}},"permission_denials":[],"terminal_reason":"max_turns","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subtype":"error_max_turns","errors":["Reached maximum number of turns (100)"],"type":"result","duration_ms":1624643,"uuid":"281ec411-fbc9-45a6-9676-97c81e7c7673"}
+
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak [apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21] on member 'local-apra-fleet' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=200 (attempt 1/2) instead of giving up or regrouping.
+[Workflow Log] [member-session-guard] pre-resume stop_prompt for 'local-apra-fleet': 🛑 Agent "local-apra-fleet" stopped (no active session was running).
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak [apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21] (resume, max_turns=200)
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21]: closed=[apra-fleet-tm7.17, apra-fleet-tm7.18, apra-fleet-tm7.19, apra-fleet-tm7.20, apra-fleet-tm7.21] failed=[].
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer worklist on 'local-apra-fleet': dispatching streak 2/2 [apra-fleet-le1.1.1] as a RESUME of session '5ee99dff-5459-499d-94c9-e10186632231' (model=standard) -- warm context carries over.
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.1]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.1]: closed=[apra-fleet-le1.1.1] failed=[].
+[Workflow Log] Develop C1 R2 streak outcomes: [{"beadIds":["apra-fleet-tm7.17","apra-fleet-tm7.18","apra-fleet-tm7.19","apra-fleet-tm7.20","apra-fleet-tm7.21"],"outcome":"retried"},{"beadIds":["apra-fleet-le1.1.1"],"outcome":"success"}]
+--- Phase: Review C1 R2 ---
+[Workflow Log] [kb-work] offering 12 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R2 | member: local-apra-fleet | label: none
+[Workflow Log] [kb-work] promote 41673c11-486e-4631-8d56-ae9a7db20027 (reviewer): Re-verified this round: `git diff feat/code-intelligence-abstraction..HEAD -- README.md` is empty (merged README is byte-identical to base, incoming hunk deliberately dropped), while `git show 039dce7b -- README.md` shows that hunk was a same-paragraph edit adding the caveat that remote-member harvest lands in a shared `default` KB pending per-repo routing -- a limitation the base branch had already fixed in that very paragraph. Unioning would have shipped a self-contradicting README. CHANGELOG.md and docs/learnings.md by contrast show zero deletions vs base, confirming the entry's contrast between true append/append files and this one.
+[Workflow Log] [kb-work] promote a2a0e499-3980-463c-b7ba-e9fe6fa81521 (reviewer): Ran `bd prime --help` directly: it documents `--hook-json  Wrap output in the SessionStart hook JSON envelope (Claude Code, Gemini CLI, Codex)`, exactly as the entry claims. Parsed .claude/settings.json and confirmed the tracked file encodes precisely the described split -- SessionStart -> 'bd prime --hook-json', PreCompact -> 'bd prime'. Both halves of the claim checked against the live tool and the committed file.
+[Workflow Log] [kb-work] promote bd281bfb-17dc-4713-bf1f-3ddddff4a4ba (reviewer): Verified against .gitignore with comments stripped: exactly one active sprint-logs rule remains, `**/sprint-logs/sprint_*.json` (nested-aware, the scratch snapshots), and no blanket directory rule survives. `git ls-files 'sprint-logs/*'` returns calibration.json plus both durable *.jsonl ledgers, and `git check-ignore --no-index -v` on a ledger reports no match -- I used --no-index deliberately because the existing CONFIRMED entry warns that check-ignore silently skips tracked paths without it, which would otherwise have made this check vacuous.
+[Workflow Log] [kb-work] promote 0b5fadcd-4936-4204-9aeb-befd95bb8a2f (reviewer): Confirmed the substantive claim first-hand while reviewing tm7.19: deploy.md's ## Deploy section launches the binary with `run --transport http` (and explicitly instructs 'Use `run`, not `start`'), while the tracked .claude/settings.json grant prior to commit a3dcfd7c read Bash(*apra-fleet* start) -- so the granted subcommand did not cover the subcommand the runbook actually invokes. a3dcfd7c fixes exactly this drift, changing the entry to `run` and stating the reconciliation, which is the same-prefix-different-subcommand gap the entry describes.
+[Workflow Log] [kb-work] reviewer: captured 2, promoted 4
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 1 beads still open/ready. Looping back to develop.
+--- Phase: Develop C1 R3 ---
+[Workflow Log] Streak grouping: deterministic from lane metadata -- 1 streak(s), no Streak Assignment dispatch ([apra-fleet-le1.1.2]).
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R3 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.2]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.2]: closed=[apra-fleet-le1.1.2] failed=[].
+[Workflow Log] Develop C1 R3 streak outcomes: [{"beadIds":["apra-fleet-le1.1.2"],"outcome":"success"}]
+--- Phase: Review C1 R3 ---
+[Workflow Log] [kb-work] offering 10 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R3 | member: local-apra-fleet | label: none
+[Workflow Log] [kb-work] promote e23e8d4e-0915-407c-9277-676a81c68ef7 (reviewer): Re-verified in this round against the tree: grep -ho on the tracked ledgers shows transcriptDir is now "~/.claude/projects/-home-kashyap-repos-apra-apra-fleet", and git ls-files 'sprint-logs/*.jsonl' | xargs grep -o kashyap still matches once in each of the two tracked files. So the /home/<user> prefix is gone while the username survives verbatim inside the dash-encoded Claude project slug, exactly as the entry states -- which is also why an acceptance criterion phrased as a grep for '/home/' passes while the leak remains.
+[Workflow Log] [kb-work] promote 9e53e948-e5a0-4e97-bb16-9ea0594c9936 (reviewer): Re-verified in this round by parsing both files: .claude/settings.json now grants Bash(apra-fleet* --version), Bash(apra-fleet* run *) and Bash(dist/apra-fleet-installer-* install *), while deploy.md:98 instructs the installer as "$INSTALLER" install --force and deploy.md:102 launches the server as nohup "$HOME/.apra-fleet/bin/apra-fleet" run --transport http. Neither literal command text begins with apra-fleet or dist/, so the anchored grants cannot match the invocations the runbook actually tells an agent to type, confirming the entry's claim that the tightening leaves the deploy step falling through to a permission prompt.
+[Workflow Log] [kb-work] reviewer: captured 0, promoted 2
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 2 beads still open/ready. Looping back to develop.
+[Workflow Log] Develop/Review round cap (3) reached this cycle with 2 bead(s) still open/reopened -- deferring to next cycle.
+--- Phase: Deploy C1 ---
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Deploy C1 | member: local-apra-fleet | label: none
+[Agent API Error] Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] [Sync] Skipping post-dispatch G-push/D-push for member 'local-apra-fleet' after a terminal dispatch failure (nothing to publish): [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] Deployer: agent dispatch failed, treating as deployed:false: [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] Deploy FAILED this cycle (C1): Deployer dispatch failed: [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed. Skipping Integration Test phase.
+[Workflow Log] Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)
+[Command API Error] fetch failed
+[Workflow Log] [Dolt] 'bd config get sync.remote' failed for member 'local-apra-fleet' (fail-safe: treating as configured): [Workflow Error] Transport failure while executing command: fetch failed
+[Command API Error] fetch failed
+[WorkflowEngine] Execution Failed: DoltSyncError: [Dolt] D-pull failed for member 'local-apra-fleet': [Workflow Error] Transport failure while executing command: fetch failed
+    at doltPullBefore (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:458:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async runDegradable (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:1007:18)
+    at async runSprintCycle (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:9201:9)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:10486:16)
+    at async FleetWorkflow.runWithContext (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/index.mjs:1722:20)
+    at async WorkflowEngine.executeFile (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/engine.mjs:161:22)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs:759:21) {
+  code: 'DOLT_SYNC_FAILED',
+  details: {
+    member: 'local-apra-fleet',
+    doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+  },
+  member: 'local-apra-fleet',
+  doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+}
+[Viewer] Run state saved to /home/kashyap/repos/apra/apra-fleet/sprint-logs/sprint_130635.json
+[member-reservation] release failed for member 'local-apra-fleet' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): fetch failed
+Sprint failed: DoltSyncError: [Dolt] D-pull failed for member 'local-apra-fleet': [Workflow Error] Transport failure while executing command: fetch failed
+    at doltPullBefore (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:458:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async runDegradable (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:1007:18)
+    at async runSprintCycle (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:9201:9)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:10486:16)
+    at async FleetWorkflow.runWithContext (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/index.mjs:1722:20)
+    at async WorkflowEngine.executeFile (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/engine.mjs:161:22)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs:759:21) {
+  code: 'DOLT_SYNC_FAILED',
+  details: {
+    member: 'local-apra-fleet',
+    doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+  },
+  member: 'local-apra-fleet',
+  doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+}
+Sprint FAILED. Dashboard remains live at http://localhost:8080 for 300s so you can inspect the final state -- press Ctrl-C to exit sooner.

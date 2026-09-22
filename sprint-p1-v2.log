@@ -1,0 +1,162 @@
+[workflow] fleet server: attached to HTTP singleton at http://127.0.0.1:7523/mcp (pid 3706849)
+Starting Auto-Sprint
+Target Issues: apra-fleet-tm7, apra-fleet-le1
+Sprint Branch: fix/codeintel-optout-and-kb-repo-scope (Base: main)
+Goal Constraint: P1
+Max Cycles: 5
+Active Members (1): local-apra-fleet
+Dashboard live at http://localhost:8080
+[Viewer] Workflow Dashboard live at http://localhost:8080
+[member-reservation] reserve rejected for member 'local-apra-fleet': [-] Member "local-apra-fleet" is already reserved by "fix/kb-repo-blindness-and-codeintel-optout". Use force_release to clear a wedged reservation, or release it as that sprint first.
+[VettingEngine] Script flagged with risk score 80/100 (advisory only -- workflow scripts run with full Node privileges and must be trusted; see docs/apra-fleet-workflow-architecture.md).
+  - WARNING: Imports a core Node.js system module -- worth a review pass, but not blocked (workflow scripts are trusted code with full Node privileges).
+  - WARNING: Accesses process environment variables directly.
+[Workflow Log] [dolt-mutex] no supervisor serviceUrl; coordinating the global push mutex through the fleet MCP server's dolt_push_mutex tool (sprint 'fix/codeintel-optout-and-kb-repo-scope').
+[Workflow Log] [id-allocator] no supervisor serviceUrl; minting child ids through the fleet MCP server's child_id_allocator tool (sprint 'fix/codeintel-optout-and-kb-repo-scope').
+[Workflow Log] [kb-prime] primed 1 member repo(s)
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+
+=== Group: Sprint Setup ===
+--- Phase: Ensure Sprint Branch ---
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+
+=== Group: Sprint Cycle 1 ===
+--- Phase: Plan C1 R1 ---
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=false, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Sync] preflight: ensuring member 'local-apra-fleet' has a fresh VCS credential before dispatch; calling provision_vcs_auth.
+[Workflow Log] [Sync] preflight: provision_vcs_auth succeeded for member 'local-apra-fleet' (expires 2026-08-18T15:02:04.000Z).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R1 | member: local-apra-fleet | label: none
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Plan C1 R1 | member: local-apra-fleet | label: none
+--- Phase: Develop C1 R1 ---
+[Workflow Log] Streak grouping: deterministic from lane metadata -- 1 streak(s), no Streak Assignment dispatch ([apra-fleet-le1.1.2]).
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R1 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.2]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.2]: closed=[apra-fleet-le1.1.2] failed=[].
+[Workflow Log] Develop C1 R1 streak outcomes: [{"beadIds":["apra-fleet-le1.1.2"],"outcome":"success"}]
+--- Phase: Review C1 R1 ---
+[Workflow Log] [kb-work] offering 8 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R1 | member: local-apra-fleet | label: none
+[Workflow Log] [kb-work] promote 4c0b14dc-0ebd-4a22-9018-e54796e817b9 (reviewer): Verified in this review by reading the code and running the test, not by taking the doer's word. auto-sprint.js:1280-1292 adds redactHomeFromTranscriptDir(), and :2731 wraps the meta record's transcriptDir field in it, so the committed SPRINT META RECORD stores ~/.claude/projects/<slug> instead of the absolute /home/<user>/... path that embedded the runner's OS username. packages/apra-fleet-se/apra-pm/test/sprint-meta.test.mjs run directly with node --test passes 11/11 including the redaction cases. One precision caveat worth recording alongside it: the implementation anchors on the literal '/.claude/projects/' substring rather than on an actual $HOME comparison (the workflow VM has no os/process.env access), and falls back to the input unchanged when the anchor is absent -- the practical effect matches the entry's claim because transcriptDir is always constructed as $HOME/.claude/projects/<slug>.
+[Workflow Log] [kb-work] reviewer: captured 2, promoted 1
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 3 beads still open/ready. Looping back to develop.
+--- Phase: Develop C1 R2 ---
+[Workflow Log] Streak grouping: no lane metadata on this round's ready beads -- falling back to LLM Streak Assignment dispatch (back-compat with pre-eft.76 plans).
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak Assignment
+[Workflow Log] Doer worklists: 2 ready streak(s) > 1 doer(s) -- packed into per-doer ordered worklists (mode: resume, tier-homogeneous): doer 'local-apra-fleet': [(apra-fleet-le1.1.4)]; doer 'local-apra-fleet': [(apra-fleet-tm7.23, apra-fleet-tm7.24)]
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.4]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.4]: closed=[apra-fleet-le1.1.4] failed=[].
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R2 | member: local-apra-fleet | label: Streak [apra-fleet-tm7.23, apra-fleet-tm7.24]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer streak attribution [apra-fleet-tm7.23, apra-fleet-tm7.24]: closed=[apra-fleet-tm7.23, apra-fleet-tm7.24] failed=[].
+[Workflow Log] Develop C1 R2 streak outcomes: [{"beadIds":["apra-fleet-le1.1.4"],"outcome":"success"},{"beadIds":["apra-fleet-tm7.23","apra-fleet-tm7.24"],"outcome":"success"}]
+--- Phase: Review C1 R2 ---
+[Workflow Log] [kb-work] offering 9 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R2 | member: local-apra-fleet | label: none
+[Agent API Error] [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Agent API Error] [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] [Sync] Skipping post-dispatch G-push/D-push for member 'local-apra-fleet' after a terminal dispatch failure (nothing to publish): [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] Reviewer: dispatch-level failure on attempt 1 of 2 -- retrying the review once before degrading the round.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R2 | member: local-apra-fleet | label: none
+[Agent API Error] [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Agent API Error] [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] [Sync] Skipping post-dispatch G-push/D-push for member 'local-apra-fleet' after a terminal dispatch failure (nothing to publish): [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: [Workflow Error] Agent dispatch failed (stalled): [FAIL] execute_prompt on "local-apra-fleet" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 2 beads still open/ready. Looping back to develop.
+--- Phase: Develop C1 R3 ---
+[Workflow Log] Streak grouping: deterministic from lane metadata -- 2 streak(s), no Streak Assignment dispatch ([apra-fleet-le1.2.1] [apra-fleet-le1.1.3]).
+[Workflow Log] Doer worklists: 2 ready streak(s) > 1 doer(s) -- packed into per-doer ordered worklists (mode: resume, tier-homogeneous): doer 'local-apra-fleet': [(apra-fleet-le1.2.1) -> (apra-fleet-le1.1.3)]
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Develop C1 R3 | member: local-apra-fleet | label: Streak [apra-fleet-le1.2.1]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] [kb-work] doer: captured 1, promoted 0
+[Workflow Log] Doer streak attribution [apra-fleet-le1.2.1]: closed=[apra-fleet-le1.2.1] failed=[].
+[Workflow Log] [Sync] preflight: member 'local-apra-fleet' needs a fresh VCS credential before this dispatch (pushCode=true, pushBeads=true, needsVcsAuth=true).
+[Workflow Log] [Sync] preflight: ensuring member 'local-apra-fleet' has a fresh VCS credential before dispatch; calling provision_vcs_auth.
+[Workflow Log] [Sync] preflight: provision_vcs_auth succeeded for member 'local-apra-fleet' (expires 2026-08-18T16:01:52.000Z).
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] Doer worklist on 'local-apra-fleet': dispatching streak 2/2 [apra-fleet-le1.1.3] as a RESUME of session 'f46a52b4-d249-4578-9c30-314180f86947' (model=standard) -- warm context carries over.
+[Dispatch] phase: Develop C1 R3 | member: local-apra-fleet | label: Streak [apra-fleet-le1.1.3]
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Workflow Log] [kb-work] doer: captured 1, promoted 0
+[Workflow Log] Doer streak attribution [apra-fleet-le1.1.3]: closed=[apra-fleet-le1.1.3] failed=[].
+[Workflow Log] Develop C1 R3 streak outcomes: [{"beadIds":["apra-fleet-le1.2.1"],"outcome":"success"},{"beadIds":["apra-fleet-le1.1.3"],"outcome":"success"}]
+--- Phase: Review C1 R3 ---
+[Workflow Log] [kb-work] offering 10 INFERRED entr(ies) to the reviewer for promotion.
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Review C1 R3 | member: local-apra-fleet | label: none
+[Workflow Log] [kb-work] promote 31acc2d6-558f-4cc3-8b28-1b1a04228ed6 (reviewer): Verified by reading src/services/knowledge/repo-config.ts:17-36 -- readRepoCodeIntelConfig wraps both readFile and JSON.parse in a single try/catch returning null, and isCodeIntelEnabled only compares the result, so there is no rejection path; confirmed against the un-try/caught await at src/cli/install.ts:1615, and the full suite passed with that call in place.
+[Workflow Log] [kb-work] promote f9f941be-12bf-4484-bd0d-6e0462e45069 (reviewer): Verified by reading the new gate at src/tools/code-intelligence.ts:210, which branches solely on readRepoCodeIntelConfig(repoPath) === null and never references hasIndex, against hasIndex's machine-global implementation at src/tools/code-intelligence-codebase-memory.ts:67-72 (existsSync plus readdirSync over ~/.cache/codebase-memory-mcp); the different-repo-indexed case is pinned by tests/code-intelligence.test.ts in the first-call opt-in prompt describe block.
+[Workflow Log] [kb-work] reviewer: captured 0, promoted 2
+[Workflow Log] [Dolt] D-push for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued
+[Workflow Log] System found 4 beads still open/ready. Looping back to develop.
+[Workflow Log] Develop/Review round cap (3) reached this cycle with 4 bead(s) still open/reopened -- deferring to next cycle.
+--- Phase: Deploy C1 ---
+[Workflow Log] [Dolt] D-pull for member 'local-apra-fleet' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued
+[Dispatch] phase: Deploy C1 | member: local-apra-fleet | label: none
+[Agent API Error] Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] [Sync] Skipping post-dispatch G-push/D-push for member 'local-apra-fleet' after a terminal dispatch failure (nothing to publish): [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] Deployer: agent dispatch failed, treating as deployed:false: [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed
+[Workflow Log] Deploy FAILED this cycle (C1): Deployer dispatch failed: [Workflow Error] Transport failure while executing agent prompt: Persistent SSE stream failed 5 consecutive reconnect attempts: fetch failed. Skipping Integration Test phase.
+[Workflow Log] Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)
+[Command API Error] fetch failed
+[Workflow Log] [Dolt] 'bd config get sync.remote' failed for member 'local-apra-fleet' (fail-safe: treating as configured): [Workflow Error] Transport failure while executing command: fetch failed
+[Command API Error] fetch failed
+[WorkflowEngine] Execution Failed: DoltSyncError: [Dolt] D-pull failed for member 'local-apra-fleet': [Workflow Error] Transport failure while executing command: fetch failed
+    at doltPullBefore (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:458:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async runDegradable (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:1007:18)
+    at async runSprintCycle (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:9201:9)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:10486:16)
+    at async FleetWorkflow.runWithContext (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/index.mjs:1722:20)
+    at async WorkflowEngine.executeFile (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/engine.mjs:161:22)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs:759:21) {
+  code: 'DOLT_SYNC_FAILED',
+  details: {
+    member: 'local-apra-fleet',
+    doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+  },
+  member: 'local-apra-fleet',
+  doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+}
+[Viewer] Run state saved to /home/kashyap/repos/apra/apra-fleet/sprint-logs/sprint_191900.json
+[member-reservation] release failed for member 'local-apra-fleet' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): fetch failed
+Sprint failed: DoltSyncError: [Dolt] D-pull failed for member 'local-apra-fleet': [Workflow Error] Transport failure while executing command: fetch failed
+    at doltPullBefore (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:458:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async runDegradable (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/dolt-sync.mjs:1007:18)
+    at async runSprintCycle (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:9201:9)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js:10486:16)
+    at async FleetWorkflow.runWithContext (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/index.mjs:1722:20)
+    at async WorkflowEngine.executeFile (file:///home/kashyap/.apra-fleet/node_modules/@apralabs/apra-fleet-workflow/src/workflow/engine.mjs:161:22)
+    at async main (file:///home/kashyap/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs:759:21) {
+  code: 'DOLT_SYNC_FAILED',
+  details: {
+    member: 'local-apra-fleet',
+    doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+  },
+  member: 'local-apra-fleet',
+  doltOutput: '[Workflow Error] Transport failure while executing command: fetch failed'
+}
+Sprint FAILED. Dashboard remains live at http://localhost:8080 for 300s so you can inspect the final state -- press Ctrl-C to exit sooner.
