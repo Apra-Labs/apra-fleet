@@ -8,6 +8,7 @@ import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
 import { setStoredPid, clearStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getOsCommands } from '../os/index.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -200,11 +201,13 @@ export async function execCommand(
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
+    let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
     function settle(fn: () => void) {
       if (settled) return;
       settled = true;
       clearTimeout(inactivityTimer);
       if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
       releaseChannel();
       fn();
     }
@@ -292,7 +295,7 @@ export async function execCommand(
         }
       });
 
-      stream.on('close', (code: number) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
@@ -306,7 +309,33 @@ export async function execCommand(
           stderr = `Warning: ${warning}\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      stream.on('close', (code: number) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; rationale in
+      // src/services/exit-drain.ts). The SSH twin of the LocalStrategy change in
+      // strategy.ts: sshd sends `exit-status` when the command process itself
+      // exits, but only closes the channel once every inherited handle on the
+      // far side is released -- so one surviving grandchild (sandbox server,
+      // orphaned find.exe) holds the channel open indefinitely. On Windows
+      // members, treat the remote process exit as completion, drain briefly, then
+      // settle; the remote grandchild is left running on purpose.
+      if (completesOnProcessExit(getAgentOS(agent))) {
+        stream.on('exit', (code: number | null) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            finalize(code);
+            // Release our end of the wedged channel; the remote grandchild is
+            // unaffected (closing an ssh2 channel never signals the far side's
+            // processes -- see killRemoteTree above for why that is deliberate).
+            try { stream.close(); } catch { /* best-effort */ }
+          }, exitDrainMs());
+          exitDrainTimer.unref();
+        });
+      }
+
       stream.on('error', (err: Error) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
