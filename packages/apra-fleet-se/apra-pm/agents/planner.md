@@ -166,6 +166,18 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**Evidence routing and permission gaps** (apply to every task, both impl and test):
+- If a task's acceptance criteria can only be confirmed by CI evidence (e.g. a passing
+  pipeline run) or live-member evidence (an observation that requires a live/running
+  member instance), route that task to the test-runner roles as verify-set work --
+  never leave it as plain doer work. A doer session cannot produce that evidence from
+  its own seat, so leaving it as a doer task only defers the failure to a mid-sprint
+  BLOCKED verdict instead of catching it here.
+- If a task needs a permission, token, or access level a doer does not hold from its
+  seat, flag that at planning time: name the specific missing capability in the task's
+  description so the orchestrator can grant it or route the task elsewhere, instead of
+  the gap being discovered mid-sprint.
+
 **Model tier** (required on every task, both impl and test): set the model tier as beads
 metadata at creation time, not in `--notes`:
 ```bash
@@ -340,6 +352,10 @@ Also check each open feature:
 - Where `kb_stats` backed a model tier choice, does the task description cite the
   coverage number (see Step 3)? Not required for tiers set on qualitative KB signals
   alone or when `kb_stats` was unavailable.
+- Does every task whose acceptance can only be confirmed by CI evidence or
+  live-member evidence route to the test-runner roles as verify-set work, rather than
+  sitting as plain doer work? Does every task that needs a permission, token, or access
+  level a doer does not hold name the specific missing capability in its description?
 
 Fix any gaps, then confirm you are done.
 
@@ -385,3 +401,7 @@ array (see Step 0.4 -- omit or send `[]` to capture nothing). Example instance:
   apart
 - Never place a `blocks` edge between two tasks that share a `streak` id -- it silently
   defeats the lane by pushing the later task into a separate review round
+- A task whose acceptance needs CI evidence or live-member evidence must be routed to
+  the test-runner roles as verify-set work, never left as plain doer work
+- A task needing a permission, token, or access level a doer does not hold must name
+  the specific missing capability in its description

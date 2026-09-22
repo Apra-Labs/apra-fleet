@@ -171,6 +171,17 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
     passage in `detail` -- a vague "may not be aligned with parent notes" is not
     sufficient; the finding must be falsifiable by inspection. Use `kind: "other"` for
     findings of this type (Step 4's closed vocabulary has no dedicated kind for it).
+13. **Evidence routing and permission flags**: for every task, check (a) that a task
+    whose acceptance criteria can only be confirmed by CI evidence (e.g. a passing
+    pipeline run) or live-member evidence (an observation that requires a live/running
+    member instance) is routed as verify-set work for the test-runner roles, not left
+    as plain doer work -- a doer cannot produce that evidence from its own seat, so this
+    is a CHANGES_NEEDED finding, not a style note; and (b) that a task needing a
+    permission, token, or access level a doer does not hold names the specific missing
+    capability in its description, rather than leaving the gap implicit for the
+    orchestrator to discover mid-sprint. Use `kind: "other"` for findings of this type
+    (Step 4's closed vocabulary has no dedicated kind for it), and state in `detail`
+    which half of the criterion failed.
 
 ## Step 3 -- Classify each task
 
@@ -202,8 +213,9 @@ Return your verdict:
   vocabulary naming the criterion that failed, one of `coverage`, `missing_test_task`,
   `acceptance_criteria`, `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
   `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other` -- in the order of
-  the numbered criteria in Step 2, with `other` covering both criterion 12
-  (NOTES-vs-child contradiction) and any failure none of the listed kinds describes.
+  the numbered criteria in Step 2, with `other` covering criterion 12
+  (NOTES-vs-child contradiction), criterion 13 (evidence routing and permission flags),
+  and any failure none of the listed kinds describes.
   `detail` is the human explanation for that bead.
 - `taskAssignments`: array with one entry per open task -- `{ id, bucket, model }`
 
@@ -211,7 +223,7 @@ Return your verdict:
 joined by `blocks` edges) so the orchestrator can see review cadence before development
 starts.
 
-**APPROVED** means all twelve criteria in Step 2 pass.
+**APPROVED** means all thirteen criteria in Step 2 pass.
 
 **CHANGES_NEEDED** means one or more criteria fail. Notes must name the specific beads ID
 and what is wrong. Do not return CHANGES_NEEDED for minor style preferences -- but a plan
