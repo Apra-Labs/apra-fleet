@@ -99,7 +99,7 @@ function makeMemberFs(initialHome: string | null, posixFlavour = false, decodeFa
     //     remember that a failing statement must abort the rest (exit 1). ---
     let gated = false;
     let body = cmd;
-    if ((m = cmd.match(/^\$ErrorActionPreference = 'Stop'; try \{ ([\s\S]*) \} catch \{ Write-Error \$_; exit 1 \}$/))) {
+    if ((m = cmd.match(/^\$ErrorActionPreference = 'Stop'; try \{ ([\s\S]*) \} catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/))) {
       gated = true;
       body = m[1];
     }
@@ -326,7 +326,7 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499)', ()
       await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows');
       const writes = member.calls.filter(c => c.includes('Move-Item'));
       expect(writes.length).toBe(1);
-      expect(writes[0]).toMatch(/^\$ErrorActionPreference = 'Stop'; try \{ .* \} catch \{ Write-Error \$_; exit 1 \}$/s);
+      expect(writes[0]).toMatch(/^\$ErrorActionPreference = 'Stop'; try \{ .* \} catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/s);
     }
   });
 

@@ -795,7 +795,7 @@ export function buildChunkedTrustWriteCommands(contentStr: string, opts: { posix
  * cheapest path; it is still gated by the same helper.
  */
 function psGated(script: string): string {
-  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { Write-Error $_; exit 1 }`;
+  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
 }
 
 /** The single-exec write command ensureWorkspaceTrusted has always used -- still the
