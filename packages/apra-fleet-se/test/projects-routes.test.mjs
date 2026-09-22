@@ -361,6 +361,41 @@ describe('PUT /api/projects/:id -- beads.remote probe (DQ-12, 972p.5)', { skip }
     });
 });
 
+describe('PUT /api/projects/:id -- beads.remote probe never creates a remote (DQ-12, 972p.6)', { skip }, () => {
+    test('no recorded command across create, omitted-PUT, repeated-PUT, a successful changed-PUT, and a failed changed-PUT ever contains "git remote add" or "git init"', async () => {
+        // ok-path scenario: create with a remote, then omit/repeat/change across PUTs.
+        const { supervisor: okSupervisor, client: okClient } = await setup('ok');
+        await okSupervisor.handleRequest(
+            mockReq('POST', '/api/projects', validBody({ beads: { kind: 'clone', dir: '/repo/.beads', remote: 'https://example.invalid/o/beads.git' } })),
+            mockRes(),
+        );
+        await okSupervisor.handleRequest(mockReq('PUT', '/api/projects/proj-1', { name: 'Renamed' }), mockRes());
+        await okSupervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/o/beads.git' } }),
+            mockRes(),
+        );
+        await okSupervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/new/beads.git' } }),
+            mockRes(),
+        );
+
+        // failing-probe scenario: create with no remote, then a changed-PUT whose probe fails.
+        const { supervisor: errSupervisor, client: errClient } = await setup('error');
+        await errSupervisor.handleRequest(mockReq('POST', '/api/projects', validBody()), mockRes());
+        await errSupervisor.handleRequest(
+            mockReq('PUT', '/api/projects/proj-1', { beads: { remote: 'https://example.invalid/bad/beads.git' } }),
+            mockRes(),
+        );
+
+        const allCalls = [...okClient.calls, ...errClient.calls];
+        assert.ok(allCalls.length > 0, 'expected the scenarios above to have recorded probe commands');
+        for (const call of allCalls) {
+            assert.doesNotMatch(call.command, /git remote add/, 'DQ-12: the console validates a remote, it never creates one');
+            assert.doesNotMatch(call.command, /git init/, 'DQ-12: the console validates a remote, it never inits one');
+        }
+    });
+});
+
 describe('PUT /api/projects/:id probe reuses the single checkBeadsRemote gate', () => {
     test('projects.mjs contains exactly one call site of probeBeadsRemote (inside checkBeadsRemote, not per-handler)', async () => {
         const modulePath = path.join(import.meta.dirname, '..', 'src', 'projects', 'routes', 'projects.mjs');
