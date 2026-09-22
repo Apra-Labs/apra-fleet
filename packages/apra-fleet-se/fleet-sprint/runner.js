@@ -2965,6 +2965,41 @@ async function runSprintCycle(context) {
             stillOpenVerifyIds = [...verifyEverIds].filter((id) => !closedIdsForExitCheck.has(id));
         }
 
+        // apra-fleet-rp7a.2: independent escape hatch, alongside (not instead
+        // of) the goal-priority exit just below -- for the case that
+        // motivated this task: the sprint's root/target bead(s) are ALREADY
+        // CLOSED (e.g. force-closed by integ-test-runner) but
+        // `lastReviewVerdict` can never become 'APPROVED' again because there
+        // is nothing left in scope to review (Re-Review's own assignedBeadIds
+        // empty-guard skips its dispatch entirely when nothing was reassigned
+        // this round -- see phases/review.mjs), so the count-based exit just
+        // below can never fire and the loop grinds cycle after cycle until
+        // stall detection (mis)reads the standstill as SPRINT_STALLED, even
+        // though the sprint's own scope is provably done. Placed HERE --
+        // AFTER the Re-Review dispatch above already had its fair chance to
+        // run this cycle -- so a genuinely fresh re-review is never skipped
+        // just because the root happens to close in the same cycle it would
+        // have run (pinned by mock-sprint-exit-stale-approval.test.mjs's
+        // "stale APPROVED verdict" regression: a root that closes via a
+        // Deploy-phase side effect must still get its Re-Review chance before
+        // any exit). Reads `closedIdsNow` -- the SAME live, freshly-scoped
+        // `--status=closed` read stall detection above already issued
+        // (bdListScoped(), not a new bd list call) -- which already reflects
+        // this cycle's Deploy/IntegTest closes (both run before this section)
+        // and is unaffected by Re-Review, which never itself closes beads.
+        // Guarded on `targetIssues.length > 0`: a sprint with no configured
+        // root (the whole-DB fallback, empty `sprintFilter`) has no "root
+        // bead" to check and always falls through to the existing
+        // goal-priority/stall logic. A root bead that is still
+        // open/in_progress/blocked can never satisfy `.every()` here, so this
+        // never fires for that case and every gate above/below runs exactly
+        // as before.
+        if (targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id))) {
+            log(`Cycle ${cycle}: every configured sprint root/target bead is already closed (${targetIssues.join(', ')}) -- no further cycle can make progress. Exiting cycle loop straight into the finish phases.`);
+            endGroup();
+            break;
+        }
+
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
             // apra-fleet-rp7a.1: the deferred enumeration rides on the EXIT
             // line specifically, because this is the line that says the sprint
