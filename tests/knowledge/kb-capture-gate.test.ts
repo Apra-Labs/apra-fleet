@@ -114,8 +114,9 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
       confidence: 'CONFIRMED',
     }));
 
-    // Verify the handler reports confidence_clamped: for a directive it should be false now
-    expect(out.confidence_clamped).toBe(false);
+    // my-beads-db-0d3.2: stored UNVERIFIED differs from the requested CONFIRMED,
+    // so the handler reports the downgrade even though it adds no clamp note.
+    expect(out.confidence_clamped).toBe(true);
 
     const entry = await fetchEntry(out.id);
     expect(entry.confidence).toBe('UNVERIFIED');

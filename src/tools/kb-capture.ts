@@ -99,10 +99,8 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   const requestedConfidence = input.confidence ?? 'INFERRED';
   let confidence = requestedConfidence;
   let content = input.content;
-  let confidence_clamped = false;
   if (requestedConfidence === 'CONFIRMED' && input.type !== 'user-directive') {
     confidence = 'INFERRED';
-    confidence_clamped = true;
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
   }
 
@@ -125,6 +123,14 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
       tags = [...tags, 'directive:pending'];
     }
   }
+
+  // my-beads-db-0d3.2: derived, not set per branch. The flag used to be set
+  // only by the CONFIRMED clamp above, so a user-directive -- quarantined to
+  // UNVERIFIED just above -- reported false while its request was not
+  // honoured. It now means "stored confidence differs from requested",
+  // whatever the reason; a caller that needs the reason has it from the
+  // type it sent (user-directive => pending approval, else kb_promote).
+  const confidence_clamped = confidence !== requestedConfidence;
 
   // D5 (T2.3) + F1 (D1): provenance is stamped by this handler, never accepted
   // as a free string from the caller. author='user' is NO LONGER stamped on a

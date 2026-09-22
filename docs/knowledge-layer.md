@@ -226,7 +226,9 @@ UNVERIFIED  ->  INFERRED  ->  CONFIRMED
 **The clamp is enforced at two layers.** `kb_capture` clamps any incoming
 `CONFIRMED` down to `INFERRED` in the tool handler (returning
 `confidence_clamped: true` and appending a note to content -- the user-facing
-signal). But the HTTP route `POST /api/kb/capture` calls `provider.capture()`
+signal; the flag is also true for a user-directive, which is stored UNVERIFIED
+as a pending proposal, and in general whenever stored confidence differs from
+requested). But the HTTP route `POST /api/kb/capture` calls `provider.capture()`
 directly and bypasses the handler, so the same clamp is ALSO enforced inside
 `SqliteProvider.capture()` -- the choke point every route shares. The handler
 clamp is UX; the provider clamp is enforcement. No route can mint `CONFIRMED`
