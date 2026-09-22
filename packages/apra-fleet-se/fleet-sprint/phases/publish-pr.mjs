@@ -70,6 +70,10 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
+// apra-fleet-iiny.7.2: no cycle -- doctor-telemetry.mjs imports only node
+// builtins and @apralabs/apra-fleet-client, never this phase or runner.js,
+// so (unlike sanitizePrText below) this is a plain direct import.
+import { buildTelemetryPrBodySection } from '../doctor-telemetry.mjs';
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -100,6 +104,21 @@ export async function runPublishPrPhase({
     finalVerdictResult,
     // Exported BY runner.js; injected to avoid a circular import (see header).
     sanitizePrText,
+    // apra-fleet-iiny.7.2: consent-gated engine-flaw telemetry surfacing
+    // (design doc section 4.4). `engineFlawReports` is the sprint's own
+    // collected+sanitized buildTelemetryReport() outputs (empty on every
+    // sprint that never raised one, which is every sprint today -- the
+    // consult's action-executor lane that would populate this in the wild
+    // is separate, later work; this phase's own behavior is correct and
+    // fully additive either way). `telemetryMode`/`telemetryTrackerUrlTemplate`
+    // are resolved ONCE by the caller (doctor-telemetry.mjs's
+    // resolveTelemetryMode()/resolveTelemetryTracker() read fleet config,
+    // not per-sprint args) so this phase makes no config-file read of its
+    // own. Defaulted so a direct/legacy caller of this phase never has to
+    // know telemetry exists.
+    engineFlawReports = [],
+    telemetryMode = 'ask',
+    telemetryTrackerUrlTemplate = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -236,11 +255,25 @@ export async function runPublishPrPhase({
         // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
         const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
         const safeNotes = sanitizePrText(finalVerdictResult.notes);
+        // apra-fleet-iiny.7.2: the consent-gated engine-flaw telemetry
+        // section -- already-sanitized report text run through the SAME
+        // sanitizePrText() this notes block uses (reuse, not a second
+        // shell/PR-injection redactor; see doctor-telemetry.mjs's header for
+        // why that reuse belongs HERE and not inside sanitizeReport() itself).
+        // null on every sprint that collected no reports (today, always),
+        // which is what keeps this line byte-identical to before this bead.
+        const telemetrySection = buildTelemetryPrBodySection(engineFlawReports, {
+            mode: telemetryMode,
+            newIssueUrlTemplate: telemetryTrackerUrlTemplate,
+            sanitizePrText,
+        });
         const prBody = [
             `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
             '',
             `Final Verdict: ${finalVerdictLabel}`,
             safeNotes ? `Notes: ${safeNotes}` : null,
+            telemetrySection ? '' : null,
+            telemetrySection,
             '',
             'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
         ].filter((line) => line !== null).join('\n');

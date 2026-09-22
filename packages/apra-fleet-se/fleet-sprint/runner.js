@@ -281,6 +281,22 @@ import {
     loadRegistryEntries,
     DEFAULT_CONSULT_LIMITS,
 } from './doctor-consult.mjs';
+// apra-fleet-iiny.7.2: consent-gated engine-flaw telemetry (design doc
+// section 4.4) -- sanitize a consult verdict's engineFlawReport BEFORE it is
+// held in memory or surfaced anywhere, resolve the fleet-config-driven
+// consent mode/tracker (never read from per-sprint args), and build the
+// PR-body/dashboard-state payloads. This is a strictly-additive side channel
+// off the SAME verdict the H2 call site already receives and otherwise
+// ignores (see the "deliberately ignores the return value" comment at that
+// call site) -- it reads verdict.engineFlawReport only, never verdict.action,
+// and never executes anything; applying a verdict's action is the separate,
+// later executor lane.
+import {
+    buildTelemetryReport,
+    resolveTelemetryMode,
+    resolveTelemetryTracker,
+    buildTelemetryDashboardState,
+} from './doctor-telemetry.mjs';
 // The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
 // path all three verdict sites (per-round reviewer, Final Review, Re-Review)
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
@@ -2720,6 +2736,23 @@ async function runSprintCycle(context) {
     // trigger from otherwise); every ready-bead query below filters it out.
     const doctorBlockedIds = new Set();
 
+    // apra-fleet-iiny.7.2: this sprint's collected, ALREADY-SANITIZED
+    // engine-flaw telemetry reports (buildTelemetryReport() outputs) --
+    // populated at the H2 consult call site below whenever a verdict comes
+    // back classified ENGINE_FLAW, surfaced at Publish PR and (optionally)
+    // the dashboard. Persists across cycles like doctorBlockedIds above (a
+    // report from cycle 1 must still show up in the sprint-end PR), and
+    // stays empty on every sprint that never raises an ENGINE_FLAW verdict --
+    // every sprint today, since the consult's action-executor lane is
+    // separate, later work; this array's plumbing is correct either way.
+    const engineFlawTelemetryReports = [];
+    // Resolved ONCE per sprint from fleet config (never per-sprint args,
+    // per this bead's own requirement) -- both are cheap, side-effect-free
+    // reads, so re-resolving per report would be needless repeated I/O for
+    // no behavioral difference.
+    const telemetryMode = doctor.enabled ? resolveTelemetryMode() : 'never';
+    const telemetryTrackerUrlTemplate = doctor.enabled ? resolveTelemetryTracker() : null;
+
     // apra-fleet-jfo D6: per-parent count of verify-fail bounces this sprint
     // (a gap bug filed under the parent, making it ineligible again). Capped
     // at VERIFY_GAP_LIMIT -- a parent that keeps failing verification is
@@ -3453,11 +3486,15 @@ async function runSprintCycle(context) {
             // below, so a consult sees the same evidence the abort would
             // report -- but it changes nothing the abort reads, so the abort
             // still fires exactly as it did before. Consulting is an ASK, not
-            // an act: the phase logs a verdict and returns, and this call
-            // site deliberately ignores the return value, which is what makes
-            // the whole layer strictly additive today.
+            // an act: the phase logs a verdict and returns. This call site
+            // reads the returned verdict for EXACTLY ONE purpose -- apra-
+            // fleet-iiny.7.2's telemetry capture below, off
+            // verdict.engineFlawReport only -- and otherwise still ignores it
+            // completely (never verdict.action), which is what keeps the
+            // whole layer strictly additive: applying an action is the
+            // separate, later executor lane.
             if (pendingConsults.length > 0) {
-                await runSprintDoctorPhase({
+                const consultVerdict = await runSprintDoctorPhase({
                     phase, log, agent, command,
                     callTool: args && typeof args.callTool === 'function' ? args.callTool : undefined,
                     doctor,
@@ -3485,6 +3522,32 @@ async function runSprintCycle(context) {
                     registry: await loadRegistryEntries(),
                     maxBeadDetails: DEFAULT_CONSULT_LIMITS.maxBeadDetails,
                 });
+
+                // apra-fleet-iiny.7.2: sanitize FIRST, locally, always -- the
+                // report is turned into a buildTelemetryReport() output (the
+                // ONLY form this array ever holds) in the same statement it
+                // is read out of the verdict, before it is appended to
+                // in-memory state or published to the dashboard. A verdict
+                // whose classification is NOT ENGINE_FLAW (the overwhelming
+                // majority) or that carries no engineFlawReport leaves
+                // engineFlawTelemetryReports untouched.
+                if (consultVerdict && consultVerdict.classification === 'ENGINE_FLAW' && consultVerdict.engineFlawReport) {
+                    const flawReport = consultVerdict.engineFlawReport;
+                    const errorSignature = normalizeErrorSignature(
+                        flawReport.suspectedComponent || 'engine_flaw',
+                        flawReport.symptom
+                    );
+                    engineFlawTelemetryReports.push(buildTelemetryReport(
+                        { ...flawReport, branch: validated.branch },
+                        { errorSignature }
+                    ));
+                    if (typeof publishState === 'function') {
+                        publishState('sprint-doctor-telemetry', buildTelemetryDashboardState(engineFlawTelemetryReports, {
+                            mode: telemetryMode,
+                            newIssueUrlTemplate: telemetryTrackerUrlTemplate,
+                        }));
+                    }
+                }
             }
         }
 
@@ -3739,6 +3802,13 @@ async function runSprintCycle(context) {
         gitSync, getMemberForRole,
         finalVerdictResult,
         sanitizePrText,
+        // apra-fleet-iiny.7.2: whatever this sprint collected via the H2
+        // consult capture above (empty on every sprint that raised no
+        // ENGINE_FLAW verdict), plus the fleet-config-resolved consent mode
+        // and tracker -- resolved once, near `doctor`, not re-read here.
+        engineFlawReports: engineFlawTelemetryReports,
+        telemetryMode,
+        telemetryTrackerUrlTemplate,
     });
 
     endGroup();

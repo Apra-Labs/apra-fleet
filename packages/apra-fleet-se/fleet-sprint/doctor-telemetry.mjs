@@ -407,3 +407,238 @@ export function buildTelemetryReport(report, options = {}) {
         fingerprint: fingerprintForSignature(errorSignature),
     };
 }
+
+// =============================================================================
+// apra-fleet-iiny.7.2: consent-gated upstreaming -- mode handling, tracker
+// resolution, fingerprint dedup, and the PR-body/dashboard surfacing text
+// builders. Kept in this same file (not a sibling module) because the mode
+// that gates upstreaming is inseparable from the sanitizer that makes
+// upstreaming safe -- one lives beside the other, per this bead's own file
+// list.
+//
+// NO DEFAULT UPSTREAM TARGET, ANYWHERE IN THIS FILE. The coach design this
+// was adopted from hardcoded the apra-fleet GitHub issues URL as its
+// upstream target -- the exact dogfood leak the redesign (design doc section
+// 4.4) forbids. The tracker is a single config field, a FULL new-issue URL
+// TEMPLATE (`{title}`/`{body}` placeholders substituted at build time) --
+// deliberately NOT an "owner/repo" shorthand that would need this module to
+// bake in a specific host's URL shape (github.com, dev.azure.com, ...) for
+// the convenience of filling it in. This engine is VCS-provider-agnostic
+// (vcs-module.mjs/vcs-providers/*) and telemetry upstreaming stays agnostic
+// the same way: the operator supplies the whole URL shape for whatever
+// tracker they use, and with none configured the feature is simply off.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Fleet config -- read directly as JSON, not through the root apra-fleet
+// CLI's TypeScript user-config module (src/services/user-config.ts): that
+// module lives in a different package, is TypeScript (this package ships
+// plain ESM to any target project), and importing it would be exactly the
+// cross-package coupling doctor-telemetry.mjs's install-id section already
+// avoids by going through @apralabs/apra-fleet-client instead of src/paths.ts.
+// Reading the SAME on-disk file (getFleetDataDir()/config.json) as generic
+// JSON keeps this "fleet config, not per-sprint args" (the bead's own
+// requirement) without adding that dependency -- a user who has never
+// configured `doctor` in their config.json simply reads back `{}` here, the
+// same "missing file/key -> safe default" shape getOrCreateInstallId() and
+// resolveOutputSchema() (contracts.mjs) already use elsewhere in this
+// package.
+// ---------------------------------------------------------------------------
+
+function fleetConfigPath(env) {
+    return path.join(getFleetDataDir(env), 'config.json');
+}
+
+function loadFleetConfig(env) {
+    try {
+        const raw = fs.readFileSync(fleetConfigPath(env), 'utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+        // Missing file, unreadable, or malformed JSON -- telemetry config is
+        // OPTIONAL, so this is a safe default, never a hard failure.
+        return {};
+    }
+}
+
+const TELEMETRY_MODES = new Set(['never', 'ask', 'always']);
+const DEFAULT_TELEMETRY_MODE = 'ask';
+
+/**
+ * Resolves the `doctor.telemetry` consent mode from fleet config.
+ * `never` | `ask` (default) | `always`; any unset/unrecognized value falls
+ * back to `ask` rather than throwing -- consent gating fails toward the
+ * SAFER, more conservative mode (human-in-the-loop), never toward `always`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {'never'|'ask'|'always'}
+ */
+export function resolveTelemetryMode(env = process.env) {
+    const config = loadFleetConfig(env);
+    const mode = config && config.doctor && config.doctor.telemetry;
+    return TELEMETRY_MODES.has(mode) ? mode : DEFAULT_TELEMETRY_MODE;
+}
+
+/**
+ * Resolves the config-supplied upstream tracker as a new-issue URL template
+ * (`{title}` and `{body}` placeholders, both substituted with
+ * percent-encoded text). Returns `null` when nothing is configured -- the
+ * ONLY correct behavior per this bead's contract is "telemetry is simply
+ * disabled" in that case, never a fallback target.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string|null}
+ */
+export function resolveTelemetryTracker(env = process.env) {
+    const config = loadFleetConfig(env);
+    const template = config && config.doctor && config.doctor.telemetryTracker
+        && config.doctor.telemetryTracker.newIssueUrlTemplate;
+    return typeof template === 'string' && template.length > 0 ? template : null;
+}
+
+/**
+ * Builds the plain-text body of an upstream issue report from an already
+ * sanitized report -- shared by the pre-filled URL builder and the PR-body
+ * section builder so the two never drift apart on what a report "looks
+ * like" to a human reading it.
+ */
+function reportBodyText(report) {
+    const r = report || {};
+    return [
+        r.symptom ? `Symptom: ${r.symptom}` : null,
+        r.suspectedComponent ? `Suspected component: ${r.suspectedComponent}` : null,
+        Array.isArray(r.reproEvidence) && r.reproEvidence.length > 0
+            ? `Evidence:\n${r.reproEvidence.map((e) => `- ${e}`).join('\n')}`
+            : null,
+        r.errorText ? `Error text:\n${r.errorText}` : null,
+        `Fingerprint: ${r.fingerprint || 'unknown'}`,
+        `Install id: ${r.installId || 'unknown'}`,
+    ].filter((line) => line !== null).join('\n\n');
+}
+
+/**
+ * Builds a pre-filled new-issue URL against `newIssueUrlTemplate` (as
+ * returned by resolveTelemetryTracker()) for one sanitized report. Returns
+ * `null` when no template is configured -- callers must treat that as
+ * "telemetry disabled", never substitute a fallback.
+ * @param {string|null} newIssueUrlTemplate
+ * @param {object} report - an already-sanitized report (sanitizeReport()/buildTelemetryReport() output)
+ * @returns {string|null}
+ */
+export function buildUpstreamIssueUrl(newIssueUrlTemplate, report) {
+    if (typeof newIssueUrlTemplate !== 'string' || newIssueUrlTemplate.length === 0) return null;
+    const r = report || {};
+    const title = r.proposedBeadTitle || r.symptom || 'sprint-doctor engine-flaw report';
+    const body = reportBodyText(r);
+    return newIssueUrlTemplate
+        .split('{title}').join(encodeURIComponent(title))
+        .split('{body}').join(encodeURIComponent(body));
+}
+
+// ---------------------------------------------------------------------------
+// Fingerprint dedup -- "a report whose fingerprint already appears in the
+// run's artifacts appends an occurrence rather than emitting a duplicate."
+// ---------------------------------------------------------------------------
+
+/**
+ * Collapses `reports` (an array of buildTelemetryReport() outputs) so every
+ * distinct `fingerprint` appears exactly once, carrying an `occurrences`
+ * count of how many times it was seen. Order-preserving: the FIRST
+ * occurrence of a fingerprint is what survives (its fields), later
+ * duplicates only increment the count.
+ * @param {Array<object>} reports
+ * @returns {Array<object & {occurrences: number}>}
+ */
+export function dedupeReportsByFingerprint(reports) {
+    const order = [];
+    const byFingerprint = new Map();
+    for (const report of reports || []) {
+        const fp = report && report.fingerprint;
+        if (byFingerprint.has(fp)) {
+            byFingerprint.get(fp).occurrences += 1;
+        } else {
+            const entry = { ...report, occurrences: 1 };
+            byFingerprint.set(fp, entry);
+            order.push(fp);
+        }
+    }
+    return order.map((fp) => byFingerprint.get(fp));
+}
+
+// ---------------------------------------------------------------------------
+// PR-body surfacing -- the `ask`/`always` sprint-end surface (design doc
+// section 4.4). `never` mode returns null: reports stay in the run
+// artifacts only, and no PR-body section is ever built for them.
+//
+// REUSE, NOT A SECOND REDACTOR (this bead's requirement, iiny.7.1's header
+// records the same decision): every human-facing line built here is passed
+// through the CALLER-INJECTED `sanitizePrText` (sprint-report.mjs) before
+// being joined into the section -- the exact function publish-pr.mjs already
+// runs finalVerdictResult.notes through before embedding it in the same PR
+// body. Injected rather than imported to avoid a circular import back into
+// runner.js/sprint-report.mjs, mirroring how publish-pr.mjs itself receives
+// it from runner.js.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {Array<object>} reports - buildTelemetryReport() outputs collected this sprint
+ * @param {{
+ *   mode: 'never'|'ask'|'always',
+ *   newIssueUrlTemplate: string|null,
+ *   sanitizePrText: (text: unknown) => string,
+ * }} opts
+ * @returns {string|null} a Markdown section, or null when there is nothing to surface
+ */
+export function buildTelemetryPrBodySection(reports, { mode, newIssueUrlTemplate, sanitizePrText }) {
+    if (mode === 'never') return null;
+    const deduped = dedupeReportsByFingerprint(reports);
+    if (deduped.length === 0) return null;
+
+    const safe = (text) => sanitizePrText(text || '');
+    const lines = ['sprint-doctor: engine-flaw report(s) this sprint (local-first sanitized; see design doc section 4.4):', ''];
+    if (mode === 'always') {
+        lines.push(
+            '(doctor.telemetry: always -- standing consent on file for this install; reports below are '
+            + 'filed automatically, never silently.)',
+            ''
+        );
+    }
+    for (const report of deduped) {
+        const occurrenceSuffix = report.occurrences > 1 ? ` (seen ${report.occurrences}x this sprint)` : '';
+        lines.push(`- ${safe(report.symptom || report.proposedBeadTitle || 'engine flaw')}${occurrenceSuffix}`);
+        if (report.suspectedComponent) lines.push(`  Suspected component: ${safe(report.suspectedComponent)}`);
+        lines.push(`  Fingerprint: ${report.fingerprint}`);
+        if (mode === 'ask') {
+            const url = buildUpstreamIssueUrl(newIssueUrlTemplate, report);
+            lines.push(url
+                ? `  File upstream: ${url}`
+                : '  Upstream telemetry disabled: no tracker configured (doctor.telemetryTracker.newIssueUrlTemplate).');
+        }
+    }
+    return lines.join('\n');
+}
+
+/**
+ * The dashboard-card equivalent of buildTelemetryPrBodySection(): structured
+ * data for a `publishState('sprint-doctor-telemetry', ...)` payload rather
+ * than Markdown prose. `never` mode still returns a payload (so the card can
+ * say "telemetry: never" rather than simply vanishing), but with an empty
+ * `reports` array regardless of what was collected -- `never` means the
+ * dashboard shows nothing about individual reports, only the mode itself.
+ * @param {Array<object>} reports
+ * @param {{mode: 'never'|'ask'|'always', newIssueUrlTemplate: string|null}} opts
+ * @returns {{mode: string, trackerConfigured: boolean, reports: Array<object>}}
+ */
+export function buildTelemetryDashboardState(reports, { mode, newIssueUrlTemplate }) {
+    const trackerConfigured = typeof newIssueUrlTemplate === 'string' && newIssueUrlTemplate.length > 0;
+    if (mode === 'never') {
+        return { mode, trackerConfigured, reports: [] };
+    }
+    const deduped = dedupeReportsByFingerprint(reports);
+    return {
+        mode,
+        trackerConfigured,
+        reports: deduped.map((report) => ({
+            ...report,
+            upstreamUrl: mode === 'ask' ? buildUpstreamIssueUrl(newIssueUrlTemplate, report) : null,
+        })),
+    };
+}
