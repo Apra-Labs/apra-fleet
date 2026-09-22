@@ -127,6 +127,8 @@ export function parseAzureDevOpsRemote(remoteUrl: unknown): AzureDevOpsRepoRef |
     return build(segments[1], segments[2], segments[3], 'ssh');
   }
   if (split.scheme !== 'https' && split.scheme !== 'http') return null;
+  // The ssh-only hosts never serve the https '_git' shape.
+  if (/^(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com)$/i.test(split.host)) return null;
 
   const marker = segments.indexOf('_git');
   if (marker === -1 || marker !== segments.length - 2) return null;
@@ -138,7 +140,7 @@ export function parseAzureDevOpsRemote(remoteUrl: unknown): AzureDevOpsRepoRef |
     // collection segment (historically 'DefaultCollection') may precede the
     // project.
     const org = split.host.split('.')[0];
-    if (!org || org.toLowerCase() === 'visualstudio') return null;
+    if (!org || org.toLowerCase() === 'visualstudio' || org.toLowerCase() === 'vs-ssh') return null;
     if (prefix.length > 0 && prefix[0].toLowerCase() === 'defaultcollection') prefix = prefix.slice(1);
     if (prefix.length > 1) return null;
     return build(org, prefix[0] || repo, repo, 'https');

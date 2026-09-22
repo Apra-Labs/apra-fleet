@@ -65,6 +65,9 @@ describe('parseAzureDevOpsRemote (issue #502)', () => {
     'https://apralabs.visualstudio.com/Other/proj/_git/repo',
     'apralabs@vs-ssh.visualstudio.com:v3/apralabs/repo',
     'https://dev.azure.com/v3/apralabs/proj/repo',
+    // the ssh-only hosts never serve the https '_git' shape
+    'https://vs-ssh.visualstudio.com/DefaultCollection/proj/_git/repo',
+    'https://ssh.dev.azure.com/apralabs/proj/_git/repo',
     'file:///tmp/bare.git',
   ])('rejects %s', (url) => {
     expect(parseAzureDevOpsRemote(url)).toBeNull();

@@ -229,6 +229,29 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
         assert.ok(!logs.some((l) => /no organization could be derived/.test(l)), 'the old cause-blind wording must not appear');
     });
 
+    test('a failSoft remote read ({ ok: false }, not thrown) is also reported as "could not be read" (issue #502)', async () => {
+        const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({
+            callTool,
+            command: async (cmd) => (
+                cmd === 'git remote get-url origin'
+                    ? { ok: false, output: '', error: "fatal: No such remote 'origin'" }
+                    : { ok: true, output: '', error: null }
+            ),
+            log: (m) => logs.push(m),
+        });
+
+        await ensureVcsAuthFresh('fleet-mac');
+
+        assert.equal(calls.length, 0, 'nothing can be provisioned without an org');
+        assert.ok(
+            logs.some((l) => /git remote could not be read \(fatal: No such remote 'origin'\)/.test(l)),
+            `expected the preflight log to carry the failSoft read error verbatim, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(!logs.some((l) => /is not a recognized Azure DevOps repository URL/.test(l)), 'an unread remote must not be reported as a malformed one');
+    });
+
     test('a missing secret fails the preflight with the remedial command, never a prompt', async () => {
         const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: [] });
         const logs = [];
