@@ -7,6 +7,7 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
+import { readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 
 // FLEET_DIR is pinned to a per-run tmpdir by tests/setup.ts, and vitest.config.ts
 // sets fileParallelism:false, so writing the single global KB config file here
@@ -53,6 +54,11 @@ function writeMalformedConfig(): void {
 function writeHttpConfigMissingUrl(): void {
   fs.mkdirSync(KB_CONFIG_DIR, { recursive: true });
   fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ provider: 'http', token_encrypted: encryptPassword(FAKE_TOKEN) }, null, 2));
+}
+
+function writeHttpConfigMissingToken(): void {
+  fs.mkdirSync(KB_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ provider: 'http', url: REMOTE_KB_URL }, null, 2));
 }
 
 // `fallback` is private on HttpKbProvider -- a compile-time marker only. Reading
@@ -221,15 +227,41 @@ describe('getKbProviders degrades a malformed/misconfigured KB config to SqliteP
     expect(errorSpy.mock.calls[0][0]).toContain('KB config error');
   });
 
-  it('provider "http" missing url degrades to SqliteProvider rather than throwing', async () => {
+  // my-beads-db-0cd.8 criterion 3: both halves of the layering asserted
+  // against the SAME config, in one test, so a future change cannot remove
+  // either half silently -- readKbConfigFromDisk (bead .1's own contract,
+  // unit-tested in isolation in kb-config.test.ts) must still throw naming
+  // "url" on this exact config, and selectProjectProvider's catch must
+  // convert that throw into a SqliteProvider degrade plus a one-time warning
+  // that names the same offending key.
+  it('provider "http" missing url: readKbConfigFromDisk still throws naming "url" in isolation, and getKbProviders degrades to SqliteProvider with a warning naming "url"', async () => {
     writeHttpConfigMissingUrl();
-    const repoPath = makeRepoPath();
 
+    expect(() => readKbConfigFromDisk()).toThrowError(/url/);
+
+    const repoPath = makeRepoPath();
     const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
 
     expect(providers.project).toBeInstanceOf(SqliteProvider);
     expect(providers.project).not.toBeInstanceOf(HttpKbProvider);
     expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][0]).toMatch(/url/);
+  });
+
+  // Sibling of the above for the other half of criterion 3: a config missing
+  // token_encrypted instead of url. Same layering, same two assertions.
+  it('provider "http" missing token_encrypted: readKbConfigFromDisk still throws naming "token_encrypted" in isolation, and getKbProviders degrades to SqliteProvider with a warning naming "token_encrypted"', async () => {
+    writeHttpConfigMissingToken();
+
+    expect(() => readKbConfigFromDisk()).toThrowError(/token_encrypted/);
+
+    const repoPath = makeRepoPath();
+    const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
+
+    expect(providers.project).toBeInstanceOf(SqliteProvider);
+    expect(providers.project).not.toBeInstanceOf(HttpKbProvider);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][0]).toMatch(/token_encrypted/);
   });
 
   it('the warning is one-time: a second, different (slug, repoPath) call with the same bad config does not warn again', async () => {

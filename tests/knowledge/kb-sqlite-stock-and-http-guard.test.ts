@@ -28,21 +28,21 @@ import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 // KB is backed by a remote HTTP provider (kb_stats is the deliberate
 // exception -- it degrades to a non-computable bible block instead).
 //
-// CRITERIA-DEFECT (recorded on the bead, see bd notes for
-// my-beads-db-0cd.8): criterion 3 as written requires getKbProviders to THROW
-// when an http-selecting config is missing its url/token. That was the
-// question bead .12 (closed, commit 51e3baa7) deliberately settled the other
-// way, per the PARENT bead's own criterion 1 ("returns SqliteProvider
-// unchanged ... including missing/malformed config"): every
-// readKbConfigFromDisk failure -- malformed JSON, http-without-url,
-// http-without-token, undecryptable token -- degrades to SqliteProvider with
-// a one-time console.error warning, already pinned by
-// tests/knowledge/kb-providers-http-selection.test.ts. This file does not
-// re-assert the throwing behaviour criterion 3 describes, because it is not
-// what the shipped, parent-mandated code does. It DOES cover the rest of
-// criterion 3's spirit (a misconfigured http config never silently produces
-// a working remote KB) by relying on that existing coverage rather than
-// duplicating it here.
+// Criterion 3 was rewritten 2026-09-17 (see bd notes for my-beads-db-0cd.8)
+// after a CRITERIA-DEFECT report: the original wording demanded getKbProviders
+// THROW on an http-selecting config missing its url/token, which contradicts
+// the PARENT bead's own criterion 1 ("returns SqliteProvider unchanged ...
+// including missing/malformed config") and bead .12 (closed, commit
+// 51e3baa7), which deliberately shipped the degrade-with-warning behaviour.
+// The corrected criterion 3 requires the opposite of the original wording: a
+// config missing url, and separately one missing token_encrypted, must
+// DEGRADE to SqliteProvider with a one-time warning naming the offending key,
+// while readKbConfigFromDisk itself still throws on both in isolation. Both
+// halves, for both missing keys, are asserted together in
+// tests/knowledge/kb-providers-http-selection.test.ts (the
+// "provider \"http\" missing url" / "missing token_encrypted" tests in the
+// my-beads-db-0cd.12 describe block) -- this file does not duplicate that
+// coverage, per criterion 3's own instruction to cite rather than re-copy.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
