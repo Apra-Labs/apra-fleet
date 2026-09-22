@@ -73,6 +73,27 @@ function countMarkerProcesses(marker: string): number {
   }
 }
 
+/**
+ * Force-kills every live process whose command line contains `marker`,
+ * best-effort. Needed by the qe83.4 forced-exit reproduction below: once
+ * run-all-tests.mjs force-exits itself (the very thing under test), the
+ * grandchild stub process it could not reap is orphaned under a pid this
+ * test never had -- killing the wrapper's own (already-exited) pid does
+ * nothing for it, so cleanup must find it by marker instead.
+ */
+function killMarkerProcesses(marker: string): void {
+  try {
+    if (isWindows) {
+      const script = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+      spawnSync('powershell', ['-NoProfile', '-Command', script]);
+    } else {
+      spawnSync('sh', ['-c', `ps -eo pid,args | grep -F '${marker}' | grep -v grep | awk '{print $1}' | xargs -r kill -9`]);
+    }
+  } catch {
+    // Best-effort only.
+  }
+}
+
 /** Unique-per-test-run marker embedded in the stub command line so the
  *  process-table check above never confuses this test's own stub process
  *  with an unrelated node process already running on the machine. */
@@ -238,5 +259,84 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
 
     expect(timedOut).toBe(false); // run-tests.mjs must have exited on its own
     expect(exitCode).not.toBe(0); // the timed-out run counts as a failure
+  }, 9_000);
+});
+
+/**
+ * apra-fleet-qe83.4: killTree (and now the belt-and-braces child.kill()
+ * alongside it) is best-effort -- if taskkill is unavailable/denied, or the
+ * POSIX group kill fails for both -pid and pid, no 'exit' event ever fires
+ * and the runner's own timeout promise never settles, hanging forever (the
+ * exact failure the bound exists to remove). Both runners expose a test-only
+ * APRA_TEST_SIMULATE_KILL_FAILURE=1 escape hatch that turns killTree()/
+ * child.kill() into no-ops, letting this reproduce that failure mode
+ * deterministically (SIGKILL itself cannot be ignored on POSIX, so a real
+ * unkillable process is not obtainable) and prove the secondary force-exit
+ * timer still makes the runner exit on its own.
+ */
+describe('run-all-tests.mjs forces its own exit when the kill path fails (apra-fleet-qe83.4)', () => {
+  const spawnedPids: number[] = [];
+  const markers: string[] = [];
+  let hangScriptDir: string;
+  let hangScriptFile: string;
+
+  afterEach(() => {
+    for (const pid of spawnedPids.splice(0)) killTree(pid);
+    // The simulated-kill-failure scenario deliberately leaves the grandchild
+    // stub alive and orphaned (see killMarkerProcesses' doc comment) -- pid
+    // cleanup above cannot reach it, so sweep by marker too.
+    for (const marker of markers.splice(0)) killMarkerProcesses(marker);
+    if (hangScriptDir) fs.rmSync(hangScriptDir, { recursive: true, force: true });
+  });
+
+  it('exits on its own via the forced-exit branch when killTree/child.kill are stubbed into no-ops', async () => {
+    const marker = makeMarker();
+    markers.push(marker);
+    hangScriptDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'qe83-4-hang-'));
+    hangScriptFile = path.join(hangScriptDir, `hang-forever-${marker}.mjs`);
+    fs.writeFileSync(hangScriptFile, 'setInterval(function () {}, 1000);\n');
+
+    const suites = JSON.stringify([
+      { name: 'hang-forever', cmd: 'node', args: [hangScriptFile] },
+    ]);
+
+    const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        APRA_TEST_SUITES_JSON: suites,
+        APRA_TEST_TIMEOUT_MS: '1000',
+        APRA_TEST_SIMULATE_KILL_FAILURE: '1',
+        APRA_TEST_FORCE_EXIT_GRACE_MS: '1000',
+      },
+    });
+    if (child.pid) spawnedPids.push(child.pid);
+
+    let exitCode: number | null = null;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+    });
+
+    // Runner's own timeout (1000ms) + forced-exit grace (1000ms) should fire
+    // well inside this outer deadline. If the forced-exit branch regressed,
+    // this races the outer deadline instead and the test fails loudly rather
+    // than hanging (vitest's own test timeout below is the final backstop).
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
+
+    // The stub process is never actually killed here (that is the whole
+    // point of the simulated failure) -- confirm it really is still alive
+    // (proving the forced exit above happened despite the kill failing, not
+    // because the kill secretly succeeded), then sweep it up by marker so it
+    // does not leak past this test.
+    const stillAliveAfterForcedExit = countMarkerProcesses(marker) > 0;
+    killMarkerProcesses(marker);
+
+    expect(timedOut).toBe(false); // run-all-tests.mjs must force-exit on its own
+    expect(exitCode).toBe(1); // the forced-exit branch calls process.exit(1)
+    expect(stillAliveAfterForcedExit).toBe(true); // kill really did fail; forced exit is what saved us
+    expect(countMarkerProcesses(marker)).toBe(0); // cleanup swept the orphaned stub
   }, 9_000);
 });
