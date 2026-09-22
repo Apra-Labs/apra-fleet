@@ -471,6 +471,21 @@ export function isAuthDispatchError(err) {
 const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline']);
 
 /**
+ * True when a bare `details.reason` STRING (not an error object) names an
+ * infrastructure dispatch failure. Added for apra-fleet-iiny.1.2's
+ * sprint-doctor trigger layer, which evaluates ledger ROWS (plain data, no
+ * error objects) and therefore cannot key off `err.details.reason` the way
+ * `isInfraDispatchFailure()` below does -- this is the one predicate that
+ * consumes the reason string directly, so `INFRA_DISPATCH_REASONS` stays
+ * declared exactly once in the codebase.
+ * @param {unknown} reason
+ * @returns {boolean}
+ */
+export function isInfraDispatchReason(reason) {
+    return INFRA_DISPATCH_REASONS.has(reason);
+}
+
+/**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
  * delivered a parseable result envelope) rather than a genuine task
  * pass/fail conclusion -- keyed off the server's structured `details.reason`.
@@ -478,7 +493,7 @@ const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'or
  * @returns {boolean}
  */
 export function isInfraDispatchFailure(err) {
-    return INFRA_DISPATCH_REASONS.has(err?.details?.reason);
+    return isInfraDispatchReason(err?.details?.reason);
 }
 
 // ---------------------------------------------------------------------------

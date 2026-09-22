@@ -395,6 +395,11 @@ export const GUARDED_MODULES = [
     // landing in this file into a red test instead of a silently unguarded
     // site.
     'doctor-ledger.mjs',
+    // apra-fleet-iiny.1.2: the sprint-doctor trigger layer (evaluateTriggers).
+    // Pure functions over ledger rows and cycle counters passed in by the
+    // caller -- no command()/agent() call, no dolt/git literal, no I/O of any
+    // kind -- so it gets the same ZERO baseline as doctor-ledger.mjs above.
+    'doctor-triggers.mjs',
 ];
 
 /**
