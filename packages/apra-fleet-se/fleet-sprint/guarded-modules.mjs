@@ -432,6 +432,12 @@ export const GUARDED_MODULES = [
     // full-DB fetch and runs no agent() dispatch of its own (the consult that
     // produces its input lives in doctor-consult.mjs).
     'doctor-executor.mjs',
+    // The sprint-doctor symptom/remedy REGISTRY. Pure data (a frozen entry
+    // array) plus one pure matcher (matchRegistry) -- no command()/agent()
+    // call, no dolt/git literal, no shell-command string, no I/O of any
+    // kind -- so it gets the same ZERO baseline as doctor-ledger.mjs/
+    // doctor-triggers.mjs/doctor-telemetry.mjs above.
+    'doctor-registry.mjs',
 ];
 
 /**
