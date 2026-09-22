@@ -31,8 +31,14 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query
    `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
    (`kb_list`/`kb_promote`/`kb_capture` are deliberately NOT here -- captures and
    promotions both go through your structured output, not a direct tool call; see
    Step 5 for promotions and item 3 below for captures.)
@@ -56,7 +62,12 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
    directly with the entry id and what was wrong -- this is a read/feedback operation, not
    a mutation, so it does not go through structured output.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Step 1 -- Context recovery
 
