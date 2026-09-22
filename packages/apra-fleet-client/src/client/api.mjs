@@ -296,6 +296,16 @@
  *   with the value escaped for the interior of a single-quoted string, with no quotes of its
  *   own, for interpolating the token into a larger already-quoted value (e.g. an Authorization
  *   header) where a bare, self-quoting substitution cannot compose.
+ *   For a provider that authenticates with basic auth (user:token, e.g. Bitbucket) two further
+ *   OPTIONAL placeholders substitute the credential helper's username under exactly the same two
+ *   dialects: {{vcs_username}}, referenced BARE -- already escaped AND quoted for that member's
+ *   shell; and {{vcs_username_inline}}, referenced INSIDE your own single quotes (e.g.
+ *   -u '{{vcs_username_inline}}:{{vcs_token_inline}}') -- escaped for the interior of a
+ *   single-quoted string, with no quotes of its own. A username placeholder may not appear on
+ *   its own: a token placeholder is still required, or the call is refused with
+ *   reason "placeholder_missing". If the command references a username placeholder and the
+ *   helper prints no username= line, the call fails with reason "username_empty" and dispatches
+ *   nothing.
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
@@ -307,13 +317,15 @@
  * @property {boolean} ok - True when the credential-requiring command was dispatched. Read
  *   exitCode for the command's own outcome.
  * @property {"ok" | "member_not_found" | "placeholder_missing" | "unsupported_member_os" |
- *   "credential_read_failed" | "credential_empty" | "dispatch_failed"} reason - Machine-readable
+ *   "credential_read_failed" | "credential_empty" | "username_empty" |
+ *   "dispatch_failed"} reason - Machine-readable
  *   outcome code. Branch on this, never on the text.
  * @property {number|null} exitCode - Exit code of the dispatched command, null if it never ran.
  * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
  * @property {string} stderr - Command stderr, with every occurrence of the credential redacted.
- * @property {number} tokenRedactions - How many times the credential had to be redacted out of
- *   stdout+stderr. Normally 0; nonzero means the command echoed its own credential back.
+ * @property {number} tokenRedactions - How many times credential material had to be redacted out
+ *   of stdout+stderr -- the token, plus the basic-auth username when the command substituted one.
+ *   Normally 0; nonzero means the command echoed its own credential back.
  * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
@@ -715,6 +727,12 @@ export class ApraFleet {
      * escaped for that interior with no quotes of its own) -- dispatches the
      * command, and redacts the value from the returned stdout/stderr. The
      * plaintext appears in no field of the result.
+     *
+     * For basic-auth providers (user:token, e.g. Bitbucket) the optional
+     * {{vcs_username}} / {{vcs_username_inline}} pair substitutes the
+     * credential helper's username under the same two dialects, and is
+     * redacted on the same footing as the token. A username placeholder
+     * never stands alone -- the command must still carry a token one.
      *
      * @param {VcsCredentialExecOptions} options
      * @returns {Promise<{ content: Array<{type: string, text: string}>,

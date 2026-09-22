@@ -299,16 +299,18 @@ Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
 god-mode. VCS access is provisioned and revocable per member, across GitHub,
-Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
-auth pattern, error vocabulary) are hidden behind a per-provider descriptor
-rather than leaking into shared code; see
-`docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-credential-assembly and PAT-lifetime details. A credential-requiring VCS
-command can be handed to the server for execution (`vcs_credential_exec`)
-rather than the orchestrator learning the plaintext token itself: the
-server substitutes the credential into the command, runs it on the member,
-and redacts the token from every field of the result -- the plaintext never
-transits an orchestrator-readable output. Permission
+Bitbucket, and Azure DevOps, all three of which can open pull requests --
+host differences (URL shape, PR REST dialect, auth pattern, error
+vocabulary) are hidden behind a per-provider descriptor rather than leaking
+into shared code; see `docs/design-azure-devops-vcs-auth.md` and
+`docs/design-bitbucket-vcs-auth.md` for each provider's credential-assembly
+details. A credential-requiring VCS command can be handed to the server for
+execution (`vcs_credential_exec`) rather than the orchestrator learning the
+plaintext token itself: the server substitutes the credential (and, for a
+provider whose REST API needs HTTP Basic `username:token` rather than a
+bearer token, the basic-auth username alongside it) into the command, runs
+it on the member, and redacts both halves from every field of the result --
+the plaintext never transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an

@@ -125,10 +125,22 @@ async function listCredentialStoreNames(fleetApi) {
  * advisory the operator should see (e.g. an ssh remote the PAT cannot
  * serve) that is NOT a failure.
  *
+ * apra-fleet-qeq1.9: a hook may also answer `{ skip: true }` -- "this
+ * provider has nothing to provision for THIS request, proceed on the
+ * credential already deployed". That is a third answer, distinct from both
+ * `args` (dispatch these) and `error` (fail): a provider whose credential is
+ * deployed out of band and carries no scope axis has no meaningful
+ * just-in-time re-provision to run, and forcing a doomed one would abort the
+ * very call it is supposed to enable. Reported to the caller as a `null`
+ * return -- no provider ever legitimately produces null `args`, and the
+ * no-hook path above returns `base`, so null is unambiguous. The skip is
+ * never silent: a hook taking it should also return a `note`, logged below
+ * exactly like any other advisory.
+ *
  * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object,
  *           secretName?: string, remoteUrl?: string, remoteReadError?: string|null,
  *           log?: Function, logPrefix?: string }} ctx
- * @returns {Promise<object>} the arguments to send
+ * @returns {Promise<object|null>} the arguments to send, or null to skip provisioning entirely
  */
 async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName, remoteUrl, remoteReadError, log = () => {}, logPrefix = '' }) {
     const impl = getVcsProvider(provider);
@@ -137,13 +149,14 @@ async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi
     const availableSecrets = await listCredentialStoreNames(fleetApi);
     const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName, remoteUrl, remoteReadError });
     if (built && typeof built.error === 'string') throw new Error(built.error);
-    if (!built || !built.args || typeof built.args !== 'object') {
+    const skipped = !!(built && built.skip === true);
+    if (!built || (!skipped && (!built.args || typeof built.args !== 'object'))) {
         throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
     }
     if (typeof built.note === 'string' && built.note.trim()) {
         log(`${logPrefix}: note: ${built.note.trim()}`);
     }
-    return built.args;
+    return skipped ? null : built.args;
 }
 
 // apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
@@ -392,6 +405,16 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         log,
         logPrefix,
     });
+    // apra-fleet-qeq1.9: the hook answered "nothing to provision for this
+    // request" (see buildProvisionArgsForProvider's own doc for the null
+    // contract). Dispatch nothing, claim no new expiry -- the credential in
+    // place is whatever it already was -- and still hand back the derived
+    // repo, which is the other half of this function's return contract and is
+    // what the PR-raising call sites need to build their command.
+    if (provisionArgs === null) {
+        log(`${logPrefix}: provider '${provider}' has nothing to re-provision for member '${member}'; continuing on its already-deployed credential without calling provision_vcs_auth.`);
+        return { expiresAt: null, repo: derivedRepo };
+    }
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = resultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it reports failure via
@@ -738,6 +761,15 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // top-level declarations symbol-for-symbol and a new const desyncs that
     // census.
     const token = '{{vcs_token_inline}}';
+    // apra-fleet-qeq1.3: Bitbucket REST needs basic auth 'username:token'
+    // (unlike Azure DevOps/GitHub, which pass an empty or no username at
+    // all) -- see the PLANNER DECISION note on the epic apra-fleet-qeq1.
+    // Passed the same INLINE-placeholder way as `token` above: a provider
+    // that does not read `username` (github.mjs, azure-devops.mjs) simply
+    // ignores it, so this is additive. Inlined here rather than hoisted to a
+    // module constant for the SAME reason `token` is -- see the comment
+    // above it.
+    const username = '{{vcs_username_inline}}';
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -777,7 +809,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         const built = buildCreatePrCommand({
             provider,
             ...(repoRef ? { repoRef } : { repo }),
-            base, head, title, body, token, os, shell,
+            base, head, title, body, token, username, os, shell,
         });
 
         if (built.descriptionTruncated && !truncationWarned) {

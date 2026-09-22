@@ -485,9 +485,9 @@ VCSModule replaces that with a provider-agnostic seam:
   never pattern-matches host-specific text itself. Only the raw text is
   host-specific; the `kind` it resolves to never is.
 - **A provider registry**, one file per provider (GitHub and a generic-git
-  fallback ship built in; Bitbucket/GitLab are structured as drop-in
-  additions; Azure DevOps is fully registered, not just structured as one --
-  it carries its own host/URL parsing, failure classification, PR/comment
+  fallback ship built in; GitLab is structured as a drop-in addition; Azure
+  DevOps and Bitbucket are fully registered, not just structured as one --
+  each carries its own host/URL parsing, failure classification, PR/comment
   REST builders and a `capabilities()` table with `canOpenPullRequest: true`),
   each exporting a descriptor of failure-text patterns plus a
   `capabilities()` table declaring which failure kinds that provider can ever
@@ -496,7 +496,8 @@ VCSModule replaces that with a provider-agnostic seam:
   A synthetic/unregistered provider still classifies correctly through the
   generic-git fallback rather than falling through to `unknown` by default.
   See the repo-root `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-  own credential-assembly, PR-response-mapping and PAT-lifetime details.
+  own credential-assembly, PR-response-mapping and PAT-lifetime details, and
+  `docs/design-bitbucket-vcs-auth.md` for Bitbucket's.
 - **The member registry, not a hardcoded literal, decides which provider
   applies.** A member's configured VCS provider is resolved from its
   registration and threaded into every classification and PR-creation call
