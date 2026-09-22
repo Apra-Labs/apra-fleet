@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.request.json#",
+  "x-invariant": [
+    "INV-06"
+  ],
+  "$ref": "#/$defs/v1-kb_setup-request",
+  "$defs": {
+    "v1-kb_setup-request": {
+      "type": "object",
+      "properties": {
+        "repo_path": {
+          "type": "string",
+          "description": "Path to git repository for post-commit hook installation (default: current directory)"
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "sqlite",
+            "http"
+          ],
+          "description": "KB provider type (default: sqlite)"
+        },
+        "remote": {
+          "type": "string",
+          "description": "Remote KB server URL (required when provider=http)"
+        },
+        "token": {
+          "type": "string",
+          "description": "Authentication token for remote KB server (stored encrypted, never logged)"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,454 @@
+{
+  "_meta": {
+    "purpose": "Source of truth for the memory-contract/v1 provider-method surface. spec.md's provider-method section is rendered from / checked against this file -- do not restate an invariant's rule text here or in spec.md; point at the spec.md section that owns it (see_also).",
+    "sources": [
+      "memory-contract/v1/INVENTORY.md (section 4: provider method surface; section 5: error/refusal paths)",
+      "memory-contract/v1/tests/GENERATOR-DECISION.md (section 4: x-invariant list and spec.md section hand-off)"
+    ],
+    "side_effect_class_enum": [
+      "pure read",
+      "append",
+      "trust-mutating",
+      "consent-gated"
+    ],
+    "side_effect_class_definitions": {
+      "pure read": "No persisted-state mutation of any kind, including telemetry counters.",
+      "append": "Writes or increments state (new row, schema/pragma setup, use_count/last_accessed telemetry) without changing any trust-relevant field (confidence, stale, flagged_for_review, superseded_at, contradiction links).",
+      "trust-mutating": "Changes a trust-relevant field: confidence tier, stale flag, flagged_for_review, superseded_at, or a contradiction_of/refines link.",
+      "consent-gated": "The call's real effect is deferred to an explicit human/CLI-only consent step; the MCP-reachable call itself can only produce a pending proposal, never the consented outcome."
+    },
+    "kb_constraint_repo_path_validation": {
+      "confirmed_by": "kb_session_prime --top_entries capture, cross-checked against src/tools/kb-export.ts, src/tools/kb-import.ts, src/tools/kb-stats.ts, src/tools/kb-session-prime.ts",
+      "finding": "The 23-tool surface does NOT share one repo_path anchor/validation path. kb_export and kb_import validate repo_path against the real filesystem and throw E-REPO-PATH-INVALID BEFORE getKbProviders is ever called -- the provider method below is never reached on that path. kb_session_prime and kb_stats pass repo_path through verbatim to the provider with no filesystem check, tolerating a missing anchor. This is recorded per affected method entry below as a per-tool 'repo_path_validation' field (values: 'validated-pre-provider' | 'verbatim-passthrough') rather than flattened into one statement, because the same provider method (e.g. list, capture) is reached by tools on both sides of the split.",
+      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
+    },
+    "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
+    "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config, and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. It is also the one kb_* tool that does not spread kbScopeFields, so its repo_path carries no scope semantics (INVENTORY.md section 2, 'Scope-field note', and section 12 `kb_setup`). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
+    "httpKbProvider_note": "HttpKbProvider is dead code in this tree (INVENTORY.md section 4.4, F-10): every MemoryProvider entry below describes SqliteProvider behavior, which is the only implementation any tool call can reach.",
+    "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE, E-DIRECTIVE-QUARANTINE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED), C-1..C-7 (E-CODE-INTEL-DISABLED)."
+  },
+  "methods": [
+    {
+      "id": "P-1",
+      "member": "init",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "init(): Promise<void>",
+      "purpose": "Set up the provider's storage (schema/pragma) before any other member is called.",
+      "tools": [],
+      "tools_note": "Not called directly by any registered tool -- invoked during provider resolution before the first tool call reaches it.",
+      "side_effect_class": "append",
+      "idempotent": true,
+      "error_codes": [],
+      "error_codes_note": "No throw site of its own; its absence is what causes E-PROVIDER-UNINITIALIZED on every other member.",
+      "see_also": []
+    },
+    {
+      "id": "P-2",
+      "member": "capture",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "capture(input: KBEntryInput, opts?: CaptureOpts): Promise<{id, audn_decision}>",
+      "purpose": "Capture a learning/fact/file-summary entry into the KB, routed through the AUDN choke point (dedupe, refine-link, contradiction-flag, or add).",
+      "tools": [
+        { "name": "kb_capture", "request_schema_ref": "schemas/kb_capture.request.json", "response_schema_ref": "schemas/kb_capture.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_harvest", "request_schema_ref": "schemas/kb_harvest.request.json", "response_schema_ref": "schemas/kb_harvest.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_import", "request_schema_ref": "schemas/kb_import.request.json", "response_schema_ref": "schemas/kb_import.response.json", "repo_path_validation": "validated-pre-provider" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
+      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
+      "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
+    },
+    {
+      "id": "P-3",
+      "member": "query",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "query(opts: QueryOptions): Promise<KBResult>",
+      "purpose": "Two-level KB search (L1 FTS5 title+summary, L2 full content for top hits), plus list/id/tag/flagged-pair modes.",
+      "tools": [
+        { "name": "kb_query", "request_schema_ref": "schemas/kb_query.request.json", "response_schema_ref": "schemas/kb_query.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_session_prime", "request_schema_ref": "schemas/kb_session_prime.request.json", "response_schema_ref": "schemas/kb_session_prime.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "append",
+      "idempotent": false,
+      "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
+      "error_codes": ["E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Query modes"]
+    },
+    {
+      "id": "P-4",
+      "member": "context",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "context(files: string[]): Promise<FileContextResult[]>",
+      "purpose": "Report fresh/stale/missing status of the given files against the KB's context-cache.",
+      "tools": [
+        { "name": "kb_context", "request_schema_ref": "schemas/kb_context.request.json", "response_schema_ref": "schemas/kb_context.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Freshness and content hashing"]
+    },
+    {
+      "id": "P-5",
+      "member": "invalidate",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "invalidate(files: string[]): Promise<{invalidated}>",
+      "purpose": "Mark context-cache entries stale for the given file paths after they change.",
+      "tools": [
+        { "name": "kb_invalidate", "request_schema_ref": "schemas/kb_invalidate.request.json", "response_schema_ref": "schemas/kb_invalidate.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": true,
+      "error_codes": ["E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Freshness and content hashing"]
+    },
+    {
+      "id": "P-6",
+      "member": "getLinked",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "getLinked(id: string): Promise<KBEntry[]>",
+      "purpose": "Look up entries linked to a given entry (refines / contradiction_of).",
+      "tools": [],
+      "tools_note": "Not reached by any tool in this surface -- internal link inspection only.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "P-7",
+      "member": "prime",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "prime(opts: PrimeOptions): Promise<PrimedContext>",
+      "purpose": "Prime a session with warm KB context: session_warm status, stale files, top entries, recommended GitNexus calls.",
+      "tools": [
+        { "name": "kb_session_prime", "request_schema_ref": "schemas/kb_session_prime.request.json", "response_schema_ref": "schemas/kb_session_prime.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "P-8",
+      "member": "promote",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "promote(id: string, reason?: string): Promise<{id, confidence_before, confidence_after}>",
+      "purpose": "Upgrade an entry's confidence one tier (UNVERIFIED -> INFERRED -> CONFIRMED), appending the reason as an evidence note.",
+      "tools": [
+        { "name": "kb_promote", "request_schema_ref": "schemas/kb_promote.request.json", "response_schema_ref": "schemas/kb_promote.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
+      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Directive quarantine"]
+    },
+    {
+      "id": "P-9",
+      "member": "sync",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "sync(opts?: SyncOptions): Promise<SyncResult>",
+      "purpose": "Transfer entries to/from a remote KB.",
+      "tools": [],
+      "tools_note": "Not reached by any tool in this surface.",
+      "side_effect_class": "append",
+      "idempotent": false,
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "P-10",
+      "member": "stats",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "stats(opts?: {symbols?}): Promise<ProviderStats>",
+      "purpose": "Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, coverage.",
+      "tools": [
+        { "name": "kb_stats", "request_schema_ref": "schemas/kb_stats.request.json", "response_schema_ref": "schemas/kb_stats.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Explicitly never bumps use_count/last_accessed.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED"],
+      "see_also": ["Query modes"]
+    },
+    {
+      "id": "P-11",
+      "member": "touch",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "touch(ids: string[]): Promise<number>",
+      "purpose": "Bump use_count/last_accessed telemetry for the given entry ids.",
+      "tools": [
+        { "name": "kb_session_prime", "request_schema_ref": "schemas/kb_session_prime.request.json", "response_schema_ref": "schemas/kb_session_prime.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "append",
+      "idempotent": false,
+      "idempotent_note": "Existence-tolerant; counter advances on each call.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "P-12",
+      "member": "relatedClaims",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]>",
+      "purpose": "Fetch entries joined to the given ids by a refines or contradiction_of edge.",
+      "tools": [
+        { "name": "kb_query", "request_schema_ref": "schemas/kb_query.request.json", "response_schema_ref": "schemas/kb_query.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "tools_note": "Only called from kb_query when expand_related is true.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-RELATED-CLAIMS-DEGRADED"],
+      "see_also": ["Query modes"]
+    },
+    {
+      "id": "X-1",
+      "member": "list",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "list(opts: {confidence?, type?, module?, symbol?, tag?, limit?}): Promise<KBEntry[]>",
+      "purpose": "List KB entries by confidence/type/module/symbol/tag, excluding superseded/stale, without touching FTS ranking or telemetry.",
+      "tools": [
+        { "name": "kb_list", "request_schema_ref": "schemas/kb_list.request.json", "response_schema_ref": "schemas/kb_list.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_stats", "request_schema_ref": "schemas/kb_stats.request.json", "response_schema_ref": "schemas/kb_stats.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_export", "request_schema_ref": "schemas/kb_export.request.json", "response_schema_ref": "schemas/kb_export.response.json", "repo_path_validation": "validated-pre-provider" }
+      ],
+      "tools_note": "kb_stats calls it for bible-drift comparison; kb_export calls it (confidence: 'CONFIRMED') to select entries to export.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export route, thrown before this member is reached.",
+      "see_also": []
+    },
+    {
+      "id": "X-2",
+      "member": "feedback",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "feedback(id: string, reason: string, author): Promise<KBEntry>",
+      "purpose": "Downvote an entry that proved wrong in practice: sets stale + flagged_for_review, appends a note; never deletes, never touches confidence.",
+      "tools": [
+        { "name": "kb_feedback", "request_schema_ref": "schemas/kb_feedback.request.json", "response_schema_ref": "schemas/kb_feedback.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "Each call appends another note.",
+      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
+      "see_also": []
+    },
+    {
+      "id": "X-3",
+      "member": "freshnessSweep",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "freshnessSweep(root?): Promise<{checked, staled, unstaled}>",
+      "purpose": "Bounded full-KB bidirectional freshness sweep: re-hash every entry's basis, stale mismatches, revive stale entries whose basis matches again.",
+      "tools": [
+        { "name": "kb_freshness_sweep", "request_schema_ref": "schemas/kb_freshness_sweep.request.json", "response_schema_ref": "schemas/kb_freshness_sweep.response.json", "repo_path_validation": "verbatim-passthrough" },
+        { "name": "kb_import", "request_schema_ref": "schemas/kb_import.request.json", "response_schema_ref": "schemas/kb_import.response.json", "repo_path_validation": "validated-pre-provider" }
+      ],
+      "tools_note": "kb_import runs this after import unless skip_sweep is true.",
+      "side_effect_class": "trust-mutating",
+      "idempotent": true,
+      "idempotent_note": "Idempotent for a fixed worktree state.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Freshness and content hashing"]
+    },
+    {
+      "id": "X-4",
+      "member": "resolveContradiction",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "resolveContradiction(winnerId, loserId, evidence): Promise<{winnerId, loserId}>",
+      "purpose": "Resolve a flagged contradiction pair: winner to CONFIRMED with evidence appended, loser superseded and staled.",
+      "tools": [
+        { "name": "kb_resolve_contradiction", "request_schema_ref": "schemas/kb_resolve_contradiction.request.json", "response_schema_ref": "schemas/kb_resolve_contradiction.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "tools_note": "Also called internally by reconcilePrefilter (X-5).",
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "A second call on the same pair REFUSES (E-RESOLVE-ALREADY-SUPERSEDED) because the loser is already superseded.",
+      "error_codes": ["E-RESOLVE-MISSING-ENTRY", "E-RESOLVE-ALREADY-SUPERSEDED", "E-RESOLVE-NOT-A-PAIR", "E-RESOLVE-DIRECTIVE-PAIR", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "X-5",
+      "member": "reconcilePrefilter",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "reconcilePrefilter(): Promise<{pairs, resolved[], left_for_agent[], skipped_directive}>",
+      "purpose": "Mechanical hash-basis prefilter over flagged contradiction pairs: auto-resolves a pair where exactly one side hash-matches the current worktree, leaves the rest for the reconciler agent.",
+      "tools": [
+        { "name": "kb_reconcile_prefilter", "request_schema_ref": "schemas/kb_reconcile_prefilter.request.json", "response_schema_ref": "schemas/kb_reconcile_prefilter.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": true,
+      "idempotent_note": "Writes only via resolveContradiction (X-4); a resolved pair is no longer flagged, so re-running is a no-op on it.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    },
+    {
+      "id": "X-6",
+      "member": "hasEntry",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "hasEntry(id: string): boolean",
+      "purpose": "Synchronous existence check for an entry id, used to skip already-imported entries.",
+      "tools": [
+        { "name": "kb_import", "request_schema_ref": "schemas/kb_import.request.json", "response_schema_ref": "schemas/kb_import.response.json", "repo_path_validation": "validated-pre-provider" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "The only synchronous (non-Promise) member on this surface.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": []
+    }
+  ],
+  "properties": [
+    {
+      "id": "X-7",
+      "member": "repoPath",
+      "kind": "property",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "note": "Property, not a method -- listed for completeness per INVENTORY.md 4.2 X-7, not counted against the 'every method has an entry' acceptance check. kb_freshness_sweep does NOT read it: it calls providers.project.freshnessSweep() with no argument, and the sweep root defaults inside freshnessSweep() itself from the provider's own stored repoPath.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": [],
+      "see_also": []
+    }
+  ],
+  "code_intelligence_methods": [
+    {
+      "id": "C-1",
+      "member": "graph",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Trace the call graph for a symbol: callers and callees across the codebase.",
+      "tools": [
+        { "name": "code_graph", "request_schema_ref": "schemas/code_graph.request.json", "response_schema_ref": "schemas/code_graph.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Pure proxy to the active provider (codebase-memory, gitnexus, or none); effect and idempotency truly belong to that provider, not this repo.",
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-2",
+      "member": "impact",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Find what is affected by changes to a symbol (blast radius).",
+      "tools": [
+        { "name": "code_impact", "request_schema_ref": "schemas/code_impact.request.json", "response_schema_ref": "schemas/code_impact.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-3",
+      "member": "query",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Search the codebase for symbols, patterns, or concepts using natural language or code patterns.",
+      "tools": [
+        { "name": "code_query", "request_schema_ref": "schemas/code_query.request.json", "response_schema_ref": "schemas/code_query.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-4",
+      "member": "context",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Get callers, callees, and execution flows for a symbol; enriched with KB context.",
+      "tools": [
+        { "name": "code_context", "request_schema_ref": "schemas/code_context.request.json", "response_schema_ref": "schemas/code_context.response.json" }
+      ],
+      "tools_note": "Also used internally by kb_session_prime for neighbor-symbol expansion, and merged with KB data by enrichContextWithKb -- so its observed shape is provider-shape-plus-enrichment, not the raw provider payload.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-5",
+      "member": "map",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Get the architectural map of a repository: module communities with their key symbols and files, ranked by size.",
+      "tools": [
+        { "name": "code_map", "request_schema_ref": "schemas/code_map.request.json", "response_schema_ref": "schemas/code_map.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-6",
+      "member": "flow",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Find process flows (entry -> steps -> exit) matching a name or specific endpoints.",
+      "tools": [
+        { "name": "code_flow", "request_schema_ref": "schemas/code_flow.request.json", "response_schema_ref": "schemas/code_flow.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    },
+    {
+      "id": "C-7",
+      "member": "tests",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "(params: Record<string, unknown>) => Promise<unknown>",
+      "purpose": "Find the test files and test functions that exercise a symbol (transitive callers, depth 2).",
+      "tools": [
+        { "name": "code_tests", "request_schema_ref": "schemas/code_tests.request.json", "response_schema_ref": "schemas/code_tests.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-CODE-PROVIDER-UNCONFIGURED"],
+      "non_error_outcomes": ["E-CODE-INTEL-DISABLED"],
+      "see_also": []
+    }
+  ]
+}

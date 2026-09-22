@@ -1,0 +1,24 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-user-directive-proposal",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "user-directive",
+    "title": "Always run the sanitation test before committing fixtures",
+    "summary": "A standing instruction captured as a pending proposal, never active from this channel.",
+    "content": "Always run the fixture sanitation test before committing new fixtures.",
+    "source_files": [
+      "src/example.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"0b2e4ead-bd4e-467c-8290-904d16becf40\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

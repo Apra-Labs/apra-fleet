@@ -41,7 +41,13 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
 
   afterEach(() => {
     restoreRegistry();
-    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // my-beads-db-27m.13: registerMember/compose_permissions spawn several real
+    // subprocesses with cwd=workFolder (LocalStrategy.execCommand); on Windows the
+    // OS can briefly hold the directory handle past the child's reported exit,
+    // producing a transient EBUSY on rmdir. maxRetries=5/retryDelay=100 (500ms
+    // total) was not enough headroom -- widen it rather than let a timing race
+    // fail the next test in the file.
+    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     vi.resetModules();
   });
 
@@ -74,7 +80,11 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // base-dev profile entry -- confirms the composed allowlist actually landed
     // in settings, not just an empty/placeholder array.
     expect(settings.permissions.allow).toContain('Bash(git:*)');
-  }, 15000);
+  // my-beads-db-27m.13: registerMember's real subprocess work (workspace-trust
+  // seeding + compose_permissions' several real execCommand round trips) measured
+  // 15-21s on a stock Windows dev host -- comfortably over the old 15000ms budget,
+  // which made this a deterministic (not flaky) failure. 45000ms leaves >2x margin.
+  }, 45000);
 
   it('AC2: reports "member not provisioned" instead of success when compose_permissions fails', async () => {
     mockComposePermissions.mockResolvedValue('compose_permissions threw: boom');
@@ -96,12 +106,17 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // partially written by a later step that assumed provisioning succeeded.
     const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
     expect(fs.existsSync(settingsPath)).toBe(false);
-  });
+  // my-beads-db-27m.13: composePermissions is mocked here, but registerMember's own
+  // pre-compose real subprocess work (connection/version checks, agent provisioning,
+  // workspace-trust seeding) still measured ~8s on a stock Windows dev host --
+  // already over vitest's 5000ms default. 20000ms leaves >2x margin.
+  }, 20000);
 
   it('AC3: re-running compose_permissions for the same member is idempotent -- no duplicate allow entries, unrelated settings keys preserved', async () => {
     // Runs a full registerMember() (which itself invokes the real compose_permissions
-    // and workspace-trust seeding, ~5s observed for AC1 alone) plus a second real
-    // compose_permissions call -- comfortably exceeds vitest's 5000ms default.
+    // and workspace-trust seeding) plus a second real compose_permissions call --
+    // measured ~33s on a stock Windows dev host, comfortably exceeding vitest's
+    // 5000ms default. 60000ms leaves ~2x margin (my-beads-db-27m.13).
     mockComposePermissions.mockImplementation((input: any) => actualCompose(input));
 
     const { registerMember } = await import('../src/tools/register-member.js');
@@ -132,5 +147,5 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     expect(after.permissions.allow.length).toBe(uniqueAllow.size);
     expect(after.permissions.allow.length).toBe(before.permissions.allow.length);
     expect(after.mcpServers['apra-fleet-member']).toEqual({ unrelated: true });
-  }, 15000);
+  }, 60000);
 });

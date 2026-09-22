@@ -1,0 +1,28 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-context-cache",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "context-cache",
+    "title": "src/example.ts summary",
+    "summary": "File summary cache entry for src/example.ts.",
+    "content": "src/example.ts exports exampleFn, a one-line increment helper.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "source_file": "src/example.ts",
+    "symbols": [
+      "exampleFn"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

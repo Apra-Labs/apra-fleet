@@ -1,0 +1,15 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-bible-not-found",
+  "kind": "refusal",
+  "request": {
+    "repo": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "path": "<SCRATCH_REPO_A>\\.fleet\\no-such-bible.json"
+  },
+  "error": {
+    "message": "kb_import: bible file not found: <SCRATCH_REPO_A>\\.fleet\\no-such-bible.json",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-NOT-FOUND"
+}

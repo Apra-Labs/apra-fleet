@@ -1,0 +1,18 @@
+{
+  "tool": "kb_query",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "query": "exampleFn"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"type\":\"knowledge\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"content\":\"\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"doer\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-08-24T16:41:56.866Z\",\"superseded_at\":null,\"promoted_at\":null,\"use_count\":1,\"last_accessed\":\"2026-08-24T16:41:56.926Z\"},{\"id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\",\"type\":\"context-cache\",\"title\":\"src/example.ts summary\",\"summary\":\"File summary cache entry for src/example.ts.\",\"content\":\"\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"unknown\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-08-24T16:41:56.897Z\",\"superseded_at\":null,\"promoted_at\":null,\"use_count\":1,\"last_accessed\":\"2026-08-24T16:41:56.926Z\"}],\"l2_expanded\":[{\"id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\",\"type\":\"context-cache\",\"title\":\"src/example.ts summary\",\"summary\":\"File summary cache entry for src/example.ts.\",\"content\":\"src/example.ts exports exampleFn, a one-line increment helper.\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"unknown\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-08-24T16:41:56.897Z\",\"superseded_at\":null,\"promoted_at\":null,\"use_count\":2,\"last_accessed\":\"2026-08-24T16:41:59.032Z\"},{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"type\":\"knowledge\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"content\":\"exampleFn(x) returns x + 1. Captured as a synthetic fixture for the memory-contract round-trip corpus.\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"doer\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-08-24T16:41:56.866Z\",\"superseded_at\":null,\"promoted_at\":null,\"use_count\":2,\"last_accessed\":\"2026-08-24T16:41:59.032Z\"}]}"
+      }
+    ]
+  }
+}

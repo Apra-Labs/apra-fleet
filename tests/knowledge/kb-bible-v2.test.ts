@@ -60,6 +60,12 @@ function readBible(): any {
   return JSON.parse(fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8'));
 }
 
+// The suite shells out to git twice per case (init + commit) and re-seeds a
+// fresh in-memory SqliteProvider. Each op is sub-100ms in isolation, but under
+// full-suite host contention on Windows this reliably blows past the 5000ms
+// vitest default and the 10000ms default hook timeout -- see
+// tests/register-member.test.ts / tests/task-wrapper.test.ts for the same
+// per-test-timeout pattern applied to other git/subprocess-heavy suites.
 beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-v2-'));
   repo = path.join(tmp, 'repo');
@@ -75,13 +81,17 @@ beforeEach(async () => {
     global: provider,
     projectSlug: 'test',
   } as any);
-});
+}, 20000);
 
 afterEach(() => {
   provider.close();
   vi.restoreAllMocks();
-  fs.rmSync(tmp, { recursive: true, force: true });
-});
+  // maxRetries/retryDelay let Node's own rmSync retry through the Windows
+  // EBUSY window (antivirus/git holding a handle on .git files right after
+  // the process exits) instead of throwing and cascading into the next
+  // case's beforeEach hook timeout.
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}, 20000);
 
 describe('kb_export writes the v2 envelope with its export commit', () => {
   it('records version, commit, branch and entry_count', async () => {
@@ -102,7 +112,7 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     expect(bible.provenance.entry_count).toBe(2);
     expect(bible.entries).toHaveLength(2);
     expect(typeof bible.provenance.branch).toBe('string');
-  });
+  }, 20000);
 
   it('entry_count matches the entry array, making truncation visible in a diff', async () => {
     await seedConfirmed(['One claim', 'Two claim', 'Three claim']);
@@ -110,7 +120,7 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
 
     const bible = readBible();
     expect(bible.provenance.entry_count).toBe(bible.entries.length);
-  });
+  }, 20000);
 
   it('degrades to a null commit rather than throwing when the repo has no git', async () => {
     fs.rmSync(path.join(repo, '.git'), { recursive: true, force: true });
@@ -122,7 +132,7 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     expect(bible.version).toBe(2);
     expect(bible.provenance.commit).toBeNull();
     expect(bible.entries).toHaveLength(1);
-  });
+  }, 20000);
 });
 
 describe('two exports at the same commit are byte-identical (the no-timestamp property)', () => {
@@ -135,7 +145,7 @@ describe('two exports at the same commit are byte-identical (the no-timestamp pr
     const second = fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8');
 
     expect(second).toBe(first);
-  });
+  }, 20000);
 
   it('changes only when the entry set changes', async () => {
     await seedConfirmed(['First claim']);
@@ -148,7 +158,7 @@ describe('two exports at the same commit are byte-identical (the no-timestamp pr
 
     expect(after).not.toBe(before);
     expect(JSON.parse(after).entries).toHaveLength(2);
-  });
+  }, 20000);
 });
 
 describe('kb_import accepts BOTH bible shapes identically', () => {
@@ -183,7 +193,7 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
 
     expect(report.imported).toBe(2);
     expect(report.rejected).toBe(0);
-  });
+  }, 20000);
 
   it('imports a v2 object bible', async () => {
     const p = path.join(tmp, 'v2.json');
@@ -197,7 +207,7 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
 
     expect(report.imported).toBe(2);
     expect(report.rejected).toBe(0);
-  });
+  }, 20000);
 
   it('both shapes produce the same stored entry set', async () => {
     const legacyPath = path.join(tmp, 'legacy2.json');
@@ -225,14 +235,14 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
       .map((e) => `${e.id}:${e.title}:${e.confidence}`).sort();
 
     expect(fromV2).toEqual(fromLegacy);
-  });
+  }, 20000);
 
   it('still refuses a shape that is neither an array nor an entries object', async () => {
     const p = path.join(tmp, 'bogus.json');
     fs.writeFileSync(p, JSON.stringify({ version: 2, provenance: {} }));
 
     await expect(kbImport({ repo: repo, path: p })).rejects.toThrow(/not a JSON array of entries/);
-  });
+  }, 20000);
 });
 
 describe('a v2 export round-trips back through import', () => {
@@ -258,7 +268,7 @@ describe('a v2 export round-trips back through import', () => {
 
     const stored = (await provider.query({ ids: exportedIds })).results.map((e) => e.id).sort();
     expect(stored).toEqual(exportedIds);
-  });
+  }, 20000);
 });
 
 describe('every bible reader handles both shapes', () => {
@@ -275,7 +285,7 @@ describe('every bible reader handles both shapes', () => {
 
     expect(stats.bible.present).toBe(true);
     expect(stats.bible.entries).toBe(2);
-  });
+  }, 20000);
 
   it('kb_stats still reports a legacy bare-array bible as present', async () => {
     const { kbStats } = await import('../../src/tools/kb-stats.js');
@@ -292,5 +302,5 @@ describe('every bible reader handles both shapes', () => {
 
     expect(stats.bible.present).toBe(true);
     expect(stats.bible.entries).toBe(1);
-  });
+  }, 20000);
 });
