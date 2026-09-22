@@ -278,6 +278,35 @@ class LocalStrategy implements AgentStrategy {
             try { child.stderr?.destroy(); } catch { /* best-effort */ }
             try { child.unref(); } catch { /* best-effort */ }
           }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // An unref-ed timer does not hold the event loop open, so if it were
+          // ever the only live handle the process would exit before finalize()
+          // ran and this promise would never settle. It never is:
+          //   - drain actually needed (a grandchild still holds the inherited
+          //     stdio): child.stdout/child.stderr are open, flowing read
+          //     handles -- they are exactly why the drain exists -- and each is
+          //     a ref-ed handle. Measured standalone (not under a test runner,
+          //     whose own handles would mask this) with stdout redirected to a
+          //     file so the probe process had NO ref-ed stdio of its own:
+          //     getActiveResourcesInfo() at arm time = [PipeWrap, PipeWrap,
+          //     ProcessWrap]; the promise settled at 2638 ms.
+          //   - drain not needed (nothing inherited the pipes): the pipes have
+          //     already EOF-ed, so 'close' is queued and finalize() runs
+          //     without this timer. Measured the same way: arm-time resources =
+          //     [ProcessWrap] (ref-ed until 'close'), settled at 599 ms, well
+          //     inside the 2000 ms window -- i.e. via 'close', not the timer.
+          // Caller paths enumerated by grepping every execCommand() call site
+          // (src/tools/*, src/providers/claude.ts, src/services/* incl.
+          // stall/*, orphan-recovery, preflight-check, relay-executor): all run
+          // inside the long-lived MCP server, and the one CLI caller
+          // (src/cli/watch.ts) holds a ref-ed setInterval for its watch loop --
+          // so every caller has additional live handles anyway.
+          // Residual risk: this rests on Node keeping child stdio read handles
+          // ref-ed while flowing. If a future caller ever spawns with
+          // stdio 'ignore'/'inherit' (no child.stdout/child.stderr objects) AND
+          // the process exit races 'close', the drain callback could be skipped
+          // -- the fix then is to re-ref for the window, not to widen it.
           exitDrainTimer.unref();
         });
       }
