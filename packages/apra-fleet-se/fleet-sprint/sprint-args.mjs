@@ -140,6 +140,18 @@ const KNOWN_ARG_KEYS = new Set([
     // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
     // pass it.
     'azdevops_pat_secret_name',
+    // sprint-doctor thresholds (fleet-sprint/docs/escalate-to-llm-design.md
+    // section 7: "All thresholds are args"). Every one of the six is
+    // optional with a documented default below, so an existing caller that
+    // passes none of them gets the documented production behaviour.
+    // `doctor_enabled: false` turns the whole observation layer into a no-op
+    // -- no ledger, no artifact, no trigger evaluation, no log line.
+    'doctor_enabled',
+    'doctor_streak_limit',
+    'doctor_spend_trigger_usd',
+    'doctor_max_consults',
+    'doctor_max_defers',
+    'doctor_max_per_class',
     // The beads identity every member must resolve to (JSON string from
     // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
     // parsed record from a programmatic caller). Consumed by the
@@ -426,6 +438,60 @@ export function validateArgs(args) {
         validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
     }
 
+    // --- doctor_* (all optional) -------------------------------------------
+    // The sprint-doctor observation layer's thresholds. Kept as ARGS rather
+    // than module constants so a target project can tune them per sprint
+    // without an engine change (design doc section 7). Each is validated
+    // here, at contract time, so an out-of-range value fails fast instead of
+    // silently producing a trigger layer that never fires (or fires every
+    // cycle).
+    //
+    // doctor_enabled (default true): the master switch. False makes every
+    // doctor code path a no-op -- nothing is recorded, no artifact is
+    // written and no doctor log line is ever emitted.
+    const doctorEnabled = args.doctor_enabled === undefined ? true : args.doctor_enabled;
+    if (typeof doctorEnabled !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid doctor_enabled "${doctorEnabled}": must be a boolean.`);
+    }
+
+    // doctor_streak_limit (default 3): consecutive infra-reason dispatch
+    // failures on one bead set (T1) or one member (T2) before that trigger
+    // fires. Floor 2 deliberately: a limit of 1 would fire on the transient
+    // blips the engine's own retry-once ladders already absorb.
+    const doctorStreakLimit = args.doctor_streak_limit === undefined ? 3 : args.doctor_streak_limit;
+    if (typeof doctorStreakLimit !== 'number' || !Number.isInteger(doctorStreakLimit) || doctorStreakLimit < 2) {
+        throw new Error(`[Arg Contract] Invalid doctor_streak_limit "${doctorStreakLimit}": must be an integer >= 2 (consecutive failures before T1/T2 fire).`);
+    }
+
+    // doctor_spend_trigger_usd (default 25): the flat USD cap on T4's
+    // spend-without-progress trigger. With a sprint budget configured the
+    // effective trigger is min(fraction * budget.total, this value); with no
+    // budget it is used as-is.
+    const doctorSpendTriggerUsd = args.doctor_spend_trigger_usd === undefined ? 25 : args.doctor_spend_trigger_usd;
+    if (typeof doctorSpendTriggerUsd !== 'number' || !Number.isFinite(doctorSpendTriggerUsd) || doctorSpendTriggerUsd <= 0) {
+        throw new Error(`[Arg Contract] Invalid doctor_spend_trigger_usd "${doctorSpendTriggerUsd}": must be a positive finite number (USD).`);
+    }
+
+    // doctor_max_consults (default 3) / doctor_max_defers (default 2) /
+    // doctor_max_per_class (default 2): the doctor's own circuit breakers
+    // (design doc section 6) -- how many consults a sprint may raise at all,
+    // how many beads it may defer, and how many times one error class may be
+    // remedied before it must fail loudly instead.
+    const doctorMaxConsults = args.doctor_max_consults === undefined ? 3 : args.doctor_max_consults;
+    if (typeof doctorMaxConsults !== 'number' || !Number.isInteger(doctorMaxConsults) || doctorMaxConsults < 1) {
+        throw new Error(`[Arg Contract] Invalid doctor_max_consults "${doctorMaxConsults}": must be an integer >= 1 (use doctor_enabled: false to disable the doctor entirely).`);
+    }
+
+    const doctorMaxDefers = args.doctor_max_defers === undefined ? 2 : args.doctor_max_defers;
+    if (typeof doctorMaxDefers !== 'number' || !Number.isInteger(doctorMaxDefers) || doctorMaxDefers < 0) {
+        throw new Error(`[Arg Contract] Invalid doctor_max_defers "${doctorMaxDefers}": must be an integer >= 0.`);
+    }
+
+    const doctorMaxPerClass = args.doctor_max_per_class === undefined ? 2 : args.doctor_max_per_class;
+    if (typeof doctorMaxPerClass !== 'number' || !Number.isInteger(doctorMaxPerClass) || doctorMaxPerClass < 1) {
+        throw new Error(`[Arg Contract] Invalid doctor_max_per_class "${doctorMaxPerClass}": must be an integer >= 1.`);
+    }
+
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
@@ -449,6 +515,12 @@ export function validateArgs(args) {
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
+        doctorEnabled,
+        doctorStreakLimit,
+        doctorSpendTriggerUsd,
+        doctorMaxConsults,
+        doctorMaxDefers,
+        doctorMaxPerClass,
         expectBeads,
     };
 }

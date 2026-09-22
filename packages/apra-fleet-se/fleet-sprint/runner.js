@@ -1,5 +1,13 @@
 import fs from 'fs/promises';
+import nodePath from 'node:path';
 import { createHash } from 'crypto';
+// Where the engine keeps its own runtime state (honoring APRA_FLEET_DATA_DIR)
+// -- the one "where does apra-fleet keep runtime state" answer in this
+// codebase. The sprint-doctor health ledger's JSONL artifact is written
+// beside the per-run state file, never into the target repo checkout, so a
+// `git status`/`git clean` in the working tree never sees it.
+import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
+import { sanitizeRunIdForFilename } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
@@ -243,6 +251,14 @@ import {
     computeChildFloor, createChildBeadWithAllocatedId,
     verifyDoerStreakClosed, claimBeadsBatched,
 } from './beads-children.mjs';
+// The sprint-doctor OBSERVATION layer (fleet-sprint/docs/escalate-to-llm-
+// design.md sections 1.1-1.3). Two pure modules -- a recorder and a pure
+// trigger evaluator -- wired here at the catch/outcome sites the engine
+// already has. Nothing in this wiring dispatches anything: a fired trigger
+// is recorded and logged, and every existing outcome is left exactly as it
+// was. The consult itself is a later lane.
+import { createSprintHealthLedger, normalizeErrorSignature } from './doctor-ledger.mjs';
+import { evaluateTriggers, DEFAULT_THRESHOLDS } from './doctor-triggers.mjs';
 // The reviewer-verdict bead transitions: the ONE goal-scope-guarded reopen
 // path all three verdict sites (per-round reviewer, Final Review, Re-Review)
 // now take, the replanIds fold, and the verdict-contract predicate. Extracted
@@ -496,6 +512,13 @@ function roleConst(name) {
 }
 const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
+// The three further role names the sprint-doctor's H1 record sites attribute
+// a ledger row to. They go through roleConst() for the same reason the two
+// above do: a rename or typo must fail at module load, not silently record
+// health evidence against a role nothing else in the engine knows about.
+const ROLE_PLAN_REVIEWER = roleConst('plan-reviewer');
+const ROLE_DEPLOYER = roleConst('deployer');
+const ROLE_INTEG_TEST_RUNNER = roleConst('integ-test-runner');
 
 // ---------------------------------------------------------------------------
 // 'orchestrator' pseudo-role
@@ -770,6 +793,165 @@ export async function resolveSettleShell({ args, member, log = () => {}, sprintS
 // dispatch-role.mjs (the engine that PERFORMS a dispatch) because these three
 // classify or bound the OUTCOME of one instead. All three are re-exported
 // from this file above.
+
+// ---------------------------------------------------------------------------
+// sprint-doctor: the per-run observation facade (design doc sections 1.1-1.3)
+// ---------------------------------------------------------------------------
+//
+// One object per sprint run, wrapping the two pure doctor modules so every
+// hook site below is a single method call that is ALREADY a no-op when the
+// doctor is disabled -- rather than every hook site carrying its own
+// `if (doctorEnabled)`. Disabled, `createSprintDoctor()` returns a frozen
+// stub that builds no ledger, writes no artifact and can emit no log line,
+// which is what makes `doctor_enabled: false` a strict no-op.
+//
+// WHAT THIS DOES NOT DO: dispatch. `evaluate()` records that a trigger fired
+// and logs it; nothing here calls agent(), changes an existing outcome, or
+// touches the stall/progress counters. The consult, its verdict schema and
+// its action executor arrive in a later lane; this layer exists so that when
+// they do, the evidence they need is already being collected.
+//
+// The consult ledger `evaluate()` maintains is what DEBOUNCES a trigger:
+// doctor-triggers.mjs suppresses a (trigger, bead-or-member) pair that
+// already produced a consult unless the prescribed action was executed and a
+// NEW failure arrived after it. Recording the fire here (with
+// `actionExecuted: false`, because no action exists yet) is therefore what
+// keeps a single sick bead from re-logging T1 at every subsequent hook.
+const DOCTOR_LOG_PREFIX = '[sprint-doctor]';
+
+/**
+ * @param {{
+ *   enabled: boolean,
+ *   thresholds?: Partial<typeof DEFAULT_THRESHOLDS>,
+ *   caps?: { maxConsults?: number, maxDefers?: number, maxPerClass?: number },
+ *   artifactPath?: string|null,
+ *   log?: (msg: string) => void,
+ * }} opts
+ */
+function createSprintDoctor({ enabled, thresholds = {}, caps = {}, artifactPath = null, log = () => {} } = {}) {
+    if (!enabled) {
+        return Object.freeze({
+            enabled: false,
+            artifactPath: null,
+            caps: Object.freeze({}),
+            record: () => null,
+            evaluate: () => [],
+            rows: () => [],
+            consults: () => [],
+        });
+    }
+
+    const ledger = createSprintHealthLedger({ artifactPath, log });
+    const effectiveThresholds = { ...DEFAULT_THRESHOLDS, ...thresholds };
+    const effectiveCaps = Object.freeze({
+        maxConsults: caps.maxConsults ?? 3,
+        maxDefers: caps.maxDefers ?? 2,
+        maxPerClass: caps.maxPerClass ?? 2,
+    });
+    const consults = [];
+    let capAnnounced = false;
+
+    // The debounce key doctor-triggers.mjs itself derives for a pending
+    // consult, recomputed here from the descriptor it returns (it reports the
+    // scope and the subject, not the key). Bead sets are de-duplicated and
+    // sorted exactly as beadSetKey() does there, so the two agree for any
+    // ordering of the same bead set.
+    function debounceKeyFor(pending) {
+        if (pending.scope === 'member') return `member:${pending.member}`;
+        if (pending.scope === 'bead') return `bead:${[...new Set((pending.beadIds || []).map(String))].sort().join(',')}`;
+        return 'sprint';
+    }
+
+    /**
+     * H1: record ONE dispatch outcome. `message` (a raw failure message) is
+     * only used to derive the normalized errorSignature; a successful row
+     * carries no signature at all, which is exactly what lets the trigger
+     * layer treat it as the closure that breaks a failure streak.
+     */
+    function record(entry = {}) {
+        const reason = entry.reason ?? null;
+        return ledger.recordDispatch({
+            ...entry,
+            reason,
+            errorSignature: entry.ok
+                ? null
+                : (entry.errorSignature ?? normalizeErrorSignature(reason, entry.message)),
+        });
+    }
+
+    /**
+     * H2/H4: evaluate the triggers over everything recorded so far plus the
+     * cycle counters the runner already keeps, log whatever fired, and return
+     * the accepted pending consults (for a caller that wants them; no caller
+     * is required to use the return value yet).
+     * @param {object} state see evaluateTriggers()'s state parameter
+     * @param {{ only?: string[]|null, hook?: string }} [opts] `only` narrows
+     *   evaluation to a subset of triggers (H4 evaluates T1/T2 only); `hook`
+     *   names the call site in the log line.
+     */
+    function evaluate(state = {}, { only = null, hook = 'H2' } = {}) {
+        const pendings = evaluateTriggers(
+            { ...state, ledgerRows: ledger.rows(), priorConsults: consults },
+            effectiveThresholds
+        ).filter((p) => !only || only.includes(p.trigger));
+
+        const accepted = [];
+        for (const pending of pendings) {
+            if (consults.length >= effectiveCaps.maxConsults) {
+                // Announced ONCE per sprint: the cap is a circuit breaker, not
+                // a per-cycle event, and repeating it every cycle would be the
+                // log noise the breaker exists to prevent.
+                if (!capAnnounced) {
+                    capAnnounced = true;
+                    log(`${DOCTOR_LOG_PREFIX} consult cap (${effectiveCaps.maxConsults}) reached -- further triggers are suppressed for the rest of this sprint.`);
+                }
+                break;
+            }
+            consults.push({
+                trigger: pending.trigger,
+                key: debounceKeyFor(pending),
+                // No action exists to execute yet, so this stays false: the
+                // pair is suppressed for the rest of the sprint rather than
+                // re-arming on the next failure.
+                actionExecuted: false,
+                firedAt: typeof state.now === 'number' ? state.now : Date.now(),
+            });
+            log(`${DOCTOR_LOG_PREFIX} ${pending.trigger} fired at ${hook}: ${pending.summary} Recorded only -- no consult is dispatched by this layer.`);
+            accepted.push(pending);
+        }
+        return accepted;
+    }
+
+    return {
+        enabled: true,
+        artifactPath: artifactPath || null,
+        caps: effectiveCaps,
+        record,
+        evaluate,
+        rows: ledger.rows,
+        consults: () => consults.slice(),
+    };
+}
+export { createSprintDoctor };
+
+/**
+ * Where this run's health-ledger JSONL artifact is written, or null to keep
+ * the ledger in memory only.
+ *
+ * The artifact is keyed by the run identity the supervisor's run-state ledger
+ * already keys a sprint by, and sits beside that state under the fleet data
+ * directory. A launch with NO run id (a direct programmatic/test invocation,
+ * which has no run-state record for the artifact to sit beside) deliberately
+ * gets no file: an in-memory ledger still feeds every trigger, so the
+ * observation layer behaves identically, it simply leaves nothing behind.
+ * @param {string|undefined} runId
+ * @returns {string|null}
+ */
+function resolveDoctorArtifactPath(runId) {
+    if (typeof runId !== 'string' || runId.length === 0) return null;
+    return nodePath.join(getFleetDataDir(), 'doctor', `${sanitizeRunIdForFilename(runId)}-health-ledger.jsonl`);
+}
+export { resolveDoctorArtifactPath };
 
 // WHY THIS FUNCTION IS STILL LARGE, AND WHY ITS PRELUDE WAS NOT SLICED
 // (apra-fleet-3swo.6.17). Everything from this header down to the first
@@ -1777,6 +1959,26 @@ async function runSprintCycle(context) {
         // A degraded round counts toward the bounded stall-abort budget like
         // every other role's dispatch failure -- it is NOT a reviewer contract
         // violation, which is what the dispatchFailed marker records.
+        //
+        // H1 (record-only): this IS the reviewer ladder's existing outcome
+        // site -- the one place that already knows whether the round produced
+        // a genuine verdict or a synthesized one. A degraded round is recorded
+        // as a failed dispatch against the reviewer pool head and the beads it
+        // was reviewing; a real verdict is recorded as a success, which is
+        // what breaks a failure streak in the trigger layer. No new try/catch:
+        // the ladder never throws here for a degrade.
+        doctor.record({
+            cycle,
+            phaseLabel: `Review C${cycle}`,
+            role: ROLE_REVIEWER,
+            member: reviewerPool[0],
+            beadIds,
+            ok: !reviewOutcome.degraded,
+            reason: reviewOutcome.degraded
+                ? ((reviewOutcome.error && reviewOutcome.error.details && reviewOutcome.error.details.reason) || 'reviewer_degraded')
+                : null,
+            message: reviewOutcome.error ? reviewOutcome.error.message : null,
+        });
         return reviewOutcome.value;
     }
 
@@ -2223,6 +2425,40 @@ async function runSprintCycle(context) {
     let verifyDispatchAttempts = 0;
     let verifyDispatchClosures = 0;
 
+    // --- sprint-doctor observation layer (design doc sections 1.1-1.3) ----
+    //
+    // Constructed HERE, immediately after the counters it consumes, so the
+    // thresholds it evaluates against are wired to the runner's own LIVE
+    // values rather than to a copy that can silently drift: T3 gets
+    // STALL_CYCLE_LIMIT above, not doctor-triggers.mjs's documented mirror of
+    // it. Everything else is an arg with a validated default (sprint-args.mjs).
+    //
+    // `doctor_streak_limit` drives BOTH T1 (consecutive failures on one bead
+    // set) and T2 (consecutive infra failures on one member): they are the
+    // same "how many repeats before this is a pattern" judgment applied to
+    // two different subjects, and the design gives them the same default.
+    const doctor = createSprintDoctor({
+        enabled: validated.doctorEnabled,
+        thresholds: {
+            t1AttemptCount: validated.doctorStreakLimit,
+            t2FailureCount: validated.doctorStreakLimit,
+            t3StallCycleLimit: STALL_CYCLE_LIMIT,
+            t4SpendTriggerFlatUsd: validated.doctorSpendTriggerUsd,
+        },
+        caps: {
+            maxConsults: validated.doctorMaxConsults,
+            maxDefers: validated.doctorMaxDefers,
+            maxPerClass: validated.doctorMaxPerClass,
+        },
+        artifactPath: resolveDoctorArtifactPath(validated.runId),
+        log,
+    });
+    // T4 evidence: spend accumulated since the last cycle that set a NEW
+    // high-water progress mark. Tracked as a delta against the budget
+    // plumbing that already exists (context.budget.spent()) rather than as a
+    // second spend accounting plane.
+    let doctorSpendAtHighWaterMark = doctor.enabled && budget ? budget.spent() : 0;
+
     // apra-fleet-jfo D6: per-parent count of verify-fail bounces this sprint
     // (a gap bug filed under the parent, making it ineligible again). Capped
     // at VERIFY_GAP_LIMIT -- a parent that keeps failing verification is
@@ -2333,6 +2569,34 @@ async function runSprintCycle(context) {
         });
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
+
+        // H1 (record-only): the planning lane's existing outcome site. A
+        // plan-review round that could not produce a genuine verdict comes
+        // back as a SYNTHESIZED CHANGES_NEEDED stamped `dispatchFailed`
+        // (role-policies.mjs's plan-reviewer degrade marker) -- the same
+        // marker the plan phase itself reads to decide it must not treat the
+        // round as real review evidence. Reading it here records the round as
+        // a failed dispatch without a new try/catch and without the plan
+        // phase needing to know the doctor exists.
+        //
+        // The PLANNER's own retry ladder is deliberately not recorded here:
+        // its policy degrade kind is 'fatal' (there is no sprint without a
+        // plan), so an exhausted planner ladder rethrows and aborts the run
+        // rather than returning an outcome this site could observe. That
+        // terminal case belongs to the T5 red-state evidence collector in the
+        // abort path, not to this record-only layer.
+        if (doctor.enabled && lastVerdict) {
+            doctor.record({
+                cycle,
+                phaseLabel: `Plan C${cycle}`,
+                role: ROLE_PLAN_REVIEWER,
+                member: getMemberForRole(ROLE_PLAN_REVIEWER),
+                beadIds: [],
+                ok: !lastVerdict.dispatchFailed,
+                reason: lastVerdict.dispatchFailed ? 'plan_review_degraded' : null,
+                message: lastVerdict.dispatchFailed ? lastVerdict.notes : null,
+            });
+        }
 
         // =======================
         // 2. Execution Prep
@@ -2560,7 +2824,24 @@ async function runSprintCycle(context) {
                 verifyDoerStreakClosed,
                 normalizeTierToken,
                 kbQueryTerms,
+                // The sprint-doctor's H1 recorder. Threaded in (rather than
+                // imported there) for the same reason every other runner-owned
+                // helper is: it is per-RUN state owned by this composition
+                // root, not a module-level function. Inside the phase it is
+                // used ONLY to record -- see that file's hook comments for why
+                // a parallel branch must never evaluate or dispatch.
+                doctor,
             });
+
+            // H4 (mid-cycle fast path): the streak outcomes are folded and we
+            // are back on the single serialized path, BEFORE Review. Evaluate
+            // T1/T2 only -- the two triggers that are already decidable from
+            // dispatch evidence alone -- so a bead on its Nth consecutive
+            // infra failure is visible now instead of after Review/Deploy/
+            // Integ Test have burned another round of dispatches on a doomed
+            // cycle. The remaining triggers need the cycle-boundary counters
+            // and are evaluated at H2.
+            doctor.evaluate({ isNewHighWaterMark: false }, { only: ['T1', 'T2'], hook: `Develop C${cycle} R${devRounds}` });
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
             // The phase body lives in ./phases/review.mjs
@@ -2637,12 +2918,45 @@ async function runSprintCycle(context) {
             // Cycle Evaluation. A failure is pushed onto `deployFailures` in
             // place, exactly as the closure did; `deployedThisCycle` is the one
             // value that is reassigned, so it comes back as a return value.
+            const deployFailuresBefore = deployFailures.length;
             ({ deployedThisCycle } = await runDeployPhase({
                 phase, log, dispatchCtx,
                 cycle, sprintSelfIdLine,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
                 deployFailures, deployedThisCycle,
             }));
+            // H1 (record-only): the Deploy phase's existing outcome site is
+            // the `deployFailures` list it appends to in place; reading the
+            // entries THIS cycle added records the outcome without a second
+            // failure-detection rule and without a new try/catch. A deploy
+            // failure is recorded under its own reason rather than an infra
+            // one -- a failed deploy is usually a real, substantive failure,
+            // and the trigger layer must not mistake a genuinely broken
+            // deploy for a sick member.
+            if (doctor.enabled) {
+                for (const failure of deployFailures.slice(deployFailuresBefore)) {
+                    doctor.record({
+                        cycle,
+                        phaseLabel: `Deploy C${cycle}`,
+                        role: ROLE_DEPLOYER,
+                        member: getMemberForRole(ROLE_DEPLOYER),
+                        beadIds: [],
+                        ok: false,
+                        reason: 'deploy_failed',
+                        message: failure.notes,
+                    });
+                }
+                if (deployFailures.length === deployFailuresBefore) {
+                    doctor.record({
+                        cycle,
+                        phaseLabel: `Deploy C${cycle}`,
+                        role: ROLE_DEPLOYER,
+                        member: getMemberForRole(ROLE_DEPLOYER),
+                        beadIds: [],
+                        ok: true,
+                    });
+                }
+            }
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
@@ -2668,6 +2982,7 @@ async function runSprintCycle(context) {
             // read by Cycle Evaluation whether or not it ran. integFailures,
             // verifyEverIds and verifyGapCounts are mutated in place exactly as
             // the closure did; the three genuinely reassigned values come back.
+            const integFailuresBefore = integFailures.length;
             ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend } = await runIntegTestPhase({
                 phase, log, command, dispatchCtx,
                 cycle, targetIssues, orchestratorMember, sprintSelfIdLine,
@@ -2678,6 +2993,37 @@ async function runSprintCycle(context) {
                 bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
                 VERIFY_GAP_LIMIT,
             }));
+            // H1 (record-only): same shape as Deploy above, over the
+            // `integFailures` list the Integ Test phase appends to in place.
+            // An entry flagged `inconclusive` is the phase's OWN name for an
+            // infrastructure dispatch fault (the runner never got a verdict at
+            // all) as opposed to a genuine test FAIL, so the two are recorded
+            // under different reasons and the doctor never reads a real red
+            // test suite as an environment problem.
+            if (doctor.enabled) {
+                for (const failure of integFailures.slice(integFailuresBefore)) {
+                    doctor.record({
+                        cycle,
+                        phaseLabel: `Integ Test C${cycle}`,
+                        role: ROLE_INTEG_TEST_RUNNER,
+                        member: getMemberForRole(ROLE_INTEG_TEST_RUNNER),
+                        beadIds: verifySetForIntegTest,
+                        ok: false,
+                        reason: failure.inconclusive ? 'integ_infra_inconclusive' : 'integ_tests_failed',
+                        message: failure.notes,
+                    });
+                }
+                if (integFailures.length === integFailuresBefore) {
+                    doctor.record({
+                        cycle,
+                        phaseLabel: `Integ Test C${cycle}`,
+                        role: ROLE_INTEG_TEST_RUNNER,
+                        member: getMemberForRole(ROLE_INTEG_TEST_RUNNER),
+                        beadIds: verifySetForIntegTest,
+                        ok: true,
+                    });
+                }
+            }
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
         } else {
@@ -2763,11 +3109,35 @@ async function runSprintCycle(context) {
         // a NEW all-time high for this sprint -- returning to a previously-seen
         // value (even one different from the immediately prior cycle, e.g.
         // 5,4,5,4,...) is not progress.
-        if (progressScore > highWaterClosedCount) {
+        const isNewHighWaterMark = progressScore > highWaterClosedCount;
+        if (isNewHighWaterMark) {
             highWaterClosedCount = progressScore;
             staleCycles = 0;
         } else {
             staleCycles++;
+        }
+
+        // H2 (evaluation point): the one serialized, fresh-state point per
+        // cycle -- immediately after the fresh closed-bead read above and the
+        // progress-score/high-water update, and deliberately BEFORE the
+        // stall-abort check below so the evidence a T3 fire reports is the
+        // same evidence that abort would report. Every counter fed in is one
+        // the runner ALREADY keeps; nothing here is duplicated bookkeeping,
+        // and nothing here changes any of them.
+        //
+        // This is evaluation only. T3's abort interposition -- consulting
+        // before the StalledSprintError is thrown, and granting at most one
+        // further cycle -- is a later lane; the abort below is untouched and
+        // fires exactly as it did before.
+        if (doctor.enabled) {
+            const spentNow = budget ? budget.spent() : 0;
+            doctor.evaluate({
+                staleCycles,
+                isNewHighWaterMark,
+                budget: { total: budget ? budget.total : null, spent: spentNow },
+                spentSinceHighWaterMark: Math.max(0, spentNow - doctorSpendAtHighWaterMark),
+            }, { hook: `Cycle Evaluation C${cycle}` });
+            if (isNewHighWaterMark) doctorSpendAtHighWaterMark = spentNow;
         }
 
         if (staleCycles >= STALL_CYCLE_LIMIT) {

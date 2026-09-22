@@ -109,8 +109,62 @@ export async function runDevelopPhase({
     verifyDoerStreakClosed,
     normalizeTierToken,
     kbQueryTerms,
+    // The sprint-doctor's per-run recorder (runner.js's createSprintDoctor).
+    // Already a no-op object when the doctor is disabled, so the hook sites
+    // below carry no enabled-check of their own. Defaulted so a direct
+    // caller of this phase that predates the doctor still works unchanged.
+    doctor = { enabled: false, record: () => null },
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
+
+    // H1 (record-only), design doc section 1.3. Every streak outcome this
+    // round attributes -- success or failure, batched or per-streak -- is
+    // mirrored into the sprint-doctor's health ledger right where the
+    // outcome is already being decided, so the ledger and `streakOutcomes`
+    // can never disagree about what happened.
+    //
+    // WHY THIS ONLY RECORDS. These call sites run INSIDE parallel() branches,
+    // one per doer worklist. Evaluating triggers (let alone dispatching a
+    // consult) from in here would interleave with sibling streaks and violate
+    // the per-branch async-local phase store, so the evaluation happens on
+    // the serialized path at the runner's H4 fast path, after this phase
+    // returns and the round's outcomes are folded. Recording is safe here
+    // because the ledger is an append-only in-memory list with a best-effort
+    // artifact append -- it has no ordering requirement and cannot fail a
+    // dispatch.
+    //
+    // A SUCCESS ROW IS LOAD-BEARING, not bookkeeping noise: the trigger layer
+    // counts a TRAILING run of failures since the last closure, so the `ok:
+    // true` row a closed streak writes is exactly what stops a bead that
+    // failed twice, then succeeded, from ever reading as a stuck bead.
+    const recordStreakHealth = (streakOutcome, dispatchError) => {
+        const failed = streakOutcome.outcome === 'failed';
+        const reasonOf = () => {
+            if (!failed) return null;
+            if (dispatchError) {
+                return (dispatchError.details && dispatchError.details.reason) || 'dispatch_failed';
+            }
+            // The doer reported success but its beads are still open -- a
+            // contract failure, deliberately NOT an infra reason, so it can
+            // never on its own make a member look sick.
+            return 'streak_beads_not_closed';
+        };
+        const messageOf = () => {
+            if (!failed) return null;
+            if (dispatchError) return dispatchError.message;
+            return `bead(s) still open after the streak: ${(streakOutcome.unclosedIds || []).join(', ')}`;
+        };
+        doctor.record({
+            cycle,
+            phaseLabel: `Develop C${cycle} R${devRounds}`,
+            role: 'doer',
+            member: streakOutcome.doerMember,
+            beadIds: streakOutcome.beadIds,
+            ok: !failed,
+            reason: reasonOf(),
+            message: messageOf(),
+        });
+    };
 
     // --- Streak grouping ------------------------------------------
     // PREFER deterministic grouping straight from the planner's lane
@@ -581,18 +635,22 @@ export async function runDevelopPhase({
                     if (subIds.length === 0) continue;
                     const subUnclosed = subIds.filter((id) => unclosedIds.includes(id));
                     const subClosed = subIds.filter((id) => !subUnclosed.includes(id));
-                    streakOutcomes.push({
+                    const subOutcome = {
                         beadIds: subIds, doerMember, wasRetried, report: null,
                         unclosedIds: subUnclosed, closedIds: subClosed,
                         outcome: subUnclosed.length > 0 ? 'failed' : 'success',
                         ...(subUnclosed.length > 0 ? { error: dispatchError.message } : {}),
-                    });
+                    };
+                    streakOutcomes.push(subOutcome);
+                    recordStreakHealth(subOutcome, dispatchError);
                 }
             } else {
-                streakOutcomes.push({
+                const failedOutcome = {
                     beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
                     report: null, unclosedIds, closedIds, error: dispatchError.message,
-                });
+                };
+                streakOutcomes.push(failedOutcome);
+                recordStreakHealth(failedOutcome, dispatchError);
             }
             // Rethrow so parallel()'s continueOnError:true isolates
             // this failure from sibling streaks (the outcome above
@@ -643,17 +701,21 @@ export async function runDevelopPhase({
                 if (subIds.length === 0) continue;
                 const subUnclosed = subIds.filter((id) => unclosedIds.includes(id));
                 const subClosed = subIds.filter((id) => !subUnclosed.includes(id));
-                streakOutcomes.push({
+                const subOutcome = {
                     beadIds: subIds, doerMember, wasRetried, report,
                     unclosedIds: subUnclosed, closedIds: subClosed,
                     outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                });
+                };
+                streakOutcomes.push(subOutcome);
+                recordStreakHealth(subOutcome, null);
             }
         } else {
-            streakOutcomes.push({
+            const completedOutcome = {
                 beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                 outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-            });
+            };
+            streakOutcomes.push(completedOutcome);
+            recordStreakHealth(completedOutcome, null);
         }
         await updateDashboard();
         } finally {
