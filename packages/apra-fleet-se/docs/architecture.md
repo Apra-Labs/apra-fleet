@@ -1097,6 +1097,19 @@ rather than traded away for the write-temp-then-rename approach, which would
 lose the atomic create-with-mode-0600 property. The token is never logged or
 included in any thrown error text.
 
+**Read-only resolution for probes that must never mint a credential as a side
+effect.** `resolveServiceToken(dir, { createIfMissing: false })` turns the
+private/token fallback read-only (no mkdir, no write, no mode healing) and
+returns `null` instead of minting when neither `fleet.key` nor an existing
+`private/token` is present, rather than the default (`createIfMissing: true`,
+preserved for every pre-existing caller) which mints-or-reuses as described
+above. Any caller that merely checks whether the supervisor is configured
+without intending to become its credential's owner -- deploy pre-flight
+checks, snapshot/verify/teardown probes against an already-running
+supervisor -- must pass `createIfMissing: false`; the previous default meant
+a passive read (e.g. `sandbox-deploy.mjs`'s drift-check probe) could
+silently mint and own a `private/token` file nobody asked it to create.
+
 **File protection is platform-asymmetric by necessity, not oversight.** On
 POSIX the token file is created 0600 and that mode is re-asserted (healed) on
 every load; a mode that cannot be forced to 0600 is a hard error, not a
