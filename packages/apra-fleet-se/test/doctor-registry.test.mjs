@@ -1,6 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // =============================================================================
 // The sprint-doctor SYMPTOM/REMEDY REGISTRY (design doc section 4).
@@ -35,6 +37,12 @@ const {
     KNOWN_REMEDY_VERBS,
     matchRegistry,
 } = await import('../fleet-sprint/doctor-registry.mjs');
+
+// Section 4.3's proposal-capture path (doctor-proposals.mjs) is a separate
+// module by design (doctor-registry.mjs stays pure data, no I/O), but the
+// acceptance bar for this suite requires proving it writes proposals to the
+// artifact WITHOUT ever touching the frozen registry this file already pins.
+const { captureDoctorProposal } = await import('../fleet-sprint/doctor-proposals.mjs');
 
 const KNOWN_CLASSIFICATIONS = ['ENVIRONMENT', 'ENGINE_FLAW', 'TASK_SHAPE', 'UNCLEAR'];
 const KNOWN_SCOPES = ['member', 'bead', 'fleet'];
@@ -249,5 +257,72 @@ describe('doctor-registry: matchRegistry()', () => {
         const second = matchRegistry({ reason: 'auth', message: 'authentication failed', scope: 'member' });
         assert.equal(first, second);
         assert.ok(REGISTRY_ENTRIES.includes(first));
+    });
+});
+
+describe('doctor-registry: proposal capture (design doc section 4.3)', () => {
+    const sampleProposedEntry = {
+        id: 'novel-symptom-example',
+        classification: 'ENVIRONMENT',
+        detect: {
+            reasons: ['some_new_reason'],
+            signatureRe: 'some new signature text',
+            scope: 'member',
+        },
+        remedy: { verb: 'reprovision_llm_auth', latch: 'once-per-member-per-sprint' },
+        verify: { kind: 'redispatch-original' },
+        fallback: 'human',
+        humanReferralTemplate: 'A brand-new symptom was diagnosed; an operator should review it.',
+    };
+
+    test('a proposedRegistryEntry is appended to the proposals artifact as one JSON line', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-proposals-test-'));
+        const artifactPath = path.join(dir, 'doctor-proposals.jsonl');
+        try {
+            const row = captureDoctorProposal({
+                artifactPath,
+                proposedRegistryEntry: sampleProposedEntry,
+                trigger: 'consult',
+                beadIds: ['example-1'],
+                member: 'mac-01',
+                classification: 'ENVIRONMENT',
+                confidence: 'medium',
+            });
+
+            assert.ok(row, 'captureDoctorProposal should return the captured row');
+            assert.equal(row.proposedRegistryEntry.id, 'novel-symptom-example');
+
+            assert.ok(fs.existsSync(artifactPath), 'proposals artifact should have been created');
+            const lines = fs.readFileSync(artifactPath, 'utf8').trim().split('\n');
+            assert.equal(lines.length, 1, 'exactly one JSON line should have been appended');
+
+            const parsed = JSON.parse(lines[0]);
+            assert.equal(parsed.proposedRegistryEntry.id, 'novel-symptom-example');
+            assert.equal(parsed.proposedRegistryEntry.classification, 'ENVIRONMENT');
+            assert.equal(parsed.trigger, 'consult');
+            assert.deepEqual(parsed.beadIds, ['example-1']);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('capturing a proposal never alters the frozen registry array', () => {
+        const before = REGISTRY_ENTRIES.slice();
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-proposals-test-'));
+        const artifactPath = path.join(dir, 'doctor-proposals.jsonl');
+        try {
+            captureDoctorProposal({ artifactPath, proposedRegistryEntry: sampleProposedEntry });
+
+            assert.equal(REGISTRY_ENTRIES.length, before.length, 'REGISTRY_ENTRIES length must be unchanged');
+            assert.deepEqual(REGISTRY_ENTRIES.slice(), before, 'REGISTRY_ENTRIES contents must be unchanged');
+            assert.ok(Object.isFrozen(REGISTRY_ENTRIES), 'REGISTRY_ENTRIES must still be frozen');
+            assert.equal(
+                entryById('novel-symptom-example'),
+                undefined,
+                'a proposal must never be merged into the real registry',
+            );
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
