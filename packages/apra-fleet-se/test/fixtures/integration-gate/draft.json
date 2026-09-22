@@ -1,0 +1,16 @@
+[
+  {
+    "number": 108,
+    "title": "Auto-sprint [PASS]: feat/draft-example",
+    "headRefName": "feat/draft-example",
+    "headRefOid": "hhh8888",
+    "baseRefName": "integration",
+    "isDraft": true,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]

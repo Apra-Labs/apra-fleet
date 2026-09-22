@@ -1,0 +1,16 @@
+[
+  {
+    "number": 103,
+    "title": "Auto-sprint [PASS]: feat/dirty-example",
+    "headRefName": "feat/dirty-example",
+    "headRefOid": "ccc3333",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "CONFLICTING",
+    "mergeStateStatus": "DIRTY",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]

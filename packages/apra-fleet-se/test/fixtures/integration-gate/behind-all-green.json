@@ -1,0 +1,16 @@
+[
+  {
+    "number": 102,
+    "title": "Auto-sprint [PASS]: feat/behind-example",
+    "headRefName": "feat/behind-example",
+    "headRefOid": "bbb2222",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]

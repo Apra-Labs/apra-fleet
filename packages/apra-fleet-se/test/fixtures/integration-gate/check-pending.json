@@ -1,0 +1,16 @@
+[
+  {
+    "number": 104,
+    "title": "Auto-sprint [PASS]: feat/pending-example",
+    "headRefName": "feat/pending-example",
+    "headRefOid": "ddd4444",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "SUCCESS" },
+      { "name": "check-b", "state": "IN_PROGRESS" }
+    ]
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "number": 107,
+    "title": "Auto-sprint [PASS]: feat/failed-check-example",
+    "headRefName": "feat/failed-check-example",
+    "headRefOid": "ggg7777",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "FAILURE" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]

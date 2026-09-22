@@ -1,0 +1,16 @@
+[
+  {
+    "number": 105,
+    "title": "Auto-sprint [FAIL]: feat/fail-example",
+    "headRefName": "feat/fail-example",
+    "headRefOid": "eee5555",
+    "baseRefName": "integration",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      { "name": "check-a", "conclusion": "FAILURE" },
+      { "name": "check-b", "conclusion": "SUCCESS" }
+    ]
+  }
+]
