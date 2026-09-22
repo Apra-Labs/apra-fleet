@@ -14,6 +14,7 @@ import { addAgent } from '../src/services/registry.js';
 import { composePermissions, findProfilesDir } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
+import { readInstallConfig } from '../src/cli/config.js';
 import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -82,6 +83,12 @@ function mkdirCalls(calls: string[][]): string[] {
   return calls.map(c => c[0]).filter(cmd => cmd.includes('mkdir'));
 }
 
+function createCompleteProfilesDir(profilesDir: string): void {
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(profilesDir, 'base-dev.json'), '{"permissions":{"allow":[]}}');
+  fs.writeFileSync(path.join(profilesDir, 'base-reviewer.json'), '{"permissions":{"allow":[]}}');
+}
+
 beforeEach(() => {
   backupAndResetRegistry();
   vi.clearAllMocks();
@@ -111,7 +118,7 @@ describe('composePermissions -- installed profile discovery', () => {
     const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
     try {
       const profilesDir = path.join(testHome, ...pathParts, 'profiles');
-      fs.mkdirSync(profilesDir, { recursive: true });
+      createCompleteProfilesDir(profilesDir);
       expect(findProfilesDir(testHome, path.join(testHome, 'no-dev-profiles'))).toBe(profilesDir);
     } finally {
       if (path.resolve(testHome).startsWith(path.resolve(os.tmpdir()) + path.sep)) {
@@ -120,15 +127,190 @@ describe('composePermissions -- installed profile discovery', () => {
     }
   });
 
-  it('reports every provider directory searched when no profiles exist', () => {
-    const testHome = path.join(os.tmpdir(), 'apra-fleet-missing-home');
-    const run = () => findProfilesDir(testHome, path.join(testHome, 'no-dev-profiles'));
+  it('prefers the most recently installed provider when two complete installs exist', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const claudeProfiles = path.join(testHome, '.claude', 'skills', 'fleet', 'profiles');
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(claudeProfiles);
+      createCompleteProfilesDir(codexProfiles);
+      const installConfigPath = path.join(testHome, '.apra-fleet', 'data', 'install-config.json');
+      fs.mkdirSync(path.dirname(installConfigPath), { recursive: true });
+      fs.writeFileSync(installConfigPath, JSON.stringify({
+        providers: {
+          claude: { skill: 'fleet', installedAt: '2026-01-01T00:00:00.000Z' },
+          codex: { skill: 'fleet', installedAt: '2026-02-01T00:00:00.000Z' },
+        },
+      }));
 
-    expect(run).toThrowError(path.join(testHome, '.claude', 'skills', 'fleet', 'profiles'));
-    expect(run).toThrowError(path.join(testHome, '.codex', 'skills', 'fleet', 'profiles'));
-    expect(run).toThrowError(path.join(testHome, '.gemini', 'antigravity-cli', 'skills', 'fleet', 'profiles'));
-    expect(run).toThrowError(path.join(testHome, '.copilot', 'skills', 'fleet', 'profiles'));
-    expect(run).toThrowError(path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles'));
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(codexProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('uses table order for tied or invalid timestamps and ignores unknown providers', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const claudeProfiles = path.join(testHome, '.claude', 'skills', 'fleet', 'profiles');
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      const opencodeProfiles = path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(claudeProfiles);
+      createCompleteProfilesDir(codexProfiles);
+      createCompleteProfilesDir(opencodeProfiles);
+      const installConfigPath = path.join(testHome, '.apra-fleet', 'data', 'install-config.json');
+      fs.mkdirSync(path.dirname(installConfigPath), { recursive: true });
+      fs.writeFileSync(installConfigPath, JSON.stringify({
+        providers: {
+          unknown: { skill: 'fleet', installedAt: '2099-01-01T00:00:00.000Z' },
+          opencode: { skill: 'fleet', installedAt: 'not-a-date' },
+          codex: { skill: 'fleet' },
+        },
+      }));
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(codexProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('breaks equal installedAt ties using the standard provider order', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      const opencodeProfiles = path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(codexProfiles);
+      createCompleteProfilesDir(opencodeProfiles);
+      const installConfigPath = path.join(testHome, '.apra-fleet', 'data', 'install-config.json');
+      fs.mkdirSync(path.dirname(installConfigPath), { recursive: true });
+      fs.writeFileSync(installConfigPath, JSON.stringify({
+        providers: {
+          opencode: { skill: 'fleet', installedAt: '2026-01-01T00:00:00.000Z' },
+          codex: { skill: 'fleet', installedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      }));
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(codexProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to table order when install-config.json is malformed', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const claudeProfiles = path.join(testHome, '.claude', 'skills', 'fleet', 'profiles');
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(claudeProfiles);
+      createCompleteProfilesDir(codexProfiles);
+      const installConfigPath = path.join(testHome, '.apra-fleet', 'data', 'install-config.json');
+      fs.mkdirSync(path.dirname(installConfigPath), { recursive: true });
+      fs.writeFileSync(installConfigPath, '{ malformed');
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(claudeProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores malformed provider records while preserving complete provider fallback', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const agyProfiles = path.join(testHome, '.gemini', 'antigravity-cli', 'skills', 'fleet', 'profiles');
+      const opencodeProfiles = path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(agyProfiles);
+      createCompleteProfilesDir(opencodeProfiles);
+      const installConfigPath = path.join(testHome, '.apra-fleet', 'data', 'install-config.json');
+      fs.mkdirSync(path.dirname(installConfigPath), { recursive: true });
+      fs.writeFileSync(installConfigPath, JSON.stringify({
+        providers: {
+          agy: 'malformed',
+          opencode: { skill: 'fleet', installedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      }));
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(opencodeProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('skips incomplete and non-file base profiles in favor of a complete provider', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const claudeProfiles = path.join(testHome, '.claude', 'skills', 'fleet', 'profiles');
+      fs.mkdirSync(path.join(claudeProfiles, 'base-dev.json'), { recursive: true });
+      fs.writeFileSync(path.join(claudeProfiles, 'base-reviewer.json'), '{}');
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(codexProfiles);
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(codexProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not skip a complete directory merely because a base profile contains malformed JSON', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const claudeProfiles = path.join(testHome, '.claude', 'skills', 'fleet', 'profiles');
+      const codexProfiles = path.join(testHome, '.codex', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(claudeProfiles);
+      fs.writeFileSync(path.join(claudeProfiles, 'base-dev.json'), '{ malformed');
+      createCompleteProfilesDir(codexProfiles);
+
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(claudeProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts complete legacy and development fallback directories', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const legacyProfiles = path.join(testHome, '.claude', 'skills', 'pm', 'profiles');
+      createCompleteProfilesDir(legacyProfiles);
+      expect(findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'))).toBe(legacyProfiles);
+
+      fs.rmSync(path.join(testHome, '.claude'), { recursive: true, force: true });
+      const startDir = path.join(testHome, 'dev', 'a', 'b', 'c', 'd');
+      const devProfiles = path.join(testHome, 'dev', 'a', 'skills', 'fleet', 'profiles');
+      createCompleteProfilesDir(devProfiles);
+      expect(findProfilesDir(testHome, startDir)).toBe(devProfiles);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('reads an injected old-format install config without changing default callers', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-config-'));
+    try {
+      const installConfigPath = path.join(testHome, 'install-config.json');
+      fs.writeFileSync(installConfigPath, JSON.stringify({ llm: 'opencode', skill: 'pm' }));
+
+      const config = readInstallConfig(installConfigPath);
+      expect(Object.keys(config.providers)).toEqual(['opencode']);
+      expect(config.providers.opencode.skill).toBe('pm');
+      expect(Number.isNaN(Date.parse(config.providers.opencode.installedAt))).toBe(false);
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it('reports every provider directory searched when no profiles exist', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-missing-home-'));
+    try {
+      const run = () => findProfilesDir(testHome, path.join(testHome, 'a', 'b', 'c', 'd', 'e', 'f'));
+
+      expect(run).toThrowError('No complete profiles directory (base-dev.json + base-reviewer.json) found.');
+      expect(run).toThrowError(path.join(testHome, '.claude', 'skills', 'fleet', 'profiles'));
+      expect(run).toThrowError(path.join(testHome, '.codex', 'skills', 'fleet', 'profiles'));
+      expect(run).toThrowError(path.join(testHome, '.gemini', 'antigravity-cli', 'skills', 'fleet', 'profiles'));
+      expect(run).toThrowError(path.join(testHome, '.copilot', 'skills', 'fleet', 'profiles'));
+      expect(run).toThrowError(path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles'));
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
   });
 });
 

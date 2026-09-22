@@ -467,9 +467,10 @@ fall back to its default.
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission
-profile to a member. Profiles are resolved from the fleet skill directory of
-the provider the server was installed for (for example,
-`~/.codex/skills/fleet/profiles` after `apra-fleet install --llm codex`). Options: `member_id?`, `member_name?`, `role?`
+profile to a member. On the server host, complete profile directories (with
+both `base-dev.json` and `base-reviewer.json`) are checked by most recent
+installation date, then by the remaining supported providers in deterministic
+order. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
 `grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each

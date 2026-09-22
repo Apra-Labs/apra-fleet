@@ -56,7 +56,7 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   opencode: 'ollama/qwen3-coder:30b',
 };
 
-/** Supported install targets, in deterministic profile-discovery precedence. */
+/** Supported install targets, in deterministic profile-discovery fallback order. */
 export const INSTALLABLE_LLM_PROVIDERS: readonly LlmProvider[] = [
   'claude', 'codex', 'copilot', 'agy', 'opencode',
 ];
@@ -172,12 +172,12 @@ export function writeConfig(paths: ProviderInstallConfig, config: any): void {
   fs.writeFileSync(paths.settingsFile, content);
 }
 
-export function readInstallConfig(): MultiProviderInstallConfig {
-  if (!fs.existsSync(INSTALL_CONFIG_PATH)) {
+export function readInstallConfig(installConfigPath = INSTALL_CONFIG_PATH): MultiProviderInstallConfig {
+  if (!fs.existsSync(installConfigPath)) {
     return { providers: {} };
   }
   try {
-    const data = JSON.parse(fs.readFileSync(INSTALL_CONFIG_PATH, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(installConfigPath, 'utf-8'));
     // Handle old format migration
     if (data.llm && data.skill) {
       return {
