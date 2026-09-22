@@ -198,7 +198,7 @@ const agyToolMap: Record<string, string[]> = {
  * stated explicitly, and this is that statement: anything NOT listed here is
  * unavailable under OpenCode and its prose is resolved to the else-branch.
  */
-const OPENCODE_NATIVE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit', 'Agent'];
+export const OPENCODE_NATIVE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit', 'Agent'];
 
 /** A frontmatter `tools: [...]` list that means "everything this provider has". */
 function isWildcardTools(tools: string[]): boolean {
