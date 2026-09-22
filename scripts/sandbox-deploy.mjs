@@ -47,7 +47,8 @@ import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/au
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PRODUCTION_FLEET_PORT = 7523;
 const PRODUCTION_SUPERVISOR_PORT = 8787;
-const RESERVED_PORTS = new Set([PRODUCTION_FLEET_PORT, PRODUCTION_SUPERVISOR_PORT, 18700, 18701]);
+export const RESERVED_PORTS = new Set([PRODUCTION_FLEET_PORT, PRODUCTION_SUPERVISOR_PORT, 18700, 18701, 7601, 8801]);
+// 7601, 8801 are console staging ports (owner-operated, reserved)
 // An OS-assigned port is released before the spawned child binds it, so under a
 // concurrent test suite another process can win it (TOCTOU). `up` recovers by
 // re-allocating and re-launching, but only this many times and only when the
@@ -535,7 +536,7 @@ export async function verify(sprintId, { home = os.homedir() } = {}) {
   return values;
 }
 
-export async function smoke(sprintId, { home = os.homedir() } = {}) {
+export async function smoke(sprintId, { home = os.homedir(), shellDist } = {}) {
   const values = requireValues(sprintId, home);
   const fleetPort = Number(values.APRA_FLEET_PORT);
   const health = await getJson(`http://127.0.0.1:${fleetPort}/health`);
@@ -547,8 +548,29 @@ export async function smoke(sprintId, { home = os.homedir() } = {}) {
   if (expected && !String(health.version).startsWith(expected)) {
     throw new SandboxDeployError(`smoke: running sandbox reports version ${health.version}, checkout is ${expected}`);
   }
-  log(`smoke ok: pid=${health.pid} version=${health.version} uptime=${health.uptime}s`);
-  return health;
+
+  // Probe /ui endpoint if the shell dist directory exists
+  let uiStatus = 'skipped';
+  const repoRoot = values.REPO_ROOT || REPO_ROOT;
+  const shellDistPath = shellDist || path.join(repoRoot, 'packages', 'apra-fleet-shell-ui', 'dist', 'index.html');
+  if (fs.existsSync(shellDistPath)) {
+    try {
+      const uiResponse = await fetch(`http://127.0.0.1:${fleetPort}/ui/`, { signal: AbortSignal.timeout(2000) });
+      if (uiResponse.ok && uiResponse.headers.get('content-type')?.includes('text/html')) {
+        uiStatus = 'ok';
+      } else {
+        throw new SandboxDeployError(`smoke: /ui/ returned status ${uiResponse.status}, expected 200 text/html`);
+      }
+    } catch (err) {
+      if (err instanceof SandboxDeployError) throw err;
+      throw new SandboxDeployError(`smoke: /ui/ probe failed: ${err.message}`);
+    }
+  } else {
+    log('smoke: /ui probe skipped (no shell dist)');
+  }
+
+  log(`smoke ok: pid=${health.pid} version=${health.version} uptime=${health.uptime}s ui=${uiStatus}`);
+  return { ...health, ui: uiStatus };
 }
 
 /** Kill only a process this recipe can prove is its own. Returns a problem

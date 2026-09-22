@@ -17,8 +17,10 @@ import {
   init,
   teardown,
   up,
+  smoke,
   getJson,
   lostPortRace,
+  RESERVED_PORTS,
   SandboxDeployError,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
@@ -147,6 +149,19 @@ describe('port allocation', () => {
     const seq = [7523, 8787, 18700, 40001, 40001, 40002, 18701, 40010];
     const ports = await allocatePorts(async () => seq.shift()!);
     expect(ports).toEqual({ fleetPort: 40001, supervisorPort: 40010 });
+  });
+
+  it('never allocates console staging ports 7601 and 8801', async () => {
+    // Verify that RESERVED_PORTS is exported and contains the console staging ports
+    expect(RESERVED_PORTS.has(7601)).toBe(true);
+    expect(RESERVED_PORTS.has(8801)).toBe(true);
+    // Test that allocatePorts skips them
+    const seq = [7601, 8801, 40001, 40010];
+    const ports = await allocatePorts(async () => seq.shift()!);
+    expect(ports.fleetPort).not.toBe(7601);
+    expect(ports.fleetPort).not.toBe(8801);
+    expect(ports.supervisorPort).not.toBe(7601);
+    expect(ports.supervisorPort).not.toBe(8801);
   });
 
   // apra-fleet-3swo.60/.63: a retry after a bind race excludes not just the
@@ -459,4 +474,105 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
     expect(readValues(id, home)).toBeNull();
     expect(fs.existsSync(sandboxRootPath(id, home))).toBe(false);
   }, 60000);
+});
+
+describe('smoke: /ui probe gated on shell dist', () => {
+  // Stub server that can serve both /health and /ui endpoints
+  const UI_STUB_SERVER = `
+    const http = require('node:http');
+    const [port, pidToReport] = process.argv.slice(1);
+    const pid = pidToReport === 'self' ? process.pid : Number(pidToReport);
+    const requests = [];
+    http.createServer((req, res) => {
+      requests.push(req.url);
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', pid, version: 'v0.0.0-test', uptime: 1 }));
+      } else if (req.url === '/ui/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html></html>');
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    }).listen(Number(port), '127.0.0.1', () => process.stdout.write('LISTENING\\n'));
+  `;
+
+  async function spawnUiStub(reportPid: 'self' | number): Promise<Fake> {
+    const port = await osPort();
+    const child = spawn(process.execPath, ['-e', UI_STUB_SERVER, String(port), String(reportPid)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('UI stub server did not start')), 5000);
+      child.stdout!.on('data', (d: Buffer) => { if (d.toString().includes('LISTENING')) { clearTimeout(t); resolve(); } });
+    });
+    const fake = { child, pid: child.pid!, port };
+    fakes.push(fake);
+    return fake;
+  }
+
+  it('smoke with dist present: probes /ui/ and reports ui ok with 200 text/html', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-with-ui';
+    const stub = await spawnUiStub('self');
+    const tempDist = path.join(home, 'packages', 'apra-fleet-shell-ui', 'dist');
+    fs.mkdirSync(tempDist, { recursive: true });
+    fs.writeFileSync(path.join(tempDist, 'index.html'), '<html></html>');
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port),
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    const result = await smoke(id, { home });
+    expect(result.ui).toBe('ok');
+    expect(result.pid).toBe(stub.pid);
+  });
+
+  it('smoke without dist: skips /ui probe and reports ui skipped', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-no-dist';
+    const stub = await spawnUiStub('self');
+    // Do NOT create the dist directory
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port),
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    const result = await smoke(id, { home });
+    expect(result.ui).toBe('skipped');
+    expect(result.pid).toBe(stub.pid);
+  });
+
+  it('smoke with dist but /ui returns 404: throws SandboxDeployError naming /ui', async () => {
+    const home = mkHome(); homes.push(home);
+    const id = 'test-smoke-ui-404';
+    const stub = await spawnUiStub('self');
+    const tempDist = path.join(home, 'packages', 'apra-fleet-shell-ui', 'dist');
+    fs.mkdirSync(tempDist, { recursive: true });
+    fs.writeFileSync(path.join(tempDist, 'index.html'), '<html></html>');
+
+    const values = {
+      APRA_FLEET_PORT: String(stub.port + 1), // Use a different port so /ui/ returns 404
+      SUPERVISOR_PORT: '18701',
+      MCP_PID: String(stub.pid),
+      REPO_ROOT: home,
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      SANDBOX_ROOT: home,
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+    };
+    writeValues(id, values, home);
+    await expect(smoke(id, { home })).rejects.toThrow(SandboxDeployError);
+    await expect(smoke(id, { home })).rejects.toThrow(/\/ui\//);
+  });
 });
