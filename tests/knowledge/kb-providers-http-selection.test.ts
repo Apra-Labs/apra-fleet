@@ -2,12 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
+import { getActiveLogFile, logLine } from '../../src/utils/log-helpers.js';
 
 // FLEET_DIR is pinned to a per-run tmpdir by tests/setup.ts, and vitest.config.ts
 // sets fileParallelism:false, so writing the single global KB config file here
@@ -374,5 +376,91 @@ describe('getKbProviders evicts a rejected provider-build promise from its cache
     expect(providers.project).toBeInstanceOf(SqliteProvider);
 
     initSpy.mockRestore();
+  });
+});
+
+// my-beads-db-u00.5: the malformed-config warning used to be suppressed by a
+// module-level boolean, so a long-lived fleet server warned ONCE per process
+// and then stayed silent even after the config was edited and broke again.
+// Suppression is now keyed by config path + content hash. Asserted against
+// the real fleet log file logWarn writes (no console spy): that file is an
+// async WriteStream, so each test writes its own sentinel line last via
+// logLine and polls until the sentinel lands -- everything written before it
+// on the same stream is then guaranteed to be on disk too.
+describe('malformed-config warning is keyed by config content, not suppressed per process (my-beads-db-u00.5)', () => {
+  const WARN_TEXT = 'KB config error, falling back to SqliteProvider';
+
+  function readLogLines(): Array<{ level: string; tag: string; msg: string }> {
+    const logFile = getActiveLogFile();
+    if (!logFile) throw new Error('u00.5 test: no active fleet log file (FLEET_DIR/logs unavailable)');
+    if (!fs.existsSync(logFile)) return [];
+    return fs.readFileSync(logFile, 'utf-8')
+      .split('\n')
+      .filter(line => line.trim().length > 0)
+      .map(line => JSON.parse(line));
+  }
+
+  function countConfigWarnings(): number {
+    return readLogLines().filter(l => l.level === 'warn' && l.tag === 'kb-providers' && l.msg.includes(WARN_TEXT)).length;
+  }
+
+  async function flushLogWithSentinel(): Promise<void> {
+    const sentinel = `u00.5-sentinel-${crypto.randomUUID()}`;
+    logLine('kb-providers-test', sentinel);
+    const deadline = Date.now() + 5000;
+    while (!readLogLines().some(l => l.msg === sentinel)) {
+      if (Date.now() > deadline) throw new Error(`u00.5 test: log sentinel ${sentinel} never reached the log file`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+
+  function writeRawConfig(content: string): void {
+    fs.mkdirSync(KB_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(KB_CONFIG_PATH, content);
+  }
+
+  it('two different slugs hitting two different malformed configs produce TWO warnings', async () => {
+    await flushLogWithSentinel();
+    const baseline = countConfigWarnings();
+
+    writeRawConfig('{ first broken config');
+    await getKbProviders(makeRepoPath(), `${REMOTE_REPO_URL}-u005-a`);
+    writeRawConfig('{ second, differently broken config');
+    await getKbProviders(makeRepoPath(), `${REMOTE_REPO_URL}-u005-b`);
+
+    await flushLogWithSentinel();
+    expect(countConfigWarnings() - baseline).toBe(2);
+  });
+
+  it('a config edited and still malformed warns again rather than staying suppressed for the life of the process', async () => {
+    await flushLogWithSentinel();
+    const baseline = countConfigWarnings();
+    const repoPath = makeRepoPath();
+
+    writeRawConfig(JSON.stringify({ provider: 'http', token_encrypted: encryptPassword(FAKE_TOKEN) }));
+    await getKbProviders(repoPath, `${REMOTE_REPO_URL}-u005-c`);
+    await flushLogWithSentinel();
+    expect(countConfigWarnings() - baseline).toBe(1);
+
+    // Edited, still broken (now missing token_encrypted instead of url).
+    writeRawConfig(JSON.stringify({ provider: 'http', url: REMOTE_KB_URL }));
+    await getKbProviders(makeRepoPath(), `${REMOTE_REPO_URL}-u005-d`);
+    await flushLogWithSentinel();
+    const lines = readLogLines().filter(l => l.level === 'warn' && l.msg.includes(WARN_TEXT));
+    expect(countConfigWarnings() - baseline).toBe(2);
+    expect(lines[lines.length - 1].msg).toContain('token_encrypted');
+  });
+
+  it('the same malformed config failing repeatedly across many provider builds warns only once', async () => {
+    await flushLogWithSentinel();
+    const baseline = countConfigWarnings();
+
+    writeRawConfig('{ repeatedly broken config');
+    for (let i = 0; i < 5; i++) {
+      await getKbProviders(makeRepoPath(), `${REMOTE_REPO_URL}-u005-repeat-${i}`);
+    }
+
+    await flushLogWithSentinel();
+    expect(countConfigWarnings() - baseline).toBe(1);
   });
 });

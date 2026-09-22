@@ -1,12 +1,14 @@
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { SqliteProvider } from './sqlite-provider.js';
 import { HttpKbProvider } from './http-provider.js';
-import { readKbConfigFromDisk } from './kb-config.js';
+import { readKbConfigFromDisk, KB_CONFIG_PATH } from './kb-config.js';
 import type { KbConfigResult } from './kb-config.js';
 import { resolveProjectSlug } from './project-slug.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
+import { logWarn } from '../../utils/log-helpers.js';
 
 export interface KbProviders {
   // Widened from SqliteProvider so a config-selected HttpKbProvider can be
@@ -70,16 +72,36 @@ const _httpProviders: HttpKbProvider[] = [];
 // an undecryptable token. Resolving the conflict per bead .12's decision:
 // readKbConfigFromDisk keeps throwing (bead .1's contract is unchanged), and
 // THIS call site catches it, degrades to the already-built SqliteProvider, and
-// logs a loud one-time warning -- never a silent downgrade, never a hard
-// failure of every kb_* tool over one bad config file.
-let _warnedMalformedKbConfig = false;
+// logs a loud warning -- never a silent downgrade, never a hard failure of
+// every kb_* tool over one bad config file.
+//
+// my-beads-db-u00.5: the warning is suppressed per FAILURE, not per process.
+// A module-level boolean meant a long-lived fleet server warned once for the
+// first bad config it ever saw and then stayed silent for the life of the
+// process, even after the file was edited and broke differently. The key is
+// the config path plus a hash of its content, so the same broken file warns
+// once (no spam on every provider build), while a changed-but-still-broken
+// file warns again.
+const _warnedKbConfigFailures = new Set<string>();
+
+function kbConfigFailureKey(): string {
+  let fingerprint: string;
+  try {
+    fingerprint = crypto.createHash('sha256').update(fs.readFileSync(KB_CONFIG_PATH)).digest('hex');
+  } catch (err) {
+    // The read that just failed may have raced a delete/rename; key on why.
+    fingerprint = `unreadable:${(err as Error).message}`;
+  }
+  return `${KB_CONFIG_PATH}\0${fingerprint}`;
+}
 
 /**
  * Return the project provider the KB config selects. Stock path (no config file,
  * or provider "sqlite") returns the already-built SqliteProvider untouched.
  * A config file that fails to read (malformed JSON, http-without-url,
  * http-without-token, undecryptable token) degrades to the same SqliteProvider,
- * after a one-time warning -- see the note above _warnedMalformedKbConfig.
+ * after a warning, once per distinct config content -- see the note above
+ * _warnedKbConfigFailures.
  *
  * The HTTP branch passes that same SqliteProvider as the explicit fallback:
  * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
@@ -90,10 +112,12 @@ async function selectProjectProvider(projectProvider: SqliteProvider): Promise<M
   try {
     config = readKbConfigFromDisk();
   } catch (err) {
-    if (!_warnedMalformedKbConfig) {
-      _warnedMalformedKbConfig = true;
-      console.error(
-        `[kb-providers] KB config error, falling back to SqliteProvider: ${(err as Error).message}`,
+    const failureKey = kbConfigFailureKey();
+    if (!_warnedKbConfigFailures.has(failureKey)) {
+      _warnedKbConfigFailures.add(failureKey);
+      logWarn(
+        'kb-providers',
+        `KB config error, falling back to SqliteProvider: ${(err as Error).message}`,
       );
     }
     return projectProvider;
@@ -199,5 +223,5 @@ export function resetKbProviders(): void {
   _providers.clear();
   _slugCache.clear();
   _globalProvider = null;
-  _warnedMalformedKbConfig = false;
+  _warnedKbConfigFailures.clear();
 }

@@ -568,8 +568,12 @@ Selection rule:
   provider as the fallback instead of relying on the default.
 - A config file that exists but is malformed (bad JSON, `http` without
   `url`/token, an undecryptable token) degrades to the same `SqliteProvider`
-  after logging one loud warning per process -- never a silent downgrade,
-  and never a hard failure of every KB tool over one bad config file. The
+  after logging a loud warning (via `logWarn`, so it also lands in the fleet
+  log) -- never a silent downgrade, and never a hard failure of every KB tool
+  over one bad config file. The warning fires once per distinct config
+  content (keyed by config path plus a content hash), not once per process:
+  the same broken file does not warn on every provider build, but a file
+  that is edited and still broken warns again. The
   provider-build promise itself is never cached when it rejects, so a
   transient failure (e.g. a disk error) can recover on the next call without
   a full process restart.
