@@ -416,6 +416,13 @@ export const GUARDED_MODULES = [
     // call of its own and gets the same ZERO baseline as the other
     // dispatch-free phase bodies.
     'phases/sprint-doctor.mjs',
+    // apra-fleet-iiny.7.1: the consent-gated engine-flaw telemetry sanitizer
+    // (sanitizeReport, getOrCreateInstallId, fingerprintForSignature). Pure
+    // text-redaction functions plus one local JSON read/write under the
+    // fleet data dir (getFleetDataDir()) -- no command()/agent() call, no
+    // dolt/git literal, no shell-command string -- so it gets the same ZERO
+    // baseline as doctor-ledger.mjs/doctor-triggers.mjs above.
+    'doctor-telemetry.mjs',
 ];
 
 /**
