@@ -544,13 +544,24 @@ and `attachments` (`{ filename, content, contentType? }[]`, base64 content).
 #### `credentialStoreSet(options)` / `credentialStoreList()` / `credentialStoreDelete(options)` / `credentialStoreUpdate(options)`
 
 The fleet credential store. `credentialStoreSet({ name, prompt, persist?,
-network_policy?, members?, ttl_seconds? })` collects a secret from the user
-out-of-band and stores it -- the value never passes through the caller.
-`credentialStoreList()` takes no arguments and returns names and metadata
-only, never values (a JSON array of `{ name, scope, ... }` entries; extract
-it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
-`credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
+network_policy?, members?, ttl_seconds?, return_url? })` collects a secret
+from the user out-of-band and stores it -- the value never passes through
+the caller. `credentialStoreList()` takes no arguments and returns names and
+metadata only, never values (a JSON array of `{ name, scope, ... }` entries;
+extract it with `parseToolJson()`). `credentialStoreDelete({ name })` removes
+one. `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
+
+**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3):
+when the server has no TTY attached, or `return_url: true` is passed
+explicitly, the call returns immediately (never blocking on the secret being
+entered) with `result.structuredContent` set to a `CredentialStoreSetResult`
+-- `{ url, expiresAt }` -- instead of the usual plain-text confirmation.
+`url` is a one-time, loopback-only link; opening it and submitting the form
+encrypts and stores the secret server-side at that moment, with no further
+tool call needed. `expiresAt` is an ISO-8601 timestamp after which the URL
+stops accepting submissions. Read `structuredContent`, never scrape it out of
+the display text.
 
 #### `doltPushMutex(options)`
 
