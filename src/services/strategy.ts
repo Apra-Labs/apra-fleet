@@ -265,13 +265,18 @@ class LocalStrategy implements AgentStrategy {
           if (settled || exitDrainTimer) return;
           exitDrainTimer = setTimeout(() => {
             if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
+            // finalize() must run first so any output already buffered in the
+            // pipe (and captured by the data listeners above) is included in
+            // the resolved result; destroying/unref-ing the handles below is
+            // pure cleanup and must never race ahead of settling the promise.
+            finalize(code);
             // Release OUR ends of the pipes so the still-open handles held by a
             // surviving grandchild do not keep this process's event loop and fds
             // alive. Destroying a read end cannot affect the grandchild.
             try { child.stdout?.destroy(); } catch { /* best-effort */ }
             try { child.stderr?.destroy(); } catch { /* best-effort */ }
             try { child.unref(); } catch { /* best-effort */ }
-            finalize(code);
           }, exitDrainMs());
           exitDrainTimer.unref();
         });

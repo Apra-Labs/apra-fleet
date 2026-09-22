@@ -326,6 +326,7 @@ export async function execCommand(
           if (settled || exitDrainTimer) return;
           exitDrainTimer = setTimeout(() => {
             if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
             finalize(code);
             // Release our end of the wedged channel; the remote grandchild is
             // unaffected (closing an ssh2 channel never signals the far side's
