@@ -6,20 +6,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * apra-fleet-qe83.3.1: reproduces the linked bug's target-side half -- both
- * scripts/run-all-tests.mjs and packages/apra-fleet-se/scripts/run-tests.mjs
- * call spawnSync (or spawn, once qe83.3.2 lands) with no wall-clock bound, so
- * a suite whose child never exits (a real vitest run that hung on Windows,
- * per the recorded bug) holds `npm test` open forever.
+ * apra-fleet-qe83.3: proves both scripts/run-all-tests.mjs and
+ * packages/apra-fleet-se/scripts/run-tests.mjs are bounded by a wall-clock
+ * timeout, so a suite whose child never exits (a real vitest run that hung
+ * on Windows, per the recorded bug) can no longer hold `npm test` open
+ * forever.
  *
- * This uses a deterministic, fast stub suite (a bare `node -e` with a
- * setInterval keep-alive) instead of the real multi-minute suites, injected
- * via APRA_TEST_SUITES_JSON / APRA_TEST_TIMEOUT_MS so the whole test
- * completes in well under 10s. On the pre-fix tree neither runner script has
- * any timeout of its own, so THIS TEST's harness deadline is what notices
- * the hang and kills the whole child tree -- exactly as apra-fleet-qe83.3.2's
- * acceptance criteria describes: "the harness deadline fires and must kill
- * the tree itself."
+ * apra-fleet-qe83.3.1 introduced this file pinning the PRE-fix behaviour
+ * (neither script had any timeout of its own, so the TEST's own harness
+ * deadline had to notice the hang and kill the whole child tree itself).
+ * apra-fleet-qe83.3.2 wired the actual bound into both scripts, so these
+ * cases now assert the runner kills its own stub within
+ * APRA_TEST_TIMEOUT_MS, with no harness-level intervention required.
+ *
+ * Uses a deterministic, fast stub suite (a bare keep-alive script) instead
+ * of the real multi-minute suites, injected via APRA_TEST_SUITES_JSON /
+ * APRA_TEST_TIMEOUT_MS, so the whole test completes in well under 10s.
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,10 +92,7 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     if (hangScriptDir) fs.rmSync(hangScriptDir, { recursive: true, force: true });
   });
 
-  // EXPECTED TO FLIP once apra-fleet-qe83.3.2 lands: at that point the
-  // runner itself enforces APRA_TEST_TIMEOUT_MS and kills the stub, so
-  // `exited` becomes true without this test's own harness-level kill.
-  it('EXPECTED TO FLIP: a stub suite that never exits hangs run-all-tests.mjs forever -- the test harness must kill it itself', async () => {
+  it('a stub suite that never exits is killed by run-all-tests.mjs itself within its configured timeout, with no leftover process', async () => {
     const marker = makeMarker();
     // A fixture FILE, not an inline `-e` string: run-all-tests.mjs always
     // spawns with shell:true (required for npm.cmd on Windows), and
@@ -120,22 +119,36 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     });
     if (child.pid) spawnedPids.push(child.pid);
 
-    let exited = false;
-    child.on('exit', () => { exited = true; });
+    let exitCode: number | null = null;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+    });
 
-    // Give the stub time to actually spawn and register, then check well
-    // past APRA_TEST_TIMEOUT_MS -- on the pre-fix tree that env var is read
-    // by nobody yet, so nothing should have happened on its own.
-    await new Promise(resolve => setTimeout(resolve, 2500));
+    // The stub really is alive shortly after spawn -- otherwise a "killed
+    // within timeout" result would be indistinguishable from "never
+    // actually ran".
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(countMarkerProcesses(marker)).toBeGreaterThan(0);
 
-    expect(exited).toBe(false); // BUG: run-all-tests.mjs never returned on its own
-    expect(countMarkerProcesses(marker)).toBeGreaterThan(0); // the stub really is still alive
+    // Race the runner's own exit against a generous outer deadline (well
+    // past APRA_TEST_TIMEOUT_MS=1500, to leave headroom for process-table
+    // scans/taskkill) -- this must resolve via the runner exiting on its
+    // own, not the outer deadline, or the fix regressed.
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
 
-    // The harness itself must clean up -- production code has no timeout to
-    // do this yet.
-    if (child.pid) killTree(child.pid);
-    await new Promise(resolve => setTimeout(resolve, 500)); // let the kill land
+    if (timedOut) {
+      // Safety net only -- must never be needed once the fix holds.
+      if (child.pid) killTree(child.pid);
+    }
 
+    expect(timedOut).toBe(false); // run-all-tests.mjs must have exited on its own
+    expect(exitCode).not.toBe(0); // the timed-out suite counts as a failure
+    // No harness-level kill was needed (the branch above did not run) --
+    // the runner's own taskkill/process-group cleanup must have already
+    // reaped the stub.
     expect(countMarkerProcesses(marker)).toBe(0);
   }, 9_000);
 
@@ -153,12 +166,12 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
 });
 
 /**
- * apra-fleet-qe83.3.1: the sibling runner in the apra-fleet-se workspace has
+ * apra-fleet-qe83.3: the sibling runner in the apra-fleet-se workspace has
  * the exact same shape of bug -- packages/apra-fleet-se/scripts/run-tests.mjs
- * spawnSyncs `node --test ...` with no timeout. It already supports pointing
- * at an arbitrary test file via its existing extraArgs passthrough (no
- * script change needed for this reproduction), so this drives it at a tiny
- * fixture test that never resolves.
+ * spawns `node --test ...` and (pre apra-fleet-qe83.3.2) had no timeout of
+ * its own. It already supports pointing at an arbitrary test file via its
+ * existing extraArgs passthrough (no reproduction-specific script change
+ * needed), so this drives it at a tiny fixture test that never resolves.
  */
 describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
   const sePkgRoot = path.join(repoRoot, 'packages', 'apra-fleet-se');
@@ -195,10 +208,8 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
     if (fixtureDir) cleanupFixture();
   });
 
-  // EXPECTED TO FLIP once apra-fleet-qe83.3.2 lands.
-  it('EXPECTED TO FLIP: a hanging test file hangs run-tests.mjs forever -- the test harness must kill it itself', async () => {
+  it('a hanging test file is killed by run-tests.mjs itself within its configured timeout', async () => {
     setupFixture();
-    const marker = `APRA_QE83_3_SE_STUB_${process.pid}_${Date.now()}`;
 
     const child = spawn(process.execPath, [
       path.join(sePkgRoot, 'scripts', 'run-tests.mjs'),
@@ -206,18 +217,26 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
       fixtureFile,
     ], {
       cwd: sePkgRoot,
-      env: { ...process.env, APRA_TEST_TIMEOUT_MS: '1500', APRA_QE83_3_MARKER: marker },
+      env: { ...process.env, APRA_TEST_TIMEOUT_MS: '1500' },
     });
     if (child.pid) spawnedPids.push(child.pid);
 
-    let exited = false;
-    child.on('exit', () => { exited = true; });
+    let exitCode: number | null = null;
+    const exitPromise = new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+    });
 
-    await new Promise(resolve => setTimeout(resolve, 2500));
+    const timedOut = await Promise.race([
+      exitPromise.then(() => false),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+    ]);
 
-    expect(exited).toBe(false); // BUG: run-tests.mjs never returned on its own
+    if (timedOut) {
+      // Safety net only -- must never be needed once the fix holds.
+      if (child.pid) killTree(child.pid);
+    }
 
-    if (child.pid) killTree(child.pid);
-    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(timedOut).toBe(false); // run-tests.mjs must have exited on its own
+    expect(exitCode).not.toBe(0); // the timed-out run counts as a failure
   }, 9_000);
 });
