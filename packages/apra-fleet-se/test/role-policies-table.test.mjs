@@ -2276,6 +2276,37 @@ function spliceDegrade(role, over) {
     return splicePolicy(role, { degrade: { ...ROLE_POLICIES[role].degrade, ...over } });
 }
 
+describe('a fatal ladder does not retry a run-level control signal', () => {
+    // A cancelled run rejects EVERY later tools/call synchronously ("aborted
+    // before a response was received"), so retrying the planner five times
+    // with ~110s of backoff can never succeed. The planner row names the two
+    // run-level signals so its 'fatal' degrade rethrows them on attempt 1;
+    // emptying that field restores the old accumulate-then-rethrow loop,
+    // proving the field -- not a hidden special case -- drives the fast fail.
+    for (const make of [cancelledError, budgetError]) {
+        const className = make().constructor.name;
+        test(`planner: a ${className} escapes on the first attempt, not after the ladder is spent`, async () => {
+            const { thrown, rec } = await runSpentLadder('planner', make);
+            assert.ok(thrown, `${className} must propagate`);
+            assert.strictEqual(thrown.constructor, make().constructor);
+            assert.strictEqual(rec.dispatches.length, 1, 'no retry may follow a run-level control signal');
+            assert.ok(
+                rec.logs.some((l) => new RegExp(`run-level ${className} received -- not retrying`).test(l)),
+                `expected an explicit not-retrying log line, got: ${JSON.stringify(rec.logs)}`,
+            );
+        });
+        test(`planner: without rethrowsRunControlSignals the same ${className} is retried until the ladder is spent`, async () => {
+            const { thrown, rec } = await runSpentLadder('planner', make, spliceDegrade('planner', { rethrowsRunControlSignals: [] }));
+            assert.ok(thrown, 'fatal still rethrows the last error once the ladder is spent');
+            assert.strictEqual(thrown.constructor, make().constructor);
+            assert.strictEqual(rec.dispatches.length, policyFor('planner').retry.attempts, 'every attempt was burned first');
+        });
+    }
+    test('planner: the row names exactly the two run-level signals', () => {
+        assert.deepStrictEqual(policyFor('planner').degrade.rethrowsRunControlSignals, ['CancelledError', 'BudgetExceededError']);
+    });
+});
+
 describe('apra-fleet-3swo.5.4: the consolidated degrade path is driven by the table', () => {
     test('every fabricating role records a note template for exactly the classes it fabricates for', () => {
         for (const role of ROLE_NAMES) {

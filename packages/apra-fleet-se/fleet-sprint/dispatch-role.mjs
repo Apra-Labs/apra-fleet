@@ -924,7 +924,10 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // let the run keep spending past a limit the operator set.
             if (policy.degrade.rethrowsRunControlSignals.length > 0) {
                 const names = errorClassNames(err);
-                if (policy.degrade.rethrowsRunControlSignals.some((name) => names.includes(name))) throw err;
+                if (policy.degrade.rethrowsRunControlSignals.some((name) => names.includes(name))) {
+                    ctx.log(`${roleLabel}: run-level ${names[0] || 'control signal'} received -- not retrying this dispatch: ${err.message}`);
+                    throw err;
+                }
             }
 
             const errorClass = classifyLadderError(err, policy);
