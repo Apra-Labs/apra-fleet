@@ -114,18 +114,31 @@ export function transformAgentForAgy(content: string, _filename: string): string
       'Grep': ['grep_search'],
       'Glob': ['list_dir'],
       'Bash': ['run_command'],
-      'Write': ['write_to_file', 'replace_file_content', 'multi_replace_file_content'],
-      'Edit': ['replace_file_content', 'multi_replace_file_content'],
+      'Write': ['write_to_file', 'replace_file_content'],
+      'Edit': ['replace_file_content'],
       'Agent': ['invoke_subagent', 'send_message']
     };
 
     const mappedTools = new Set<string>();
+    const unmappedTools: string[] = [];
     for (const tool of tools) {
-      const mapped = agyToolMap[tool] || [tool];
-      for (const m of mapped) mappedTools.add(m);
+      const mapped = agyToolMap[tool];
+      if (mapped) {
+        for (const m of mapped) mappedTools.add(m);
+      } else {
+        unmappedTools.push(tool);
+      }
     }
 
-    agyFm += `tools: [${Array.from(mappedTools).join(', ')}]\n`;
+    if (unmappedTools.length > 0) {
+      console.warn(
+        `[agy] dropping tools with no Antigravity equivalent from agent "${name || _filename}": ${unmappedTools.join(', ')}`
+      );
+    }
+
+    if (mappedTools.size > 0) {
+      agyFm += `tools: [${Array.from(mappedTools).join(', ')}]\n`;
+    }
   }
 
   agyFm += '---\n\n';
