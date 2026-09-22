@@ -80,13 +80,13 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
         structuredContent: { url: result.url, expiresAt: result.expiresAt },
       };
     }
-    return result.fallback ?? `[ERROR] Could not start out-of-band credential entry for ${input.name}.`;
+    return result.fallback ?? `[FAIL] Could not start out-of-band credential entry for ${input.name}.`;
   }
 
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
   if (result.fallback) return result.fallback;
-  if (!result.password) return `[ERROR] No secret received for ${input.name}. Please try again.`;
+  if (!result.password) return `[FAIL] No secret received for ${input.name}. Please try again.`;
 
   const plaintext = decryptPassword(result.password);
   const allowedMembers = parseAllowedMembers(input.members);

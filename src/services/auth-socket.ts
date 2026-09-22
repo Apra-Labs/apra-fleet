@@ -332,7 +332,7 @@ function collectOobUrl(
   if (mode === 'confirm') {
     // No caller opts a confirm prompt into return_url today (collectOobConfirm
     // never sets it) -- a yes/no confirmation has nothing meaningful to link to.
-    return Promise.resolve({ fallback: '[ERROR] return_url is not supported for confirmation prompts.' });
+    return Promise.resolve({ fallback: '[FAIL] return_url is not supported for confirmation prompts.' });
   }
 
   const webMode: AuthWebMode = mode;
@@ -347,7 +347,7 @@ function collectOobUrl(
       if (settled) return;
       settled = true;
       if (listenTimer) clearTimeout(listenTimer);
-      resolve({ fallback: `[ERROR] Could not start the local credential-entry web server for ${memberName}.` });
+      resolve({ fallback: `[FAIL] Could not start the local credential-entry web server for ${memberName}.` });
     };
 
     const outcome = launchAuthWeb(memberName, webMode, webPrompt, onSubmit, {
@@ -405,8 +405,8 @@ async function collectOobInput(
   const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
-  const timeoutMessage = `[ERROR] Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
-  const cancelledMessage = `[ERROR] Password entry cancelled. Call ${toolName} again to retry.`;
+  const timeoutMessage = `[FAIL] Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
+  const cancelledMessage = `[FAIL] Password entry cancelled. Call ${toolName} again to retry.`;
 
   // Re-entrant case
   if (hasPendingAuth(memberName)) {
