@@ -247,8 +247,9 @@ normally has all three already):
 <!-- history: apra-fleet stabilization Issue 43 -->
 - `<repo-root>` cloned normally (`git clone`) -- `install`
   fails at its fleet-skill step if `packages/apra-fleet-se/apra-pm` is empty.
-- `npm install && npm run build` has been run -- every step below invokes
-  `node dist/index.js`.
+- `npm install && npm run build && npm run build:ui --if-present` has been run --
+  every step below invokes `node dist/index.js`. (`npm run build:ui --if-present`
+  is a no-op until the UI shell sprint adds the root script.)
 - The runner's real session has a live Claude credential (see the
   credential-provisioning step in `## Test scenario`).
 

@@ -27,15 +27,18 @@ node scripts/sandbox-deploy.mjs teardown --sprint-id "<that id>"   # LAST step, 
 ```
 
 Use the printed `APRA_FLEET_PORT` / `SUPERVISOR_PORT` / `APRA_FLEET_DATA_DIR`
-whenever a step talks to the deployed instance -- never `7523`/`8787`, never
-`~/.apra-fleet`. `env` exiting 1 means no sandbox exists for this id (report
-it; do not test against production). See `deploy.md`'s Teardown for what
-`teardown` checks before it deletes anything.
+/ service token path (`<sandbox>/.apra-fleet/fleet.key`) whenever a step talks
+to the deployed instance -- never `7523`/`8787`, never `~/.apra-fleet`.
+`env` exiting 1 means no sandbox exists for this id (report it; do not test
+against production). See `deploy.md`'s Teardown for what `teardown` checks
+before it deletes anything.
 
 ## Permissions
 
 Commands below require the ability to run these command families:
+- `curl ...` (e.g. `Bash(curl *)`) -- drives the supervisor's HTTP API
 - `npm test ...` (e.g. `Bash(npm test*)`)
+- `npm run build:ui ...` (e.g. `Bash(npm run build:ui*)`)
 - `npm run ...` (e.g. `Bash(npm run *)`)
 - `npx vitest ...` (e.g. `Bash(npx vitest *)`)
 - `bd ...` (e.g. `Bash(bd *)`)
