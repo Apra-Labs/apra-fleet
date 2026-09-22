@@ -67,6 +67,84 @@ function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
 }
 
+/** Split a remote URL into { host, path } for BOTH shapes git speaks: a real
+ *  scheme'd URL (https, with optional userinfo and port) and the scp-like
+ *  shorthand `git@host:path` that `new URL()` cannot parse at all. Mirrors
+ *  ./azure-devops.mjs's splitRemote(). */
+function splitRemote(url) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch {
+            return null;
+        }
+        if (!parsed.hostname) return null;
+        return { host: parsed.hostname.toLowerCase(), path: parsed.pathname };
+    }
+    const scp = /^(?:[^@\s/]+@)?([^:\s/]+):(.*)$/.exec(url);
+    if (!scp) return null;
+    return { host: scp[1].toLowerCase(), path: `/${scp[2]}` };
+}
+
+/** Split `path` into non-empty segments with any trailing '.git' stripped off
+ *  the last one. Bitbucket workspace/repo slugs are not percent-encoded in
+ *  practice (unlike Azure DevOps project names), so no decode step is needed
+ *  here. */
+function pathSegments(path) {
+    const raw = String(path).split('/').filter((part) => part !== '');
+    if (raw.length === 0) return raw;
+    raw[raw.length - 1] = raw[raw.length - 1].replace(/\.git$/i, '');
+    return raw;
+}
+
+function makeRef(workspace, repo) {
+    if (!workspace || !repo) return null;
+    return {
+        workspace,
+        repo,
+        canonical: `${workspace}/${repo}`,
+    };
+}
+
+/**
+ * Parse a Bitbucket git remote URL into its { workspace, repo, canonical }
+ * coordinates -- the identity every Bitbucket REST call needs
+ * (https://api.bitbucket.org/2.0/repositories/{workspace}/{repo}/...).
+ *
+ * Recognized shapes:
+ *   git@bitbucket.org:WORKSPACE/REPO[.git]
+ *   https://[user@]bitbucket.org/WORKSPACE/REPO[.git][/]
+ *   ssh://git@altssh.bitbucket.org[:22]/WORKSPACE/REPO[.git]
+ *
+ * NEVER throws and NEVER partially guesses: anything that is not one of the
+ * shapes above -- including a non-Bitbucket host and a lookalike like
+ * `bitbucket.org.evil.example` -- returns null, so the caller can raise its
+ * own typed ERROR naming the expected shape (repoRefHint) instead of
+ * proceeding with half-parsed coordinates.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ workspace: string, repo: string, canonical: string }|null}
+ */
+function parseRepoRef(remoteUrl) {
+    if (typeof remoteUrl !== 'string') return null;
+    const url = remoteUrl.trim();
+    if (!url) return null;
+
+    const split = splitRemote(url);
+    if (!split || !matchesHost(split.host)) return null;
+
+    const segments = pathSegments(split.path);
+    if (segments.length !== 2) return null;
+
+    return makeRef(segments[0], segments[1]);
+}
+
+/** The remote shape parseRepoRef() expects, quoted into every
+ *  operator-facing remedy this module produces -- the modern form an
+ *  operator copies out of Bitbucket's "Clone" dialog. */
+const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
+
 export const BitbucketVCS = Object.freeze({
     name: 'bitbucket',
     extends: 'generic-git',
@@ -74,6 +152,10 @@ export const BitbucketVCS = Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
     matchesHost,
+    // remote-URL -> { workspace, repo, canonical }, mirroring
+    // ./azure-devops.mjs's own parseRepoRef axis (apra-fleet-qeq1.2).
+    parseRepoRef,
+    repoRefHint: REPO_REF_HINT,
     defaultAuthMode: null,
     builders: null,
 });
