@@ -385,6 +385,16 @@ export const GUARDED_MODULES = [
     'vcs-providers/github.mjs',
     'vcs-providers/index.mjs',
     'vcs-providers/shell-helpers.mjs',
+    // apra-fleet-iiny.1.1: the sprint-doctor dispatch-health ledger
+    // (createSprintHealthLedger, normalizeErrorSignature). Pure in-memory
+    // state plus a local JSONL artifact append -- not a member-bound
+    // command() call, a dolt/git literal, or a raw doltPushAfter()/
+    // syncMemberAfter() site -- so it gets a ZERO baseline across all five
+    // guards, same as round-session.mjs/dispatch-failure.mjs above. The zero
+    // is not a formality: it is what turns a future raw command()/agent()
+    // landing in this file into a red test instead of a silently unguarded
+    // site.
+    'doctor-ledger.mjs',
 ];
 
 /**
