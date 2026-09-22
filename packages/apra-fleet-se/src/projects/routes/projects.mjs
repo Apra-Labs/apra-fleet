@@ -84,6 +84,41 @@ function validationErrorPayload(err) {
     return { error: err.message, errors: err.errors, field: err.field, reason: err.reason };
 }
 
+/**
+ * The shared `beads.remote` gate (DQ-12): format-checks `remote`, requires a
+ * non-empty `backlogMember` to probe it on, and probes it via
+ * `probeBeadsRemote()`. Used by POST (create) and PUT (972p.5) so both paths
+ * shape the same 400 body on a failed/misconfigured probe.
+ *
+ * @param {{ executeCommand: (opts: {command: string, member_name: string}) => Promise<any> }} client
+ * @param {{ remote: unknown, backlogMember: unknown }} opts
+ * @returns {Promise<{ ok: true } | { ok: false, status: number, payload: object }>}
+ */
+export async function checkBeadsRemote(client, { remote, backlogMember } = {}) {
+    if (typeof remote !== 'string' || remote.trim().length === 0) {
+        return { ok: true };
+    }
+    if (typeof backlogMember !== 'string' || backlogMember.trim().length === 0) {
+        const err = new StoreValidationError([
+            { field: 'backlogMember', reason: 'must be a non-empty string (required to probe beads.remote)' },
+        ]);
+        return { ok: false, status: 400, payload: validationErrorPayload(err) };
+    }
+    const probe = await probeBeadsRemote(client, backlogMember, remote);
+    if (!probe.ok) {
+        return {
+            ok: false,
+            status: 400,
+            payload: {
+                error: `beads.remote probe failed on member '${backlogMember}': ${probe.error}`,
+                field: 'beads.remote',
+                reason: probe.error,
+            },
+        };
+    }
+    return { ok: true };
+}
+
 /** Whether `err` is the node:sqlite PRIMARY KEY / UNIQUE violation on `projects.id`. */
 function isUniqueViolation(err) {
     return typeof err?.message === 'string' && /UNIQUE constraint failed/i.test(err.message);
@@ -109,25 +144,13 @@ export function registerProjectRoutes(supervisor, deps = {}) {
     // -- POST /api/projects : validate, probe beads.remote (DQ-12), create ---
     supervisor.route('POST', '/api/projects', async (req, res) => {
         const body = (await readJsonBody(req)) ?? {};
-        const remote = body?.beads?.remote;
-        if (typeof remote === 'string' && remote.trim().length > 0) {
-            const backlogMember = body.backlogMember;
-            if (typeof backlogMember !== 'string' || backlogMember.trim().length === 0) {
-                const err = new StoreValidationError([
-                    { field: 'backlogMember', reason: 'must be a non-empty string (required to probe beads.remote)' },
-                ]);
-                sendJson(res, 400, validationErrorPayload(err));
-                return;
-            }
-            const probe = await probeBeadsRemote(client, backlogMember, remote);
-            if (!probe.ok) {
-                sendJson(res, 400, {
-                    error: `beads.remote probe failed on member '${backlogMember}': ${probe.error}`,
-                    field: 'beads.remote',
-                    reason: probe.error,
-                });
-                return;
-            }
+        const remoteCheck = await checkBeadsRemote(client, {
+            remote: body?.beads?.remote,
+            backlogMember: body.backlogMember,
+        });
+        if (!remoteCheck.ok) {
+            sendJson(res, remoteCheck.status, remoteCheck.payload);
+            return;
         }
         try {
             const project = createProject(db, body);
