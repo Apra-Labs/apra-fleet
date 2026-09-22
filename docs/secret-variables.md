@@ -33,7 +33,8 @@ reach an LLM prompt. Use `execute_command` instead.
 
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
-- `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
+- `credential_store_set` **blocks by default** - when a TTY is attached and `return_url` is not passed, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
+- **Non-blocking alternative**: when the server has no TTY attached (headless/service context), or `return_url: true` is passed explicitly, the tool instead returns immediately with `structuredContent: {url, expiresAt}` - a one-time browser URL the user opens to submit the secret asynchronously. The secret is stored the moment that form is submitted; no follow-up tool call is needed. See `docs/features/oob-auth.md` for the full mechanism.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage
