@@ -11,6 +11,7 @@
  *
  * Mocks the strategy/exec layer -- no real member connection.
  */
+import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -401,52 +402,46 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
    * apra-fleet-qe83.8.1.2 for which CI run this was confirmed against.
    */
   it.runIf(!isWindows)('POSIX: killPidTree reaps a live descendant that stayed in the process group, and isPidAlive does not report either as alive once gone', async () => {
-    const { getStrategy } = await vi.importActual<typeof import('../src/services/strategy.js')>('../src/services/strategy.js');
-    const agent = makeTestLocalAgent({ workFolder: process.cwd() });
-
-    // GG: the innermost process, alive until killed.
-    const ggScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-gg-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
-    fs.writeFileSync(ggScriptPath, "setInterval(() => {}, 1000);\n");
-    tempScripts.push(ggScriptPath);
-
-    // G: spawned detached by P below, so it becomes the leader of a NEW
-    // process group; it spawns GG WITHOUT detaching, so GG stays in G's
-    // (new) process group rather than starting one of its own.
-    const gScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-g-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
-    fs.writeFileSync(gScriptPath, [
-      "import { spawn } from 'node:child_process';",
-      `const gg = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(ggScriptPath)}], { stdio: 'ignore' });`,
+    // G: spawned DETACHED straight from this test process, so it becomes the
+    // leader of a new process group; it spawns GG without detaching, so GG
+    // stays in G's group rather than starting one of its own. `node -e` runs
+    // as CommonJS regardless of this package's "type": "module", hence
+    // require() rather than an import statement -- and inline source rather
+    // than temp scripts, so this case creates no filesystem state at all.
+    //
+    // Deliberately NOT routed through getStrategy().execCommand: on POSIX
+    // completesOnProcessExit() is false by design (src/services/exit-drain.ts)
+    // and G/GG hold the dispatch's stdio, so such a dispatch can never settle
+    // and can only ever hit the inactivity timeout on Linux/macOS. The
+    // properties under test here belong to killPidTree/isPidAlive, not to the
+    // dispatch layer, so they are exercised directly.
+    const gSource = [
+      "const { spawn } = require('node:child_process');",
+      "const gg = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
       "process.stdout.write('GG_PID:' + gg.pid + '\\n');",
-      "setInterval(() => {}, 1000);",
-      '',
-    ].join('\n'));
-    tempScripts.push(gScriptPath);
+      'setInterval(() => {}, 1000);',
+    ].join('');
 
-    // P: the dispatched process. Spawns G detached (new session/process
-    // group) with inherited stdio so G's (and GG's) writes reach P's own
-    // stdout, then exits immediately -- orphaning G+GG, exactly like the
-    // macOS CI failure shape (the dispatched process exits while a
-    // detached descendant tree keeps running).
-    const pScriptPath = path.join(os.tmpdir(), `fleet-posix-tree-p-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`);
-    fs.writeFileSync(pScriptPath, [
-      "import { spawn } from 'node:child_process';",
-      `const g = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(gScriptPath)}], { detached: true, stdio: ['ignore', 1, 2] });`,
-      'g.unref();',
-      "process.stdout.write('G_PID:' + g.pid + '\\n');",
-      'process.exit(0);',
-      '',
-    ].join('\n'));
-    tempScripts.push(pScriptPath);
+    const g = spawn(process.execPath, ['-e', gSource], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const gPid = g.pid!;
+    survivors.push(gPid);
 
-    const result = await getStrategy(agent).execCommand(nodeScriptCommand(pScriptPath), 20_000);
-
-    const gMatch = /G_PID:(\d+)/.exec(result.stdout);
-    const ggMatch = /GG_PID:(\d+)/.exec(result.stdout);
-    expect(gMatch).not.toBeNull();
-    expect(ggMatch).not.toBeNull();
-    const gPid = Number(gMatch![1]);
-    const ggPid = Number(ggMatch![1]);
-    survivors.push(gPid, ggPid);
+    let buf = '';
+    const ggPid: number = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out waiting for GG_PID')), 20_000);
+      g.stdout!.on('data', (chunk: Buffer) => {
+        buf += String(chunk);
+        const m = /GG_PID:(\d+)/.exec(buf);
+        if (m) {
+          clearTimeout(timer);
+          resolve(Number(m[1]));
+        }
+      });
+    });
+    survivors.push(ggPid);
 
     // Live process: the liveness check must report true for both.
     expect(repro.isPidAlive(gPid)).toBe(true);
@@ -457,14 +452,74 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
     // gPid, since ggPid stayed in gPid's process group.
     repro.killPidTree(gPid);
 
-    // Actually gone: not just "kill(0) still succeeds because the zombie
-    // has not been reaped yet" -- this is the exact assertion that failed
-    // on macos-latest CI pre-fix.
+    // Actually gone by the time killPidTree returns. kill(2) only QUEUES the
+    // signal, so without killPidTree's bounded wait-until-gone these two
+    // assertions still see live processes -- reproduced 25/25 on Linux and
+    // the shape of the ubuntu-latest/macos-latest CI teardown failure.
     expect(repro.isPidAlive(gPid)).toBe(false);
     expect(repro.isPidAlive(ggPid)).toBe(false);
 
     // eslint-disable-next-line no-console
     console.log(`[posix-tree] platform=${process.platform} gPid=${gPid} ggPid=${ggPid} bothReapedAfterKillPidTree=true`);
+  }, 60_000);
+
+  /**
+   * apra-fleet-qe83.8.1.3, criterion 3 (liveness half). killPidTree now waits
+   * until the pid has genuinely left the process table, which means the case
+   * above can no longer distinguish "gone" from "zombie" -- the wait masks the
+   * `ps stat = Z` branch of isPidAlive. This case keeps that branch covered
+   * directly and deterministically.
+   *
+   * The zombie is manufactured with `sh -c '<child> & echo ZPID:$!; exec sleep
+   * N'`: `exec` replaces the shell with `sleep` under the SAME pid, so the
+   * exited child's parent is now a process that never calls wait(2), leaving
+   * the child parked as an unreaped zombie for the duration. `process.kill(z,
+   * 0)` succeeds for that zombie -- which is exactly why isPidAlive needs the
+   * `ps` state check on top of it.
+   */
+  it.runIf(!isWindows)('POSIX: isPidAlive reports a zombie as not alive while still reporting its live parent as alive', async () => {
+    const holder = spawn('sh', ['-c', `${JSON.stringify(process.execPath)} -e "process.exit(0)" & echo ZPID:$!; exec sleep 60`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    survivors.push(holder.pid!);
+
+    let buf = '';
+    const zPid: number = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out waiting for ZPID')), 20_000);
+      holder.stdout!.on('data', (chunk: Buffer) => {
+        buf += String(chunk);
+        const m = /ZPID:(\d+)/.exec(buf);
+        if (m) {
+          clearTimeout(timer);
+          resolve(Number(m[1]));
+        }
+      });
+    });
+
+    // Wait (bounded) for the child to have exited and become a zombie, so the
+    // assertion below is deterministic rather than timing-dependent.
+    let stat = '';
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      try {
+        stat = execFileSync('ps', ['-o', 'stat=', '-p', String(zPid)], { encoding: 'utf8' }).trim();
+      } catch {
+        stat = '';
+      }
+      if (stat.startsWith('Z')) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(stat.startsWith('Z')).toBe(true);
+
+    // kill(0) succeeds for a zombie; isPidAlive must still say "not alive".
+    expect(() => process.kill(zPid, 0)).not.toThrow();
+    expect(repro.isPidAlive(zPid)).toBe(false);
+    // ...while the genuinely live holder is still reported as alive: the
+    // zombie check must never weaken the liveness answer for a live process.
+    expect(repro.isPidAlive(holder.pid!)).toBe(true);
+
+    // eslint-disable-next-line no-console
+    console.log(`[posix-zombie] platform=${process.platform} zombiePid=${zPid} psStat=${stat} holderPid=${holder.pid} holderAlive=true`);
   }, 60_000);
 
   it.runIf(!isWindows)('non-windows: wrapper shape only -- process-exit completion is Windows-scoped and POSIX is untouched', async () => {

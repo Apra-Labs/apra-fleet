@@ -89,8 +89,101 @@ export function isPidAlive(pid) {
 }
 
 /**
- * Best-effort kill of a pid and its descendants; never throws, even when the
- * target is already gone.
+ * Bound (ms) on how long killPidTree waits for a signalled pid to actually
+ * leave the process table, and the poll interval inside that bound.
+ *
+ * Deliberately a BOUNDED poll, not a fixed sleep: a pid that dies in 3 ms
+ * costs 3 ms, and a pid that somehow never dies costs at most the bound and
+ * then returns anyway (killPidTree stays best-effort and never throws).
+ */
+export const KILL_TREE_WAIT_MS = 5000;
+const KILL_TREE_POLL_MS = 20;
+
+/**
+ * Synchronous sleep. killPidTree/isPidAlive are synchronous and are called
+ * from synchronous teardown (vitest afterEach), so the wait cannot be an
+ * `await`. Atomics.wait on a throwaway SharedArrayBuffer blocks the thread
+ * for the given ms without busy-spinning the CPU.
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Bounded wait until `pid` is no longer alive. Returns true if it is gone
+ * within `timeoutMs`, false if it outlived the bound.
+ *
+ * Why this is needed at all: `process.kill(pid, 'SIGKILL')` (and taskkill)
+ * only QUEUES the kill -- the syscall returns as soon as the signal is
+ * pending, before the target has been scheduled to die. A liveness probe run
+ * on the very next line therefore still sees a running process. On a Linux
+ * runner whose grandchild has been reparented to init this is not even a
+ * flaky race: it reported "still alive" on 25/25 local WSL2 iterations. The
+ * zombie branch in isPidAlive does not help here, because at that instant the
+ * process is not a zombie yet -- it is still in state S/R with a pending
+ * SIGKILL.
+ */
+export function waitForPidGone(pid, timeoutMs = KILL_TREE_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!isPidAlive(pid)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(KILL_TREE_POLL_MS);
+  }
+}
+
+/**
+ * True if the POSIX process group `pgid` still has at least one member that
+ * is not already a zombie.
+ *
+ * `process.kill(-pgid, 0)` cannot be used for this: it succeeds for a group
+ * whose only remaining members are unreaped zombies, which would make the
+ * wait below burn its whole bound whenever a descendant's reaper is slow.
+ * `ps -e -o pid=,pgid=,stat=` is filtered in JS instead of using `ps -g`,
+ * because `-g` means process-group on macOS but effective-group-name on
+ * Linux.
+ */
+function groupHasLiveMember(pgid) {
+  try {
+    const out = execFileSync('ps', ['-e', '-o', 'pid=,pgid=,stat='], { encoding: 'utf8' });
+    for (const line of out.split('\n')) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line);
+      if (!m) continue;
+      if (Number(m[2]) !== pgid) continue;
+      if (m[3].startsWith('Z')) continue;
+      return true;
+    }
+    return false;
+  } catch {
+    // ps unavailable -- cannot prove anything survives, so do not block.
+    return false;
+  }
+}
+
+/**
+ * Bounded wait until no live (non-zombie) process remains in process group
+ * `pgid`. Returns true if the group drained within the bound.
+ *
+ * This is what makes killPidTree live up to its name: `kill(-pgid, SIGKILL)`
+ * reaches every group member, but returns before ANY of them has died, so a
+ * descendant that stayed in the leader's group is still visible to a liveness
+ * probe on the next line -- the same asynchronous-delivery effect documented
+ * on waitForPidGone, just for the descendants rather than the leader.
+ */
+export function waitForGroupGone(pgid, timeoutMs = KILL_TREE_WAIT_MS) {
+  if (process.platform === 'win32') return true;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!groupHasLiveMember(pgid)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(KILL_TREE_POLL_MS);
+  }
+}
+
+/**
+ * Best-effort kill of a pid and its descendants, which does not return until
+ * the pid has actually left the process table (or the bounded wait above
+ * expires); never throws, even when the target is already gone.
  *
  * On POSIX a plain `process.kill(pid, 'SIGKILL')` only ever reaches the
  * single given pid despite the function's name -- any descendant survives.
@@ -106,6 +199,7 @@ export function killPidTree(pid) {
     try {
       execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
     } catch { /* already gone */ }
+    waitForPidGone(pid);
     return;
   }
   try {
@@ -114,6 +208,8 @@ export function killPidTree(pid) {
   try {
     process.kill(pid, 'SIGKILL');
   } catch { /* already gone */ }
+  waitForPidGone(pid);
+  waitForGroupGone(pid);
 }
 
 async function main() {
