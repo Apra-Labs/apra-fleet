@@ -1019,7 +1019,16 @@ function createSprintDoctor({ enabled, thresholds = {}, caps = {}, limits = {}, 
 
         const accepted = [];
         for (const pending of pendings) {
-            if (consults.length >= effectiveCaps.maxConsults) {
+            // Gate on the LIMITER's real dispatch count, not on how many
+            // triggers this debounce ledger has recorded: `consults` below is
+            // the trigger-debounce bookkeeping array (evaluateTriggers()'s
+            // `priorConsults`), and a trigger raised through evaluate() at a
+            // record-only hook (H4's T1/T2 fast path, or a T5 red-state event
+            // that never reaches doctor.consult()) never dispatches anything,
+            // so it must never spend the consult budget. `limiter.count()` is
+            // the one counter createConsultLimiter() increments -- via
+            // noteConsult() -- only where a consult is ACTUALLY dispatched.
+            if (limiter.count() >= effectiveCaps.maxConsults) {
                 // Announced ONCE per sprint: the cap is a circuit breaker, not
                 // a per-cycle event, and repeating it every cycle would be the
                 // log noise the breaker exists to prevent.
