@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Groundwork for the v0.5 console integration branch: epic closed, all three CI legs green
+
+The final pass on the v0.5 console groundwork branch. Both Windows-only test
+failures the previous pass left open are now root-caused and fixed, closing
+out every P1 acceptance criterion for the epic; `ubuntu-latest`,
+`macos-latest` and `windows-latest` are all green on the same head.
+
+What shipped since the previous pass:
+
+- **`integration-gate-status.mjs`'s ESM entry-point guard now uses
+  `pathToFileURL(process.argv[1]).href`** instead of a raw `file://` string
+  built by template-literal interpolation, so `main()` actually runs on
+  win32 (see
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md#windows-pitfalls-in-local-node-tooling-not-member-transport-but-the-same-failure-shape)
+  for the general failure shape and fix pattern).
+- **`supervisor-guard-e2e.test.mjs` is hardened against hosted-runner
+  contention** on Windows: every HTTP/TCP timeout is now derived from the
+  package's existing `scaledTimeout()` helper (explicit concurrency, since
+  a bare `node --test` invocation of a single file does not always inherit
+  the env var that helper reads), the first loopback health probe retries
+  until any response or a scaled deadline rather than a fixed 5s budget, and
+  every timeout/failure names its request and carries the child process's
+  stdout/stderr so a CI failure is actionable. No assertion was weakened and
+  nothing is skipped on Windows.
+- **`deploy.md`'s two remaining unauthenticated supervisor curls** (the
+  force-release call in the Active-sprints gate section, and the
+  `/api/sprints` gate curl in the Deploy build script) now carry the
+  `Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")` header,
+  matching the form already used throughout the other playbooks.
+- **The playbook auth-curl scan test now covers all three playbooks**
+  (`deploy.md`, `integ-test-playbook.md`, `regression-test-playbook.md`),
+  not just the regression playbook, so the "no unauthenticated supervisor
+  curl in any playbook" acceptance criterion is actually enforced across the
+  full set of operator-facing docs rather than one of three.
+
+Deferred (filed as open, low-priority backlog, not blocking this epic):
+
+- Supervisor auth's `aclVerified` reporting for an unprotected `fleet.key`.
+- Integration gate status treats terminal `SKIPPED`/`NEUTRAL` check
+  conclusions as pending rather than resolved.
+- No startup warning when the supervisor starts with no service token
+  configured.
+- The supervisor launch API still cannot express a synced multi-machine
+  topology (`--sync`), tracked separately from this epic.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $15.9796.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3051 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 21 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Groundwork for the v0.5 console integration branch: follow-up pass on the open P1 gaps
 
 A follow-up pass on the same v0.5 console groundwork branch, closing most of
