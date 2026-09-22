@@ -344,8 +344,8 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
 // module never has to import runner.js back (a cycle).
 export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads = false, needsVcsAuth = pushCode || pushBeads, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
     const {
-        brackets, command, log, branch, args, agent, doltPushMutex, sprintId,
-        onAuthFailure, resolveMemberProvider, ensureVcsAuthFresh,
+        brackets, command, log, branch, baseBranch, args, agent, doltPushMutex, sprintId,
+        onAuthFailure, resolveMemberProvider, ensureVcsAuthFresh, warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfterOrdered, isNoMutationDispatchFailure,
     } = ctx;
     // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
@@ -380,6 +380,19 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
             if (needsVcsAuth) {
                 log(`[Sync] preflight: member '${member}' needs a fresh VCS credential before this dispatch (pushCode=${pushCode}, pushBeads=${pushBeads}, needsVcsAuth=${needsVcsAuth}).`);
                 await ensureVcsAuthFresh(member);
+            }
+            // (apra-fleet-2wdc.6) Workflows-permission preflight: only a
+            // CODE-writing dispatch (pushCode) can ever push a
+            // .github/workflows/** change, so this is gated on pushCode
+            // specifically -- not needsVcsAuth, which also covers
+            // beads-only (D-push) roles that never touch the git branch at
+            // all. warnWorkflowsPermissionMissing is undefined for any
+            // caller that has not wired createWorkflowsPermissionPreflightCallback
+            // (e.g. a pre-existing test's hand-built ctx) -- optional and a
+            // no-op in that case, exactly like the other injected callbacks
+            // here. Never throws; see that function's own doc comment.
+            if (pushCode && typeof warnWorkflowsPermissionMissing === 'function') {
+                await warnWorkflowsPermissionMissing(member, branch, baseBranch);
             }
             await syncMemberBefore(member, { command, log, branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip, resolveMemberProvider });
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that

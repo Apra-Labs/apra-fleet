@@ -223,6 +223,12 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
+ *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
+ *   when the member was registered without an explicit level. Consumers that need to know whether a
+ *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
+ *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
+ *   exactly for the members at risk.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
@@ -379,7 +385,8 @@
  * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
  * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
- *   Defaults to "https://<host>".
+ *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
+ *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
@@ -391,7 +398,8 @@
  * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
  * @property {string} [workspace] - Bitbucket workspace slug
- * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
+ * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg,
+ *   or the legacy https://myorg.visualstudio.com)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
  *   token -- resolved from the credential store server-side before use.
  * @property {string} [pat_expires_at] - ISO 8601 date/time the Azure DevOps PAT expires, as

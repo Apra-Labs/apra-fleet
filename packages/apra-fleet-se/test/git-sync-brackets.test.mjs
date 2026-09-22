@@ -10,8 +10,10 @@ import {
     syncMemberAfter,
     syncMemberAfterOrdered,
     parseUnmergedPaths,
+    isMissingRemoteRefError,
 } from '../fleet-sprint/runner.js';
-import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
+import { GitDivergedError, GitSyncError, PostDispatchSyncError, isPostDispatchSyncFailure } from '../fleet-sprint/errors.mjs';
+import { isPermissionScopePostDispatchSyncFailure } from '../fleet-sprint/dispatch-failure.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
@@ -77,6 +79,24 @@ const REAL_DIVERGED_UNMERGED = stderrText('git/diverged/pull-with-unmerged-files
 const REAL_DIVERGED_CONFLICT = stderrText('git/diverged/merge-conflict');
 const REAL_AUTH_NO_USERNAME = stderrText('git/auth/could-not-read-username-prompts-disabled');
 const REAL_UNKNOWN_BAD_OBJECT = stderrText('git/unknown/not-a-valid-object-name');
+
+// -----------------------------------------------------------------------------
+// apra-fleet-2wdc.5 -- the GitHub workflow-file permission refusal
+// (vcs-providers/github.mjs's WORKFLOW_PERMISSION_REFUSAL / `permissionScope`
+// hook, added by apra-fleet-2wdc.3). Not part of the recorded corpus above (it
+// is a documented, synthesized shape rather than a captured real-git sample --
+// see this file's own header comment on WORKFLOW_PERMISSION_REFUSAL for the
+// exact two-line git stderr shape this reproduces): GitHub's "refusing to
+// allow a <principal> to create or update workflow <path>" rejection wrapped
+// in git's universal "error: failed to push some refs" tail. Two wordings --
+// GitHub App (fleet-minted installation tokens) and Personal Access Token (an
+// operator-supplied PAT) -- are the two the fleet can actually produce.
+const GITHUB_APP_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+const PAT_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a Personal Access Token to create or update workflow .github/workflows/ci.yml without workflow scope)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
 
 // A tiny scripted command() mock: pass a map from cmd-substring -> a sequence
 // of results (each { ok } or { ok:false, error }). Records every call with its
@@ -861,6 +881,102 @@ test('(ported) syncMemberAfter: a pull --rebase failure with a CLEAN porcelain (
     check(abortCalls.length === 0, 'rebase --abort must not run when porcelain reports nothing unmerged');
 });
 
+// =============================================================================
+// apra-fleet-ta3.4 -- unit coverage for apra-fleet-ta3.3's missing-remote-ref
+// guard in syncMemberAfter: on a fresh sprint branch the initial G-push can be
+// classified 'diverged' even though the remote has no such branch at all
+// (git's non-fast-forward rejection trailers are generic); the ONLY place that
+// becomes observable is the resulting `git pull --rebase`, which fails with
+// git's exact "couldn't find remote ref <branch>" message when there is
+// nothing there to rebase against. The guard (isMissingRemoteRefError(),
+// member-sync.mjs) skips the Tier 1/Tier 2 conflict-ladder machinery entirely
+// in that case and retries the push directly to create the branch.
+// =============================================================================
+test('(ta3.4-1) missing-remote-ref guard: push diverged, then rebase fails with "couldn\'t find remote ref feat/x" -- skips rebase --abort and Tier 2 entirely, retries the push directly, and resolves { ok: true, pushed: true }', async () => {
+    const { command, calls } = makeCommandMock({
+        // Initial push classified 'diverged' (generic non-FF trailer -- the
+        // root cause this guard exists for: this text is ALSO what a brand-
+        // new, never-pushed branch produces). The retry create-push below
+        // succeeds, creating the branch on the remote.
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK],
+        // The resulting pull --rebase fails with git's exact, unambiguous
+        // "branch does not exist on the remote" message.
+        'git pull --rebase': [fail("fatal: couldn't find remote ref feat/x")],
+    });
+    let agentCalls = 0;
+    const agent = async () => { agentCalls++; return { status: 'RESOLVED' }; };
+
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin', agent });
+
+    check(res.ok === true && res.pushed === true, `expected { ok: true, pushed: true }, got: ${JSON.stringify(res)}`);
+    check(res.rebased === false, 'the missing-remote-ref path never actually rebased anything');
+
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(pushCalls.length === 2, `expected the initial push plus one create-push retry, saw ${pushCalls.length}: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 1, `expected the pull --rebase probed exactly once (never blindly repeated), saw ${rebaseCalls.length}`);
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 0, `expected NO 'git rebase --abort' -- there is nothing to abort when there was never a real rebase attempt, saw ${abortCalls.length}`);
+    check(agentCalls === 0, `expected NO Tier 2 agent dispatch -- a missing remote ref is not a real conflict, saw ${agentCalls} agent call(s)`);
+});
+
+test('(ta3.4-2) missing-remote-ref guard: if the create-push retry is itself rejected as diverged, a concurrent writer published the branch first -- raises the typed GitDivergedError', async () => {
+    const { command, calls } = makeCommandMock({
+        // Single-entry queue: the same divergence rejection on BOTH the
+        // initial push and the create-push retry (see makeCommandMock's doc
+        // comment) -- simulating another writer publishing the branch in the
+        // narrow window between the failed rebase probe and this retry.
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail("fatal: couldn't find remote ref feat/x")],
+    });
+
+    let err = null;
+    try { await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin' }); } catch (e) { err = e; }
+
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(err.member === 'm1', 'the typed error must carry the member');
+    check(err.operation === 'push', `expected operation 'push', got ${err.operation}`);
+
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(pushCalls.length === 2, `expected the initial push plus exactly one create-push retry (never retried further), saw ${pushCalls.length}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 1, `expected the pull --rebase probed exactly once, saw ${rebaseCalls.length}`);
+});
+
+test('(ta3.4-3) regression guard: a genuine rebase CONFLICT (not a missing-remote-ref) still runs the Tier 1 abort and, with an injected agent, the Tier 2 path -- unaffected by the missing-remote-ref guard', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK], // initial reject, then Tier 2 re-push
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
+        'git status --porcelain': [
+            { ok: true, output: 'UU a.txt\n', error: null }, // Tier 1 conflict-detection check
+            { ok: true, output: '', error: null },           // Tier 1 post-abort clean-state check
+            { ok: true, output: '', error: null },           // Tier 2 post-resolution clean-state check
+        ],
+        'git rebase --abort': [OK],
+    });
+    let agentCalls = 0;
+    const agent = async () => { agentCalls++; return { status: 'RESOLVED' }; };
+
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin', agent });
+
+    check(res.ok === true && res.pushed === true && res.tier2Resolved === true, `expected a Tier-2-resolved success, got: ${JSON.stringify(res)}`);
+    check(agentCalls === 1, `expected exactly one Tier 2 agent dispatch for a genuine conflict, saw ${agentCalls}`);
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 1, `expected the Tier 1 rebase --abort to still run for a genuine conflict, saw ${abortCalls.length}`);
+    check(!isMissingRemoteRefError(REAL_DIVERGED_CONFLICT), 'sanity: the recorded genuine-conflict sample must not match the missing-remote-ref predicate');
+});
+
+test('(ta3.4-4) isMissingRemoteRefError: matches git\'s exact wording case-insensitively; does not match unrelated fatal texts, empty, or undefined input', () => {
+    check(isMissingRemoteRefError("fatal: couldn't find remote ref feat/x") === true, 'must match the exact live wording');
+    check(isMissingRemoteRefError("FATAL: COULDN'T FIND REMOTE REF refs/heads/mybranch") === true, 'must match case-insensitively');
+    check(isMissingRemoteRefError("something couldn't find remote ref buried mid-sentence") === true, 'must match anywhere in the text, not just at the start');
+    check(isMissingRemoteRefError('fatal: Not possible to fast-forward, aborting.') === false, 'a plain ff-only refusal must not match');
+    check(isMissingRemoteRefError(REAL_DIVERGED_CONFLICT) === false, 'a genuine recorded content-conflict sample must not match');
+    check(isMissingRemoteRefError(REAL_DIVERGED_PUSH_NON_FF) === false, 'a genuine recorded non-FF push rejection must not match');
+    check(isMissingRemoteRefError('') === false, 'empty string must not match');
+    check(isMissingRemoteRefError(undefined) === false, 'undefined input must not match (defaults to empty string, never throws)');
+});
+
 test('(ported) syncMemberAfterOrdered: clean G-push publishes, then D-push runs (both succeed)', async () => {
     const { command, calls } = makeCommandMock({});
     const res = await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true });
@@ -918,4 +1034,138 @@ test('(ported) syncMemberAfterOrdered: pushBeads:false (read-only bracket) with 
     check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
     const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
     check(doltPushCalls.length === 0, `D-push must not be invoked, saw ${doltPushCalls.length}`);
+});
+
+// =============================================================================
+// apra-fleet-2wdc.5 -- end-to-end coverage for the workflow-permission
+// refusal's syncMemberAfter/dispatch-outcome behavior (apra-fleet-2wdc.3/.4's
+// fixes). classifyFailure()'s own AUTH_DENIED/permissionScope/operatorReferral
+// verdict is pinned separately in test/vcs-classify-failure.test.mjs; this
+// suite pins what a caller (syncMemberAfter, and the dispatch-outcome
+// classifier dispatch-failure.mjs consumes) DOES with that verdict: no
+// rebase, no self-heal, no retry, and a thrown error that names the member,
+// the refused workflow path and the missing permission -- plus a regression
+// guard that the new permission-scope gate in runGitStep does not disturb the
+// pre-existing transient-retry or diverged-rebase-once paths.
+// =============================================================================
+for (const [label, refusalText] of [
+    ['GitHub App', GITHUB_APP_WORKFLOW_REFUSAL],
+    ['Personal Access Token', PAT_WORKFLOW_REFUSAL],
+]) {
+    test(`(2wdc.5) syncMemberAfter: a ${label} workflow-permission refusal is NOT rebased/self-healed/retried, and the thrown error names the member, the refused workflow path and the missing permission`, async () => {
+        const { command, calls } = makeCommandMock({
+            'git push': [fail(refusalText)],
+        });
+        let healCalls = 0;
+        const onAuthFailure = async () => { healCalls += 1; };
+        let err = null;
+        try {
+            await syncMemberAfter('doer-1', { command, branch: 'feat/x', onAuthFailure });
+        } catch (e) {
+            err = e;
+        }
+        check(err instanceof GitSyncError, `expected a typed GitSyncError, got ${err && err.constructor.name}`);
+        check(!(err instanceof GitDivergedError), 'a permission-scope refusal must never be classified as a divergence (the DIVERGED trap this bug fixes)');
+        check(
+            calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 0,
+            `no pull --rebase may ever be attempted for a permission-scope refusal, saw ${JSON.stringify(calls.map((c) => c.cmd))}`,
+        );
+        check(
+            calls.filter((c) => /^git push/.test(c.cmd)).length === 1,
+            `no second push may be attempted (no retry), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+        );
+        check(healCalls === 0, 'the injected onAuthFailure self-heal must never be invoked for a permission-scope refusal');
+        check(err.message.includes('doer-1'), `expected the thrown error to name the member 'doer-1', got: ${err.message}`);
+        check(err.message.includes('.github/workflows/ci.yml'), `expected the thrown error to name the refused workflow path, got: ${err.message}`);
+        check(/workflows.{0,30}permission/is.test(err.message), `expected the thrown error to name the missing 'workflows' permission, got: ${err.message}`);
+    });
+}
+
+test('(2wdc.5) regression guard: a transient G-push failure still retries to success -- the new permission-scope gate does not disturb the transient path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS), OK],
+    });
+    const res = await syncMemberAfter('m1', { command, maxTransientRetries: 1 });
+    check(res.ok === true, `expected the retried push to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected exactly one retry (2 total push attempts), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) regression guard: a genuine divergence still rebases exactly once then re-pushes -- the new permission-scope gate does not disturb the diverged path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK],
+        'git pull --rebase': [OK],
+    });
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x' });
+    check(res.ok === true && res.rebased === true, `expected the rebase-then-repush to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 1,
+        `expected exactly one rebase attempt, saw ${calls.filter((c) => /git pull --rebase/.test(c.cmd)).length}`,
+    );
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected the initial push plus one re-push after rebase, saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) unit: isPermissionScopePostDispatchSyncFailure recognizes the REAL error chain a permission-scope G-push produces, and only that chain', async () => {
+    // Drive the REAL syncMemberAfter failure path (rather than hand-typing a
+    // marker string) so this test fails if github.mjs's permissionScope hook,
+    // vcs-module.mjs's precedence-skip, git-topology.mjs's runGitStep gate, or
+    // dispatch-failure.mjs's marker regex is reverted.
+    const { command: permCommand } = makeCommandMock({
+        'git push': [fail(GITHUB_APP_WORKFLOW_REFUSAL)],
+    });
+    let permissionScopeGitErr = null;
+    try {
+        await syncMemberAfter('doer-1', { command: permCommand, branch: 'feat/x' });
+    } catch (e) {
+        permissionScopeGitErr = e;
+    }
+    check(permissionScopeGitErr instanceof GitSyncError, 'precondition: syncMemberAfter must throw the typed GitSyncError for a permission-scope refusal');
+
+    // Wrapped the same way git-sync.mjs's post-dispatch teardown wraps a
+    // failed syncMemberAfterOrdered call, interpolating the sync error's
+    // message and carrying it as `cause`.
+    const permissionScopePostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'doer-1' AFTER the dispatch completed successfully: ${permissionScopeGitErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+        { member: 'doer-1', cause: permissionScopeGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'the real permission-scope G-push chain must be recognized as a permission-scope post-dispatch sync failure',
+    );
+    check(
+        isPostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'it must still satisfy the broader isPostDispatchSyncFailure() predicate too (regression: the general classifier is unaffected)',
+    );
+
+    // A DIFFERENT (transient-exhausted) G-push failure, wrapped the SAME way,
+    // must never be misread as a permission-scope refusal -- the marker text
+    // is specific to the permission-scope referral, not to "any G-push
+    // failure that became a PostDispatchSyncError".
+    const { command: transientCommand } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS)],
+    });
+    let transientGitErr = null;
+    try {
+        await syncMemberAfter('m1', { command: transientCommand, maxTransientRetries: 0 });
+    } catch (e) {
+        transientGitErr = e;
+    }
+    check(transientGitErr instanceof GitSyncError, 'precondition: an exhausted-transient G-push failure must also throw a typed GitSyncError');
+    const transientPostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'm1' AFTER the dispatch completed successfully: ${transientGitErr.message}.`,
+        { member: 'm1', cause: transientGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(transientPostDispatchErr) === false,
+        'a transient G-push failure must never be misread as permission-scope',
+    );
+    check(isPostDispatchSyncFailure(transientPostDispatchErr) === true, 'a transient failure is still a generic post-dispatch sync failure');
+
+    check(isPermissionScopePostDispatchSyncFailure(new Error('plain error, not even a PostDispatchSyncError')) === false, 'a non-PostDispatchSyncError is never permission-scope');
+    check(isPermissionScopePostDispatchSyncFailure(undefined) === false, 'undefined input must not throw and must not be permission-scope');
 });

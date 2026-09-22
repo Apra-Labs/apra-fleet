@@ -90,6 +90,60 @@ describe('AzureDevOpsVCS.buildProvisionArgs (apra-fleet-5co8.2.1)', () => {
         }
     });
 
+    // GitHub issue #502 -----------------------------------------------------
+    const LEGACY_REF = { org: 'apralabs', project: 'e2e-fleet-testing', repo: 'fleet-e2e-toy' };
+
+    test('a legacy visualstudio.com https remote binds the credential to that host via scope_url (issue #502)', () => {
+        for (const remoteUrl of [
+            'https://apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy',
+            'https://ApraLabs.visualstudio.com/e2e-fleet-testing/_git/fleet-e2e-toy',
+            'https://apralabs@apralabs.visualstudio.com/DefaultCollection/My%20Project/_git/fleet-e2e-toy',
+        ]) {
+            const built = AzureDevOpsVCS.buildProvisionArgs({ base, repoRef: LEGACY_REF, availableSecrets: ['azdevops_pat'], remoteUrl });
+            assert.equal(built.error, undefined, remoteUrl);
+            // The REST org URL stays on the modern host; only the git
+            // credential scope moves to the legacy host.
+            assert.equal(built.args.org_url, 'https://dev.azure.com/apralabs', remoteUrl);
+            assert.equal(built.args.scope_url, 'https://apralabs.visualstudio.com', remoteUrl);
+            assert.equal(built.note, undefined, remoteUrl);
+        }
+    });
+
+    test('a modern dev.azure.com remote sends NO scope_url, so the server default applies unchanged', () => {
+        const built = AzureDevOpsVCS.buildProvisionArgs({ base, repoRef: LEGACY_REF, availableSecrets: ['azdevops_pat'], remoteUrl: AZ_REMOTE });
+        assert.equal('scope_url' in built.args, false);
+        assert.equal(built.note, undefined);
+    });
+
+    test('an ssh remote (either host) still provisions the PAT for REST calls but notes that git push uses the SSH key', () => {
+        for (const remoteUrl of [
+            'apralabs@vs-ssh.visualstudio.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+            'git@ssh.dev.azure.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy',
+        ]) {
+            const built = AzureDevOpsVCS.buildProvisionArgs({ base, repoRef: LEGACY_REF, availableSecrets: ['azdevops_pat'], remoteUrl });
+            assert.equal(built.args.org_url, 'https://dev.azure.com/apralabs', remoteUrl);
+            assert.equal('scope_url' in built.args, false, 'a PAT cannot be bound to an ssh host');
+            assert.match(built.note, /pushes over ssh/, remoteUrl);
+            assert.match(built.note, /SSH key/, remoteUrl);
+            assert.match(built.note, /pull-request calls only/, remoteUrl);
+        }
+    });
+
+    test('an underivable org names its real cause: an unreadable remote is not a malformed one', () => {
+        const unread = AzureDevOpsVCS.buildProvisionArgs({
+            base, repoRef: null, availableSecrets: ['azdevops_pat'], remoteUrl: '', remoteReadError: 'Request "tools/call" (id=31) aborted before a response was received.',
+        });
+        assert.match(unread.error, /^ERROR: /);
+        assert.match(unread.error, /git remote could not be read \(Request "tools\/call" \(id=31\) aborted/);
+        assert.match(unread.error, /ORG\.visualstudio\.com/);
+
+        const wrong = AzureDevOpsVCS.buildProvisionArgs({
+            base, repoRef: null, availableSecrets: ['azdevops_pat'], remoteUrl: 'https://gitlab.example.com/x/y.git', remoteReadError: null,
+        });
+        assert.match(wrong.error, /remote 'https:\/\/gitlab\.example\.com\/x\/y\.git' is not a recognized Azure DevOps repository URL/);
+        assert.match(wrong.error, /https:\/\/dev\.azure\.com\/ORG\/PROJECT\/_git\/REPO/);
+    });
+
     test('a per-sprint secret-name override is honoured when one is supplied', () => {
         // The override is now wired through runner.js validated args (apra-fleet-5co8.2.3).
         const built = AzureDevOpsVCS.buildProvisionArgs({
@@ -116,6 +170,86 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
         });
         // No raw token value anywhere in what the runner sent.
         assert.match(JSON.stringify(calls[0].args), /\{\{secret\.azdevops_pat\}\}/);
+    });
+
+    test('a legacy visualstudio.com member provisions with the modern org_url AND a legacy-host scope_url (issue #502)', async () => {
+        const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({
+            callTool,
+            command: remoteCommandFor('https://apralabs.visualstudio.com/DefaultCollection/e2e-fleet-testing/_git/fleet-e2e-toy'),
+        });
+
+        await ensureVcsAuthFresh('fleet-mac');
+
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0].args, {
+            member_name: 'fleet-mac',
+            provider: 'azure-devops',
+            org_url: 'https://dev.azure.com/apralabs',
+            pat: '{{secret.azdevops_pat}}',
+            scope_url: 'https://apralabs.visualstudio.com',
+        });
+    });
+
+    test('an ssh member provisions and the preflight logs the ssh-key note (issue #502)', async () => {
+        const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({
+            callTool,
+            command: remoteCommandFor('apralabs@vs-ssh.visualstudio.com:v3/apralabs/e2e-fleet-testing/fleet-e2e-toy'),
+            log: (m) => logs.push(m),
+        });
+
+        await ensureVcsAuthFresh('fleet-mac');
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].args.org_url, 'https://dev.azure.com/apralabs');
+        assert.ok(logs.some((l) => /note: .*pushes over ssh \(vs-ssh\.visualstudio\.com\)/.test(l)), JSON.stringify(logs));
+    });
+
+    test('an unreadable remote is reported as such, not as an unrecognized URL (issue #502)', async () => {
+        const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({
+            callTool,
+            command: async (cmd) => {
+                if (cmd === 'git remote get-url origin') throw new Error('Request "tools/call" (id=31) aborted before a response was received.');
+                return { ok: true, output: '', error: null };
+            },
+            log: (m) => logs.push(m),
+        });
+
+        await ensureVcsAuthFresh('fleet-mac');
+
+        assert.equal(calls.length, 0, 'nothing can be provisioned without an org');
+        assert.ok(
+            logs.some((l) => /git remote could not be read \(Request "tools\/call" \(id=31\) aborted/.test(l)),
+            `expected the preflight log to name the remote-read failure as the cause, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(!logs.some((l) => /no organization could be derived/.test(l)), 'the old cause-blind wording must not appear');
+    });
+
+    test('a failSoft remote read ({ ok: false }, not thrown) is also reported as "could not be read" (issue #502)', async () => {
+        const { calls, callTool } = makeCallTool({ provider: 'azure-devops', secrets: ['azdevops_pat'] });
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({
+            callTool,
+            command: async (cmd) => (
+                cmd === 'git remote get-url origin'
+                    ? { ok: false, output: '', error: "fatal: No such remote 'origin'" }
+                    : { ok: true, output: '', error: null }
+            ),
+            log: (m) => logs.push(m),
+        });
+
+        await ensureVcsAuthFresh('fleet-mac');
+
+        assert.equal(calls.length, 0, 'nothing can be provisioned without an org');
+        assert.ok(
+            logs.some((l) => /git remote could not be read \(fatal: No such remote 'origin'\)/.test(l)),
+            `expected the preflight log to carry the failSoft read error verbatim, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(!logs.some((l) => /is not a recognized Azure DevOps repository URL/.test(l)), 'an unread remote must not be reported as a malformed one');
     });
 
     test('a missing secret fails the preflight with the remedial command, never a prompt', async () => {

@@ -83,6 +83,12 @@ import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
+// apra-fleet-rp7a.1: the SAME deferred split Cycle Evaluation applies. Shared
+// rather than re-implemented here, because the two counts disagreeing is
+// exactly the bug: the cycle loop would exit "satisfied" while this phase
+// reported the deferred bead as still open, and the evidence-based final
+// verdict would then FAIL a sprint the loop had just declared complete.
+import { partitionDeferredBeads } from '../beads-scope.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -93,7 +99,11 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
  *   finalVerdictResult: object,
  *   finalClosedCount: number,
  *   finalOpenAtGoalCount: number,
- * }>} The sprint verdict and the two closing counts the analysis doc renders.
+ *   finalDeferredAtGoalIds: string[],
+ * }>} The sprint verdict, the two closing counts the analysis doc renders, and
+ *   (apra-fleet-rp7a.1) the ids excluded from `finalOpenAtGoalCount` because
+ *   they are deferred -- carried out so the analysis doc can name what was
+ *   skipped rather than leaving it invisible behind a count of zero.
  *   Every other output of this phase is an in-place mutation of an array the
  *   caller still holds, or a bead/KB write already performed.
  */
@@ -152,7 +162,14 @@ export async function runFinalReviewPhase({
         decomposedParentIds(),
         bdListScoped('--status=closed --json'),
     ]);
-    const finalOpenAtGoal = finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id));
+    // apra-fleet-rp7a.1: deferred beads are dropped from the closing count for
+    // the same reason Cycle Evaluation drops them -- the dispatcher never
+    // offers a deferred bead, so it is not work this sprint left undone. Their
+    // ids are kept and surfaced as their own evidence line (below) rather than
+    // silently folded away, so the final reviewer judges "finished with N
+    // beads deliberately deferred", not "finished with N beads still open".
+    const { active: finalOpenAtGoal, deferredIds: finalDeferredAtGoalIds } =
+        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)));
     const finalClosedCount = finalClosedBeads.length;
     // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
     // check -- verify-routed beads are decomposed parents, so they never
@@ -222,6 +239,7 @@ export async function runFinalReviewPhase({
             integFailures,
             rejectedNewTasks,
             unclosedVerifyIds: finalUnclosedVerifyIds,
+            deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
             kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
         }),
@@ -374,5 +392,12 @@ export async function runFinalReviewPhase({
         await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });
     }
 
-    return { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount: finalOpenAtGoal.length };
+    return {
+        finalVerdictResult,
+        finalClosedCount,
+        finalOpenAtGoalCount: finalOpenAtGoal.length,
+        // apra-fleet-rp7a.1: carried out so the sprint analysis document names
+        // what was skipped, not just how many beads remained open.
+        finalDeferredAtGoalIds,
+    };
 }

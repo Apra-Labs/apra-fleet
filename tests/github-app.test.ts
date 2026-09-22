@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import crypto from 'node:crypto';
-import { createAppJWT, loadPrivateKey, mapAccessLevel } from '../src/services/github-app.js';
+import { createAppJWT, loadPrivateKey, mapAccessLevel, mintGitToken } from '../src/services/github-app.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -84,17 +84,86 @@ describe('createAppJWT', () => {
 describe('mapAccessLevel', () => {
   it('maps all access levels correctly', () => {
     expect(mapAccessLevel('read')).toEqual({ contents: 'read', metadata: 'read' });
-    expect(mapAccessLevel('push')).toEqual({ contents: 'write', metadata: 'read' });
-    expect(mapAccessLevel('push+pr')).toEqual({ contents: 'write', pull_requests: 'write', metadata: 'read' });
-    expect(mapAccessLevel('admin')).toEqual({ contents: 'write', administration: 'write', actions: 'write', metadata: 'read' });
+    expect(mapAccessLevel('push')).toEqual({ contents: 'write', metadata: 'read', workflows: 'write' });
+    expect(mapAccessLevel('push+pr')).toEqual({ contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write' });
+    expect(mapAccessLevel('admin')).toEqual({ contents: 'write', administration: 'write', actions: 'write', metadata: 'read', workflows: 'write' });
     expect(mapAccessLevel('issues')).toEqual({ issues: 'write', pull_requests: 'write', discussions: 'write', metadata: 'read' });
     expect(mapAccessLevel('full')).toEqual({
       contents: 'write', administration: 'write', issues: 'write',
-      pull_requests: 'write', actions: 'write', discussions: 'write', metadata: 'read',
+      pull_requests: 'write', actions: 'write', discussions: 'write', metadata: 'read', workflows: 'write',
     });
   });
 
   it('falls back to read for unknown levels', () => {
     expect(mapAccessLevel('bogus')).toEqual({ contents: 'read', metadata: 'read' });
+  });
+
+  it.each(['push', 'push+pr', 'admin', 'full'])(
+    "grants workflows:'write' (plus its existing keys) for level '%s'",
+    (level) => {
+      const perms = mapAccessLevel(level);
+      expect(perms.workflows).toBe('write');
+      // The workflows grant must be additive, not a replacement -- every
+      // pre-existing key for this level must still be present.
+      const withoutWorkflows: Record<string, string> = { ...perms };
+      delete withoutWorkflows.workflows;
+      expect(Object.keys(withoutWorkflows).length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(['read', 'issues'])("does not grant workflows for level '%s'", (level) => {
+    expect(mapAccessLevel(level)).not.toHaveProperty('workflows');
+  });
+});
+
+describe('mintGitToken', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('returns { token, expiresAt } on a 201 and sends the full permission map in the request body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: 'ghs_abc123', expires_at: '2026-09-22T12:00:00Z' }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const permissions = mapAccessLevel('push');
+    const result = await mintGitToken('12345', testPrivateKey, 999, ['owner/repo'], permissions);
+
+    expect(result).toEqual({ token: 'ghs_abc123', expiresAt: '2026-09-22T12:00:00Z' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toContain('/app/installations/999/access_tokens');
+    const body = JSON.parse((opts as { body: string }).body);
+    expect(body.permissions).toEqual(permissions);
+  });
+
+  it('raises an operator-referral error on a 422 ungranted-permission response and does not retry with reduced permissions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({ message: "The permission 'workflows' is not granted to this installation." }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const permissions = mapAccessLevel('push');
+
+    let caught: unknown;
+    try {
+      await mintGitToken('12345', testPrivateKey, 999, ['owner/repo'], permissions);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/workflows/);
+    expect((caught as Error).message).toMatch(/App's settings|Permissions & events/);
+
+    // Exactly one fetch call -- no second, reduced-permission retry after the 422.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

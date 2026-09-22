@@ -63,11 +63,22 @@ curl -sf -u :pat "https://dev.azure.com/{org}/_apis/projects?api-version=7.1&\$t
 git ls-remote https://dev.azure.com/{org}/{project}/_git/{repo} HEAD
 ```
 
+## Legacy `<org>.visualstudio.com` remotes
+
+git looks credentials up by the remote's own hostname, so a PAT bound to
+`dev.azure.com` is never offered for a push to `https://<org>.visualstudio.com/...`.
+Pass `scope_url="https://<org>.visualstudio.com"` to `provision_vcs_auth`
+(fleet-sprint does this automatically from the member's remote). `org_url`
+stays `https://dev.azure.com/<org>` -- the REST API serves every org there.
+An ssh remote (`vs-ssh.visualstudio.com` / `ssh.dev.azure.com`) cannot take a
+PAT at all: push uses the member's SSH key; the PAT serves only REST calls.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
 | 401 Unauthorized | Create new PAT and re-deploy |
+| push to `<org>.visualstudio.com` prompts / 401 while REST works | Re-provision with `scope_url="https://<org>.visualstudio.com"` |
 | 403 Forbidden | Create PAT with broader scopes |
 | TF400813: Resource not available | Verify org URL matches `https://dev.azure.com/{org}` |
 | Clone prompts for password | Re-run `provision_vcs_auth` |

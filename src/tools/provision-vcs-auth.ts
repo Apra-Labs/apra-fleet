@@ -89,7 +89,7 @@ export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
   label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
-  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>".'),
+  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to.'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
@@ -103,7 +103,7 @@ export const provisionVcsAuthSchema = z.object({
   workspace: z.string().optional().describe('Bitbucket workspace slug'),
 
   // Azure DevOps fields
-  org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
+  org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg, or the legacy https://myorg.visualstudio.com)'),
   pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   // apra-fleet-5co8.5.1: OPTIONAL, caller-supplied -- Azure DevOps exposes no
   // API to query a PAT's expiry back, so this must come from the operator

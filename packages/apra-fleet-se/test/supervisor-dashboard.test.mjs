@@ -102,6 +102,33 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(html.toLowerCase().includes('no members recorded'));
     });
 
+    test('Branch line shows the merge target when base is set, and no dangling arrow when it is not', () => {
+        const withBase = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            base: 'main',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(withBase.includes('Branch:</span> feat/x -> main</div>'), withBase);
+
+        const withoutBase = renderSprintSection({
+            sprintId: 'sprint-2',
+            branch: 'feat/x',
+            base: null,
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(withoutBase.includes('Branch:</span> feat/x</div>'), withoutBase);
+        assert.ok(!withoutBase.includes('->'));
+    });
+
     test('untrusted sprintId/branch/goal/member fields are HTML-escaped', () => {
         const html = renderSprintSection({
             sprintId: '<script>x</script>',
