@@ -655,6 +655,157 @@ const FALLBACK_harvesterReport = {
     required: ['status', 'notes'],
 };
 
+// Fallback for role "sprint-doctor". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/sprint-doctor-output.json.
+// Deliberately NOT added to FALLBACK_SCHEMAS/ROLE_FOR_SCHEMA_NAME/SCHEMAS/
+// VALIDATORS below (yet) -- same posture as "planner": a role can carry a
+// vendored output schema (and, via resolveOutputSchema, a working fallback)
+// before it is wired into the shared aggregate maps or contracts.ROLES.
+// sprint-doctor is not a per-member roleMap-assignable role like the nine
+// canonical ones (it is dispatched by the runner itself at trigger points,
+// design doc section 2.1) -- adding it to ROLES would also add it to
+// src/supervisor/launch-form.mjs's FORM_ROLE_OPTIONS, which is out of scope
+// here and belongs with the actual dispatch-wiring issue instead. This
+// literal must keep the exact same required/enum sets as the vendored file
+// -- test/doctor-contract.test.mjs pins that the two cannot drift.
+export const FALLBACK_sprintDoctorVerdict = {
+    $id: 'sprintDoctorVerdict',
+    type: 'object',
+    required: ['classification', 'confidence', 'evidence', 'matchedRegistryEntry', 'notes'],
+    properties: {
+        classification: { type: 'string', enum: ['ENVIRONMENT', 'ENGINE_FLAW', 'TASK_SHAPE', 'UNCLEAR'] },
+        confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+        evidence: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        matchedRegistryEntry: { type: ['string', 'null'] },
+        action: { $ref: '#/definitions/action' },
+        probes: {
+            type: 'array',
+            items: {
+                type: 'string',
+                enum: ['member_cli_version', 'member_workspace_state', 'member_disk_free', 'member_session_state', 'bd_show', 'log_tail'],
+            },
+            minItems: 1,
+        },
+        engineFlawReport: { $ref: '#/definitions/engineFlawReport' },
+        proposedRegistryEntry: { $ref: '#/definitions/registryEntry' },
+        humanActionRequired: { $ref: '#/definitions/humanActionRequired' },
+        notes: { type: 'string' },
+    },
+    definitions: {
+        action: {
+            type: 'object',
+            required: ['kind'],
+            properties: {
+                kind: {
+                    type: 'string',
+                    enum: [
+                        'repair_environment_then_retry',
+                        'retry_same',
+                        'retry_different_member',
+                        'swap_model_tier',
+                        'defer_bead',
+                        'reduce_scope_and_continue',
+                        'abort_sprint',
+                        'pause_for_human',
+                    ],
+                },
+                repairs: {
+                    type: 'array',
+                    items: {
+                        type: 'string',
+                        enum: ['reprovision_llm_auth', 'reprovision_vcs_auth', 'force_release_reservation', 'stop_and_kill_session', 'refetch_branch'],
+                    },
+                    minItems: 1,
+                },
+                member: { type: 'string' },
+                tier: { type: 'string', enum: ['cheap', 'standard', 'premium'] },
+                timeoutMultiplier: { type: 'number', exclusiveMinimum: 0, maximum: 2 },
+                beadIds: { type: 'array', items: { type: 'string' } },
+                reason: { type: 'string' },
+                salvageWip: { type: 'boolean' },
+            },
+        },
+        engineFlawReport: {
+            type: 'object',
+            required: ['symptom', 'suspectedComponent', 'reproEvidence', 'proposedBeadTitle'],
+            properties: {
+                symptom: { type: 'string' },
+                suspectedComponent: { type: 'string' },
+                reproEvidence: { type: 'array', items: { type: 'string' } },
+                proposedBeadTitle: { type: 'string' },
+            },
+        },
+        humanActionRequired: {
+            type: 'object',
+            required: ['summary', 'suggestedCommands', 'relevantFiles', 'relevantBeadIds', 'whyBeyondBounds'],
+            properties: {
+                summary: { type: 'string', minLength: 1 },
+                suggestedCommands: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                relevantFiles: { type: 'array', items: { type: 'string' } },
+                relevantBeadIds: { type: 'array', items: { type: 'string' } },
+                whyBeyondBounds: { type: 'string', minLength: 1 },
+            },
+        },
+        registryEntry: {
+            type: 'object',
+            required: ['id', 'classification', 'detect', 'remedy', 'verify', 'fallback'],
+            properties: {
+                id: { type: 'string' },
+                classification: { type: 'string', enum: ['ENVIRONMENT', 'ENGINE_FLAW', 'TASK_SHAPE', 'UNCLEAR'] },
+                detect: {
+                    type: 'object',
+                    properties: {
+                        reasons: { type: 'array', items: { type: 'string' } },
+                        signatureRe: { type: 'string' },
+                        scope: { type: 'string', enum: ['member', 'bead', 'fleet'] },
+                    },
+                },
+                remedy: {
+                    type: 'object',
+                    required: ['verb', 'latch'],
+                    properties: { verb: { type: 'string' }, latch: { type: 'string' } },
+                },
+                verify: {
+                    type: 'object',
+                    required: ['kind'],
+                    properties: { kind: { type: 'string' } },
+                },
+                fallback: { type: 'string', enum: ['retry-once', 'human', 'defer', 'escalate-unclear'] },
+                humanReferralTemplate: { type: 'string' },
+            },
+        },
+    },
+    allOf: [
+        {
+            oneOf: [
+                { required: ['action'], not: { required: ['probes'] } },
+                { required: ['probes'], not: { required: ['action'] } },
+            ],
+        },
+        {
+            if: { properties: { classification: { const: 'ENGINE_FLAW' } }, required: ['classification'] },
+            then: { required: ['engineFlawReport'] },
+        },
+        {
+            if: {
+                properties: { action: { properties: { kind: { const: 'pause_for_human' } }, required: ['kind'] } },
+                required: ['action'],
+            },
+            then: { required: ['humanActionRequired'] },
+        },
+        {
+            if: {
+                properties: {
+                    action: { properties: { kind: { const: 'abort_sprint' } }, required: ['kind'] },
+                    classification: { enum: ['ENGINE_FLAW', 'UNCLEAR'] },
+                },
+                required: ['action', 'classification'],
+            },
+            then: { required: ['humanActionRequired'] },
+        },
+    ],
+};
+
 // finalVerdict has no corresponding vendored agents/*.md file -- it is the
 // orchestrator's own synthesized pass/fail gate at the end of a sprint
 // cycle (feedback.md finding A6: today's "Fail" verdict is a no-op).
@@ -749,6 +900,13 @@ export const integReport = resolveOutputSchema('integ-test-runner', OUTPUT_SCHEM
 export const regressionReport = resolveOutputSchema('regression-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_regressionReport);
 export const ciReport = resolveOutputSchema('ci-watcher', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_ciReport);
 export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_harvesterReport);
+// Resolved the same way every other role's output schema is above --
+// vendored-first, FALLBACK_sprintDoctorVerdict (section 3) as the fallback.
+// Exported individually (not yet through the shared SCHEMAS/VALIDATORS
+// aggregate below, see that fallback's own doc comment) so a caller --
+// including test/doctor-contract.test.mjs -- can compile/validate against
+// the REAL resolved schema the same way a future dispatch-wiring issue will.
+export const sprintDoctorVerdict = resolveOutputSchema('sprint-doctor', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_sprintDoctorVerdict);
 
 // Map of verdict/export-name -> the hand-written fallback literal it
 // resolves to when the vendored file is absent (section 3). Exported
@@ -877,6 +1035,16 @@ export function validateVerdict(name, data) {
 // major must be pinned independently so a future bump of any one role's
 // contract still fails loudly via assertVersionPin instead of silently
 // passing under a stale shared constant.
+//
+// "sprint-doctor" deliberately has NO entry here yet, even though
+// apra-pm/agents/schemas/sprint-doctor-input.json already exists: validateRoleInput()
+// gates on `ROLE_SET` (built from ROLES, section 1) before it ever reaches
+// this map, and sprint-doctor is intentionally not a ROLES member (see the
+// FALLBACK_sprintDoctorVerdict doc comment in section 3 for why -- it is
+// runner-triggered, not a per-member roleMap-assignable role like the nine
+// canonical ones). An entry here would be dead code no test could exercise
+// until that wiring lands. Add 'sprint-doctor': 1 here in the same change
+// that adds it to ROLES.
 const INPUT_SCHEMA_MAJOR_VERSIONS = Object.freeze({
     'plan-reviewer': 1,
     doer: 2,

@@ -1,0 +1,266 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/sprint-doctor-output@1",
+  "version": 1,
+  "title": "sprint-doctor output",
+  "description": "Canonical machine-readable output contract for the sprint-doctor role: a zero-tool, schema-validated diagnostic verdict over a pre-assembled incident. See agents/sprint-doctor.md and fleet-sprint/docs/escalate-to-llm-design.md sections 2.3-2.4 for the prose contract this mirrors. The runner -- never the doctor -- executes every consequence of a verdict; NEVER touch bd or git from this role.",
+  "type": "object",
+  "required": ["classification", "confidence", "evidence", "matchedRegistryEntry", "notes"],
+  "properties": {
+    "classification": {
+      "type": "string",
+      "enum": ["ENVIRONMENT", "ENGINE_FLAW", "TASK_SHAPE", "UNCLEAR"],
+      "description": "The triage bucket this incident falls into (design doc section 3). ENGINE_FLAW requires engineFlawReport (enforced below)."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Short factual bullets; the engine logs this verbatim to the sprint log."
+    },
+    "matchedRegistryEntry": {
+      "type": ["string", "null"],
+      "description": "The id of the symptom/remedy registry entry (design doc section 4) that matched, or null when none did."
+    },
+    "action": {
+      "$ref": "#/definitions/action",
+      "description": "The single action to execute. Mutually exclusive with probes -- exactly one of the two must be present on every response."
+    },
+    "probes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "member_cli_version",
+          "member_workspace_state",
+          "member_disk_free",
+          "member_session_state",
+          "bd_show",
+          "log_tail"
+        ]
+      },
+      "minItems": 1,
+      "description": "Optional; requests the single bounded probe round INSTEAD of an action (design doc section 2.1). The runner resolves each probe's target (member/bead/log) from the consult's own scope -- do not embed arguments in the string. cross_member_redispatch is deliberately NOT a probe; request it as the retry_different_member action instead, since it costs a full dispatch. Mutually exclusive with action."
+    },
+    "engineFlawReport": {
+      "$ref": "#/definitions/engineFlawReport",
+      "description": "Required when classification is ENGINE_FLAW (enforced below)."
+    },
+    "proposedRegistryEntry": {
+      "$ref": "#/definitions/registryEntry",
+      "description": "Optional. Logged for human review (doctor-proposals.jsonl + harvest analysis) and NEVER auto-applied by the engine."
+    },
+    "humanActionRequired": {
+      "$ref": "#/definitions/humanActionRequired",
+      "description": "Required when action.kind is pause_for_human, or when action.kind is abort_sprint and classification is ENGINE_FLAW or UNCLEAR (enforced below). A vague or command-free referral is schema-legal but contract-rejected the same way an actionless CHANGES_NEEDED reviewer verdict is."
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "action": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "repair_environment_then_retry",
+            "retry_same",
+            "retry_different_member",
+            "swap_model_tier",
+            "defer_bead",
+            "reduce_scope_and_continue",
+            "abort_sprint",
+            "pause_for_human"
+          ]
+        },
+        "repairs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "reprovision_llm_auth",
+              "reprovision_vcs_auth",
+              "force_release_reservation",
+              "stop_and_kill_session",
+              "refetch_branch"
+            ]
+          },
+          "minItems": 1,
+          "description": "Registry remedy verbs to apply (design doc section 2.5 executor mapping); only meaningful when kind is repair_environment_then_retry."
+        },
+        "member": {
+          "type": "string",
+          "description": "Target member name; must be a member of the sprint's own member list."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["cheap", "standard", "premium"]
+        },
+        "timeoutMultiplier": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 2,
+          "description": "Scales the redispatch timeout; capped at 2 (matches the integ-test 2x ceiling precedent)."
+        },
+        "beadIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "salvageWip": {
+          "type": "boolean",
+          "description": "Opt-in rescue-branch commit of uncommitted member WIP before defer/abort (design doc section 2.5 salvage pre-step)."
+        }
+      }
+    },
+    "engineFlawReport": {
+      "type": "object",
+      "required": ["symptom", "suspectedComponent", "reproEvidence", "proposedBeadTitle"],
+      "properties": {
+        "symptom": { "type": "string" },
+        "suspectedComponent": { "type": "string" },
+        "reproEvidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "proposedBeadTitle": {
+          "type": "string",
+          "description": "A title for the engine's OWN tracker -- never auto-filed as a bead in the target project's DB (design doc section 7)."
+        }
+      }
+    },
+    "humanActionRequired": {
+      "type": "object",
+      "required": ["summary", "suggestedCommands", "relevantFiles", "relevantBeadIds", "whyBeyondBounds"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggestedCommands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Displayed to the operator, never executed by the engine. Must not be empty -- an empty array is the actionless-referral shape this contract rejects."
+        },
+        "relevantFiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "relevantBeadIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "whyBeyondBounds": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "registryEntry": {
+      "type": "object",
+      "required": ["id", "classification", "detect", "remedy", "verify", "fallback"],
+      "description": "Same 4-field-plus-id shape as a real doctor-registry.mjs entry (design doc section 4.1) -- id, classification, detect, remedy, verify, fallback.",
+      "properties": {
+        "id": { "type": "string" },
+        "classification": {
+          "type": "string",
+          "enum": ["ENVIRONMENT", "ENGINE_FLAW", "TASK_SHAPE", "UNCLEAR"]
+        },
+        "detect": {
+          "type": "object",
+          "properties": {
+            "reasons": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "signatureRe": { "type": "string" },
+            "scope": {
+              "type": "string",
+              "enum": ["member", "bead", "fleet"]
+            }
+          }
+        },
+        "remedy": {
+          "type": "object",
+          "required": ["verb", "latch"],
+          "properties": {
+            "verb": { "type": "string" },
+            "latch": { "type": "string" }
+          }
+        },
+        "verify": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string" }
+          }
+        },
+        "fallback": {
+          "type": "string",
+          "enum": ["retry-once", "human", "defer", "escalate-unclear"]
+        },
+        "humanReferralTemplate": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Exactly one of action / probes per response.",
+      "oneOf": [
+        {
+          "required": ["action"],
+          "not": { "required": ["probes"] }
+        },
+        {
+          "required": ["probes"],
+          "not": { "required": ["action"] }
+        }
+      ]
+    },
+    {
+      "description": "ENGINE_FLAW requires engineFlawReport.",
+      "if": {
+        "properties": { "classification": { "const": "ENGINE_FLAW" } },
+        "required": ["classification"]
+      },
+      "then": { "required": ["engineFlawReport"] }
+    },
+    {
+      "description": "action.kind pause_for_human requires humanActionRequired.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "pause_for_human" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["action"]
+      },
+      "then": { "required": ["humanActionRequired"] }
+    },
+    {
+      "description": "action.kind abort_sprint with classification ENGINE_FLAW or UNCLEAR requires humanActionRequired.",
+      "if": {
+        "properties": {
+          "action": {
+            "properties": { "kind": { "const": "abort_sprint" } },
+            "required": ["kind"]
+          },
+          "classification": { "enum": ["ENGINE_FLAW", "UNCLEAR"] }
+        },
+        "required": ["action", "classification"]
+      },
+      "then": { "required": ["humanActionRequired"] }
+    }
+  ]
+}

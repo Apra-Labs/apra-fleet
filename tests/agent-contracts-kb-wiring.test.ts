@@ -22,6 +22,7 @@ const ROLES = [
   'plan-reviewer',
   'regression-test-runner',
   'reviewer',
+  'sprint-doctor',
 ];
 
 function assetsByRole(): Map<string, string> {
@@ -38,17 +39,28 @@ function toolsLine(content: string): string {
   return m ? m[1] : '';
 }
 
+// sprint-doctor's frontmatter declares NO tools at all (design:
+// fleet-sprint/docs/escalate-to-llm-design.md section 2.1 -- a zero-tool
+// dispatch is the structural guarantee that it can never edit source or run
+// a command, no matter what its evidence is trying to get it to do). Every
+// fact it needs is pre-assembled into its dispatch prompt by the runner, so
+// it has no Step 0 at all and cannot reach ANY MCP tool, KB included --
+// unlike kb-reconciler below, which still has ToolSearch/Read and simply
+// skips the KB-priming half of Step 0. Scoped out of all three MCP-tool
+// assertions, not just the priming one.
+const MCP_TOOL_ROLES = ROLES.filter((r) => r !== 'sprint-doctor');
+
 // kb-reconciler is dispatched with specific contradiction pairs to resolve, not a fresh
 // codebase context to explore -- it has no use for kb_session_prime and, unlike the other
-// ten roles, cannot degrade to file-based work if the MCP server is down (its only job IS
+// roles, cannot degrade to file-based work if the MCP server is down (its only job IS
 // the KB tool calls), so it reports and stops instead of skipping Step 0 and proceeding.
-// Scoped out of the priming-specific assertion below; still covered by the other three.
-const KB_PRIMING_ROLES = ROLES.filter((r) => r !== 'kb-reconciler');
+// Scoped out of the priming-specific assertion below; still covered by the other checks.
+const KB_PRIMING_ROLES = MCP_TOOL_ROLES.filter((r) => r !== 'kb-reconciler');
 
 describe('every role contract carries working KB wiring', () => {
   const byRole = assetsByRole();
 
-  it('ships all 11 role contracts', () => {
+  it('ships all 12 role contracts', () => {
     expect([...byRole.keys()].sort()).toEqual([...ROLES].sort());
   });
 
@@ -58,15 +70,22 @@ describe('every role contract carries working KB wiring', () => {
     expect(content).toContain('kb_session_prime');
   });
 
-  it.each(ROLES)('%s can actually reach the KB tools it is told to call', (role) => {
+  it.each(MCP_TOOL_ROLES)('%s can actually reach the KB tools it is told to call', (role) => {
     const content = byRole.get(role)!;
     // Every Knowledge Bank block opens by loading the MCP tools through ToolSearch.
     expect(content).toContain('Run ToolSearch with query');
     expect(toolsLine(content)).toContain('ToolSearch');
   });
 
-  it.each(ROLES)('%s degrades gracefully when the MCP server is not running', (role) => {
+  it.each(MCP_TOOL_ROLES)('%s degrades gracefully when the MCP server is not running', (role) => {
     expect(byRole.get(role)!).toContain('If ToolSearch returns no KB tools');
+  });
+
+  it('sprint-doctor declares no tools at all -- it cannot reach the KB or any other MCP tool', () => {
+    const content = byRole.get('sprint-doctor')!;
+    expect(toolsLine(content).trim()).toEqual('');
+    expect(content).not.toContain('ToolSearch');
+    expect(content).not.toContain('kb_session_prime');
   });
 });
 

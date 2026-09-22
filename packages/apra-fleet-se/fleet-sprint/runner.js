@@ -580,6 +580,14 @@ const FIXED_ROLE_TIER = {
     // states, so it gets 'cheap' even though it borrows the planner MEMBER for
     // routing convenience.
     streakAssignment: 'cheap',
+    // sprint-doctor (docs/escalate-to-llm-design.md section 5): a low-
+    // frequency judgment call over ambiguous, mixed evidence -- exactly the
+    // class this runner already reserves premium for. Tier resolution stays
+    // per-member via each member's own registered model_tiers, so this pins
+    // WHICH tier, never a hardcoded model. Registered here ahead of the
+    // consult dispatch itself landing (a later issue) so the tier is pinned
+    // once, in one place, the same day the role's contract is.
+    'sprint-doctor': 'premium',
 };
 
 export const meta = { name: 'fleet-sprint-runner' };

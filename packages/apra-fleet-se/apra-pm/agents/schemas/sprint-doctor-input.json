@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/sprint-doctor-input@1",
+  "version": 1,
+  "title": "sprint-doctor input",
+  "description": "Required dispatch-context keys for the sprint-doctor role, per agents/sprint-doctor.md Inputs section (design doc section 2.2). The doctor gets zero tools: everything it can see is assembled into this context by the runner BEFORE dispatch. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM verbatim (the runner renders these fields into the prompt itself).",
+  "type": "object",
+  "required": ["branch", "trigger", "triggeringBeadIds", "logTails"],
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "Sprint track branch this consult is diagnosing."
+    },
+    "goal": {
+      "type": "string",
+      "description": "Sprint goal priority filter, e.g. \"P1/P2\"."
+    },
+    "cycle": {
+      "type": "integer",
+      "description": "Current cycle number."
+    },
+    "phaseLabel": {
+      "type": "string",
+      "description": "The current phase label the consult interrupted (dashboard-visible)."
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "total": { "type": ["number", "null"] },
+        "spent": { "type": "number" }
+      },
+      "description": "The sprint's own budget accounting; doctor spend flows through it like every other dispatch."
+    },
+    "trigger": {
+      "type": "object",
+      "required": ["id", "evidence"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["T1", "T2", "T3", "T4", "T5"],
+          "description": "Which trigger fired (design doc section 1.2)."
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "The health-ledger rows that satisfied this trigger."
+        }
+      }
+    },
+    "triggeringBeadIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "The bead id(s) involved in the triggering incident."
+    },
+    "beadDetails": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Full `bd show --json` output for each triggering bead, plus scope summary counts (open/in_progress/blocked/deferred/closed at goal priority)."
+    },
+    "dispatchHistory": {
+      "type": "object",
+      "properties": {
+        "beadLedgerRows": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "memberLedgerRows": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "errorSignatureFrequency": {
+          "type": "object",
+          "description": "Cross-member errorSignature frequency table -- the environment-vs-engine triage signal (design doc section 2.2)."
+        }
+      },
+      "description": "Ledger rows for the triggering bead(s) and member(s), plus per-member aggregate failure counts."
+    },
+    "logTails": {
+      "type": "object",
+      "required": ["sprintLog"],
+      "properties": {
+        "sprintLog": {
+          "type": "string",
+          "description": "Last N KB of the runner's own sprint log (default cap 16KB)."
+        },
+        "memberDispatchOutput": {
+          "type": "string",
+          "description": "Last N KB of the relevant member-side dispatch output (default cap 16KB)."
+        }
+      }
+    },
+    "consultHistory": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "This sprint's own prior doctor verdicts + their outcomes -- required for the no-repeat circuit-breaker (design doc section 6) so the doctor never re-prescribes a failed remedy blind."
+    },
+    "registry": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "The symptom/remedy registry (design doc section 4), injected as data, never baked into the prompt text."
+    }
+  }
+}
