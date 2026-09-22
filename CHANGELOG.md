@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Bitbucket remotes can now open pull requests
+
+Sprint goal: Bitbucket-hosted members could push commits but never raise a
+pull request -- the provider had no builders and never advertised
+`canOpenPullRequest`, so the Publish PR phase silently skipped it. Bitbucket
+is now a fully registered VCSModule provider: it resolves `{workspace,
+repo}` from a member's git remote, builds the `create-pull-request` REST
+call (including Bitbucket's nested `links.html.href` web-URL response
+field), and advertises pull-request capability the same way GitHub and
+Azure DevOps do.
+
+Getting there required extending the server-side credential handoff
+(`vcs_credential_exec`) with a basic-auth username placeholder pair
+(`{{vcs_username}}` / `{{vcs_username_inline}}`), since Bitbucket's REST API
+needs `username:token` HTTP Basic auth rather than a bearer token -- the
+username is read from the same deployed credential helper the token comes
+from and is redacted under its own marker, so no plaintext credential half
+transits an orchestrator-readable field. Bitbucket's provisioning hook also
+introduces a new `{ skip: true }` answer to the provider `buildProvisionArgs`
+contract, for a provider whose credential has no just-in-time scope to widen
+and would otherwise abort the very PR call the re-provision step exists to
+enable. See `docs/design-bitbucket-vcs-auth.md` for the full design.
+
+Carried forward as open backlog (not blocking): the epic's headline
+criterion -- a real PR against a real Bitbucket workspace -- is still
+unverified beyond mocks, since the opt-in live end-to-end lane has not yet
+been run against a live workspace; Bitbucket's already-exists PR dialect is
+deliberately left unconfirmed and unmapped rather than guessed; the reactive
+PR-auth self-heal logs a completed heal even when Bitbucket's provisioning
+hook skipped it as a no-op; and two test/tooling-robustness items (a
+hardcoded-port test's false failure under port contention, and a missing
+`bd` permission grant that blocked two of three integration-test cycles this
+sprint) remain open at low priority for a future sprint.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $29.6189.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2117 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- fleet-sprint: a finished sprint with deferred beads no longer aborts as stalled, and a permission-scope git rejection stops spinning the sprint
 
 Sprint goal: three independent reliability fixes to the fleet-sprint
