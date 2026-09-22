@@ -2,6 +2,84 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Groundwork for the v0.5 console integration branch
+
+Sprint goal: prepare every shared file the v0.5 console tracks will build on
+top of -- the loopback-bearer supervisor auth guard, the two test playbooks,
+`sandbox-deploy.mjs`, `CLAUDE.md` and CI -- so later console sprints can land
+without ever touching these files themselves, plus stand up the
+integration-branch merge gate that later sprints' PRs merge through.
+
+What shipped:
+
+- **Loopback-bearer supervisor auth guard landed on the branch with the
+  shared `fleet.key` as its preferred token source.** `resolveServiceToken()`
+  now tries `~/.apra-fleet/fleet.key` (the same key `src/services/jwt.ts`
+  signs with) before falling back to minting a `private/token` under the
+  supervisor's own data root, so the supervisor and the rest of the fleet's
+  JWT-authenticated surface can share one credential without an extra
+  provisioning step. The token source is logged; the value never is.
+- **Every playbook curl carries the bearer token**, and regression-playbook
+  teardown distinguishes a `401` (guard is up, as expected) from a refused
+  connection (supervisor actually down) instead of treating both as "already
+  stopped."
+- **The launch API forwards `sync` to the runner.** `POST /api/sprints`
+  validates `body.sync` as a boolean and, when true, appends `--sync` to the
+  spawned runner's `extraArgs`; the ledger records it so a synced-topology
+  launch is visible in sprint history.
+- **deploy.md, both test playbooks, `sandbox-deploy.mjs` and `CLAUDE.md`
+  prepared for the upcoming React/Vite console workspace**: a
+  `npm run build:ui` build step (tolerant of the script not existing yet),
+  staging ports `7601`/`8801` reserved and never touched by the sandbox
+  deployer, and an integration-branch rules block in `CLAUDE.md` (fork/PR
+  model, per-track shared-file ownership, tests only through the bounded
+  runner).
+- **CI builds UI workspaces when present, and stays green when none exist**
+  (`npm run build:ui --if-present` in both the Linux and packaging jobs).
+- **`fleet-integrator` merge gate added**: a generic SKILL.md agent loop plus
+  a read-only `integration-gate-status.mjs` status script that computes
+  merge/repair/wait/skip decisions for PRs into a configured integration
+  branch; the mutating action (squash-merge, one repair prompt per stuck
+  head sha, owner report) stays in the agent loop, never in the script.
+- **`check-generic-boundary.mjs` now scans `fleet-sprint/skills/**/*.md`**
+  for tracker-id leaks, closing the one gap in the dogfood-safety-net's file
+  coverage.
+- **`list_members` returns a parseable JSON envelope for an empty registry**
+  instead of a plain-text "No members registered." string, and the
+  supervisor's own short-lived fleet-members reader now skips the
+  `<apra-fleet-display>` onboarding preamble block before parsing, instead
+  of assuming the first content block is always the JSON payload.
+
+Known follow-on gaps (deliberately left open, not closed by this pass):
+
+- **`npm test` was RED at final review** (2 failed / 326 passed test files):
+  the composed reviewer permission profile grants no `curl` family despite
+  the integ-test-playbook Permissions section now requiring it, and the
+  sandbox-deploy smoke test's "/ui returns 404" case never reaches the /ui
+  probe because it fails an earlier /health check first. Both are filed as
+  open P1 issues for the next pass.
+- The sandbox service-token path documented in `deploy.md` and
+  `integ-test-playbook.md` still names a sandbox-local path; live sandboxes
+  resolve the token from the real home directory instead. Filed as an open
+  P2. Root `package.json` also lost its trailing newline despite this
+  epic's "root package.json is not touched here" rule.
+- `resolveServiceToken()`'s two read-only callers still mint a
+  `private/token` as a side effect of reading it, which can create state
+  under a production data root before that supervisor has ever started.
+  Filed as an open P3, needs a `createIfMissing: false` read path.
+- README.md and this file previously described the auth-guard token as
+  always minted under `<data-root>/private/token`; corrected during harvest
+  now that `fleet.key` is the preferred source (see above).
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $25.5050.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4806 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 47 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-se supervisor: resolves, displays and enforces its beads tracker identity
 
 - **The supervisor now knows which `.beads` it runs against.** `bin/serve.mjs`
