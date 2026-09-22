@@ -120,7 +120,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
 ```
 
 Same route the dashboard's Stop/Restart controls use. Force-release does not
@@ -160,7 +160,10 @@ npm run build:binary
 #   exit 1 -> usage error (fix the arguments, do not proceed)
 # Unreachable supervisor = exit 0 (no live sprint to collide with). Omit
 # --self-sprint-id only when given no identity: every reservation is then foreign.
-curl -s http://localhost:8787/api/sprints
+# The header carries the shared fleet.key service token (see the "Service
+# token" row below under Sandbox Deploy), the same one every playbook curl
+# authenticates with.
+curl -s http://localhost:8787/api/sprints -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
 OS="$(uname -s)"
