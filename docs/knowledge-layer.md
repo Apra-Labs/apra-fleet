@@ -78,7 +78,10 @@ Two concrete implementations exist:
 `getKbProviders(repoPath)` (`src/services/knowledge/kb-providers.ts`) is the
 single accessor every KB tool goes through to reach a provider. It is the only
 place in the codebase that resolves a repo to its database -- there is no
-second entry point. Run `kb_setup` to write the local config.
+second entry point. Run `kb_setup` to write the local config. That config is
+install-wide: one `FLEET_DIR/knowledge/config.json` selects the provider for
+every repo this fleet install serves (`kb_setup`'s `repo_path` only places the
+git hook), even though each repo's entries stay in their own KB -- see below.
 
 ---
 
@@ -401,7 +404,8 @@ node dist/index.js kb-server
 # Prints: KB server listening on port 7878
 ```
 
-On each client machine, configure the provider:
+On each client machine, configure the provider. This is per fleet install,
+not per repo: every repo that install serves switches to the central server.
 
 ```
 kb_setup with provider=http, remote=http://<host>:7878, token=<token>
@@ -541,7 +545,8 @@ large or after a major refactor.
 
 ## Provider Swap
 
-Switch providers without code changes by rewriting config.json.
+Switch providers without code changes by rewriting config.json. The switch
+applies to every repo the fleet install serves; there is no per-repo provider.
 
 ### SQLite (default)
 

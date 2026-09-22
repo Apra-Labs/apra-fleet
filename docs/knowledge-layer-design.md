@@ -554,7 +554,9 @@ for that (slug, repo path) are returned as-is, and once it changes -- e.g.
 `kb_setup` just ran, in this process or any other -- the next call selects
 again, reusing the already-open `SqliteProvider`s and disposing any
 `HttpKbProvider` it replaces. A long-lived fleet server therefore needs no
-restart after `kb_setup`. `global` is never
+restart after `kb_setup`. The config file is one per fleet install, not per
+repo: the selection it makes applies to every repo the install serves, and
+`kb_setup`'s `repo_path` only places the git hook. `global` is never
 selected this way -- there is exactly one shared global KB and no remote story
 for it, so it always stays `SqliteProvider`.
 
