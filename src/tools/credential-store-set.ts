@@ -75,22 +75,22 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
 
     if (result.url && result.expiresAt) {
       return {
-        text: `🔗 Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${result.url}\n\n` +
+        text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${result.url}\n\n` +
           `The secret is encrypted and stored automatically once the form is submitted -- no further tool call is needed.`,
         structuredContent: { url: result.url, expiresAt: result.expiresAt },
       };
     }
-    return result.fallback ?? `❌ Could not start out-of-band credential entry for ${input.name}.`;
+    return result.fallback ?? `[ERROR] Could not start out-of-band credential entry for ${input.name}.`;
   }
 
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
   if (result.fallback) return result.fallback;
-  if (!result.password) return `❌ No secret received for ${input.name}. Please try again.`;
+  if (!result.password) return `[ERROR] No secret received for ${input.name}. Please try again.`;
 
   const plaintext = decryptPassword(result.password);
   const allowedMembers = parseAllowedMembers(input.members);
   const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
   logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
-  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.`;
+  return `[OK] ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.`;
 }

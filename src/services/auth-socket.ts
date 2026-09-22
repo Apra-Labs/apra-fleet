@@ -18,7 +18,7 @@ const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 // Bounds how long collectOobUrl waits for launchAuthWeb's openUrl callback
 // before treating the listen as failed (apra-fleet-972p.7). launchAuthWeb
 // returns {kind:'launched'} synchronously right after calling
-// server.listen(), BEFORE listen has actually succeeded — on a listen
+// server.listen(), BEFORE listen has actually succeeded -- on a listen
 // failure server.on('error') tears the server down without ever invoking
 // openUrl. In practice a successful listen() fires within the same tick or
 // two, so this only ever trips on a genuine failure, never the happy path.
@@ -332,7 +332,7 @@ function collectOobUrl(
   if (mode === 'confirm') {
     // No caller opts a confirm prompt into return_url today (collectOobConfirm
     // never sets it) -- a yes/no confirmation has nothing meaningful to link to.
-    return Promise.resolve({ fallback: '❌ return_url is not supported for confirmation prompts.' });
+    return Promise.resolve({ fallback: '[ERROR] return_url is not supported for confirmation prompts.' });
   }
 
   const webMode: AuthWebMode = mode;
@@ -347,7 +347,7 @@ function collectOobUrl(
       if (settled) return;
       settled = true;
       if (listenTimer) clearTimeout(listenTimer);
-      resolve({ fallback: `❌ Could not start the local credential-entry web server for ${memberName}.` });
+      resolve({ fallback: `[ERROR] Could not start the local credential-entry web server for ${memberName}.` });
     };
 
     const outcome = launchAuthWeb(memberName, webMode, webPrompt, onSubmit, {
@@ -366,7 +366,7 @@ function collectOobUrl(
 
     // Backstop for a listen failure that happens after launchAuthWeb already
     // returned {kind:'launched'} synchronously (see OOB_URL_LISTEN_TIMEOUT_MS
-    // above) — without this, a failed listen() leaves this promise unsettled
+    // above) -- without this, a failed listen() leaves this promise unsettled
     // forever, which is the exact blocking behaviour return_url/F3 exists to
     // eliminate.
     listenTimer = setTimeout(() => {
@@ -405,8 +405,8 @@ async function collectOobInput(
   const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
-  const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
-  const cancelledMessage = `❌ Password entry cancelled. Call ${toolName} again to retry.`;
+  const timeoutMessage = `[ERROR] Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
+  const cancelledMessage = `[ERROR] Password entry cancelled. Call ${toolName} again to retry.`;
 
   // Re-entrant case
   if (hasPendingAuth(memberName)) {
@@ -458,7 +458,7 @@ async function collectOobInput(
           }
         }
         const manualMsg = result.slice('fallback:'.length);
-        resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
+        resolve({ fallback: `${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
       }
     });
 
