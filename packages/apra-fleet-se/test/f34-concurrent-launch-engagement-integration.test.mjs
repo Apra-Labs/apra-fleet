@@ -17,6 +17,7 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
+import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
 // apra-fleet-f34.3 -- proves REAL end-to-end launches engage the HTTP-backed
@@ -119,9 +120,15 @@ async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 10
     }
 }
 
-function httpGet(port, urlPath, host = '127.0.0.1') {
+/**
+ * apra-fleet-50j6.1.2: `serviceToken`, when provided, rides as a Bearer
+ * Authorization header -- the whole `/api/` surface (including /api/health)
+ * is guarded now.
+ */
+function httpGet(port, urlPath, { host = '127.0.0.1', serviceToken } = {}) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: scaledTimeout(5000) }, (res) => {
+        const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
+        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: scaledTimeout(5000), headers }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });
@@ -260,6 +267,11 @@ async function bootRealSupervisor() {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'f34-3-serve-data-'));
     const seDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'f34-3-serve-se-'));
     const port = await getFreePort();
+    // apra-fleet-50j6.1.2: mint/load the SAME shared bearer service token the
+    // spawned subprocess will (deterministic, idempotent function of
+    // seDataDir -- see auth.mjs's loadOrCreateToken), so this test's own
+    // boot/shutdown checks below can carry it.
+    const serviceToken = loadOrCreateToken(seDataDir).token;
     const proc = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
         cwd: SE_PKG_ROOT,
         stdio: ['ignore', 'ignore', 'ignore'],
@@ -267,13 +279,13 @@ async function bootRealSupervisor() {
     });
     await waitFor(async () => {
         try {
-            const res = await httpGet(port, '/api/health');
+            const res = await httpGet(port, '/api/health', { serviceToken });
             return res.status === 200;
         } catch {
             return false;
         }
     }, { label: 'real supervisor /api/health to answer' });
-    return { proc, port, dataDir, seDataDir };
+    return { proc, port, dataDir, seDataDir, serviceToken };
 }
 
 /**
@@ -300,12 +312,13 @@ async function wireRealDoltRemote(tempDir) {
     return remoteDir;
 }
 
-async function stopRealSupervisor({ proc, port }) {
+async function stopRealSupervisor({ proc, port, serviceToken }) {
     if (!proc) return;
     try {
-        await httpGet(port, '/api/health');
+        await httpGet(port, '/api/health', { serviceToken });
         await new Promise((resolve) => {
-            const req = http.request({ host: '127.0.0.1', port, path: '/api/shutdown', method: 'POST', timeout: 3000 }, () => resolve());
+            const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
+            const req = http.request({ host: '127.0.0.1', port, path: '/api/shutdown', method: 'POST', timeout: 3000, headers }, () => resolve());
             req.on('error', () => resolve());
             req.on('timeout', () => { req.destroy(); resolve(); });
             req.end();
@@ -347,10 +360,27 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 const { epicBead } = setup;
                 const remoteDir = await wireRealDoltRemote(tempDir);
 
-                const [runA, runB] = await Promise.all([
-                    launchSprint({ tempDir, epicBead, branch: branchA, extraArgs: { serviceUrl: serviceUrlA } }),
-                    launchSprint({ tempDir, epicBead, branch: branchB, extraArgs: { serviceUrl: serviceUrlB } }),
-                ]);
+                // apra-fleet-50j6.1.2: launchSprint() drives runner.js
+                // IN-PROCESS (via WorkflowEngine.executeFile), not as a real
+                // subprocess -- unlike a real spawned sprint child, it never
+                // goes through spawner.mjs's env injection, so
+                // coordination.mjs's `opts.token ?? process.env.FLEET_SE_SERVICE_TOKEN`
+                // fallback needs the token set on THIS process's own env for
+                // the acquire/allocate calls below to authenticate against
+                // the now-guarded /api/ coordination routes.
+                const prevServiceToken = process.env.FLEET_SE_SERVICE_TOKEN;
+                process.env.FLEET_SE_SERVICE_TOKEN = supervisor.serviceToken;
+                let runA;
+                let runB;
+                try {
+                    [runA, runB] = await Promise.all([
+                        launchSprint({ tempDir, epicBead, branch: branchA, extraArgs: { serviceUrl: serviceUrlA } }),
+                        launchSprint({ tempDir, epicBead, branch: branchB, extraArgs: { serviceUrl: serviceUrlB } }),
+                    ]);
+                } finally {
+                    if (prevServiceToken === undefined) delete process.env.FLEET_SE_SERVICE_TOKEN;
+                    else process.env.FLEET_SE_SERVICE_TOKEN = prevServiceToken;
+                }
 
                 for (const [label, run] of [['A', runA], ['B', runB]]) {
                     assert.ok(!run.error, `run ${label} should not throw: ${run.error ? run.error.message : ''}`);

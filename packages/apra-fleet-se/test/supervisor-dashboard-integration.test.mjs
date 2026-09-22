@@ -17,6 +17,7 @@ import { buildLaunchRequestBody } from '../src/supervisor/launch-form.mjs';
 import { createSprintController, registerSprintRoutes } from '../src/supervisor/api.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
+import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 
 // =============================================================================
@@ -127,6 +128,40 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
         });
         req.on('error', reject);
         req.end(body);
+    });
+}
+
+/**
+ * GET a path against a given host:port with arbitrary extra request headers
+ * (httpGet() above takes none), resolving `{ status, headers, body }`.
+ */
+function httpGetWithHeaders(port, urlPath, headers = {}, host = '127.0.0.1') {
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host, port, path: urlPath, method: 'GET', headers }, (res) => {
+            let body = '';
+            res.setEncoding('utf-8');
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+/**
+ * POST a path against a given host:port with arbitrary extra request headers
+ * (httpPostJson() above takes none), resolving `{ status, headers, body }`.
+ */
+function httpPostWithHeaders(port, urlPath, headers = {}, host = '127.0.0.1') {
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host, port, path: urlPath, method: 'POST', headers }, (res) => {
+            let body = '';
+            res.setEncoding('utf-8');
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        req.end();
     });
 }
 
@@ -455,5 +490,209 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
         // Bonus consistency check: since the sprint is no longer active (per the
         // watchdog), its claimed bead returns to the Backlog.
         assert.ok(res.body.includes('data-bead-id="c1"'), 'c1 should return to the Backlog once its sprint has finished');
+    });
+});
+
+// =============================================================================
+// apra-fleet-50j6.2.2 acceptance criterion (2) -- the dashboard's own Stop
+// button (POST /api/reservations/:sprintId/force-release) and the live
+// proxy's mutating stop route (POST /sprints/:id/live/stop) both keep working
+// end to end when the supervisor is built with auth configured, using ONLY
+// the se_token cookie GET / sets -- no Authorization header at all. A
+// SEPARATE supervisor instance (its own dataDir/token) from the describe
+// block above, which deliberately stays unauthenticated (deps.token/dataDir
+// omitted) to cover the many pre-auth call sites with header-less requests.
+// =============================================================================
+describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release flow works with the cookie alone', () => {
+    let dataDir;
+    let ledger;
+    let history;
+    let spawner;
+    let watchdog;
+    let backlog;
+    let dashboard;
+    let sprintController;
+    let reconciler;
+    let supervisor;
+    let port;
+    let token;
+    let sprintId;
+    let childPid;
+    let childPort;
+    let cookie;
+
+    before(async () => {
+        dataDir = await mkTmp('50j6-2-2-auth-');
+
+        ledger = createLedger({ filePath: path.join(dataDir, LEDGER_FILENAME) });
+        await ledger.start();
+        history = createHistory({ filePath: path.join(dataDir, HISTORY_FILENAME) });
+        await history.start();
+
+        spawner = createSpawner({
+            command: process.execPath,
+            cliPath: VIEWER_FIXTURE,
+            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
+            logger: silentLogger,
+            dataDir,
+        });
+
+        function resolvePort(id) {
+            const entry = ledger.get(id);
+            const pid = entry && entry.childPid;
+            if (!Number.isInteger(pid)) return undefined;
+            const live = spawner.getLiveEntry(pid);
+            return live && Number.isInteger(live.port) ? live.port : undefined;
+        }
+
+        watchdog = createWatchdog({
+            ledger,
+            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
+            resolvePort,
+            logger: silentLogger,
+        });
+
+        backlog = createBacklog({
+            ledger,
+            listAllBeads: () => [],
+            expandScope: async (roots) => new Set(roots),
+            watchdog,
+            logger: silentLogger,
+        });
+
+        dashboard = createDashboard({
+            ledger,
+            watchdog,
+            expandScope: async (roots) => new Set(roots),
+            backlog,
+            logger: silentLogger,
+        });
+
+        sprintController = createSprintController({
+            ledger,
+            history,
+            spawner,
+            listMembers: () => ({ members: [{ name: 'alice' }] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        reconciler = createReconciler({ ledger, history, killPid: () => true });
+
+        // apra-fleet-50j6.1.2/50j6.2.2: supply dataDir so createSupervisor mints
+        // (or reuses) the shared bearer token and turns the per-request auth
+        // guard ON for this instance only.
+        supervisor = createSupervisor({ port: 0, dataDir, ledger, spawner, watchdog, dashboard, logger: silentLogger });
+        registerDashboardRoutes(supervisor, dashboard);
+        registerSprintRoutes(supervisor, sprintController);
+        registerLiveRoutes(supervisor, createLiveProxy({
+            ledger,
+            spawner,
+            renderHistory: () => '',
+            logger: silentLogger,
+        }));
+        registerReservationRoutes(supervisor, reconciler);
+
+        await supervisor.start();
+        port = supervisor.server.address().port;
+        token = supervisor.token;
+        assert.ok(typeof token === 'string' && token.length > 0, 'supervisor.token must be minted when dataDir is supplied');
+    });
+
+    after(async () => {
+        for (const pid of [childPid].filter(Boolean)) forceKill(pid);
+        await supervisor.stop('test');
+        await fsp.rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    // -------------------------------------------------------------------------
+    // setup: launch a real sprint using the Authorization header (setup step
+    // only -- NOT what this suite is verifying).
+    // -------------------------------------------------------------------------
+    test('setup: launch a sprint via POST /api/sprints using the Authorization header', async () => {
+        const res = await new Promise((resolve, reject) => {
+            const body = Buffer.from(JSON.stringify({
+                issue: 'x1', members: ['alice'], branch: 'feat/50j6-2-2', base: 'main', goal: 'auth itest',
+            }), 'utf-8');
+            const req = http.request({
+                host: '127.0.0.1', port, path: '/api/sprints', method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'content-length': body.length,
+                    authorization: `Bearer ${token}`,
+                },
+            }, (r) => {
+                let raw = '';
+                r.setEncoding('utf-8');
+                r.on('data', (c) => { raw += c; });
+                r.on('end', () => resolve({ status: r.statusCode, json: raw.length ? JSON.parse(raw) : null }));
+            });
+            req.on('error', reject);
+            req.end(body);
+        });
+        assert.equal(res.status, 201, JSON.stringify(res.json));
+        sprintId = res.json.sprintId;
+        childPid = track(res.json.pid);
+        childPort = res.json.port;
+
+        await waitFor(async () => {
+            try {
+                const r = await httpGet(childPort, '/state');
+                return r.status === 200;
+            } catch {
+                return false;
+            }
+        }, { label: 'auth-suite viewer-child /state to answer' });
+    });
+
+    // -------------------------------------------------------------------------
+    // GET / sets the se_token cookie (acceptance criterion (1), re-proved here
+    // against a REAL running supervisor+sprint, not just the unit-level check
+    // in supervisor-dashboard.test.mjs).
+    // -------------------------------------------------------------------------
+    test('GET / sets the se_token cookie carrying the same value as supervisor.token', async () => {
+        const res = await httpGet(port, '/');
+        assert.equal(res.status, 200);
+        // Node's http client normalizes the (single) 'set-cookie' response
+        // header into a one-element array, unlike every other header.
+        const setCookie = Array.isArray(res.headers['set-cookie'])
+            ? res.headers['set-cookie'][0]
+            : res.headers['set-cookie'];
+        assert.ok(typeof setCookie === 'string', 'expected a single Set-Cookie header');
+        assert.equal(setCookie, `se_token=${token}; Path=/; SameSite=Strict; HttpOnly`);
+        cookie = `se_token=${token}`;
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /sprints/:id/live/stop -- guarded (LIVE_CONTROL_PATTERN); no
+    // credential -> 401, cookie-only -> guard passes (request reaches the
+    // real child, which has no /stop route in this fixture and answers 404 --
+    // the important assertion is "not 401", i.e. the guard let it through).
+    // -------------------------------------------------------------------------
+    test('POST /sprints/:id/live/stop: no credential -> 401; se_token cookie ALONE -> guard passes', async () => {
+        const noCred = await httpPostWithHeaders(port, `/sprints/${sprintId}/live/stop`, {});
+        assert.equal(noCred.status, 401, noCred.body);
+        assert.ok(/bearer/i.test(noCred.headers['www-authenticate'] || ''), 'expected WWW-Authenticate: Bearer');
+
+        const withCookie = await httpPostWithHeaders(port, `/sprints/${sprintId}/live/stop`, { cookie });
+        assert.notEqual(withCookie.status, 401, withCookie.body);
+    });
+
+    // -------------------------------------------------------------------------
+    // POST /api/reservations/:sprintId/force-release -- guarded (whole /api/
+    // surface); no credential -> 401, cookie-only -> 200 and the reservation
+    // is actually released (this IS the Sprint Stack's Stop button's real
+    // route -- see dashboard.mjs's SPRINT_STOP_SCRIPT).
+    // -------------------------------------------------------------------------
+    test('POST /api/reservations/:sprintId/force-release: no credential -> 401; se_token cookie ALONE -> 200 and releases', async () => {
+        const noCred = await httpPostWithHeaders(port, `/api/reservations/${sprintId}/force-release`, {});
+        assert.equal(noCred.status, 401, noCred.body);
+        assert.ok(ledger.get(sprintId), 'the reservation must still be held after the unauthorized attempt');
+
+        const withCookie = await httpPostWithHeaders(port, `/api/reservations/${sprintId}/force-release`, { cookie });
+        assert.equal(withCookie.status, 200, withCookie.body);
+        const json = JSON.parse(withCookie.body);
+        assert.equal(json.status, 'force-released');
+        assert.equal(json.sprintId, sprintId);
+        assert.equal(ledger.get(sprintId), undefined, 'force-release via cookie-only auth must actually release the reservation');
     });
 });

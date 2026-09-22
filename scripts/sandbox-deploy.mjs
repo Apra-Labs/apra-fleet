@@ -42,6 +42,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { loadOrCreateToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PRODUCTION_FLEET_PORT = 7523;
@@ -252,9 +253,15 @@ export async function allocatePorts(pick = osAssignedPort, exclude = []) {
   return { fleetPort: chosen[0], supervisorPort: chosen[1] };
 }
 
-export async function getJson(url, timeoutMs = 2000) {
+/** `token`: when set, sent as `Authorization: Bearer <token>` -- required for
+ *  every supervisor /api/* call now that bin/serve.mjs always mints a token
+ *  and the supervisor's pre-dispatch guard 401s unauthenticated requests
+ *  (server.mjs's requiresAuth/isAuthorized). Not needed for the fleet MCP
+ *  server's own /health, which stays unauthenticated. */
+export async function getJson(url, timeoutMs = 2000, token) {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -262,13 +269,39 @@ export async function getJson(url, timeoutMs = 2000) {
   }
 }
 
-async function postJson(url, timeoutMs = 2000) {
+async function postJson(url, timeoutMs = 2000, token) {
   try {
-    const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs) });
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers });
     return res.ok;
   } catch {
     return false;
   }
+}
+
+/** Load (or, for a not-yet-started production instance, mint) the bearer
+ *  token for a supervisor's data dir. loadOrCreateToken is idempotent --
+ *  reading an existing token file never mutates it -- so this is safe to call
+ *  purely for a read against an already-running supervisor. Never throws: a
+ *  missing/unreadable dir just means "no snapshot/no auth", handled by the
+ *  caller exactly like the pre-auth null/false it used to get from a bare
+ *  401. */
+function tryLoadToken(dir) {
+  try {
+    return loadOrCreateToken(dir).token;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Production supervisor's data dir: same default bin/serve.mjs's
+ *  defaultDataDir() resolves to when FLEET_SE_DATA_DIR is unset (ledger.mjs),
+ *  rooted at the given `home` rather than always os.homedir() so tests can
+ *  point it at a fixture. */
+function productionSeDataDir(home) {
+  return process.env.FLEET_SE_DATA_DIR
+    ? path.resolve(process.env.FLEET_SE_DATA_DIR)
+    : path.join(home, '.apra-fleet-se');
 }
 
 function readJsonFile(file) {
@@ -300,7 +333,8 @@ export async function snapshotProduction(home = os.homedir()) {
     snap.PROD_MCP_PID = String(info.pid);
     snap.PROD_MCP_PORT = String(info.port ?? '');
   }
-  const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`);
+  const prodToken = tryLoadToken(productionSeDataDir(home));
+  const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`, 2000, prodToken);
   if (health && health.pid) {
     snap.PROD_SUPERVISOR_PID = String(health.pid);
     snap.PROD_SUPERVISOR_UPTIME = String(health.uptimeSeconds ?? 0);
@@ -318,7 +352,8 @@ export async function checkProductionUnchanged(values, home = os.homedir()) {
     }
   }
   if (values.PROD_SUPERVISOR_PID) {
-    const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`);
+    const prodToken = tryLoadToken(productionSeDataDir(home));
+    const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`, 2000, prodToken);
     if (!health || String(health.pid) !== values.PROD_SUPERVISOR_PID) {
       problems.push(`production supervisor pid changed (was ${values.PROD_SUPERVISOR_PID}, now ${health?.pid ?? 'unreachable'})`);
     } else if (Number(health.uptimeSeconds) < Number(values.PROD_SUPERVISOR_UPTIME)) {
@@ -436,6 +471,11 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
     await stopPid(mcpPid);
     throw portConflictError('supervisor', supervisorPort, `supervisor port ${supervisorPort} is no longer free -- torn down; re-run 'init'`);
   }
+  // Mint (or reuse) the sandbox's own bearer token BEFORE spawning, so the
+  // child's own idempotent loadOrCreateToken() reuses this exact file rather
+  // than racing a concurrent first mint (same pattern as f34/serve-wiring's
+  // fix for this).
+  const supervisorToken = loadOrCreateToken(values.FLEET_SE_DATA_DIR).token;
   const serve = path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
   const supPid = spawnDetached([serve, '--port', String(supervisorPort)], env, path.join(root, 'supervisor.log'));
   values.SUPERVISOR_PID = String(supPid);
@@ -443,7 +483,7 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   let supHealth = null;
   for (const deadline = Date.now() + 30000; Date.now() < deadline; await sleep(500)) {
     if (!isPidAlive(supPid)) break;
-    supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`);
+    supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
     if (supHealth && String(supHealth.pid) === String(supPid)) break;
     supHealth = null;
   }
@@ -465,13 +505,14 @@ export async function verify(sprintId, { home = os.homedir() } = {}) {
   const fleetPort = Number(values.APRA_FLEET_PORT);
   const supervisorPort = Number(values.SUPERVISOR_PORT);
 
+  const supervisorToken = tryLoadToken(values.FLEET_SE_DATA_DIR);
   const health = await getJson(`http://127.0.0.1:${fleetPort}/health`);
   if (!health || String(health.pid) !== values.MCP_PID) problems.push(`sandbox fleet server: /health on ${fleetPort} did not answer with pid ${values.MCP_PID}`);
-  const supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`);
+  const supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
   if (!supHealth || String(supHealth.pid) !== values.SUPERVISOR_PID) problems.push(`sandbox supervisor: /api/health on ${supervisorPort} did not answer with pid ${values.SUPERVISOR_PID}`);
   // Isolation: the sandbox supervisor must see the sandbox's EMPTY registry,
   // never production's members.
-  const members = await getJson(`http://127.0.0.1:${supervisorPort}/api/members`, 10000);
+  const members = await getJson(`http://127.0.0.1:${supervisorPort}/api/members`, 10000, supervisorToken);
   const list = Array.isArray(members?.members) ? members.members : (Array.isArray(members) ? members : null);
   if (!list) problems.push(`sandbox supervisor: /api/members unreadable (${JSON.stringify(members)})`);
   else if (list.length !== 0) problems.push(`sandbox supervisor sees ${list.length} member(s) -- it is attached to a NON-empty registry (production?)`);
@@ -502,9 +543,9 @@ export async function smoke(sprintId, { home = os.homedir() } = {}) {
 
 /** Kill only a process this recipe can prove is its own. Returns a problem
  *  string, or null when the process is gone. */
-async function stopOwned({ label, pid, port, healthPath, expectedPid }) {
+async function stopOwned({ label, pid, port, healthPath, expectedPid, token }) {
   if (!pid || !isPidAlive(pid)) return null;
-  const health = port ? await getJson(`http://127.0.0.1:${port}${healthPath}`) : null;
+  const health = port ? await getJson(`http://127.0.0.1:${port}${healthPath}`, 2000, token) : null;
   const answersAsSelf = health && String(health.pid) === String(pid);
   const isRecorded = expectedPid && String(pid) === String(expectedPid);
   if (!answersAsSelf && !isRecorded) {
@@ -530,12 +571,13 @@ export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [
 
   // 1. Supervisor: graceful shutdown only if the port answers with OUR pid.
   if (values.SUPERVISOR_PID && isPidAlive(values.SUPERVISOR_PID)) {
-    const h = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`);
+    const supervisorToken = tryLoadToken(values.FLEET_SE_DATA_DIR);
+    const h = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
     if (h && String(h.pid) === values.SUPERVISOR_PID) {
-      await postJson(`http://127.0.0.1:${supervisorPort}/api/shutdown`);
+      await postJson(`http://127.0.0.1:${supervisorPort}/api/shutdown`, 2000, supervisorToken);
       await waitForExit(values.SUPERVISOR_PID, 5000);
     }
-    const p = await stopOwned({ label: 'supervisor', pid: values.SUPERVISOR_PID, port: supervisorPort, healthPath: '/api/health', expectedPid: values.SUPERVISOR_PID });
+    const p = await stopOwned({ label: 'supervisor', pid: values.SUPERVISOR_PID, port: supervisorPort, healthPath: '/api/health', expectedPid: values.SUPERVISOR_PID, token: supervisorToken });
     if (p) problems.push(p);
   }
 

@@ -22,7 +22,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
-import { createLedger } from '../src/supervisor/ledger.mjs';
+import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { createLedger, defaultDataDir } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
@@ -210,6 +211,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
         console.warn(`[supervisor] WARNING: ${beadsWarning}`);
     }
 
+    // apra-fleet-50j6.1.2: mint-or-reuse the shared bearer service token that
+    // guards the `/api/` surface and the live-sprint mutating routes (see
+    // auth.mjs). Loaded from the SAME data root ledger.mjs/history.mjs/
+    // spawner.mjs already default to (FLEET_SE_DATA_DIR, or ~/.apra-fleet-se)
+    // so a restarted supervisor reuses the same token across restarts.
+    const dataDir = defaultDataDir();
+    const { token: serviceToken } = loadOrCreateToken(dataDir);
+
     // The durable reservation ledger (eft.5.1) and its terminal-event history
     // (eft.5.4) are the restart-surviving source of truth. Wire them as real
     // collaborators so a restarted supervisor reconciles against on-disk state.
@@ -264,6 +273,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
             const id = beadsIdentity.get();
             return id ? serializeExpectedIdentity(id) : undefined;
         },
+        // apra-fleet-50j6.2.1/50j6.1.2: thread this supervisor's own token
+        // through so a spawned child's coordination HTTP client (dolt-mutex,
+        // id-allocator) authenticates against the SAME guard server.mjs now
+        // enforces (see createSupervisor({ token }) below).
+        serviceToken,
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
@@ -372,7 +386,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
+    const supervisor = createSupervisor({ port, token: serviceToken, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 

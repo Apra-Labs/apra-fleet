@@ -40,6 +40,7 @@
 
 import http from 'node:http';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { loadOrCreateToken, isAuthorized, requiresAuth } from './auth.mjs';
 
 /** Default HTTP service port for the always-on supervisor. */
 export const DEFAULT_SERVICE_PORT = 8787;
@@ -113,12 +114,33 @@ export function sendJson(res, status, payload) {
 }
 
 /**
+ * Writes the 401 challenge for a guarded route the request did not carry the
+ * service token for. A dedicated helper (rather than `sendJson` plus a
+ * separate `res.setHeader` call) so the `WWW-Authenticate` header rides the
+ * same single `writeHead` call `sendJson` uses -- a test double that only
+ * implements `writeHead`/`end` (no `setHeader`) still works.
+ * @param {import('http').ServerResponse} res
+ */
+function sendUnauthorized(res) {
+    const body = JSON.stringify({ error: 'unauthorized' });
+    res.writeHead(401, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+        'www-authenticate': 'Bearer',
+    });
+    res.end(body);
+}
+
+/**
  * Creates (but does not start) the always-on supervisor. Returns a handle whose
  * `start()`/`stop()` own the full lifecycle; `route()` lets later tasks register
  * additional endpoints against the same error-isolated dispatcher.
  *
  * @param {{
  *   port?: number,
+ *   bind?: string,
+ *   token?: string,
+ *   dataDir?: string,
  *   ledger?: object,
  *   spawner?: object,
  *   watchdog?: object,
@@ -139,6 +161,10 @@ export function sendJson(res, status, payload) {
  */
 export function createSupervisor(deps = {}) {
     let port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
+    // apra-fleet-50j6.1.2: loopback-only bind. `bind` is a deps-level seam
+    // for tests, not a CLI flag -- production (bin/serve.mjs) never overrides
+    // it, so the supervisor is unreachable from any non-loopback interface.
+    const bindHost = typeof deps.bind === 'string' && deps.bind.length > 0 ? deps.bind : '127.0.0.1';
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -148,6 +174,20 @@ export function createSupervisor(deps = {}) {
     // The "identity unknown" warning (getWarning() is optional on the handle
     // so an older/test-only { get, refresh } stub still works).
     const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
+
+    // The shared bearer service token guarding the `/api/` surface and the
+    // live-sprint mutating routes (see auth.mjs's requiresAuth). Either
+    // supplied directly (deps.token) or loaded/minted from deps.dataDir via
+    // auth.mjs's loadOrCreateToken. If NEITHER is supplied, `token` stays
+    // null and the per-request guard below is skipped entirely (never
+    // fails closed against a token that was never configured) -- this is
+    // deliberate back-compat for the many existing unit tests that build a
+    // supervisor with no auth concept at all and call handleRequest()
+    // directly with header-less mock requests.
+    let token = typeof deps.token === 'string' && deps.token.length > 0 ? deps.token : null;
+    if (!token && typeof deps.dataDir === 'string' && deps.dataDir.length > 0) {
+        token = loadOrCreateToken(deps.dataDir).token;
+    }
 
     // Module seams -- inert stubs unless a real collaborator was injected.
     const seams = {
@@ -239,6 +279,15 @@ export function createSupervisor(deps = {}) {
         const path = url.pathname;
 
         try {
+            // apra-fleet-50j6.1.2: 401 before any route dispatch when this
+            // route requires auth and the request does not carry the
+            // service token. Runs first so a guarded mutating route (e.g.
+            // POST /sprints/:id/live/stop) never reaches its handler/proxy
+            // call at all on an unauthorized request.
+            if (token && requiresAuth(method, path) && !isAuthorized(req, token)) {
+                sendUnauthorized(res);
+                return;
+            }
             const handler = routes.get(routeKey(method, path));
             if (handler) {
                 await handler(req, res, { url, params: {} });
@@ -356,7 +405,7 @@ export function createSupervisor(deps = {}) {
             };
             server.once('error', onError);
             server.once('listening', onListening);
-            server.listen(port);
+            server.listen(port, bindHost);
         });
 
         // port:0 asks the OS to pick a free port; reflect the port it
@@ -383,6 +432,12 @@ export function createSupervisor(deps = {}) {
         get server() { return server; },
         seams,
         get port() { return port; },
+        // apra-fleet-50j6.2.2: exposes the SAME token the per-request guard
+        // above checks requests against, so a route handler (dashboard.mjs's
+        // GET / cookie-setter) can hand it back out to a trusted, loopback-
+        // only client without a second source of truth. `null` when auth was
+        // never configured (see the deps.token/deps.dataDir comment above).
+        get token() { return token; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
     };

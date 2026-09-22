@@ -270,6 +270,7 @@ export function buildSprintArgv(opts = {}) {
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
  *   expectBeads?: string|(() => string|undefined),
+ *   serviceToken?: string,
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
  *   dataDir?: string,
@@ -320,6 +321,12 @@ export function createSpawner(deps = {}) {
     // later by GET /api/health?refresh=1. undefined -> the flag is omitted.
     const expectBeadsDep = deps.expectBeads;
     const resolveExpectBeads = () => (typeof expectBeadsDep === 'function' ? expectBeadsDep() : expectBeadsDep);
+    // apra-fleet-50j6.2.1: the supervisor's own service token, used to
+    // authenticate coordination HTTP requests from the spawned child. Passed
+    // through the child's env as FLEET_SE_SERVICE_TOKEN so the coordination
+    // clients can reach the supervisor's dolt-mutex and id-allocator routes.
+    // Optional: when absent, the child falls back to process.env.FLEET_SE_SERVICE_TOKEN.
+    const serviceToken = deps.serviceToken;
     // apra-fleet-k7b.3: optional same-instance child-exit notification (see
     // the 'exit' listener below) and its injectable clock (test determinism,
     // matching ledger.mjs/history.mjs's own `now` seam convention).
@@ -385,11 +392,20 @@ export function createSpawner(deps = {}) {
 
         let child;
         try {
+            // apra-fleet-50j6.2.1: compose env with serviceToken. Base is
+            // deps.env (if provided) or process.env (the implicit default).
+            // If serviceToken is set, overlay it on the base env as
+            // FLEET_SE_SERVICE_TOKEN. Omit env entirely if no token and no
+            // deps.env -- match today's behavior exactly.
+            const baseEnv = deps.env ?? process.env;
+            const spawnEnv = serviceToken
+                ? { ...baseEnv, FLEET_SE_SERVICE_TOKEN: serviceToken }
+                : baseEnv;
             child = spawnImpl(command, args, {
                 detached: true,
                 stdio: ['ignore', logFd, logFd],
                 ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
-                ...(deps.env !== undefined ? { env: deps.env } : {}),
+                ...(spawnEnv !== process.env ? { env: spawnEnv } : {}),
             });
         } catch (err) {
             // Spawn itself threw synchronously (e.g. an injected fake spawn in
