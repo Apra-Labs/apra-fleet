@@ -448,38 +448,68 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
     it('every curl targeting $SUPERVISOR_PORT, 8787 or /api/ in Setup/Reset/Teardown/Test scenario carries an Authorization: Bearer header', () => {
       const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
 
-      // Extract all curl commands that target supervisor ports/api
-      const curlPattern = /curl\s+(?:[^`\n]*?)(?:\$SUPERVISOR_PORT|8787|\/api\/)[^\n`]*/g;
-      const curlMatches = Array.from(text.matchAll(curlPattern));
+      // Extract all bash code blocks and check for supervisor/api curls with bearer tokens
+      const bashBlockRegex = /```bash\n([\s\S]*?)\n```/g;
+      let currlsWithBearer = 0;
+      let curlsWithoutBearer: string[] = [];
+      let match;
 
-      expect(curlMatches.length).toBeGreaterThan(0);
+      while ((match = bashBlockRegex.exec(text)) !== null) {
+        const code = match[1];
+        const lines = code.split('\n');
 
-      for (const match of curlMatches) {
-        const curlCmd = match[0];
-        // Each curl should have an Authorization header
-        const hasAuthHeader = /Authorization:\s*Bearer/.test(curlCmd);
-        expect(hasAuthHeader).toBe(true, `Curl missing Authorization header: ${curlCmd.substring(0, 100)}...`);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Skip comments and empty lines
+          if (line.trim().startsWith('#') || !line.trim()) continue;
+          // Skip lines that aren't curl commands
+          if (!line.includes('curl ')) continue;
+          // Skip lines that don't target supervisor/api
+          if (!/\$SUPERVISOR_PORT|:8787|\/api\//.test(line)) continue;
+
+          // Build full curl command including continuation lines (identified by leading whitespace and - or \)
+          let fullCmd = line;
+          let j = i + 1;
+          while (j < lines.length && /^\s*(-|\\)/.test(lines[j])) {
+            fullCmd += ' ' + lines[j].trim();
+            j++;
+          }
+
+          // Check for Authorization header
+          if (/Authorization:\s*Bearer/.test(fullCmd)) {
+            currlsWithBearer++;
+          } else {
+            curlsWithoutBearer.push(fullCmd.substring(0, 120));
+          }
+        }
+      }
+
+      // There should be some curls with bearer and none without
+      expect(currlsWithBearer).toBeGreaterThan(0);
+      if (curlsWithoutBearer.length > 0) {
+        expect.fail(`Found ${curlsWithoutBearer.length} supervisor/api curls without Bearer tokens:\n${curlsWithoutBearer.join('\n')}`);
       }
     });
 
     it('the pre-mint node -e import call appears BEFORE the serve.mjs boot line in both Setup and Reset', () => {
       const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
 
-      // Check Setup section
+      // Check Setup section - look for the fenced bash block in the "Boot the supervisor" subsection
       const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
-      const setupPreMintIndex = setupSection.indexOf('getOrCreateKey');
-      const setupServeIndex = setupSection.indexOf('serve.mjs');
-      expect(setupPreMintIndex).toBeGreaterThan(-1);
-      expect(setupServeIndex).toBeGreaterThan(-1);
-      expect(setupPreMintIndex).toBeLessThan(setupServeIndex);
+      // Look for the specific node -e import pattern that mints the key
+      const setupPreMintMatch = setupSection.match(/node -e "import\('<repo-root>\/dist\/services\/jwt\.js'\)\.then\(m => \{ m\.getOrCreateKey\(\); \}\)"/);
+      const setupServeMatch = setupSection.match(/node "<repo-root>\/packages\/apra-fleet-se\/bin\/serve\.mjs"/);
+      expect(setupPreMintMatch).not.toBeNull();
+      expect(setupServeMatch).not.toBeNull();
+      expect(setupPreMintMatch!.index).toBeLessThan(setupServeMatch!.index);
 
       // Check Reset section
       const resetSection = text.split(/^## Reset$/m)[1]?.split(/^## Teardown$/m)[0] ?? '';
-      const resetPreMintIndex = resetSection.indexOf('getOrCreateKey');
-      const resetServeIndex = resetSection.indexOf('serve.mjs');
-      expect(resetPreMintIndex).toBeGreaterThan(-1);
-      expect(resetServeIndex).toBeGreaterThan(-1);
-      expect(resetPreMintIndex).toBeLessThan(resetServeIndex);
+      const resetPreMintMatch = resetSection.match(/node -e "import\('<repo-root>\/dist\/services\/jwt\.js'\)\.then\(m => \{ m\.getOrCreateKey\(\); \}\)"/);
+      const resetServeMatch = resetSection.match(/node "<repo-root>\/packages\/apra-fleet-se\/bin\/serve\.mjs"/);
+      expect(resetPreMintMatch).not.toBeNull();
+      expect(resetServeMatch).not.toBeNull();
+      expect(resetPreMintMatch!.index).toBeLessThan(resetServeMatch!.index);
     });
 
     it('the Teardown post-shutdown liveness check compares http_code and treats 401 as alive (not gone)', () => {
