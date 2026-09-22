@@ -517,6 +517,11 @@ for the boot itself, but only if the port is free to bind on first try.
 ```bash
 node "<repo-root>/scripts/kill-port.mjs" "$SUPERVISOR_PORT" "supervisor port $SUPERVISOR_PORT" 5000 || exit 1
 
+# Mint the sandbox fleet.key before the supervisor boots. The supervisor only
+# READS fleet.key if it exists; it falls back to private/token when absent.
+# This pre-mint ensures the key exists for the supervisor's token resolution.
+node -e "import('<repo-root>/dist/services/jwt.js').then(m => { m.getOrCreateKey(); })"
+
 node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
   > "$HOME/supervisor.log" 2>&1 &
 SUPERVISOR_PID=$!
@@ -558,7 +563,7 @@ while :; do
     exit 1
   fi
   LOG_PID="$(grep -o '(pid [0-9]*)' "$HOME/supervisor.log" 2>/dev/null | tail -n1 | grep -o '[0-9]*' || true)"
-  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
+  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" 2>/dev/null || true)"
   if [ -n "$HEALTH" ] && [ -n "$LOG_PID" ]; then
     HEALTH_PID="$(node -e '
       try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
@@ -627,7 +632,7 @@ export APRA_FLEET_PORT=18700
 SUPERVISOR_PORT="${SUPERVISOR_PORT:-18701}"
 if [ -f "$SANDBOX.supervisor.pid" ]; then
   OLD_SUPERVISOR_PID="$(cat "$SANDBOX.supervisor.pid")"
-  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" > /dev/null 2>&1 || true
   DEADLINE=$(( $(date +%s) + 10 ))
   while kill -0 "$OLD_SUPERVISOR_PID" 2>/dev/null; do
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
@@ -649,6 +654,12 @@ git reset --hard origin/main
 git clean -fdx
 node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-repo" --mode reset
 
+# Mint the sandbox fleet.key before the supervisor boots (Reset re-boot).
+# The supervisor only READS fleet.key if it exists; it falls back to
+# private/token when absent. This pre-mint ensures the key exists for the
+# supervisor's token resolution.
+node -e "import('<repo-root>/dist/services/jwt.js').then(m => { m.getOrCreateKey(); })"
+
 node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
   > "$HOME/supervisor.log" 2>&1 &
 SUPERVISOR_PID=$!
@@ -669,7 +680,7 @@ while :; do
     exit 1
   fi
   LOG_PID="$(grep -o '(pid [0-9]*)' "$HOME/supervisor.log" 2>/dev/null | tail -n1 | grep -o '[0-9]*' || true)"
-  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" 2>/dev/null || true)"
+  HEALTH="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/health" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" 2>/dev/null || true)"
   if [ -n "$HEALTH" ] && [ -n "$LOG_PID" ]; then
     HEALTH_PID="$(node -e '
       try { process.stdout.write(String(JSON.parse(process.argv[1]).pid)); } catch { /* empty */ }
@@ -736,7 +747,7 @@ if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; 
          "holds if FLEET_SE_SWEEP_OWNER_DATA_DIR was exported for this" \
          "supervisor)." >&2
   fi
-  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+  curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" > /dev/null 2>&1 || true
   DEADLINE=$(( $(date +%s) + 10 ))
   while kill -0 "$SUPERVISOR_PID" 2>/dev/null; do
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
@@ -748,10 +759,23 @@ if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; 
   # Primary evidence the port is free: the recorded PID is gone AND the API
   # no longer answers -- portable to every host, unlike an lsof-ti probe
   # (Git Bash/Windows has no lsof; see the KB note this playbook's earlier
-  # port-kill loops already run into). lsof below is best-effort only, run
+  # port-kill loops already run into). Probe HTTP code, not -sf: a 401
+  # unauthorized response indicates the port is still alive and listening,
+  # which counts as "not gone" for this check. Only http_code 000 (connection
+  # refused / port closed) means gone. lsof below is best-effort only, run
   # if present, never the sole basis for a pass/fail verdict.
   DEADLINE=$(( $(date +%s) + 5 ))
-  while kill -0 "$SUPERVISOR_PID" 2>/dev/null || curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; do
+  while true; do
+    if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+      CODE="000"
+    else
+      CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$SUPERVISOR_PORT/api/health" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" 2>/dev/null || echo 000)
+    fi
+    if [ "$CODE" = "000" ]; then
+      # Port is gone, PID is gone
+      break
+    fi
+    # Any other code (401 included) means the port is still answering
     kill -9 "$SUPERVISOR_PID" 2>/dev/null || true
     if command -v lsof > /dev/null 2>&1; then
       PIDS="$(lsof -ti tcp:$SUPERVISOR_PORT 2>/dev/null || true)"
@@ -762,7 +786,8 @@ if [ -f "$SANDBOX.supervisor.pid" ] && [ -f "$SANDBOX.supervisor.started_at" ]; 
     fi
     sleep 1
   done
-  if kill -0 "$SUPERVISOR_PID" 2>/dev/null || curl -sf "http://localhost:$SUPERVISOR_PORT/api/members" > /dev/null 2>&1; then
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$SUPERVISOR_PORT/api/health" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" 2>/dev/null || echo 000)
+  if kill -0 "$SUPERVISOR_PID" 2>/dev/null || [ "$CODE" != "000" ]; then
     echo "Teardown: the supervisor (pid $SUPERVISOR_PID, port $SUPERVISOR_PORT)" \
          "is still alive/answering after stop + 5s of kill retries." \
          "Manually confirm it is stopped before continuing." >&2
@@ -993,6 +1018,7 @@ scenario.
    # check it explicitly.
    HTTP_RESPONSE="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:$SUPERVISOR_PORT/api/sprints" \
      -H 'Content-Type: application/json' \
+     -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" \
      -d "{\"issue\":\"gh-toy-4ef\",\"branch\":\"$SPRINT_BRANCH\",\"base\":\"main\",\"members\":[\"toy-doer\"],\"maxCycles\":1}")"
    HTTP_CODE="$(printf '%s' "$HTTP_RESPONSE" | tail -n1)"
    RESPONSE="$(printf '%s' "$HTTP_RESPONSE" | sed '$d')"
@@ -1054,7 +1080,7 @@ scenario.
      # make 'curl -sf' fail silently, leave STATE empty, and spin the
      # loop to its deadline instead of retrying/reporting -- treat an
      # empty STATE as "not yet terminal" and just keep polling.
-     STATE="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/sprints/$SPRINT_ID" 2>/dev/null || true)"
+     STATE="$(curl -sf "http://localhost:$SUPERVISOR_PORT/api/sprints/$SPRINT_ID" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" 2>/dev/null || true)"
      if [ -n "$STATE" ]; then
        # GET /api/sprints/:id (api.mjs's getSprint): 'live:false' covers
        # both its 'terminal:true' branch (persisted run-state found) and
@@ -1076,7 +1102,7 @@ scenario.
             "risk the sweep's machine-wide kill scope firing. File this as" \
             "a carry-over bug: the toy sprint did not finish within the" \
             "mitigation window." >&2
-       curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" > /dev/null 2>&1 || true
+       curl -sf -X POST "http://localhost:$SUPERVISOR_PORT/api/shutdown" -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")" > /dev/null 2>&1 || true
        exit 1
      fi
      if [ "$(date +%s)" -ge "$DEADLINE" ]; then

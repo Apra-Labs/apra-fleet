@@ -438,4 +438,61 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       expect(deadlineIndex).toBeGreaterThan(guardIndex);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Property 6: Supervisor bearer auth -- all supervisor curls carry the
+  // bearer token, the pre-mint step runs before the supervisor boots, and
+  // the post-shutdown liveness check treats 401 as alive.
+  // -----------------------------------------------------------------------
+  describe('supervisor bearer auth: curls carry the bearer header, pre-mint runs first, 401 treated as alive', () => {
+    it('every curl targeting $SUPERVISOR_PORT, 8787 or /api/ in Setup/Reset/Teardown/Test scenario carries an Authorization: Bearer header', () => {
+      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+
+      // Extract all curl commands that target supervisor ports/api
+      const curlPattern = /curl\s+(?:[^`\n]*?)(?:\$SUPERVISOR_PORT|8787|\/api\/)[^\n`]*/g;
+      const curlMatches = Array.from(text.matchAll(curlPattern));
+
+      expect(curlMatches.length).toBeGreaterThan(0);
+
+      for (const match of curlMatches) {
+        const curlCmd = match[0];
+        // Each curl should have an Authorization header
+        const hasAuthHeader = /Authorization:\s*Bearer/.test(curlCmd);
+        expect(hasAuthHeader).toBe(true, `Curl missing Authorization header: ${curlCmd.substring(0, 100)}...`);
+      }
+    });
+
+    it('the pre-mint node -e import call appears BEFORE the serve.mjs boot line in both Setup and Reset', () => {
+      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+
+      // Check Setup section
+      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
+      const setupPreMintIndex = setupSection.indexOf('getOrCreateKey');
+      const setupServeIndex = setupSection.indexOf('serve.mjs');
+      expect(setupPreMintIndex).toBeGreaterThan(-1);
+      expect(setupServeIndex).toBeGreaterThan(-1);
+      expect(setupPreMintIndex).toBeLessThan(setupServeIndex);
+
+      // Check Reset section
+      const resetSection = text.split(/^## Reset$/m)[1]?.split(/^## Teardown$/m)[0] ?? '';
+      const resetPreMintIndex = resetSection.indexOf('getOrCreateKey');
+      const resetServeIndex = resetSection.indexOf('serve.mjs');
+      expect(resetPreMintIndex).toBeGreaterThan(-1);
+      expect(resetServeIndex).toBeGreaterThan(-1);
+      expect(resetPreMintIndex).toBeLessThan(resetServeIndex);
+    });
+
+    it('the Teardown post-shutdown liveness check compares http_code and treats 401 as alive (not gone)', () => {
+      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
+
+      // The post-shutdown check should use http_code comparison
+      expect(text).toMatch(/CODE=\$\(curl\s+(?:[^)]*?)http_code/);
+
+      // It should treat code 000 as gone
+      expect(text).toMatch(/\[ "\$CODE" = "000" \]/);
+
+      // It should mention 401 as alive (from the comment)
+      expect(text).toMatch(/401[\s\S]{0,200}alive/i);
+    });
+  });
 });
