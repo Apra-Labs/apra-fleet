@@ -11,12 +11,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { composePermissions } from '../src/tools/compose-permissions.js';
+import { composePermissions, findProfilesDir } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
-import type { SSHExecResult } from '../src/types.js';
+import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 // GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
 // out-of-band file channel for a large ~/.claude.json) for every non-relay member.
@@ -98,20 +99,36 @@ afterEach(() => {
 });
 
 describe('composePermissions -- installed profile discovery', () => {
-  it('loads profiles from the Codex skill directory', async () => {
-    const member = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'windows' });
-    addAgent(member);
-    installFsMock();
-    vi.mocked(os.homedir).mockReturnValue('/codex-test-home');
+  const installs: Array<{ provider: Exclude<LlmProvider, 'none'>; pathParts: string[] }> = [
+    { provider: 'claude', pathParts: ['.claude', 'skills', 'fleet'] },
+    { provider: 'codex', pathParts: ['.codex', 'skills', 'fleet'] },
+    { provider: 'agy', pathParts: ['.gemini', 'antigravity-cli', 'skills', 'fleet'] },
+    { provider: 'copilot', pathParts: ['.copilot', 'skills', 'fleet'] },
+    { provider: 'opencode', pathParts: ['.config', 'opencode', 'skills', 'fleet'] },
+  ];
 
-    const codexProfiles = '/codex-test-home/.codex/skills/fleet/profiles';
-    const realExistsSync = fs.existsSync.bind(fs);
-    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation(p =>
-      String(p).replace(/\\/g, '/') === codexProfiles || realExistsSync(p)
-    );
+  it.each(installs)('loads profiles from the $provider fleet skill directory', async ({ provider, pathParts }) => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-profiles-'));
+    try {
+      const profilesDir = path.join(testHome, ...pathParts, 'profiles');
+      fs.mkdirSync(profilesDir, { recursive: true });
+      expect(findProfilesDir(testHome, path.join(testHome, 'no-dev-profiles'))).toBe(profilesDir);
+    } finally {
+      if (path.resolve(testHome).startsWith(path.resolve(os.tmpdir()) + path.sep)) {
+        fs.rmSync(testHome, { recursive: true, force: true });
+      }
+    }
+  });
 
-    await expect(composePermissions({ member_id: member.id, role: 'doer' })).resolves.toContain('codex-doer');
-    expect(existsSpy).toHaveBeenCalledWith(expect.stringContaining('.codex'));
+  it('reports every provider directory searched when no profiles exist', () => {
+    const testHome = path.join(os.tmpdir(), 'apra-fleet-missing-home');
+    const run = () => findProfilesDir(testHome, path.join(testHome, 'no-dev-profiles'));
+
+    expect(run).toThrowError(path.join(testHome, '.claude', 'skills', 'fleet', 'profiles'));
+    expect(run).toThrowError(path.join(testHome, '.codex', 'skills', 'fleet', 'profiles'));
+    expect(run).toThrowError(path.join(testHome, '.gemini', 'antigravity-cli', 'skills', 'fleet', 'profiles'));
+    expect(run).toThrowError(path.join(testHome, '.copilot', 'skills', 'fleet', 'profiles'));
+    expect(run).toThrowError(path.join(testHome, '.config', 'opencode', 'skills', 'fleet', 'profiles'));
   });
 });
 

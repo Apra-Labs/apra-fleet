@@ -56,6 +56,11 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   opencode: 'ollama/qwen3-coder:30b',
 };
 
+/** Supported install targets, in deterministic profile-discovery precedence. */
+export const INSTALLABLE_LLM_PROVIDERS: readonly LlmProvider[] = [
+  'claude', 'codex', 'copilot', 'agy', 'opencode',
+];
+
 export interface ProviderInstallConfig {
   configDir: string;
   settingsFile: string;
@@ -75,52 +80,52 @@ export interface MultiProviderInstallConfig {
   }>;
 }
 
-export function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
+export function getProviderInstallConfig(provider: LlmProvider, homeDir = home): ProviderInstallConfig {
   switch (provider) {
     case 'agy':
       return {
-        configDir: path.join(home, '.gemini', 'antigravity-cli'),
-        settingsFile: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.gemini', 'antigravity-cli', 'agents'),
+        configDir: path.join(homeDir, '.gemini', 'antigravity-cli'),
+        settingsFile: path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json'),
+        skillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'agents'),
         name: 'Antigravity',
       };
     case 'codex':
       return {
-        configDir: path.join(home, '.codex'),
-        settingsFile: path.join(home, '.codex', 'config.toml'),
-        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.codex'),
+        settingsFile: path.join(homeDir, '.codex', 'config.toml'),
+        skillsDir: path.join(homeDir, '.codex', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.codex', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Codex',
       };
     case 'copilot':
       return {
-        configDir: path.join(home, '.copilot'),
-        settingsFile: path.join(home, '.copilot', 'settings.json'),
-        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.copilot'),
+        settingsFile: path.join(homeDir, '.copilot', 'settings.json'),
+        skillsDir: path.join(homeDir, '.copilot', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.copilot', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Copilot',
       };
     case 'opencode':
       return {
-        configDir: path.join(home, '.config', 'opencode'),
-        settingsFile: path.join(home, '.config', 'opencode', 'opencode.json'),
-        skillsDir: path.join(home, '.config', 'opencode', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.config', 'opencode', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.config', 'opencode', 'agents'),
+        configDir: path.join(homeDir, '.config', 'opencode'),
+        settingsFile: path.join(homeDir, '.config', 'opencode', 'opencode.json'),
+        skillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.config', 'opencode', 'agents'),
         name: 'OpenCode',
       };
     case 'claude':
     default:
       return {
-        configDir: path.join(home, '.claude'),
-        settingsFile: path.join(home, '.claude', 'settings.json'),
-        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.claude', 'agents'),
+        configDir: path.join(homeDir, '.claude'),
+        settingsFile: path.join(homeDir, '.claude', 'settings.json'),
+        skillsDir: path.join(homeDir, '.claude', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.claude', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.claude', 'agents'),
         name: 'Claude',
       };
   }

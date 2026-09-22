@@ -13,6 +13,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
@@ -143,26 +144,29 @@ interface Ledger {
   granted: Array<{ permission: string; reason: string; date: string }>;
 }
 
-function findProfilesDir(): string {
-  // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
-  const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
-  if (fs.existsSync(installedFleet)) return installedFleet;
-  // Installed by `apra-fleet install --llm codex`.
-  const installedCodex = path.join(os.homedir(), '.codex', 'skills', 'fleet', 'profiles');
-  if (fs.existsSync(installedCodex)) return installedCodex;
+export function findProfilesDir(homeDir = os.homedir(), startDir = __dirname): string {
+  const searched: string[] = [];
+  for (const provider of INSTALLABLE_LLM_PROVIDERS) {
+    const candidate = path.join(getProviderInstallConfig(provider, homeDir).fleetSkillsDir, 'profiles');
+    searched.push(candidate);
+    if (fs.existsSync(candidate)) return candidate;
+  }
   // Installed (legacy): ~/.claude/skills/pm/profiles/
-  const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
+  const installedPm = path.join(homeDir, '.claude', 'skills', 'pm', 'profiles');
+  searched.push(installedPm);
   if (fs.existsSync(installedPm)) return installedPm;
   // Dev: walk up from __dirname looking for skills/fleet/profiles/
-  let dir = __dirname;
+  let dir = startDir;
   for (let i = 0; i < 6; i++) {
     const candidateFleet = path.join(dir, 'skills', 'fleet', 'profiles');
+    searched.push(candidateFleet);
     if (fs.existsSync(candidateFleet)) return candidateFleet;
     const candidatePm = path.join(dir, 'skills', 'pm', 'profiles');
+    searched.push(candidatePm);
     if (fs.existsSync(candidatePm)) return candidatePm;
     dir = path.dirname(dir);
   }
-  throw new Error('Cannot find profiles directory');
+  throw new Error(`Cannot find profiles directory. Searched: ${searched.join(', ')}`);
 }
 
 function loadProfile(profilesDir: string, name: string): any {
