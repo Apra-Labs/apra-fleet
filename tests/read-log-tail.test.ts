@@ -144,4 +144,25 @@ describe('readLogTail', () => {
     expect(result.lastTimestamp).toBeNull();
     expect(result.error).toContain('Permission denied');
   });
+
+  // apra-fleet-qe83.2.1: readLogTail only ever inspects the LAST line of the
+  // tail, unlike stall-poller.ts's extractClaudeTimestamp which scans
+  // backwards for the last entry that carries a timestamp. This is the same
+  // "tail ends without a timestamp" shape as the recorded bug.
+  // EXPECTED TO FLIP once apra-fleet-qe83.2.2 gives readLogTail the same
+  // backward scan -- at that point this must return the dated assistant
+  // entry's timestamp instead of null.
+  describe('backward scan for the last dated entry (apra-fleet-qe83.2, expected to flip in .2.2)', () => {
+    it('EXPECTED TO FLIP: returns null even though an earlier line in the tail carries a timestamp', async () => {
+      const stdout = [
+        JSON.stringify({ type: 'assistant', timestamp: '2026-05-04T10:00:00.000Z' }),
+        JSON.stringify({ type: 'last-prompt', prompt: 'continue' }), // no timestamp field
+      ].join('\n');
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await readLogTail('agent-1', '/home/user/.claude/session.jsonl');
+
+      expect(result.lastTimestamp).toBeNull();
+    });
+  });
 });

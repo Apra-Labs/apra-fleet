@@ -1024,6 +1024,49 @@ describe('StallDetector', () => {
       expect(detector.getEntry('member-1')?.lastActivityAt).toBe(mtimeMs);
     });
   });
+
+  /**
+   * apra-fleet-qe83.2: reproduces the recorded missed stall -- a transcript
+   * whose tail is a dated assistant entry, an attachment entry, and a final
+   * last-prompt record with no timestamp field, byte-cap-truncated so the
+   * dated entry never survives extraction (see the fixture
+   * tests/fixtures/stall-frozen-tail-no-timestamp.jsonl and its pollLogFile-
+   * level reproduction in tests/stall-poller.test.ts). The file's own mtime
+   * is frozen at the same instant. pollLogFile is mocked here to return
+   * exactly what that extraction layer produces for this shape
+   * (lastTimestamp: null, mtimeMs pinned) so this block isolates the
+   * DETECTOR's classification of that result, not the extraction itself.
+   */
+  describe('_poll — frozen-tail-null-timestamp (apra-fleet-qe83.2)', () => {
+    // EXPECTED TO FLIP once apra-fleet-qe83.2.2 lands: today the detector
+    // silently `continue`s when lastTimestamp is null and mtime hasn't
+    // advanced, even though the file's own mtime proves it is genuinely
+    // frozen -- no stall_detected, no onStall, and no log line at all.
+    it('EXPECTED TO FLIP: currently misses a stall past threshold with no signal at all (no stall_detected, no onStall, no log line)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '1800000'; // matches the recorded bug's 30-minute threshold
+      const baseTime = Date.now();
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: baseTime, onStall }));
+
+      // Frozen: content extraction found nothing usable, and the file's own
+      // mtime has not advanced past lastActivityAt either.
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: baseTime });
+
+      // Threshold + one poll past T0.
+      vi.setSystemTime(baseTime + 1_800_000 + 30_000);
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(0);
+      // No diagnostic log line of any kind for this silent-continue path.
+      expect(mockLogLine).not.toHaveBeenCalledWith('stall_tail_truncated', expect.any(String));
+      expect(mockLogWarn).not.toHaveBeenCalledWith('stall_tail_truncated', expect.any(String));
+      expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(0);
+    });
+  });
 });
 
 describe('computeEffectiveThresholdMs (PR#416 finding 4: clamp)', () => {
