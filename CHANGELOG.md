@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint Deploy routing and test-runner robustness
+
+Incidental repairs found while restoring config-driven HTTP KB provider
+selection: neither touches the KB, and the provider work does not depend on
+them, but the sprint could not finish without them.
+
+- **fleet-sprint Deploy routes to Sandbox Deploy**, not the production deploy
+  path, and a self-hosted target refuses the production path outright. The
+  destructive test suite was otherwise run against the live fleet server and
+  supervisor. Documented, not yet independently validated -- Deploy stalled on
+  the dispatch timeout in both cycles of the sprint that wrote it.
+- **The test runner no longer stalls or orphans workers**: suite output goes to
+  a file descriptor rather than a pipe nothing drains, each suite is bounded by
+  its own timer, and a timed-out suite is killed as a whole process tree rooted
+  at the pid this runner spawned.
+
 ## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
 
 Sprint goal: fix a real, observed failure mode where a sprint decomposed a

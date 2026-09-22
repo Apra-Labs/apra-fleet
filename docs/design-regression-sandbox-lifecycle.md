@@ -169,3 +169,37 @@ open, on a tag-then-retry design:
 - The retry path refuses to proceed if teardown of the previous attempt did
   not fully succeed, rather than layering a new bind attempt on top of a
   partially-torn-down previous one.
+
+## fleet-sprint's own Deploy phase must use Sandbox Deploy on a self-hosted repo
+
+A repo that builds the same tool running its own sprint (apra-fleet building
+apra-fleet) cannot let a sprint's `Deploy C<N>` phase follow the production
+deploy path. Production deploy replaces the machine's live singleton:
+`install --force` stops it and deletes its registration file, so the
+just-stopped instance's old port is still held while the new instance binds
+elsewhere, and a "poll the well-known port to confirm it came up" step then
+waits for something that can never appear -- a silent, effectively unbounded
+stall, since it is the very server executing the sprint. The sandbox deploy
+path is unaffected by this because it uses its own data directory and an
+OS-assigned port and never touches the production singleton's port or
+registration file. The fix belongs in the *deploy runbook's phase-selection
+rule*, not in sandbox-deploy.mjs: a `Deploy C<N>` label must resolve to the
+sandbox section, and the production section should be reserved for a human
+deliberately rolling out to the live singleton. Confirming that the
+resolved phase actually reaches the sandbox path (rather than merely
+updating the routing prose) is separate, currently-open verification work --
+a docs-only rule change is not itself proof the dispatcher honors it.
+
+## The test-runner's own hang-timeout does not reap a hung suite's full process tree on Windows
+
+A suite that leaks an open handle (a spawned git process, an open SQLite
+connection) can leave `vitest`/`node --test` alive with no output and no
+exit long after the last test finished. Bounding the parent test-runner
+invocation with a timeout stops the *runner* process, but on Windows a
+plain `SIGKILL` to the parent does not necessarily reap children it spawned
+transitively -- an orphaned child can keep a port, lockfile, or SQLite
+handle held even after the timeout fires and the dispatch moves on,
+recreating exactly the kind of cross-instance hazard this document's
+sandbox isolation exists to prevent. Killing the whole process tree (not
+just the immediate child) on a suite timeout is open follow-up work, not
+yet implemented.
