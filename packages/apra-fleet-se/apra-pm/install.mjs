@@ -239,6 +239,31 @@ function copyDir(src, dest) {
   }
 }
 
+/**
+ * Like copyDir(), but every file is routed through resolveAgentConditionals()
+ * first (apra-fleet-oomh.4). agents/*.md already gets this treatment via the
+ * loop in install() -- this covers the OTHER asset trees shipped alongside it
+ * (agents/schemas/*.json, agents/_shared/*.md) so a conditional marker added
+ * to either in the future can never ship verbatim on any --llm path. No
+ * markers exist under those trees today, so this is currently a no-op pass
+ * through resolveConditionalBody (which returns text unchanged when it finds
+ * no markers) -- see src/cli/agent-transform.ts's identical treatment of
+ * schemas/*.json and _shared/*.md via loadAgentAssets() for the main installer.
+ */
+function copyDirResolved(src, dest, llm) {
+  ensureDir(dest);
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirResolved(s, d, llm);
+    } else {
+      const content = fs.readFileSync(s, 'utf-8');
+      fs.writeFileSync(d, resolveAgentConditionals(content, llm, entry.name));
+    }
+  }
+}
+
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { return {}; }
 }
@@ -489,11 +514,15 @@ function main() {
   // (e.g. an installed .claude/workflows/auto-sprint.js, see its
   // loadRoleSchema()) finds them at the same relative location regardless of
   // provider.
+  // copyDirResolved (not copyDir) so any conditional marker under these trees
+  // resolves per --llm instead of shipping verbatim (apra-fleet-oomh.4) -- the
+  // same guarantee the agents/*.md loop above already gets from
+  // resolveAgentConditionals().
   const schemasSrc = path.join(agentsSrc, 'schemas');
   if (fs.existsSync(schemasSrc)) {
     const schemasDest = path.join(agentsDest, 'schemas');
     clearDir(schemasDest);
-    copyDir(schemasSrc, schemasDest);
+    copyDirResolved(schemasSrc, schemasDest, args.llm);
     const schemaFiles = fs.readdirSync(schemasSrc).filter(f => f.endsWith('.json'));
     console.log(`  [2/4] schemas -> ${schemasDest} (${schemaFiles.length} files)`);
   }
@@ -505,7 +534,7 @@ function main() {
   if (fs.existsSync(sharedSrc)) {
     const sharedDest = path.join(agentsDest, '_shared');
     clearDir(sharedDest);
-    copyDir(sharedSrc, sharedDest);
+    copyDirResolved(sharedSrc, sharedDest, args.llm);
     const sharedFiles = fs.readdirSync(sharedSrc).filter(f => f.endsWith('.md'));
     console.log(`  [2/4] shared  -> ${sharedDest} (${sharedFiles.length} files)`);
   }
@@ -633,4 +662,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   main();
 }
 
-export { claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME };
+export { claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME, resolveAgentConditionals, copyDirResolved };
