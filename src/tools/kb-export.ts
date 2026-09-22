@@ -4,9 +4,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
-import { FLEET_DIR } from '../paths.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
+import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
@@ -185,7 +186,6 @@ function resolveRepoPath(explicit?: string): string {
 // Missing file and missing section degrade to the default (TRUE). A MALFORMED
 // config still degrades to FALSE: "I could not read your settings" must not be
 // the moment the tool starts committing on the team's behalf.
-const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
 // 'off'      -- explicitly disabled, or the config is unreadable.
 // 'default'  -- nobody expressed a preference; commit, but refuse to commit a
@@ -198,7 +198,7 @@ type AutoCommitMode = 'off' | 'default' | 'explicit';
 function autoCommitMode(): AutoCommitMode {
   try {
     if (!fs.existsSync(KB_CONFIG_PATH)) return 'default';
-    const raw = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8')) as { bible?: { autoCommit?: boolean } };
+    const raw = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8')) as KbConfigFile;
     const configured = raw.bible?.autoCommit;
     if (configured === true) return 'explicit';
     if (configured === false) return 'off';

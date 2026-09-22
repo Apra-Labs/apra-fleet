@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"success\":true,\"steps\":[\"Skipped git hook: no .git directory found at <SCRATCH_REPO_A>\",\"Wrote KB config to <SCRATCH_ROOT>\\\\fleet-data\\\\knowledge\\\\config.json\"]}"
+        "text": "{\"success\":true,\"steps\":[\"Skipped git hook: no .git directory found at <SCRATCH_REPO_A>\",\"Wrote KB config to <SCRATCH_ROOT>\\\\fleet-data\\\\knowledge\\\\config.json\"],\"warnings\":[]}"
       }
     ]
   }

@@ -14,6 +14,20 @@ export interface KbConfigResult {
   token?: string;
 }
 
+/**
+ * On-disk shape of FLEET_DIR/knowledge/config.json. One file, several owners:
+ * kb_setup writes provider/url/token_encrypted, kb_export reads bible.autoCommit.
+ * The index signature keeps keys this build does not know about, so a writer
+ * that merges into the file never drops another owner's settings.
+ */
+export interface KbConfigFile {
+  provider?: 'sqlite' | 'http';
+  url?: string;
+  token_encrypted?: string;
+  bible?: { autoCommit?: boolean };
+  [key: string]: unknown;
+}
+
 export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
 /**
