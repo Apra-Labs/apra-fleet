@@ -280,21 +280,24 @@ async function postJson(url, timeoutMs = 2000, token) {
   }
 }
 
-/** Resolve (or, for a not-yet-started production instance, mint) the bearer
- *  token for a supervisor's data dir, through the SAME resolveServiceToken()
- *  bin/serve.mjs itself uses (apra-fleet-ky2l.1.2, DQ-20) -- deliberately
- *  called with NO `home` override, so it resolves against the real
- *  os.homedir() exactly like the supervisor process(es) this script spawns
- *  or snapshots (which also never receive a --home override). resolveService
- *  Token is idempotent for an existing source -- reading an existing
- *  fleet.key or private/token file never mutates it -- so this is safe to
- *  call purely for a read against an already-running supervisor. Never
- *  throws: a missing/unreadable dir just means "no snapshot/no auth",
+/** READ-ONLY resolve of the bearer token for a supervisor's data dir, through
+ *  the SAME resolveServiceToken() bin/serve.mjs itself uses (apra-fleet-
+ *  ky2l.1.2, DQ-20) -- deliberately called with NO `home` override, so it
+ *  resolves against the real os.homedir() exactly like the supervisor
+ *  process(es) this script spawns or snapshots (which also never receive a
+ *  --home override). apra-fleet-ky2l.13: passes createIfMissing: false, so
+ *  this NEVER mints a fresh private/token as a side effect -- every call
+ *  site reads against a dir whose token (if any) was already minted by an
+ *  earlier, explicitly-minting call (e.g. start()'s pre-spawn resolve at
+ *  line 489) or belongs to a production supervisor this script must never
+ *  create credentials for. Never throws: a missing/unreadable dir, or no
+ *  token existing at either source, just means "no snapshot/no auth",
  *  handled by the caller exactly like the pre-auth null/false it used to get
  *  from a bare 401. */
 function tryLoadToken(dir) {
   try {
-    return resolveServiceToken(dir).token;
+    const resolved = resolveServiceToken(dir, { createIfMissing: false });
+    return resolved ? resolved.token : undefined;
   } catch {
     return undefined;
   }

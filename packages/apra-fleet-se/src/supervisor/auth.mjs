@@ -238,6 +238,21 @@ const FLEET_KEY_DIRNAME = '.apra-fleet';
 const FLEET_KEY_FILENAME = 'fleet.key';
 
 /**
+ * Read-only counterpart of loadOrCreateToken(): returns the private/token
+ * contents for `dir` if the file exists and is well-formed, or `null`
+ * otherwise. Unlike loadOrCreateToken() this NEVER creates the private/
+ * directory, NEVER writes the token file, and NEVER heals its mode --
+ * a pure read with no side effect on disk.
+ * @param {string} dir supervisor data root
+ * @returns {string|null}
+ */
+function readPrivateTokenOnly(dir) {
+    const file = tokenFilePath(dir);
+    const existing = readExistingToken(file);
+    return typeof existing === 'string' ? existing : null;
+}
+
+/**
  * apra-fleet-ky2l.1.2 (DQ-20): resolve the supervisor's service token,
  * preferring the shared `<home>/.apra-fleet/fleet.key` (the SAME file
  * src/services/jwt.ts's getOrCreateKey() reads/mints, so the supervisor and
@@ -252,18 +267,33 @@ const FLEET_KEY_FILENAME = 'fleet.key';
  * `opts.logger` (default `console`); resolution then falls through to the
  * private/token fallback exactly as if fleet.key were absent.
  *
+ * apra-fleet-ky2l.13: `opts.createIfMissing` (default `true`, preserving
+ * every existing caller byte-for-byte) gates what happens when fleet.key is
+ * absent/malformed. When `true` (the default), the private/token fallback
+ * mints-or-reuses via loadOrCreateToken() as before. When `false`, the
+ * private/token fallback is READ-ONLY (readPrivateTokenOnly(): no mkdir, no
+ * write, no mode healing) -- if no well-formed token exists at either source
+ * this returns `null` instead of minting one. Read-only callers (deploy
+ * pre-flight checks, snapshot/verify probes against an already-running
+ * supervisor) MUST pass `createIfMissing: false` so a mere read never mints
+ * a credential as a side effect.
+ *
  * @param {string} dir supervisor data root (passed through to
  *   loadOrCreateToken() for the private/token fallback)
- * @param {{ home?: string, logger?: { warn?: Function } }} [opts]
+ * @param {{ home?: string, logger?: { warn?: Function }, createIfMissing?: boolean }} [opts]
  *   `home` overrides where the fleet-key lookup is rooted -- tests MUST pass
  *   a temp dir here (jwt.ts's own KEY_PATH has no such override, so
  *   `loadOrCreateToken`'s fallback is otherwise the only test-isolated path).
  *   `home` defaults to the real `os.homedir()`, matching production.
- * @returns {{ token: string, path: string, source: 'fleet-key'|'private-token', aclVerified: boolean, created: boolean }}
+ *   `createIfMissing` defaults to `true`; pass `false` for a read-only probe.
+ * @returns {{ token: string, path: string, source: 'fleet-key'|'private-token', aclVerified: boolean, created: boolean }|null}
+ *   `null` only when `createIfMissing: false` and no token exists at either
+ *   source.
  */
 export function resolveServiceToken(dir, opts = {}) {
     const home = typeof opts.home === 'string' && opts.home.length > 0 ? opts.home : os.homedir();
     const logger = opts.logger && typeof opts.logger.warn === 'function' ? opts.logger : console;
+    const createIfMissing = opts.createIfMissing !== false;
     const fleetKeyPath = path.join(home, FLEET_KEY_DIRNAME, FLEET_KEY_FILENAME);
 
     let raw = null;
@@ -285,6 +315,12 @@ export function resolveServiceToken(dir, opts = {}) {
             `[supervisor] WARNING: fleet.key at ${fleetKeyPath} is malformed (expected ${TOKEN_BYTES * 2} lowercase-hex chars) -- `
             + 'never used as the service token; falling back to the private/token source.',
         );
+    }
+
+    if (!createIfMissing) {
+        const token = readPrivateTokenOnly(dir);
+        if (token === null) return null;
+        return { token, path: tokenFilePath(dir), source: 'private-token', aclVerified: false, created: false };
     }
 
     const fallback = loadOrCreateToken(dir);

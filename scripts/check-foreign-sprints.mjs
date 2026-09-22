@@ -23,11 +23,13 @@
 // Since the loopback-bearer sprint, every /api/* route requires an
 // Authorization: Bearer <token> header (auth.mjs's requiresAuth/isAuthorized).
 // This script resolves that token via auth.mjs's resolveServiceToken() (DQ-20,
-// apra-fleet-ky2l.1.2) -- the shared ~/.apra-fleet/fleet.key when present and
-// well-formed, else the <FLEET_SE_DATA_DIR or ~/.apra-fleet-se>/private/token
-// fallback -- and sends it on every request. A 401 response is a live,
+// apra-fleet-ky2l.1.2), read-only (createIfMissing: false, apra-fleet-ky2l.13)
+// -- the shared ~/.apra-fleet/fleet.key when present and well-formed, else an
+// EXISTING <FLEET_SE_DATA_DIR or ~/.apra-fleet-se>/private/token; neither is
+// ever minted as a side effect of this preflight. A 401 response is a live,
 // auth-enforcing supervisor -- NEVER treated as "no live sprints" -- and is a
-// fatal (exit 1) condition distinct from "supervisor unreachable" (exit 0).
+// fatal (exit 1) condition distinct from "supervisor unreachable" (exit 0),
+// whether or not a token could be read at all.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -53,20 +55,24 @@ export function defaultSeDataDir() {
 /**
  * Resolve the supervisor's service token through the SAME resolver
  * bin/serve.mjs uses (apra-fleet-ky2l.1.2, DQ-20): prefers the shared
- * ~/.apra-fleet/fleet.key over the private/token file minted under
- * `dataDir`. Unlike the old direct-file read this may mint a fresh
- * private/token as a side effect when neither source exists yet -- harmless
- * here since it is the exact file a freshly (re)started supervisor would
- * mint for itself moments later, and it means this preflight always has a
- * real token to send rather than silently sending none.
+ * ~/.apra-fleet/fleet.key over the private/token file under `dataDir`.
+ *
+ * apra-fleet-ky2l.13: this is a READ-ONLY preflight, so it passes
+ * `createIfMissing: false` -- it must never mint a fresh private/token as a
+ * side effect of a mere check. If neither the shared fleet.key nor an
+ * existing private/token is present, this returns `undefined` and the
+ * caller sends the request with no Authorization header at all (which a
+ * live, auth-enforcing supervisor answers with 401, handled distinctly from
+ * a stale/rotated token below).
  * @param {string} dataDir supervisor data root (see defaultSeDataDir)
  * @param {{ home?: string }} [opts] `home` overrides the fleet-key lookup
  *   root -- tests must pass a temp dir; production leaves it unset (real
  *   os.homedir(), matching what the real supervisor resolves).
- * @returns {string} the resolved token
+ * @returns {string|undefined} the resolved token, or `undefined` if none exists
  */
 export function readServiceToken(dataDir, opts = {}) {
-    return resolveServiceToken(dataDir, opts).token;
+    const resolved = resolveServiceToken(dataDir, { ...opts, createIfMissing: false });
+    return resolved ? resolved.token : undefined;
 }
 
 /**
@@ -141,11 +147,14 @@ export async function run(argv, deps = {}) {
             // never "no live sprints". Silently treating it as an empty list
             // (the old !res.ok branch below) would defeat this whole preflight
             // gate, so it gets its own fatal branch instead. readServiceToken()
-            // (via resolveServiceToken) always resolves SOME token now -- either
-            // the shared fleet.key or a freshly minted private/token -- so a 401
-            // here means that token is stale/rotated relative to whatever the
-            // live supervisor is actually enforcing, never "no token at all".
-            console.error(`[foreign-sprints] ${opts.url} returned HTTP 401 unauthorized -- the token this script read may be stale/rotated.`);
+            // is read-only (apra-fleet-ky2l.13): it does not mint a token, so a
+            // 401 here has two distinct causes worth telling apart in the log,
+            // though both are still fatal (exit 1) -- never "no live sprints".
+            if (token) {
+                console.error(`[foreign-sprints] ${opts.url} returned HTTP 401 unauthorized -- the token this script read may be stale/rotated.`);
+            } else {
+                console.error(`[foreign-sprints] ${opts.url} returned HTTP 401 unauthorized -- no token could be read (neither fleet.key nor private/token exists); the live supervisor is enforcing auth and this preflight has nothing to send.`);
+            }
             console.error('[foreign-sprints] refusing to treat an auth failure as "no live sprints".');
             return 1;
         }

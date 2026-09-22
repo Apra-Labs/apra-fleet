@@ -115,24 +115,26 @@ describe('readServiceToken (apra-fleet-ky2l.1.2: resolves via auth.mjs resolveSe
     expect(readServiceToken(dir, { home })).toBe(VALID_TOKEN);
   });
 
-  it('mints a fresh private/token when neither fleet.key nor private/token exist yet', () => {
+  it('apra-fleet-ky2l.13: returns undefined and never creates private/token when neither fleet.key nor private/token exist yet', () => {
     const dir = mkSeDataDir();
     const home = mkHomeDir();
 
     const token = readServiceToken(dir, { home });
 
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(fs.readFileSync(path.join(dir, 'private', 'token'), 'utf8').trim()).toBe(token);
+    expect(token).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'private'))).toBe(false);
   });
 
-  it('heals (re-mints) a blank private/token file rather than throwing', () => {
+  it('apra-fleet-ky2l.13: returns undefined for a blank private/token file rather than healing (re-minting) it', () => {
     const dir = mkSeDataDir();
     const home = mkHomeDir();
     writeToken(dir, '   \n');
 
     const token = readServiceToken(dir, { home });
 
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(token).toBeUndefined();
+    // Read-only: the blank file is left exactly as it was, never unlinked/re-minted.
+    expect(fs.readFileSync(path.join(dir, 'private', 'token'), 'utf8')).toBe('   \n');
   });
 });
 
@@ -144,7 +146,7 @@ describe('parseArgs (unaffected by the auth change)', () => {
 });
 
 describe('run(): 401 is never silently interpreted as an empty sprint list', () => {
-  it('returns nonzero and reports the auth failure when neither token source exists yet (a fresh token is minted and still does not match)', async () => {
+  it('apra-fleet-ky2l.13: returns nonzero and reports "no token could be read" (read-only -- never mints) when neither token source exists yet', async () => {
     const seDataDir = mkSeDataDir(); // no token file written
     const home = mkHomeDir(); // no fleet.key
     const fetchImpl = fakeAuthedFetch(VALID_TOKEN);
@@ -157,16 +159,21 @@ describe('run(): 401 is never silently interpreted as an empty sprint list', () 
       expect(code).not.toBe(3); // not the "foreign sprint" STOP code either -- this is an auth failure
       const combined = errLines.join('\n');
       expect(combined).toMatch(/401/);
+      expect(combined).toMatch(/no token could be read/);
       // The old !res.ok branch's "proceed" wording is what would have leaked
       // through if a 401 were misread as an empty/clean sprint list -- assert
       // that phrasing never appears on this path.
       expect(combined.toLowerCase()).not.toMatch(/proceed/);
+      // Read-only (apra-fleet-ky2l.13): this preflight must not mint a
+      // credential as a side effect of a failed check.
+      expect(fs.existsSync(path.join(seDataDir, 'private'))).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledWith('http://fake/api/sprints', { headers: {} });
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('returns nonzero and reports the auth failure when the on-disk token is stale', async () => {
+  it('returns nonzero and reports the (unchanged) stale-token message when the on-disk token is stale', async () => {
     const seDataDir = mkSeDataDir();
     const home = mkHomeDir();
     writeToken(seDataDir, 'b'.repeat(64)); // wrong token
@@ -180,6 +187,10 @@ describe('run(): 401 is never silently interpreted as an empty sprint list', () 
       expect(code).not.toBe(3);
       const combined = errLines.join('\n');
       expect(combined).toMatch(/401/);
+      expect(combined).toMatch(/may be stale\/rotated/);
+      // A token WAS read here, so this must stay the stale-token message, not
+      // the "no token could be read" wording that the no-token case above gets.
+      expect(combined).not.toMatch(/no token could be read/);
       expect(combined.toLowerCase()).not.toMatch(/proceed/);
     } finally {
       spy.mockRestore();

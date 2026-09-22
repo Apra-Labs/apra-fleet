@@ -49,6 +49,11 @@ What shipped:
   supervisor's own short-lived fleet-members reader now skips the
   `<apra-fleet-display>` onboarding preamble block before parsing, instead
   of assuming the first content block is always the JSON payload.
+- **`resolveServiceToken()`'s read-only callers no longer mint a
+  `private/token` as a side effect of a read**: `check-foreign-sprints.mjs`
+  and `sandbox-deploy.mjs`'s snapshot/verify/teardown probes now pass
+  `createIfMissing: false` and return no token rather than creating one when
+  neither `fleet.key` nor an existing `private/token` is present.
 
 Known follow-on gaps (deliberately left open, not closed by this pass):
 
@@ -63,10 +68,6 @@ Known follow-on gaps (deliberately left open, not closed by this pass):
   resolve the token from the real home directory instead. Filed as an open
   P2. Root `package.json` also lost its trailing newline despite this
   epic's "root package.json is not touched here" rule.
-- `resolveServiceToken()`'s two read-only callers still mint a
-  `private/token` as a side effect of reading it, which can create state
-  under a production data root before that supervisor has ever started.
-  Filed as an open P3, needs a `createIfMissing: false` read path.
 - README.md and this file previously described the auth-guard token as
   always minted under `<data-root>/private/token`; corrected during harvest
   now that `fleet.key` is the preferred source (see above).
