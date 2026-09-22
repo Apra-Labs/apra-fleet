@@ -114,6 +114,38 @@ When the `!` operator isn't available or the user is in a non-Claude Code contex
 
 ---
 
+## Non-blocking OOB collection: the return-URL path
+
+`credential_store_set` is the one credential-collection tool with a second,
+non-blocking response shape, used whenever the calling server process has no
+TTY attached (a headless/service context cannot block a tool call on a human
+sitting at a terminal) or the caller passes `return_url: true` explicitly
+even when a TTY is available. Instead of blocking on `waitForPassword()`
+like the terminal flow above, the tool returns immediately with
+`structuredContent: {url, expiresAt}` -- a one-time, loopback-only browser
+URL. The secret is still encrypted and stored server-side, but the moment of
+storage is decoupled from the tool call: it happens when the user submits
+the form at `url`, via the same `auth-web.ts` browser flow this mechanism
+already used for interactive password entry, not through the
+`pendingRequests`/`waitForPassword` machinery the blocking terminal path
+uses (there is no waiter to resolve -- the tool call has already returned by
+the time the form is submitted). No follow-up tool call is needed on
+success; the credential simply becomes available as `{{secret.NAME}}` once
+submitted.
+
+**Bounded listen backstop.** The internal collector that produces the URL
+(`collectOobUrl` in `auth-socket.ts`) resolves as soon as the underlying web
+server's `openUrl` callback fires -- normally within the same tick as
+`server.listen()`. If `listen()` fails asynchronously after that callback
+has already been wired but before it fires, nothing would otherwise ever
+settle the returned promise. A bounded timer (default 5 seconds) backstops
+this: if the callback has not fired by the deadline, the promise rejects and
+the caller (`credential_store_set`) reports a `[FAIL]` result instead of
+hanging indefinitely. The timer is cleared the instant the callback does
+fire, so the common case pays no delay.
+
+---
+
 ## Re-entrancy and Stale State
 
 If a terminal launch fails (fallback path), `collectOobInput` cleans up the pending auth state:

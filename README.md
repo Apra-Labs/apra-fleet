@@ -341,6 +341,13 @@ Or via the MCP tool (the path an LLM agent uses):
 Secrets are encrypted in the fleet credential store. They never appear in
 workflow code, config files, or environment variables.
 
+On a headless server (no terminal attached), or by passing `return_url:
+true` explicitly, `credential_store_set` returns a one-time browser URL
+(`{url, expiresAt}`) instead of blocking on terminal input -- open the URL
+to submit the secret; it is stored automatically, with no follow-up call
+needed. See [docs/secret-variables.md](docs/secret-variables.md) for the
+full behavior.
+
 ### Sending email from a workflow
 
 The workflow passes non-secret config inline and calls `send_email`. Load

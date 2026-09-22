@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- apra-fleet-client catch-up and fleet-supervisor project-store skeleton
+
+Sprint goal: catch `@apralabs/apra-fleet-client` up with tool-registry
+methods it was missing, and lay the durable-state foundation for the
+fleet-supervisor's project domain (console projects, per-member git probe
+cache).
+
+- **Client wrappers for previously-unwrapped tools.** `ApraFleet` gains
+  `revokeVcsAuth`, `setupGitApp`, `updateLlmCli`, `monitorTask`,
+  `stopPrompt`, `version`, and `kbSetup`, each backed by a real
+  tool-registry entry and its own test case. `package.json` gains
+  `./auth/*`, `./beads/*`, and `./registration/*` subpath exports; the
+  `./beads/*` mapping is backed by a real module (`beads/normalize.mjs`, a
+  pure copy of the fleet-supervisor's bead-normalization/tree helpers,
+  usable by any consumer without depending on the supervisor package's `bd`
+  subprocess plumbing). The doc-parity test that checks
+  `docs/api-reference.md` against `ApraFleet`'s method list now also flags
+  stale documented methods, not just missing ones.
+- **`credential_store_set` gains a non-blocking, headless-friendly path.**
+  When the server has no TTY attached, or the caller passes `return_url:
+  true`, the tool returns `{url, expiresAt}` in `structuredContent`
+  immediately instead of blocking on terminal input; the secret is
+  encrypted and stored the moment the user submits the form at that URL, no
+  follow-up call needed. A bounded backstop timer prevents a listen failure
+  in the underlying web server from leaving the call hung indefinitely.
+- **fleet-supervisor gains a `node:sqlite`-backed project store.**
+  `supervisor.sqlite` holds `projects` and `member_git` tables behind an
+  ordered, idempotent migration runner (WAL journalling, foreign keys
+  enforced, one transaction per migration). An unmounted `/api/projects`
+  route module (`POST`/`GET`/`PUT`/`DELETE`) validates payloads and, per the
+  "console never creates a beads remote" rule, probes an operator-supplied
+  `beads.remote` via `git ls-remote` on the project's backlog member rather
+  than ever running `git remote add` -- the same gate is reused by create
+  and update so the invariant lives in one place. Mounting this route module
+  into the running supervisor, and building the first UI surface against
+  it, are follow-on work.
+- Carried forward as open backlog (not fixed this sprint): validating/
+  escaping the operator-supplied remote before it reaches the shell probe
+  command; documenting the new client subpath exports and
+  `beads/normalize.mjs` in `api-reference.md`; swapping the supervisor's own
+  `backlog.mjs` onto the shared `beads/normalize.mjs` helpers instead of
+  keeping two copies; widening the route module's "already mounted" guard
+  to cover `bin/serve.mjs`, not only `src/supervisor/**`; a residual
+  non-ASCII sweep in `auth-web.ts` and its tests; and reconciling
+  `docs/secret-variables.md`'s older description of `credential_store_set`
+  as unconditionally blocking (updated as part of this sprint's docs pass,
+  but the backlog item tracking a fuller doc audit remains open). A
+  regression pass attempted after the sprint's final verdict was blocked
+  before running by a permissions gap (missing `curl`/`kill` allowances for
+  the sandbox supervisor's HTTP API) -- informational only, does not gate
+  this sprint, and no code changes resulted from it.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $7.4067.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0366 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 13 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-se supervisor: resolves, displays and enforces its beads tracker identity
 
 - **The supervisor now knows which `.beads` it runs against.** `bin/serve.mjs`

@@ -466,6 +466,70 @@
  * @property {{ filename: string, content: string, contentType?: string }[]} [attachments] - Optional file attachments (base64-encoded content)
  */
 
+/**
+ * @typedef {Object} RevokeVcsAuthOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider whose credentials to revoke
+ * @property {string} [label] - Credential label to revoke (e.g. "work-github"). If omitted, revokes
+ *   the default (provider-named) credential.
+ * @property {string} [scope_url] - Git credential scope URL used when the credential was provisioned
+ *   (e.g. "https://github.com/my-org"). Defaults to "https://<host>".
+ */
+
+/**
+ * @typedef {Object} SetupGitAppOptions
+ * @property {string} app_id - The GitHub App ID (numeric string)
+ * @property {string} private_key_path - Path to the GitHub App private key (.pem) file. Supports
+ *   {{secret.NAME}} token -- if the resolved value starts with -----BEGIN it is treated as PEM key
+ *   content directly (no file needed).
+ * @property {number} installation_id - The GitHub App installation ID for your organization
+ */
+
+/**
+ * @typedef {Object} UpdateLlmCliOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {boolean} [install_if_missing] - Install the LLM agent CLI on the member if not already
+ *   installed (default: false)
+ */
+
+/**
+ * @typedef {Object} MonitorTaskOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} task_id - Task ID returned by execute_command with long_running=true. Must match
+ *   the pattern task-[a-z0-9]{4,20}.
+ * @property {boolean} [auto_stop] - Stop the cloud instance when the task completes (default: false)
+ */
+
+/**
+ * @typedef {Object} StopPromptOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ */
+
+/**
+ * Result shape when `credential_store_set` returns the out-of-band collection
+ * URL instead of blocking (apra-fleet-972p.2.1, F3) -- server always takes
+ * this path when it has no TTY attached, or when `return_url: true` is
+ * passed explicitly. Read off `structuredContent`, not by parsing `content`
+ * text; the secret itself is encrypted and stored server-side the moment the
+ * user submits the form at `url` -- no follow-up tool call is needed.
+ * @typedef {Object} CredentialStoreSetResult
+ * @property {string} url - The one-time, loopback-only URL to open for entering the secret.
+ * @property {string} expiresAt - ISO-8601 timestamp after which the URL stops accepting submissions.
+ */
+
+/**
+ * @typedef {Object} KbSetupOptions
+ * @property {string} [repo_path] - Path to the git repository for post-commit hook installation
+ *   (default: current directory)
+ * @property {"sqlite" | "http"} [provider] - KB provider type (default: sqlite)
+ * @property {string} [remote] - Remote KB server URL (required when provider is "http")
+ * @property {string} [token] - Authentication token for the remote KB server (stored encrypted,
+ *   never logged)
+ */
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -717,6 +781,66 @@ export class ApraFleet {
     }
 
     /**
+     * Remove VCS credentials from a member.
+     * @param {RevokeVcsAuthOptions} options
+     */
+    async revokeVcsAuth(options) {
+        return this.mcpClient.callTool('revoke_vcs_auth', options);
+    }
+
+    /**
+     * One-time setup: register a GitHub App for git token minting. Requires a GitHub
+     * App ID, private key (.pem) file path, and installation ID. The app must already
+     * be created at github.com/organizations/{org}/settings/apps.
+     * @param {SetupGitAppOptions} options
+     */
+    async setupGitApp(options) {
+        return this.mcpClient.callTool('setup_git_app', options);
+    }
+
+    /**
+     * Update or install the AI provider CLI on members. Omit member to update all
+     * online members at once.
+     * @param {UpdateLlmCliOptions} [options]
+     */
+    async updateLlmCli(options = {}) {
+        return this.mcpClient.callTool('update_llm_cli', options);
+    }
+
+    /**
+     * Check status of a long-running background task on a cloud member. Optionally
+     * stop the cloud instance automatically when the task completes.
+     * @param {MonitorTaskOptions} options
+     */
+    async monitorTask(options) {
+        return this.mcpClient.callTool('monitor_task', options);
+    }
+
+    /**
+     * Kill the active LLM process on a member.
+     * @param {StopPromptOptions} options
+     */
+    async stopPrompt(options) {
+        return this.mcpClient.callTool('stop_prompt', options);
+    }
+
+    /**
+     * Get the installed apra-fleet server version.
+     */
+    async version() {
+        return this.mcpClient.callTool('version', {});
+    }
+
+    /**
+     * Set up KB: install git post-commit hook, write provider config, store remote
+     * credentials encrypted. Run once per repo.
+     * @param {KbSetupOptions} [options]
+     */
+    async kbSetup(options = {}) {
+        return this.mcpClient.callTool('kb_setup', options);
+    }
+
+    /**
      * Compose and deliver a scoped permission profile to a member.
      * @param {ComposePermissionsOptions} options
      */
@@ -745,9 +869,17 @@ export class ApraFleet {
     /**
      * Collect a secret from the user out-of-band and store it in the fleet
      * credential store. The secret value never passes through the caller.
+     *
+     * When the server has no TTY attached, or `return_url: true` is passed,
+     * the result's `structuredContent` is a {@link CredentialStoreSetResult}
+     * (`{url, expiresAt}`) instead of the usual plain-text confirmation --
+     * the call returns immediately without waiting for the secret, which is
+     * stored once the user submits the form at that URL (apra-fleet-972p.2.1).
      * @param {{ name: string, prompt: string, persist?: boolean,
      *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
-     *           ttl_seconds?: number }} options
+     *           ttl_seconds?: number, return_url?: boolean }} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent?: CredentialStoreSetResult }>}
      */
     async credentialStoreSet(options) {
         return this.mcpClient.callTool('credential_store_set', options);
