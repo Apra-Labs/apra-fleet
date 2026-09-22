@@ -31,6 +31,28 @@ node dist/index.js install     # Dev-mode install
 - Never cite a bead id (apra-fleet-XXXX) in any LLM-facing text: prompts, playbooks, schema descriptions, or strings a script prints/writes at runtime. Bead ids are fine only in code comments and docs/.
 - The fleet-sprint engine (`packages/apra-fleet-se/fleet-sprint/**` plus the role prompts in `packages/apra-fleet-se/apra-pm/agents/**`) is a GENERIC product that runs sprints for any target repo; apra-fleet building itself with it is the build method, not the product scope. LLM-facing text there (prompt strings, role-prompt markdown) must never assume the target is apra-fleet -- its build commands, env vars, ports, repo layout, bead ids, or deploy.md/playbook sections beyond the documented contract. Target-specific content belongs in the target's own deploy.md/playbooks/CLAUDE.md. Enforced by `packages/apra-fleet-se/scripts/check-generic-boundary.mjs` (part of `npm test`); rule and exception mechanism in docs/generic-engine-boundary.md.
 
+## Fix the product, not the environment
+
+Learn from every failure and misbehaviour by improving the PRODUCT, never by
+patching the environment it runs in. We are not building a cradle for a baby;
+we are maturing the baby into a strong adult. Thousands of people are meant to
+run this software on machines we will never see.
+
+- A manual intervention repeated is a product requirement that was not
+  escalated. Its second occurrence stops being a workaround and becomes scoped
+  product work, ranked against current work rather than deferred behind it.
+- When reporting a failure, the deliverable is the generic fix, not the local
+  recovery you performed to keep things moving.
+- No fix may depend on a line in this file, an agent's memory, or operator
+  tribal knowledge. If a user without those would hit the same trap, it is not
+  fixed -- writing the workaround down protects one operator and leaves every
+  other user in the trap.
+- `human` is an acceptable fallback only where a human genuinely must decide.
+  Everywhere else it is an unshipped feature.
+- Watch for the recurring shape: implicit environment decides behaviour and
+  failure is silent. The answer is explicit configuration plus loud failure,
+  in the engine.
+
 ## DeepWiki
 
 Always use DeepWiki (MCP server `https://mcp.deepwiki.com/mcp`) while exploring this codebase -- prefer it over cold file reads for architecture/unfamiliar-component questions:
