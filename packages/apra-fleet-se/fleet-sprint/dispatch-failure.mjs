@@ -11,6 +11,11 @@
 //     means the dispatch delivered no usable result and therefore produced no
 //     code/beads mutation to publish (gates skipping the post-dispatch sync
 //     teardown).
+//   - isPermissionScopePostDispatchSyncFailure: classifies whether a COMPLETED
+//     dispatch's post-dispatch sync failed for the specific, never-self-
+//     healable reason that the member's VCS credential lacks a permission
+//     (apra-fleet-2wdc.3/.4) -- gates the Develop phase's "publish blocked,
+//     do not treat as a failed dispatch, do not re-dispatch" handling.
 //   - withDispatchWatchdog: the client-side dispatch watchdog that races an
 //     already-in-flight dispatch promise against a local timer.
 //
@@ -21,6 +26,7 @@
 
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import { isTypedAbortError } from './abort.mjs';
+import { isPostDispatchSyncFailure } from './errors.mjs';
 
 // Deliberately BROADER than isTypedAbortError(): every terminal WorkflowError
 // except a cooperative cancellation. The two predicates answer two different
@@ -86,6 +92,38 @@ export function isNoMutationDispatchFailure(err) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError || err instanceof BudgetExceededError;
+}
+
+// (apra-fleet-2wdc.4) True when `err` is a PostDispatchSyncError (the LLM
+// turn COMPLETED; only the post-dispatch G-push/D-push teardown failed --
+// see errors.mjs's PostDispatchSyncError) whose failure is SPECIFICALLY the
+// permission-scope git refusal apra-fleet-2wdc.3 taught the classifier to
+// recognise (github.mjs's workflow-file refusal today; any future provider
+// that opts into vcs-providers/index.mjs's `permissionScope` hook tomorrow).
+//
+// WHY A TEXT MATCH, NOT A STRUCTURED FLAG. git-topology.mjs's runGitStep()
+// carries `permissionScope: true` on its OWN return value, but member-sync.mjs
+// (syncMemberAfter/syncMemberAfterOrdered -- deliberately NOT edited by this
+// task) reads only `push.kind`/`push.error` off that result and throws a
+// plain GitSyncError whose `message` is built from `push.error`. That string
+// is exactly runGitStep's `${error}\n${referral}`, so the referral's stable
+// lead-in -- "[Sync] permission-scope git failure for member" -- survives
+// intact through GitSyncError.message -> (as `cause`) -> PostDispatchSyncError
+// .message (git-sync.mjs interpolates `syncErr.message` into its own message).
+// Matching that phrase is therefore reading the SAME classification
+// git-topology.mjs already computed, one level removed, without adding a new
+// structured field to member-sync.mjs's thrown errors.
+//
+// Checks both `err.message` (the interpolated chain covers it already) and
+// `err.cause` explicitly, so this stays correct even if a future change
+// stops re-interpolating the full chain into the top-level message.
+const PERMISSION_SCOPE_SYNC_FAILURE_MARKER = /permission-scope git failure/i;
+
+export function isPermissionScopePostDispatchSyncFailure(err) {
+    if (!isPostDispatchSyncFailure(err)) return false;
+    const cause = err.cause;
+    const text = `${err.message || ''} ${cause && cause.message ? cause.message : ''} ${cause && cause.gitOutput ? cause.gitOutput : ''}`;
+    return PERMISSION_SCOPE_SYNC_FAILURE_MARKER.test(text);
 }
 
 // ---------------------------------------------------------------------------

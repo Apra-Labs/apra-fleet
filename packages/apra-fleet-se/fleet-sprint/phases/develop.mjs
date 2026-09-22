@@ -61,6 +61,7 @@ import {
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
 } from '../worklists.mjs';
 import { isPostDispatchSyncFailure } from '../errors.mjs';
+import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
 
 /**
@@ -111,6 +112,41 @@ export async function runDevelopPhase({
     kbQueryTerms,
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
+
+    // --- Permission-scope publish-blocked carry-over (apra-fleet-2wdc.4) ---
+    // A permission-scope post-dispatch sync failure (runStreakTurn's
+    // dispatchError handling below) can NEVER be fixed by re-dispatching: the
+    // App/token permission set that refused the push is the SAME set a fresh
+    // dispatch would push with, so a bead flagged here would otherwise be
+    // re-selected into `currentReady` every subsequent round -- and every
+    // subsequent CYCLE, since `sprintState` is created once per sprint and
+    // threaded unchanged through every phase call (see ../sprint-state.mjs) --
+    // spinning the sprint on a wall only an operator (granting the missing
+    // permission in the App's own settings) can clear. `permissionScopeBlockedBeads`
+    // is lazily attached to `sprintState` rather than passed as its own
+    // parameter, so this stays a develop.mjs-local concern with no change to
+    // sprint-state.mjs's documented shape or to runner.js's call site --
+    // consistent with review.mjs's own precedent of mutating a caller-held
+    // Map/Set in place (`replanIds`/`replannedThisCycle`) rather than
+    // threading a new return value through every round.
+    sprintState.permissionScopeBlockedBeads = sprintState.permissionScopeBlockedBeads || new Map();
+    const permissionScopeBlockedBeads = sprintState.permissionScopeBlockedBeads;
+    const carriedOverBlocked = currentReady.filter((b) => permissionScopeBlockedBeads.has(b.id));
+    if (carriedOverBlocked.length > 0) {
+        for (const b of carriedOverBlocked) {
+            log(`[Sync] PUBLISH BLOCKED (carried over from an earlier round this sprint): bead '${b.id}' -- ${permissionScopeBlockedBeads.get(b.id)}`);
+        }
+        log(
+            `Develop C${cycle} R${devRounds}: excluding ${carriedOverBlocked.length} bead(s) already publish-blocked by a ` +
+            `permission-scope sync failure (${carriedOverBlocked.map((b) => b.id).join(', ')}) from this round's streak ` +
+            'assignment -- not re-dispatching for that reason alone until an operator grants the missing permission.'
+        );
+        currentReady = currentReady.filter((b) => !permissionScopeBlockedBeads.has(b.id));
+    }
+    if (currentReady.length === 0) {
+        log(`Develop C${cycle} R${devRounds}: every still-ready bead this round is publish-blocked -- skipping streak assignment and dispatch entirely.`);
+        return { streakOutcomes: [], readyTitleById: new Map() };
+    }
 
     // --- Streak grouping ------------------------------------------
     // PREFER deterministic grouping straight from the planner's lane
@@ -546,7 +582,18 @@ export async function runDevelopPhase({
                 worklistCtx.sessionId = null;
                 worklistCtx.usage = null;
             }
-            if (isPostDispatchSyncFailure(dispatchError)) {
+            // (apra-fleet-2wdc.4) A permission-scope post-dispatch sync
+            // failure is a DISTINCT case from every other post-dispatch sync
+            // failure: it is not merely un-redispatchable THIS turn (every
+            // PostDispatchSyncError already gets that via dispatch-role.mjs's
+            // skipRedispatchOnPostDispatchSyncFailure) -- it can never be
+            // fixed by ANY future redispatch either, because the App/token
+            // permission set that refused the push is exactly what a fresh
+            // dispatch would push with again. Detected below and handled
+            // distinctly from the generic isPostDispatchSyncFailure branch.
+            if (isPermissionScopePostDispatchSyncFailure(dispatchError)) {
+                log(`[Sync] PUBLISH BLOCKED: doer streak ${streakScope()} on member '${doerMember}' COMPLETED and its work is committed locally, but the post-dispatch G-push was refused for a permission-scope reason that a redispatch cannot fix: ${dispatchError.message} Reporting this streak as work done/publish-blocked, NOT as a failed dispatch -- not re-dispatching these bead(s) again this sprint until an operator grants the missing permission.`);
+            } else if (isPostDispatchSyncFailure(dispatchError)) {
                 log(`Doer streak ${streakScope()} on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${dispatchError.message} Not re-dispatching -- the work is already committed locally.`);
             } else if (doerOutcome.resumesIssued > 0) {
                 log(`Doer streak ${streakScope()} on member '${doerMember}' still failing after ${doerOutcome.resumesIssued} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
@@ -554,6 +601,7 @@ export async function runDevelopPhase({
         }
 
         if (dispatchError) {
+            const permissionScopeBlocked = isPermissionScopePostDispatchSyncFailure(dispatchError);
             // Per-bead failure attribution: a dispatch-level throw
             // (crash, transport error, exhausted resumes) does NOT mean
             // none of this streak's beads closed -- a doer can close bead
@@ -569,13 +617,35 @@ export async function runDevelopPhase({
             }));
             const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
             log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
+            // NOTE ON `outcome` STAYING 'failed' HERE (never 'publish-blocked')
+            // EVEN FOR THE PERMISSION-SCOPE CASE: review.mjs's ONLY read of
+            // this field is `streakOutcomes.filter((o) => o.outcome !== 'failed')`
+            // to build the round's REVIEW SCOPE, on the invariant that every
+            // non-'failed' outcome's beads are ACTUALLY closed (this file's own
+            // success path only ever records 'success'/'retried' when
+            // unclosedIds is empty). A permission-scope failure's beads are
+            // NOT closed in the shared beads DB (D-push was skipped -- see
+            // member-sync.mjs's syncMemberAfterOrdered) even though the doer's
+            // own local clone may show them closed, so feeding them to review.mjs
+            // would violate that invariant: the reviewer would be asked to
+            // evaluate acceptance criteria for beads with no evidence and no
+            // report, which risks a self-contradictory CHANGES_NEEDED verdict
+            // and dispatchReview()'s ReviewerContractViolationError -- a hard
+            // sprint ABORT, i.e. turning "the sprint spins" into "the sprint
+            // crashes". So `outcome` is kept 'failed' (review.mjs's existing,
+            // CORRECT exclusion for not-actually-done work) and the
+            // work-done/publish-blocked distinction is carried on the
+            // additional `publishBlocked` flag below instead, which review.mjs
+            // does not read.
             if (batchStreaks) {
                 // Mode (i): PER-STREAK attribution for a failed batch
                 // dispatch -- a sub-streak whose beads all verifiably
                 // closed before the failure keeps its work (outcome
                 // 'success', its closes stand and go to review); only
                 // sub-streaks with still-open beads are 'failed' and
-                // re-lane next round.
+                // re-lane next round (permission-scope ones are additionally
+                // recorded on `permissionScopeBlockedBeads` below so they are
+                // excluded from re-laning instead of actually retried).
                 for (const sub of batchStreaks) {
                     const subIds = sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id));
                     if (subIds.length === 0) continue;
@@ -585,14 +655,41 @@ export async function runDevelopPhase({
                         beadIds: subIds, doerMember, wasRetried, report: null,
                         unclosedIds: subUnclosed, closedIds: subClosed,
                         outcome: subUnclosed.length > 0 ? 'failed' : 'success',
-                        ...(subUnclosed.length > 0 ? { error: dispatchError.message } : {}),
+                        ...(subUnclosed.length > 0 ? {
+                            error: dispatchError.message,
+                            ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                        } : {}),
                     });
                 }
             } else {
                 streakOutcomes.push({
                     beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
                     report: null, unclosedIds, closedIds, error: dispatchError.message,
+                    ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
                 });
+            }
+            if (permissionScopeBlocked) {
+                // Record every still-open bead id so future rounds AND
+                // future cycles this sprint skip them outright (see the
+                // carry-over filter at the top of this function) instead of
+                // re-selecting them into `currentReady` and reproducing the
+                // identical refusal. Beads this dispatch DID manage to close
+                // (closedIds) are deliberately excluded -- their work already
+                // stands and they are not "ready" again regardless.
+                for (const id of unclosedIds) {
+                    permissionScopeBlockedBeads.set(id, dispatchError.message);
+                }
+                // Refresh the dashboard/terminal summary state so the
+                // publish-blocked outcome (and its operator referral) is
+                // visible there too, exactly as a normal completed turn
+                // does below -- not just in the log.
+                await updateDashboard();
+                // Deliberately NOT rethrown: this is a recognised, handled
+                // condition (work done, publish blocked), not a dispatch
+                // crash for parallel()'s continueOnError accounting to
+                // isolate. Every OTHER dispatchError class still rethrows
+                // below, unchanged.
+                return;
             }
             // Rethrow so parallel()'s continueOnError:true isolates
             // this failure from sibling streaks (the outcome above
