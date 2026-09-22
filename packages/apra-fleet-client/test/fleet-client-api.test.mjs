@@ -557,6 +557,12 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
         // vacuously against an (almost) empty set.
         assert.ok(methods.size > 25, `expected many ApraFleet methods, parsed ${methods.size}`);
 
+        // apra-fleet-972p.1.3: pin the exact exported-method count (32 as of
+        // the C1-wrapper catch-up). A future wrapper addition/removal must
+        // update this assertion deliberately, rather than silently passing
+        // the >25 sanity floor above while docs drift out of sync.
+        assert.strictEqual(methods.size, 32, `expected exactly 32 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
+
         // Documented method names are those referenced as `name(...)` inside a
         // backtick code span anywhere in the doc (covers both a method's own
         // heading and combined headings like the credentialStore* group).
