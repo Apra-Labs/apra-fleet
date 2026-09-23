@@ -15,7 +15,7 @@
 // literal from a file already checked into this repo, not external input) so a
 // human edit to one side without the other fails this suite instead of shipping.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -253,4 +253,150 @@ describe('agent-transform.ts <-> apra-pm/install.mjs resolve conditional bodies 
       }
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-oomh.15: extend the behavioural guard to the DECLARED frontmatter
+// tools path and the WILDCARD case.
+//
+// Every fixture above is frontmatter-less, so toolAvailability(declared,
+// supported) is only ever exercised on its `declared === null` branch (every
+// tool the provider supports counts as available). This block adds real
+// `tools:` frontmatter declarations so two more branches get driven on BOTH
+// sides:
+//   - the INTERSECTION branch: declared tools ∩ provider-supported tools
+//     (a tool the provider can express but the agent did not declare must
+//     still resolve to its else-branch);
+//   - the WILDCARD branch: `tools: [*]` means "everything this provider has",
+//     decided by isWildcardTools() in agent-transform.ts (~line 234) and the
+//     inlined `declared.some(t => t === '*')` in install.mjs's
+//     toolAvailability -- two independent expressions of the same rule that
+//     could silently diverge (e.g. one side stops treating a bare '*' entry
+//     inside a longer declared list as a wildcard).
+//
+// COMPARABILITY PROBLEM AND FIX: with frontmatter present, the .ts entry
+// points (transformAgentForAgy/transformAgentForOpenCode) also REWRITE the
+// frontmatter (name/description echoing, Claude-name -> provider-tool-name
+// mapping, the agy auto-approve rules block), while .mjs's
+// resolveAgentConditionals only ever resolves body markers and never touches
+// frontmatter (see the file-level comment on agent-transform.ts: the .mjs
+// transformAgentForAgy/ForOpenCode do that rewriting in a SEPARATE, later
+// pass in install()'s loop). Comparing whole outputs would fail on that
+// unrelated, already-documented frontmatter-rewrite drift (e.g. install.mjs's
+// opencode frontmatter carries an extra `external_directory: allow` line the
+// .ts side does not emit) and would prove nothing about toolAvailability.
+//
+// So each fixture body is wrapped in unique sentinel strings, and both
+// outputs are sliced down to the sentinel-delimited substring before
+// comparing. That isolates exactly the marker-resolution computation under
+// test and is inert to whatever either side does to the frontmatter or
+// appends after the body (e.g. agy's auto-approve rules block).
+
+const BODY_START = '@@FIXTURE-BODY-START@@';
+const BODY_END = '@@FIXTURE-BODY-END@@';
+
+/** Slices `s` down to the sentinel-delimited body region (sentinels included, so either side dropping a sentinel is itself a visible failure rather than a silent no-op). */
+function extractSentinelBody(s: string, context: string): string {
+  const start = s.indexOf(BODY_START);
+  const end = s.indexOf(BODY_END);
+  if (start === -1 || end === -1) {
+    throw new Error(`${context}: sentinel missing from output (start=${start}, end=${end})`);
+  }
+  return s.slice(start, end + BODY_END.length);
+}
+
+/** Wraps a WELL_FORMED-style marker fixture body in the extraction sentinels. */
+function wrapBody(text: string): string {
+  return `${BODY_START}\n${text}${BODY_END}\n`;
+}
+
+/** Thin adapter: run the .ts resolver for `provider` over content that HAS a real frontmatter block. */
+function tsResolveWithFrontmatter(
+  provider: SharedProvider,
+  content: string,
+  label: string
+): string {
+  return provider === 'agy'
+    ? transformAgentForAgy(content, label)
+    : transformAgentForOpenCode(content, label);
+}
+
+interface DeclaredFixture {
+  name: string;
+  /** Raw frontmatter `tools:` value, in Claude tool names. */
+  toolsDecl: string;
+  /** A WELL_FORMED-style marker body (sentinels are added by wrapBody). */
+  body: string;
+  expectContains: string[];
+  expectExcludes: string[];
+}
+
+const DECLARED_FIXTURES: DeclaredFixture[] = [
+  {
+    name: 'declared list intersects provider support (tools: [Read, Bash] -- Bash is declared AND supported)',
+    toolsDecl: '[Read, Bash]',
+    body: WELL_FORMED[0].text, // if/else block on Bash
+    expectContains: ['use-bash'],
+    expectExcludes: ['no-bash'],
+  },
+  {
+    name: 'declared list withholds a tool the provider otherwise supports (tools: [Read] -- Bash not declared)',
+    toolsDecl: '[Read]',
+    body: WELL_FORMED[0].text, // if/else block on Bash
+    expectContains: ['no-bash'],
+    expectExcludes: ['use-bash'],
+  },
+  {
+    name: 'wildcard tools (tools: [*]) grants every provider-supported tool (Bash)',
+    toolsDecl: '[*]',
+    body: WELL_FORMED[0].text, // if/else block on Bash
+    expectContains: ['use-bash'],
+    expectExcludes: ['no-bash'],
+  },
+  {
+    name: 'wildcard tools (tools: [*]) does not grant a tool the provider fundamentally lacks (Telepathy)',
+    toolsDecl: '[*]',
+    body: WELL_FORMED[1].text, // if/else block on Telepathy
+    expectContains: ['no-tp'],
+    expectExcludes: ['use-tp'],
+  },
+];
+
+describe('agent-transform.ts <-> apra-pm/install.mjs resolve conditional bodies identically with declared frontmatter tools', () => {
+  let mjs: MjsApi;
+
+  beforeAll(async () => {
+    mjs = (await import(MJS_MODULE_URL)) as unknown as MjsApi;
+    // The wildcard fixture declares `tools: [*]`, which is not a key in
+    // agyToolMap -- both transformAgentForAgy implementations log a "dropping
+    // tools with no Antigravity equivalent" warning for it. That warning is
+    // expected noise for this fixture, not a signal this suite checks.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  for (const provider of SHARED_PROVIDERS) {
+    for (const fixture of DECLARED_FIXTURES) {
+      it(`${provider}: byte-identical resolved body -- ${fixture.name}`, () => {
+        const content = `---\ntools: ${fixture.toolsDecl}\n---\n${wrapBody(fixture.body)}`;
+
+        const tsOut = tsResolveWithFrontmatter(provider, content, LABEL);
+        const mjsOut = mjs.resolveAgentConditionals(content, provider, LABEL);
+
+        const tsBody = extractSentinelBody(tsOut, `.ts ${provider}`);
+        const mjsBody = extractSentinelBody(mjsOut, `.mjs ${provider}`);
+
+        expect(mjsBody).toBe(tsBody);
+        for (const expected of fixture.expectContains) {
+          expect(tsBody, `${provider}: ${fixture.name}`).toContain(expected);
+        }
+        for (const excluded of fixture.expectExcludes) {
+          expect(tsBody, `${provider}: ${fixture.name}`).not.toContain(excluded);
+        }
+      });
+    }
+  }
 });

@@ -16,27 +16,42 @@
  *   - resolveConditionalBody
  *   - toolAvailability
  *   - readFrontmatterTools
- * tests/agent-transform-apra-pm-sync.test.ts guards ALL of the above, in two
+ * tests/agent-transform-apra-pm-sync.test.ts guards ALL of the above, in three
  * complementary ways:
  *   - SOURCE-TEXT guard: agyToolMap and OPENCODE_NATIVE_TOOLS are extracted from
  *     both files and compared as parsed values, so an edit to one literal
  *     without the other fails the suite.
- *   - BEHAVIOURAL guard: one shared fixture corpus (if/else, else-less if,
- *     nested, repeated, tool-present, tool-absent, plus the four malformed
- *     cases) is fed through BOTH implementations for agy and opencode, and the
- *     outputs must be byte-identical strings / the thrown MESSAGES must match.
- *     That drives CONDITIONAL_MARKER_RE, resolveConditionalBody, toolAvailability
- *     and readFrontmatterTools transitively through the exported transform entry
- *     points -- none of those four is exported on either side, and the test does
- *     not widen exports to reach them.
+ *   - BEHAVIOURAL guard (frontmatter-less): one shared fixture corpus (if/else,
+ *     else-less if, nested, repeated, tool-present, tool-absent, plus the four
+ *     malformed cases) is fed through BOTH implementations for agy and
+ *     opencode, and the outputs must be byte-identical strings / the thrown
+ *     MESSAGES must match. That drives CONDITIONAL_MARKER_RE,
+ *     resolveConditionalBody and toolAvailability's `declared === null` branch
+ *     transitively through the exported transform entry points -- none of
+ *     those three is exported on either side, and the test does not widen
+ *     exports to reach them.
+ *   - BEHAVIOURAL guard (declared frontmatter tools, apra-fleet-oomh.15): a
+ *     second fixture corpus adds real `tools:` frontmatter declarations --
+ *     including `tools: [*]` -- so toolAvailability's INTERSECTION branch
+ *     (declared tools ∩ provider-supported tools) and isWildcardTools() /
+ *     install.mjs's inlined `declared.some(t => t === '*')` are also driven on
+ *     both sides, alongside readFrontmatterTools. Because transformAgentForAgy/
+ *     ForOpenCode also rewrite the frontmatter itself when one is present
+ *     (unlike .mjs's resolveAgentConditionals, see below), each fixture body is
+ *     wrapped in sentinel strings and outputs are compared only in the
+ *     sentinel-delimited region -- this keeps the comparison scoped to marker
+ *     resolution and inert to frontmatter-rewrite differences.
  *
  * Note the two structural asymmetries the test documents and works around: the
  * .mjs body resolver is named resolveAgentConditionals (not
  * resolveConditionalBody) and takes a provider string rather than a predicate,
  * and the .mjs transformAgentForAgy/ForOpenCode do NOT resolve body markers
- * (install() does that in a separate pass). Drift in the frontmatter-rewriting
- * half of transformAgentForAgy/transformAgentForOpenCode is therefore still
- * unguarded -- update those by hand on both sides.
+ * (install() does that in a separate pass). The one residual gap after
+ * apra-fleet-oomh.15: drift in the frontmatter-REWRITING half of
+ * transformAgentForAgy/transformAgentForOpenCode (name/description echoing,
+ * Claude-name -> provider-tool-name mapping, the agy auto-approve rules block,
+ * opencode's permission map) is still unguarded by this suite -- update those
+ * by hand on both sides.
  */
 
 interface PermissionMap {
