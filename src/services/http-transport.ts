@@ -1,8 +1,5 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { fleetEvents, FleetEventMap } from './event-bus.js';
@@ -13,106 +10,7 @@ import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
-import { handleConsoleRequest, type ConsoleStaticHandler } from '../console/server.js';
-
-/**
- * apra-fleet-v6t7.5: minimal static serving for the built shell SPA
- * (packages/apra-fleet-shell-ui, base "/ui/") -- the epic's "GET /ui 200
- * with the shell" acceptance criterion, landed ahead of/with the root
- * build:ui wiring so scripts/sandbox-deploy.mjs's smoke() /ui probe (which
- * auto-arms whenever a shell dist exists on disk) never finds a shell dist
- * present with no server route behind it. This is deliberately minimal --
- * a single index.html/asset static server, no client-side-route fallback,
- * no SEA-embedded-asset support (apra-fleet-v6t7.3) -- the fuller console
- * seam (src/console/, route modules, GET /api/fleet/members) is
- * apra-fleet-v6t7.2's scope, not this task's.
- *
- * Resolving the repo root mirrors version.ts's resolveVersion() dual-path
- * convention: under tsc/ESM output (dist/services/http-transport.js) derive
- * it from import.meta.url; under the esbuild CJS/SEA bundle __dirname is a
- * bundle-internal path with no on-disk packages/ tree next to it, so this
- * intentionally resolves to nothing servable there -- existsSync below just
- * finds no shell dist and the route falls through to today's 404, exactly
- * as before this change, until apra-fleet-v6t7.3 gives the SEA binary its
- * own asset source.
- */
-function resolveDefaultShellDistDir(): string {
-  if (typeof __dirname !== 'undefined') {
-    // CJS/SEA bundle: no repo checkout to walk up to from inside a
-    // single-file binary.
-    return path.join(__dirname, 'packages', 'apra-fleet-shell-ui', 'dist');
-  }
-  // ESM path (tsc output for npm): dist/services/http-transport.js ->
-  // repo root is two levels up.
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-  return path.join(repoRoot, 'packages', 'apra-fleet-shell-ui', 'dist');
-}
-
-const UI_MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html',
-  '.js': 'application/javascript',
-  '.mjs': 'application/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.map': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.txt': 'text/plain',
-};
-
-function uiContentType(filePath: string): string {
-  return UI_MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-}
-
-/**
- * Serves the built shell under /ui and /ui/*. Returns false (never writes
- * to res) when there is no shell dist to serve at all, so the caller can
- * fall through to the server's existing 404 -- this route never CHANGES
- * behavior for a checkout/binary with no shell dist present, only adds
- * behavior when one exists.
- *
- * A request for a path with no matching file under the dist directory
- * (e.g. a client-side route like /ui/members) falls back to index.html, the
- * standard SPA-shell pattern -- the same index.html the bare /ui/ request
- * serves.
- */
-function serveUiAsset(shellDistDir: string, pathname: string, res: http.ServerResponse): boolean {
-  const indexPath = path.join(shellDistDir, 'index.html');
-  if (!fs.existsSync(indexPath)) return false;
-
-  const relPath = pathname === '/ui' || pathname === '/ui/' ? '' : pathname.slice('/ui/'.length);
-  let target = indexPath;
-  if (relPath) {
-    const decoded = decodeURIComponent(relPath);
-    const resolved = path.normalize(path.join(shellDistDir, decoded));
-    // Traversal guard: the resolved path must stay inside shellDistDir.
-    const withinDist = resolved === shellDistDir || resolved.startsWith(shellDistDir + path.sep);
-    if (withinDist && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-      target = resolved;
-    }
-  }
-
-  const body = fs.readFileSync(target);
-  res.writeHead(200, { 'Content-Type': uiContentType(target) });
-  res.end(body);
-  return true;
-}
-
-/**
- * Interim bridge from the console seam's static hook to the helpers above,
- * which are still living in this file until the sibling static task
- * (apra-fleet-v6t7.2.2) moves them to src/console/static.ts. It exists so
- * the seam lands behaviour-preserving in its own commit; that task deletes
- * this bridge together with the helper bodies it points at.
- */
-const consoleStatic: ConsoleStaticHandler = (pathname, res, source) =>
-  serveUiAsset(source.shellDistDir ?? resolveDefaultShellDistDir(), pathname, res);
+import { handleConsoleRequest } from '../console/server.js';
 
 interface Session {
   server: McpServer;
@@ -126,9 +24,10 @@ interface Session {
 export interface HttpTransportOptions {
   registerTools: (server: McpServer) => void | Promise<void>;
   preferredPort?: number;
-  /** Testability seam (mirrors version.ts's rootDir param): overrides where
-   *  the /ui route looks for the built shell. Production always uses
-   *  resolveDefaultShellDistDir(). */
+  /** Testability seam (mirrors version.ts's rootDir param): overrides the
+   *  disk root the console serves the built shell from. Undefined (the
+   *  production case) lets src/console/static.ts resolve the real
+   *  packages/apra-fleet-shell-ui/dist path itself. */
   shellDistDir?: string;
 }
 
@@ -232,8 +131,7 @@ function extractBearer(req: http.IncomingMessage): string | null {
 }
 
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
-  const { registerTools, preferredPort } = options;
-  const shellDistDir = options.shellDistDir ?? resolveDefaultShellDistDir();
+  const { registerTools, preferredPort, shellDistDir } = options;
   const sessions = new Map<string, Session>();
   const startedAt = Date.now();
 
@@ -295,9 +193,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
 
     // Console seam (apra-fleet-v6t7.2.1): the ONE console branch in this
     // file. Everything the console owns -- the shell and its api -- is
-    // handled inside src/console/server.ts; every other path falls through
-    // to the routing below exactly as before.
-    if (await handleConsoleRequest(req, res, { shellDistDir, serveStatic: consoleStatic })) return;
+    // handled inside src/console/server.ts (static serving lives in
+    // src/console/static.ts); every other path falls through to the routing
+    // below exactly as before.
+    if (await handleConsoleRequest(req, res, { shellDistDir })) return;
 
     if (url !== '/mcp' && !url.startsWith('/mcp?')) {
       res.writeHead(404);

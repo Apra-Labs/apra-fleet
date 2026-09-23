@@ -22,10 +22,12 @@
  *
  * Static serving (/ui and /ui/*) is reached through the typed
  * ConsoleStaticHandler hook on ConsoleContext rather than inlined here --
- * src/console/static.ts (apra-fleet-v6t7.2.2) is its implementation.
+ * src/console/static.ts is its implementation and the only place in the
+ * tree that reads the built shell.
  */
 import type http from 'node:http';
 import { fleetRoutes } from './routes/fleet.js';
+import { serveUiAsset } from './static.js';
 
 /** Where the built shell lives, plus how to read it. Passed straight through
  *  to the static hook, so a test can point the console at a temp dist (or a
@@ -112,12 +114,10 @@ function jsonError(res: http.ServerResponse, status: number, message: string): v
   res.end(JSON.stringify({ error: message }));
 }
 
-/** Default static implementation. The sibling static task
- *  (apra-fleet-v6t7.2.2) is its owner and destination: until it lands, the
- *  caller injects the implementation through ConsoleContext.serveStatic and
- *  this default answers "nothing to serve", which the dispatch below turns
- *  into the server's existing 404. */
-const staticHandlerDefault: ConsoleStaticHandler = () => false;
+/** Default static implementation: src/console/static.ts, the single
+ *  index.html-serving code path in the tree. ConsoleContext.serveStatic
+ *  overrides it (tests, and any future alternate shell source). */
+const staticHandlerDefault: ConsoleStaticHandler = serveUiAsset;
 
 /**
  * The single entry point the HTTP transport delegates to.
