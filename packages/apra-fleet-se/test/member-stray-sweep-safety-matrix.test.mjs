@@ -9,6 +9,9 @@ import {
     ACTION_KILL,
     ACTION_LEAVE,
     ACTION_REPORT_ONLY,
+    DEFAULT_MIN_AGE_MS,
+    KILL_BEGIN_PREFIX,
+    KILL_STATUS_PREFIX,
     LOCALITY_LOCAL,
     LOCALITY_REMOTE,
     StrayProbeError,
@@ -23,6 +26,7 @@ import {
     memberLocality,
     memberShellFamily,
     parseElapsedSeconds,
+    parseKillOutput,
     parseProbeOutput,
     sweepMemberStrayProcesses,
 } from '../fleet-sprint/member-stray-sweep.mjs';
@@ -93,8 +97,15 @@ function staleSandboxSupervisor(overrides = {}) {
     };
 }
 
-const decideRemote = (record) => decideStrayProcess({
-    locality: LOCALITY_REMOTE, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS,
+// The reference "now" every decision-level test in this file is judged
+// against, unless a test overrides it. Chosen well after the control
+// record's startedAtMs (2026-09-22T03:14:15.000Z) so its age comfortably
+// clears DEFAULT_MIN_AGE_MS and the minimum-age predicate (apra-fleet-i4ku.5)
+// stays out of every OTHER predicate's test.
+const DECISION_NOW_MS = Date.parse('2026-09-22T04:00:00.000Z');
+
+const decideRemote = (record, overrides = {}) => decideStrayProcess({
+    locality: LOCALITY_REMOTE, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS, nowMs: DECISION_NOW_MS, ...overrides,
 });
 
 // ---------------------------------------------------------------------------
@@ -235,10 +246,10 @@ test('LOCAL member, the EXACT record that would be killed on a remote member: NO
 
     // Same record, same markers, same ports -- only the locality differs.
     const remote = decideStrayProcess({
-        locality: LOCALITY_REMOTE, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS,
+        locality: LOCALITY_REMOTE, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS, nowMs: DECISION_NOW_MS,
     });
     const local = decideStrayProcess({
-        locality: LOCALITY_LOCAL, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS,
+        locality: LOCALITY_LOCAL, record, productionPorts: PRODUCTION_PORTS, markers: MARKERS, nowMs: DECISION_NOW_MS,
     });
 
     assert.equal(remote.action, ACTION_KILL, 'premise: this record IS killable on a remote member');
@@ -310,6 +321,56 @@ test('remote member, listening ports NOT attributable: reported, never killed', 
         decideRemote(staleSandboxSupervisor({ listeningPorts: [], portsKnown: true })).action,
         ACTION_KILL,
     );
+});
+
+// ---------------------------------------------------------------------------
+// Predicate 6 -- a candidate younger than the minimum-age bound is never
+// killed (apra-fleet-i4ku.5). A daemonized process (ppid 1) satisfies the
+// parent-gone predicate INSTANTLY, so without this bound a process a
+// DIFFERENT, concurrently-starting sprint just launched on this same member
+// seconds ago would be indistinguishable from a genuinely stale stray.
+// ---------------------------------------------------------------------------
+
+test('remote member, the canonical killable record with a FRESH startedAtMs: reported, never killed', () => {
+    // Same record, same markers, same ports as the CONTROL -- only the start
+    // time is fresh (well inside DEFAULT_MIN_AGE_MS of "now").
+    const freshRecord = staleSandboxSupervisor({ startedAtMs: DECISION_NOW_MS - 5000 });
+
+    const decision = decideRemote(freshRecord);
+
+    assert.equal(decision.action, ACTION_REPORT_ONLY, 'a process seconds old must not be killed');
+    assert.notEqual(decision.action, ACTION_KILL);
+    assert.match(decision.sparedReasons.join(' '), /younger than the minimum age bound/);
+    assert.match(decision.sparedReasons.join(' '), /5s old/);
+
+    // Control: the SAME record aged past the bound (still using the module's
+    // own default) IS killable -- pinning the assertion above to age alone.
+    assert.equal(
+        decideRemote(staleSandboxSupervisor({ startedAtMs: DECISION_NOW_MS - (DEFAULT_MIN_AGE_MS + 1000) })).action,
+        ACTION_KILL,
+    );
+});
+
+test('remote member, a candidate whose start time could not be established: reported, never killed', () => {
+    // Neither a malformed `ps` etime nor a null Windows CreationDate can ever
+    // produce a confident age -- see parseElapsedSeconds() and
+    // apra-fleet-i4ku.4. "Unknown" must resolve the same way "too young" does.
+    const decision = decideRemote(staleSandboxSupervisor({ startedAtMs: null }));
+
+    assert.equal(decision.action, ACTION_REPORT_ONLY);
+    assert.notEqual(decision.action, ACTION_KILL);
+    assert.match(decision.sparedReasons.join(' '), /start time .* is unknown/);
+});
+
+test('remote member, a candidate judged with no reference "now" at all: reported, never killed', () => {
+    // decideStrayProcess is pure: `nowMs` is an INPUT like productionPorts,
+    // never Date.now() read internally. A caller that omits it entirely must
+    // not silently disable the minimum-age predicate.
+    const decision = decideStrayProcess({
+        locality: LOCALITY_REMOTE, record: staleSandboxSupervisor(), productionPorts: PRODUCTION_PORTS, markers: MARKERS,
+    });
+    assert.equal(decision.action, ACTION_REPORT_ONLY);
+    assert.match(decision.sparedReasons.join(' '), /reference clock.*is unknown/);
 });
 
 // ---------------------------------------------------------------------------
@@ -385,7 +446,17 @@ test('the Windows enumeration command is -EncodedCommand wrapped, and its DECODE
 });
 
 test('the kill command targets an explicit pid list in both families, and refuses anything that is not a real pid', () => {
-    assert.equal(buildKillCommand('posix', [11, 22]), 'kill -9 11 22');
+    const posix = buildKillCommand('posix', [11, 22]);
+    // Each pid is killed INDIVIDUALLY (apra-fleet-i4ku.3), tagged with its own
+    // begin/status markers, never one shared `kill -9 11 22` -- see
+    // parseKillOutput() and its tests for why.
+    assert.match(posix, /kill -9 11 2>&1/);
+    assert.match(posix, /kill -9 22 2>&1/);
+    assert.match(posix, new RegExp(`${KILL_BEGIN_PREFIX} 11.*${KILL_BEGIN_PREFIX} 22`));
+    assert.match(posix, /\$\?/, 'the shell\'s own exit-status variable is read back, not a JS-side guess');
+    // No "$(" command substitution -- shell-command-guard.mjs forbids it in
+    // any member-bound command string.
+    assert.doesNotMatch(posix, /\$\(/, 'no POSIX command substitution');
 
     const win = decodeWinCommand(buildKillCommand('win32', [11, 22]));
     assert.match(win, /Stop-Process -Id 11,22 -Force/);
@@ -396,6 +467,65 @@ test('the kill command targets an explicit pid list in both families, and refuse
         assert.throws(() => buildKillCommand('posix', bad), TypeError, `must reject ${JSON.stringify(bad)}`);
     }
     assert.throws(() => buildKillCommand('posix', []), TypeError);
+});
+
+// ---------------------------------------------------------------------------
+// The kill dispatch's output parser -- the piece that tells "already gone"
+// apart from "refused" (apra-fleet-i4ku.3).
+// ---------------------------------------------------------------------------
+
+test('parseKillOutput: a clean kill (exit 0, no stderr text) is neither gone nor failed', () => {
+    const output = [`${KILL_BEGIN_PREFIX} 111`, `${KILL_STATUS_PREFIX} 111 0`].join('\n');
+    const { gone, failed } = parseKillOutput(output, [111]);
+    assert.deepEqual(gone, []);
+    assert.deepEqual(failed, []);
+});
+
+test('parseKillOutput: a pid that already exited (ESRCH text, nonzero exit) is TOLERATED, not a failure', () => {
+    const output = [
+        `${KILL_BEGIN_PREFIX} 111`,
+        'kill: (111): No such process',
+        `${KILL_STATUS_PREFIX} 111 1`,
+    ].join('\n');
+    const { gone, failed } = parseKillOutput(output, [111]);
+    assert.deepEqual(gone, [111]);
+    assert.deepEqual(failed, []);
+});
+
+test('parseKillOutput: a permission failure (nonzero exit, no ESRCH text) STAYS a failure', () => {
+    const output = [
+        `${KILL_BEGIN_PREFIX} 111`,
+        'kill: (111): Operation not permitted',
+        `${KILL_STATUS_PREFIX} 111 1`,
+    ].join('\n');
+    const { gone, failed } = parseKillOutput(output, [111]);
+    assert.deepEqual(gone, []);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].pid, 111);
+    assert.match(failed[0].detail, /Operation not permitted/);
+});
+
+test('parseKillOutput: a mix of one already-gone pid and one genuinely refused pid reports only the refused one as failed', () => {
+    const output = [
+        `${KILL_BEGIN_PREFIX} 111`,
+        'bash: line 1: kill: (111) - No such process',
+        `${KILL_STATUS_PREFIX} 111 1`,
+        `${KILL_BEGIN_PREFIX} 222`,
+        `${KILL_STATUS_PREFIX} 222 0`,
+        `${KILL_BEGIN_PREFIX} 333`,
+        'kill: (333): Operation not permitted',
+        `${KILL_STATUS_PREFIX} 333 1`,
+    ].join('\n');
+    const { gone, failed } = parseKillOutput(output, [111, 222, 333]);
+    assert.deepEqual(gone, [111]);
+    assert.deepEqual(failed.map((f) => f.pid), [333]);
+});
+
+test('parseKillOutput: a pid with no status line at all is a failure, never a silent success', () => {
+    const { gone, failed } = parseKillOutput('', [111]);
+    assert.deepEqual(gone, []);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].pid, 111);
 });
 
 test('memberShellFamily picks the shell family, and does not mistake darwin for windows', () => {
@@ -448,6 +578,18 @@ test('the generated win32 probe script PARSES as real PowerShell', { skip: POWER
     assert.match(probe.stdout, /PARSE-OK/, `generated script has syntax errors: ${probe.stdout}`);
 });
 
+test('the win32 probe script emits EVERY process row, never filtering one out by CreationDate', () => {
+    // Regression pin (apra-fleet-i4ku.4): a Where-Object { $_.CreationDate -ne
+    // $null } filter used to drop a row entirely, which also removed its pid
+    // from the live-pid set computeParentGone() consults -- making that
+    // process's children look orphaned and killable. The replacement encodes
+    // a null CreationDate as a '-' sentinel INSIDE the row instead of
+    // dropping the row.
+    const script = decodeWinCommand(buildProbeCommand('win32'));
+    assert.doesNotMatch(script, /Where-Object/, 'no row may be filtered out of the process table');
+    assert.match(script, /else \{ '-' \}/, 'a null CreationDate must fall back to the "-" sentinel, not be dropped');
+});
+
 // ---------------------------------------------------------------------------
 // Probe output parsing, including the loud-failure contract.
 // ---------------------------------------------------------------------------
@@ -493,6 +635,28 @@ test('a Windows command line containing a pipe survives parsing intact', () => {
     assert.equal(parsed.processes[0].commandLine, 'C:\\x.exe -c "a | b"');
     assert.equal(parsed.processes[0].ppid, 4);
     assert.equal(parsed.processes[0].startedAtMs, 1758542400 * 1000);
+});
+
+test('a Windows row with an unknown start time ("-" sentinel) still contributes its pid to the live-pid set '
+    + 'and still protects its children from being judged orphaned', () => {
+    // Regression pin (apra-fleet-i4ku.4). Companion to the POSIX pipe pin
+    // above: a Windows process whose CreationDate was null on the member is
+    // emitted with the '-' sentinel rather than being dropped from the table
+    // entirely, so it must still count as a LIVE parent.
+    const output = [
+        'SWEEP-PROC-WIN 100|1|-|C:\\Windows\\System32\\some-system-process.exe',
+        `SWEEP-PROC-WIN 101|100|1758542400|${SANDBOX_SUPERVISOR_CMD}`,
+    ].join('\n');
+
+    const parsed = parseProbeOutput(output, {});
+    assert.equal(parsed.processes.length, 2, 'the sentinel row must not be dropped');
+    assert.equal(parsed.processes[0].startedAtMs, null, '"-" is not a parseable epoch');
+    assert.equal(parsed.processes[0].pid, 100);
+
+    const records = annotateCandidates(parsed.processes, parsed.listeners, { portsKnown: parsed.portsKnown });
+    const child = records.find((r) => r.pid === 101);
+    assert.equal(child.parentGone, false, 'pid 100 is alive (even with an unknown start time), so its child is not an orphan');
+    assert.equal(decideRemote(child).action, ACTION_LEAVE, 'and therefore must not be killed');
 });
 
 test('listening sockets are attributed from both lsof and ss output', () => {
@@ -560,13 +724,44 @@ test('NO supported enumeration tool: a LOUD failure naming the tool, never an em
 
 /** A stub execution seam. It RECORDS command strings and never runs them, so
  *  no process on the host running this suite can be enumerated or signalled. */
-function stubSeam(probeOutput) {
+/**
+ * @param {string} probeOutput
+ * @param {{ killOutcomes?: Record<number, 'ok'|'gone'|'denied'> }} [opts]
+ *        Per-pid outcome for a POSIX kill dispatch (default 'ok' for every
+ *        pid the command names). 'gone' synthesizes the ESRCH ("No such
+ *        process") text a real member would print for a pid that already
+ *        exited; 'denied' synthesizes a permission failure.
+ */
+function stubSeam(probeOutput, opts = {}) {
+    const killOutcomes = opts.killOutcomes || {};
     const issued = [];
     return {
         issued,
         execCommand: async ({ member, command }) => {
             issued.push({ member, command });
-            // Only the probe produces output; a kill dispatch returns nothing.
+            if (command.includes(KILL_BEGIN_PREFIX)) {
+                // A POSIX kill dispatch: synthesize begin/status lines for
+                // every pid it names, per killOutcomes (default: success).
+                const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
+                const lines = [];
+                for (const pid of pids) {
+                    const outcome = killOutcomes[pid] || 'ok';
+                    lines.push(`${KILL_BEGIN_PREFIX} ${pid}`);
+                    if (outcome === 'ok') {
+                        lines.push(`${KILL_STATUS_PREFIX} ${pid} 0`);
+                    } else if (outcome === 'gone') {
+                        lines.push(`kill: (${pid}): No such process`);
+                        lines.push(`${KILL_STATUS_PREFIX} ${pid} 1`);
+                    } else {
+                        lines.push(`kill: (${pid}): Operation not permitted`);
+                        lines.push(`${KILL_STATUS_PREFIX} ${pid} 1`);
+                    }
+                }
+                return { ok: true, output: lines.join('\n') };
+            }
+            // Only the probe produces output; a Windows kill dispatch (which
+            // starts with "powershell") is unparsed by this module and its
+            // exact output does not matter to any assertion in this file.
             return { ok: true, output: command.includes('SWEEP-') || command.startsWith('powershell') ? probeOutput : '' };
         },
     };
@@ -614,7 +809,8 @@ test('remote member end to end: ONLY the stale supervisor is killed, and the kil
 
     // The kill actually dispatched must name that pid and NOTHING else.
     assert.equal(seam.issued.length, 2, 'one probe dispatch, then one kill dispatch');
-    assert.equal(seam.issued[1].command, `kill -9 ${STALE_PID}`);
+    assert.match(seam.issued[1].command, new RegExp(`kill -9 ${STALE_PID} 2>&1`));
+    assert.match(seam.issued[1].command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_PID}`));
     assert.equal(seam.issued[1].member, 'linux-member-1');
     for (const sparedPid of [4300, 4400, 5000, 4500, 2000]) {
         assert.ok(!seam.issued[1].command.includes(String(sparedPid)), `pid ${sparedPid} must not be in the kill`);
@@ -625,6 +821,52 @@ test('remote member end to end: ONLY the stale supervisor is killed, and the kil
     assert.ok(killLog, `expected a KILLED log line, got: ${JSON.stringify(logs)}`);
     assert.ok(killLog.includes(String(STALE_PID)));
     assert.ok(killLog.includes(SANDBOX_SUPERVISOR_CMD));
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.3: a pid that already exited between the probe and the kill
+// dispatch (a benign race) must not turn the whole sweep into a loud failure,
+// while a genuinely refused kill (e.g. permission denied) still must.
+// ---------------------------------------------------------------------------
+
+test('remote member end to end: a selected pid that already exited (ESRCH) is TOLERATED, not a sweep failure', async () => {
+    const seam = stubSeam(scenarioProbeOutput(), { killOutcomes: { [STALE_PID]: 'gone' } });
+    const logs = [];
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        logger: { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) },
+    });
+
+    // The sweep did not throw, and it still reports the pid as selected.
+    assert.deepEqual(result.killed.map((k) => k.pid), [STALE_PID]);
+    // The race is stated, not silent -- and NOT reported as "KILLED", which
+    // would misrepresent what actually happened to this pid.
+    assert.ok(logs.some((l) => l.includes('already') && l.includes(String(STALE_PID))));
+    assert.ok(!logs.some((l) => l.includes('KILLED')), 'an already-gone pid must not be logged as KILLED');
+});
+
+test('remote member end to end: a selected pid whose kill is genuinely REFUSED (permission denied) aborts loudly', async () => {
+    const seam = stubSeam(scenarioProbeOutput(), { killOutcomes: { [STALE_PID]: 'denied' } });
+    await assert.rejects(
+        () => sweepMemberStrayProcesses({
+            member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+            markers: MARKERS,
+            productionPorts: PRODUCTION_PORTS,
+            execCommand: seam.execCommand,
+            now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+            logger: { log: () => {}, error: () => {} },
+        }),
+        (err) => {
+            assert.ok(err instanceof StrayProbeError);
+            assert.match(err.message, new RegExp(String(STALE_PID)));
+            assert.match(err.message, /Operation not permitted/);
+            return true;
+        },
+    );
 });
 
 test('local member end to end: the SAME probe output kills nothing and dispatches no kill command at all', async () => {

@@ -25,7 +25,15 @@
 //   4. NEVER a process listening on the member's production fleet or
 //      supervisor port (the caller passes that port set in; this module
 //      hardcodes no port).
-//   5. Every kill is logged with pid, command line, start time and the reason
+//   5. Only when the process is OLDER than a minimum-age bound (see
+//      DEFAULT_MIN_AGE_MS and decideStrayProcess() -- a process that is too
+//      young, or whose start time could not be established, is reported but
+//      never killed. This is what stops the sweep from killing a process a
+//      DIFFERENT, concurrently-starting sprint just launched on the same
+//      member seconds ago: it can already satisfy every other predicate
+//      (daemonized -> ppid 1 -> parentGone true) before it has had time to do
+//      anything the next member-prep pass would recognise as itself).
+//   6. Every kill is logged with pid, command line, start time and the reason
 //      the process was selected (see formatStrayKillLog()).
 //
 // PRIOR ART this follows deliberately: src/supervisor/dolt-orphan-sweep.mjs
@@ -229,17 +237,29 @@ export function buildProbeCommand(family) {
             '$procTool = Get-Command Get-CimInstance -ErrorAction SilentlyContinue', // shell-guard-allow: PowerShell local variable inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- not an orchestrator-side value left for an unknown member shell to expand.
             'if ($procTool) {'
                 + ' Get-CimInstance Win32_Process -ErrorAction Stop'
-                // CreationDate is null for a few system processes; calling
-                // ToUniversalTime() on null would throw under the envelope's
-                // $ErrorActionPreference = 'Stop' and lose the whole table.
-                + ' | Where-Object { $_.CreationDate -ne $null }' // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                // NO Where-Object filter here (apra-fleet-i4ku.4): EVERY row
+                // is emitted, including one with a null CreationDate (a few
+                // system processes). Dropping such a row would also drop its
+                // pid from the live-pid set annotateCandidates() builds from
+                // this table, making computeParentGone() treat its CHILDREN
+                // as orphaned -- the exact dropped-row hazard this module's
+                // header already documents for the pipe-sniffing case.
                 // String concatenation rather than "$( ... )" subexpressions:
                 // a PowerShell subexpression and a POSIX command substitution
                 // are spelled identically, and this command string must stay
                 // free of the latter's spelling.
-                + " | ForEach-Object { 'SWEEP-PROC-WIN ' + $_.ProcessId + '|' + $_.ParentProcessId + '|'" // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
-                + ' + [long]([DateTimeOffset]$_.CreationDate.ToUniversalTime()).ToUnixTimeSeconds()' // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
-                + " + '|' + $_.CommandLine }" // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                + ' | ForEach-Object {' // shell-guard-allow: PowerShell pipeline stage inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                // A null CreationDate would throw calling .ToUniversalTime()
+                // under the envelope's $ErrorActionPreference = 'Stop', so
+                // that call only ever runs in the branch that already proved
+                // CreationDate is not null; the other branch emits the '-'
+                // sentinel parseProbeOutput() reads back as "start time
+                // unknown" (Number('-') is NaN -> startedAtMs: null).
+                + ' $sweepTs = if ($_.CreationDate -ne $null)' // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                + ' { [long]([DateTimeOffset]$_.CreationDate.ToUniversalTime()).ToUnixTimeSeconds() }' // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                + " else { '-' };"
+                + " 'SWEEP-PROC-WIN ' + $_.ProcessId + '|' + $_.ParentProcessId + '|' + $sweepTs + '|' + $_.CommandLine" // shell-guard-allow: PowerShell pipeline variable and local variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                + ' }'
                 + " } else { 'SWEEP-NOTOOL Get-CimInstance' }",
             '$portTool = Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue', // shell-guard-allow: PowerShell local variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
             'if ($portTool) {' // shell-guard-allow: PowerShell local variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
@@ -276,11 +296,44 @@ export function buildProbeCommand(family) {
     ].join(' ');
 }
 
+/** Marks the start of one pid's POSIX kill attempt in the kill dispatch's
+ *  output: `SWEEP-KILL-BEGIN <pid>`. Any line between this and the matching
+ *  `SWEEP-KILL-STATUS` line is that pid's `kill` stderr text, if any. */
+export const KILL_BEGIN_PREFIX = 'SWEEP-KILL-BEGIN';
+/** Reports one pid's POSIX kill exit status: `SWEEP-KILL-STATUS <pid> <code>`. */
+export const KILL_STATUS_PREFIX = 'SWEEP-KILL-STATUS';
+
+/** The standard POSIX strerror(ESRCH) text ("No such process"), which `kill`
+ *  prints -- via bash's builtin, POSIX kill(1), BSD kill, or busybox ash, all
+ *  of which agree on this exact phrase -- when a pid it was asked to signal
+ *  no longer exists. Matched case-insensitively for portability across shells
+ *  that vary only in surrounding punctuation ("kill: (PID): No such process"
+ *  vs "bash: line 1: kill: (PID) - No such process" vs "kill: PID: No such
+ *  process" on BSD/macOS). */
+const ESRCH_TEXT_RE = /no such process/i;
+
 /**
  * The kill command for an EXPLICIT list of pids that has already survived
  * every safety predicate. Every pid is validated as a positive integer before
  * it is allowed anywhere near a command string, so no caller can splice text
  * into the dispatched command through this path.
+ *
+ * POSIX kills EACH PID INDIVIDUALLY and reports its own exit status, rather
+ * than one shared `kill -9 <pids>` -- apra-fleet-i4ku.3: a shared invocation
+ * fails as a WHOLE the instant any single pid has already exited (a benign
+ * race -- the process could have died between the probe dispatch and this
+ * kill dispatch, which is exactly the outcome the sweep wanted), turning that
+ * race into a loud member-prep failure. Per-pid begin/status markers let
+ * parseKillOutput() tell "already gone" (tolerate) apart from "refused"
+ * (permission denied -- must stay loud) without any command substitution
+ * ("$(" is forbidden in a member-bound command string -- see
+ * shell-command-guard.mjs): `$?` is the invoking shell's OWN exit-status
+ * variable, evaluated on the member exactly like PowerShell's `$_` is in the
+ * win32 probe branch, never an orchestrator-side value left for the member
+ * shell to expand.
+ *
+ * win32 already tolerates an already-gone pid via `-ErrorAction
+ * SilentlyContinue` and needs no equivalent change.
  *
  * @param {'win32'|'posix'} family
  * @param {number[]} pids
@@ -300,7 +353,74 @@ export function buildKillCommand(family, pids) {
     if (family === 'win32') {
         return seWindows.wrapForMember(`Stop-Process -Id ${clean.join(',')} -Force -ErrorAction SilentlyContinue`);
     }
-    return `kill -9 ${clean.join(' ')}`;
+    return clean.map((pid) => [
+        `echo '${KILL_BEGIN_PREFIX} ${pid}'`,
+        // stderr redirected onto stdout with a plain "2>&1" -- not captured
+        // via "$(...)" -- so any "No such process" / "Operation not
+        // permitted" text simply appears in the dispatch's combined output
+        // between this pid's BEGIN and STATUS lines.
+        `kill -9 ${pid} 2>&1`,
+        `echo "${KILL_STATUS_PREFIX} ${pid} $?"`,
+    ].join('; ')).join('; ');
+}
+
+/**
+ * Parse a POSIX kill dispatch's output (built by buildKillCommand()) into
+ * which selected pids had ALREADY EXITED before this dispatch ran (tolerate)
+ * versus which ones this sweep genuinely failed to kill (stay loud).
+ *
+ * A pid with no STATUS line at all (a truncated or malformed dispatch output)
+ * is treated as a failure, never a silent success -- the same "I could not
+ * tell" -> "do not report clean" discipline this module uses everywhere else.
+ *
+ * @param {string} output raw combined stdout/stderr from the kill dispatch
+ * @param {number[]} pids the pids this dispatch was built for
+ * @returns {{ gone: number[], failed: Array<{ pid: number, detail: string }> }}
+ */
+export function parseKillOutput(output, pids) {
+    const detailByPid = new Map();
+    const statusByPid = new Map();
+    let currentPid = null;
+    let detailLines = [];
+    const flush = () => {
+        if (currentPid != null) detailByPid.set(currentPid, detailLines.join(' ').trim());
+    };
+
+    for (const raw of String(output || '').split('\n')) {
+        const line = raw.replace(/\r$/, '');
+        if (line.startsWith(`${KILL_BEGIN_PREFIX} `)) {
+            flush();
+            currentPid = Number(line.slice(KILL_BEGIN_PREFIX.length + 1).trim());
+            detailLines = [];
+            continue;
+        }
+        if (line.startsWith(`${KILL_STATUS_PREFIX} `)) {
+            const [pidText, codeText] = line.slice(KILL_STATUS_PREFIX.length + 1).trim().split(/\s+/);
+            const pid = Number(pidText);
+            if (pid === currentPid) flush();
+            statusByPid.set(pid, Number(codeText));
+            currentPid = null;
+            detailLines = [];
+            continue;
+        }
+        if (currentPid != null && line.trim()) detailLines.push(line.trim());
+    }
+
+    const gone = [];
+    const failed = [];
+    for (const pid of pids) {
+        const code = statusByPid.get(pid);
+        if (code === 0) continue;
+        const detail = detailByPid.get(pid) || '';
+        if (code === undefined) {
+            failed.push({ pid, detail: detail || '(no kill status reported for this pid)' });
+        } else if (ESRCH_TEXT_RE.test(detail)) {
+            gone.push(pid);
+        } else {
+            failed.push({ pid, detail: detail || `kill exited ${code}` });
+        }
+    }
+    return { gone, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +520,14 @@ export function parseProbeOutput(output, opts = {}) {
             // Windows: pid|ppid|epochSeconds|commandLine. Only the first
             // three fields are positional; the command line is whatever
             // remains, rejoined, so a pipe inside it survives intact.
+            // apra-fleet-i4ku.4: startText is the literal sentinel '-' for a
+            // process whose CreationDate was null on the member (a few
+            // system processes) -- Number('-') is NaN, so it falls through to
+            // startedAtMs: null below exactly like any other unparseable
+            // value. The row's pid/ppid are NOT dropped, unlike the old
+            // Where-Object filter this replaced: this pid still contributes
+            // to the live-pid set computeParentGone() consults, so its
+            // children are not wrongly judged orphaned.
             const body = trimmed.slice(PROC_WIN_LINE_PREFIX.length + 1).trim();
             const [pidText, ppidText, startText, ...cmdParts] = body.split('|');
             const pid = Number(pidText);
@@ -623,25 +751,46 @@ export const ACTION_REPORT_ONLY = 'report-only';
 export const ACTION_LEAVE = 'leave';
 
 /**
+ * A candidate younger than this is reported, never killed, even when every
+ * other predicate says "stray". WHY 60s rather than something shorter: the
+ * hazard this guards against (apra-fleet-i4ku.5) is a daemonized fleet
+ * process -- ppid 1, so computeParentGone() is true INSTANTLY -- started by a
+ * DIFFERENT, concurrently-starting sprint sharing this member mere seconds
+ * before this sweep's probe dispatch ran. A one-shot spawn+immediate-exit
+ * race is sub-second; 60s leaves comfortable headroom over that without
+ * meaningfully delaying the cleanup of a process that really is stale (a
+ * stray left behind by a PRIOR sprint is, by definition, at least as old as
+ * the time between that sprint ending and this one's member-prep running,
+ * which is minutes at the very least).
+ */
+export const DEFAULT_MIN_AGE_MS = 60 * 1000;
+
+/**
  * THE KILL DECISION. Pure: a function of member locality, one candidate
- * process record, and the production port set. It reads no clock, no
+ * process record, the production port set, a minimum-age bound and the
+ * caller's own notion of "now" (`nowMs`). It reads no clock of its own, no
  * environment and no filesystem, and it executes nothing -- which is what
  * makes every predicate below directly assertable without a process existing.
+ * `nowMs` is an ordinary input like `productionPorts`, never `Date.now()`
+ * read from inside this function.
  *
  * A candidate is killed only when ALL of these hold:
  *   - the member is remote (memberLocality());
  *   - fleet started the process, on more than a name (classifyFleetEvidence());
  *   - its parent process is gone (computeParentGone(), via annotateCandidates);
  *   - it is listening on NONE of the caller's production ports, AND its
- *     listening ports were actually observable (`record.portsKnown`).
+ *     listening ports were actually observable (`record.portsKnown`);
+ *   - its age (nowMs - record.startedAtMs) is known AND at least `minAgeMs`.
  *
  * Two levels of "no":
  *   ACTION_LEAVE       -- not a stray fleet process at all, or explicitly
  *                         protected by holding a production port.
  *   ACTION_REPORT_ONLY -- it IS a stray fleet process, but this sweep is not
  *                         allowed to act: the member is not verifiably remote,
- *                         or the production-port predicate could not be
- *                         evaluated. `sparedReasons` says which.
+ *                         the production-port predicate could not be
+ *                         evaluated, or the process is too young (or its start
+ *                         time is unknown) to trust the parent-gone race has
+ *                         actually settled. `sparedReasons` says which.
  *
  * For a LOCAL member (which, per memberLocality(), also covers relay and
  * unknown types) a would-be kill is downgraded to ACTION_REPORT_ONLY. There is
@@ -654,6 +803,8 @@ export const ACTION_LEAVE = 'leave';
  *   productionPorts?: Array<number>,
  *   markers?: Array<object>,
  *   caseInsensitive?: boolean,
+ *   minAgeMs?: number,
+ *   nowMs?: number,
  * }} input
  * @returns {{ pid, commandLine, startedAtMs, startTime, action, kind,
  *             parentGone, listeningPorts, productionPortHits, selectionReason,
@@ -662,6 +813,7 @@ export const ACTION_LEAVE = 'leave';
 export function decideStrayProcess(input = {}) {
     const {
         locality, record = {}, productionPorts = [], markers = [], caseInsensitive = false,
+        minAgeMs = DEFAULT_MIN_AGE_MS, nowMs,
     } = input;
 
     const evidence = classifyFleetEvidence(record, markers, { caseInsensitive });
@@ -733,6 +885,25 @@ export function decideStrayProcess(input = {}) {
             + 'be evaluated',
         );
     }
+    // Minimum-age guard: a process whose start time is unknown, or that is
+    // younger than minAgeMs, might be a fresh process a DIFFERENT,
+    // concurrently-starting sprint just launched on this same member -- see
+    // DEFAULT_MIN_AGE_MS. Every direction of doubt (unknown startedAtMs,
+    // unknown nowMs) resolves to "too young to trust", matching this
+    // module's fail-safe convention elsewhere.
+    const ageMs = (startedAtMs != null && Number.isFinite(nowMs)) ? (nowMs - startedAtMs) : null;
+    if (ageMs == null) {
+        blockers.push(
+            'process start time (or the sweep\'s reference clock) is unknown, so the minimum-age safety '
+            + 'predicate could not be evaluated',
+        );
+    } else if (ageMs < minAgeMs) {
+        blockers.push(
+            `process is younger than the minimum age bound (${Math.floor(ageMs / 1000)}s old, `
+            + `bound ${Math.floor(minAgeMs / 1000)}s) -- it may belong to a different, still-starting sprint `
+            + 'on this same member',
+        );
+    }
 
     return {
         ...base,
@@ -777,6 +948,7 @@ export function formatStrayKillLog(memberName, decision) {
  *   member: { name?: string, id?: string, os?: string, type?: string, agentType?: string },
  *   markers?: Array<{ kind: string, token: string, evidence: string }>,
  *   productionPorts?: Array<number>,
+ *   minAgeMs?: number,
  *   execCommand: (opts: { member: string, command: string }) => Promise<{ ok?: boolean, output?: string, error?: string }>,
  *   now?: () => number,
  *   logger?: { log?: Function, error?: Function },
@@ -784,7 +956,7 @@ export function formatStrayKillLog(memberName, decision) {
  */
 export async function sweepMemberStrayProcesses(deps = {}) {
     const {
-        member = {}, markers = [], productionPorts = [], execCommand,
+        member = {}, markers = [], productionPorts = [], minAgeMs = DEFAULT_MIN_AGE_MS, execCommand,
         now = () => Date.now(), logger = console,
     } = deps;
 
@@ -813,8 +985,12 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         throw new StrayProbeError(`stray-process sweep probe failed on member '${name}': ${probe.error}`);
     }
 
+    // Captured ONCE and reused for both the probe's etime->startedAtMs
+    // conversion and the minimum-age decision below, so every record in this
+    // pass is judged against the same reference instant.
+    const nowMs = now();
     const { processes, listeners, portsKnown } = parseProbeOutput(probe && (probe.output || probe.error), {
-        nowMs: now(),
+        nowMs,
         memberName: name,
     });
     if (!portsKnown) {
@@ -826,7 +1002,7 @@ export async function sweepMemberStrayProcesses(deps = {}) {
     }
     const records = annotateCandidates(processes, listeners, { portsKnown });
     const decisions = records.map((record) => decideStrayProcess({
-        locality, record, productionPorts, markers, caseInsensitive,
+        locality, record, productionPorts, markers, caseInsensitive, minAgeMs, nowMs,
     }));
 
     const toKill = decisions.filter((d) => d.action === ACTION_KILL);
@@ -834,7 +1010,8 @@ export async function sweepMemberStrayProcesses(deps = {}) {
 
     let killed = [];
     if (toKill.length > 0) {
-        const killCommand = buildKillCommand(family, toKill.map((d) => d.pid));
+        const killPids = toKill.map((d) => d.pid);
+        const killCommand = buildKillCommand(family, killPids);
         let res;
         try {
             res = await execCommand({ member: name, command: killCommand });
@@ -849,8 +1026,36 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 `stray-process sweep could not kill ${toKill.length} selected process(es) on member '${name}': ${res.error}`,
             );
         }
+        // POSIX only: tell a pid that had ALREADY EXITED before this dispatch
+        // ran (a benign probe/kill race -- apra-fleet-i4ku.3) apart from a
+        // pid this sweep genuinely failed to kill (e.g. permission denied),
+        // which must still abort loudly. win32's Stop-Process is already
+        // tolerant of the same race via -ErrorAction SilentlyContinue and
+        // needs no equivalent parse.
+        let goneSet = new Set();
+        if (family === 'posix') {
+            const { gone, failed } = parseKillOutput(res && (res.output || res.error), killPids);
+            if (failed.length > 0) {
+                throw new StrayProbeError(
+                    `stray-process sweep could not kill ${failed.length} of ${toKill.length} selected process(es) `
+                    + `on member '${name}': ${failed.map((f) => `pid ${f.pid} (${f.detail})`).join('; ')}`,
+                );
+            }
+            if (gone.length > 0) {
+                goneSet = new Set(gone);
+                logError(
+                    `[member-stray-sweep] member '${name}': ${gone.length} selected process(es) had already `
+                    + `exited before the kill dispatch ran (benign race) and needed no signal: pid(s) ${gone.join(', ')}`,
+                );
+            }
+        }
         killed = toKill;
-        for (const decision of killed) logError(formatStrayKillLog(name, decision));
+        // A pid the tolerant path above already logged as "already exited"
+        // is not ALSO logged as KILLED -- the two lines would contradict each
+        // other about what actually happened to that pid.
+        for (const decision of killed) {
+            if (!goneSet.has(decision.pid)) logError(formatStrayKillLog(name, decision));
+        }
     }
 
     if (reported.length > 0) {
