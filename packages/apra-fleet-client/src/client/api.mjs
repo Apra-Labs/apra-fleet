@@ -322,6 +322,41 @@
  */
 
 /**
+ * @typedef {Object} MemberGitStatusOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} [folder] - Absolute path on the member to inspect. Defaults to the
+ *   member's registered work folder. A folder that is not a git work tree is reported as
+ *   checkout: null, not as an error.
+ */
+
+/**
+ * @typedef {Object} MemberGitStatusResult
+ * @property {"checkout" | "no_checkout" | "member_not_found" | "no_folder" | "failed"} outcome -
+ *   Machine-readable outcome discriminator. Branch on this field; never string-match the
+ *   human-readable summary text.
+ * @property {boolean} ok - True when the probe ran and produced an answer -- including
+ *   "no checkout here", which is a normal answer and not a failure.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {string|null} folder - The folder that was probed, null when none could be resolved.
+ * @property {{path: string, branch: string|null, detached: boolean, head: string|null,
+ *   upstream: string|null, ahead: number|null, behind: number|null, dirty: boolean,
+ *   dirtyFiles: Array<{code: string, path: string}>,
+ *   worktrees: Array<{path: string, head: string|null, branch: string|null, detached: boolean,
+ *   bare: boolean, locked: boolean}>, originUrl: string|null, originSlug: string|null,
+ *   playbooks: string[], bibleCommit: string|null}|null} checkout - Parsed checkout state, or
+ *   null when the folder is not a git work tree.
+ * @property {string|null} error - Failure detail when outcome is member_not_found/no_folder/
+ *   failed, else null.
+ *
+ * Mirrors src/tools/member-git-status.ts's MemberGitStatusFields field-for-field (pinned by
+ * test/client-server-typedef-parity.test.mjs). The tool still returns the same
+ * human-readable summary in `content[0].text`; this shape is the machine-readable half of
+ * the same response.
+ */
+
+/**
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -796,6 +831,27 @@ export class ApraFleet {
      */
     async memberOwner(options) {
         return this.mcpClient.callTool('member_owner', options);
+    }
+
+    /**
+     * Report the git state of a folder on a member -- branch, upstream and
+     * ahead/behind, dirty paths, linked work trees, the origin remote plus
+     * its normalised host/path slug, which target playbook files are present,
+     * and the last commit touching the knowledge-bank export
+     * (src/tools/member-git-status.ts).
+     *
+     * Same two-halves result shape as memberOwner: `content[0].text` is the
+     * human-readable summary and `structuredContent` is a
+     * MemberGitStatusResult -- branch on `structuredContent.outcome`. A
+     * folder that is not a git work tree yields outcome "no_checkout" with
+     * `checkout: null`, which is a normal answer, not an error.
+     *
+     * @param {MemberGitStatusOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberGitStatusResult }>}
+     */
+    async memberGitStatus(options) {
+        return this.mcpClient.callTool('member_git_status', options);
     }
 
     /**

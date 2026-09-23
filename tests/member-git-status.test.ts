@@ -9,8 +9,11 @@
  * their DECODED script (decodePowerShellEncodedCommand, tests/test-helpers.ts)
  * so the assertions survive the base64 wrapping wrapPowerShellEncoded applies.
  */
-import { describe, it, expect } from 'vitest';
-import { decodePowerShellEncodedCommand } from './test-helpers.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { decodePowerShellEncodedCommand, makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { addAgent } from '../src/services/registry.js';
+import { memberGitStatus } from '../src/tools/member-git-status.js';
+import type { SSHExecResult } from '../src/types.js';
 import {
   buildGitStatusProbes,
   isInsideWorkTree,
@@ -21,6 +24,15 @@ import {
   BIBLE_PATH,
   type GitProbeName,
 } from '../src/services/git-status-probe.js';
+
+// The tool's own cases below drive the REAL memberGitStatus() with a stubbed
+// execute path: only strategy.getStrategy is replaced, so probe building,
+// sequencing, short-circuiting and parsing all run for real.
+const execCommand = vi.fn<(cmd: string, timeoutMs?: number) => Promise<SSHExecResult>>();
+vi.mock('../src/services/strategy.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/strategy.js')>();
+  return { ...actual, getStrategy: () => ({ execCommand }) };
+});
 
 const EXPECTED_ORDER: GitProbeName[] = [
   'insideWorkTree', 'status', 'worktrees', 'originUrl', 'playbooks', 'bibleCommit',
@@ -318,5 +330,205 @@ describe('originSlugFromUrl', () => {
       'ssh://git@github.com:22/Apra-Labs/apra-fleet',
     ];
     expect(new Set(spellings.map((s) => originSlugFromUrl(s))).size).toBe(1);
+  });
+});
+
+/**
+ * Tool-level coverage (apra-fleet-4qtu.3.2): the REGISTERED member_git_status
+ * tool over a stubbed execute path. Only strategy.getStrategy is replaced --
+ * probe building, sequencing, the DQ-27 short-circuit and every parser run
+ * for real, so these cases pin the tool's behaviour, not a re-derivation of
+ * it inside the test.
+ */
+function exec(stdout: string, code = 0): SSHExecResult {
+  return { stdout, stderr: '', code } as SSHExecResult;
+}
+
+const PORCELAIN = [
+  '# branch.oid 9999999999999999999999999999999999999999',
+  '# branch.head feat/topic',
+  '# branch.upstream origin/feat/topic',
+  '# branch.ab +1 -2',
+  '1 .M N... 100644 100644 100644 aaaa bbbb src/changed.ts',
+  '? notes.txt',
+  '',
+].join('\n');
+
+const WORKTREES = [
+  'worktree /work/repo',
+  'HEAD 9999999999999999999999999999999999999999',
+  'branch refs/heads/feat/topic',
+  '',
+].join('\n');
+
+/** Canned member responses keyed by probe name, for a healthy checkout. */
+function checkoutResponses(): Map<GitProbeName, SSHExecResult> {
+  return new Map<GitProbeName, SSHExecResult>([
+    ['insideWorkTree', exec('true\n')],
+    ['status', exec(PORCELAIN)],
+    ['worktrees', exec(WORKTREES)],
+    ['originUrl', exec('git@github.com:Apra-Labs/apra-fleet.git\n')],
+    ['playbooks', exec('deploy.md\nregression-test-playbook.md\n')],
+    ['bibleCommit', exec('abcdef1234567890abcdef1234567890abcdef12\n')],
+  ]);
+}
+
+describe('member_git_status tool', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    execCommand.mockReset();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('issues exactly the F2 probe sequence, in order, and returns the parsed design shape', async () => {
+    const member = makeTestAgent({ os: 'linux', workFolder: '/work/repo' });
+    addAgent(member);
+    const responses = checkoutResponses();
+    const probes = buildGitStatusProbes('/work/repo', 'linux');
+    const issued: string[] = [];
+    execCommand.mockImplementation(async (cmd: string) => {
+      issued.push(cmd);
+      const probe = probes.find((p) => p.command === cmd);
+      expect(probe, `tool issued a command no builder produced: ${cmd}`).toBeTruthy();
+      return responses.get(probe!.name)!;
+    });
+
+    const { structuredContent, text } = await memberGitStatus({ member_id: member.id });
+
+    expect(issued).toEqual(probes.map((p) => p.command));
+    expect(structuredContent.outcome).toBe('checkout');
+    expect(structuredContent.ok).toBe(true);
+    expect(structuredContent.error).toBeNull();
+    expect(structuredContent.folder).toBe('/work/repo');
+    expect(structuredContent.checkout).toEqual({
+      path: '/work/repo',
+      branch: 'feat/topic',
+      detached: false,
+      head: '9999999999999999999999999999999999999999',
+      upstream: 'origin/feat/topic',
+      ahead: 1,
+      behind: 2,
+      dirty: true,
+      dirtyFiles: [
+        { code: '.M', path: 'src/changed.ts' },
+        { code: '??', path: 'notes.txt' },
+      ],
+      worktrees: [{
+        path: '/work/repo',
+        head: '9999999999999999999999999999999999999999',
+        branch: 'feat/topic',
+        detached: false,
+        bare: false,
+        locked: false,
+      }],
+      originUrl: 'git@github.com:Apra-Labs/apra-fleet.git',
+      originSlug: 'github.com/apra-labs/apra-fleet',
+      playbooks: ['deploy.md', 'regression-test-playbook.md'],
+      bibleCommit: 'abcdef1234567890abcdef1234567890abcdef12',
+    });
+    expect(text).toContain('feat/topic');
+  });
+
+  it('sends the PowerShell-encoded sequence to a Windows member', async () => {
+    const member = makeTestAgent({ os: 'windows', shell: 'pwsh7', workFolder: 'C:\\work\\repo' });
+    addAgent(member);
+    const responses = checkoutResponses();
+    const probes = buildGitStatusProbes('C:\\work\\repo', 'windows', 'pwsh7');
+    const issued: string[] = [];
+    execCommand.mockImplementation(async (cmd: string) => {
+      issued.push(cmd);
+      return responses.get(probes.find((p) => p.command === cmd)!.name)!;
+    });
+
+    const { structuredContent } = await memberGitStatus({ member_id: member.id });
+
+    expect(issued).toEqual(probes.map((p) => p.command));
+    for (const cmd of issued) {
+      expect(cmd.startsWith('powershell -EncodedCommand ')).toBe(true);
+      expect(decodePowerShellEncodedCommand(cmd)).toContain("'C:\\work\\repo");
+    }
+    expect(structuredContent.outcome).toBe('checkout');
+  });
+
+  it('reports a non-git folder as checkout null with no error, after one probe only (DQ-27)', async () => {
+    const member = makeTestAgent({ os: 'linux', workFolder: '/work/plain' });
+    addAgent(member);
+    const issued: string[] = [];
+    execCommand.mockImplementation(async (cmd: string) => {
+      issued.push(cmd);
+      return exec('fatal: not a git repository (or any of the parent directories): .git\n', 128);
+    });
+
+    const { structuredContent } = await memberGitStatus({ member_id: member.id });
+
+    expect(issued).toEqual([buildGitStatusProbes('/work/plain', 'linux')[0].command]);
+    expect(structuredContent.outcome).toBe('no_checkout');
+    expect(structuredContent.ok).toBe(true);
+    expect(structuredContent.checkout).toBeNull();
+    expect(structuredContent.error).toBeNull();
+  });
+
+  it('probes an explicit folder instead of the registered work folder', async () => {
+    const member = makeTestAgent({ os: 'linux', workFolder: '/work/repo' });
+    addAgent(member);
+    execCommand.mockImplementation(async () => exec('false\n'));
+
+    const { structuredContent } = await memberGitStatus({ member_id: member.id, folder: '/other/place' });
+
+    expect(execCommand.mock.calls[0][0]).toBe("git -C '/other/place' rev-parse --is-inside-work-tree");
+    expect(structuredContent.folder).toBe('/other/place');
+    expect(structuredContent.checkout).toBeNull();
+  });
+
+  it('reports a checkout with no origin remote as originSlug null, not an error', async () => {
+    const member = makeTestAgent({ os: 'linux', workFolder: '/work/repo' });
+    addAgent(member);
+    const responses = checkoutResponses();
+    responses.set('originUrl', exec("error: No such remote 'origin'\n", 2));
+    const probes = buildGitStatusProbes('/work/repo', 'linux');
+    execCommand.mockImplementation(async (cmd: string) => responses.get(probes.find((p) => p.command === cmd)!.name)!);
+
+    const { structuredContent } = await memberGitStatus({ member_id: member.id });
+
+    expect(structuredContent.outcome).toBe('checkout');
+    expect(structuredContent.checkout?.originUrl).toBeNull();
+    expect(structuredContent.checkout?.originSlug).toBeNull();
+    expect(structuredContent.error).toBeNull();
+  });
+
+  it('surfaces an execute-path failure as outcome failed', async () => {
+    const member = makeTestAgent({ os: 'linux', workFolder: '/work/repo' });
+    addAgent(member);
+    execCommand.mockImplementation(async () => { throw new Error('Command timed out after 30000ms of inactivity'); });
+
+    const { structuredContent } = await memberGitStatus({ member_id: member.id });
+
+    expect(structuredContent.outcome).toBe('failed');
+    expect(structuredContent.ok).toBe(false);
+    expect(structuredContent.checkout).toBeNull();
+    expect(structuredContent.error).toContain('timed out');
+  });
+
+  it('reports an unknown member without touching the execute path', async () => {
+    const { structuredContent } = await memberGitStatus({ member_id: 'no-such-member' });
+
+    expect(structuredContent.outcome).toBe('member_not_found');
+    expect(structuredContent.ok).toBe(false);
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it('is registered as member_git_status and appears in the tool listing', async () => {
+    const { registerAllTools } = await import('../src/services/tool-registry.js');
+    const registered = new Set<string>();
+    const fakeServer = {
+      tool: (name: string) => { registered.add(name); },
+      server: { sendLoggingMessage: async () => {} },
+    };
+    await registerAllTools(fakeServer as never);
+
+    expect(registered.has('member_git_status')).toBe(true);
   });
 });

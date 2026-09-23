@@ -489,6 +489,35 @@ the human-readable summary, and `structuredContent` is a
 `action`, `memberId`, `memberName`, `owner` (`{package, ref}` after this
 call, or `null` when cleared/absent/failed before writing).
 
+#### `memberGitStatus(options: MemberGitStatusOptions)`
+
+Calls `member_git_status` -- probes a folder on a member with the F2 git
+probe sequence (built for that member's OS and shell) and returns the parsed
+checkout state. The MCP result carries both halves: `content[0].text` is the
+human-readable summary, and `structuredContent` is a `MemberGitStatusResult`.
+Programmatic callers must branch on `structuredContent.outcome` rather than
+string-matching the prose.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `folder` | `string?` | Absolute path on the member to inspect. Defaults to the member's registered work folder. |
+
+`MemberGitStatusResult` fields: `outcome` (one of `"checkout"`,
+`"no_checkout"`, `"member_not_found"`, `"no_folder"`, `"failed"`), `ok`,
+`memberId`, `memberName`, `folder`, `checkout`, `error`.
+
+`checkout` is `null` when the folder is not a git work tree -- a normal
+answer with `ok: true` and `outcome: "no_checkout"`, since the server never
+requires a member to have a checkout. Otherwise it carries `path`, `branch`,
+`detached`, `head`, `upstream`, `ahead`, `behind`, `dirty`, `dirtyFiles`
+(`{code, path}`), `worktrees` (`{path, head, branch, detached, bare,
+locked}`), `originUrl`, `originSlug` (the remote normalised to lowercase
+`host/path`), `playbooks` (which of `deploy.md`, `integ-test-playbook.md`,
+`regression-test-playbook.md` exist in the checkout root) and `bibleCommit`
+(last commit touching `.fleet/kb-canonical.json`).
+
 #### `getMemberModelPricing(options)`
 
 Calls `get_member_model_pricing` -- returns a member's cheap/standard/premium

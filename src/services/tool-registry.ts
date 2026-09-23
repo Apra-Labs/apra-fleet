@@ -12,6 +12,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { updateMemberSchema, updateMember } = await import('../tools/update-member.js');
   const { memberReservationSchema, memberReservation } = await import('../tools/member-reservation.js');
   const { memberOwnerSchema, memberOwner } = await import('../tools/member-owner.js');
+  const { memberGitStatusSchema, memberGitStatus } = await import('../tools/member-git-status.js');
   const { doltPushMutexSchema, doltPushMutex } = await import('../tools/dolt-push-mutex.js');
   const { childIdAllocatorSchema, childIdAllocator } = await import('../tools/child-id-allocator.js');
   const { sendFilesSchema, sendFiles } = await import('../tools/send-files.js');
@@ -127,6 +128,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('child_id_allocator', 'Global child-bead-id allocator hosted on the fleet server, so sprints launched WITHOUT a supervisor never mint the same child id under a shared parent. "allocate" reserves the next id under parent_id (lease + pid guarded); "confirm" commits it after a successful create; "release" returns an unused id to the free pool; "status" snapshots per-parent state.', childIdAllocatorSchema.shape, wrapTool('child_id_allocator', (input) => childIdAllocator(input as any)));
   server.tool('member_reservation', 'Reserve, release, or force-release exclusive ownership of a member for a sprint (server-side reservation; does not yet block dispatch). "reserve" claims the member for sprint_id; "release" clears it if sprint_id matches the current holder; "force_release" clears a wedged reservation regardless of owner.', memberReservationSchema.shape, wrapTool('member_reservation', (input) => memberReservation(input as any)));
   server.tool('member_owner', 'Set or clear the owner {package, ref} tag a package/consumer (e.g. a fleet-sprint project) uses to bind this member to its own bookkeeping. "set" requires both package and ref (format-validated); "clear" removes the tag. Both refuse with error code member-held while the member is reserved (reservedBy set).', memberOwnerSchema.shape, wrapTool('member_owner', (input) => memberOwner(input as any)));
+  server.tool('member_git_status', 'Report the git state of a folder on a member: branch, upstream and ahead/behind, dirty paths, linked work trees, the origin remote plus its normalised host/path slug, which target playbook files are present, and the last commit touching the knowledge-bank export. Probe commands are built for the member OS and shell. A folder that is not a git work tree returns checkout: null and is NOT an error.', memberGitStatusSchema.shape, wrapTool('member_git_status', (input) => memberGitStatus(input as any)));
 
   // File Operations
   server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files.', sendFilesSchema.shape, wrapTool('send_files', (input, extra) => sendFiles(input as any, extra)));

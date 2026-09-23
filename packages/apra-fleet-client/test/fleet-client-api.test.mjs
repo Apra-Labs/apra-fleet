@@ -339,6 +339,25 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('memberGitStatus', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'abc-123', folder: '/work/repo' };
+        const result = await fleet.memberGitStatus(options);
+
+        assert.strictEqual(calledName, 'member_git_status');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
     test('shutdownServer', async () => {
         let calledName, calledArgs, calledOpts;
         const mockClient = {
@@ -576,12 +595,13 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
         // vacuously against an (almost) empty set.
         assert.ok(methods.size > 25, `expected many ApraFleet methods, parsed ${methods.size}`);
 
-        // apra-fleet-972p.1.3: pin the exact exported-method count (33 as of
-        // apra-fleet-4qtu.2.1's memberOwner addition). A future wrapper
+        // apra-fleet-972p.1.3: pin the exact exported-method count (34 as of
+        // apra-fleet-4qtu.3.2's memberGitStatus addition, which followed
+        // apra-fleet-4qtu.2.1's memberOwner). A future wrapper
         // addition/removal must update this assertion deliberately, rather
         // than silently passing the >25 sanity floor above while docs drift
         // out of sync.
-        assert.strictEqual(methods.size, 33, `expected exactly 33 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
+        assert.strictEqual(methods.size, 34, `expected exactly 34 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
 
         // Documented method names are those referenced as `name(...)` inside a
         // backtick code span anywhere in the doc (covers both a method's own
