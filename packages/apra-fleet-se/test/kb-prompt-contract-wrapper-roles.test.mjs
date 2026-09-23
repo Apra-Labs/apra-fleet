@@ -82,6 +82,45 @@ const REQUIRED_KB_STEP_RE = /\(\s*required\b/i;
 // the field exists and says to leave it empty (e.g. "omit it or send []").
 const KB_CAPTURES_INSTRUCTION_RE = /\b(add|populate|emit|include|fill(?:\s+in)?|write)\b[\s\S]{0,100}?kb_captures/i;
 
+// apra-fleet-i4ku.6: the heading check above only inspects kb.headingLine, so
+// a prompt whose HEADING drops "(required" while its BODY still carries an
+// unconditional imperative KB tool-call step -- exactly the shape main had at
+// Step 0 item 1, "Run ToolSearch with query ..." -- passed the old test
+// vacuously. This second check scans the section BODY line by line for an
+// imperative verb (run/call/invoke) immediately preceding "ToolSearch" or an
+// "mcp__*__kb_*" tool name, on a line that carries no guarding conditional.
+const KB_TOOL_IMPERATIVE_RE = /\b(run|call|invoke)\b\s+(?:the\s+)?`?(ToolSearch|mcp__[\w-]+__kb_[\w-]+)/i;
+const KB_CONDITIONAL_GUARD_RE = /\b(if|when|unless|where\s+(?:available|reachable)|opportunistically|bonus\s+path)\b/i;
+
+/**
+ * Scans a Knowledge Bank step's full text (heading + body) for an
+ * UNCONDITIONAL imperative KB tool-call instruction: an imperative verb next
+ * to "ToolSearch"/"mcp__*__kb_*" with no guard word ("if"/"when"/"unless"/
+ * "where available"/"if reachable"/etc) anywhere in the same UNIT of prose.
+ *
+ * A "unit" is one markdown paragraph, further split at each new numbered/
+ * bulleted list item -- NOT a physical source line, because this repo's
+ * prompt markdown hard-wraps a single sentence across several lines (e.g.
+ * "1. If you want a live lookup beyond the pre-fetched block, run ToolSearch
+ * with query\n   `"select:...` -- the guard word "If" and the imperative
+ * "run ToolSearch" are one sentence but two physical lines). A line-by-line
+ * scan would misread that as unconditional; collapsing each item back to one
+ * string first reads it the way a person would.
+ *
+ * @param {string} section
+ * @returns {string|null} the first offending unit (whitespace-collapsed), or null
+ */
+function findUnconditionalKbToolCall(section) {
+    const paragraphs = String(section || '').split(/\n\s*\n/);
+    const units = [];
+    for (const para of paragraphs) units.push(...para.split(/\n(?=\s*(?:\d+\.|[-*])\s)/));
+    for (const unit of units) {
+        const collapsed = unit.replace(/\s+/g, ' ').trim();
+        if (KB_TOOL_IMPERATIVE_RE.test(collapsed) && !KB_CONDITIONAL_GUARD_RE.test(collapsed)) return collapsed;
+    }
+    return null;
+}
+
 test('wrapper-injection roles without a kb-apply step: derived set is non-empty and includes planner', () => {
     const rows = wrapperRowsWithoutKbApply(ROLE_POLICIES);
     const roleNames = rows.map(([name]) => name);
@@ -120,6 +159,18 @@ test('wrapper-injection roles without a kb-apply step: their prompt files requir
             `required. Heading line: ${JSON.stringify(kb.headingLine)}`
         );
 
+        // apra-fleet-i4ku.6: the heading check above is not enough on its
+        // own -- a prompt could drop "(required" from the heading while its
+        // BODY still states an unconditional imperative KB tool-call step.
+        const unconditionalLine = findUnconditionalKbToolCall(kb.section);
+        assert.ok(
+            !unconditionalLine,
+            `role(s) ${roleNames.join(', ')}: ${agentType}.md's Knowledge Bank section body has an UNCONDITIONAL ` +
+            `imperative KB tool-call instruction (no guarding if/when/unless/"where available"/etc on that line) -- ` +
+            `KB tool calls are unreachable on a dispatched member for this role, so the instruction must be ` +
+            `conditional. Offending line: ${JSON.stringify(unconditionalLine)}`
+        );
+
         const captureMatch = content.match(KB_CAPTURES_INSTRUCTION_RE);
         assert.ok(
             !captureMatch,
@@ -128,6 +179,68 @@ test('wrapper-injection roles without a kb-apply step: their prompt files requir
             `step, so nothing in the engine ever reads/applies that field.`
         );
     }
+});
+
+// ---------------------------------------------------------------------------
+// findUnconditionalKbToolCall() in isolation -- fabricated fixtures, not real
+// prompt files, so the catch/no-catch behaviour is pinned independently of
+// whatever the current apra-pm/agents/*.md content happens to say.
+// ---------------------------------------------------------------------------
+
+test('findUnconditionalKbToolCall: catches the vacuous-pass regression shape (heading has no "(required", body has an unconditional "Run ToolSearch")', () => {
+    // Mirrors main's actual pre-fix Step 0 item 1 ("Run ToolSearch with query
+    // ...") with no guarding "if"/"when" anywhere on that line. The OLD test
+    // (heading-only) would pass this vacuously because the heading below
+    // never says "(required".
+    const content = [
+        '## Step 0 -- Knowledge Bank (do this BEFORE any other work)',
+        '',
+        '1. Run ToolSearch with query',
+        '   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query"`',
+        '2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo.',
+        '',
+        '## Step 1 -- Next section',
+    ].join('\n');
+
+    const kb = extractKnowledgeBankSection(content);
+    assert.ok(kb, 'fixture must have an extractable Knowledge Bank section');
+    assert.ok(!REQUIRED_KB_STEP_RE.test(kb.headingLine), 'premise: the heading-only check must NOT catch this fixture');
+
+    const offending = findUnconditionalKbToolCall(kb.section);
+    assert.ok(offending, 'the body-level check must catch what the heading-only check missed');
+    assert.match(offending, /Run ToolSearch/);
+});
+
+test('findUnconditionalKbToolCall: does NOT flag a properly-guarded body (the current, already-fixed wrapper-role shape)', () => {
+    // Mirrors the real, already-fixed wrapper-role prompts (planner.md,
+    // deployer.md, etc): every imperative KB tool call is guarded by an "If
+    // you want a live lookup ..." / "... if it is reachable" clause on the
+    // SAME line. This pins the absence of a false positive.
+    const content = [
+        '## Step 0 -- Knowledge Bank (do this BEFORE any other work)',
+        '',
+        '1. If you want a live lookup beyond the pre-fetched block, run ToolSearch with query',
+        '   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call',
+        '   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are planning for.',
+        '2. When you discover something non-obvious and durable, call `mcp__apra-fleet__kb_capture` if it is reachable.',
+        '',
+        '## Step 1 -- Next section',
+    ].join('\n');
+
+    const kb = extractKnowledgeBankSection(content);
+    assert.ok(kb, 'fixture must have an extractable Knowledge Bank section');
+    assert.equal(findUnconditionalKbToolCall(kb.section), null);
+});
+
+test('findUnconditionalKbToolCall: catches an unconditional "call mcp__*__kb_*" (not just "run ToolSearch")', () => {
+    const section = [
+        '## Step 0 -- Knowledge Bank',
+        '',
+        '1. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo.',
+    ].join('\n');
+    const offending = findUnconditionalKbToolCall(section);
+    assert.ok(offending);
+    assert.match(offending, /kb_session_prime/);
 });
 
 test('wrapper-injection roles without a kb-apply step: harvester, doer and reviewer are excluded (they have kb-apply)', () => {
