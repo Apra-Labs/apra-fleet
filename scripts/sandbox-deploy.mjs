@@ -561,6 +561,17 @@ export async function smoke(sprintId, { home = os.homedir(), shellDist } = {}) {
       const uiResponse = await fetch(`http://127.0.0.1:${fleetPort}/ui/`, { signal: AbortSignal.timeout(2000) });
       if (uiResponse.ok && uiResponse.headers.get('content-type')?.includes('text/html')) {
         uiStatus = 'ok';
+      } else if (uiResponse.status === 404) {
+        // Self-diagnosing (apra-fleet-v6t7.5): a shell dist is present at
+        // shellDistPath (we only reach this branch when it is), so a 404
+        // here is never "the build is missing" -- it means the RUNNING
+        // server has no /ui route wired up (or is serving a build that
+        // predates one). Say so explicitly rather than leaving the reader
+        // to guess between a bad build and a missing route.
+        throw new SandboxDeployError(
+          `smoke: /ui/ returned status 404, expected 200 text/html (shell dist found at ${shellDistPath} -- `
+          + `the dist exists, so this is not a missing build; the running sandbox server exposes no /ui route)`,
+        );
       } else {
         throw new SandboxDeployError(`smoke: /ui/ returned status ${uiResponse.status}, expected 200 text/html`);
       }

@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import net from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -615,5 +618,111 @@ describe('(k) report_status closes the busy->online/idle loop over the real MCP 
     expect(parsed.ok).toBe(true);
     expect(parsed.member_id).toBe(memberId);
     expect(sessionRegistry.get(issuer.workspaceId(), memberId)?.status).toBe('online');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (n) GET /ui serves the shell dist (apra-fleet-v6t7.5): the epic's "GET /ui
+// 200 with the shell" criterion, landed with the root build:ui wiring so
+// scripts/sandbox-deploy.mjs's smoke() /ui probe -- which auto-arms
+// whenever a shell dist exists on disk -- never finds a dist with no route
+// behind it. shellDistDir is a testability seam; production resolves the
+// real packages/apra-fleet-shell-ui/dist path instead.
+// ---------------------------------------------------------------------------
+function getRaw(port: number, urlPath: string): Promise<{ status: number; contentType: string | undefined; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path: urlPath, method: 'GET' }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode ?? 0,
+        contentType: res.headers['content-type'],
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+describe('(n) GET /ui serves the built shell when a dist is present', () => {
+  let shellDistDir: string;
+
+  beforeEach(() => {
+    shellDistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-dist-'));
+    fs.writeFileSync(path.join(shellDistDir, 'index.html'), '<html><body>shell</body></html>');
+    fs.mkdirSync(path.join(shellDistDir, 'assets'));
+    fs.writeFileSync(path.join(shellDistDir, 'assets', 'app.js'), 'console.log("hi");');
+  });
+
+  afterEach(() => {
+    fs.rmSync(shellDistDir, { recursive: true, force: true });
+  });
+
+  it('GET /ui/ answers 200 text/html with the shell', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, '/ui/');
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain('text/html');
+    expect(res.body).toContain('shell');
+  });
+
+  it('GET /ui (no trailing slash) also answers 200 text/html', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, '/ui');
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain('text/html');
+  });
+
+  it('GET /ui/assets/app.js serves the real asset with a javascript content-type', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, '/ui/assets/app.js');
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain('javascript');
+    expect(res.body).toContain('console.log');
+  });
+
+  it('GET /ui/some/client-route falls back to index.html (SPA shell)', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, '/ui/some/client-route');
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain('text/html');
+    expect(res.body).toContain('shell');
+  });
+
+  it('does not allow path traversal outside the dist directory', async () => {
+    const outsideFile = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+    fs.writeFileSync(path.join(outsideFile, 'secret.txt'), 'nope');
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, `/ui/${encodeURIComponent('../../../../etc/passwd')}`);
+    // Falls back to index.html rather than escaping the dist dir -- never a
+    // 500, never file content from outside shellDistDir.
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('shell');
+    fs.rmSync(outsideFile, { recursive: true, force: true });
+  });
+
+  it('/mcp behavior is unchanged when a shell dist is configured', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir });
+    handles.push(handle);
+    const client = makeClient(handle.port);
+    clients.push(client);
+    await client.connect(makeTransport(handle.port));
+    expect(handle.sessions.size).toBe(1);
+  });
+});
+
+describe('(o) GET /ui with no shell dist present falls through to the existing 404', () => {
+  it('answers 404, same as any other unmatched route', async () => {
+    const missingDir = path.join(os.tmpdir(), 'no-such-shell-dist-' + Date.now());
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, shellDistDir: missingDir });
+    handles.push(handle);
+    const res = await getRaw(handle.port, '/ui/');
+    expect(res.status).toBe(404);
   });
 });
