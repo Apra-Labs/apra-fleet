@@ -29,6 +29,11 @@ CLAUDE.md
 .beads/
 # Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
 .beads.bak-*/
+# apra-fleet-v6t7.10: written by the bd CLI's session-scoped gate/lock
+# mechanism during normal `bd` usage (claim/close/etc.), not a code
+# artifact -- same class of accidental-stage footgun as the
+# packages/*/package-lock.json rule below.
+.beads.gate.lock
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
