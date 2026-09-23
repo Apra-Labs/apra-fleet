@@ -13,7 +13,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, SprintDoctorAbortError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -2782,6 +2782,37 @@ async function runSprintCycle(context) {
     let highWaterClosedCount = 0;
     const closedCountHistory = [];
 
+    // --- T3 abort interposition state (design doc sections 1.3 H3, 3.3) ---
+    //
+    // The stall abort below is no longer unconditional: the doctor is
+    // consulted ONCE before the sprint is killed, its action is executed by
+    // the executor, and the sprint is granted at most ONE further cycle to
+    // show that the repair worked. These three variables are the whole of
+    // that bookkeeping, and they are deliberately SEPARATE from `staleCycles`
+    // and `highWaterClosedCount` above: doctor code never writes either of
+    // those two: only a genuine progress-score increase (which includes the
+    // monotone doctor-defer credit folded into the score itself) resets
+    // staleness, exactly as before. The grant is an extra-cycle permit, not a
+    // counter reset -- so a doctored cycle that makes no progress leaves
+    // staleCycles still climbing and aborts on the very next evaluation.
+    //
+    // `doctorStallVerdict` is the compact record of the one T3 consult: it is
+    // attached to the eventual StalledSprintError's `details` so the abort
+    // report says what was tried, and it is set ONLY for a consult that
+    // returned a schema-valid verdict. A failed or schema-invalid consult
+    // leaves all three untouched, which is what makes the pre-change abort
+    // reproduce byte for byte.
+    let doctorStallVerdict = null;
+    let doctorStallConsultCycle = null;
+    let doctorStallExtraCycleUsed = false;
+
+    // The abort_sprint request the action executor routes to this lane. The
+    // executor wraps its delegated-handler call in its own try/catch (a
+    // verdict must never throw INTO the cycle loop from inside apply()), so
+    // the handler RECORDS the request here and the executor call site below
+    // -- the runner, in its own control flow -- raises the typed abort.
+    let doctorAbortRequest = null;
+
     // Per-bead reopen counts across the whole sprint. A bead reopened more than
     // REOPEN_THRASH_LIMIT times is flagged as thrashing -- the develop/review
     // loop is oscillating on that specific bead -- and its id is surfaced in
@@ -2973,6 +3004,23 @@ async function runSprintCycle(context) {
         // the engine pause primitive) inject the handlers; until they do,
         // the executor refuses the action loudly instead of pretending to
         // have acted on it.
+        //
+        // abort_sprint's owning lane is THIS one -- the terminal abort. The
+        // handler only records the request (and never throws): apply() runs
+        // every handler inside its own try/catch precisely so a verdict
+        // cannot throw into the cycle loop from inside the executor, so a
+        // throw here would be swallowed and reported as a failed action.
+        // The runner raises the typed SprintDoctorAbortError itself, at the
+        // executor call site, off `applied.aborted`.
+        onAbort: async ({ verdict: abortVerdict, beadIds: abortBeadIds, member: abortMember, cycle: abortCycle }) => {
+            doctorAbortRequest = {
+                verdict: abortVerdict || null,
+                beadIds: [...(abortBeadIds || [])],
+                member: abortMember || null,
+                cycle: abortCycle ?? null,
+            };
+            return true;
+        },
         onPause: (typeof requestPause === 'function')
             ? async ({ verdict: pauseVerdict }) => {
                 const summary = (pauseVerdict && pauseVerdict.humanActionRequired && pauseVerdict.humanActionRequired.summary)
@@ -3959,10 +4007,13 @@ async function runSprintCycle(context) {
         // the runner ALREADY keeps; nothing here is duplicated bookkeeping,
         // and nothing here changes any of them.
         //
-        // This is evaluation only. T3's abort interposition -- consulting
-        // before the StalledSprintError is thrown, and granting at most one
-        // further cycle -- is a later lane; the abort below is untouched and
-        // fires exactly as it did before.
+        // T3's abort interposition (design doc 1.3 H3, wired below) reads
+        // what happens here: this evaluation is where the one T3 consult is
+        // raised and answered, and the stall check below then grants the
+        // single doctored cycle it buys. Nothing in this block writes
+        // `staleCycles` or `highWaterClosedCount` -- the doctored cycle is a
+        // permit, not a counter reset -- so a sprint that makes no progress
+        // still aborts, one cycle later and with the verdict attached.
         if (doctor.enabled) {
             const spentNow = budget ? budget.spent() : 0;
             const pendingConsults = doctor.evaluate({
@@ -4050,10 +4101,22 @@ async function runSprintCycle(context) {
                 // which bead a doer refused and why.
                 //
                 // Everything the executor decided comes back as data and is
-                // folded into the runner's own state below. Nothing here can
-                // throw into the cycle loop: applying a verdict either
-                // changes one of these sets or is refused with a reason.
+                // folded into the runner's own state below. apply() itself
+                // never throws into the cycle loop: applying a verdict either
+                // changes one of these sets or is refused with a reason. The
+                // ONE exception is deliberate and lives outside apply(), in
+                // the runner's own control flow just after this block: an
+                // executed `abort_sprint` verdict raises the typed
+                // SprintDoctorAbortError, because ending the sprint is the
+                // whole content of that action.
                 const incidentAction = consultVerdict && consultVerdict.action;
+                // What the executor did with it, read AFTER the block below
+                // by the two T3 interposition steps (design doc 1.3 H3): the
+                // typed abort, and the record of what was tried that the
+                // eventual stall abort carries. Null whenever no incident
+                // action ran at all (no verdict, or a re-plan action, which
+                // belongs to the Develop-side lane).
+                let appliedIncident = null;
                 if (incidentAction && isIncidentAction(incidentAction.kind)) {
                     const incidentPending = pendingConsults[0];
                     const incidentRows = incidentPending.evidenceRows || [];
@@ -4067,6 +4130,7 @@ async function runSprintCycle(context) {
                         errorSignature: [...incidentRows].reverse().find((r) => r && r.errorSignature)?.errorSignature || null,
                         cycle,
                     });
+                    appliedIncident = applied;
                     // A deferred bead leaves the sprint's open-at-goal set
                     // and earns stagnation credit exactly once (monotone
                     // sets, so oscillation can never re-earn it) -- without
@@ -4110,10 +4174,100 @@ async function runSprintCycle(context) {
                         });
                     }
                 }
+
+                // H3, first half (design doc 1.3, 3.3): an `abort_sprint`
+                // verdict ends the sprint HERE, with the doctor's own typed
+                // error, instead of letting the run continue to a later,
+                // less informative death. This is the only place a verdict
+                // becomes a throw, and it is reached only because this lane
+                // injected `onAbort` above -- an executor with no abort
+                // handler still refuses the action loudly, exactly as it did
+                // before. SprintDoctorAbortError is a registered typed abort
+                // (abort.mjs), so it routes through the SAME finalizeAbort()/
+                // [ABORTED]-PR terminal machinery as every other abort, with
+                // the verdict rendered into the PR body and the terminal
+                // record.
+                if (appliedIncident && appliedIncident.aborted && doctorAbortRequest) {
+                    const abortReason = (incidentAction && incidentAction.reason)
+                        || consultVerdict.notes
+                        || 'no reason given';
+                    throw new SprintDoctorAbortError(
+                        `Sprint aborted on the sprint doctor's own verdict at cycle ${cycle}: `
+                        + `${consultVerdict.classification} (confidence ${consultVerdict.confidence}) -> abort_sprint. `
+                        + `Reason: ${abortReason}`,
+                        {
+                            verdict: consultVerdict,
+                            cycle,
+                            details: {
+                                trigger: pendingConsults[0].trigger,
+                                beadIds: doctorAbortRequest.beadIds,
+                                member: doctorAbortRequest.member,
+                                salvageBranch: appliedIncident.salvageBranch || null,
+                                staleCycles,
+                                closedCountHistory,
+                                highWaterClosedCount,
+                            },
+                        }
+                    );
+                }
+
+                // H3, second half: remember the ONE T3 consult, so the stall
+                // check below can grant its single doctored cycle and, if
+                // that cycle still makes no new high-water mark, say what
+                // was tried in the abort it then throws. Recorded only for a
+                // consult that came back with a schema-valid verdict: a
+                // failed consult leaves this null and the stall abort below
+                // is byte-for-byte what it was before this interposition
+                // existed. Nothing here touches `staleCycles` or
+                // `highWaterClosedCount`.
+                if (consultVerdict && pendingConsults[0].trigger === 'T3') {
+                    doctorStallConsultCycle = cycle;
+                    doctorStallVerdict = {
+                        cycle,
+                        classification: consultVerdict.classification,
+                        confidence: consultVerdict.confidence,
+                        actionKind: (incidentAction && incidentAction.kind) || null,
+                        actionReason: (incidentAction && incidentAction.reason) || null,
+                        actionApplied: Boolean(appliedIncident && appliedIncident.applied),
+                        actionRefusedReason: (appliedIncident && (appliedIncident.reason || appliedIncident.error)) || null,
+                        matchedRegistryEntry: consultVerdict.matchedRegistryEntry || null,
+                        evidence: Array.isArray(consultVerdict.evidence) ? [...consultVerdict.evidence] : [],
+                        humanActionRequired: consultVerdict.humanActionRequired || null,
+                    };
+                }
             }
         }
 
-        if (staleCycles >= STALL_CYCLE_LIMIT) {
+        // H3 (abort interposition, T3 -- design doc sections 1.3 and 3.3).
+        // The sprint has stalled AND the doctor was consulted about exactly
+        // this stall in this same evaluation, one step above: it gets ONE
+        // further cycle to show that whatever the executor just did worked.
+        // At most one such grant is ever made per sprint, so a second stall
+        // aborts immediately -- the doctor cannot buy the sprint a cycle at
+        // a time forever.
+        //
+        // This is a permit to skip THIS abort once, NOT a counter reset:
+        // `staleCycles` keeps climbing and `highWaterClosedCount` is
+        // untouched, so if the doctored cycle sets no new high-water mark
+        // the very next evaluation lands back here with the grant already
+        // spent and throws. Only a genuine progress-score increase (which
+        // already folds in the monotone doctor-defer credit) can clear the
+        // staleness, exactly as before.
+        const doctoredStallCycleGranted = staleCycles >= STALL_CYCLE_LIMIT
+            && doctorStallConsultCycle === cycle
+            && !doctorStallExtraCycleUsed;
+        if (doctoredStallCycleGranted) {
+            doctorStallExtraCycleUsed = true;
+            log(
+                `Cycle ${cycle}: sprint stalled (${staleCycles} cycle(s) with no new high-water-mark progress), but the `
+                + `sprint doctor was consulted before the abort and prescribed ${doctorStallVerdict.actionKind || 'no executable action'} `
+                + `(${doctorStallVerdict.classification}, ${doctorStallVerdict.actionApplied ? 'applied' : 'NOT applied'}). `
+                + 'Granting exactly ONE further cycle -- the only one this sprint can ever get -- to show it worked; '
+                + 'the next evaluation with no new high-water mark aborts.'
+            );
+        }
+
+        if (staleCycles >= STALL_CYCLE_LIMIT && !doctoredStallCycleGranted) {
             const thrashIds = thrashingBeadIds();
             // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
             // tell an operator WHAT is holding the sprint open, which is
@@ -4166,13 +4320,28 @@ async function runSprintCycle(context) {
                         : ` ${stillOpenVerifyIdsForAbort.length} verify-routed bead(s) remain unclosed: ${stillOpenVerifyIdsForAbort.join(', ')}.`;
                 }
             }
+            // apra-fleet-iiny.4.2 (design doc 1.3 H3): when the doctor WAS
+            // consulted about this stall and the one extra cycle it bought
+            // still set no new high-water mark, the ORIGINAL error is what
+            // throws -- with the verdict attached, so the abort report
+            // explains what was tried instead of reading as a bare kill.
+            // Both halves are conditional on a verdict existing at all: a
+            // failed or schema-invalid consult (and a sprint with the doctor
+            // disabled) reproduces the pre-interposition abort exactly, down
+            // to the details keys.
+            const doctorSuffix = doctorStallVerdict
+                ? ` The sprint doctor was consulted once about this stall (cycle ${doctorStallVerdict.cycle}): `
+                  + `${doctorStallVerdict.classification} -> ${doctorStallVerdict.actionKind || 'no executable action'} `
+                  + `(${doctorStallVerdict.actionApplied ? 'applied' : 'not applied'}), and the one extra cycle that bought `
+                  + 'made no new high-water-mark progress -- see this error\'s doctorVerdict details for the full diagnosis.'
+                : '';
             throw new StalledSprintError(
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                blockerSuffix + deferredSuffix + grantSuffix + thrashSuffix + verifySuffix +
+                blockerSuffix + deferredSuffix + grantSuffix + thrashSuffix + verifySuffix + doctorSuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, deferredIds: [...deferredEverIds], thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, deferredIds: [...deferredEverIds], thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle, ...(doctorStallVerdict ? { doctorVerdict: doctorStallVerdict } : {}) }
             );
         }
 
