@@ -305,6 +305,83 @@ Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
 Pricing source: all 39 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 
+## [Unreleased] -- agent transform: closing out the static follow-ups from the body-block fix; end-to-end proof still not run (sprint FAILED)
+
+Sprint goal (continuation of the prior entry below): close the follow-up gaps
+left after landing the provider-conditional body-block mechanism for role
+prompts, and attempt acceptance criterion 2 -- an end-to-end proof that a real
+toy sprint on the Antigravity provider completes a review cycle with zero
+executor-construction errors and zero calls to a tool dropped from its own
+frontmatter.
+
+What shipped this round:
+
+- **A behavioral cross-implementation guard** now covers the rest of the
+  logic `packages/apra-fleet-se/apra-pm/install.mjs` hand-copies from
+  `src/cli/agent-transform.ts` -- `resolveConditionalBody`, declared-tools
+  intersection, and wildcard paths -- not just the two literal tool-map
+  tables that were guarded before.
+- **The apra-pm installer's `copyDirResolved` now gates its UTF-8 rewrite
+  on a text-file allowlist** (`.md`, `.json`, `.txt`); anything else copies
+  byte-for-byte, closing the latent binary-corruption risk flagged as a
+  follow-up in the prior entry. A test asserts byte-for-byte survival.
+- **CI's test-step comments were reconciled** with the fact that root
+  `npm test` now covers all three suites, and a regression test now asserts
+  `run-all-tests.mjs` enumerates every suite and fails the run when any one
+  suite fails.
+- **An automated ASCII-only gate**, wired into root `npm test`, enforces the
+  existing "ASCII only" convention instead of leaving it review-enforced. It
+  ships as a ratchet against a checked-in baseline of pre-existing violations
+  (a baselined file may have at most its recorded violation count; fewer than
+  recorded also fails, so the baseline can't silently go stale) rather than a
+  blanket exemption, and excludes binary files by content (a NUL byte in the
+  first 8000 bytes), not by extension. The two non-ASCII characters this
+  branch itself had introduced into `agent-transform.ts` comments were
+  replaced with ASCII.
+
+Filed as follow-up (deliberately left open, not closed by this pass):
+
+- **Acceptance criterion 2 (the end-to-end Antigravity proof) is still
+  unrun, for the second sprint in a row.** Root-caused this round, not just
+  re-observed: the IntegTest routing classifier excludes any bead with no
+  children (so a dedicated leaf "run and record the proof" bead can only ever
+  route to the doer, never verification) and excludes any parent with an open
+  child (so the epic itself can't become verify-eligible while that leaf, or
+  any other open child, stays open) -- making the criterion structurally
+  unreachable under the current decomposition regardless of how many times
+  the leaf bead is recreated. Filed as a P2 task to give the routing
+  classifier an explicit escape hatch (or restructure so the proof rides the
+  parent's own verify route) with a regression test, so a verification leaf
+  can't silently be routed to the doer again.
+- **The main `apra-fleet` installer still lacks the binary-safe asset copy
+  path** the apra-pm installer gained this round -- `loadAgentAssets()` and
+  the install loop in `src/cli/install.ts` still round-trip every asset
+  through UTF-8 text handling regardless of content, latent for as long as
+  the agent asset trees stay text-only. Filed as a P3 follow-up.
+- **Conditional-marker syntax has two undocumented, unenforced gaps**: a
+  marker sharing a line with prose silently swallows the boundary whitespace,
+  and markers inside a fenced code block are resolved like any other text (so
+  the mechanism cannot be demonstrated inline in a role prompt body). Both are
+  now documented as caveats in
+  `docs/features/agent-transform-provider-conditionals.md`; enforcing them
+  with a test is filed as a P3 follow-up.
+- **This branch conflicts with current `origin/main`** in `CHANGELOG.md` and
+  `scripts/run-all-tests.mjs` -- `origin/main` independently added the
+  identical apra-pm suite entry this branch also adds, so a careless merge
+  would run that suite twice per `npm test`. Filed as a pre-merge blocker;
+  the branch also has no CI run yet at its current head.
+- A stray, untracked `.beads.gate.lock` file was observed at the repo root
+  (not committed by this branch); filed as a low-priority `.gitignore` fix.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.1640.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2602 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- agent transform: role-prompt body text now follows dropped tools, not just frontmatter (sprint FAILED -- static half verified, end-to-end proof not run)
 
 Sprint goal: fix the half of `apra-fleet-oomh` that the earlier frontmatter-only
