@@ -84,6 +84,14 @@ const CONDITIONAL_MARKER_RE =
 // back off the emitted frontmatter. Mirrors OPENCODE_NATIVE_TOOLS in agent-transform.ts.
 const OPENCODE_NATIVE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit', 'Agent'];
 
+// File extensions copyDirResolved() will decode as utf-8 and run through
+// resolveAgentConditionals(). Anything not listed here is copied byte-for-byte:
+// the utf-8 round-trip would corrupt binary assets (images in docs, fixture
+// archives) with no error pointing at the cause. Extend this list rather than
+// re-deriving the rule inside the copy loop; entries are lowercase and include
+// the leading dot, matched against path.extname().toLowerCase().
+const RESOLVABLE_TEXT_EXTENSIONS = ['.md', '.json', '.txt'];
+
 // Tools Antigravity can express. The keys ARE the availability set for agy: a tool with
 // no mapping is dropped from the frontmatter, so its prose must go too. Mirrors
 // agyToolMap in agent-transform.ts -- keep both in sync.
@@ -355,8 +363,9 @@ function copyDir(src, dest) {
 }
 
 /**
- * Like copyDir(), but every file is routed through resolveAgentConditionals()
- * first (apra-fleet-oomh.4). agents/*.md already gets this treatment via the
+ * Like copyDir(), but every RESOLVABLE_TEXT_EXTENSIONS file is routed through
+ * resolveAgentConditionals() first (apra-fleet-oomh.4); any other file is
+ * copied byte-for-byte. agents/*.md already gets this treatment via the
  * loop in install() -- this covers the OTHER asset trees shipped alongside it
  * (agents/schemas/*.json, agents/_shared/*.md) so a conditional marker added
  * to either in the future can never ship verbatim on any --llm path. No
@@ -372,9 +381,14 @@ function copyDirResolved(src, dest, llm) {
     const d = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       copyDirResolved(s, d, llm);
-    } else {
+    } else if (RESOLVABLE_TEXT_EXTENSIONS.includes(path.extname(entry.name).toLowerCase())) {
       const content = fs.readFileSync(s, 'utf-8');
       fs.writeFileSync(d, resolveAgentConditionals(content, llm, entry.name));
+    } else {
+      // Not a known text asset: copy the raw bytes. Reading it as utf-8 and
+      // writing the decoded string back would silently corrupt any binary
+      // file (lone surrogates and invalid sequences become U+FFFD).
+      fs.copyFileSync(s, d);
     }
   }
 }
