@@ -51,6 +51,14 @@ export const SWEEP_CONFIG_RELATIVE_PATH = path.join('.fleet', 'sweep-config.json
 
 const EVIDENCE_KINDS = new Set(['path', 'flag', 'name']);
 
+// apra-fleet-i4ku.22: the only top-level keys this loader reads. Any other
+// key (most often a typo like "productionPort") is silently discarded
+// without this check, which can quietly drop a target's production-port
+// protection. A key starting with "_" is the documented comment-key
+// convention (.fleet/sweep-config.json's _readme* keys) and is always
+// allowed regardless of this set.
+const ALLOWED_TOP_LEVEL_KEYS = new Set(['markers', 'productionPorts', 'livenessProbe']);
+
 /**
  * Shape-checks a parsed sweep config. Mirrors bin/cli.mjs's
  * resolveSweepConfig() so a config this supervisor accepts is always one the
@@ -64,6 +72,15 @@ const EVIDENCE_KINDS = new Set(['path', 'flag', 'name']);
 export function validateSweepConfig(parsed, source) {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         throw new Error(`[supervisor] sweep config ${source} must be a JSON object ({ markers: [...], productionPorts: [...] }).`);
+    }
+
+    const unknownKeys = Object.keys(parsed).filter((k) => !k.startsWith('_') && !ALLOWED_TOP_LEVEL_KEYS.has(k));
+    if (unknownKeys.length > 0) {
+        throw new Error(
+            `[supervisor] sweep config ${source}: unknown key(s) ${unknownKeys.map((k) => `"${k}"`).join(', ')} -- `
+            + `accepted top-level keys are ${[...ALLOWED_TOP_LEVEL_KEYS].join(', ')} (a key starting with "_" is `
+            + `always accepted as a comment).`
+        );
     }
 
     const markers = parsed.markers === undefined ? [] : parsed.markers;

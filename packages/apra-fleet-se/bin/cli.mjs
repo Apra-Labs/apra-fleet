@@ -343,6 +343,11 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * @param {{ readFile?: (path: string, encoding: string) => Promise<string> }} [deps] - injectable for tests
  * @returns {Promise<{ markers: Array<object>, productionPorts: Array<number> }|undefined>}
  */
+// apra-fleet-i4ku.22: the only top-level keys this resolver reads, mirrored
+// with src/supervisor/sweep-config.mjs's ALLOWED_TOP_LEVEL_KEYS so the two
+// independent validators agree on what is legal.
+const SWEEP_CONFIG_ALLOWED_TOP_LEVEL_KEYS = new Set(['markers', 'productionPorts', 'livenessProbe']);
+
 export async function resolveSweepConfig(rawValue, deps = {}) {
     if (rawValue === undefined) return undefined;
     const readFile = deps.readFile || fs.readFile;
@@ -365,6 +370,20 @@ export async function resolveSweepConfig(rawValue, deps = {}) {
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         throw new Error('Error: --sweep-config JSON must be an object ({ markers: [...], productionPorts: [...] }).');
+    }
+
+    // apra-fleet-i4ku.22: mirrors the supervisor's validateSweepConfig() --
+    // any top-level key other than the documented set is rejected, so a typo
+    // like "productionPort" cannot silently discard a target's production-
+    // port protection. A key starting with "_" is the documented comment-key
+    // convention and is always allowed.
+    const unknownKeys = Object.keys(parsed).filter((k) => !k.startsWith('_') && !SWEEP_CONFIG_ALLOWED_TOP_LEVEL_KEYS.has(k));
+    if (unknownKeys.length > 0) {
+        throw new Error(
+            `Error: --sweep-config unknown key(s) ${unknownKeys.map((k) => `"${k}"`).join(', ')} -- accepted top-level `
+            + `keys are ${[...SWEEP_CONFIG_ALLOWED_TOP_LEVEL_KEYS].join(', ')} (a key starting with "_" is always `
+            + `accepted as a comment).`
+        );
     }
 
     const markers = parsed.markers === undefined ? [] : parsed.markers;
