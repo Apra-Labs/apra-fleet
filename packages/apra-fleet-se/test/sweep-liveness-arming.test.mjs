@@ -85,6 +85,36 @@ function portlessAloneProbeOutput() {
     return [PORTLESS_PROC_LINE, 'SWEEP-PROC  1  0 9-00:00:00 /sbin/init', UNRELATED_PORT_ROW].join('\n');
 }
 
+/** A stray that survives every other predicate and DOES hold a listening
+ *  port -- but bound to a HOSTNAME, which livenessProbeHost() cannot turn
+ *  into a URL. There is a socket to ask, so this is not `unprobeable`; the
+ *  question cannot be phrased, so it is the fail-safe `unevaluable` spare.
+ *  Alone in a pass it is the only shape that reaches
+ *  armed && !dispatched && unevaluable > 0. */
+const UNASKABLE_PID = 7100;
+const UNASKABLE_PORT = 9600;
+const UNASKABLE_PROC_LINE = `SWEEP-PROC  ${UNASKABLE_PID}  1 1-02:03:04 /usr/bin/node `
+    + `/home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${UNASKABLE_PORT}`;
+const UNASKABLE_PORT_ROW = `SWEEP-PORT-SS LISTEN 0 4096 db.internal:${UNASKABLE_PORT} 0.0.0.0:* `
+    + `users:(("node",pid=${UNASKABLE_PID},fd=22))`;
+
+/** The unaskable stray ALONE, so no probeable candidate exists in the pass
+ *  and no liveness dispatch can be built at all. */
+function unaskableAloneProbeOutput() {
+    return [
+        UNASKABLE_PROC_LINE, 'SWEEP-PROC  1  0 9-00:00:00 /sbin/init', UNASKABLE_PORT_ROW, UNRELATED_PORT_ROW,
+    ].join('\n');
+}
+
+/** Both undispatchable shapes in ONE pass -- an unaskable spare and a
+ *  portless unchecked kill, still with no dispatch. */
+function unaskableWithPortlessProbeOutput() {
+    return [
+        UNASKABLE_PROC_LINE, PORTLESS_PROC_LINE, 'SWEEP-PROC  1  0 9-00:00:00 /sbin/init',
+        UNASKABLE_PORT_ROW, UNRELATED_PORT_ROW,
+    ].join('\n');
+}
+
 /** The SAME portless stray, plus one unrelated live sibling that DOES hold a
  *  port -- the only difference between this pass and the one above. */
 function portlessWithPortedSiblingProbeOutput() {
@@ -435,6 +465,86 @@ test('GUARD (no sibling effect): a portless candidate is selected UNCHECKED and 
         'the unchecked kill must be just as loud in a pass that DID dispatch a probe',
     );
     assert.match(withSibling.sweepLines[0], /a further 1 candidate\(s\) held no listening port to probe and were selected UNCHECKED/);
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 3, the state apra-fleet-i4ku.21 MADE reachable: armed, nothing
+// dispatched, and yet candidates survived the other predicates.
+//
+// WHAT THIS GUARDS: classifying an unresolvable bound address as
+// `unevaluable` happens OUTSIDE the dispatch block, so a pass can now end
+// with dispatched:false and unevaluable > 0 -- a combination that was
+// unreachable while both unevaluable++ sites sat behind the dispatch guard.
+// The not-dispatched summary branch only special-cased `unprobeable`, so
+// this pass narrated itself as "no candidate survived the other predicates,
+// so there was nothing to check" while a candidate had both survived AND
+// held a port. Drop the `unevaluable > 0` clause from
+// formatSweepLivenessSummary()'s not-dispatched branch and both assertions
+// on the summary text below fail.
+// ---------------------------------------------------------------------------
+
+test('GUARD (no false reassurance): an armed pass that dispatched NOTHING because its only surviving candidate was unaskable never claims there was nothing to check', async () => {
+    const config = { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true };
+
+    const alone = await runWholeChain(config, { probeOutput: unaskableAloneProbeOutput() });
+    assert.equal(
+        alone.seam.liveness().length, 0,
+        'no probeable target exists, so no liveness dispatch can be built -- this is the not-dispatched state',
+    );
+    assert.equal(alone.sweep.result.liveness.armed, true);
+    assert.equal(alone.sweep.result.liveness.dispatched, false);
+    assert.equal(alone.sweep.result.liveness.unevaluable, 1, 'an address we cannot phrase a question about is the fail-safe bucket');
+    assert.equal(alone.sweep.result.liveness.unprobeable, 0, 'it DOES hold a socket, so it is not the "nothing to ask" bucket');
+    assert.equal(alone.sweep.result.liveness.checked, 0, 'a candidate that was never asked must never count as checked');
+
+    // Fail-safe direction, unchanged: unevaluable SPARES.
+    assert.deepEqual(alone.sweep.result.killed, [], 'an unevaluable candidate must be spared, never killed on an unasked question');
+    assert.ok(
+        alone.sweep.result.reported.some((d) => d.pid === UNASKABLE_PID),
+        `the unaskable candidate must be reported as surviving: ${JSON.stringify(alone.sweep.result.reported)}`,
+    );
+
+    // THE FALSE SENTENCE THIS ROUND WAS REOPENED FOR. Both of its clauses
+    // were wrong at once in this pass: a candidate DID survive the other
+    // predicates, and it DID hold a port there was something to check on.
+    assert.doesNotMatch(
+        alone.sweepLines[0], /nothing to check/,
+        'a pass whose surviving candidate held a listening port must never narrate itself as having had nothing to check',
+    );
+    assert.doesNotMatch(
+        alone.sweepLines[0], /no candidate survived the other predicates/,
+        'a candidate survived every other predicate in this pass -- that is why it is in `reported`',
+    );
+    assert.match(
+        alone.sweepLines[0],
+        /armed but not dispatched -- no surviving candidate held a listening port whose bound address could be resolved to a probeable host, so 1 candidate\(s\) were SPARED unevaluable/,
+        'the summary must name the real reason nothing was dispatched, and that the candidate was spared rather than checked',
+    );
+    assert.ok(
+        alone.sweepLines.some((l) => l.includes('LIVENESS UNEVALUABLE')),
+        `a spare nobody checked must still get its loud line with no dispatch in the pass: ${JSON.stringify(alone.sweepLines)}`,
+    );
+
+    // BOTH undispatchable shapes at once: the spare and the unchecked kill
+    // have opposite consequences, so one must never be reported over the
+    // other. Still no dispatch.
+    const mixed = await runWholeChain(config, { probeOutput: unaskableWithPortlessProbeOutput() });
+    assert.equal(mixed.seam.liveness().length, 0);
+    assert.equal(mixed.sweep.result.liveness.unevaluable, 1);
+    assert.equal(mixed.sweep.result.liveness.unprobeable, 1);
+    assert.deepEqual(
+        mixed.sweep.result.killed.map((k) => k.pid), [PORTLESS_PID],
+        'the portless stray is still killed unchecked, and the unaskable one is still spared -- same pass, opposite fates',
+    );
+    assert.match(
+        mixed.sweepLines[0],
+        /1 candidate\(s\) were SPARED unevaluable rather than checked; a further 1 candidate\(s\) held no listening port at all and were selected UNCHECKED/,
+        'a summary that reported only one of the two outcomes would hide either a kill nobody checked or a stray nobody cleared',
+    );
+
+    // Per-candidate, never per-pass: adding the portless sibling must not
+    // change the unaskable candidate's fate, and vice versa.
+    assert.deepEqual(fateOf(mixed, UNASKABLE_PID), fateOf(alone, UNASKABLE_PID));
 });
 
 // ---------------------------------------------------------------------------

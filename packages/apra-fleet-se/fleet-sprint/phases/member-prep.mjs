@@ -613,7 +613,29 @@ export function formatSweepLivenessSummary(liveness) {
     // and was killed. A summary that reassures while a kill went unchecked is
     // worse than no summary.
     const unprobeable = liveness.unprobeable || 0;
+    // apra-fleet-i4ku.21, the SAME defect class one bucket over. `unevaluable`
+    // used to be reachable only from inside the dispatch block, so
+    // armed && !dispatched && unevaluable > 0 could not happen. It can now: a
+    // candidate whose only listening sockets carry a bound address this module
+    // cannot turn into a URL (a hostname, a zone-scoped link-local) is
+    // classified unevaluable and SPARED before any dispatch is built -- see
+    // member-stray-sweep.mjs's `unaskable` bucket, which sits outside that
+    // block precisely so one candidate's fate never depends on whether some
+    // other candidate happened to be askable. In that pass the old wording
+    // ("no candidate survived the other predicates, so there was nothing to
+    // check") was false in BOTH clauses: a candidate survived, and it held a
+    // port worth checking. So this branch states the unevaluable spares too,
+    // for the same reason the unprobeable kills are stated above.
+    const unevaluable = liveness.unevaluable || 0;
     if (!liveness.dispatched) {
+        if (unevaluable > 0) {
+            const alsoUnchecked = unprobeable > 0
+                ? `; a further ${unprobeable} candidate(s) held no listening port at all and were selected UNCHECKED`
+                : '';
+            return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port whose '
+                + `bound address could be resolved to a probeable host, so ${unevaluable} candidate(s) were SPARED `
+                + `unevaluable rather than checked${alsoUnchecked}`;
+        }
         if (unprobeable > 0) {
             return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port '
                 + `to probe, so ${unprobeable} candidate(s) were selected UNCHECKED by this predicate`;
@@ -625,7 +647,7 @@ export function formatSweepLivenessSummary(liveness) {
         ? `; a further ${unprobeable} candidate(s) held no listening port to probe and were selected UNCHECKED`
         : '';
     return `liveness probe armed and dispatched: ${liveness.checked || 0} candidate(s) checked, `
-        + `${liveness.spared || 0} spared as live, ${liveness.unevaluable || 0} unevaluable${uncheckedClause}`;
+        + `${liveness.spared || 0} spared as live, ${unevaluable} unevaluable${uncheckedClause}`;
 }
 
 /**
@@ -785,10 +807,12 @@ export async function runMemberPrepPhase({
                 line(
                     log, member, 'sweep', 'LIVENESS UNEVALUABLE',
                     `${result.liveness.unevaluable} candidate(s) were SPARED rather than killed because the liveness `
-                    + 'probe could not be evaluated on this member (no curl/Invoke-WebRequest there, or the probe '
-                    + 'dispatch itself failed). Stray processes will KEEP ACCUMULATING on this member until either '
-                    + 'an HTTP probe tool is installed on it, or the sweep config sets "livenessProbe": false to '
-                    + 'accept kills that were never checked for life',
+                    + 'probe could not be evaluated on this member (no curl/Invoke-WebRequest there, the probe '
+                    + 'dispatch itself failed, or the candidate\'s only listening sockets carry a bound address that '
+                    + 'could not be resolved to a probeable host). Stray processes will KEEP ACCUMULATING on this '
+                    + 'member until either an HTTP probe tool is installed on it and every such socket is reachable, '
+                    + 'or the sweep config sets "livenessProbe": false to accept kills that were never checked for '
+                    + 'life',
                 );
             }
             // THE OTHER HALF OF THE SAME HONESTY (apra-fleet-i4ku.17): a
