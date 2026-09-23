@@ -136,6 +136,7 @@ import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 // unchanged -- Ensure Sprint Branch still runs where it ran, Plan still runs
 // at the top of every cycle.
 import { runEnsureSprintBranchPhase } from './phases/ensure-sprint-branch.mjs';
+import { runMemberPrepPhase } from './phases/member-prep.mjs';
 import { runPlanPhase } from './phases/plan.mjs';
 // apra-fleet-3swo.6.7: the next two phase() boundaries, sliced the same way
 // -- the in-cycle scoped Replan and one Develop round. Both live INSIDE the
@@ -1905,6 +1906,33 @@ async function runSprintCycle(context) {
     // (apra-fleet-7dir.24).
     const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) });
+
+    // Member Prep (apra-fleet-9be4.3): once per sprint member, before the
+    // first role dispatch -- auth, stray-process sweep, G-pull (reported;
+    // the real fetch/checkout is Ensure Sprint Branch immediately below) and
+    // D-pull. Runs over the SAME branchEnsureMembers set Ensure Sprint Branch
+    // uses, so "every member this sprint will dispatch to" never drifts
+    // between the two steps. `execCommand` adapts the sweep's injected seam
+    // onto this file's own per-member `command()` dispatcher (failSoft, so a
+    // probe failure surfaces as the sweep's own StrayProbeError rather than
+    // an unrelated non-zero-exit throw). `sweepMarkers`/`sweepProductionPorts`
+    // are deliberately empty here -- this generic engine has no target-repo
+    // paths, flags or ports of its own to hardcode (member-stray-sweep.mjs's
+    // own header), so with no caller-supplied evidence the sweep finds no
+    // fleet-started candidate and kills nothing; a target that wants real
+    // stray-process cleanup supplies its own markers/ports through this same
+    // call site.
+    await runMemberPrepPhase({
+        members: branchEnsureMembers,
+        fleetApi: sprintState.fleetApi,
+        execCommand: ({ member: member_name, command: cmd }) => command(cmd, {
+            member_name, silent: true, failSoft: true, label: `Member Prep: stray-process probe on '${member_name}'`,
+        }),
+        syncBeadsBefore: gitSync.syncBeadsBefore,
+        log, group, phase, endGroup,
+        sweepMarkers: [],
+        sweepProductionPorts: [],
+    });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch

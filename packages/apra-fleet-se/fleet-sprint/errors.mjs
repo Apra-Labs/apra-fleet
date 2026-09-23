@@ -922,3 +922,45 @@ export class BeadsIdentityError extends WorkflowError {
         if (mismatches) this.mismatches = mismatches;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Member prep (apra-fleet-9be4.3) -- LLM auth cannot be provisioned
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by the Member Prep phase (phases/member-prep.mjs) BEFORE the
+ * sprint's first role dispatch when a member's LLM auth is missing and
+ * cannot be provisioned. This is the FAIL LOUD path the phase exists for --
+ * an advisory warning that never blocks is explicitly not acceptable here
+ * (see that module's header), so this error is never caught/degraded inside
+ * Member Prep itself.
+ *
+ * Covers every "cannot help this member" outcome the phase distinguishes:
+ * a `provision_llm_auth` call that failed outright, AND the
+ * `skipped_local_member` no-op (a local member shares the operator's own
+ * host session; only an interactive `/login` on that machine can fix it, so
+ * `ok:true`/`skipped_local_member` is deliberately NOT read as successful
+ * provisioning -- see vcs-auth.mjs's createLlmAuthSelfHealCallback, whose
+ * same rule this mirrors for the up-front check).
+ *
+ * @property {string} member - the member whose auth is unprovisionable
+ * @property {string} credential - which credential is missing (e.g. 'LLM auth')
+ */
+export class LlmAuthUnprovisionableError extends WorkflowError {
+    /**
+     * @param {string} member
+     * @param {string} credential
+     * @param {string} detail - the provision_llm_auth outcome text/reason this was raised from
+     * @param {{ cause?: unknown }} [opts]
+     */
+    constructor(member, credential, detail, opts = {}) {
+        super(
+            `Member Prep: LLM auth cannot be provisioned for member '${member}' (missing credential: ${credential}) -- ` +
+            `${detail} Aborting before the first dispatch rather than warning.`,
+            { code: 'LLM_AUTH_UNPROVISIONABLE', details: { member, credential, detail }, cause: opts.cause },
+        );
+        this.member = member;
+        this.credential = credential;
+        this.detail = detail;
+    }
+}

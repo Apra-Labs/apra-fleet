@@ -161,7 +161,10 @@ async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi
 // present; only fall back to the old prose/isError heuristic for a result
 // that carries no structuredContent at all (e.g. a test double that mocks a
 // bare `{ content }` shape).
-function provisionOutcome(result, text) {
+// Exported (apra-fleet-9be4.3) so phases/member-prep.mjs's up-front LLM-auth
+// check reads the SAME structuredContent.ok/.reason contract this self-heal
+// path does, rather than a second hand-rolled copy that could drift from it.
+export function provisionOutcome(result, text) {
     const structured = result && result.structuredContent;
     if (structured && typeof structured.ok === 'boolean') {
         return { ok: structured.ok, reason: typeof structured.reason === 'string' ? structured.reason : null };
