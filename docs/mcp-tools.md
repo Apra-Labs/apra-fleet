@@ -231,10 +231,10 @@ cannot be changed as a side effect of `update_member` while the member is held e
 `member_held`, `member_not_found`, `failed` -- branch on this, never on the text. On
 success, `structuredContent.owner` reflects the value after the call (`null` when cleared).
 
-**Known gap:** `register_member` and `update_member` accept `owner` with only a
-non-empty-string check, not the package/ref format validation `member_owner` enforces --
-so the same value can be written through either path without going through this tool's
-checks (tracked as follow-up work, not yet fixed).
+`member_owner` is the validating path for `owner`: its package/ref format checks live in
+`src/utils/owner-validation.ts` (`OWNER_PACKAGE_PATTERN`/`OWNER_REF_PATTERN`), guarding
+against values that would corrupt the `owner=pkg@ref` compact chip `list_members` and
+`member_detail` render.
 
 ### `member_git_status`
 
@@ -571,5 +571,4 @@ Assembles a multi-section report covering:
 - **System Resources:** CPU load, memory usage, and working folder disk space.
 - **Git:** Current branch in the member's working folder.
 - **Token Usage:** Accumulated lifetime token totals.
-- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), and git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`). `member_detail` is the only MCP surface exposing these, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission).
-- **Registry facts** (`"json"` format): also emits `modelTiers`, `shell`, `vcsTokenExpiresAt`, `reservedBy`, `unreservable`, `owner` (`{package, ref}` or `null`), and `env` (the stored name -> value map). `list_members`'s `"json"` format emits the same field set for every member, not just one.
+- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`), `modelTiers`, `shell`, `vcsTokenExpiresAt`, `reservedBy`, `unreservable`, `owner` (`{package, ref}` or `null`), and `env` (the stored name -> value map). `member_detail` is the only MCP surface exposing the VCS/repo/access facts, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission). `list_members`'s `"json"` format emits the same full field set for every member, not just one.
