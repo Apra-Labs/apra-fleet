@@ -55,6 +55,17 @@
 //      than silently falling back to killing it -- see
 //      parseLivenessProbeOutput()'s `evaluable` and decideStrayProcess()'s
 //      `record.liveProbe` handling.
+//      WHAT IT CANNOT PROTECT (apra-fleet-i4ku.17): a candidate holding NO
+//      listening port. "Is anything still answering here" has no answer for
+//      a portless process, so this predicate never applies to one and never
+//      changes its fate -- such a candidate is killed on the other six
+//      predicates exactly as it was before this predicate existed. That is
+//      NOT the fail-safe `unevaluable` case (asked, could not find out ->
+//      spare); it is its own `unprobeable` bucket on the result, counted per
+//      candidate and never dependent on whether some OTHER candidate in the
+//      same pass happened to hold a port. It is a kill that was never
+//      checked, so the phase narrates it as one rather than letting it hide
+//      inside an otherwise reassuring liveness summary.
 //      WHO TURNS IT ON (apra-fleet-i4ku.17): this module stays opt-in --
 //      `livenessProbe` defaults to null here, so a direct caller gets the
 //      pre-predicate behaviour byte for byte. The SHIPPED sweep path is
@@ -1313,18 +1324,50 @@ export async function sweepMemberStrayProcesses(deps = {}) {
     // identical decision as before.
     // apra-fleet-i4ku.17: ACCOUNTING ONLY -- no predicate reads this object,
     // so nothing here can turn an unevaluable or unrun probe into a kill. It
-    // exists so a caller can tell the three outcomes apart on the RESULT
-    // rather than by parsing log prose: never armed, armed but no candidate
-    // ever reached it, and armed-and-ran-and-spared-nothing. Before this,
-    // all three produced a byte-identical result object, so a phase summary
-    // built from it could not report "not armed" honestly.
+    // exists so a caller can tell the outcomes apart on the RESULT rather
+    // than by parsing log prose: never armed; armed but no candidate ever
+    // reached it; armed-and-ran-and-spared-nothing; and armed-but-this
+    // candidate-had-no-port-to-ask (`unprobeable`, which is a kill that was
+    // never checked and so must never read like a checked one). Before this,
+    // they produced a byte-identical result object, so a phase summary built
+    // from it could not report "not armed" honestly.
     const liveness = {
-        armed: Boolean(livenessProbe), dispatched: false, checked: 0, spared: 0, unevaluable: 0,
+        armed: Boolean(livenessProbe),
+        dispatched: false,
+        checked: 0,
+        spared: 0,
+        unevaluable: 0,
+        // apra-fleet-i4ku.17 rework: candidates this predicate CANNOT ask a
+        // question of, because they hold no listening port. Counted whether
+        // or not any dispatch was issued -- see the classification below.
+        unprobeable: 0,
     };
     if (livenessProbe) {
         const provisionalToKill = decisions.filter((d) => d.action === ACTION_KILL);
+        // CLASSIFIED PER CANDIDATE, NEVER PER PASS (apra-fleet-i4ku.17
+        // rework). A candidate holding NO listening port has nothing this
+        // predicate can ask -- "did anything answer HTTP here" is not a
+        // question a portless process has an answer to. It is therefore
+        // `unprobeable`, which is DISTINCT from `unevaluable` ("we asked and
+        // could not find out"): unevaluable spares fail-safe, unprobeable
+        // leaves the other predicates' verdict exactly as it stood before
+        // this predicate existed, which for a candidate that survived all of
+        // them is a kill.
+        //
+        // WHY THE SPLIT EXISTS AT ALL: before this rework the whole block was
+        // guarded by `candidates.length > 0`, built from the ports of ALL
+        // provisional candidates. A portless stray was therefore killed when
+        // it was alone in the pass, but SPARED as `unevaluable` when some
+        // unrelated ported sibling happened to be swept alongside it -- an
+        // identical process, opposite fate, decided by another process. That
+        // is the "implicit environment decides behaviour and failure is
+        // silent" shape this repo forbids, and it also made the result lie:
+        // the pass reported `checked: 0` next to a kill. Splitting the set
+        // here makes each candidate's outcome depend only on that candidate.
+        const probeable = provisionalToKill.filter((d) => d.listeningPorts.length > 0);
+        liveness.unprobeable = provisionalToKill.length - probeable.length;
         const candidates = [];
-        for (const d of provisionalToKill) {
+        for (const d of probeable) {
             for (const port of d.listeningPorts) candidates.push({ pid: d.pid, port });
         }
         if (candidates.length > 0) {
@@ -1367,7 +1410,7 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 ? parseLivenessProbeOutput(livenessRes && (livenessRes.output || livenessRes.error))
                 : { evaluable: false, byKey: new Map() };
 
-            for (const d of provisionalToKill) {
+            for (const d of probeable) {
                 const record = records.find((r) => r.pid === d.pid);
                 if (!record) continue;
                 liveness.checked += 1;

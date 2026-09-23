@@ -69,6 +69,34 @@ function twoCandidateProbeOutput() {
  *  "armed but never dispatched" state. */
 const NO_CANDIDATE_PROBE_OUTPUT = 'SWEEP-PROC 1 0 00:01 /sbin/init';
 
+/** A stray that survives every OTHER predicate but holds NO listening port,
+ *  so the liveness predicate has nothing it can ask about it. */
+const PORTLESS_PID = 7001;
+const PORTLESS_PROC_LINE = `SWEEP-PROC  ${PORTLESS_PID}  1 1-02:03:04 /usr/bin/node `
+    + '/home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --stdio';
+/** One attributed port row owned by a NON-candidate, present only so port
+ *  attribution is observable at all (`portsKnown`); without any attributed
+ *  row the sweep reports and kills nothing for an unrelated reason and these
+ *  fixtures would prove nothing about the liveness predicate. */
+const UNRELATED_PORT_ROW = 'SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:(("init",pid=1,fd=3))';
+
+/** The portless stray ALONE in the pass. */
+function portlessAloneProbeOutput() {
+    return [PORTLESS_PROC_LINE, 'SWEEP-PROC  1  0 9-00:00:00 /sbin/init', UNRELATED_PORT_ROW].join('\n');
+}
+
+/** The SAME portless stray, plus one unrelated live sibling that DOES hold a
+ *  port -- the only difference between this pass and the one above. */
+function portlessWithPortedSiblingProbeOutput() {
+    return [
+        PORTLESS_PROC_LINE,
+        `SWEEP-PROC  ${LIVE_PID}  1 1-02:03:04 /usr/bin/node /home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${LIVE_PORT}`,
+        'SWEEP-PROC  1  0 9-00:00:00 /sbin/init',
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${LIVE_PORT} 0.0.0.0:* users:(("node",pid=${LIVE_PID},fd=21))`,
+        UNRELATED_PORT_ROW,
+    ].join('\n');
+}
+
 /**
  * The exec seam. Discriminates the THREE dispatch shapes, in this order:
  * kill first, then liveness, then the process probe. The order matters --
@@ -278,7 +306,7 @@ test('NOT ARMED is distinguishable: livenessProbe:false issues no liveness dispa
 
     assert.equal(disarmed.validated.sweepLivenessProbe, false, 'an explicit false must survive the chain as false, distinct from absent');
     assert.equal(disarmed.seam.liveness().length, 0, 'a disarmed sweep must dispatch no liveness probe at all');
-    assert.deepEqual(disarmed.sweep.result.liveness, { armed: false, dispatched: false, checked: 0, spared: 0, unevaluable: 0 });
+    assert.deepEqual(disarmed.sweep.result.liveness, { armed: false, dispatched: false, checked: 0, spared: 0, unevaluable: 0, unprobeable: 0 });
     assert.equal(disarmed.sweepLines.length, 1);
     assert.match(disarmed.sweepLines[0], /liveness probe NOT ARMED/);
 
@@ -334,6 +362,79 @@ test('the LOUD losing case: a member with no probe tool spares everything unchec
     assert.ok(loud, `expected a dedicated loud line, got: ${JSON.stringify(chain.sweepLines)}`);
     assert.match(loud, /SPARED rather than killed/);
     assert.match(loud, /livenessProbe/, 'the loud line must name the way out, or it is an advisory the reader cannot act on');
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 3, the case that reopened this bead: a candidate the predicate
+// CANNOT ask about (it holds no listening port) must get the same fate in
+// both passes below, and the summary must never claim there was nothing to
+// check while a kill went unchecked.
+//
+// WHAT THIS GUARDS: the liveness block used to be gated on
+// `candidates.length > 0`, a set pooled from the ports of ALL provisional
+// candidates. Restore that gate and this test fails twice over -- the
+// portless stray is SPARED in the sibling pass (as `unevaluable`) while it
+// is killed in the pass where it is alone, and the alone pass narrates
+// itself as "no candidate survived the other predicates, so there was
+// nothing to check" over the top of a kill.
+// ---------------------------------------------------------------------------
+
+/** Every fact about ONE pid that an operator or caller could act on. */
+function fateOf(chain, pid) {
+    const decision = chain.sweep.result.candidates.find((d) => d.pid === pid);
+    return { action: decision.action, sparedReasons: decision.sparedReasons };
+}
+
+test('GUARD (no sibling effect): a portless candidate is selected UNCHECKED and counted `unprobeable`, identically whether or not a ported sibling shares the pass', async () => {
+    const config = { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true };
+
+    // Pass A: the portless stray is the only candidate, so no liveness
+    // dispatch can be issued at all.
+    const alone = await runWholeChain(config, { probeOutput: portlessAloneProbeOutput() });
+    assert.equal(alone.seam.liveness().length, 0, 'there is no port to ask, so no liveness dispatch should be issued');
+    assert.deepEqual(
+        alone.sweep.result.killed.map((k) => k.pid), [PORTLESS_PID],
+        'a portless stray that survived every other predicate is still killed -- sparing it would make an armed sweep a no-op',
+    );
+    assert.equal(alone.sweep.result.liveness.unprobeable, 1, 'the unchecked kill must be COUNTED, not invisible on the result');
+    assert.equal(alone.sweep.result.liveness.unevaluable, 0, '"nothing to ask" is not the fail-safe "asked and could not find out"');
+
+    // THE FALSE SENTENCE THIS BEAD WAS REOPENED FOR.
+    assert.doesNotMatch(
+        alone.sweepLines[0], /nothing to check/,
+        'a pass that killed an unchecked candidate must never narrate itself as having had nothing to check',
+    );
+    assert.match(alone.sweepLines[0], /armed but not dispatched -- no surviving candidate held a listening port to probe, so 1 candidate\(s\) were selected UNCHECKED/);
+    const loud = alone.sweepLines.find((l) => l.includes('LIVENESS UNPROBEABLE'));
+    assert.ok(loud, `an unchecked kill needs its own loud line, got: ${JSON.stringify(alone.sweepLines)}`);
+    assert.match(loud, /WITHOUT a liveness check/);
+
+    // Pass B: the SAME portless stray, with one unrelated ported sibling
+    // added. The sibling answers HTTP and is spared -- it still gets the full
+    // benefit of the predicate -- but it must not change 7001's fate.
+    const withSibling = await runWholeChain(config, { probeOutput: portlessWithPortedSiblingProbeOutput() });
+    assert.equal(withSibling.seam.liveness().length, 1, 'the ported sibling must still be probed');
+    assert.ok(
+        withSibling.sweep.result.reported.some((d) => d.pid === LIVE_PID),
+        'the ported sibling answering HTTP must still be spared -- this fix must not weaken the predicate where it applies',
+    );
+    assert.equal(withSibling.sweep.result.liveness.unprobeable, 1);
+    assert.equal(withSibling.sweep.result.liveness.unevaluable, 0);
+    assert.equal(withSibling.sweep.result.liveness.checked, 1, 'only the candidate that could be asked counts as checked');
+
+    // THE INVARIANT: an identical process, an identical verdict. Before the
+    // fix these two differed (killed alone, spared as `unevaluable` with a
+    // sibling) -- an unrelated process deciding this one's fate.
+    assert.deepEqual(
+        fateOf(withSibling, PORTLESS_PID), fateOf(alone, PORTLESS_PID),
+        "a candidate's fate must depend only on that candidate, never on whether some unrelated process in the same pass happened to hold a port",
+    );
+    assert.ok(withSibling.sweep.result.killed.map((k) => k.pid).includes(PORTLESS_PID));
+    assert.ok(
+        withSibling.sweepLines.some((l) => l.includes('LIVENESS UNPROBEABLE')),
+        'the unchecked kill must be just as loud in a pass that DID dispatch a probe',
+    );
+    assert.match(withSibling.sweepLines[0], /a further 1 candidate\(s\) held no listening port to probe and were selected UNCHECKED/);
 });
 
 // ---------------------------------------------------------------------------

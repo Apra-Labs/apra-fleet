@@ -197,6 +197,25 @@
 // armed-and-dispatched-with-counts, so "armed and nothing was live" can
 // never be misread as "the predicate was off".
 //
+// WHAT ARMING DOES NOT BUY, STATED SO NOBODY OVER-TRUSTS THE WORD "ARMED"
+// (apra-fleet-i4ku.17): the predicate can only ask a PORT whether anything
+// is answering on it. A candidate holding no listening port therefore gets
+// no protection from it and is killed on the other predicates alone --
+// unchanged from before the predicate existed. DECIDED, and the alternative
+// rejected: routing a portless candidate into the fail-safe `unevaluable`
+// spare was considered and rejected, because a portless process is the
+// COMMON shape of the stale stray this sweep exists to clear (a supervisor
+// that already released its port, an orphaned child), so sparing it would
+// make an armed sweep a near-total no-op -- the same "quietly stops cleaning
+// up" failure the arming decision above exists to avoid, arrived at from the
+// other side. Those kills are counted as `unprobeable` on the result --
+// per candidate, never contingent on whether some unrelated sibling in the
+// same pass held a port -- and reported on their own `sweep -- LIVENESS
+// UNPROBEABLE` line, so "the liveness probe was armed" can never be read as
+// "every kill in this pass was checked for life". The only lever a target
+// has over them is its sweep markers: a process the markers never match is
+// never a candidate in the first place.
+//
 // READ-ONLY LOOKUPS DEGRADE, THE AUTH GATE DOES NOT: list_members is a
 // best-effort registry read used only to (a) skip a redundant provision call
 // when auth is already known-good and (b) classify locality for the sweep
@@ -572,7 +591,8 @@ export async function runSweepStep({
  * direction, so a sweep result that carries no liveness accounting can never
  * be narrated as if it had been checked.
  *
- * @param {{ armed?: boolean, dispatched?: boolean, checked?: number, spared?: number, unevaluable?: number }|undefined} liveness
+ * @param {{ armed?: boolean, dispatched?: boolean, checked?: number, spared?: number,
+ *           unevaluable?: number, unprobeable?: number }|undefined} liveness
  * @returns {string}
  */
 export function formatSweepLivenessSummary(liveness) {
@@ -583,12 +603,29 @@ export function formatSweepLivenessSummary(liveness) {
         return 'liveness probe NOT ARMED -- no candidate was checked for life before it was selected '
             + '(the sweep config set "livenessProbe": false)';
     }
+    // apra-fleet-i4ku.17: an `unprobeable` candidate is a KILL THAT WAS NEVER
+    // CHECKED (it held no listening port, so this predicate had no question
+    // to ask it -- see member-stray-sweep.mjs's header predicate 7). It is
+    // stated in BOTH armed branches below, never only in the dispatched one:
+    // the previous wording said "no candidate survived the other predicates,
+    // so there was nothing to check" whenever no dispatch went out, which was
+    // flatly false in the pass where a portless candidate survived everything
+    // and was killed. A summary that reassures while a kill went unchecked is
+    // worse than no summary.
+    const unprobeable = liveness.unprobeable || 0;
     if (!liveness.dispatched) {
+        if (unprobeable > 0) {
+            return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port '
+                + `to probe, so ${unprobeable} candidate(s) were selected UNCHECKED by this predicate`;
+        }
         return 'liveness probe armed but not dispatched -- no candidate survived the other predicates, '
             + 'so there was nothing to check';
     }
+    const uncheckedClause = unprobeable > 0
+        ? `; a further ${unprobeable} candidate(s) held no listening port to probe and were selected UNCHECKED`
+        : '';
     return `liveness probe armed and dispatched: ${liveness.checked || 0} candidate(s) checked, `
-        + `${liveness.spared || 0} spared as live, ${liveness.unevaluable || 0} unevaluable`;
+        + `${liveness.spared || 0} spared as live, ${liveness.unevaluable || 0} unevaluable${uncheckedClause}`;
 }
 
 /**
@@ -752,6 +789,26 @@ export async function runMemberPrepPhase({
                     + 'dispatch itself failed). Stray processes will KEEP ACCUMULATING on this member until either '
                     + 'an HTTP probe tool is installed on it, or the sweep config sets "livenessProbe": false to '
                     + 'accept kills that were never checked for life',
+                );
+            }
+            // THE OTHER HALF OF THE SAME HONESTY (apra-fleet-i4ku.17): a
+            // candidate holding no listening port cannot be probed at all, so
+            // it is killed on the other predicates alone. That is not a
+            // regression -- it is exactly the pre-predicate behaviour, and it
+            // is deliberately NOT routed into the fail-safe spare, or the
+            // armed sweep would stop cleaning the portless strays it exists
+            // for. But it must never hide behind a reassuring "liveness probe
+            // armed" line, so the unchecked kills get their own count, named
+            // as unchecked.
+            if (result.liveness && result.liveness.armed && result.liveness.unprobeable > 0) {
+                line(
+                    log, member, 'sweep', 'LIVENESS UNPROBEABLE',
+                    `${result.liveness.unprobeable} candidate(s) were selected WITHOUT a liveness check because `
+                    + 'they held no listening port -- "is anything still answering here" has no answer for a '
+                    + 'portless process. Those kills rest entirely on the other predicates (markers, evidence, '
+                    + 'production ports, parent-gone, minimum age), exactly as they did before the liveness '
+                    + 'predicate existed. Nothing here can be fixed on the member; if such a kill is unsafe on '
+                    + 'this target, tighten the sweep markers so the process is never a candidate',
                 );
             }
         }

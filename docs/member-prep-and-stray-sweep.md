@@ -116,11 +116,30 @@ were spared unchecked, and both ways out (install an HTTP probe tool on the
 member, or set `"livenessProbe": false` to accept kills that were never
 checked for life).
 
+**What arming does not buy: portless candidates are killed unchecked.** The
+predicate can only ask a *port* whether anything is answering on it, so a
+candidate holding no listening port gets no protection from it and is
+selected on the other predicates alone -- exactly as it was before the
+predicate existed. **Sparing it instead was considered and rejected**: a
+portless process is the common shape of the stale stray this sweep exists to
+clear (a supervisor that already released its port, an orphaned child), so
+treating it as a fail-safe `unevaluable` spare would make an armed sweep a
+near-total no-op. These kills are counted per candidate as `unprobeable` on
+the sweep result -- never contingent on whether some unrelated candidate in
+the same pass happened to hold a port -- and Member Prep prints its own
+`sweep -- LIVENESS UNPROBEABLE` line for them, so "the liveness probe was
+armed" can never be read as "every kill in this pass was checked for life".
+The only lever a target has here is its sweep markers: a process the markers
+never match is never a candidate at all.
+
 **"Not armed" and "armed, nothing was live" are different results.** The
 sweep result carries a `liveness` record (`armed`, `dispatched`, `checked`,
-`spared`, `unevaluable`) and the phase summary line renders all three states
-distinctly, so an operator never has to guess how much safety was applied to
-a given set of kills. A malformed `livenessProbe` value is a hard error at
+`spared`, `unevaluable`, `unprobeable`) and the phase summary line renders
+each state distinctly -- including "armed but not dispatched because no
+surviving candidate held a port to probe, so N were selected unchecked",
+which must never be collapsed into "nothing survived, so there was nothing
+to check". An operator never has to guess how much safety was applied to a
+given set of kills. A malformed `livenessProbe` value is a hard error at
 the same config/CLI boundary that rejects a malformed marker -- it never
 silently disarms and never silently arms.
 
