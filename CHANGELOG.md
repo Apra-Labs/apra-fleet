@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- provision_vcs_auth: failure cause now reaches structuredContent, not just text
+
+`provision_vcs_auth` failures (e.g. `deploy_failed`, `member_offline`) now carry the
+human-readable cause in a new `structuredContent.message` field, so a caller reading
+only structured content no longer sees a bare reason code with the cause dropped.
+`packages/apra-fleet-client`'s JSDoc typedef updated to match.
+
 ## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the

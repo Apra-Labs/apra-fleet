@@ -369,6 +369,11 @@
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ * @property {string|null} message - Human-readable cause of a non-ok outcome (e.g. "No repos
+ *   specified and none on agent config."), or null when ok is true. Previously this text only
+ *   reached the caller inside the tool's `text` content, so a caller reading only
+ *   structuredContent saw nothing but the bare `reason` code. Read this instead of parsing the
+ *   `[FAIL] ...` prefix out of `text`.
  *
  * Mirrors src/tools/provision-vcs-auth.ts's ProvisionVcsAuthStructured field-for-field
  * (apra-fleet-3swo.7.2).
