@@ -360,7 +360,7 @@ export function buildKillCommand(family, pids) {
         // permitted" text simply appears in the dispatch's combined output
         // between this pid's BEGIN and STATUS lines.
         `kill -9 ${pid} 2>&1`,
-        `echo "${KILL_STATUS_PREFIX} ${pid} $?"`,
+        `echo "${KILL_STATUS_PREFIX} ${pid} $?"`, // shell-guard-allow: $? is the invoking POSIX shell's OWN exit-status variable for the `kill -9 ${pid} 2>&1` immediately above in this same dispatch, evaluated on the member -- mirrors buildProbeCommand's PowerShell $_ carve-out just above in this file; never an orchestrator-side value left for an unknown member shell to expand. See this function's own doc comment.
     ].join('; ')).join('; ');
 }
 
