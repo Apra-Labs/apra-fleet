@@ -467,6 +467,28 @@ prose.
 the reservation when the call arrived, or the blocking owner on
 `"already_reserved_by_other"`).
 
+#### `memberOwner(options: MemberOwnerOptions)`
+
+Calls `member_owner` -- sets or clears the owner `{package, ref}` tag a
+package/consumer (e.g. a fleet-sprint project) uses to bind a member to its
+own bookkeeping. The MCP result carries both halves: `content[0].text` is
+the human-readable summary, and `structuredContent` is a
+`MemberOwnerStructured`. Programmatic callers must branch on
+`structuredContent.outcome` rather than string-matching the prose.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. Both refuse with error code `member-held` while the member is reserved (`reservedBy` set). |
+| `package` | `string?` | Package/consumer that owns this member (e.g. "fleet-sprint"). Required for action `"set"`. |
+| `ref` | `string?` | Consumer-side reference this owner binding points at (e.g. a sprint/checkout id). Required for action `"set"`. |
+
+`MemberOwnerStructured` fields: `outcome` (one of `"set"`, `"cleared"`,
+`"invalid_input"`, `"member_held"`, `"member_not_found"`, `"failed"`), `ok`,
+`action`, `memberId`, `memberName`, `owner` (`{package, ref}` after this
+call, or `null` when cleared/absent/failed before writing).
+
 #### `getMemberModelPricing(options)`
 
 Calls `get_member_model_pricing` -- returns a member's cheap/standard/premium

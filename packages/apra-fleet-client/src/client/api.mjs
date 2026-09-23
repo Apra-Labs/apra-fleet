@@ -292,6 +292,36 @@
  */
 
 /**
+ * @typedef {Object} MemberOwnerOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"set" | "clear"} action - "set" writes owner {package, ref} (both required,
+ *   format-validated); "clear" removes the owner tag. Both refuse with error code
+ *   member-held while the member is reserved (reservedBy set).
+ * @property {string} [package] - Package/consumer that owns this member (e.g. "fleet-sprint").
+ *   Required for action "set".
+ * @property {string} [ref] - Consumer-side reference this owner binding points at (e.g. a
+ *   sprint/checkout id). Required for action "set".
+ */
+
+/**
+ * @typedef {Object} MemberOwnerStructured
+ * @property {"set" | "cleared" | "invalid_input" | "member_held" | "member_not_found" |
+ *   "failed"} outcome - Machine-readable outcome discriminator. Branch on this field; never
+ *   string-match the human-readable summary text.
+ * @property {boolean} ok - True when the requested operation took effect.
+ * @property {"set" | "clear"} action - The action that was requested.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {{package: string, ref: string}|null} owner - The owner value AFTER this call (null
+ *   when cleared, absent, or the call failed before writing).
+ *
+ * Mirrors src/tools/member-owner.ts's MemberOwnerStructured field-for-field. The tool still
+ * returns the same human-readable summary in `content[0].text`; this shape is the
+ * machine-readable half of the same response.
+ */
+
+/**
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -749,6 +779,23 @@ export class ApraFleet {
      */
     async memberReservation(options) {
         return this.mcpClient.callTool('member_reservation', options);
+    }
+
+    /**
+     * Set or clear the owner {package, ref} tag a package/consumer (e.g. a
+     * fleet-sprint project) uses to bind a member to its own bookkeeping
+     * (src/tools/member-owner.ts).
+     *
+     * Same two-halves result shape as memberReservation: `content[0].text`
+     * is the human-readable summary and `structuredContent` is a
+     * MemberOwnerStructured -- branch on `structuredContent.outcome`.
+     *
+     * @param {MemberOwnerOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberOwnerStructured }>}
+     */
+    async memberOwner(options) {
+        return this.mcpClient.callTool('member_owner', options);
     }
 
     /**
