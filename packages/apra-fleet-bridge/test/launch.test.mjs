@@ -75,14 +75,26 @@ function makeFakeSupervisorClient({ postSprintResult, postSprintError, getSprint
   };
 }
 
-/** A fake spool recording write() calls. */
-function makeFakeSpool() {
+/** A fake spool recording write() calls. `read()` answers the watcher check
+ *  (launch.mjs step 6): by default a live daemon has already claimed the
+ *  handle, so tests about the rest of launch are not also about the watcher. */
+function makeFakeSpool({ readSequence } = {}) {
   const writeCalls = [];
+  const readCalls = [];
+  let seq = 0;
   return {
     writeCalls,
+    readCalls,
     async write(handle) {
       writeCalls.push(handle);
       return handle;
+    },
+    async read(sprintId) {
+      readCalls.push(sprintId);
+      if (!readSequence) return { sprintId, state: 'watching', claim: { pid: 777, host: 'daemon-host' } };
+      const entry = readSequence[Math.min(seq, readSequence.length - 1)];
+      seq += 1;
+      return entry;
     },
   };
 }
@@ -94,6 +106,7 @@ function makeDeps(overrides = {}) {
     spool: overrides.spool ?? makeFakeSpool(),
     sleep: overrides.sleep ?? (async () => {}),
     now: overrides.now ?? (() => clock++),
+    isAlive: overrides.isAlive ?? (() => true),
     log: overrides.log ?? (() => {}),
   };
 }
@@ -514,5 +527,82 @@ describe('runLaunch', () => {
     // deps carries no stop/cancel capability at all -- the fake supervisor
     // client's stopSprint() would throw if ever invoked, and nothing in
     // runLaunch ever calls it (there is no such call site to begin with).
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The watcher check (launch.mjs step 6). A detached sprint nobody watches is
+// a sprint whose carry-over is never published, and nothing used to say so.
+// ---------------------------------------------------------------------------
+
+describe('runLaunch: the watcher check', () => {
+  test('no claim within the timeout -> watcher.ok false, naming the daemon, after polling (never a throw)', async () => {
+    const sleeps = [];
+    const spool = makeFakeSpool({ readSequence: [{ sprintId: 'spr-1', state: 'unknown', claim: null }] });
+    let clock = 0;
+    const deps = makeDeps({ spool, sleep: async (ms) => { sleeps.push(ms); clock += ms; }, now: () => clock });
+
+    const result = await runLaunch(
+      { request: makeRequest(), syntheticRootId: ROOT_ID, awaitUntil: 'launch', watcherTimeoutMs: 10_000 },
+      deps
+    );
+
+    assert.strictEqual(result.watcher.mode, 'daemon');
+    assert.strictEqual(result.watcher.ok, false);
+    assert.match(result.watcher.message, /fleet-bridge daemon/);
+    assert.match(result.watcher.message, /carry-over will never be published/);
+    assert.ok(sleeps.length >= 4, `expected the spool to be polled across the window, slept ${sleeps.length} times`);
+    // The handle was still written and returned -- the caller keeps the sprint id.
+    assert.strictEqual(result.handle.sprintId, 'spr-1');
+    assert.strictEqual(spool.writeCalls.length, 1);
+  });
+
+  test('a claim whose owner is dead is not a watcher', async () => {
+    const spool = makeFakeSpool({ readSequence: [{ sprintId: 'spr-1', state: 'unknown', claim: { pid: 1, host: 'h' } }] });
+    let clock = 0;
+    const deps = makeDeps({ spool, isAlive: () => false, sleep: async (ms) => { clock += ms; }, now: () => clock });
+    const result = await runLaunch({ request: makeRequest(), syntheticRootId: ROOT_ID, awaitUntil: 'launch', watcherTimeoutMs: 4000 }, deps);
+    assert.strictEqual(result.watcher.ok, false);
+  });
+
+  test('a claim that appears on a later scan is found', async () => {
+    const spool = makeFakeSpool({
+      readSequence: [
+        { sprintId: 'spr-1', state: 'unknown', claim: null },
+        { sprintId: 'spr-1', state: 'unknown', claim: null },
+        { sprintId: 'spr-1', state: 'watching', claim: { pid: 9, host: 'box' } },
+      ],
+    });
+    let clock = 0;
+    const deps = makeDeps({ spool, sleep: async (ms) => { clock += ms; }, now: () => clock });
+    const result = await runLaunch({ request: makeRequest(), syntheticRootId: ROOT_ID, awaitUntil: 'launch' }, deps);
+    assert.strictEqual(result.watcher.ok, true);
+    assert.deepStrictEqual(result.watcher.claimedBy, { pid: 9, host: 'box' });
+    assert.strictEqual(spool.readCalls.length, 3);
+  });
+
+  test("watcher 'none' never reads the spool and says loudly who must finalize", async () => {
+    const logs = [];
+    const spool = makeFakeSpool();
+    const deps = makeDeps({ spool, log: (m) => logs.push(m) });
+    const result = await runLaunch({ request: makeRequest(), syntheticRootId: ROOT_ID, awaitUntil: 'launch', watcher: 'none' }, deps);
+    assert.strictEqual(result.watcher.mode, 'none');
+    assert.strictEqual(spool.readCalls.length, 0);
+    assert.ok(logs.some((m) => /WARNING/.test(m) && /fleet-bridge finalize --sprint-id spr-1/.test(m)), logs.join('\n'));
+  });
+
+  test('an unknown watcher mode is CONFIG_INVALID', () => {
+    const err = assertThrows(() => validateLaunchOpts({ request: makeRequest(), syntheticRootId: ROOT_ID, watcher: 'cron' }));
+    assert.strictEqual(err.code, BRIDGE_ERROR_CODES.CONFIG_INVALID);
+  });
+
+  test('the default watcher check without isAlive is a wiring defect (CONFIG_MISSING), before any POST', async () => {
+    const supervisorClient = makeFakeSupervisorClient();
+    const deps = { ...makeDeps({ supervisorClient }), isAlive: undefined };
+    await assert.rejects(
+      () => runLaunch({ request: makeRequest(), syntheticRootId: ROOT_ID }, deps),
+      (err) => err instanceof BridgeError && err.code === BRIDGE_ERROR_CODES.CONFIG_MISSING,
+    );
+    assert.strictEqual(supervisorClient.postSprintCalls.length, 0);
   });
 });

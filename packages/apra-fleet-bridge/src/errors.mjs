@@ -34,6 +34,11 @@ export const BRIDGE_ERROR_CODES = Object.freeze({
   ADAPTER_UNKNOWN: 'ADAPTER_UNKNOWN',
   ADAPTER_INVALID: 'ADAPTER_INVALID',
   USAGE: 'USAGE',
+  // A verb read a CLI flag its own VERB_FLAGS entry (src/cli/flags.mjs) does
+  // not declare. Never caused by the operator's input -- the command line has
+  // already been checked against the same table -- so it is a wiring defect
+  // in this package, bucketed with the other internal/tooling defects.
+  FLAG_UNDECLARED: 'FLAG_UNDECLARED',
 });
 
 export function exitCodeFor(codeOrError) {
@@ -94,6 +99,7 @@ export function exitCodeFor(codeOrError) {
     case BRIDGE_ERROR_CODES.BEADS_FAILED:
     case BRIDGE_ERROR_CODES.BEADS_BARE_SYNC_REFUSED:
     case BRIDGE_ERROR_CODES.ADAPTER_INVALID:
+    case BRIDGE_ERROR_CODES.FLAG_UNDECLARED:
       return 9;
 
     default:

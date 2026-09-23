@@ -86,6 +86,7 @@ import os from 'node:os';
 import { createServer as httpCreateServer } from 'node:http';
 
 import { VERBS, USAGE_TEXT, parseArgs, requireFlag } from '../src/cli/args.mjs';
+import { assertKnownFlags, declaredFlagsView } from '../src/cli/flags.mjs';
 import { BridgeError, BRIDGE_ERROR_CODES, exitCodeFor } from '../src/errors.mjs';
 import { resolveConfigValue, loadRepoConfig } from '../src/config.mjs';
 
@@ -413,8 +414,12 @@ export function createRealContext({ env = process.env } = {}) {
  * @returns {Promise<{ adoOrgUrl: string|undefined, adoProject: string|undefined, adoPatSecretName: string, adoWorkItemType: string|undefined }>}
  */
 async function resolveAdapterCoordinates(ctx, flags) {
-  const adoOrgUrl = await ctx.configValue({ name: 'adoOrgUrl', envVar: 'FLEET_BRIDGE_ADO_ORG_URL', required: false }, flags);
-  const adoProject = await ctx.configValue({ name: 'adoProject', envVar: 'FLEET_BRIDGE_ADO_PROJECT', required: false }, flags);
+  // Explicit kebab-case flag names. These two used to default their flag to
+  // the config name, so the only spelling that worked was `--adoOrgUrl` --
+  // while the pipeline template, the example README and every other flag in
+  // this CLI said `--ado-org-url`, which was silently ignored.
+  const adoOrgUrl = await ctx.configValue({ name: 'adoOrgUrl', flagName: 'ado-org-url', envVar: 'FLEET_BRIDGE_ADO_ORG_URL', required: false }, flags);
+  const adoProject = await ctx.configValue({ name: 'adoProject', flagName: 'ado-project', envVar: 'FLEET_BRIDGE_ADO_PROJECT', required: false }, flags);
   const adoPatSecretName = await ctx.configValue(
     { name: 'secretName', flagName: 'secret-name', envVar: 'FLEET_BRIDGE_SECRET_NAME', pipelineParam: 'adoPatSecretName', default: 'fleet_bridge_azdevops_pat' },
     flags,
@@ -821,6 +826,14 @@ export function buildVerbTable(ctx) {
           spawn: flags.get('spawn'),
         };
       },
+      // A failed check is DATA inside runPreflight (preflight.mjs, "THROW vs.
+      // REPORT"), which is right for the report -- but with no mapping here the
+      // PROCESS still exited 0, so a pipeline step running preflight went green
+      // on `"ok": false` and the next step launched anyway. The report is still
+      // printed in full; only the exit status now tells the truth.
+      exitCodeForResult(result) {
+        return result && result.ok === false ? exitCodeFor(BRIDGE_ERROR_CODES.PREFLIGHT_FAILED) : 0;
+      },
       async buildDeps(opts, c, flags) {
         const { fleetApi, callTool } = await c.mcp();
         const beads = await c.beadsClientFor({
@@ -894,11 +907,34 @@ export function buildVerbTable(ctx) {
         const requestFile = flags.get('request-file');
         const requestJson = flags.get('request-json');
         let request;
+        // Read/parse failures are BridgeErrors naming the flag: a raw ENOENT or
+        // SyntaxError used to escape to the exit-1 catch-all with no hint of
+        // which input was wrong.
+        const parseRequest = (raw, source) => {
+          try {
+            return JSON.parse(raw);
+          } catch (err) {
+            throw new BridgeError(
+              BRIDGE_ERROR_CODES.CONFIG_INVALID,
+              `launch: ${source} is not valid JSON: ${safeMessage(err)}`,
+              { flag: requestFile ? 'request-file' : 'request-json' },
+            );
+          }
+        };
         if (requestFile) {
-          const raw = await c.fs.readFile(requestFile, 'utf-8');
-          request = JSON.parse(raw);
+          let raw;
+          try {
+            raw = await c.fs.readFile(requestFile, 'utf-8');
+          } catch (err) {
+            throw new BridgeError(
+              BRIDGE_ERROR_CODES.CONFIG_INVALID,
+              `launch: could not read --request-file "${requestFile}": ${safeMessage(err)}`,
+              { flag: 'request-file' },
+            );
+          }
+          request = parseRequest(raw, `--request-file "${requestFile}"`);
         } else if (typeof requestJson === 'string') {
-          request = JSON.parse(requestJson);
+          request = parseRequest(requestJson, '--request-json');
         } else {
           throw new BridgeError(
             BRIDGE_ERROR_CODES.CONFIG_MISSING,
@@ -913,6 +949,10 @@ export function buildVerbTable(ctx) {
           overrideRelaunchGate: flags.get('override-relaunch-gate') === true,
           timeoutMs: flags.has('timeout-ms') ? Number(flags.get('timeout-ms')) : undefined,
           pollMs: flags.has('poll-ms') ? Number(flags.get('poll-ms')) : undefined,
+          // Left undefined when absent so launch.mjs owns the default
+          // ('daemon') in exactly one place.
+          watcher: flags.get('watcher'),
+          watcherTimeoutMs: flags.has('watcher-timeout-ms') ? Number(flags.get('watcher-timeout-ms')) : undefined,
         };
       },
       async buildDeps(_opts, c, flags) {
@@ -921,6 +961,9 @@ export function buildVerbTable(ctx) {
           spool: await c.spool(flags),
           sleep: c.clock.sleep,
           now: c.clock.now,
+          // The watcher check (launch.mjs, "WHY LAUNCH CONFIRMS A WATCHER")
+          // uses the same liveness probe the daemon uses on its own claims.
+          isAlive: c.isAliveFn,
           log: c.log,
         };
       },
@@ -932,8 +975,15 @@ export function buildVerbTable(ctx) {
       // (5), the closest existing code for "the sprint went terminal before
       // the requested milestone". UNDER-SPECIFIED: no doc pins an exact exit
       // code for this case; see this task's final report.
+      //
+      // A launch no watcher claimed (`result.watcher.ok === false`) exits in the
+      // same bucket: the sprint is running, but in a state where its carry-over
+      // would silently never be published -- see launch.mjs's header. The JSON
+      // result (with the handle) is printed first either way.
       exitCodeForResult(result) {
-        return result && result.color === 'red' ? exitCodeFor(BRIDGE_ERROR_CODES.LAUNCH_FAILED) : 0;
+        if (result && result.color === 'red') return exitCodeFor(BRIDGE_ERROR_CODES.LAUNCH_FAILED);
+        if (result && result.watcher && result.watcher.ok === false) return exitCodeFor(BRIDGE_ERROR_CODES.LAUNCH_FAILED);
+        return 0;
       },
     },
 
@@ -1160,8 +1210,14 @@ export async function dispatch({
   }
 
   try {
-    const opts = await entry.buildOpts(flags, positionals, ctx);
-    const deps = await entry.buildDeps(opts, ctx, flags);
+    // Strict flags, from the one per-verb declaration in src/cli/flags.mjs:
+    // an unknown flag, a stray positional, or a mistyped boolean is a USAGE
+    // error here, before anything runs; and the verb only ever sees a view of
+    // the flags that refuses to answer for a name it did not declare. See
+    // that file's header for why a silently ignored flag is a defect.
+    const checkedFlags = declaredFlagsView(verb, assertKnownFlags(verb, flags, positionals));
+    const opts = await entry.buildOpts(checkedFlags, positionals, ctx);
+    const deps = await entry.buildDeps(opts, ctx, checkedFlags);
     const result = await entry.run(opts, deps);
 
     if (entry.longLived) {

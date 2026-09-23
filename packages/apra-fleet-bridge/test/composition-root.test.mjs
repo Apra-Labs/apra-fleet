@@ -836,3 +836,39 @@ describe('createRealContext(): member dialect lookup failures are fatal, not a P
     assert.strictEqual(typeof beads.doltPullProbe, 'function');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exit codes that must tell a pipeline the truth.
+// ---------------------------------------------------------------------------
+
+describe('composition root: results that must not exit 0', () => {
+  function withRunResult(table, verb, result) {
+    return { ...table, [verb]: { ...table[verb], async run() { return result; } } };
+  }
+
+  test('preflight with a failed check exits 3 (PREFLIGHT_FAILED) and still prints the report', async () => {
+    const ctx = makeFakeCtx();
+    const table = withRunResult(buildVerbTable(ctx), 'preflight', { ok: false, checks: [], warnings: [] });
+    const { exitCode, out } = await runDispatch({ table, ctx, argv: fakeArgv('preflight', []) });
+    assert.strictEqual(exitCode, exitCodeFor(BRIDGE_ERROR_CODES.PREFLIGHT_FAILED));
+    assert.match(out.join('\n'), /"ok": false/);
+  });
+
+  test('a launch no watcher claimed exits non-zero AFTER printing the handle', async () => {
+    const ctx = makeFakeCtx();
+    const result = { handle: { sprintId: 'spr-9' }, awaited: { outcome: 'reached' }, color: 'green', watcher: { ok: false, message: 'no daemon' } };
+    const table = withRunResult(buildVerbTable(ctx), 'launch', result);
+    const { exitCode, out } = await runDispatch({ table, ctx, argv: fakeArgv('launch', MIN_ARGS_BY_VERB.launch) });
+    assert.strictEqual(exitCode, exitCodeFor(BRIDGE_ERROR_CODES.LAUNCH_FAILED));
+    assert.match(out.join('\n'), /"sprintId": "spr-9"/);
+  });
+
+  test('an unknown flag never reaches the verb', async () => {
+    const ctx = makeFakeCtx();
+    const { table, calls } = spyOnRuns(buildVerbTable(ctx));
+    const { exitCode, err } = await runDispatch({ table, ctx, argv: fakeArgv('launch', [...MIN_ARGS_BY_VERB.launch, '--target-branch', 'x']) });
+    assert.strictEqual(exitCode, 2);
+    assert.strictEqual(calls.launch, undefined);
+    assert.match(err.join('\n'), /SprintRequest field inside --request-file/);
+  });
+});

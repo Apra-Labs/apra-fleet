@@ -29,6 +29,10 @@ Verbs:
   daemon      Run the bridge as a background service
   viewer      Start the web viewer for sprint results
 
+Every verb rejects a flag it does not accept, and the error lists the flags
+it does accept (src/cli/flags.mjs). launch takes the sprint's parameters as a
+SprintRequest document (--request-file or --request-json), not as flags.
+
 Remote observability (watch, daemon, finalize):
   --blob-account-url <url>   Azure Storage account URL, e.g. https://<account>.blob.core.windows.net
   --blob-container <name>    Container that receives <sprintId>.jsonl and sprints/<sprintId>/
@@ -52,7 +56,9 @@ Remote observability (watch, daemon, finalize):
 /**
  * Parse raw argv into {verb, flags, positionals}.
  * Supports --flag value, --flag=value, boolean --flag, --no-flag, and -- passthrough.
- * Unknown flags are NOT rejected here (verbs validate their own).
+ * Unknown flags are NOT rejected here -- this parser does not know which verb
+ * it is parsing for. dispatch() rejects them against the per-verb declaration
+ * in ./flags.mjs (assertKnownFlags), before any verb runs.
  *
  * @param {string[]} argv - raw argument array (process.argv.slice(2) or similar)
  * @returns {{verb: string, flags: Map<string, any>, positionals: string[]}}

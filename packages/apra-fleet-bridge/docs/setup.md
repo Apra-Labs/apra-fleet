@@ -19,6 +19,8 @@ needs, because the pipeline job exits in minutes while the sprint runs for days 
   anything else; it will not self-spawn a stdio server)
 - The supervisor running on `127.0.0.1:8787`
 - `bd` (beads) on PATH
+- A source checkout of apra-fleet with `npm install` run in it: fleet-bridge is a
+  private workspace package and runs from there (see step 7 for how to invoke it)
 - An Azure DevOps project, a repo whose base branch builds, and 2-3 work items
 
 Check the first two:
@@ -169,7 +171,43 @@ fleet-bridge preflight --member aztoy --repo-local-path C:\ak\aztoy --base-branc
 ```
 
 It runs all nine checks without stopping at the first failure, so one run tells you
-everything that needs fixing. Each failure names its own remedy.
+everything that needs fixing. Each failure names its own remedy. It exits 3 if any
+fail-level check failed (warnings alone still exit 0), so a pipeline step running it
+stops the job instead of going green on a failed report.
+
+---
+
+## 7. Run the daemon
+
+`launch` starts a sprint and returns; nothing in it watches the sprint or finalizes
+it, and **finalize is what publishes carry-over**. That is the job of one long-lived
+process on the same machine as the supervisor:
+
+```bash
+fleet-bridge daemon --ado-org-url https://dev.azure.com/apralabs --ado-project e2e-fleet-testing
+```
+
+Run it as the **same user**, from the **same apra-fleet checkout**, and with the same
+`--spool-dir` (if you set one) as whatever runs `launch` - a pipeline agent service
+included. The daemon finds sprints through the spool directory that `launch` writes a
+handle into; a daemon looking at a different directory sees nothing.
+
+The Azure DevOps coordinates, the blob storage settings (below) and the carry-over
+policy are the daemon's configuration, because the daemon is what comments, publishes
+and archives. Put them in flags, `FLEET_BRIDGE_*` environment variables, or a
+`bridge.config.json` in the daemon's working directory.
+
+**`launch` checks this for you.** By default (`--watcher daemon`) it waits up to a
+minute for a live process to claim the sprint it just launched, and exits non-zero -
+after printing the handle - if none does, saying exactly that carry-over would never
+be published. Starting the daemon afterwards is enough to recover: its first scan
+claims every unclaimed handle. If you really mean to run `watch` and `finalize`
+yourself, say so with `--watcher none`; launch then prints the two commands you owe.
+
+`fleet-bridge` on these pages means `node <apra-fleet checkout>/packages/apra-fleet-bridge/bin/fleet-bridge.mjs`
+(or `npm exec fleet-bridge` run from inside that checkout). The package is not
+published to any registry; `npm exec --yes fleet-bridge` from anywhere else would
+fetch an unrelated package of that name.
 
 ---
 
@@ -179,10 +217,33 @@ Do these from a shell before touching a pipeline. They exercise the risky paths 
 the errors are readable:
 
 ```bash
-fleet-bridge ingest  --refs <id>,<id>,<id> --member <name> --repo-local-path C:/path/to/clone
-fleet-bridge launch  --await-until plan-round
+fleet-bridge ingest  --refs <id>,<id>,<id> --member <name> --repo-local-path C:/path/to/clone > ingest.json
+fleet-bridge launch  --request-file request.json --synthetic-root-id <syntheticRootId from ingest.json> --await-until plan-round
 fleet-bridge status  --sprint-id <id>
 ```
+
+`launch` takes the sprint's parameters as a SprintRequest document, not as flags:
+
+```json
+{
+  "platform": "azure-devops",
+  "member": "aztoy",
+  "workItems": ["10", "11", "12"],
+  "targetBranch": "feat/note-list-querying",
+  "baseBranch": "main",
+  "goal": "P1/P2",
+  "repo": { "localPath": "C:/ak/aztoy" },
+  "patSecretName": "fleet_bridge_azdevops_pat"
+}
+```
+
+`--synthetic-root-id` is ingest's `syntheticRootId` output, verbatim. It is the beads
+root the sprint launches against; without it launch refuses to start.
+
+Every verb rejects a flag it does not know, naming it and listing the ones it takes
+(`fleet-bridge ingest --work-items 9` answers "did you mean --refs?"). An unknown flag
+used to be ignored silently, which is how a whole pipeline template went wrong
+without a single error.
 
 **Pass `--repo-local-path` to `ingest` as well as to `preflight`.** Every local `bd`
 call runs in that directory, and the beads DB belongs to the repo under test, not to
@@ -373,14 +434,11 @@ environment variable > `bridge.config.json`**:
 
 **The SAS is an environment variable and nothing else.** A flag would put a live
 credential into argv, where `ps`, a crash dump and the pipeline's own command echo
-can all read it; a config-file key would commit it. In Azure Pipelines, map the
-secret variable onto the step:
-
-```yaml
-- script: npm exec --yes fleet-bridge watch --sprint-id $(SprintId)
-  env:
-    FLEET_BRIDGE_BLOB_SAS: $(blobSasSecret)
-```
+can all read it; a config-file key would commit it. Set it in the environment of the
+process that watches and finalizes - normally the daemon, so in the environment of
+whatever service or scheduled task starts `fleet-bridge daemon`. The pipeline
+template never needs it: the pipeline job only launches, and exits long before any
+progress is written.
 
 Set **both** coordinates or **neither**. Setting one alone fails at startup with a
 named error rather than quietly downgrading to local-only - an operator who thinks
@@ -492,7 +550,8 @@ storage is for. See "Remote observability" above for the setup.
 **The live SPA (Part D2).** Only the *archive* page ships today: a permanent page
 written once, at `finalize`. There is no live blob-fed viewer yet.
 
-**A self-hosted pipeline agent.** Only needed to trigger via Azure Pipelines. Every
+**A self-hosted pipeline agent.** Only needed to trigger via Azure Pipelines
+(`templates/azure-pipelines.yml`; `examples/azure-devops-toy/` shows a consumer). Every
 step above, and the whole first sprint, runs from a shell. Prove the loop by hand
 first; then a pipeline failure is unambiguously a pipeline problem. Note that
 registering an agent needs a PAT with **Agent Pools (Read & manage)**, a scope the
@@ -504,6 +563,10 @@ bridge itself never needs.
 
 - **`preflight` does not check beads' ado config** (step 5). Add it to your own
   checklist until the check exists.
+- **A daemon with no Azure DevOps coordinates starts anyway.** `launch` proves a daemon
+  claimed the sprint, not that the daemon was given `--ado-org-url`/`--ado-project`.
+  Without them progress comments degrade to logged no-ops and carry-over fails at
+  finalize - loudly, but in the daemon's log, not the pipeline's.
 - **One daemon cannot serve two Azure DevOps organisations.** A sprint handle carries
   no adapter coordinates, so `watch`/`finalize` use the daemon's own configuration for
   every sprint it manages. The failure mode is silence: comments simply never post.

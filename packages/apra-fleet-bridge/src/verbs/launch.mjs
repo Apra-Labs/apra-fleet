@@ -37,6 +37,30 @@
 //      Any other value (default `'plan-approved'`) is parsed via
 //      `parseAwaitUntil` and run through `awaitMilestone` (await-gate.mjs).
 //
+//   6. The watcher check (`opts.watcher`, default `'daemon'`): confirm that
+//      a live process -- in practice `fleet-bridge daemon` -- has CLAIMED this
+//      sprint's handle in the spool launch just wrote. See "WHY LAUNCH
+//      CONFIRMS A WATCHER" below.
+//
+// WHY LAUNCH CONFIRMS A WATCHER. In detached mode nothing in the launching
+// process ever watches or finalizes the sprint: that is the daemon's job, and
+// finalize is where carry-over is published. If no daemon is running -- or one
+// is running as a different user, or against a different spool directory, so
+// it never sees this handle -- the sprint runs for days, ends, and carry-over
+// is simply never published. Nothing fails; nothing says so; the pipeline
+// that launched it went green. So launch looks for positive evidence: a claim
+// on THIS handle, in THIS spool, by a process `isAlive()` confirms. A daemon
+// heartbeat file checked by preflight was considered and rejected: it proves
+// "some daemon is up", not "a daemon can see this sprint", and the second is
+// the part that actually goes wrong (wrong user, wrong spool dir). Missing
+// evidence makes the result `watcher.ok: false`, which bin/ turns into a
+// non-zero exit AFTER the handle has been printed, so the caller still has the
+// sprint id. Recovery needs no special step: the daemon's startup scan claims
+// every unclaimed handle it finds, so starting it later still watches and
+// finalizes the sprint. `watcher: 'none'` is the explicit opt-out for an
+// operator who will run `watch`/`finalize` by hand; it is logged loudly, never
+// assumed.
+//
 // THE AWAIT OUTCOME DECIDES THE EXIT COLOUR (implementation-plan.md's
 // "`--await-until`: the configurable hold", also restated in this
 // package's build log): `reached` -> green; `terminal` before the milestone
@@ -69,6 +93,16 @@ import { awaitMilestone } from '../await-gate.mjs';
 import { DEFAULT_LOG_TAIL_LINES } from './watch.mjs';
 
 const noopLog = () => {};
+
+/** How long launch waits for a watcher to claim the handle by default: several
+ *  of the daemon's own 10s scan intervals (daemon.mjs DEFAULT_SCAN_INTERVAL_MS),
+ *  so one slow scan is not reported as "no daemon". */
+export const DEFAULT_WATCHER_TIMEOUT_MS = 60 * 1000;
+const WATCHER_POLL_MS = 2 * 1000;
+export const WATCHER_MODES = Object.freeze(['daemon', 'none']);
+/** Spool states only a watcher ever writes -- evidence one has already worked
+ *  the sprint even if its claim was released by the time we looked. */
+const WATCHER_WRITTEN_STATES = Object.freeze(['watching', 'finalizing', 'completed', 'failed']);
 
 // ---------------------------------------------------------------------------
 // Step 0: validate this verb's own inputs -- see ingest.mjs/finalize.mjs for
@@ -193,7 +227,30 @@ export function validateLaunchOpts(opts) {
     pollMs = o.pollMs;
   }
 
-  return Object.freeze({ request, syntheticRootId, awaitUntil, overrideRelaunchGate, timeoutMs, pollMs });
+  // Defaulted to 'daemon', the safe choice: see the module header, "WHY
+  // LAUNCH CONFIRMS A WATCHER". Opting out must be an explicit 'none'.
+  const watcher = o.watcher === undefined ? 'daemon' : o.watcher;
+  if (!WATCHER_MODES.includes(watcher)) {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.CONFIG_INVALID,
+      `launch: --watcher must be one of ${WATCHER_MODES.join(', ')} (got "${watcher}")`,
+      { field: 'watcher' }
+    );
+  }
+
+  let watcherTimeoutMs = DEFAULT_WATCHER_TIMEOUT_MS;
+  if (o.watcherTimeoutMs !== undefined) {
+    if (typeof o.watcherTimeoutMs !== 'number' || !Number.isFinite(o.watcherTimeoutMs) || o.watcherTimeoutMs < 0) {
+      throw new BridgeError(
+        BRIDGE_ERROR_CODES.CONFIG_INVALID,
+        'launch: opts.watcherTimeoutMs must be a non-negative finite number when provided',
+        { field: 'watcherTimeoutMs' }
+      );
+    }
+    watcherTimeoutMs = o.watcherTimeoutMs;
+  }
+
+  return Object.freeze({ request, syntheticRootId, awaitUntil, overrideRelaunchGate, timeoutMs, pollMs, watcher, watcherTimeoutMs });
 }
 
 /**
@@ -206,7 +263,7 @@ export function validateLaunchOpts(opts) {
  * @returns {{ supervisorClient: object, spool: object, sleep: Function, now: Function, log: Function }}
  * @throws {BridgeError} CONFIG_MISSING
  */
-function validateLaunchDeps(deps) {
+function validateLaunchDeps(deps, { watcher = 'daemon' } = {}) {
   const d = deps && typeof deps === 'object' ? deps : {};
 
   if (!d.supervisorClient || typeof d.supervisorClient.postSprint !== 'function' || typeof d.supervisorClient.getSprint !== 'function') {
@@ -238,11 +295,20 @@ function validateLaunchDeps(deps) {
     );
   }
 
+  if (watcher === 'daemon' && (typeof d.spool.read !== 'function' || typeof d.isAlive !== 'function')) {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.CONFIG_MISSING,
+      'launch: the watcher check needs deps.spool.read() and deps.isAlive() -- without them it cannot tell whether a daemon claimed the sprint',
+      { param: typeof d.spool.read !== 'function' ? 'deps.spool.read' : 'deps.isAlive' }
+    );
+  }
+
   return {
     supervisorClient: d.supervisorClient,
     spool: d.spool,
     sleep: d.sleep,
     now: d.now,
+    isAlive: d.isAlive,
     log: typeof d.log === 'function' ? d.log : noopLog,
   };
 }
@@ -394,6 +460,63 @@ export function colorForAwaitOutcome(awaited) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 6: the watcher check. See the module header, "WHY LAUNCH CONFIRMS A
+// WATCHER".
+// ---------------------------------------------------------------------------
+
+/**
+ * Polls the spool until a live process has claimed `sprintId`'s handle (or a
+ * watcher-only state shows one already worked it), or `timeoutMs` elapses.
+ * Never throws for "not claimed" -- that is an outcome, returned as data, so
+ * the caller can still print the handle it just created.
+ *
+ * @param {string} sprintId
+ * @param {{ spool: object, isAlive: Function, sleep: Function, now: Function }} d
+ * @param {number} timeoutMs
+ * @returns {Promise<{ mode: 'daemon', ok: boolean, claimedBy: {pid: any, host: any}|null, state: string|null, message: string }>}
+ */
+export async function confirmWatcher(sprintId, d, timeoutMs) {
+  const deadline = d.now() + timeoutMs;
+  let lastState = null;
+  for (;;) {
+    const doc = await d.spool.read(sprintId);
+    lastState = doc && typeof doc.state === 'string' ? doc.state : null;
+    const claim = doc && doc.claim;
+    if (claim && d.isAlive(claim.pid, claim.host)) {
+      return {
+        mode: 'daemon',
+        ok: true,
+        claimedBy: { pid: claim.pid, host: claim.host },
+        state: lastState,
+        message: `sprint ${sprintId} is claimed by pid ${claim.pid} on ${claim.host}; it will be watched and finalized`,
+      };
+    }
+    if (lastState && WATCHER_WRITTEN_STATES.includes(lastState)) {
+      return {
+        mode: 'daemon',
+        ok: true,
+        claimedBy: null,
+        state: lastState,
+        message: `sprint ${sprintId} is already in watcher state "${lastState}"`,
+      };
+    }
+    if (d.now() >= deadline) break;
+    await d.sleep(WATCHER_POLL_MS);
+  }
+  return {
+    mode: 'daemon',
+    ok: false,
+    claimedBy: null,
+    state: lastState,
+    message:
+      `no live process claimed sprint ${sprintId} within ${Math.round(timeoutMs / 1000)}s, so nothing will watch or `
+      + 'finalize it and its carry-over will never be published. Start `fleet-bridge daemon` on this machine, as '
+      + 'the same user and with the same --spool-dir as this launch; its startup scan claims every unclaimed handle, '
+      + 'including this one, so nothing is lost. The sprint itself is running -- do not relaunch it.',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator.
 // ---------------------------------------------------------------------------
 
@@ -426,7 +549,7 @@ export function colorForAwaitOutcome(awaited) {
  */
 export async function runLaunch(opts, deps) {
   const validated = validateLaunchOpts(opts);
-  const d = validateLaunchDeps(deps);
+  const d = validateLaunchDeps(deps, { watcher: validated.watcher });
   const { request, syntheticRootId, awaitUntil, overrideRelaunchGate, timeoutMs, pollMs } = validated;
 
   // 2. POST to the supervisor. 400 -> LAUNCH_INVALID, 409 -> LAUNCH_CONFLICT
@@ -483,7 +606,27 @@ export async function runLaunch(opts, deps) {
   const color = colorForAwaitOutcome(awaited);
   d.log(`[launch] sprint ${handle.sprintId} launched; awaitUntil=${awaitUntil ?? 'plan-approved'} outcome=${awaited.outcome} color=${color}`);
 
-  return Object.freeze({ handle, awaited, color });
+  // 6. The watcher check -- after the await gate, which usually takes minutes,
+  // so a running daemon has long since claimed the handle and this returns on
+  // its first read.
+  let watcher;
+  if (validated.watcher === 'none') {
+    watcher = {
+      mode: 'none',
+      ok: true,
+      claimedBy: null,
+      state: null,
+      message: `--watcher none: nothing will watch or finalize sprint ${handle.sprintId} unless you run `
+        + `"fleet-bridge watch --sprint-id ${handle.sprintId}" and then "fleet-bridge finalize --sprint-id ${handle.sprintId}" `
+        + 'yourself. Carry-over is published only by finalize.',
+    };
+    d.log(`[launch] WARNING: ${watcher.message}`);
+  } else {
+    watcher = await confirmWatcher(handle.sprintId, d, validated.watcherTimeoutMs);
+    d.log(watcher.ok ? `[launch] watcher: ${watcher.message}` : `[launch] ERROR: ${watcher.message}`);
+  }
+
+  return Object.freeze({ handle, awaited, color, watcher });
 }
 
 export default runLaunch;

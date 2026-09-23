@@ -1,69 +1,144 @@
-# Azure Pipelines template for fleet-bridge
-# Self-contained and fully parameterized. A single parameters: block at the top
-# is the only region an adopter edits; everything below is logic.
+# Azure Pipelines template for fleet-bridge: preflight -> ingest -> launch ->
+# publish the sprint handle, then exit while the sprint runs on, detached.
+# Consume it with `extends:` from your own pipeline; see
+# examples/azure-devops-toy/azure-pipelines.yml for a complete consumer.
+#
+# THIS FILE IS CHECKED AGAINST THE REAL CLI. The first version of this
+# template was written against the design document and never executed: every
+# flag it passed was wrong, ingest's output never reached launch, and because
+# the CLI silently ignored unknown flags nothing ever said so. Two things now
+# stop that recurring:
+#   - the CLI rejects any flag a verb does not declare (src/cli/flags.mjs);
+#   - test/pipeline-template.test.mjs extracts every `fleet-bridge <verb>`
+#     invocation below and checks each flag against that same declaration,
+#     and fails on any `${{ parameters.* }}` inside a script body.
+# Keep one `fleet-bridge <verb>` invocation per step so that test can
+# attribute every `--flag` in a step to its verb.
+#
+# PARAMETERS NEVER ENTER A SCRIPT AS TEXT. Anyone who can queue this pipeline
+# chooses the parameter values, so `${{ parameters.x }}` pasted into a bash
+# body is shell injection. Every parameter reaches a script only through
+# `env:` and is always used double-quoted ("$FBP_X"). Compile-time uses
+# outside any script (pool name, job timeout) are not shell and are fine.
+# The first step additionally rejects any parameter containing `$(`: Azure
+# expands `$(name)` macros inside `env:` values at runtime, so a value such as
+# `$(System.AccessToken)` would otherwise put the job's token into the step's
+# environment -- and from there into a branch name or a work-item comment.
+#
+# NO CREDENTIAL IS MAPPED INTO ANY STEP. The bridge references stored
+# credentials by NAME (`secretName`) and the fleet server substitutes the value
+# server-side; no step here receives a PAT, a SAS or System.AccessToken, and
+# nothing in the bridge would read one.
+#
+# WHERE THE BRIDGE COMES FROM. fleet-bridge is not published to any registry
+# (its package is private to the apra-fleet monorepo), so `npm exec fleet-bridge`
+# would fetch whatever unrelated package owns that name. It runs from the
+# apra-fleet checkout on the agent -- the same checkout the long-lived
+# `fleet-bridge daemon` runs from, which matters: launch and the daemon must
+# share one spool directory and one version. Point `bridgeHome` at it, and
+# reference this template at the same commit or tag that checkout is on; a
+# mismatch now fails loudly as an unknown flag rather than silently.
+#
+# WHAT HAPPENS AFTER THE JOB EXITS. Nothing in this job watches or finalizes
+# the sprint, and finalize is what publishes carry-over. That is the job of
+# `fleet-bridge daemon`, running on the agent. `launch --watcher daemon` fails
+# this job (after publishing the handle) unless a live daemon has claimed the
+# sprint, so a missing, crashed or misconfigured daemon cannot go unnoticed.
+# The daemon also owns everything that happens after launch -- the Azure DevOps
+# org/project for comments and carry-over, blob storage, the carry-over cap --
+# so those are the daemon's own configuration (flags, FLEET_BRIDGE_* env, or
+# bridge.config.json in its working directory; see docs/setup.md), not
+# parameters here. Parameters here that nothing would read would be exactly
+# the silent-no-op this file used to be full of.
+#
+# Steps use `bash:` explicitly. On a Windows agent, `bash` on PATH must be Git
+# Bash (not the WSL launcher in System32).
+#
 # ASCII only.
 
 parameters:
-  # Work selection and targeting
+  # --- What to sprint on ----------------------------------------------------
   - name: workItems
     type: string
-    displayName: Work item IDs (semicolon-separated)
+    displayName: Work item ids or URLs, comma-separated (e.g. 9,10,11)
 
   - name: targetBranch
     type: string
-    displayName: Target branch (sprint develops here)
+    displayName: Sprint branch - created by the sprint; its commits land here
 
   - name: baseBranch
     type: string
-    displayName: Base branch (PR will target this)
-    default: 'main'
+    displayName: Base branch - the sprint branch is cut from it and the PR targets it
+    default: main
 
+  # A priority ceiling, not free text (the SprintRequest validator accepts
+  # only P1..P3 combinations).
   - name: goal
     type: string
-    displayName: Sprint goal (title for the run)
+    displayName: Priority ceiling of beads the sprint works
+    default: P1/P2
+    values:
+      - P1
+      - P1/P2
+      - P1/P2/P3
 
-  # Deployment topology
+  - name: allowMissingCriteria
+    type: boolean
+    displayName: Ingest work items that have no acceptance criteria (exploration only)
+    default: false
+
+  # --- Where it runs ----------------------------------------------------------
+  - name: agentPool
+    type: string
+    displayName: Agent pool whose agents run the fleet server, supervisor and daemon
+    default: fleet-sprints
+
+  - name: bridgeHome
+    type: string
+    displayName: Absolute path of the apra-fleet checkout on the agent (the one the daemon runs from)
+
   - name: member
     type: string
-    displayName: Fleet member name (runner nickname)
-
-  - name: adoOrgUrl
-    type: string
-    displayName: Azure DevOps org URL
-
-  - name: adoProject
-    type: string
-    displayName: Azure DevOps project name
+    displayName: Fleet member that runs the sprint
 
   - name: repoPath
     type: string
-    displayName: Local path to the git repo
-    default: '.'
+    displayName: Absolute path of the member's clone of the target repo (its beads DB lives there)
 
-  - name: agentPool
+  - name: repoRemoteUrl
     type: string
-    displayName: Agent pool name
+    displayName: Remote URL of the target repo (lets preflight check PR capability; optional)
+    default: ''
 
-  # Tuning and optional features
+  - name: secretName
+    type: string
+    displayName: NAME of the stored tracker/VCS PAT in the fleet credential store (never the value)
+    default: fleet_bridge_azdevops_pat
+
+  # --- Tuning -----------------------------------------------------------------
+  # There is no "unbounded": the engine requires a positive integer, and 5 is
+  # its own default.
   - name: maxCycles
     type: number
-    displayName: Maximum development cycles (0 for unbounded)
-    default: 0
+    displayName: Maximum development cycles (1 or more)
+    default: 5
 
+  # A string so that "no ceiling" can be expressed as empty. 0 would be a
+  # ceiling of zero dollars, which stops the sprint at its first dispatch.
   - name: budget
-    type: number
-    displayName: Budget in USD (0 for no limit)
-    default: 0
+    type: string
+    displayName: Budget ceiling in USD (empty = no ceiling)
+    default: ''
 
   - name: requirementsFile
     type: string
-    displayName: Requirements file path (optional)
+    displayName: Requirements file, relative to the repo (optional)
     default: ''
 
   - name: awaitUntil
     type: string
-    displayName: Pipeline milestone
-    default: 'plan-approved'
+    displayName: Hold the job until this milestone, then detach
+    default: plan-approved
     values:
       - launch
       - plan-round
@@ -72,144 +147,230 @@ parameters:
 
   - name: awaitTimeoutMinutes
     type: number
-    displayName: Timeout for milestone in minutes
+    displayName: Give up holding after this many minutes (the sprint is never stopped)
     default: 20
 
-  - name: maxCarryOver
-    type: number
-    displayName: Maximum carry-over items
-    default: 0
-
+  # `fleet-bridge viewer` is opt-in and long-lived, run separately on the
+  # agent; 8788 is its default. (8787 is the supervisor itself.) The job only
+  # probes this port and prints a link if something answers.
   - name: viewerPort
     type: number
-    displayName: LAN viewer port
-    default: 8787
-
-  # Credentials by name (not value)
-  - name: adoPatSecretName
-    type: string
-    displayName: Azure DevOps PAT secret name
-    default: 'fleet_bridge_azdevops_pat'
-
-  # Optional blob sink and archive page (set BOTH, or neither -- setting one
-  # alone is a startup error, never a silent downgrade to local-only).
-  # The SAS itself is NEVER a parameter or a flag: it is a live credential,
-  # and it reaches the bridge only as the FLEET_BRIDGE_BLOB_SAS environment
-  # variable on whichever process watches and finalizes the sprint (the
-  # long-lived `fleet-bridge daemon` on the agent, in this template).
-  # See packages/apra-fleet-bridge/docs/setup.md, "Remote observability".
-  - name: blobAccountUrl
-    type: string
-    displayName: Blob storage account URL (optional)
-    default: ''
-
-  - name: blobContainer
-    type: string
-    displayName: Blob container name (optional)
-    default: ''
-
----
-
-trigger: none
-
-pool:
-  name: ${{ parameters.agentPool }}
+    displayName: Port of the LAN viewer on the agent, if one is running
+    default: 8788
 
 jobs:
-  - job: FleetBridgeRun
-    displayName: Sprint via fleet-bridge
+  - job: FleetBridgeLaunch
+    displayName: Launch a fleet-sprint
+    pool:
+      name: ${{ parameters.agentPool }}
+    # Bounds the await window plus setup, not the sprint: the sprint is a
+    # detached child of the supervisor and outlives this job.
     timeoutInMinutes: ${{ add(parameters.awaitTimeoutMinutes, 15) }}
-    # NOTE: timeoutInMinutes must accommodate the await window plus a buffer.
-    # The job exits after reaching the milestone, while the sprint continues as
-    # a detached child. This timeout bounds the AWAIT phase, not the total sprint.
-
-    variables:
-      AZURE_DEVOPS_TOKEN: $(System.AccessToken)
 
     steps:
-      - script: |
-          cd "${{ parameters.repoPath }}"
-          npm exec --yes fleet-bridge preflight \
-            --work-items "${{ parameters.workItems }}" \
-            --target-branch "${{ parameters.targetBranch }}" \
-            --base-branch "${{ parameters.baseBranch }}" \
-            --goal "${{ parameters.goal }}" \
-            --member "${{ parameters.member }}" \
-            --ado-org-url "${{ parameters.adoOrgUrl }}" \
-            --ado-project "${{ parameters.adoProject }}" \
-            --agent-pool "${{ parameters.agentPool }}" \
-            --ado-pat-secret-name "${{ parameters.adoPatSecretName }}"
-        displayName: Preflight checks
-        env:
-          # CRITICAL: Secret variables must be explicitly mapped in env: block.
-          # Omitting this yields an empty string, not an error. The name is
-          # checked; the value is never logged or persisted.
-          FLEET_PAT_SECRET: $(adoPatSecret)
+      # The sprint works in the member's own clone (repoPath), never in the
+      # pipeline's checkout.
+      - checkout: none
 
-      - script: |
-          cd "${{ parameters.repoPath }}"
-          npm exec --yes fleet-bridge ingest \
-            --work-items "${{ parameters.workItems }}" \
-            --target-branch "${{ parameters.targetBranch }}" \
-            --member "${{ parameters.member }}" \
-            --ado-org-url "${{ parameters.adoOrgUrl }}" \
-            --ado-project "${{ parameters.adoProject }}"
+      - ${{ each p in parameters }}:
+        - ${{ if contains(p.value, '$(') }}:
+          - bash: |
+              echo "##vso[task.logissue type=error]Parameter $FBP_PARAMETER contains macro syntax (a dollar sign followed by an opening parenthesis), which Azure would expand at runtime. Pass a literal value."
+              exit 1
+            displayName: Reject macro syntax in parameter ${{ p.key }}
+            env:
+              FBP_PARAMETER: ${{ p.key }}
+
+      - bash: |
+          set -euo pipefail
+          entry="$FBP_BRIDGE_HOME/packages/apra-fleet-bridge/bin/fleet-bridge.mjs"
+          if ! node -e 'process.exit(require("fs").existsSync(process.argv[1]) ? 0 : 1)' "$entry"; then
+            echo "##vso[task.logissue type=error]No bridge entry point at bridgeHome: $entry does not exist. Set bridgeHome to the apra-fleet checkout the daemon runs from."
+            exit 1
+          fi
+          fleet-bridge() { node "$FBP_BRIDGE_HOME/packages/apra-fleet-bridge/bin/fleet-bridge.mjs" "$@"; }
+          mkdir -p "$FBP_WORK/handle"
+          remote=()
+          if [ -n "$FBP_REPO_REMOTE_URL" ]; then remote=(--repo-remote-url "$FBP_REPO_REMOTE_URL"); fi
+          # Exits non-zero when any fail-level check fails; the full report is
+          # printed either way.
+          fleet-bridge preflight \
+            --member "$FBP_MEMBER" \
+            --repo-local-path "$FBP_REPO_PATH" \
+            --base-branch "$FBP_BASE_BRANCH" \
+            --secret-name "$FBP_SECRET_NAME" \
+            ${remote[@]+"${remote[@]}"}
+        displayName: Preflight
+        env:
+          FBP_BRIDGE_HOME: ${{ parameters.bridgeHome }}
+          FBP_WORK: $(Agent.TempDirectory)/fleet-bridge
+          FBP_MEMBER: ${{ parameters.member }}
+          FBP_REPO_PATH: ${{ parameters.repoPath }}
+          FBP_REPO_REMOTE_URL: ${{ parameters.repoRemoteUrl }}
+          FBP_BASE_BRANCH: ${{ parameters.baseBranch }}
+          FBP_SECRET_NAME: ${{ parameters.secretName }}
+
+      - bash: |
+          set -euo pipefail
+          fleet-bridge() { node "$FBP_BRIDGE_HOME/packages/apra-fleet-bridge/bin/fleet-bridge.mjs" "$@"; }
+          criteria=()
+          if [ "$FBP_ALLOW_MISSING_CRITERIA" = "True" ] || [ "$FBP_ALLOW_MISSING_CRITERIA" = "true" ]; then
+            criteria=(--allow-missing-criteria)
+          fi
+          # --repo-local-path: every local bd call runs there. Without it ingest
+          # would use whatever beads DB sits in the agent's working directory.
+          fleet-bridge ingest \
+            --refs "$FBP_WORK_ITEMS" \
+            --member "$FBP_MEMBER" \
+            --repo-local-path "$FBP_REPO_PATH" \
+            --secret-name "$FBP_SECRET_NAME" \
+            ${criteria[@]+"${criteria[@]}"} \
+            > "$FBP_WORK/ingest.json"
+          cat "$FBP_WORK/ingest.json"
         displayName: Ingest work items
         env:
-          FLEET_PAT_SECRET: $(adoPatSecret)
+          FBP_BRIDGE_HOME: ${{ parameters.bridgeHome }}
+          FBP_WORK: $(Agent.TempDirectory)/fleet-bridge
+          FBP_WORK_ITEMS: ${{ parameters.workItems }}
+          FBP_MEMBER: ${{ parameters.member }}
+          FBP_REPO_PATH: ${{ parameters.repoPath }}
+          FBP_SECRET_NAME: ${{ parameters.secretName }}
+          FBP_ALLOW_MISSING_CRITERIA: ${{ parameters.allowMissingCriteria }}
 
-      - ${{ if ne(parameters.requirementsFile, '') }}:
-        - script: |
-            cd "${{ parameters.repoPath }}"
-            npm exec --yes fleet-bridge ingest \
-              --work-items "${{ parameters.workItems }}" \
-              --target-branch "${{ parameters.targetBranch }}" \
-              --member "${{ parameters.member }}" \
-              --ado-org-url "${{ parameters.adoOrgUrl }}" \
-              --ado-project "${{ parameters.adoProject }}" \
-              --requirements-file "${{ parameters.requirementsFile }}"
-          displayName: Ingest with requirements file
-          env:
-            FLEET_PAT_SECRET: $(adoPatSecret)
-
-      - script: |
-          cd "${{ parameters.repoPath }}"
-          npm exec --yes fleet-bridge launch \
-            --work-items "${{ parameters.workItems }}" \
-            --target-branch "${{ parameters.targetBranch }}" \
-            --goal "${{ parameters.goal }}" \
-            --member "${{ parameters.member }}" \
-            --ado-org-url "${{ parameters.adoOrgUrl }}" \
-            --ado-project "${{ parameters.adoProject }}" \
-            --viewer-port "${{ parameters.viewerPort }}" \
-            --ado-pat-secret-name "${{ parameters.adoPatSecretName }}" \
-            --await-until "${{ parameters.awaitUntil }}" \
-            --await-timeout-minutes "${{ parameters.awaitTimeoutMinutes }}" \
-            --max-cycles "${{ parameters.maxCycles }}" \
-            --budget "${{ parameters.budget }}" \
-            --max-carry-over "${{ parameters.maxCarryOver }}" \
-            --blob-account-url "${{ parameters.blobAccountUrl }}" \
-            --blob-container "${{ parameters.blobContainer }}" 2>&1 | tee bridge-output.log
-          SPRINT_ID=$(cat bridge-output.log | grep -i sprint-id | head -1 | awk '{print $NF}' || echo '')
-          VIEWER_URL=$(cat bridge-output.log | grep -i viewer | head -1 | awk '{print $NF}' || echo '')
-          LOG_PATH=$(cat bridge-output.log | grep -i "log:" | head -1 | awk '{print $NF}' || echo '')
-          echo "##vso[task.setvariable variable=SprintId]$SPRINT_ID"
-          echo "##vso[task.setvariable variable=ViewerUrl]$VIEWER_URL"
-          echo "##vso[task.setvariable variable=LogPath]$LOG_PATH"
+      - bash: |
+          set -euo pipefail
+          fleet-bridge() { node "$FBP_BRIDGE_HOME/packages/apra-fleet-bridge/bin/fleet-bridge.mjs" "$@"; }
+          # Build the SprintRequest from the parameters (all read from env, as
+          # data) and take the issue root from ingest's JSON output. Launch
+          # posts the sprint against exactly that root.
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const env = process.env;
+            const fail = (msg) => { console.error("request: " + msg); process.exit(1); };
+            const ingest = JSON.parse(fs.readFileSync(path.join(env.FBP_WORK, "ingest.json"), "utf8"));
+            if (!ingest.syntheticRoot || typeof ingest.syntheticRootId !== "string") {
+              fail("ingest resolved to the tracker-native root " + JSON.stringify(ingest.rootBeadId)
+                + " rather than a synthetic one; launch currently requires ingest to create the root."
+                + " Pass the child work items rather than their parent.");
+            }
+            if (!/^[A-Za-z0-9._-]+$/.test(ingest.syntheticRootId)) fail("unexpected syntheticRootId " + JSON.stringify(ingest.syntheticRootId));
+            const maxCycles = Number(env.FBP_MAX_CYCLES);
+            if (!Number.isInteger(maxCycles) || maxCycles < 1) fail("maxCycles must be an integer of 1 or more, got " + JSON.stringify(env.FBP_MAX_CYCLES));
+            const minutes = Number(env.FBP_AWAIT_TIMEOUT_MINUTES);
+            if (!Number.isInteger(minutes) || minutes < 1) fail("awaitTimeoutMinutes must be an integer of 1 or more");
+            const request = {
+              platform: "azure-devops",
+              member: env.FBP_MEMBER,
+              workItems: env.FBP_WORK_ITEMS.split(",").map((s) => s.trim()).filter(Boolean),
+              targetBranch: env.FBP_TARGET_BRANCH,
+              baseBranch: env.FBP_BASE_BRANCH,
+              goal: env.FBP_GOAL,
+              maxCycles,
+              repo: { localPath: env.FBP_REPO_PATH },
+              patSecretName: env.FBP_SECRET_NAME,
+              triggeredBy: env.FBP_TRIGGERED_BY,
+              runUrl: env.FBP_COLLECTION_URI + encodeURIComponent(env.FBP_TEAM_PROJECT) + "/_build/results?buildId=" + env.FBP_BUILD_ID,
+            };
+            if (env.FBP_REPO_REMOTE_URL) request.repo.remoteUrl = env.FBP_REPO_REMOTE_URL;
+            if (env.FBP_BUDGET !== "") {
+              const budget = Number(env.FBP_BUDGET);
+              if (!Number.isFinite(budget) || budget < 0) fail("budget must be empty or a non-negative number, got " + JSON.stringify(env.FBP_BUDGET));
+              request.budget = budget;
+            }
+            if (env.FBP_REQUIREMENTS_FILE !== "") request.requirementsFile = env.FBP_REQUIREMENTS_FILE;
+            fs.writeFileSync(path.join(env.FBP_WORK, "request.json"), JSON.stringify(request, null, 2));
+            fs.writeFileSync(path.join(env.FBP_WORK, "root-id.txt"), ingest.syntheticRootId);
+            fs.writeFileSync(path.join(env.FBP_WORK, "timeout-ms.txt"), String(minutes * 60000));
+          '
+          root_id=$(cat "$FBP_WORK/root-id.txt")
+          timeout_ms=$(cat "$FBP_WORK/timeout-ms.txt")
+          cat "$FBP_WORK/request.json"; echo
+          set +e
+          fleet-bridge launch \
+            --request-file "$FBP_WORK/request.json" \
+            --synthetic-root-id "$root_id" \
+            --await-until "$FBP_AWAIT_UNTIL" \
+            --timeout-ms "$timeout_ms" \
+            --watcher daemon \
+            > "$FBP_WORK/launch.json"
+          rc=$?
+          set -e
+          # Keep the handle whether or not launch went green: a red await or an
+          # unclaimed sprint still leaves a running sprint someone must find.
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const work = process.env.FBP_WORK;
+            let out;
+            try { out = JSON.parse(fs.readFileSync(path.join(work, "launch.json"), "utf8")); } catch { process.exit(0); }
+            if (!out || !out.handle || !/^[A-Za-z0-9._-]+$/.test(String(out.handle.sprintId))) process.exit(0);
+            fs.writeFileSync(path.join(work, "handle", "sprint-handle.json"), JSON.stringify(out.handle, null, 2));
+            const line = (k, v) => console.log("  " + k + ": " + String(v).replace(/[\r\n]+/g, " "));
+            console.log("Sprint launched:");
+            line("sprint id", out.handle.sprintId);
+            line("log path (on the agent)", out.handle.logPath);
+            if (out.awaited) line("await " + out.awaited.milestone, out.awaited.outcome + (out.awaited.reason ? " - " + out.awaited.reason : ""));
+            if (out.watcher) line("watcher", (out.watcher.ok ? "ok - " : "MISSING - ") + out.watcher.message);
+            console.log("##vso[task.setvariable variable=FleetBridgeSprintId]" + out.handle.sprintId);
+            console.log("##vso[task.setvariable variable=FleetBridgeHandleWritten]true");
+          '
+          exit "$rc"
         displayName: Launch sprint and await milestone
         env:
-          FLEET_PAT_SECRET: $(adoPatSecret)
+          FBP_BRIDGE_HOME: ${{ parameters.bridgeHome }}
+          FBP_WORK: $(Agent.TempDirectory)/fleet-bridge
+          FBP_WORK_ITEMS: ${{ parameters.workItems }}
+          FBP_MEMBER: ${{ parameters.member }}
+          FBP_REPO_PATH: ${{ parameters.repoPath }}
+          FBP_REPO_REMOTE_URL: ${{ parameters.repoRemoteUrl }}
+          FBP_TARGET_BRANCH: ${{ parameters.targetBranch }}
+          FBP_BASE_BRANCH: ${{ parameters.baseBranch }}
+          FBP_GOAL: ${{ parameters.goal }}
+          FBP_MAX_CYCLES: ${{ parameters.maxCycles }}
+          FBP_BUDGET: ${{ parameters.budget }}
+          FBP_REQUIREMENTS_FILE: ${{ parameters.requirementsFile }}
+          FBP_SECRET_NAME: ${{ parameters.secretName }}
+          FBP_AWAIT_UNTIL: ${{ parameters.awaitUntil }}
+          FBP_AWAIT_TIMEOUT_MINUTES: ${{ parameters.awaitTimeoutMinutes }}
+          FBP_TRIGGERED_BY: $(Build.RequestedFor)
+          FBP_COLLECTION_URI: $(System.CollectionUri)
+          FBP_TEAM_PROJECT: $(System.TeamProject)
+          FBP_BUILD_ID: $(Build.BuildId)
 
-      - task: PublishBuildArtifacts@1
+      # The SprintHandle is the join key for everything after this job
+      # (fleet-bridge-design.md, "SprintHandle -- pipeline artifact"): status,
+      # watch and finalize all start from its sprintId. It carries no secret --
+      # makeSprintHandle refuses to build one that does.
+      - task: PublishPipelineArtifact@1
         displayName: Publish sprint handle
+        condition: and(always(), eq(variables['FleetBridgeHandleWritten'], 'true'))
         inputs:
-          PathtoPublish: $(LogPath)
-          ArtifactName: sprint-handle
-        condition: and(succeeded(), ne(variables['LogPath'], ''))
+          targetPath: $(Agent.TempDirectory)/fleet-bridge/handle
+          artifact: sprint-handle
 
-      - script: |
-          echo "Sprint ID: $(SprintId)"
-          echo "Viewer URL: $(ViewerUrl)"
-          echo "Log Path: $(LogPath)"
-        displayName: Report sprint details
-        condition: succeeded()
+      - bash: |
+          set -euo pipefail
+          node -e '
+            const http = require("http");
+            const os = require("os");
+            const port = Number(process.env.FBP_VIEWER_PORT);
+            const id = process.env.FBP_SPRINT_ID;
+            const req = http.get({ host: "127.0.0.1", port, path: "/api/health", timeout: 3000 }, (res) => {
+              res.resume();
+              console.log("LAN viewer: http://" + os.hostname() + ":" + port + "/sprints/" + id + "/live");
+            });
+            const none = () => {
+              // Worded so no second "fleet-bridge VERB" appears in this step:
+              // the drift test attributes every such phrase to a verb.
+              console.log("No LAN viewer answers on port " + port + ". For a browsable link, run the viewer verb of fleet-bridge, on the agent;");
+              console.log("otherwise run its status verb there for sprint " + id + ".");
+            };
+            req.on("timeout", () => { req.destroy(); });
+            req.on("error", none);
+          '
+        displayName: Report where to follow the sprint
+        condition: and(always(), eq(variables['FleetBridgeHandleWritten'], 'true'))
+        env:
+          FBP_VIEWER_PORT: ${{ parameters.viewerPort }}
+          FBP_SPRINT_ID: $(FleetBridgeSprintId)

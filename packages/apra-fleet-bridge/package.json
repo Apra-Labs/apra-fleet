@@ -26,5 +26,8 @@
     "@apralabs/apra-fleet-client": "*",
     "@apralabs/apra-fleet-se": "*",
     "@apralabs/apra-fleet-workflow": "*"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.0"
   }
 }
