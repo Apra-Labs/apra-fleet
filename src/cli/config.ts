@@ -37,6 +37,7 @@ export const CURATED_CHEAP_MODELS = [
 ] as const;
 
 export const CURATED_STANDARD_MODELS = [
+  'gemini-3.8-flash-medium',
   'gemini-3.1-pro-low',
   'gpt-oss-120b',
   'gpt-120',
@@ -47,6 +48,7 @@ export const CURATED_STANDARD_MODELS = [
 export const CURATED_PREMIUM_MODELS = [
   'sonnet',
   'opus',
+  'gemini-3.1-pro-high',
   'claude-opus-4-6-thinking',
   'gpt-oss-120b',
 ] as const;
@@ -55,7 +57,7 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
-  agy: 'gemini-3.1-pro-low',
+  agy: 'gemini-3.8-flash-medium',
   opencode: 'ollama/qwen3-coder:30b',
 };
 

@@ -30,8 +30,8 @@ describe('get_member_model_pricing', () => {
     addAgent(makeTestAgent({ id: 'm-agy', friendlyName: 'agy-member', llmProvider: 'agy' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-agy' }));
     expect(result.pricing.cheap.model).toBe('gemini-3.8-flash-low');
-    expect(result.pricing.standard.model).toBe('gemini-3.1-pro-low');
-    expect(result.pricing.premium.model).toBe('claude-opus-4-6-thinking');
+    expect(result.pricing.standard.model).toBe('gemini-3.8-flash-medium');
+    expect(result.pricing.premium.model).toBe('gemini-3.1-pro-high');
     expect(result.pricing.premium.promptPrice).toBeGreaterThan(0);
   });
 

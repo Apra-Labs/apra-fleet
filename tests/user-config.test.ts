@@ -249,6 +249,6 @@ describe('agy provider uses user-config for display name', () => {
       tier: 'standard',
     });
     // standard not overridden -- should use hardcoded default
-    expect(cmd).toContain('gemini-3.1-pro-low');
+    expect(cmd).toContain('gemini-3.8-flash-medium');
   });
 });

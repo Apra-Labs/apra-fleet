@@ -47,7 +47,10 @@ const PROVIDER_MODEL_PRICING: Partial<Record<LlmProvider, Record<string, { promp
   },
   agy: {
     'gemini-3.8-flash-low': { prompt: 0.10, completion: 0.40 },
+    // Effort variants of one model share its per-token rate (same weights).
+    'gemini-3.8-flash-medium': { prompt: 0.10, completion: 0.40 },
     'gemini-3.1-pro-low': { prompt: 0.35, completion: 1.05 },
+    'gemini-3.1-pro-high': { prompt: 0.35, completion: 1.05 },
     'claude-opus-4-6-thinking': { prompt: 15.00, completion: 75.00 },
   },
   codex: {

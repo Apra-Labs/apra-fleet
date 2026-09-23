@@ -68,8 +68,8 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       // structured output. The cheap tier is what doers run on, so a stale
       // cheap slug silently costs a sprint every line of code it would write.
       expect(provider.modelForTier('cheap')).toBe('gemini-3.8-flash-low');
-      expect(provider.modelForTier('standard')).toBe('gemini-3.1-pro-low');
-      expect(provider.modelForTier('premium')).toBe('claude-opus-4-6-thinking');
+      expect(provider.modelForTier('standard')).toBe('gemini-3.8-flash-medium');
+      expect(provider.modelForTier('premium')).toBe('gemini-3.1-pro-high');
     });
 
     it('dispatches the SAME model id it reports for a tier (the two catalogs cannot drift)', () => {
