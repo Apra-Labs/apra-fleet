@@ -142,13 +142,17 @@ cannot check, and why.
 - **Tool / method:** `kb_capture` (`P-2`), authority group's non-error branch.
 - **Unverifiable behaviour:** a capture asking for `confidence: "CONFIRMED"` is
   silently clamped to `INFERRED`; the ONLY signal is `confidence_clamped: true`
-  in the response body. `taxonomy.json` deliberately gives this branch no error
+  in the response body. That flag is derived as "stored confidence differs from
+  requested" (requested defaults to `INFERRED` when absent), so it is also
+  `true` for a `user-directive` quarantined to `UNVERIFIED` (D-8), not only for
+  this clamp. `taxonomy.json` deliberately gives this branch no error
   code.
 - **Why schema validation cannot check it:** `confidence: "CONFIRMED"` is a
   schema-VALID request. That the server will not honour it is a policy, not a
   shape. The response's `confidence_clamped` field is schema-checkable as a
-  boolean, but "it is `true` exactly when the request over-asked" is a
-  cross-document relation no schema expresses.
+  boolean, but "it is `true` exactly when the stored confidence differs from
+  the requested one" is a relation between the request and state the response
+  does not carry, which no schema expresses.
 
 ## D-8 -- Directive quarantine is only observable through a LATER read
 
@@ -158,7 +162,9 @@ cannot check, and why.
 - **Unverifiable behaviour:** a `user-directive` capture is forced to
   `UNVERIFIED` and parked as a pending proposal. `kb_capture`'s own response
   (`{id, audn_decision, confidence_clamped}`) never exposes the forced
-  confidence, tag or scope.
+  confidence, tag or scope: `confidence_clamped: true` says only that the stored
+  confidence differs from the requested one -- the same flag the D-7 clamp sets
+  -- not what it became or why.
 - **Why schema validation cannot check it:** the durable effect lives in a
   DIFFERENT tool's response document. No single request/response pair contains
   both the cause and the evidence. (This is also why the corpus records it as a
