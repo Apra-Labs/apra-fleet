@@ -25,6 +25,7 @@ import {
     computeParentGone,
     decideStrayProcess,
     formatStrayKillLog,
+    livenessProbeHost,
     memberLocality,
     memberShellFamily,
     parseElapsedSeconds,
@@ -1296,6 +1297,337 @@ test('the liveness-probe dispatch itself failing (rejects) spares every provisio
         logs.some((l) => l.includes('liveness-probe dispatch itself failed')),
         `the degradation must be stated, not silent: ${JSON.stringify(logs)}`,
     );
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.21 -- WHICH ADDRESS THE LIVENESS PROBE ASKS.
+//
+// THE DEFECT THESE PIN: the probe built http://127.0.0.1:<port> for every
+// candidate, because the listener table carried only { pid, port }. A live
+// process bound ONLY to a specific interface answers nothing on loopback, so
+// curl returned its '000' sentinel, the candidate was recorded as
+// `no-response`, no blocker was added, and it was KILLED -- a live process
+// destroyed on the strength of a question that was asked of the wrong
+// address. That is the single outcome a fail-safe predicate may never
+// produce, so these cases assert the FATE of the process, not the shape of
+// the command that decided it.
+//
+// The module took option (a) (probe the address the socket actually holds),
+// so the non-loopback candidate is SPARED. Under the rejected option (b)
+// (classify it `unprobeable`) it would still have been killed -- which is
+// exactly why option (b) was rejected, and why the assertion below is on the
+// kill list rather than only on the counters.
+// ---------------------------------------------------------------------------
+
+/** The interface address the non-loopback fixture binds to -- deliberately
+ *  NOT 127.0.0.1 and not a wildcard, so a loopback-only probe cannot reach
+ *  it. */
+const IFACE_ADDR = '192.168.1.5';
+const IFACE_PID = 7100;
+const IFACE_PORT = 9600;
+const IFACE_CMD = '/usr/bin/node /opt/fleetwork/supervisor/serve.mjs --host 192.168.1.5 --port 9600';
+
+/** The i4ku.21 scenario: ONE candidate, bound only to a specific interface,
+ *  daemonized (ppid 1) and old enough to clear the minimum-age bound, on a
+ *  port no productionPorts list knows about. It survives every other
+ *  predicate, so the liveness predicate alone decides whether it lives. */
+function ifaceBoundProbeOutput(address = IFACE_ADDR) {
+    return [
+        `SWEEP-PROC  ${IFACE_PID}     1 2-00:00:00 ${IFACE_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 ${address}:${IFACE_PORT} 0.0.0.0:* users:(("node",pid=${IFACE_PID},fd=20))`,
+    ].join('\n');
+}
+
+/**
+ * A liveness seam that behaves like a REAL member rather than an oracle: a
+ * `SWEEP-HEALTH` line is emitted for a candidate only when the dispatched
+ * command actually asked `listenHost`, the address the socket is bound to.
+ * A probe aimed anywhere else gets curl's '000' sentinel -- which is exactly
+ * what a loopback probe against an interface-bound process receives.
+ *
+ * This is what makes the FATE assertions load-bearing instead of decorative:
+ * with a seam that answers whatever it is handed, the defect these cases pin
+ * would still produce a spared process and the tests would pass while the
+ * product killed live processes.
+ */
+function ifaceAwareSeam(probeOutput, { listenHost, status = '200', port = IFACE_PORT, pid = IFACE_PID }) {
+    return livenessStubSeamWithCommand(probeOutput, (command) => {
+        const answered = command.includes(`http://${listenHost}:${port}/`);
+        return `${HEALTH_LINE_PREFIX} ${pid} ${port} ${answered ? status : '000'}`;
+    });
+}
+
+/** livenessStubSeam, but the health output is a FUNCTION of the dispatched
+ *  liveness command rather than a fixed string. */
+function livenessStubSeamWithCommand(processProbeOutput, healthFor) {
+    const issued = [];
+    return {
+        issued,
+        execCommand: async ({ member, command }) => {
+            issued.push({ member, command });
+            if (command.includes(KILL_BEGIN_PREFIX)) {
+                const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
+                const lines = [];
+                for (const pid of pids) {
+                    lines.push(`${KILL_BEGIN_PREFIX} ${pid}`, `${KILL_STATUS_PREFIX} ${pid} 0`);
+                }
+                return { ok: true, output: lines.join('\n') };
+            }
+            if (command.includes(HEALTH_LINE_PREFIX)) {
+                return { ok: true, output: healthFor(command) };
+            }
+            return { ok: true, output: processProbeOutput };
+        },
+    };
+}
+
+async function sweepIfaceScenario({ probeOutput, healthOutput, seam: providedSeam, logs = [] }) {
+    const seam = providedSeam || livenessStubSeam(probeOutput, healthOutput);
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: LIVENESS_MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) },
+    });
+    return { seam, result };
+}
+
+test('DONE WHEN (apra-fleet-i4ku.21): a LIVE candidate bound only to a specific non-loopback address is '
+    + 'probed on THAT address, spared, and never counted as checked-and-dead', async () => {
+    // The member answers ONLY on the address the socket is bound to, exactly
+    // as a real one does -- so under the defect (probe loopback) this
+    // candidate receives curl's '000' and is killed, which is the failure
+    // this case exists to catch.
+    const probeOutput = ifaceBoundProbeOutput();
+    const { seam, result } = await sweepIfaceScenario({
+        probeOutput,
+        seam: ifaceAwareSeam(probeOutput, { listenHost: IFACE_ADDR }),
+    });
+
+    // 1. THE FATE: not killed.
+    assert.deepEqual(result.killed.map((k) => k.pid), [], 'a live interface-bound process must never be swept');
+    assert.deepEqual(result.reported.map((r) => r.pid), [IFACE_PID]);
+    assert.match(result.reported[0].sparedReasons.join(' '), /responded to a liveness probe/);
+
+    // 2. THE ADDRESS: the dispatch asked the bound interface, not loopback.
+    const livenessCmd = seam.issued[1].command;
+    assert.ok(
+        livenessCmd.includes(`http://${IFACE_ADDR}:${IFACE_PORT}/`),
+        `the probe must target the bound address: ${livenessCmd}`,
+    );
+    assert.ok(
+        !livenessCmd.includes(`http://127.0.0.1:${IFACE_PORT}`),
+        'the probe must not ask loopback for a socket that is not bound there',
+    );
+
+    // 3. THE COUNTERS: checked and spared, never counted as unprobeable
+    // (which would mean "held no port to ask" -- it held one).
+    assert.equal(result.liveness.armed, true);
+    assert.equal(result.liveness.dispatched, true);
+    assert.equal(result.liveness.checked, 1);
+    assert.equal(result.liveness.spared, 1);
+    assert.equal(result.liveness.unprobeable, 0);
+    assert.equal(result.liveness.unevaluable, 0);
+    // No kill dispatch at all: probe + liveness probe only.
+    assert.equal(seam.issued.length, 2, `expected probe + liveness probe and NO kill: ${seam.issued.length}`);
+});
+
+test('apra-fleet-i4ku.21: a 0.0.0.0-bound candidate is STILL probed on loopback and still spared when it answers', async () => {
+    // The wildcard case must not regress: loopback IS one of the interfaces a
+    // 0.0.0.0 socket listens on, so asking it needs no assumption about the
+    // member's routing and stays the cheapest correct question.
+    // A wildcard-bound socket answers on loopback and nowhere else in this
+    // fixture, so the case fails if the probe ever stops asking loopback for
+    // a 0.0.0.0 bind.
+    const probeOutput = ifaceBoundProbeOutput('0.0.0.0');
+    const { seam, result } = await sweepIfaceScenario({
+        probeOutput,
+        seam: ifaceAwareSeam(probeOutput, { listenHost: '127.0.0.1', status: '503' }),
+    });
+
+    const livenessCmd = seam.issued[1].command;
+    assert.ok(
+        livenessCmd.includes(`http://127.0.0.1:${IFACE_PORT}/`),
+        `a wildcard bind is probed on loopback: ${livenessCmd}`,
+    );
+    // ANY HTTP status answers -- 503 is a live process, not a healthy one,
+    // and this predicate asks only whether anything is still there.
+    assert.deepEqual(result.killed.map((k) => k.pid), []);
+    assert.equal(result.liveness.spared, 1);
+    assert.match(result.reported[0].sparedReasons.join(' '), /responded to a liveness probe/);
+});
+
+test('apra-fleet-i4ku.21: a "::" wildcard is probed on loopback too, and a bracketed IPv6 bind is probed as a legal URL authority', () => {
+    assert.equal(livenessProbeHost('::'), '127.0.0.1');
+    assert.equal(livenessProbeHost('[::]'), '127.0.0.1');
+    assert.equal(livenessProbeHost('*'), '127.0.0.1');
+    assert.equal(livenessProbeHost(''), '127.0.0.1');
+    assert.equal(livenessProbeHost('[::1]'), '[::1]', 'IPv6 stays bracketed so the URL authority is legal');
+    assert.equal(livenessProbeHost('10.0.0.4'), '10.0.0.4');
+    // Not turnable into a URL -> null, which the sweep resolves fail-safe
+    // (spare), never by quietly asking loopback instead.
+    assert.equal(livenessProbeHost('db.internal'), null, 'a hostname is not probed');
+    assert.equal(livenessProbeHost('fe80::1%eth0'), null, 'a zone-scoped link-local is not probed');
+    assert.equal(livenessProbeHost('999.1.1.1'), null, 'an out-of-range octet is not an address');
+});
+
+test('apra-fleet-i4ku.21: the built probe command targets the expected host for BOTH families, with no command substitution', () => {
+    const candidates = [
+        { pid: 100, port: 9100, probeHost: IFACE_ADDR },
+        { pid: 200, port: 8555, probeHost: '127.0.0.1' },
+        { pid: 300, port: 7000, probeHost: '[::1]' },
+    ];
+
+    const posix = buildLivenessProbeCommand('posix', candidates);
+    assert.ok(posix.includes(`http://${IFACE_ADDR}:9100/`), posix);
+    assert.ok(posix.includes('http://127.0.0.1:8555/'), posix);
+    assert.ok(posix.includes('http://[::1]:7000/'), posix);
+
+    const win = decodeWinCommand(buildLivenessProbeCommand('win32', candidates));
+    assert.ok(win.includes(`http://${IFACE_ADDR}:9100/`), win);
+    assert.ok(win.includes('http://127.0.0.1:8555/'), win);
+    assert.ok(win.includes('http://[::1]:7000/'), win);
+
+    // Criterion 4 of the impl task, re-pinned now that a member-supplied
+    // value reaches the command string: still no command substitution and no
+    // shell-level expansion in either family.
+    for (const [label, cmd] of [['posix', posix], ['win32', win]]) {
+        assert.ok(!cmd.includes('$('), `${label}: no POSIX command substitution`);
+        assert.ok(!cmd.includes('`'), `${label}: no backtick command substitution`);
+        assert.ok(!cmd.includes('${'), `${label}: no braced expansion`);
+    }
+
+    // The host is the LAST gate before a member-supplied value becomes
+    // dispatched text, so anything that is not a plain IP literal is refused
+    // outright rather than rewritten to loopback.
+    for (const bad of ['db.internal', 'fe80::1%eth0', '127.0.0.1; rm -rf /', '$(whoami)', '0.0.0.0']) {
+        assert.throws(
+            () => buildLivenessProbeCommand('posix', [{ pid: 100, port: 9100, probeHost: bad }]),
+            TypeError,
+            `an unprobeable host must be refused, not dispatched: ${bad}`,
+        );
+    }
+});
+
+test('apra-fleet-i4ku.21: a socket whose bound address cannot be turned into a URL is UNEVALUABLE (spared), '
+    + 'never unprobeable and never quietly probed on loopback', async () => {
+    // A socket EXISTS, so there is something to ask -- we merely cannot
+    // phrase the question. `unprobeable` would leave the other predicates'
+    // verdict standing, which here is a kill; `unevaluable` spares.
+    const logs = [];
+    const { seam, result } = await sweepIfaceScenario({
+        probeOutput: ifaceBoundProbeOutput('fe80::1%eth0'),
+        healthOutput: '',
+        logs,
+    });
+
+    assert.deepEqual(result.killed.map((k) => k.pid), [], 'an unaskable socket must spare, not kill');
+    assert.equal(result.liveness.unevaluable, 1);
+    assert.equal(result.liveness.unprobeable, 0, 'it held a port, so it is not the portless bucket');
+    assert.equal(result.liveness.checked, 0, 'it was never actually asked, so it must not count as checked');
+    assert.equal(seam.issued.length, 1, 'no liveness dispatch is built for a candidate with no askable address');
+    assert.ok(
+        logs.some((l) => l.includes('could not be resolved to a probeable host')),
+        `the degradation must be stated, not silent: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('apra-fleet-i4ku.21: a candidate whose sockets are only PARTLY askable is spared rather than killed on the answered half', async () => {
+    // Two ports, one askable and silent, one with no resolvable address.
+    // "Everything I managed to ask said no" is not "nothing is there" while a
+    // socket remains unasked.
+    const probeOutput = [
+        `SWEEP-PROC  ${IFACE_PID}     1 2-00:00:00 ${IFACE_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 ${IFACE_ADDR}:${IFACE_PORT} 0.0.0.0:* users:(("node",pid=${IFACE_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 db.internal:9601 0.0.0.0:* users:(("node",pid=${IFACE_PID},fd=21))`,
+    ].join('\n');
+    const { result } = await sweepIfaceScenario({
+        probeOutput,
+        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000`,
+    });
+
+    assert.deepEqual(result.killed.map((k) => k.pid), []);
+    assert.equal(result.liveness.unevaluable, 1);
+    assert.match(result.reported[0].sparedReasons.join(' '), /liveness probe could not be evaluated/);
+});
+
+test('apra-fleet-i4ku.21: an interface-bound candidate that genuinely does NOT answer is still killed -- the fix must not disarm the sweep', async () => {
+    // The counterweight to the case above: probing the right address and
+    // getting curl's '000' is a real negative answer, and the sweep must
+    // still act on it. Otherwise "spare the live one" would have quietly
+    // become "spare everything".
+    const { result } = await sweepIfaceScenario({
+        probeOutput: ifaceBoundProbeOutput(),
+        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000`,
+    });
+
+    assert.deepEqual(result.killed.map((k) => k.pid), [IFACE_PID], 'a genuinely dead candidate is still swept');
+    assert.equal(result.liveness.checked, 1);
+    assert.equal(result.liveness.spared, 0);
+    assert.equal(result.liveness.unevaluable, 0);
+    assert.equal(result.liveness.unprobeable, 0);
+});
+
+test('apra-fleet-i4ku.21: parseProbeOutput carries the bound host of a SPECIFIC-interface socket through to the candidate record', () => {
+    const parsed = parseProbeOutput(ifaceBoundProbeOutput(), { nowMs: Date.parse('2026-09-23T12:00:00.000Z') });
+    assert.deepEqual(parsed.listeners, [{ pid: IFACE_PID, port: IFACE_PORT, probeHost: IFACE_ADDR }]);
+
+    const record = annotateCandidates(parsed.processes, parsed.listeners, { portsKnown: parsed.portsKnown })
+        .find((r) => r.pid === IFACE_PID);
+    // listeningPorts keeps its old shape: the production-port predicate reads
+    // it and is deliberately unchanged by this bead.
+    assert.deepEqual(record.listeningPorts, [IFACE_PORT]);
+    assert.deepEqual(record.probeTargets, [{ port: IFACE_PORT, probeHost: IFACE_ADDR }]);
+    assert.equal(record.unresolvedSockets, 0);
+});
+
+test('apra-fleet-i4ku.21: one pid holding the same port on loopback AND an interface yields ONE probe, on loopback', () => {
+    // The dispatch is attributed by `pid:port`, so two probes for one key
+    // would collide. Loopback wins because it is reachable without assuming
+    // anything about the member's routing.
+    const parsed = parseProbeOutput([
+        `SWEEP-PROC  ${IFACE_PID}     1 2-00:00:00 ${IFACE_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 ${IFACE_ADDR}:${IFACE_PORT} 0.0.0.0:* users:(("node",pid=${IFACE_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 127.0.0.1:${IFACE_PORT} 0.0.0.0:* users:(("node",pid=${IFACE_PID},fd=21))`,
+    ].join('\n'), {});
+
+    const record = annotateCandidates(parsed.processes, parsed.listeners, { portsKnown: true })
+        .find((r) => r.pid === IFACE_PID);
+    assert.deepEqual(record.probeTargets, [{ port: IFACE_PORT, probeHost: '127.0.0.1' }]);
+    assert.equal(record.unresolvedSockets, 0);
+});
+
+test('apra-fleet-i4ku.21: parseLivenessProbeOutput OR-combines two results for one pid:port -- an answer is never '
+    + 'overwritten by a sibling address\'s 000', () => {
+    const { byKey } = parseLivenessProbeOutput([
+        `${HEALTH_LINE_PREFIX} 500 8080 200`,
+        `${HEALTH_LINE_PREFIX} 500 8080 000`,
+    ].join('\n'));
+    assert.equal(byKey.get('500:8080'), true, 'answered on one address means alive');
+});
+
+test('apra-fleet-i4ku.21: the Windows port table carries LocalAddress, and a legacy two-field row is UNKNOWN rather than assumed loopback', () => {
+    assert.match(
+        decodeWinCommand(buildProbeCommand('win32')),
+        /SWEEP-PORT-WIN.*LocalPort.*LocalAddress/,
+        'the win32 probe must emit the bound address as a third field',
+    );
+
+    const withAddr = parseProbeOutput([
+        'SWEEP-PROC-WIN 700|1|1758503655|C:\\fleetwork\\app.exe',
+        `SWEEP-PORT-WIN 700|9600|${IFACE_ADDR}`,
+    ].join('\n'), {});
+    assert.deepEqual(withAddr.listeners, [{ pid: 700, port: 9600, probeHost: IFACE_ADDR }]);
+
+    const legacy = parseProbeOutput([
+        'SWEEP-PROC-WIN 700|1|1758503655|C:\\fleetwork\\app.exe',
+        'SWEEP-PORT-WIN 700|9600',
+    ].join('\n'), {});
+    assert.deepEqual(legacy.listeners, [{ pid: 700, port: 9600, probeHost: null }]);
+    assert.equal(legacy.portsKnown, true, 'the PORT is still attributed -- only the host is unknown');
 });
 
 // ---------------------------------------------------------------------------
