@@ -10,6 +10,7 @@ import {
     ACTION_LEAVE,
     ACTION_REPORT_ONLY,
     DEFAULT_MIN_AGE_MS,
+    HEALTH_LINE_PREFIX,
     KILL_BEGIN_PREFIX,
     KILL_STATUS_PREFIX,
     LOCALITY_LOCAL,
@@ -18,6 +19,7 @@ import {
     StrayProbeToolMissingError,
     annotateCandidates,
     buildKillCommand,
+    buildLivenessProbeCommand,
     buildProbeCommand,
     classifyFleetEvidence,
     computeParentGone,
@@ -27,6 +29,7 @@ import {
     memberShellFamily,
     parseElapsedSeconds,
     parseKillOutput,
+    parseLivenessProbeOutput,
     parseProbeOutput,
     sweepMemberStrayProcesses,
 } from '../fleet-sprint/member-stray-sweep.mjs';
@@ -1005,6 +1008,286 @@ test('a member whose sockets cannot be attributed reports rather than kills, and
     assert.equal(seam.issued.length, 1, 'no kill dispatch');
     assert.ok(
         logs.some((l) => /could not be attributed/.test(l)),
+        `the degradation must be stated, not silent: ${JSON.stringify(logs)}`,
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Predicate 7 (apra-fleet-i4ku.17) -- the OPT-IN liveness probe. A static
+// productionPorts list cannot enumerate a supervisor on a non-default port or
+// a sprint child's allocateFreePort() viewer port; both are daemonized
+// (ppid 1) the instant their own parent restarts, so predicates 2-3 above are
+// already satisfied the instant this sweep looks at them. This predicate is
+// the backstop: a candidate that still ANSWERS HTTP on a port it holds is
+// spared, with a recorded reason -- never silently killed.
+// ---------------------------------------------------------------------------
+
+test('decideStrayProcess: a candidate that RESPONDED to the liveness probe is spared, with a recorded reason', () => {
+    const decision = decideRemote(staleSandboxSupervisor({ liveProbe: 'responded' }));
+    assert.equal(decision.action, ACTION_REPORT_ONLY, 'a responding candidate must never be killed');
+    assert.notEqual(decision.action, ACTION_KILL);
+    assert.match(decision.sparedReasons.join(' '), /responded to a liveness probe/);
+});
+
+test('decideStrayProcess: a candidate whose liveness probe could not be EVALUATED is spared (fail-safe), never killed', () => {
+    const decision = decideRemote(staleSandboxSupervisor({ liveProbe: 'unevaluable' }));
+    assert.equal(decision.action, ACTION_REPORT_ONLY);
+    assert.notEqual(decision.action, ACTION_KILL);
+    assert.match(decision.sparedReasons.join(' '), /liveness probe could not be evaluated/);
+});
+
+test('decideStrayProcess: a candidate that was probed and got NO response is unaffected -- still killable', () => {
+    // Control for the predicate above: "probed, and confirmed silent" must
+    // not spare a process, or the stale-sandbox case this sweep exists for
+    // would stop working the moment liveness probing is turned on.
+    const decision = decideRemote(staleSandboxSupervisor({ liveProbe: 'no-response' }));
+    assert.equal(decision.action, ACTION_KILL);
+    assert.deepEqual(decision.sparedReasons, []);
+});
+
+test('decideStrayProcess: no liveness probe configured/run at all (liveProbe undefined) is unaffected -- unchanged behaviour', () => {
+    const decision = decideRemote(staleSandboxSupervisor());
+    assert.equal(decision.action, ACTION_KILL, 'the predicate must be a total no-op when liveProbe was never set');
+});
+
+test('buildLivenessProbeCommand: POSIX shape -- one curl per candidate, tagged with pid+port, no command substitution', () => {
+    const cmd = buildLivenessProbeCommand('posix', [{ pid: 100, port: 9100 }, { pid: 200, port: 8555 }]);
+
+    assert.match(cmd, /command -v curl/);
+    assert.match(cmd, /SWEEP-NOTOOL curl/, 'a missing curl must produce a named line, never silence');
+    assert.match(cmd, /SWEEP-HEALTH 100 9100 %\{http_code\}/);
+    assert.match(cmd, /SWEEP-HEALTH 200 8555 %\{http_code\}/);
+    assert.match(cmd, /http:\/\/127\.0\.0\.1:9100\//);
+    assert.match(cmd, /http:\/\/127\.0\.0\.1:8555\//);
+    assert.match(cmd, /--max-time 2\b/, 'DEFAULT_LIVENESS_PROBE_TIMEOUT_MS (2000ms) rounds up to 2 seconds');
+
+    // No shell-level expansion of an orchestrator-side value -- curl's own -w
+    // writes the tagged result directly, so no "$(" capture is ever needed.
+    assert.doesNotMatch(cmd, /\$\(/, 'no POSIX command substitution');
+    assert.doesNotMatch(cmd, /\$HOME|\$\{/, 'no variable expansion');
+});
+
+test('buildLivenessProbeCommand: a custom path and timeout are honoured', () => {
+    const cmd = buildLivenessProbeCommand('posix', [{ pid: 100, port: 9100 }], { path: '/api/health', timeoutMs: 500 });
+    assert.match(cmd, /http:\/\/127\.0\.0\.1:9100\/api\/health/);
+    assert.match(cmd, /--max-time 1\b/, '500ms rounds UP to a whole second, never down to 0');
+});
+
+test('buildLivenessProbeCommand: refuses an invalid candidate, an empty list, or a path not starting with "/"', () => {
+    assert.throws(() => buildLivenessProbeCommand('posix', []), TypeError);
+    assert.throws(() => buildLivenessProbeCommand('posix', [{ pid: 0, port: 80 }]), TypeError);
+    assert.throws(() => buildLivenessProbeCommand('posix', [{ pid: 100, port: 0 }]), TypeError);
+    assert.throws(() => buildLivenessProbeCommand('posix', [{ pid: 100, port: 70000 }]), TypeError);
+    assert.throws(
+        () => buildLivenessProbeCommand('posix', [{ pid: 100, port: 80 }], { path: 'no-leading-slash' }),
+        TypeError,
+    );
+});
+
+test('buildLivenessProbeCommand: win32 is -EncodedCommand wrapped and its decoded script probes every candidate', () => {
+    const cmd = buildLivenessProbeCommand('win32', [{ pid: 100, port: 9100 }]);
+    assert.match(cmd, /^powershell -EncodedCommand [A-Za-z0-9+/=]+$/);
+    const script = decodeWinCommand(cmd);
+    assert.match(script, /Invoke-WebRequest -Uri 'http:\/\/127\.0\.0\.1:9100\/'/);
+    assert.match(script, /SWEEP-HEALTH 100 9100/);
+    assert.doesNotMatch(script, /\$\(/, 'no "$(" subexpression/command-substitution spelling');
+});
+
+test('the generated win32 liveness-probe script PARSES as real PowerShell', { skip: POWERSHELL_SKIP }, () => {
+    const script = decodeWinCommand(buildLivenessProbeCommand('win32', [
+        { pid: 100, port: 9100 }, { pid: 200, port: 8555 },
+    ]));
+    // Parse only -- never execute, matching the equivalent test for
+    // buildProbeCommand() above.
+    const probe = spawnSync(POWERSHELL.bin, ['-NoProfile', '-Command', [
+        '$errs = $null',
+        '$null = [System.Management.Automation.Language.Parser]::ParseInput($input, [ref]$null, [ref]$errs)',
+        'if ($errs.Count -eq 0) { "PARSE-OK" } else { $errs | ForEach-Object { $_.Message } }',
+    ].join('; ')], { encoding: 'utf8', input: script });
+
+    assert.equal(probe.status, 0, `powershell exited ${probe.status}: ${probe.stderr}`);
+    assert.match(probe.stdout, /PARSE-OK/, `generated script has syntax errors: ${probe.stdout}`);
+});
+
+test('parseLivenessProbeOutput: attributes an HTTP status to its pid:port, and treats curl\'s "000" as no response', () => {
+    const output = [
+        `${HEALTH_LINE_PREFIX} 100 9100 200`,
+        `${HEALTH_LINE_PREFIX} 200 8555 503`,
+        `${HEALTH_LINE_PREFIX} 300 18701 000`,
+    ].join('\n');
+    const { evaluable, byKey } = parseLivenessProbeOutput(output);
+    assert.equal(evaluable, true);
+    assert.equal(byKey.get('100:9100'), true, 'any HTTP status at all counts as answered');
+    assert.equal(byKey.get('200:8555'), true, 'even a 5xx is a real HTTP response');
+    assert.equal(byKey.get('300:18701'), false, "curl's 000 sentinel is the only 'no response' outcome");
+});
+
+test('parseLivenessProbeOutput: a SWEEP-NOTOOL line marks the whole dispatch unevaluable', () => {
+    const { evaluable, byKey } = parseLivenessProbeOutput('SWEEP-NOTOOL curl');
+    assert.equal(evaluable, false);
+    assert.equal(byKey.size, 0);
+});
+
+test('parseLivenessProbeOutput: malformed/unrecognised lines are ignored rather than throwing', () => {
+    const { evaluable, byKey } = parseLivenessProbeOutput('garbage\n\nSWEEP-HEALTH not-a-number\n');
+    assert.equal(evaluable, true);
+    assert.equal(byKey.size, 0);
+});
+
+// The three "Done when" scenarios, pinned together in ONE sweep pass so the
+// combined matrix -- not just each predicate in isolation -- is proven:
+//   - a healthy daemonized supervisor on a NON-DEFAULT port (not in
+//     PRODUCTION_PORTS) is SPARED, with a recorded reason;
+//   - a live, re-adoptable sprint child (also daemonized, also on a port
+//     PRODUCTION_PORTS knows nothing about) is SPARED, with a recorded
+//     reason;
+//   - the stale-sandbox case (STALE_PID) is STILL KILLED -- turning this
+//     predicate on must not disable the sweep for the case it exists for.
+const LIVENESS_SUPERVISOR_PID = 6100;
+const LIVENESS_SUPERVISOR_PORT = 9100;
+const LIVENESS_SUPERVISOR_CMD = '/usr/bin/node /opt/fleetwork/supervisor/serve.mjs --port 9100';
+const LIVENESS_SPRINT_CHILD_PID = 6200;
+const LIVENESS_SPRINT_CHILD_PORT = 8555;
+const LIVENESS_SPRINT_CHILD_CMD = '/usr/bin/node /opt/fleetwork/bin/cli.mjs --fleet-run-id run-789 --viewer-port 8555';
+const LIVENESS_MARKERS = [
+    ...MARKERS,
+    // A non-default-port supervisor's own path marker -- distinct from the
+    // sandbox-supervisor marker above, matching the bead's own scenario 1
+    // (a supervisor started on a port no static productionPorts list knows
+    // about) rather than reusing the sandbox fixture.
+    { kind: 'supervisor', token: '/opt/fleetwork/supervisor/', evidence: 'path' },
+];
+
+/** Process/port table carrying: the stale sandbox supervisor (still
+ *  killable), a healthy non-default-port supervisor, and a live re-adoptable
+ *  sprint child -- both of the latter daemonized (ppid 1) exactly like the
+ *  bead describes. */
+function livenessScenarioProbeOutput() {
+    return [
+        `SWEEP-PROC  ${STALE_PID}  ${DEAD_PARENT_PID} 1-02:03:04 ${SANDBOX_SUPERVISOR_CMD}`,
+        `SWEEP-PROC  ${LIVENESS_SUPERVISOR_PID}     1 2-00:00:00 ${LIVENESS_SUPERVISOR_CMD}`,
+        `SWEEP-PROC  ${LIVENESS_SPRINT_CHILD_PID}     1 1-00:00:00 ${LIVENESS_SPRINT_CHILD_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:18701 0.0.0.0:* users:(("node",pid=${STALE_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${LIVENESS_SUPERVISOR_PORT} 0.0.0.0:* users:(("node",pid=${LIVENESS_SUPERVISOR_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${LIVENESS_SPRINT_CHILD_PORT} 0.0.0.0:* users:(("node",pid=${LIVENESS_SPRINT_CHILD_PID},fd=20))`,
+    ].join('\n');
+}
+
+/** A bespoke exec seam for the liveness end-to-end tests: unlike stubSeam()
+ *  above, it must tell THREE dispatch shapes apart (process probe, liveness
+ *  probe, kill) -- stubSeam's own content sniffing (`command.includes('SWEEP-')`)
+ *  cannot, since a liveness dispatch's curl -w format string ALSO contains
+ *  the literal text "SWEEP-" for the process-probe branch to match. */
+function livenessStubSeam(processProbeOutput, healthOutput) {
+    const issued = [];
+    return {
+        issued,
+        execCommand: async ({ member, command }) => {
+            issued.push({ member, command });
+            if (command.includes(KILL_BEGIN_PREFIX)) {
+                const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
+                const lines = [];
+                for (const pid of pids) {
+                    lines.push(`${KILL_BEGIN_PREFIX} ${pid}`, `${KILL_STATUS_PREFIX} ${pid} 0`);
+                }
+                return { ok: true, output: lines.join('\n') };
+            }
+            if (command.includes(HEALTH_LINE_PREFIX)) {
+                return { ok: true, output: healthOutput };
+            }
+            return { ok: true, output: processProbeOutput };
+        },
+    };
+}
+
+test('DONE WHEN (apra-fleet-i4ku.17): a healthy non-default-port supervisor and a live re-adoptable sprint '
+    + 'child are both spared with a recorded reason, while the stale-sandbox case is still killed', async () => {
+    const healthOutput = [
+        `${HEALTH_LINE_PREFIX} ${LIVENESS_SUPERVISOR_PID} ${LIVENESS_SUPERVISOR_PORT} 200`,
+        `${HEALTH_LINE_PREFIX} ${LIVENESS_SPRINT_CHILD_PID} ${LIVENESS_SPRINT_CHILD_PORT} 200`,
+        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000`,
+    ].join('\n');
+    const seam = livenessStubSeam(livenessScenarioProbeOutput(), healthOutput);
+    const logs = [];
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: LIVENESS_MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) },
+    });
+
+    // The stale-sandbox case: STILL KILLED.
+    assert.deepEqual(result.killed.map((k) => k.pid), [STALE_PID], 'turning liveness probing on must not disable the sweep');
+
+    // Both liveness-guarded candidates: SPARED, with a recorded reason.
+    const reportedPids = result.reported.map((r) => r.pid).sort((a, b) => a - b);
+    assert.deepEqual(reportedPids, [LIVENESS_SUPERVISOR_PID, LIVENESS_SPRINT_CHILD_PID].sort((a, b) => a - b));
+    const supervisorReport = result.reported.find((r) => r.pid === LIVENESS_SUPERVISOR_PID);
+    const childReport = result.reported.find((r) => r.pid === LIVENESS_SPRINT_CHILD_PID);
+    assert.match(supervisorReport.sparedReasons.join(' '), /responded to a liveness probe/);
+    assert.match(childReport.sparedReasons.join(' '), /responded to a liveness probe/);
+
+    // Exactly three dispatches: process probe, liveness probe, kill.
+    assert.equal(seam.issued.length, 3, `expected probe + liveness-probe + kill, got: ${JSON.stringify(seam.issued.map((i) => i.command))}`);
+    // The liveness dispatch must have named every provisional candidate,
+    // including the one that turned out to still be dead.
+    const livenessCmd = seam.issued[1].command;
+    assert.ok(livenessCmd.includes(`${LIVENESS_SUPERVISOR_PID} ${LIVENESS_SUPERVISOR_PORT}`));
+    assert.ok(livenessCmd.includes(`${LIVENESS_SPRINT_CHILD_PID} ${LIVENESS_SPRINT_CHILD_PORT}`));
+    assert.ok(livenessCmd.includes(`${STALE_PID} 18701`));
+    // The kill dispatch must name ONLY the still-dead pid.
+    const killCmd = seam.issued[2].command;
+    assert.match(killCmd, new RegExp(`kill -9 ${STALE_PID} 2>&1`));
+    for (const sparedPid of [LIVENESS_SUPERVISOR_PID, LIVENESS_SPRINT_CHILD_PID]) {
+        assert.ok(!killCmd.includes(String(sparedPid)), `pid ${sparedPid} must not be in the kill dispatch`);
+    }
+});
+
+test('liveness probe OFF by default: sweepMemberStrayProcesses dispatches no second probe unless livenessProbe is set', async () => {
+    const seam = stubSeam(scenarioProbeOutput());
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        logger: { log: () => {}, error: () => {} },
+    });
+    assert.deepEqual(result.killed.map((k) => k.pid), [STALE_PID]);
+    assert.equal(seam.issued.length, 2, 'probe + kill only -- no liveness dispatch when the caller never opted in');
+});
+
+test('the liveness-probe dispatch itself failing (rejects) spares every provisional candidate, fail-safe', async () => {
+    const seam = livenessStubSeam(livenessScenarioProbeOutput(), null);
+    const failingExec = async (opts) => {
+        if (opts.command.includes(HEALTH_LINE_PREFIX)) throw new Error('ssh: connection reset');
+        return seam.execCommand(opts);
+    };
+    const logs = [];
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: LIVENESS_MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: failingExec,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) },
+    });
+
+    assert.deepEqual(result.killed, [], 'a failed SECOND dispatch must never fall back to killing');
+    assert.deepEqual(
+        result.reported.map((r) => r.pid).sort((a, b) => a - b),
+        [STALE_PID, LIVENESS_SUPERVISOR_PID, LIVENESS_SPRINT_CHILD_PID].sort((a, b) => a - b),
+        'every provisional candidate is spared, including the genuinely stale one',
+    );
+    for (const r of result.reported) {
+        assert.match(r.sparedReasons.join(' '), /liveness probe could not be evaluated/);
+    }
+    assert.ok(
+        logs.some((l) => l.includes('liveness-probe dispatch itself failed')),
         `the degradation must be stated, not silent: ${JSON.stringify(logs)}`,
     );
 });

@@ -35,6 +35,26 @@
 //      anything the next member-prep pass would recognise as itself).
 //   6. Every kill is logged with pid, command line, start time and the reason
 //      the process was selected (see formatStrayKillLog()).
+//   7. LIVENESS PROBE (apra-fleet-i4ku.17, OPT-IN). Predicate 4 above is only
+//      as good as the caller's static `productionPorts` list -- which cannot
+//      enumerate a supervisor started on a non-default port, or a sprint
+//      child's allocateFreePort() viewer port. Both are daemonized (ppid 1
+//      the instant their own parent restarts -- exactly the re-adoption
+//      window src/supervisor/readopt.mjs exists for), so predicate 3 is
+//      satisfied instantly too, leaving only the port list standing between
+//      a live process and a kill. When the caller opts in (`livenessProbe`
+//      on sweepMemberStrayProcesses()), every candidate that survived every
+//      OTHER predicate gets a SECOND dispatch -- a plain HTTP GET against
+//      each port it still holds (buildLivenessProbeCommand()). Answering
+//      ANY HTTP status at all is enough to spare it: this predicate asks
+//      only "is anything still answering here", never what the response
+//      says, so it makes no assumption about a target's own health-endpoint
+//      shape. Fail-safe exactly like every predicate above: a probe that
+//      could not be run at all (no curl/Invoke-WebRequest on the member, or
+//      the second dispatch itself failing) spares the candidate too, rather
+//      than silently falling back to killing it -- see
+//      parseLivenessProbeOutput()'s `evaluable` and decideStrayProcess()'s
+//      `record.liveProbe` handling.
 //
 // PRIOR ART this follows deliberately: src/supervisor/dolt-orphan-sweep.mjs
 // (same command-builder / output-parser / injected-seam split, same
@@ -447,6 +467,143 @@ export function parseKillOutput(output, pids) {
         }
     }
     return { gone, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Liveness probe (apra-fleet-i4ku.17) -- the OPT-IN second dispatch that lets
+// a candidate that survived every other kill predicate prove it is still a
+// live, answering process before it is signalled. See this file's header,
+// predicate 7.
+// ---------------------------------------------------------------------------
+
+/** `SWEEP-HEALTH <pid> <port> <httpStatusOr000>` -- one liveness-probe result
+ *  line. Built and emitted IDENTICALLY for both shell families (unlike the
+ *  process/port tables): the value is computed in JavaScript-authored format
+ *  strings on both sides, so there is no OS-specific shape for the parser to
+ *  tell apart. */
+export const HEALTH_LINE_PREFIX = 'SWEEP-HEALTH';
+
+/** Default path requested by the liveness probe. Only whether SOMETHING
+ *  answers HTTP here matters -- never the response body -- so a bare `/` is
+ *  a safe, target-agnostic default; a caller may override it. */
+export const DEFAULT_LIVENESS_PROBE_PATH = '/';
+
+/** Default per-request timeout. Short and deliberately so: this predicate
+ *  only ever runs against candidates already headed for a kill, and a
+ *  slow/hanging probe must not stall the whole sweep pass over one of them. */
+export const DEFAULT_LIVENESS_PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * Builds the liveness-probe dispatch for a set of already-provisionally-
+ * killable `{ pid, port }` candidates: one HTTP GET per candidate port,
+ * tagged with pid+port so parseLivenessProbeOutput() can attribute a result
+ * back to the exact candidate that requested it (a candidate may hold more
+ * than one listening port).
+ *
+ * THIS PROBE ANSWERS ONE QUESTION ONLY: does *anything* answer HTTP on this
+ * port right now? It never inspects the response body or requires a
+ * particular status code -- doing so would require knowing what a target's
+ * own health endpoint returns, which is exactly the target knowledge this
+ * generic module must not hardcode (see this file's GENERIC ENGINE note).
+ * Any HTTP status at all (2xx-5xx) counts as "answered"; curl's own '000'
+ * sentinel (no HTTP response was received at all -- connection refused,
+ * reset, or the request timed out) is the only "not answering" outcome.
+ *
+ * NO SHELL-LEVEL EXPANSION AND NO COMMAND SUBSTITUTION: curl's `-w` format
+ * string writes the tagged result line directly to stdout, so no `$(...)` is
+ * needed to capture it -- matching this module's "no orchestrator-side value
+ * left for the member shell to expand" discipline (see buildProbeCommand()'s
+ * header and buildKillCommand()'s `$?` carve-out for the one legitimate
+ * exception to that rule, which this function does not need).
+ *
+ * @param {'win32'|'posix'} family
+ * @param {Array<{ pid: number, port: number }>} candidates
+ * @param {{ path?: string, timeoutMs?: number }} [opts]
+ * @returns {string}
+ */
+export function buildLivenessProbeCommand(family, candidates, opts = {}) {
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+        throw new TypeError('buildLivenessProbeCommand(family, candidates): candidates must be a non-empty array');
+    }
+    const clean = candidates.map(({ pid, port } = {}) => {
+        const p = Number(pid);
+        const prt = Number(port);
+        if (!Number.isInteger(p) || p <= 1) {
+            throw new TypeError(`buildLivenessProbeCommand: refusing an invalid pid ${JSON.stringify(pid)}`);
+        }
+        if (!Number.isInteger(prt) || prt <= 0 || prt > 65535) {
+            throw new TypeError(`buildLivenessProbeCommand: refusing an invalid port ${JSON.stringify(port)}`);
+        }
+        return { pid: p, port: prt };
+    });
+    const reqPath = typeof opts.path === 'string' && opts.path ? opts.path : DEFAULT_LIVENESS_PROBE_PATH;
+    if (!reqPath.startsWith('/')) {
+        throw new TypeError(`buildLivenessProbeCommand: opts.path must start with '/', got ${JSON.stringify(reqPath)}`);
+    }
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_LIVENESS_PROBE_TIMEOUT_MS;
+    const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+
+    if (family === 'win32') {
+        const rawScript = clean.map(({ pid, port }) => [
+            'try {',
+            ` $r = Invoke-WebRequest -Uri 'http://127.0.0.1:${port}${reqPath}' -TimeoutSec ${timeoutSeconds}`, // shell-guard-allow: PowerShell local variable ($r, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's own carve-outs; never an orchestrator-side value left for an unknown member shell to expand.
+            ' -UseBasicParsing -ErrorAction Stop;',
+            ` 'SWEEP-HEALTH ${pid} ${port} ' + [int]$r.StatusCode`, // shell-guard-allow: PowerShell local variable $r assigned two lines above in this same -EncodedCommand payload; see this function's try-block first line.
+            ' } catch {',
+            // A non-2xx HTTP status still throws under -ErrorAction Stop, but
+            // it IS a real HTTP response (the port answered) -- read the
+            // status back off the exception's own Response when present,
+            // rather than reading it as "no response" (000).
+            ` if ($_.Exception.Response) { 'SWEEP-HEALTH ${pid} ${port} ' + [int]$_.Exception.Response.StatusCode }`, // shell-guard-allow: PowerShell's own $_ catch-block variable inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's $_ carve-out.
+            ` else { 'SWEEP-HEALTH ${pid} ${port} 000' }`,
+            ' }',
+        ].join('')).join('; ');
+        return seWindows.wrapForMember(rawScript);
+    }
+    // POSIX. `command -v curl` checked ONCE up front (a POSIX shell builtin,
+    // no external binary needed); every candidate is probed inside the same
+    // `if`, so a missing tool produces exactly one SWEEP-NOTOOL line instead
+    // of one per candidate.
+    const probes = clean.map(({ pid, port }) => (
+        `curl -s -o /dev/null -w 'SWEEP-HEALTH ${pid} ${port} %{http_code}\\n' `
+        + `--max-time ${timeoutSeconds} http://127.0.0.1:${port}${reqPath} 2>/dev/null;`
+    )).join(' ');
+    return `if ! command -v curl > /dev/null 2>&1; then echo '${MISSING_TOOL_PREFIX} curl'; else ${probes} fi`;
+}
+
+/**
+ * Parse a liveness-probe dispatch's output (built by
+ * buildLivenessProbeCommand()) into a per-`pid:port` outcome.
+ *
+ * `evaluable` is FALSE when the member had no supported liveness-probe tool
+ * (a SWEEP-NOTOOL line) -- the caller must then treat every candidate this
+ * dispatch was built for as UNEVALUABLE (fail-safe: report, never kill),
+ * matching this module's "I could not look != there is nothing there"
+ * discipline everywhere else (StrayProbeToolMissingError, the portsKnown
+ * guard).
+ *
+ * @param {string} output raw combined stdout/stderr from the liveness-probe dispatch
+ * @returns {{ evaluable: boolean, byKey: Map<string, boolean> }} byKey maps
+ *   `${pid}:${port}` -> true (answered some HTTP status) | false (curl's
+ *   '000' sentinel -- no HTTP response at all).
+ */
+export function parseLivenessProbeOutput(output) {
+    const byKey = new Map();
+    let evaluable = true;
+    for (const raw of String(output || '').split('\n')) {
+        const line = raw.replace(/\r$/, '').trim();
+        if (!line) continue;
+        if (line.startsWith(`${MISSING_TOOL_PREFIX} `)) {
+            evaluable = false;
+            continue;
+        }
+        if (!line.startsWith(`${HEALTH_LINE_PREFIX} `)) continue;
+        const body = line.slice(HEALTH_LINE_PREFIX.length + 1).trim();
+        const m = /^(\d+)\s+(\d+)\s+(\d{1,3})$/.exec(body);
+        if (!m) continue;
+        byKey.set(`${m[1]}:${m[2]}`, m[3] !== '000');
+    }
+    return { evaluable, byKey };
 }
 
 // ---------------------------------------------------------------------------
@@ -930,6 +1087,24 @@ export function decideStrayProcess(input = {}) {
             + 'on this same member',
         );
     }
+    // Liveness probe (apra-fleet-i4ku.17, this file's header predicate 7),
+    // OPT-IN: sweepMemberStrayProcesses() sets `record.liveProbe` from a
+    // SECOND dispatch run only against candidates that already survived
+    // every predicate above. Every other value (including undefined, when no
+    // liveness probe was configured or run at all) leaves this predicate a
+    // no-op -- unchanged behaviour from before this predicate existed.
+    if (record.liveProbe === 'responded') {
+        blockers.push(
+            'responded to a liveness probe on a port it holds, so it may be a live fleet process a static '
+            + 'production-port list does not know about (a supervisor on a non-default port, or a sprint '
+            + "child's allocateFreePort() viewer port) -- see member-stray-sweep.mjs's liveness predicate",
+        );
+    } else if (record.liveProbe === 'unevaluable') {
+        blockers.push(
+            'the liveness probe could not be evaluated for this candidate (no supported probe tool on the '
+            + 'member, or the probe dispatch itself failed), so the liveness predicate could not be applied',
+        );
+    }
 
     return {
         ...base,
@@ -978,12 +1153,18 @@ export function formatStrayKillLog(memberName, decision) {
  *   execCommand: (opts: { member: string, command: string, kind: 'probe'|'kill' }) => Promise<{ ok?: boolean, output?: string, error?: string }>,
  *   now?: () => number,
  *   logger?: { log?: Function, error?: Function },
+ *   livenessProbe?: true|{ path?: string, timeoutMs?: number },
  * }} deps
  */
 export async function sweepMemberStrayProcesses(deps = {}) {
     const {
         member = {}, markers = [], productionPorts = [], minAgeMs = DEFAULT_MIN_AGE_MS, execCommand,
         now = () => Date.now(), logger = console,
+        // apra-fleet-i4ku.17, header predicate 7: OPT-IN, exactly like
+        // markers/productionPorts. `undefined`/`null` (the default) runs this
+        // sweep pass byte-for-byte as before this predicate existed -- no
+        // second dispatch, no candidate ever gains a `liveProbe` field.
+        livenessProbe = null,
     } = deps;
 
     if (typeof execCommand !== 'function') {
@@ -1033,9 +1214,80 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         );
     }
     const records = annotateCandidates(processes, listeners, { portsKnown });
-    const decisions = records.map((record) => decideStrayProcess({
+    const decideAll = () => records.map((record) => decideStrayProcess({
         locality, record, productionPorts, markers, caseInsensitive, minAgeMs, nowMs,
     }));
+    let decisions = decideAll();
+
+    // Liveness probe (apra-fleet-i4ku.17, header predicate 7), OPT-IN: a
+    // SECOND dispatch, run only against candidates that already survived
+    // EVERY other predicate (never the full process table -- probing every
+    // listening port on the member is both wasteful and a needless side
+    // effect against services this sweep has no business touching).
+    // `record.liveProbe` is mutated onto the SAME record objects `decideAll`
+    // above already closed over, so re-running it recomputes only what the
+    // new field can change; every record this pass never touches gets the
+    // identical decision as before.
+    if (livenessProbe) {
+        const provisionalToKill = decisions.filter((d) => d.action === ACTION_KILL);
+        const candidates = [];
+        for (const d of provisionalToKill) {
+            for (const port of d.listeningPorts) candidates.push({ pid: d.pid, port });
+        }
+        if (candidates.length > 0) {
+            const livenessOpts = livenessProbe === true ? {} : livenessProbe;
+            let livenessRes;
+            let dispatchFailed = false;
+            try {
+                livenessRes = await execCommand({
+                    member: name,
+                    command: buildLivenessProbeCommand(family, candidates, livenessOpts),
+                    kind: EXEC_KIND_PROBE,
+                });
+            } catch (err) {
+                // The SECOND dispatch itself could not run at all -- fail-safe:
+                // every provisional candidate becomes 'unevaluable' below,
+                // never silently killed because this extra dispatch happened
+                // to fail. Not a StrayProbeError: this predicate is opt-in
+                // hygiene layered on top of an already-successful probe, not
+                // the sweep's core "I could not look at this member" failure.
+                dispatchFailed = true;
+                logError(
+                    `[member-stray-sweep] member '${name}': the liveness-probe dispatch itself failed `
+                    + `(${err && err.message ? err.message : err}) -- every candidate it would have checked `
+                    + 'is spared rather than killed.',
+                );
+            }
+            const failedResult = !dispatchFailed && livenessRes && livenessRes.ok === false;
+            if (failedResult) {
+                logError(
+                    `[member-stray-sweep] member '${name}': the liveness-probe dispatch failed (${livenessRes.error}) `
+                    + '-- every candidate it would have checked is spared rather than killed.',
+                );
+            }
+            const { evaluable, byKey } = (!dispatchFailed && !failedResult)
+                ? parseLivenessProbeOutput(livenessRes && (livenessRes.output || livenessRes.error))
+                : { evaluable: false, byKey: new Map() };
+
+            for (const d of provisionalToKill) {
+                const record = records.find((r) => r.pid === d.pid);
+                if (!record) continue;
+                if (!evaluable) {
+                    record.liveProbe = 'unevaluable';
+                    continue;
+                }
+                const checkedPorts = record.listeningPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
+                if (checkedPorts.length === 0) {
+                    record.liveProbe = 'unevaluable';
+                } else if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === true)) {
+                    record.liveProbe = 'responded';
+                } else {
+                    record.liveProbe = 'no-response';
+                }
+            }
+            decisions = decideAll();
+        }
+    }
 
     const toKill = decisions.filter((d) => d.action === ACTION_KILL);
     const reported = decisions.filter((d) => d.action === ACTION_REPORT_ONLY);
