@@ -66,6 +66,20 @@ export interface Agent {
    *  be exclusively reserved: reserve/release/force_release are no-op
    *  successes and overlap guards skip it. Defaults to false/absent. */
   unreservable?: boolean;
+  /** Which package/consumer currently "owns" this member for its own
+   *  bookkeeping (e.g. a fleet-sprint project binding it to a checkout).
+   *  Set/cleared via member_owner (apra-fleet-4qtu.2) or register_member;
+   *  refused while reservedBy is set (member-held). Deliberately NOT a
+   *  project/repo/group field -- see apra-fleet-4qtu.1 design note. */
+  owner?: { package: string; ref: string };
+  /** Free-form name -> value map for this member, name-validated (portable
+   *  env-name pattern) and size-capped (DQ-23, src/utils/env-map-validation.ts).
+   *  Introduced this sprint as a plain field only -- NOT read by any dispatch
+   *  or provider command path yet (that wiring is DQ-23's S9 follow-up). */
+  env?: Record<string, string>;
+  /** Expiry of this member's LLM auth (OAuth session / API key), when known.
+   *  ISO 8601. Distinct from vcsTokenExpiresAt (VCS credentials) above. */
+  llmAuthExpiresAt?: string;
 }
 
 export interface GitHubAppConfig {

@@ -170,6 +170,9 @@
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.
+ * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
 /**
@@ -204,6 +207,9 @@
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.
+ * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass {} to clear.
+ * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
 /**
@@ -238,6 +244,13 @@
  * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
  * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
  * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
+ * @property {{cheap?: string, standard?: string, premium?: string}} [modelTiers] - Per-member model tier map
+ * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known
+ * @property {string|null} reservedBy - sprintId currently reserving this member for exclusive dispatch, or null when unreserved
+ * @property {boolean} unreservable - True when this member is never exclusively reservable (shared role)
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member
+ * @property {string} [llmAuthExpiresAt] - ISO 8601 expiry of this member's LLM auth, when known
  */
 
 /**

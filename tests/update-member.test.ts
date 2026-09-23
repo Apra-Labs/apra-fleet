@@ -549,3 +549,92 @@ describe('updateMember -- vcs_provider (explicit override)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('updateMember -- owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('sets owner and env on a free (unheld) member', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const result = await updateMember({
+      member_id: member.id,
+      owner: { package: 'fleet-sprint', ref: 'sprint-1' },
+      env: { MY_VAR: 'value' },
+    });
+
+    expect(result).toContain('updated.');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.owner).toEqual({ package: 'fleet-sprint', ref: 'sprint-1' });
+    expect(updated?.env).toEqual({ MY_VAR: 'value' });
+  });
+
+  it('refuses to set owner while the member is held (reservedBy set) -- same refusal member_owner applies', async () => {
+    const member = makeTestAgent({ reservedBy: 'sprint-9' });
+    addAgent(member);
+
+    const result = await updateMember({
+      member_id: member.id,
+      owner: { package: 'fleet-sprint', ref: 'sprint-1' },
+    });
+
+    expect(result).toContain('❌');
+    expect(result).toContain('held');
+    expect(getAllAgents().find(a => a.id === member.id)?.owner).toBeUndefined();
+  });
+
+  it('rejects an env name outside the portable env-name pattern', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, env: { '1bad': 'value' } });
+
+    expect(result).toContain('❌');
+    expect(result).toContain('Invalid env name');
+    expect(getAllAgents().find(a => a.id === member.id)?.env).toBeUndefined();
+  });
+
+  it('rejects an oversized env map', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const bigEnv: Record<string, string> = {};
+    for (let i = 0; i < 50; i++) {
+      bigEnv[`VAR_${i}`] = 'x'.repeat(100);
+    }
+
+    const result = await updateMember({ member_id: member.id, env: bigEnv });
+
+    expect(result).toContain('❌');
+    expect(result).toContain('too large');
+    expect(getAllAgents().find(a => a.id === member.id)?.env).toBeUndefined();
+  });
+
+  it('clearing env with an empty object removes it', async () => {
+    const member = makeTestAgent({ env: { MY_VAR: 'value' } });
+    addAgent(member);
+
+    await updateMember({ member_id: member.id, env: {} });
+
+    expect(getAllAgents().find(a => a.id === member.id)?.env).toBeUndefined();
+  });
+
+  it('accepts llm_auth_expires_at and stores it as llmAuthExpiresAt', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    await updateMember({ member_id: member.id, llm_auth_expires_at: '2027-01-01T00:00:00Z' });
+
+    expect(getAllAgents().find(a => a.id === member.id)?.llmAuthExpiresAt).toBe('2027-01-01T00:00:00Z');
+  });
+});

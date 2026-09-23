@@ -149,3 +149,79 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     expect(after.mcpServers['apra-fleet-member']).toEqual({ unrelated: true });
   }, 60000);
 });
+
+describe('register_member: owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', () => {
+  let workFolder: string;
+
+  beforeEach(async () => {
+    backupAndResetRegistry();
+    workFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-fields-'));
+    mockComposePermissions.mockReset();
+    mockComposePermissions.mockResolvedValue('✅ permissions composed');
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  });
+
+  it('accepts owner, env and llm_auth_expires_at and stores them on the registered member', async () => {
+    const { registerMember } = await import('../src/tools/register-member.js');
+    const { getAllAgents } = await import('../src/services/registry.js');
+
+    const result = await registerMember({
+      friendly_name: 'fields-happy-path',
+      member_type: 'local',
+      work_folder: workFolder,
+      llm_provider: 'claude',
+      owner: { package: 'fleet-sprint', ref: 'sprint-1' },
+      env: { MY_VAR: 'value' },
+      llm_auth_expires_at: '2027-01-01T00:00:00Z',
+    } as any);
+
+    expect(result).toContain('registered successfully');
+    const agent = getAllAgents().find((a) => a.friendlyName === 'fields-happy-path');
+    expect(agent?.owner).toEqual({ package: 'fleet-sprint', ref: 'sprint-1' });
+    expect(agent?.env).toEqual({ MY_VAR: 'value' });
+    expect(agent?.llmAuthExpiresAt).toBe('2027-01-01T00:00:00Z');
+  }, 20000);
+
+  it('rejects an env name outside the portable env-name pattern', async () => {
+    const { registerMember } = await import('../src/tools/register-member.js');
+
+    const result = await registerMember({
+      friendly_name: 'fields-bad-env-name',
+      member_type: 'local',
+      work_folder: workFolder,
+      llm_provider: 'claude',
+      env: { 'bad-name!': 'value' },
+    } as any);
+
+    expect(result).toContain('❌');
+    expect(result).toContain('Invalid env name');
+    expect(result).not.toContain('registered successfully');
+    expect(mockComposePermissions).not.toHaveBeenCalled();
+  }, 20000);
+
+  it('rejects an oversized env map', async () => {
+    const { registerMember } = await import('../src/tools/register-member.js');
+
+    const bigEnv: Record<string, string> = {};
+    // Each entry is ~110 chars (name ~10 + value 100); 50 entries exceeds the 4096-char cap.
+    for (let i = 0; i < 50; i++) {
+      bigEnv[`VAR_${i}`] = 'x'.repeat(100);
+    }
+
+    const result = await registerMember({
+      friendly_name: 'fields-oversized-env',
+      member_type: 'local',
+      work_folder: workFolder,
+      llm_provider: 'claude',
+      env: bigEnv,
+    } as any);
+
+    expect(result).toContain('❌');
+    expect(result).toContain('too large');
+    expect(result).not.toContain('registered successfully');
+  }, 20000);
+});

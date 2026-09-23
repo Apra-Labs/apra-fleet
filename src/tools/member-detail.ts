@@ -62,6 +62,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // unreachable. Absent when the member was registered without an explicit
     // git_access (the engine then falls back to its provisioning default).
     gitAccess: agent.gitAccess ?? undefined,
+    modelTiers: agent.modelTiers ?? undefined,
+    vcsTokenExpiresAt: agent.vcsTokenExpiresAt ?? undefined,
+    reservedBy: agent.reservedBy ?? null,
+    unreservable: agent.unreservable ?? false,
+    owner: agent.owner ?? undefined,
+    env: agent.env ?? undefined,
+    llmAuthExpiresAt: agent.llmAuthExpiresAt ?? undefined,
   };
 
   // -- Cloud Info (parallel with connectivity check) --
@@ -283,7 +290,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
   const shellStr = agent.shell ? ` | shell=${agent.shell}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os}${shellStr} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
+  const ownerStr = agent.owner ? ` | owner=${agent.owner.package}@${agent.owner.ref}` : '';
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os}${shellStr} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}${ownerStr}\n`;
   const tokenStr = agent.llmProvider === 'none'
     ? ' | compute only'
     : agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';

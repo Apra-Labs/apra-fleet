@@ -321,7 +321,8 @@ Returns a plain multi-line text summary for `"compact"`, or the structured
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
 `repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
 `llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
-`branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
+`branch?`, `cloud?`, `modelTiers?`, `vcsTokenExpiresAt?`, `reservedBy`,
+`unreservable`, `owner?`, `env?`, `llmAuthExpiresAt?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by
 `test/client-server-typedef-parity.test.mjs`, which parses the real
 `src/tools/*.ts` sources; the typedefs for the other tools are
@@ -385,6 +386,9 @@ Calls `register_member` -- adds a machine to the fleet.
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+| `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
+| `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint. |
+| `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 
 #### `updateMember(options: UpdateMemberOptions)`
@@ -425,6 +429,9 @@ and means "new value for this field". Identifies the target member via
 | `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
+| `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (`reservedBy` set) -- the same refusal `member_owner` applies, so this cannot be used to bypass it. |
+| `env` | `Record<string, string>?` | Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass `{}` to clear. |
+| `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 #### `removeMember(options: RemoveMemberOptions)`
 

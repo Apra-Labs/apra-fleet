@@ -193,3 +193,48 @@ describe('list_members -- reservedBy (apra-fleet-eft.10.2)', () => {
     expect(member.reservedBy).toBeNull();
   });
 });
+
+describe('list_members -- owner, env, modelTiers, shell, vcsTokenExpiresAt (apra-fleet-4qtu.1.1)', () => {
+  it('surfaces owner, env, modelTiers, shell and vcsTokenExpiresAt in json when set', async () => {
+    addAgent(makeTestAgent({
+      id: 'member-full',
+      friendlyName: 'full-worker',
+      owner: { package: 'fleet-sprint', ref: 'sprint-42' },
+      env: { MY_VAR: 'value' },
+      modelTiers: { cheap: 'haiku', standard: 'sonnet', premium: 'opus' },
+      shell: 'gitbash',
+      vcsTokenExpiresAt: '2026-12-01T00:00:00Z',
+    }));
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-full');
+    expect(member.owner).toEqual({ package: 'fleet-sprint', ref: 'sprint-42' });
+    expect(member.env).toEqual({ MY_VAR: 'value' });
+    expect(member.modelTiers).toEqual({ cheap: 'haiku', standard: 'sonnet', premium: 'opus' });
+    expect(member.shell).toBe('gitbash');
+    expect(member.vcsTokenExpiresAt).toBe('2026-12-01T00:00:00Z');
+  });
+
+  it('omits owner and env from json when unset, and adds no owner= chip to compact output', async () => {
+    addAgent(makeTestAgent({ id: 'member-bare', friendlyName: 'bare-worker' }));
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-bare');
+    expect(member.owner).toBeUndefined();
+    expect(member.env).toBeUndefined();
+
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).not.toContain('owner=');
+  });
+
+  it('adds an owner= chip to compact output when owner is set, with output otherwise unchanged', async () => {
+    addAgent(makeTestAgent({
+      id: 'member-owned',
+      friendlyName: 'owned-worker',
+      owner: { package: 'fleet-sprint', ref: 'sprint-7' },
+    }));
+
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).toContain('owner=fleet-sprint@sprint-7');
+  });
+});
