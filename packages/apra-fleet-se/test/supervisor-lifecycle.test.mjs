@@ -43,6 +43,27 @@ const SPAWNER_HARNESS = path.join(__dirname, 'fixtures/spawner/harness.mjs');
 const SERVE_BIN = path.join(__dirname, '../bin/serve.mjs');
 const SE_PKG_ROOT = path.join(__dirname, '..');
 
+// apra-fleet-v6t7.8: the wait for the real `fleet-se serve` subprocess's
+// /api/health to answer, previously a bare literal (15000ms) at the call
+// site, gets the same treatment as GET_ROOT_TIMEOUT_MS in
+// supervisor-guard-e2e.test.mjs (apra-fleet-v6t7.7): a single named,
+// env-overridable constant with a comment stating why it is sized as it
+// is, rather than an anonymous number that silently drifts. This wait
+// covers the subprocess's full cold-start path (module load, supervisor
+// wiring, ledger/history/reconcile bootstrap) before the listener is even
+// up, so 15s already carries real headroom -- the one observed timeout
+// (15050ms, barely over budget) happened in a full bounded-runner run
+// alongside sibling suites and their own spawned subprocesses contending
+// for the same CPU/IO; a standalone re-run of this exact file passed in
+// 3954ms, over 3x faster than the budget. 15s is kept as the documented
+// default rather than raised blind; the env override exists for a
+// genuinely slower environment to prove its own number instead of every
+// caller inheriting a bigger guess.
+const SUPERVISOR_HEALTH_TIMEOUT_MS = (() => {
+    const override = Number(process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS);
+    return Number.isFinite(override) && override > 0 ? override : 15000;
+})();
+
 // -- global PID cleanup: every spawned pid is tracked and force-killed --------
 /** @type {Set<number>} */
 const spawnedPids = new Set();
@@ -109,6 +130,30 @@ async function waitFor(pred, { timeoutMs = 8000, intervalMs = 50, label = 'condi
 /** Resolve once a pid is no longer alive (via the real signal-0 probe). */
 function waitDead(pid, timeoutMs = 8000) {
     return waitFor(() => !isPidAlive(pid), { timeoutMs, label: `pid ${pid} to exit` });
+}
+
+const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
+
+/**
+ * Wrap a supervisor health-wait timeout with a diagnostic that
+ * distinguishes "the supervisor process never logged its listening line"
+ * from "it bound but /api/health did not answer", using the
+ * already-captured serve.mjs stdout, and appends the captured
+ * stdout/stderr tail so a CI log is actionable without a re-run.
+ * Exercised directly (see the "health-wait timeout diagnostic" test below)
+ * against a real failed wait on a deliberately unbound port, rather than
+ * only asserted against hand-built strings.
+ */
+function describeHealthWaitFailure(err, { stdoutBuf, stderrBuf }) {
+    const bindState = LISTENING_LOG_RE.test(stdoutBuf)
+        ? 'supervisor bound but /api/health did not answer'
+        : 'supervisor never logged its listening line';
+    const context = `${bindState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
+    if (err instanceof Error) {
+        err.message = `${err.message}\n${context}`;
+        return err;
+    }
+    return new Error(`${String(err)}\n${context}`);
 }
 
 /** Resolve once a child process object has emitted 'exit'. */
@@ -379,21 +424,32 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
 
         const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
-            stdio: ['ignore', 'ignore', 'ignore'],
+            // apra-fleet-v6t7.8: piped (not ignored) so a health-wait timeout
+            // can carry the "never bound" vs "bound but silent" diagnostic
+            // plus the stdout/stderr tail -- see describeHealthWaitFailure().
+            stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
         });
         track(serve.pid);
+        let stdoutBuf = '';
+        let stderrBuf = '';
+        serve.stdout.on('data', (c) => { stdoutBuf += c.toString('utf-8'); });
+        serve.stderr.on('data', (c) => { stderrBuf += c.toString('utf-8'); });
         const serveExited = onExit(serve);
 
         // Wait for the supervisor to come up.
-        await waitFor(async () => {
-            try {
-                const res = await httpRequest(port, '/api/health', 'GET', serviceToken);
-                return res.status === 200;
-            } catch {
-                return false;
-            }
-        }, { timeoutMs: 15000, label: 'supervisor /api/health' });
+        try {
+            await waitFor(async () => {
+                try {
+                    const res = await httpRequest(port, '/api/health', 'GET', serviceToken);
+                    return res.status === 200;
+                } catch {
+                    return false;
+                }
+            }, { timeoutMs: SUPERVISOR_HEALTH_TIMEOUT_MS, label: 'supervisor /api/health' });
+        } catch (err) {
+            throw describeHealthWaitFailure(err, { stdoutBuf, stderrBuf });
+        }
 
         // A sprint "completing" on the machine: a real short-lived child that
         // writes a terminal state and exits. The supervisor must not react.
@@ -421,5 +477,58 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
 
         // And its port is no longer answering.
         await assert.rejects(httpRequest(port, '/api/health', 'GET', serviceToken));
+    });
+});
+
+// -----------------------------------------------------------------------------
+// health-wait timeout diagnostic (apra-fleet-v6t7.8)
+// -----------------------------------------------------------------------------
+describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
+    // Proves describeHealthWaitFailure()'s two messages against a REAL
+    // failed health wait (a deliberately unbound port -- nothing ever
+    // listens on it), rather than only asserting against hand-built
+    // strings, so the diagnostic text is demonstrated on an actual
+    // connection failure instead of merely assumed correct.
+    test('distinguishes "supervisor never logged its listening line" from "bound but /api/health did not answer"', async () => {
+        const port = await getFreePort(); // closed immediately after allocation; nothing listens on it
+        let caught;
+        try {
+            await waitFor(async () => {
+                try {
+                    const res = await httpRequest(port, '/api/health', 'GET', 'irrelevant-token');
+                    return res.status === 200;
+                } catch {
+                    return false;
+                }
+            }, { timeoutMs: 300, intervalMs: 50, label: 'unbound port /api/health' });
+            assert.fail('expected the wait against an unbound port to time out');
+        } catch (err) {
+            caught = err;
+        }
+        assert.ok(caught instanceof Error, 'the wait against an unbound port must reject with an Error');
+
+        // describeHealthWaitFailure() mutates err.message in place (matching
+        // how it is actually used against the single shared serve.mjs error
+        // above), so each invocation below gets its own fresh Error built
+        // from the same real failure -- otherwise the second call's
+        // diagnostic would stack onto the first's message.
+        const neverBound = describeHealthWaitFailure(new Error(caught.message), { stdoutBuf: '', stderrBuf: '' });
+        assert.match(
+            neverBound.message,
+            /supervisor never logged its listening line/,
+            'stdout with no listening line must be diagnosed as "supervisor never logged its listening line"',
+        );
+        assert.doesNotMatch(neverBound.message, /supervisor bound but \/api\/health did not answer/);
+
+        const boundButSilent = describeHealthWaitFailure(new Error(caught.message), {
+            stdoutBuf: `[supervisor] listening on http://localhost:${port} (pid 12345)\n`,
+            stderrBuf: '',
+        });
+        assert.match(
+            boundButSilent.message,
+            /supervisor bound but \/api\/health did not answer/,
+            'stdout containing the listening line must be diagnosed as "supervisor bound but /api/health did not answer"',
+        );
+        assert.doesNotMatch(boundButSilent.message, /supervisor never logged its listening line/);
     });
 });
