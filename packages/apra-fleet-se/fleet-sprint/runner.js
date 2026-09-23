@@ -4173,6 +4173,39 @@ async function runSprintCycle(context) {
                             reason: remedy.reason || null,
                         });
                     }
+
+                    // apra-fleet-iiny.5.1 (design doc sections 2.4, 2.6.5):
+                    // `pause_for_human` was applied above (the executor's
+                    // `onPause` handler already called the engine's own
+                    // `requestPause(reason)` -- this runner never calls it
+                    // directly), so the referral card the human sees needs
+                    // the doctor's full humanActionRequired block, not just
+                    // the one-line reason string requestPause() carries.
+                    // Published verbatim under the 'sprint-doctor' state
+                    // namespace: the viewer's existing generic
+                    // publishState()/state.extensions wiring (the same path
+                    // 'sprint-doctor-telemetry' above already uses) delivers
+                    // it to the dashboard with ZERO further viewer changes --
+                    // a dashboard extension renders the summary/suggested
+                    // commands/relevant files/beads/whyBeyondBounds fields
+                    // off `workflow:state:sprint-doctor`. Only published when
+                    // the action actually applied: an executor refusal (no
+                    // onPause handler injected, cap reached, etc.) leaves
+                    // nothing published, so the generic pause banner is all
+                    // that shows -- never a stale or misleading referral.
+                    if (appliedIncident && appliedIncident.paused && typeof publishState === 'function') {
+                        publishState('sprint-doctor', {
+                            pausedAt: new Date().toISOString(),
+                            cycle,
+                            trigger: incidentPending.trigger,
+                            classification: consultVerdict.classification,
+                            confidence: consultVerdict.confidence,
+                            actionReason: incidentAction.reason || null,
+                            beadIds: incidentPending.beadIds || [],
+                            member: incidentPending.member || null,
+                            humanActionRequired: consultVerdict.humanActionRequired || null,
+                        });
+                    }
                 }
 
                 // H3, first half (design doc 1.3, 3.3): an `abort_sprint`
