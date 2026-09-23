@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_flow.request.json#",
+  "$ref": "#/$defs/v1-code_flow-request",
+  "$defs": {
+    "v1-code_flow-request": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Entry-point symbol or label fragment the flow must start from"
+        },
+        "to": {
+          "type": "string",
+          "description": "Terminal symbol or label fragment the flow must end at"
+        },
+        "name": {
+          "type": "string",
+          "description": "Process name or label fragment to match, e.g. \"RemoveMember\""
+        },
+        "repo": {
+          "type": "string",
+          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

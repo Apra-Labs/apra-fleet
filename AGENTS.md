@@ -10,10 +10,21 @@ Read `README.md` in this repo for the full tool reference, installation, member 
 
 ```bash
 npm install && npm run build   # Build from source
-npm test                       # Unit tests (vitest)
+npm test                       # Unit tests (vitest + apra-fleet-se), wall-clock bounded
 npm run build:binary           # Build single-executable binary
 node dist/index.js install     # Dev-mode install
 ```
+
+Run tests only through `npm test` (`scripts/run-all-tests.mjs`) or the
+apra-fleet-se workspace's own `npm test` (`packages/apra-fleet-se/scripts/run-tests.mjs`)
+-- both are wall-clock bounded (default 15 minutes per suite, override with
+`APRA_TEST_TIMEOUT_MS`) and kill the whole child process tree (not just the
+immediate child) on timeout, so a hung suite can never hold a dispatch open
+indefinitely. Do not invoke `vitest run` or `node --test` directly for a
+tracked task's verification step. `test:slow` in `packages/apra-fleet-se`
+is a deliberate exception: it is a manual/regression-playbook lane invoked
+directly, not part of the `npm test` chain, so it is intentionally left
+unbounded by this rule.
 
 ## Conventions
 
@@ -24,9 +35,32 @@ node dist/index.js install     # Dev-mode install
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
 - Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe.
 - `packages/apra-fleet-client` must always be updated to catch up with any changes to the fleet MCP tools (`src/tools/*` schemas/behavior) in the same change -- it is the thin client wrapper other packages (fleet-sprint, apra-pm, workflows) use to call those tools, and a drifted client silently gives callers a stale or inconsistent view of what the server actually accepts/does. This is not optional cleanup; treat it as part of the tool change itself.
+- Any change to the memory subsystem (its tools, schemas, or bindings) must land together with the corresponding `memory-contract/v1` spec, schema, and conformance updates in the same change -- not as a separate follow-up cleanup -- because a drifted contract silently misrepresents what the server actually accepts and does.
 - Never rely on shell-level variable expansion in a member-bound command string ($VAR/path, ~/, backticks) -- the target member's shell may be PowerShell, not POSIX. Resolve paths in JavaScript before building the command using `probeCommandFor(targetOs, shell)` (src/services/member-home.ts) or branching on the member's OS/shell via `isPosixShell(agentOs, shell)` (src/providers/claude.ts). Wrap PowerShell commands explicitly (powershell -EncodedCommand, per src/os/windows.ts) rather than assuming the member's shell. A POSIX-only feature must hard-fail on Windows or gate with a surfaced error -- an advisory warning that never blocks is a false success.
 - Never cite a bead id (apra-fleet-XXXX) in any LLM-facing text: prompts, playbooks, schema descriptions, or strings a script prints/writes at runtime. Bead ids are fine only in code comments and docs/.
 - The fleet-sprint engine (`packages/apra-fleet-se/fleet-sprint/**` plus the role prompts in `packages/apra-fleet-se/apra-pm/agents/**`) is a GENERIC product that runs sprints for any target repo; apra-fleet building itself with it is the build method, not the product scope. LLM-facing text there (prompt strings, role-prompt markdown) must never assume the target is apra-fleet -- its build commands, env vars, ports, repo layout, bead ids, or deploy.md/playbook sections beyond the documented contract. Target-specific content belongs in the target's own deploy.md/playbooks/CLAUDE.md. Enforced by `packages/apra-fleet-se/scripts/check-generic-boundary.mjs` (part of `npm test`); rule and exception mechanism in docs/generic-engine-boundary.md.
+
+## Fix the product, not the environment
+
+Learn from every failure and misbehaviour by improving the PRODUCT, never by
+patching the environment it runs in. We are not building a cradle for a baby;
+we are maturing the baby into a strong adult. Thousands of people are meant to
+run this software on machines we will never see.
+
+- A manual intervention repeated is a product requirement that was not
+  escalated. Its second occurrence stops being a workaround and becomes scoped
+  product work, ranked against current work rather than deferred behind it.
+- When reporting a failure, the deliverable is the generic fix, not the local
+  recovery you performed to keep things moving.
+- No fix may depend on a line in this file, an agent's memory, or operator
+  tribal knowledge. If a user without those would hit the same trap, it is not
+  fixed -- writing the workaround down protects one operator and leaves every
+  other user in the trap.
+- `human` is an acceptable fallback only where a human genuinely must decide.
+  Everywhere else it is an unshipped feature.
+- Watch for the recurring shape: implicit environment decides behaviour and
+  failure is silent. The answer is explicit configuration plus loud failure,
+  in the engine.
 
 ## DeepWiki
 

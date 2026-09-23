@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import http from 'node:http';
-import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
+import { createHttpTransport, HttpTransportHandle, isFetchBlockedPort } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
@@ -230,6 +230,39 @@ describe('(e) port fallback when preferred port is busy', () => {
     } finally {
       await new Promise<void>(resolve => blocker.close(() => resolve()));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) OS-assigned port that collides with fetch's WHATWG blocked-port list
+// (apra-fleet-my-beads-db-27m.17): the SDK client's transport calls the
+// built-in `fetch`, which refuses ports like 5060/6667/etc. On a host whose
+// TCP dynamic port range starts low (e.g. legacy Windows default of 1024),
+// `server.listen(0, ...)` can occasionally hand back exactly one of these
+// under load. createHttpTransport must retry rather than return it.
+// ---------------------------------------------------------------------------
+describe('(m) OS-assigned port colliding with the fetch blocked-port list', () => {
+  it('isFetchBlockedPort recognizes known-blocked and ordinary ports', () => {
+    expect(isFetchBlockedPort(6667)).toBe(true); // IRC
+    expect(isFetchBlockedPort(5060)).toBe(true); // SIP
+    expect(isFetchBlockedPort(8080)).toBe(false);
+    expect(isFetchBlockedPort(0)).toBe(false);
+  });
+
+  it('retries when the OS hands back a blocked port, and never returns it to the caller', async () => {
+    const addressSpy = vi.spyOn(http.Server.prototype, 'address');
+    // Simulate the OS assigning a blocked port on the FIRST bind attempt
+    // only; subsequent binds report the real (unmocked) address.
+    addressSpy.mockImplementationOnce(() => ({ address: '127.0.0.1', family: 'IPv4', port: 6667 }));
+
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    expect(handle.port).not.toBe(6667);
+    expect(isFetchBlockedPort(handle.port)).toBe(false);
+    expect(addressSpy).toHaveBeenCalledTimes(2);
+
+    addressSpy.mockRestore();
   });
 });
 

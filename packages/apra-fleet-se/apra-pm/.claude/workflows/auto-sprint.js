@@ -1277,6 +1277,123 @@ function worktreeNamesFor(sprintBranch, taskId, worktreeRoot) {
   };
 }
 
+// EXPORT SHRINK GUARD (my-beads-db-27m.12): replaces the unguarded
+// `git -C "${repo}" add .beads/issues.jsonl` step. Compares the id set of the freshly
+// written .beads/issues.jsonl against the ids committed at HEAD BEFORE staging it, so a
+// `bd export` run against a workspace whose Dolt DB has diverged from the repo's
+// committed export cannot silently clobber the committed id set (a line-count/size
+// check would miss this: the file can grow while still dropping most committed ids).
+// Mirrors the kb-export.ts shrink guard (src/tools/kb-export.ts, maybeAutoCommitBible):
+// written to disk but NOT staged/committed unless AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 is
+// set as an explicit operator opt-in.
+//
+// DUPLICATED (intentionally) from lib/export-shrink-guard.mjs's runExportShrinkGuard, so
+// this stays a single self-contained shell command -- the dispatched agent runs inside
+// an arbitrary target repo's checkout, not this monorepo, and cannot `require()` that
+// file. Keep both in sync when changing the algorithm (same convention as
+// lib/parse-sprint-args.mjs). Pure -- no I/O, just builds a command string -- so it lives
+// in this PURE_FUNCTIONS block and test/export-shrink-guard.test.mjs can extract and call
+// it the same way test/sprint-cost.test.mjs extracts computeSprintQuote.
+// repoPath is passed as a shell argument (process.argv[1]), NOT interpolated into the JS
+// source: node -e "code" runs inside an outer double-quoted shell string, and
+// JSON.stringify(repoPath) emits its own double quotes that terminate that string early,
+// leaving the shell to hand node a broken program (my-beads-db-27m.12 round-2 reopen).
+// Quoting the trailing "${repoPath}" argument matches every other `-C "${repo}"` call in
+// this file.
+//
+// DESIGN DECISION (predicate is "any dropped id", deliberately, not "loud warning" only):
+// the guard refuses to stage on ANY committed id missing from the fresh export, with no
+// narrower allowance for legitimate removals (compaction, deletion, an id moved out of
+// scope). A legitimate removal therefore looks identical to corruption from here and
+// stops the export from being committed on every later sprint until an operator notices
+// the EXPORT_GUARD_REFUSED line and either investigates or sets
+// AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1. This is intentional: refusing (and requiring a human
+// to look) is judged safer than guessing which drops are legitimate, mirroring the
+// kb-export.ts shrink guard's same all-or-nothing predicate. The refusal is non-fatal to
+// the sprint, but it is NOT silent: both call sites pass their dispatch result through
+// detectExportGuardIssue() and log exportGuardLogLine() to the sprint log. If it ever
+// needs to be louder still (e.g. failing the sprint), change this predicate and its
+// counterpart in lib/export-shrink-guard.mjs together.
+//
+// FAIL CLOSED: the committed file is read with maxBuffer=256 MB (the 1 MB default threw
+// ENOBUFS on real backlogs and the old empty catch waved everything through). Whether
+// the export is tracked at HEAD is decided separately via `git ls-tree` (unborn HEAD ->
+// `rev-parse --verify -q HEAD` exits 1): only "not tracked" means an empty committed set.
+// Any other read failure prints EXPORT_GUARD_ERROR and stages nothing. git is invoked via
+// execFileSync argv arrays (no inner shell), so no extra quoting layer is involved.
+function buildExportShrinkGuardCmd(repoPath) {
+  return `node -e "` +
+    `const{execFileSync}=require('child_process');` +
+    `const fs=require('fs');` +
+    `const repo=process.argv[1];` +
+    `const P='.beads/issues.jsonl';` +
+    `function git(a,mb){return execFileSync('git',a,{cwd:repo,encoding:'utf8',stdio:['ignore','pipe','pipe'],maxBuffer:1048576*(mb||16)});}` +
+    `function why(e){return String((e&&(e.stderr||e.code||e.message))||e).trim().split(/\\n/)[0];}` +
+    `function fail(m){console.log('EXPORT_GUARD_ERROR: '+m+'. .beads/issues.jsonl NOT staged/committed (guard fails closed).');process.exit(0);}` +
+    `function ids(t){const s=new Set();for(const l of String(t||'').split(/\\n/)){const x=l.trim();if(!x)continue;try{const o=JSON.parse(x);if(o&&o.id)s.add(o.id);}catch(e){}}return s;}` +
+    `let tracked=false;` +
+    `try{tracked=git(['ls-tree','--name-only','HEAD','--',P]).trim()!=='';}catch(e){let unborn=false;try{git(['rev-parse','--verify','-q','HEAD']);}catch(e2){unborn=!!e2&&e2.status===1;}if(!unborn)fail('cannot list HEAD tree: '+why(e));}` +
+    `let before='';` +
+    `if(tracked){try{before=git(['show','HEAD:'+P],256);}catch(e){fail('cannot read committed HEAD:'+P+': '+why(e));}}` +
+    `const committed=ids(before);` +
+    `let after='';try{after=fs.readFileSync(repo+'/'+P,'utf8');}catch(e){after='';}` +
+    `const fresh=ids(after);` +
+    `const dropped=[...committed].filter(id=>!fresh.has(id));` +
+    `const allow=process.env.AUTO_SPRINT_ALLOW_EXPORT_SHRINK==='1';` +
+    `if(dropped.length>0&&!allow){` +
+      `console.log('EXPORT_GUARD_REFUSED: '+dropped.length+' committed id(s) missing from new export (e.g. '+dropped.slice(0,5).join(', ')+'). Written to disk but NOT staged/committed. Set AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 to override.');` +
+      `process.exit(0);` +
+    `}` +
+    `try{git(['add',P]);}catch(e){fail('git add failed: '+why(e));}` +
+    `console.log('EXPORT_GUARD_OK: staged .beads/issues.jsonl'+(dropped.length?' (override used, '+dropped.length+' dropped)':''));` +
+    `" "${repoPath}"`;
+}
+
+// Orchestrator-side detection of the guard's outcome in a dispatch result, so a refusal
+// or fail-closed error reaches the sprint log instead of dying in a Haiku transcript.
+// Accepts whatever dispatch()/dispatchShell() returned: a string, a {outputs:[...]}
+// shell result, or any object (nested strings are scanned). Returns
+// { kind: 'REFUSED'|'ERROR'|'OK', line } -- REFUSED/ERROR win over OK -- or null when no
+// EXPORT_GUARD_* marker is present. Pure.
+function detectExportGuardIssue(result) {
+  const texts = [];
+  const walk = (v, depth) => {
+    if (v == null || depth > 6) return;
+    if (typeof v === 'string') { texts.push(v); return; }
+    if (Array.isArray(v)) { v.forEach(x => walk(x, depth + 1)); return; }
+    if (typeof v === 'object') Object.keys(v).forEach(k => walk(v[k], depth + 1));
+  };
+  walk(result, 0);
+  const text = texts.join('\n');
+  const bad = text.match(/EXPORT_GUARD_(REFUSED|ERROR):[^\r\n]*/);
+  if (bad) return { kind: bad[1], line: bad[0].trim() };
+  const ok = text.match(/EXPORT_GUARD_OK:[^\r\n]*/);
+  if (ok) return { kind: 'OK', line: ok[0].trim() };
+  return null;
+}
+
+// Operator-facing sprint-log line for a detectExportGuardIssue() result, or null when
+// nothing needs flagging (OK). stepLabel names the call site (e.g. "plan-commit-c2").
+// A missing marker is flagged too, since the guard's outcome is then unknown. Pure.
+function exportGuardLogLine(detected, stepLabel) {
+  const where = stepLabel || 'beads export';
+  if (!detected) {
+    return `WARN: [export-guard] ${where}: no EXPORT_GUARD_* result seen -- cannot confirm ` +
+      `.beads/issues.jsonl was committed; check that dispatch's transcript.`;
+  }
+  if (detected.kind === 'REFUSED') {
+    return `WARNING: [export-guard] ${where}: beads export NOT committed -- ${detected.line} ` +
+      `Every later sprint will keep refusing until resolved. If the dropped ids were removed ` +
+      `on purpose (bd delete, compaction), rerun with AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 to ` +
+      `commit the smaller export; otherwise investigate the beads DB divergence.`;
+  }
+  if (detected.kind === 'ERROR') {
+    return `WARNING: [export-guard] ${where}: beads export NOT committed (guard failed closed) -- ` +
+      `${detected.line}`;
+  }
+  return null;
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -3023,14 +3140,18 @@ while (cycleCount < maxCycles) {
           `doer_tokens=${t.doerTokens} reviewer_tokens=${t.reviewerTokens} output_usd=${t.outputUsd.toFixed(4)}"`
         ),
         `bd export -o "${repo}/.beads/issues.jsonl"`,
-        `git -C "${repo}" add .beads/issues.jsonl`,
+        buildExportShrinkGuardCmd(repo),
         `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "plan: approve task DAG"`,
         `git -C "${repo}" push origin ${branch}`,
       ];
-      await dispatchShell(planCommitCmds, {
+      const planCommitRes = await dispatchShell(planCommitCmds, {
         model: MODEL_HAIKU, label: `plan-commit-c${cycleCount}`, phase: 'Plan',
         maxTurns: planCommitCmds.length + 2,
       });
+      // Surface an export-guard refusal/error in the sprint log (non-fatal).
+      const planGuardLine = exportGuardLogLine(
+        detectExportGuardIssue(planCommitRes?.outputs ?? planCommitRes), `plan-commit-c${cycleCount}`);
+      if (planGuardLine) log(planGuardLine);
     } else {
       planFeedback = (planReview && planReview.notes) || '';
       log(`Plan needs changes: ${planFeedback.slice(0, 120)}`);
@@ -3810,7 +3931,7 @@ await parallel([
 // Also remove sprint process files (requirements.md, feedback.md) from the PR net diff.
 // Step 1 stages any sprint-log entries written by fire-and-forget appendNewEntries
 // calls so the final cycle's JSONL lines are captured even when no later doer runs.
-await dispatch(
+const exportCleanupRes = await dispatch(
   `Persist beads state and clean sprint scaffolding from the PR diff.\n\n` +
   `Step 1 -- Stage sprint-logs and evict scaffold files from the working tree (unconditional):\n` +
   `  git -C "${repo}" add sprint-logs/\n` +
@@ -3818,9 +3939,13 @@ await dispatch(
   `  rm -f "${repo}/feedback.md" "${repo}/requirements.md" 2>/dev/null || true\n\n` +
   `Step 2 -- Export beads state:\n` +
   `  bd export -o "${repo}/.beads/issues.jsonl"\n` +
-  `  git -C "${repo}" add .beads/issues.jsonl\n` +
+  `  ${buildExportShrinkGuardCmd(repo)}\n` +
   `  git -C "${repo}" diff --cached --quiet || git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: export beads state"\n` +
-  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.)\n\n` +
+  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.\n` +
+  `   The guard step above prints exactly one line starting with EXPORT_GUARD_OK,\n` +
+  `   EXPORT_GUARD_REFUSED or EXPORT_GUARD_ERROR. On REFUSED/ERROR nothing is staged, so the\n` +
+  `   commit is skipped; do not try to work around it -- continue with Step 3.\n` +
+  `   You MUST copy that EXPORT_GUARD_* line verbatim into your final reply.)\n\n` +
   `Step 3 -- Check what process files are still in the PR diff:\n` +
   `  git -C "${repo}" diff --name-only ${base_branch}...${branch}\n\n` +
   `Step 4 -- For each of requirements.md, feedback.md that appears in the diff:\n` +
@@ -3837,9 +3962,12 @@ await dispatch(
   `  The output must NOT contain requirements.md or feedback.md. If it does, repeat Step 4.\n\n` +
   `Step 6 -- Push all local commits to remote:\n` +
   `  git -C "${repo}" push origin ${branch}\n\n` +
-  `Return "OK" when done.`,
+  `Return "OK" when done, followed on its own line by the EXPORT_GUARD_* line from Step 2, verbatim.`,
   { model: MODEL_HAIKU, label: 'beads-export-cleanup', phase: 'Harvest' }
 );
+// Surface an export-guard refusal/error in the sprint log (non-fatal).
+const harvestGuardLine = exportGuardLogLine(detectExportGuardIssue(exportCleanupRes), 'beads-export-cleanup');
+if (harvestGuardLine) log(harvestGuardLine);
 
 // ------------------------------------------------------------------ DOLT PUSH
 

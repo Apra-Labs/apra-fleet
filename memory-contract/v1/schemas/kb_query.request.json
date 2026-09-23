@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_query.request.json#",
+  "x-invariant": [
+    "INV-08"
+  ],
+  "$ref": "#/$defs/v1-kb_query-request",
+  "$defs": {
+    "v1-kb_query-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly."
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Free-text search string. Required unless flagged_only is true or tag is provided."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "context-cache",
+            "learning",
+            "knowledge",
+            "runbook"
+          ],
+          "description": "Filter by content type"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max L1 results (default 20)"
+        },
+        "include_stale": {
+          "type": "boolean",
+          "description": "Include stale and superseded entries (default false)"
+        },
+        "flagged_only": {
+          "type": "boolean",
+          "description": "Return all contradiction-flagged entries. When true, query is optional and full content is returned."
+        },
+        "expand_related": {
+          "type": "boolean",
+          "description": "Append entries connected to the top hits by a refines or contradiction_of edge, as related_claims. These are the KB's own judgements about its contents -- \"there is a newer framing of this\" and \"something disputes this\" -- which a text match cannot surface. shares_file/shares_symbol edges are NOT traversed: FTS over the same fields already finds those. Default false, in which case related_claims is absent."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

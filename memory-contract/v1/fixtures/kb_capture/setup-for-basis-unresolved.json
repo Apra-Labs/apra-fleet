@@ -1,0 +1,24 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-basis-unresolved",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "Entry whose basis file will be deleted before a second promote",
+    "summary": "Set up to demonstrate E-PROMOTE-BASIS-UNRESOLVED.",
+    "content": "This entry cites src/soon-to-be-deleted.ts, which is removed before the second promote call.",
+    "source_files": [
+      "src/soon-to-be-deleted.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"bce6c4af-2d17-4858-8e5f-0556ccfef745\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

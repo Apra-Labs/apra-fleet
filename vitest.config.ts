@@ -50,5 +50,33 @@ export default defineConfig({
     globalSetup: ['tests/global-setup.ts'],
     fileParallelism: false,  // Tests share registry.json in temp dir (unique per run, see global-setup.ts)
     teardownTimeout: 1000,
+    // apra-fleet-qe83.3.2 rework: the linked bug is a root `vitest run` on
+    // Windows that never exited (LLM finished, but the dispatch waited on
+    // the pipe for 45+ minutes with no process-level signal). This line is
+    // NOT an effective config change and must not be read as one: verified
+    // against the pinned vitest 4.0.18
+    // (node_modules/vitest/dist/chunks/coverage.AVPTjMgw.js resolves
+    // `resolved.pool ??= "forks"` before the dead `??= "threads"` branch
+    // later in the same function, and the CLI help documents
+    // "default: forks"), `forks` is already vitest 4's default pool. The
+    // pre-existing config here had no `pool` key at all, so this line
+    // changes nothing -- including during the recorded Windows hang, which
+    // happened under that same default. It is left in place purely as an
+    // explicit, self-documenting statement of intent (isolated child-process
+    // test execution, not worker_threads, should a future vitest major
+    // change the default) -- not as a fix, and not as evidence that a fix
+    // was applied here.
+    //
+    // RESIDUAL RISK: a real capture of `npx vitest run --reporter=
+    // hanging-process` on this Windows machine (apra-fleet-qe83.3.1, see
+    // that bug's linked comment) exited cleanly with no open-handle warning
+    // -- this run did NOT reproduce the specific hang, and no vitest.config.ts
+    // setting is confirmed to change vitest's own exit behaviour for it. The
+    // actual safety net if a root vitest run hangs again is
+    // scripts/run-all-tests.mjs's wall-clock bound (apra-fleet-qe83.3.2),
+    // not this file -- plus the dispatch-side stall detector and
+    // completion-on-exit sibling features that bound the blast radius even
+    // if the target-side bound above somehow also failed.
+    pool: 'forks',
   },
 });

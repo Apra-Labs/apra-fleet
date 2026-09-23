@@ -1,0 +1,17 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "refusal-already-superseded",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "winnerId": "b047eace-fbc2-43bf-9cd3-1c8ce8081998",
+    "loserId": "2697d23a-1bf9-4a95-b5a9-717cc8020600",
+    "evidence": "Re-resolving an already-resolved contradiction pair."
+  },
+  "error": {
+    "message": "resolveContradiction: refused -- one or both entries are already superseded (winner=b047eace-fbc2-43bf-9cd3-1c8ce8081998, loser=2697d23a-1bf9-4a95-b5a9-717cc8020600)",
+    "thrown": true
+  },
+  "expected_error_code": "E-RESOLVE-ALREADY-SUPERSEDED"
+}
