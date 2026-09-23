@@ -328,6 +328,11 @@ export async function resolveRoleMap(rawValue, deps = {}) {
     return normalized;
 }
 
+// apra-fleet-i4ku.22: the only top-level keys this resolver reads, mirrored
+// with src/supervisor/sweep-config.mjs's ALLOWED_TOP_LEVEL_KEYS so the two
+// independent validators agree on what is legal.
+const SWEEP_CONFIG_ALLOWED_TOP_LEVEL_KEYS = new Set(['markers', 'productionPorts', 'livenessProbe']);
+
 /**
  * Resolves `--sweep-config` into `{ markers, productionPorts }` for the
  * Member Prep stray-process sweep (apra-fleet-i4ku.7), supporting the same
@@ -346,11 +351,6 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * @param {{ readFile?: (path: string, encoding: string) => Promise<string> }} [deps] - injectable for tests
  * @returns {Promise<{ markers: Array<object>, productionPorts: Array<number> }|undefined>}
  */
-// apra-fleet-i4ku.22: the only top-level keys this resolver reads, mirrored
-// with src/supervisor/sweep-config.mjs's ALLOWED_TOP_LEVEL_KEYS so the two
-// independent validators agree on what is legal.
-const SWEEP_CONFIG_ALLOWED_TOP_LEVEL_KEYS = new Set(['markers', 'productionPorts', 'livenessProbe']);
-
 export async function resolveSweepConfig(rawValue, deps = {}) {
     if (rawValue === undefined) return undefined;
     const readFile = deps.readFile || fs.readFile;
