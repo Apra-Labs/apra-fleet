@@ -139,21 +139,30 @@ dispatching to that member at all. The full rationale lives in the
 `fleet-sprint/phases/member-prep.mjs`, and the operator-facing statement of
 the same policy is in the fleet-supervisor `SKILL.md` Member Prep section.
 
-## Known gaps carried forward (deferred, not silently dropped)
+## Previously listed gaps, now closed
 
-This was filed as a low-priority follow-up rather than blocking the initial
-feature, and remains open by design:
+Nothing in this design is outstanding: every gap this section once carried
+has been closed, and each is recorded below as current behaviour rather than
+as an open item.
 
-- **The sweep config surface exists but nothing wires it end to end.** A
-  direct CLI launch can pass `--sweep-config` (markers plus production
-  ports) through to Member Prep, but the supervisor's own sprint-launch
-  argument builder has no passthrough for it yet, so a sprint launched via
-  the supervisor -- the path that motivated this feature in the first place
-  -- still ships the sweep dormant (no markers, no production ports, so
-  nothing ever matches).
-
-Two gaps listed here previously are now closed, and are recorded here as
-current behaviour rather than as open items:
+- **The sweep config is wired end to end.** The supervisor loads the sprint
+  repo's own `.fleet/sweep-config.json` (or `FLEET_SE_SWEEP_CONFIG`) at
+  startup and `buildSprintArgv()` forwards it to every sprint it launches as
+  `--sweep-config`, which `bin/cli.mjs`'s `resolveSweepConfig()` parses back
+  into the `sweepMarkers` / `sweepProductionPorts` Member Prep consumes. A
+  supervisor-launched sprint therefore no longer reports "sweep skipped: no
+  fleet-start markers configured". The marker/port data itself stays
+  TARGET-owned (see `docs/generic-engine-boundary.md`): the engine knows no
+  process names, paths or ports of its own, and a target that declares no
+  config still gets the dormant-but-loud behaviour (a startup log line saying
+  the sweep will stay dormant; a declared-but-malformed config fails the
+  supervisor at startup instead of silently disarming the sweep).
+  apra-fleet's own set lives in `.fleet/sweep-config.json`, and the safety
+  reasoning behind each marker's `evidence` class is stated in that file's
+  `_readme` -- in particular that a process shape whose live instances cannot
+  be recognised from the command line (a sprint engine child on an
+  OS-assigned viewer port) is declared `evidence: "name"`, which can never by
+  itself get anything killed.
 
 - **Kill-dispatch labelling.** A sweep dispatch now carries its kind, so a
   kill is labelled as a kill ("stray-process kill on `<member>`") rather

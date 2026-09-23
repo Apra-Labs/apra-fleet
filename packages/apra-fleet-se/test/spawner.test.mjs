@@ -387,6 +387,11 @@ describe('supervisor sweep-config surface (target-owned data)', () => {
         const classify = (commandLine, caseInsensitive) =>
             classifyFleetEvidence({ commandLine }, markers, { caseInsensitive });
 
+        // NOTE: this block asserts MATCHING only. Matching is not killing --
+        // what the real marker set actually does to a healthy supervisor, a
+        // live sprint child and a stale sandbox supervisor is pinned at the
+        // decision level, against the real decideStrayProcess(), in
+        // test/sweep-config-threading.test.mjs.
         const posixSupervisor = classify('node /home/u/git/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port 8899', false);
         assert.equal(posixSupervisor.fleetStarted, true);
         assert.equal(posixSupervisor.kind, 'fleet-supervisor');
@@ -398,8 +403,17 @@ describe('supervisor sweep-config surface (target-owned data)', () => {
         assert.equal(winSupervisor.fleetStarted, true, 'a Windows command line must still match -- separators are NOT normalized');
         assert.equal(winSupervisor.kind, 'fleet-supervisor');
 
+        // The sprint engine is declared 'name' ON PURPOSE (see
+        // .fleet/sweep-config.json "_readme_sprint_engine"): a live sprint
+        // child is detached (ppid 1 as soon as its supervisor restarts -- the
+        // readopt.mjs window) and holds only an allocateFreePort() viewer
+        // port that no static productionPorts list can contain, so no
+        // predicate could protect it if this were path/flag evidence. It is
+        // therefore recognised and LABELLED, but never evidence fleet may act
+        // on.
         const sprintChild = classify('node /home/u/git/apra-fleet/packages/apra-fleet-se/bin/cli.mjs --issue x --run-id r1', false);
-        assert.equal(sprintChild.fleetStarted, true);
+        assert.equal(sprintChild.fleetStarted, false, 'a live sprint child must never be kill-grade evidence');
+        assert.equal(sprintChild.nameOnly, true);
         assert.equal(sprintChild.kind, 'fleet-sprint-engine');
 
         // Fail-safe direction: never claim an unrelated process was fleet-started.

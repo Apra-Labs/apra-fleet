@@ -309,6 +309,26 @@ Two traps worth knowing before you write your markers:
 2. **Environment variables are not visible to this sweep.** A data dir passed
    to a process through the environment never appears in its command line, so
    it cannot be a marker. Pick something on the *outer* command line.
+3. **A daemonized process already counts as "parent gone".** The parent-gone
+   predicate is true the moment a process's parent pid is 1 (POSIX) -- which
+   is the case for anything started detached, and for any long-lived service
+   whose own launcher has since exited or restarted. "Parent gone" therefore
+   does **not** mean "this process is finished", and the minimum-age guard
+   only protects something started in the last minute. For a healthy,
+   long-lived process that matches one of your `path`/`flag` markers,
+   `productionPorts` is the only predicate left standing between it and a
+   kill. So:
+   - enumerate in `productionPorts` **every** port a long-lived process on a
+     member may bind, including a second instance deliberately started on a
+     non-default port. A port you forget is a process this sweep may kill
+     while it is still serving traffic;
+   - for a process shape whose live instances *cannot* be enumerated by port
+     -- one that takes an OS-assigned/ephemeral port at startup, such as a
+     sprint engine child with a dynamically allocated viewer port -- do not
+     declare a `path`/`flag` marker for it at all. Declare it as
+     `evidence: "name"` (or leave it out): a name marker can never by itself
+     get anything killed, which is exactly the outcome you want when
+     "still in use" is not decidable from the command line.
 
 The file is optional. With no `.fleet/sweep-config.json` the supervisor logs
 that the sweep is dormant and the sprint runs exactly as before; a file that
@@ -317,8 +337,11 @@ silently sweeping nothing. To point somewhere else, set
 `FLEET_SE_SWEEP_CONFIG` to a path or to inline JSON.
 
 The sweep is conservative by construction: remote members only, only processes
-whose parent is already gone, never a listener on a production port, and never
-on a name match alone.
+whose parent is already gone, never a listener on a production port, never a
+process younger than the minimum-age bound, and never on a name match alone.
+Read trap 3 above before deciding that "parent already gone" makes a marker
+safe: the marker set plus `productionPorts` is the safety boundary you are
+authoring, and the engine has no knowledge of your processes to fall back on.
 
 ---
 
