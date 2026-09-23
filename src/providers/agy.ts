@@ -513,6 +513,19 @@ export function formatAgyPermissionRules(rules: AgyPermissionRule[]): string[] {
   return out;
 }
 
+const PATH_SCOPED_READ_RE = /^(?:Read|Glob|Grep)\((.+)\)$/;
+const PATH_SCOPED_WRITE_RE = /^(?:Write|Edit)\((.+)\)$/;
+
+/** Reduces a Claude path pattern to the directory PREFIX form AGY's
+ *  read_file/write_file targets use: trailing '/**', '/*' and a bare '*' tail
+ *  are dropped, since AGY already matches by prefix. */
+function agyPathTarget(item: string): string {
+  const inner = item.slice(item.indexOf('(') + 1, -1).trim();
+  const stripped = inner.replace(/\/\*{1,2}$/, '').replace(/\*+$/, '');
+  const trimmed = stripped.replace(/\/+$/, '');
+  return trimmed || '*';
+}
+
 export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {
   const rules: AgyPermissionRule[] = [];
   const added = new Set<string>();
@@ -530,6 +543,14 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
       addRule('read_file', '*');
     } else if (item === 'Write' || item === 'Edit') {
       addRule('write_file', '*');
+    } else if (PATH_SCOPED_READ_RE.test(item)) {
+      // Path-scoped Claude grant, e.g. Read(/home/u/.claude/skills/**). AGY
+      // targets are path PREFIXES (`read_file(/Users/alice/notes)`), so the
+      // trailing glob is stripped; a bare `Read`/`Write` (no argument) is
+      // unrestricted in Claude and keeps mapping to '*' above.
+      addRule('read_file', agyPathTarget(item));
+    } else if (PATH_SCOPED_WRITE_RE.test(item)) {
+      addRule('write_file', agyPathTarget(item));
     } else if (item === 'Agent') {
       addRule('invoke_subagent', '*');
       addRule('send_message', '*');
