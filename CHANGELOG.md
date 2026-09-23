@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Beads hygiene: milestone labels, gate-lock ignore, no token-estimate memories
+
+- `scripts/check-bead-milestones.mjs`: lists non-closed beads with zero, several or
+  unknown `milestone:*` labels (exit 2). Options `--assignee`, `--known`, `--file`,
+  `--json`. A standalone, opt-in operator tool. The `milestone:*` labels are a local,
+  ad-hoc convention until a formal milestone model lands, so the script is not wired
+  into any sprint phase, hook, prompt or CI job.
+- `.gitignore`: ignore `.beads.gate.lock`, the bd runtime lock that sprints kept
+  re-filing as a dirty-worktree finding.
+- apra-pm: the legacy auto-sprint harvest and the pm cost skill no longer write the
+  `token-estimates-json` bd memory; `scripts/fix-token-memories.mjs` is removed.
+  Calibration stays in `sprint-logs/calibration.json`.
+- backlog-groomer: new hygiene step. Follow-ups under closed parents are groomed, given
+  the parent's context and detached. Fully closed epics are listed as deletion
+  candidates, which need operator confirmation. Token-estimate memories are banned.
+
 ## [Unreleased] -- Windows dispatch pipe stall, missed-stall tail truncation and unbounded test runner (sprint goal not yet met -- see carried-forward items)
 
 Sprint goal: close three P1 regressions that could each hold a Windows-member
