@@ -2,14 +2,14 @@
 
 Scope issue id(s): apra-fleet-oomh.
 Base branch: main.
-Cycles run: 1.
+Cycles run: 3.
 
 ## Progress
 
-Closed-bead count history (per cycle evaluation): [8].
-High-water-mark closed count this sprint: 8.
-Final closed count: 8.
-Final open-at-goal-priority count: 0.
+Closed-bead count history (per cycle evaluation): [14, 17, 19].
+High-water-mark closed count this sprint: 20.
+Final closed count: 18.
+Final open-at-goal-priority count: 1.
 No beads were deferred out of scope at/above goal priority this sprint.
 
 ## Deploy/Integration outcomes
@@ -23,21 +23,28 @@ None.
 
 ## Final verdict
 
-FAIL -- Code half is correct and independently verified; the epic's own acceptance criterion 2 was never executed.
+FAIL -- FAIL -- acceptance criterion 1 of apra-fleet-oomh is fully met and independently verified; criterion 2 (end-to-end Antigravity proof) was never executed for the second sprint running, and the current decomposition makes it structurally unreachable.
 
-VERIFIED GOOD (not taken on trust). Build passes; all three suites pass (vitest 332 files, apra-fleet-se, apra-pm 453 tests), generic-boundary guard green. I re-ran the transforms over all 32 shipped assets from dist: 0 surviving conditional markers and 0 ToolSearch references on the agy and opencode paths. I also ran packages/apra-fleet-se/apra-pm/install.mjs --llm agy into a throwaway HOME: exit 0, installed tree greps clean for both ToolSearch and if-tool markers, doer.md frontmatter emits only mapped agy tools.
+VERIFIED MYSELF (not taken on trust):
+- Reviewed the net diff over the real branch point (merge-base with origin/main = 97877f5e; local main is stale, so main..branch also shows 6 already-merged PRs). Sprint net: 32 files, +2937/-35.
+- Mechanism: resolveConditionalBody/toolAvailability/transformAgentForClaude in src/cli/agent-transform.ts, wired at src/cli/install.ts:1540-1550 so the Claude path is no longer a passthrough (markers stripped, if-branch kept). Mirrored as resolveAgentConditionals in packages/apra-fleet-se/apra-pm/install.mjs and guarded both as source text and behaviourally by tests/agent-transform-apra-pm-sync.test.ts.
+- All 11 role prompts gated; no un-gated ToolSearch prose remains, and no other Claude-only tool name (TodoWrite/WebFetch/Task/MultiEdit) appears in any prompt body.
+- Live installs into throwaway HOMEs: apra-pm install.mjs --llm agy exits 0, installed tree greps clean for ToolSearch and for if/else/end-tool markers, doer.md emits only mapped agy tools and Step 0 renders coherent fallback prose; --llm claude keeps the ToolSearch branch with 0 markers.
+- Failure paths traced with a standalone repro, not by reading: unclosed, orphan, mismatched and duplicate-else markers all throw with the filename; CRLF sources resolve correctly; copyDirResolved copies non-allowlisted files byte-for-byte with no utf-8 round trip.
+- Build green. Full suite green: vitest 335 files passed / 5 skipped, apra-fleet-se 3462 tests 0 fail, apra-pm 456 tests 0 fail; generic-boundary guard and the new ASCII gate both green.
+- Hygiene clean: all 32 changed files justifiable, no scratch or tool-config files, no src/tools change so no apra-fleet-client sync owed.
 
-All 8 closed beads are traceable to specific lines: oomh.1 resolveConditionalBody/CONDITIONAL_MARKER_RE plus transformAgentForClaude in src/cli/agent-transform.ts wired at src/cli/install.ts:1541-1549 (the claude path is no longer a passthrough, which was the subtle half); oomh.2 all 11 role prompts gated; oomh.3 tests/agent-transform-body-tools.test.ts, which derives the drop list from the transform's own warnings rather than re-deriving the tool map, and includes a non-vacuity assertion plus an independent line-scanner oracle for the Claude path; oomh.4 copyDirResolved for schemas/ and _shared/; oomh.5 the reviewer.md dangling parenthetical; oomh.6 transformAgentForAgy in install.mjs; oomh.7 the widened keep-in-sync note; oomh.8 the apra-pm suite added to scripts/run-all-tests.mjs. Error-path coverage is good: unclosed, unmatched, mismatched and duplicated markers all throw with the filename. File hygiene is clean - 21 files, all justifiable, no scratch or tool config.
+WHY FAIL: AC2 requires a toy sprint on the Antigravity provider with a recorded sprint id, verdict and transcript check. No such evidence exists on the root bead or any child. oomh.10 was closed administratively ("not doer work"), and its replacement oomh.19 stayed open across all 3 cycles. The cause is structural: IntegTest targets come from classifyVerifySet (packages/apra-fleet-se/fleet-sprint/beads-scope.mjs:397-458, consumed at phases/integ-test.mjs:171), which excludes childless beads (rule 3), so leaf .19 can only route to the doer, and excludes any parent with an open child (rule 4), so root oomh cannot be verify-routed while .19 and .20 are open. Filed as a P2 task.
 
-WHY FAIL. apra-fleet-oomh criterion 2 requires an end-to-end proof routed to the integ-test-runner: install --llm agy on the Linux member via sandbox deploy, run a toy sprint on the Antigravity provider, and record the sprint id, verdict and transcript check on the bead. No such evidence exists on the root bead or any child, and no bead was ever created for it. The sprint decomposed into 8 static/impl tasks only. This criterion exists because the prior static-only fix (PR #509) fixed frontmatter and left the bug alive in the prose - approving a second static-only round without real-provider proof repeats exactly that pattern. I cannot run the toy sprint from here, so the criterion stands unproven.
+No beads reopened: each of the 18 closed children maps to specific lines in this diff. oomh.10 is the only closure on non-evidence, but oomh.19 already carries that exact work, so reopening .10 would duplicate rather than add signal.
 
-No beads reopened: all 8 closed children are correctly implemented and verified above. oomh.9 (P3) remains open and already tracks the CI step reconciliation.
+Pre-merge blocker (task filed): the branch conflicts with current origin/main in CHANGELOG.md and scripts/run-all-tests.mjs -- origin/main independently added the identical apra-pm suite entry. Also note no CI run exists for this branch head yet.
 
-KB/code_* tools were unavailable this session (apra-fleet and fleet MCP servers both failed to connect), so this review used direct diff reading, dist-level execution and a live installer run instead.
+No KB promotions: the apra-fleet and fleet MCP servers both failed to connect this session and no promotion-candidate block was supplied.
 
 ## Regression pass (once per sprint, informational)
 
 Regression pass: FAILED (real-bd suite: fail, smoke test: fail).
 Carry-over beads filed: none.
-Summary: Ran the full regression pass per regression-test-playbook.md. Part 1 (real-bd suite): recovered from a stale run-integ-suites.mjs status file (known recurring gotcha, apra-fleet-jl71) via --fresh/--start, then ran a full 269-file pass against real bd (elapsedWall=708s) -- 7 failures, all matching already-tracked pre-existing bugs (apra-fleet-zekq's golden-transcript-divergence cascade into phase0-seams-facade/phase1-leaf-facade-completeness/phase3-dispatch-engine-completeness/vcs-auth-extraction-facade, plus apra-fleet-vwa2 and apra-fleet-0aer); also ran the slow lane (npm run test:slow), which failed with a new manifestation of the already-tracked apra-fleet-5jlr bd-replay-drift bug. Part 2 (smoke test): Setup completed fully and cleanly (install, server start with port verification, toy-repo clone, sandbox-local git/dolt isolation, supervisor boot with identity-checked readiness), but Test scenario step 3a (credential provisioning) was denied by the Claude Code auto-mode permission classifier -- the long-recurring, already-tracked apra-fleet-j48h; per this repo's CLAUDE.md policy no workaround was attempted, so steps 1/2/3b/4/5 never ran. Teardown was run regardless and completed cleanly (supervisor stopped, lock released, dolt processes reaped, sandbox removed); the leftover sandbox-deploy sweep for this sprint's reservation id found nothing to tear down. No new carry-over bugs were filed -- every failure found matched an existing open [regression][carry-over] (or, for the golden-transcript root cause, [integ]-tagged eft.17 budget note) bead, which was updated with this run's fresh evidence instead of duplicating. This result is purely informational: it does not gate the current sprint's PASS/FAIL verdict, and all findings are pre-existing breakage carrying over to a future sprint.
+Summary: Ran regression-test-playbook.md's full pass at branch HEAD c932dd39698a374fee56d5d6d6c3ad45801fbd23. Part 1 (real-bd suite, node scripts/run-integ-suites.mjs) completed 269/269 files in 715s with 7 failures, plus the slow lane (npm run test:slow) failing 1 of 2 tests -- every failure is a long-known, previously-filed recurrence (golden-transcript snapshot divergence cascading into phase0-seams-facade/phase1-leaf-facade-completeness/phase3-dispatch-engine-completeness/vcs-auth-extraction-facade via apra-fleet-zekq, mock-sprint-beads-identity via apra-fleet-vwa2, mock-sprint-parent-child-blocks-cycle-repair via apra-fleet-0aer, the phase3 300s-budget overrun via apra-fleet-eft.17, and the slow-lane bd-replay drift via apra-fleet-5jlr), each updated with today's evidence rather than re-filed. Part 2 (smoke test) Setup completed cleanly (install, server boot+port verification, toy-repo clone, sandbox-local isolation verified, supervisor boot identity-checked), but Test scenario step 3a (seeding the sandbox's Claude credential) was denied by the Claude Code auto-mode permission classifier -- a heavily recurring, previously-filed block (apra-fleet-j48h, reproduced on nearly every regression pass since 2026-08-19); per repo policy no workaround was attempted, so steps 1/2/3b/4/5 (registration, canary check, member auth, sprint launch, closure assertion) never ran. Teardown was executed and verified clean regardless. No new beads were filed -- all findings matched and updated existing standalone, parent-less [regression][carry-over] beads. This result is purely informational: it does not gate the current sprint's PASS/FAIL verdict, and all filed/updated bugs carry over to a future sprint.
 Informational only -- this pass ran after the final verdict and did not gate it; any bead above is parent-less by design and carries over to a future sprint.
