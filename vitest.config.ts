@@ -44,6 +44,14 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // apra-fleet-v6t7.1.1: '.' keeps this file's own config (the include
+    // pattern below, node environment, etc.) as the root project; the
+    // shell-ui entry picks up its own packages/apra-fleet-shell-ui/
+    // vitest.config.ts (jsdom environment) as a second project run in the
+    // same `vitest run` invocation -- the bounded runner's 'vitest' suite
+    // (scripts/run-all-tests.mjs) already spawns this, so no new suite entry
+    // is needed there for shell-ui's tests to run under `npm test`.
+    projects: ['.', 'packages/apra-fleet-shell-ui'],
     include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
     exclude: sqliteAvailable ? defaultExclude : [...defaultExclude, ...NODE_SQLITE_DEPENDENT_TESTS],
     setupFiles: ['tests/setup.ts'],
