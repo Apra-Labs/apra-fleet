@@ -1,11 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 import {
     runMemberPrepPhase, checkMemberAuth, runSweepStep, memberPrepExecLabel,
 } from '../fleet-sprint/phases/member-prep.mjs';
 import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../fleet-sprint/errors.mjs';
 import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // =============================================================================
 // Member Prep (apra-fleet-9be4.4) -- verification for the sprint-start
@@ -849,4 +856,60 @@ test('member-prep: an empty members list is a no-op (no group/phase/log calls, n
     assert.equal(lines.length, 0);
     assert.equal(execCalls.length, 0);
     assert.equal(dpullCalls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 11. apra-fleet-i4ku.16: the test above (9b) proves memberPrepExecLabel()
+//     itself distinguishes probe/kill -- but it does so inside its OWN stub
+//     adapter, hand-copied from runner.js's real one. Nothing else in this
+//     suite asserts that the PRODUCTION adapter runner.js actually wires into
+//     runMemberPrepPhase's execCommand seam still destructures `kind` off its
+//     argument and forwards it into memberPrepExecLabel(). Deleting `kind`
+//     from that adapter would restore the original defect -- every kill
+//     recorded as a probe -- with 9b (and the rest of this suite) still
+//     green, because memberPrepExecLabel() silently defaults an absent kind
+//     to the probe wording.
+//
+//     A full extraction into an exported factory would let this be driven
+//     the same way 9b drives memberPrepExecLabel() directly, but the adapter
+//     is a small inline arrow function at the runMemberPrepPhase call site in
+//     runner.js, and factoring it out is more invasive than this regression
+//     pin needs to be. So this is a source-text assertion, in the style of
+//     test/phase-sequence-order.test.mjs's label-ownership checks: it reads
+//     runner.js itself and confirms the adapter's parameter list still names
+//     `kind` and that `kind` is still the second argument passed to
+//     memberPrepExecLabel(). Removing `kind` from either the destructuring or
+//     the memberPrepExecLabel() call fails this test.
+// ---------------------------------------------------------------------------
+
+test('runner.js: the production Member Prep execCommand adapter still destructures kind and forwards it to memberPrepExecLabel', () => {
+    const runnerSrc = fs.readFileSync(RUNNER_PATH, 'utf8');
+
+    // Anchor on the adapter's distinctive shape: `execCommand: ({ ... }) =>
+    // command(cmd, { ... })`. [^}]* is safe (no nested braces appear inside
+    // either the parameter list or the options object literal), and it
+    // matches across the newline between the two lines the adapter is
+    // written on without needing the 's' flag.
+    const adapterMatch = runnerSrc.match(
+        /execCommand:\s*\(\{([^}]*)\}\)\s*=>\s*command\(cmd,\s*\{([^}]*)\}\)/
+    );
+    assert.ok(
+        adapterMatch,
+        'could not find the Member Prep execCommand adapter ( execCommand: ({ ... }) => command(cmd, { ... }) ) in ' +
+        'runner.js -- if it was rewritten, update this pin\'s anchor pattern to match the new shape rather than ' +
+        'deleting the pin'
+    );
+    const [, params, body] = adapterMatch;
+
+    assert.match(
+        params, /\bkind\b/,
+        'the Member Prep execCommand adapter in runner.js no longer destructures `kind` off its argument -- this ' +
+        'restores the original defect where every dispatch (probe AND kill) is recorded under the same hardcoded ' +
+        'label, because memberPrepExecLabel() silently defaults an absent kind to the probe wording'
+    );
+    assert.match(
+        body, /memberPrepExecLabel\(\s*member_name\s*,\s*kind\s*\)/,
+        'the Member Prep execCommand adapter in runner.js no longer forwards `kind` as the second argument to ' +
+        'memberPrepExecLabel() -- a kill would again be recorded in the sprint log and ledger as a probe'
+    );
 });
