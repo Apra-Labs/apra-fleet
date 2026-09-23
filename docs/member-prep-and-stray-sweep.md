@@ -109,10 +109,40 @@ checkable rather than a convention to trust: only the caller knows which
 paths and flags it actually put on a command line, so the module cannot
 smuggle in a name-only shortcut even if a future edit tried to.
 
+### Sweep failure does not abort the sprint (DECIDED)
+
+This is settled, single behaviour -- not a choice a reader or an operator
+still has to make. **A sweep failure never ends the sprint.** If the probe
+command will not execute, the member has none of the supported
+process-enumeration or listening-socket tools, or a selected pid's kill is
+genuinely refused, the phase records a loud per-member
+`sweep -- FAILURE` line naming that member and the specific cause, records
+`{ status: 'failed', reason, error }` on the phase result, and CONTINUES --
+to that member's remaining prep steps, to every other member, and on to the
+sprint's first dispatch.
+
+Read a FAILURE as **"this member was not scanned"**: never as "clean", never
+as "skipped". Those are three distinct statuses and the phase reports them
+as three. The sweep is hygiene, not a dispatch precondition, so an unswept
+member still builds, tests and commits normally; the only cost is that a
+leftover process from an earlier run may still be sitting there.
+
+The containment is deliberately narrow: only `StrayProbeError` (and its
+subclass `StrayProbeToolMissingError`) is caught. Any other error escaping
+the sweep is an engine defect, not a member condition, and still propagates
+and still ends the sprint.
+
+**The auth policy is unchanged by this.** An unprovisionable LLM credential
+still aborts before the first dispatch, because auth *is* a precondition for
+dispatching to that member at all. The full rationale lives in the
+`SWEEP-FAILURE POLICY -- DECIDED` header comment in
+`fleet-sprint/phases/member-prep.mjs`, and the operator-facing statement of
+the same policy is in the fleet-supervisor `SKILL.md` Member Prep section.
+
 ## Known gaps carried forward (deferred, not silently dropped)
 
-These were filed as low-priority follow-ups rather than blocking the initial
-feature, and remain open by design:
+This was filed as a low-priority follow-up rather than blocking the initial
+feature, and remains open by design:
 
 - **The sweep config surface exists but nothing wires it end to end.** A
   direct CLI launch can pass `--sweep-config` (markers plus production
@@ -121,14 +151,17 @@ feature, and remain open by design:
   the supervisor -- the path that motivated this feature in the first place
   -- still ships the sweep dormant (no markers, no production ports, so
   nothing ever matches).
-- **A sweep probe or kill failure currently aborts the whole sprint.** Only
-  the auth failure path was specified as a hard, pre-first-dispatch abort;
-  a sweep-side failure propagating the same way was not a deliberate design
-  choice and needs an explicit decision.
-- **Kill-dispatch labeling.** Internal logging for a sweep kill still uses a
-  "probe" label even when the action taken was a kill, not just an
-  enumeration -- a readability gap, not a correctness one.
-- **Auth-unreachable vs auth-missing.** An offline/unreachable remote member
-  is currently reported the same way as one with a genuinely missing LLM
-  credential ("LLM auth cannot be provisioned"), which conflates two
-  different operator actions (fix connectivity vs. provision a credential).
+
+Two gaps listed here previously are now closed, and are recorded here as
+current behaviour rather than as open items:
+
+- **Kill-dispatch labelling.** A sweep dispatch now carries its kind, so a
+  kill is labelled as a kill ("stray-process kill on `<member>`") rather
+  than reusing the probe wording. The label is presentation only -- the kind
+  never reaches the probe or kill command strings.
+- **Auth-unreachable vs auth-missing.** A member the registry reports as
+  offline now fails with a distinct unreachable error, raised *before* any
+  `provision_llm_auth` call, whose text states it is not a credential
+  problem. A genuinely missing credential still reports as unprovisionable.
+  The two point at different operator actions: fix connectivity vs.
+  provision a credential.
