@@ -146,6 +146,24 @@ const KNOWN_ARG_KEYS = new Set([
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
     // orchestrator member's own probed identity becomes the expectation.
     'expect_beads',
+    // apra-fleet-i4ku.7: the TARGET-OWNED configuration surface for the
+    // Member Prep stray-process sweep (member-stray-sweep.mjs / phases/
+    // member-prep.mjs). runner.js's own Member Prep call site hardcodes
+    // neither of these (per the generic-engine boundary -- this engine has no
+    // target-repo paths/flags/ports of its own); a target that wants real
+    // stray-process cleanup supplies both here, via `--sweep-config
+    // <json|@file>` (bin/cli.mjs's resolveSweepConfig()). `sweep_markers` is
+    // the array of `{ kind, token, evidence }` fleet-start evidence markers
+    // threaded straight into sweepMemberStrayProcesses({ markers }) --
+    // classifyFleetEvidence() in member-stray-sweep.mjs is the consumer and
+    // owns the evidence-class semantics. `sweep_production_ports` is the
+    // array of ports sweepMemberStrayProcesses({ productionPorts }) never
+    // kills a listener on. Both omitted (the default): Member Prep's sweep
+    // step reports a deliberate SKIP and dispatches no probe at all -- see
+    // phases/member-prep.mjs's runSweepStep() -- never a false "clean, N
+    // scanned" result.
+    'sweep_markers',
+    'sweep_production_ports',
 ]);
 
 /**
@@ -429,6 +447,44 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
+    // --- sweep_markers / sweep_production_ports (optional; apra-fleet-i4ku.7) ---
+    // The target-owned config surface for the Member Prep stray-process
+    // sweep -- see KNOWN_ARG_KEYS's doc comment above for why this exists and
+    // what each shape feeds. Validated here (shape only; the evidence-class
+    // semantics belong to member-stray-sweep.mjs's classifyFleetEvidence())
+    // so a malformed --sweep-config fails loudly before any dispatch, exactly
+    // like every other arg in this file.
+    const MARKER_EVIDENCE_KINDS = new Set(['path', 'flag', 'name']);
+    if (args.sweep_markers !== undefined) {
+        if (!Array.isArray(args.sweep_markers)) {
+            throw new Error('[Arg Contract] Invalid sweep_markers: must be an array of { kind, token, evidence } objects.');
+        }
+        args.sweep_markers.forEach((m, i) => {
+            if (!m || typeof m !== 'object' || Array.isArray(m)) {
+                throw new Error(`[Arg Contract] Invalid sweep_markers[${i}]: must be an object { kind, token, evidence }.`);
+            }
+            if (typeof m.kind !== 'string' || m.kind.length === 0) {
+                throw new Error(`[Arg Contract] Invalid sweep_markers[${i}].kind: must be a non-empty string.`);
+            }
+            if (typeof m.token !== 'string' || m.token.length === 0) {
+                throw new Error(`[Arg Contract] Invalid sweep_markers[${i}].token: must be a non-empty string.`);
+            }
+            if (typeof m.evidence !== 'string' || !MARKER_EVIDENCE_KINDS.has(m.evidence)) {
+                throw new Error(`[Arg Contract] Invalid sweep_markers[${i}].evidence: must be one of 'path', 'flag', 'name'.`);
+            }
+        });
+    }
+    if (args.sweep_production_ports !== undefined) {
+        if (!Array.isArray(args.sweep_production_ports)) {
+            throw new Error('[Arg Contract] Invalid sweep_production_ports: must be an array of port numbers.');
+        }
+        args.sweep_production_ports.forEach((p, i) => {
+            if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 65535) {
+                throw new Error(`[Arg Contract] Invalid sweep_production_ports[${i}] "${p}": must be an integer in 1..65535.`);
+            }
+        });
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -450,5 +506,7 @@ export function validateArgs(args) {
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
+        sweepMarkers: args.sweep_markers,
+        sweepProductionPorts: args.sweep_production_ports,
     };
 }

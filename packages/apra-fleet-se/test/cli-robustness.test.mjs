@@ -9,6 +9,7 @@ import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveSweepConfig,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
@@ -215,6 +216,99 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
             () => resolveRoleMap('{"Doer":["m1"],"doer":["m2"]}'),
             /--role-map key "doer" normalizes to "doer", which collides/
         );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.7: --sweep-config reaches the runner's validated args --
+// the target-owned config surface for the Member Prep stray-process sweep.
+// Mirrors the --role-map coverage above, since resolveSweepConfig() follows
+// the identical inline-JSON / @file pattern.
+// ---------------------------------------------------------------------------
+
+describe('parseCliArgs + resolveSweepConfig + buildRunnerArgs -> runner.js validateArgs', () => {
+    test('parseCliArgs accepts --sweep-config', () => {
+        const { values } = parseCliArgs([
+            ...BASE_ARGV,
+            '--sweep-config', '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}]}',
+        ]);
+        assert.strictEqual(values['sweep-config'], '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}]}');
+    });
+
+    test('inline JSON --sweep-config reaches validateArgs correctly', async () => {
+        const sweepConfig = await resolveSweepConfig(
+            '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}],"productionPorts":[8787]}'
+        );
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'],
+            members: ['m1'],
+            branch: 'auto-sprint/x',
+            baseBranch: 'main',
+            goal: 'P1/P2',
+            maxCycles: 5,
+            sweepMarkers: sweepConfig.markers,
+            sweepProductionPorts: sweepConfig.productionPorts,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.sweepMarkers, [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }]);
+        assert.deepStrictEqual(validated.sweepProductionPorts, [8787]);
+    });
+
+    test('@file --sweep-config indirection reaches validateArgs correctly', async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-se-sweepconfig-'));
+        const filePath = path.join(dir, 'sweep-config.json');
+        await fs.writeFile(filePath, JSON.stringify({
+            markers: [{ kind: 'dispatch', token: 'claude --fleet-run-id', evidence: 'flag' }],
+            productionPorts: [8080, 8787],
+        }), 'utf-8');
+        try {
+            const sweepConfig = await resolveSweepConfig(`@${filePath}`);
+            const args = buildRunnerArgs({
+                targetIssues: ['bd-1'], members: ['m1'], branch: 'auto-sprint/x', baseBranch: 'main',
+                goal: 'P1', maxCycles: 2,
+                sweepMarkers: sweepConfig.markers, sweepProductionPorts: sweepConfig.productionPorts,
+            });
+            const validated = validateArgs(args);
+            assert.deepStrictEqual(validated.sweepMarkers, [{ kind: 'dispatch', token: 'claude --fleet-run-id', evidence: 'flag' }]);
+            assert.deepStrictEqual(validated.sweepProductionPorts, [8080, 8787]);
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('resolveSweepConfig is undefined when --sweep-config is not passed, and the Member Prep call site falls back to skip', async () => {
+        const sweepConfig = await resolveSweepConfig(undefined);
+        assert.strictEqual(sweepConfig, undefined);
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m1'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, sweepMarkers: sweepConfig?.markers, sweepProductionPorts: sweepConfig?.productionPorts,
+        });
+        assert.strictEqual('sweep_markers' in args, false);
+        assert.strictEqual('sweep_production_ports' in args, false);
+        const validated = validateArgs(args); // must not throw
+        assert.strictEqual(validated.sweepMarkers, undefined);
+        assert.strictEqual(validated.sweepProductionPorts, undefined);
+    });
+
+    test('rejects malformed inline JSON with a clear error', async () => {
+        await assert.rejects(() => resolveSweepConfig('{not valid json'), /must be valid JSON/);
+    });
+
+    test('rejects a sweep-config that is not an object', async () => {
+        await assert.rejects(() => resolveSweepConfig('["markers"]'), /must be an object/);
+    });
+
+    test('rejects a markers entry missing kind/token/evidence, or with an unknown evidence class', async () => {
+        await assert.rejects(() => resolveSweepConfig('{"markers":[{"token":"x","evidence":"path"}]}'), /markers\[0\]/);
+        await assert.rejects(() => resolveSweepConfig('{"markers":[{"kind":"x","token":"y","evidence":"bogus"}]}'), /markers\[0\]/);
+    });
+
+    test('rejects an out-of-range productionPorts entry', async () => {
+        await assert.rejects(() => resolveSweepConfig('{"productionPorts":[99999]}'), /productionPorts\[0\]/);
+    });
+
+    test('@file indirection surfaces a clear error when the file is missing', async () => {
+        await assert.rejects(() => resolveSweepConfig('@/path/does/not/exist.json'), /could not read --sweep-config file/);
     });
 });
 

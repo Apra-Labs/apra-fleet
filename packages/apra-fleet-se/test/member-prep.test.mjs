@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { runMemberPrepPhase, checkMemberAuth, runSweepStep } from '../fleet-sprint/phases/member-prep.mjs';
 import { LlmAuthUnprovisionableError } from '../fleet-sprint/errors.mjs';
+import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
 
 // =============================================================================
 // Member Prep (apra-fleet-9be4.4) -- verification for the sprint-start
@@ -415,6 +416,129 @@ test('member-prep: sweep step skips with an honest reason (not "local member") w
     assert.notEqual(sweep.reason, 'local member', 'must not claim the member is local when locality was never confirmed');
     assert.match(sweep.reason, /registry could not be read/);
     assert.equal(calls.length, 0, 'execCommand (the sweep probe seam) must never be called when locality is unknown');
+});
+
+// ---------------------------------------------------------------------------
+// 9. apra-fleet-i4ku.7: the new target-owned config surface (--sweep-config
+//    -> sprint-args.mjs's sweep_markers/sweep_production_ports -> runner.js's
+//    Member Prep call site) actually produces a KILL decision end to end
+//    through runMemberPrepPhase's own stubbed execCommand seam -- not just an
+//    empty "ran, 0 killed" result. NOTHING REAL IS TOUCHED: execCommand below
+//    is a plain in-memory stub that only ever records/synthesizes text, the
+//    same pattern member-stray-sweep-safety-matrix.test.mjs's stubSeam()
+//    uses.
+// ---------------------------------------------------------------------------
+
+const CONFIGURED_MARKERS = [
+    { kind: 'sandbox-supervisor', token: '/opt/fleetwork/sandbox-run1/', evidence: 'path' },
+];
+const STALE_SUPERVISOR_PID = 4242;
+const DEAD_PARENT_PID = 9999;
+const SANDBOX_SUPERVISOR_CMD = '/usr/bin/node /opt/fleetwork/sandbox-run1/supervisor.js --listen 18701';
+
+/** Probe output carrying ONE real killable stray process (stale sandbox
+ *  supervisor, dead parent, non-production listening port) and nothing else,
+ *  so a kill decision -- if it happens -- is unambiguous. */
+function killableStrayProbeOutput() {
+    return [
+        `SWEEP-PROC  ${STALE_SUPERVISOR_PID}  ${DEAD_PARENT_PID} 1-02:03:04 ${SANDBOX_SUPERVISOR_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:18701 0.0.0.0:* users:(("node",pid=${STALE_SUPERVISOR_PID},fd=20))`,
+    ].join('\n');
+}
+
+/** Same execCommand-shape stub runMemberPrepPhase's caller (runner.js) wires
+ *  in production -- ({ member, command }) => Promise<{ ok, output, error }>
+ *  -- but synthesizes a real kill-dispatch response for the configured pid,
+ *  exactly like member-stray-sweep-safety-matrix.test.mjs's stubSeam(). */
+function makeKillCapableExecCommand(probeOutput) {
+    const calls = [];
+    const execCommand = async ({ member, command }) => {
+        calls.push({ member, command });
+        if (command.includes(KILL_BEGIN_PREFIX)) {
+            const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
+            const lines = pids.flatMap((pid) => [`${KILL_BEGIN_PREFIX} ${pid}`, `${KILL_STATUS_PREFIX} ${pid} 0`]);
+            return { ok: true, output: lines.join('\n'), error: null };
+        }
+        return { ok: true, output: probeOutput, error: null };
+    };
+    return { execCommand, calls };
+}
+
+test('member-prep: a configured marker set (the new target-owned config surface) actually produces a KILL decision end to end through runMemberPrepPhase', async () => {
+    const { log, lines } = collectLog();
+    const fleetApi = makeFleetApi({
+        members: [{ name: 'sandbox-member', type: 'remote', os: 'linux', llm_auth: 'oauth' }],
+    });
+    const { execCommand, calls } = makeKillCapableExecCommand(killableStrayProbeOutput());
+    const { syncBeadsBefore } = makeSyncBeadsBefore();
+    const fixedNow = () => Date.parse('2026-09-23T12:00:00.000Z');
+
+    const result = await runMemberPrepPhase({
+        members: ['sandbox-member'],
+        fleetApi,
+        execCommand,
+        syncBeadsBefore,
+        log,
+        // The exact shape --sweep-config's resolveSweepConfig() (bin/cli.mjs)
+        // resolves into, after flowing through sprint-args.mjs's
+        // validateArgs() -- proving the marker/port CONFIGURATION itself, not
+        // just member-stray-sweep.mjs's own decision logic (already covered
+        // by test/member-stray-sweep-safety-matrix.test.mjs), reaches this
+        // phase and results in a real kill dispatch.
+        sweepMarkers: CONFIGURED_MARKERS,
+        sweepProductionPorts: [7523, 8787],
+        now: fixedNow,
+    });
+
+    assert.equal(result.members['sandbox-member'].sweep.status, 'ran');
+    assert.deepEqual(
+        result.members['sandbox-member'].sweep.result.killed.map((k) => k.pid),
+        [STALE_SUPERVISOR_PID],
+        'the configured marker must have matched the stale supervisor and produced exactly one kill decision',
+    );
+
+    // A real kill dispatch was issued (probe, then kill -- two execCommand
+    // calls), naming the selected pid.
+    assert.equal(calls.length, 2, 'expected one probe dispatch and one kill dispatch');
+    assert.match(calls[1].command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`));
+
+    // The summary log line reports a nonzero killed count, not "0 killed".
+    const sweepLine = lines.find((l) => l.includes("member 'sandbox-member': sweep --"));
+    assert.ok(sweepLine, 'expected a sweep summary log line');
+    assert.match(sweepLine, /1 killed/);
+});
+
+test('member-prep: an UNCONFIGURED target (--sweep-config omitted -> no sweepMarkers passed) reports the sweep step SKIPPED, never a false "clean" scan', async () => {
+    const { log, lines } = collectLog();
+    const fleetApi = makeFleetApi({
+        members: [{ name: 'sandbox-member', type: 'remote', os: 'linux', llm_auth: 'oauth' }],
+    });
+    // The SAME probe output that produces a real kill above -- if the sweep
+    // module were invoked with no markers it could only ever answer "clean, N
+    // scanned", which is exactly the false-coverage result this proves never
+    // happens: no probe is dispatched at all when unconfigured.
+    const { execCommand, calls } = makeKillCapableExecCommand(killableStrayProbeOutput());
+    const { syncBeadsBefore } = makeSyncBeadsBefore();
+
+    const result = await runMemberPrepPhase({
+        members: ['sandbox-member'],
+        fleetApi,
+        execCommand,
+        syncBeadsBefore,
+        log,
+        // No sweepMarkers/sweepProductionPorts passed at all -- exactly what
+        // runner.js's Member Prep call site now does by default when
+        // validated.sweepMarkers is undefined (--sweep-config never passed).
+    });
+
+    assert.equal(result.members['sandbox-member'].sweep.status, 'skipped');
+    assert.match(result.members['sandbox-member'].sweep.reason, /no fleet-start markers configured/);
+    assert.equal(calls.length, 0, 'no probe may be dispatched at all when unconfigured');
+
+    const sweepLine = lines.find((l) => l.includes("member 'sandbox-member': sweep --"));
+    assert.ok(sweepLine, 'expected a sweep summary log line');
+    assert.match(sweepLine, /skipped/);
+    assert.doesNotMatch(sweepLine, /clean/, 'must never report a false "clean" result with no markers configured');
 });
 
 // ---------------------------------------------------------------------------

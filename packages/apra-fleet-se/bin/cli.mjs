@@ -139,6 +139,13 @@ export function buildOptionsSpec() {
         'allow-missing-members': { type: 'boolean' },
         'requirements-file': { type: 'string' },
         'role-map': { type: 'string' },
+        // apra-fleet-i4ku.7: target-owned config for the Member Prep
+        // stray-process sweep. Same inline-JSON-or-@file indirection as
+        // --role-map (resolveSweepConfig() below); omitted, the sweep step
+        // reports a deliberate skip (fleet-sprint/runner.js's Member Prep
+        // call site passes sweepMarkers/sweepProductionPorts straight
+        // through to sprint-args.mjs's validateArgs()).
+        'sweep-config': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
         // apra-fleet-f34.1: the supervisor's own HTTP listen address, threaded
         // in by src/supervisor/spawner.mjs's buildSprintArgv() when this CLI is
@@ -193,6 +200,10 @@ Options:
       --requirements-file <p>  Path to a requirements file threaded into the planner's prompt.
       --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
                                 either inline JSON or '@path/to/file.json'.
+      --sweep-config <json|@file>  JSON object { markers: [{kind,token,evidence}], productionPorts: [n] }
+                                configuring the Member Prep stray-process sweep for this target,
+                                either inline JSON or '@path/to/file.json'. Omitted: the sweep step
+                                reports a deliberate skip (no fleet-start evidence to act on).
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
       --service-url <url>      The supervisor's own HTTP service URL (e.g. http://localhost:8787),
                                 enabling the HTTP-backed dolt-mutex/id-allocator clients. Normally
@@ -311,6 +322,75 @@ export async function resolveRoleMap(rawValue, deps = {}) {
 }
 
 /**
+ * Resolves `--sweep-config` into `{ markers, productionPorts }` for the
+ * Member Prep stray-process sweep (apra-fleet-i4ku.7), supporting the same
+ * inline-JSON / `@path/to/file.json` indirection as `--role-map` above
+ * (resolveRoleMap()). The target repo owns this data (per
+ * docs/generic-engine-boundary.md -- this engine hardcodes no target-repo
+ * paths, flags or ports of its own), so it lives outside the engine entirely
+ * and is only ever supplied by whoever launches the sprint for that target.
+ *
+ * Shape-checked here so a malformed `--sweep-config` fails fast at the CLI
+ * layer; `fleet-sprint/sprint-args.mjs`'s `validateArgs()` re-validates the
+ * resolved `sweep_markers`/`sweep_production_ports` independently once they
+ * reach the runner, exactly like every other CLI-resolved arg in this file.
+ *
+ * @param {string|undefined} rawValue - the raw `--sweep-config` flag value
+ * @param {{ readFile?: (path: string, encoding: string) => Promise<string> }} [deps] - injectable for tests
+ * @returns {Promise<{ markers: Array<object>, productionPorts: Array<number> }|undefined>}
+ */
+export async function resolveSweepConfig(rawValue, deps = {}) {
+    if (rawValue === undefined) return undefined;
+    const readFile = deps.readFile || fs.readFile;
+
+    let jsonText = rawValue;
+    if (rawValue.startsWith('@')) {
+        const filePath = rawValue.slice(1);
+        try {
+            jsonText = await readFile(filePath, 'utf-8');
+        } catch (err) {
+            throw new Error(`Error: could not read --sweep-config file '${filePath}': ${err.message}`);
+        }
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonText);
+    } catch (err) {
+        throw new Error(`Error: --sweep-config must be valid JSON (inline or @path/to/file.json): ${err.message}`);
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('Error: --sweep-config JSON must be an object ({ markers: [...], productionPorts: [...] }).');
+    }
+
+    const markers = parsed.markers === undefined ? [] : parsed.markers;
+    if (!Array.isArray(markers)) {
+        throw new Error('Error: --sweep-config "markers" must be an array of { kind, token, evidence } objects.');
+    }
+    const evidenceKinds = new Set(['path', 'flag', 'name']);
+    markers.forEach((m, i) => {
+        if (!m || typeof m !== 'object' || Array.isArray(m)
+            || typeof m.kind !== 'string' || m.kind.length === 0
+            || typeof m.token !== 'string' || m.token.length === 0
+            || typeof m.evidence !== 'string' || !evidenceKinds.has(m.evidence)) {
+            throw new Error(`Error: --sweep-config "markers[${i}]" must be { kind: string, token: string, evidence: 'path'|'flag'|'name' }.`);
+        }
+    });
+
+    const productionPorts = parsed.productionPorts === undefined ? [] : parsed.productionPorts;
+    if (!Array.isArray(productionPorts)) {
+        throw new Error('Error: --sweep-config "productionPorts" must be an array of port numbers.');
+    }
+    productionPorts.forEach((p, i) => {
+        if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 65535) {
+            throw new Error(`Error: --sweep-config "productionPorts[${i}]" ("${p}") must be an integer in 1..65535.`);
+        }
+    });
+
+    return { markers, productionPorts };
+}
+
+/**
  * Builds the exact args object handed to `engine.executeFile()`, i.e. the
  * object `fleet-sprint/runner.js`'s `validateArgs()` consumes. Pulled into its
  * own pure function so a test can assert `--requirements-file`/`--role-map`
@@ -319,11 +399,11 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * @param {{
  *   targetIssues: string[], members: string[], branch: string, baseBranch: string,
  *   goal: string, maxCycles: number, requirementsFile: string|undefined, roleMap: object|undefined,
- *   budget: number|undefined,
+ *   budget: number|undefined, sweepMarkers: Array<object>|undefined, sweepProductionPorts: Array<number>|undefined,
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, sweepMarkers, sweepProductionPorts }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -355,6 +435,13 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    // apra-fleet-i4ku.7: the resolved --sweep-config (resolveSweepConfig()'s
+    // `{ markers, productionPorts }`), forwarded as the two separate
+    // sprint-args.mjs keys its validateArgs() expects. Omitted (no
+    // --sweep-config): both stay unset, and runner.js's Member Prep call site
+    // falls back to `[]`/`[]`, matching pre-existing behavior exactly.
+    if (sweepMarkers !== undefined) args.sweep_markers = sweepMarkers;
+    if (sweepProductionPorts !== undefined) args.sweep_production_ports = sweepProductionPorts;
     return args;
 }
 
@@ -623,11 +710,13 @@ async function main() {
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
     let roleMap;
+    let sweepConfig;
     try {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
         roleMap = await resolveRoleMap(values['role-map']);
+        sweepConfig = await resolveSweepConfig(values['sweep-config']);
     } catch (err) {
         console.error(`Error: ${err.message}`);
         process.exit(1);
@@ -1030,6 +1119,8 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                sweepMarkers: sweepConfig?.markers,
+                sweepProductionPorts: sweepConfig?.productionPorts,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

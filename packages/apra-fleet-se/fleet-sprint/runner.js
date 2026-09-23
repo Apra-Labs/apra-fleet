@@ -1915,16 +1915,32 @@ async function runSprintCycle(context) {
     // between the two steps. `execCommand` adapts the sweep's injected seam
     // onto this file's own per-member `command()` dispatcher (failSoft, so a
     // probe failure surfaces as the sweep's own StrayProbeError rather than
-    // an unrelated non-zero-exit throw). `sweepMarkers`/`sweepProductionPorts`
-    // are deliberately empty here -- this generic engine has no target-repo
-    // paths, flags or ports of its own to hardcode (member-stray-sweep.mjs's
-    // own header). With no caller-supplied markers, phases/member-prep.mjs's
+    // an unrelated non-zero-exit throw).
+    //
+    // `sweepMarkers`/`sweepProductionPorts` (apra-fleet-i4ku.7) come straight
+    // from `validated.sweepMarkers`/`validated.sweepProductionPorts` -- this
+    // generic engine still hardcodes no target-repo paths, flags or ports of
+    // its own (member-stray-sweep.mjs's own header); those now flow in from
+    // the TARGET-OWNED `--sweep-config <json|@file>` CLI flag
+    // (bin/cli.mjs's resolveSweepConfig() -> sprint-args.mjs's
+    // sweep_markers/sweep_production_ports), so a target that wants real
+    // stray-process cleanup supplies its own markers/ports there instead of
+    // this engine inventing any. Considered and rejected: having the ENGINE
+    // itself contribute markers for the process trees it starts (role
+    // dispatch, test-runner subprocesses) -- role dispatch happens through
+    // the fleet MCP server's own `agent()`/`execute_prompt` call, not a
+    // locally-spawned child process this engine could tag with an inspectable
+    // command-line token, and a test-runner's subprocesses are target-authored
+    // commands this engine does not construct, so there is no reliable,
+    // target-repo-agnostic marker to add on the engine's own behalf.
+    // Defaulted to `[]` (via `|| []`) rather than relying on
+    // runMemberPrepPhase's own default, so a `validated.sweepMarkers` of
+    // `undefined` (the --sweep-config flag omitted) is explicit at this call
+    // site. With no configured markers, phases/member-prep.mjs's
     // runSweepStep() reports the sweep step SKIPPED and dispatches no probe
     // at all (apra-fleet-9be4.3 review blocker 2 -- a probe run with no
     // markers can never identify a fleet-started process, so running it
-    // anyway would print a false "clean, N scanned" result); a target that
-    // wants real stray-process cleanup supplies its own markers/ports
-    // through this same call site.
+    // anyway would print a false "clean, N scanned" result).
     await runMemberPrepPhase({
         members: branchEnsureMembers,
         fleetApi: sprintState.fleetApi,
@@ -1933,8 +1949,8 @@ async function runSprintCycle(context) {
         }),
         syncBeadsBefore: gitSync.syncBeadsBefore,
         log, group, phase, endGroup,
-        sweepMarkers: [],
-        sweepProductionPorts: [],
+        sweepMarkers: validated.sweepMarkers || [],
+        sweepProductionPorts: validated.sweepProductionPorts || [],
     });
 
     // =======================
