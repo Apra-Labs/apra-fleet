@@ -5,7 +5,7 @@ import {
     runMemberPrepPhase, checkMemberAuth, runSweepStep, memberPrepExecLabel,
 } from '../fleet-sprint/phases/member-prep.mjs';
 import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../fleet-sprint/errors.mjs';
-import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
+import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
 
 // =============================================================================
 // Member Prep (apra-fleet-9be4.4) -- verification for the sprint-start
@@ -709,6 +709,115 @@ test('member-prep: an UNCONFIGURED target (--sweep-config omitted -> no sweepMar
     assert.ok(sweepLine, 'expected a sweep summary log line');
     assert.match(sweepLine, /skipped/);
     assert.doesNotMatch(sweepLine, /clean/, 'must never report a false "clean" result with no markers configured');
+});
+
+// ---------------------------------------------------------------------------
+// 10. apra-fleet-i4ku.15 / apra-fleet-i4ku.11: THE SWEEP-FAILURE POLICY.
+//
+//     A sweep that cannot run does NOT abort the sprint. This is the single
+//     decided behaviour recorded in phases/member-prep.mjs's header and in
+//     the fleet-supervisor SKILL.md Member Prep section; this test is the
+//     one and only place in the suite that asserts it, and it is written to
+//     be readable as documentation of that decision.
+//
+//     Read off the assertions below, the policy is: runMemberPrepPhase()
+//     RETURNS NORMALLY; the bad member's sweep is recorded as FAILURE (never
+//     'skipped', never a clean scan) naming the member and the specific
+//     missing tool; that member's remaining prep steps still run; and every
+//     other member is prepped normally, so an otherwise healthy multi-member
+//     sprint still reaches its first dispatch.
+//
+//     NOTHING REAL IS TOUCHED: execCommand below is a plain in-memory stub
+//     that returns canned probe text. No process anywhere is enumerated or
+//     signalled, and nothing is written to disk.
+// ---------------------------------------------------------------------------
+
+test('member-prep: a member with no ps/lsof/ss records a loud sweep FAILURE and the phase CONTINUES -- the sprint is not aborted', async () => {
+    const { log, lines } = collectLog();
+    const fleetApi = makeFleetApi({
+        members: [
+            { name: 'toolless-member', type: 'remote', os: 'linux', llm_auth: 'oauth' },
+            { name: 'healthy-member', type: 'remote', os: 'linux', llm_auth: 'oauth' },
+        ],
+    });
+
+    // 'toolless-member' answers the probe the way a member with none of the
+    // supported enumeration tools does -- member-stray-sweep.mjs's
+    // MISSING_TOOL_PREFIX row -- which makes it raise
+    // StrayProbeToolMissingError out of sweepMemberStrayProcesses().
+    // 'healthy-member' answers with a normal, parseable (clean) probe table.
+    const dispatched = [];
+    const execCommand = async ({ member, command }) => {
+        dispatched.push({ member, command });
+        if (member === 'toolless-member') return { ok: true, output: `${MISSING_TOOL_PREFIX} ps`, error: null };
+        return { ok: true, output: CLEAN_PROBE_OUTPUT, error: null };
+    };
+    const { syncBeadsBefore, calls: dpulls } = makeSyncBeadsBefore();
+
+    // POLICY, ASSERTION 1: the phase RETURNS. It does not throw, so the
+    // sprint reaches its first dispatch. (Before apra-fleet-i4ku.11 the
+    // StrayProbeToolMissingError propagated out of runMemberPrepPhase and
+    // through runner.js's uncaught Member Prep call site, ending the sprint.)
+    const result = await runMemberPrepPhase({
+        members: ['toolless-member', 'healthy-member'],
+        fleetApi,
+        execCommand,
+        syncBeadsBefore,
+        log,
+        sweepMarkers: CONFIGURED_MARKERS,
+        sweepProductionPorts: [7523, 8787],
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+    });
+
+    // POLICY, ASSERTION 2: the failure is recorded as its own FAILURE
+    // outcome. Not 'skipped' (which would imply the sweep deliberately chose
+    // not to look) and not 'ran' (which would imply a real, clean scan).
+    const failed = result.members['toolless-member'].sweep;
+    assert.equal(failed.status, 'failed');
+    assert.notEqual(failed.status, 'skipped', 'a sweep that could not run is not the same as a sweep deliberately skipped');
+    assert.notEqual(failed.status, 'ran', 'a sweep that could not run must never be recorded as a completed scan');
+    assert.ok(failed.error instanceof Error, 'the underlying error is kept on the result, not discarded');
+    assert.equal(failed.error.name, 'StrayProbeToolMissingError');
+    assert.equal(failed.error.tool, 'ps', 'the specific missing tool is preserved so the operator knows what to install');
+
+    // POLICY, ASSERTION 3: it is LOUD -- the operator sees a FAILURE line
+    // naming the member and the specific cause, never a silent swallow and
+    // never a claim that the member is clean.
+    const failLine = lines.find((l) => l.includes("member 'toolless-member': sweep --"));
+    assert.ok(failLine, 'expected a sweep result line for the failing member');
+    assert.match(failLine, /FAILURE/);
+    assert.match(failLine, /no supported tool available/);
+    assert.match(failLine, /missing 'ps'/);
+    // ...and it states the CONSEQUENCE, so the line cannot be misread as a
+    // successful pass. Deliberately not a bare /clean/ search: the sweep's
+    // own error text ("Refusing to report a clean member") and the policy
+    // wording ("rather than clean") both contain that word as a NEGATION.
+    // What must be absent is the 'ran' summary shape -- the "N killed, M
+    // scanned" counts, which are the only thing that asserts real coverage.
+    assert.match(failLine, /NOT scanned/, 'the line must state the member was not scanned');
+    assert.doesNotMatch(failLine, /\d+ scanned/, 'a failed sweep must never report a scanned count, which would read as real coverage');
+    assert.doesNotMatch(failLine, /\d+ killed/, 'a failed sweep must never report a killed count');
+
+    // POLICY, ASSERTION 4: the failing member's own remaining prep steps
+    // still run -- the failure is contained to the sweep step, not treated
+    // as "give up on this member".
+    assert.equal(result.members['toolless-member'].dpull.status, 'ran');
+
+    // POLICY, ASSERTION 5: the other member is prepped completely and
+    // normally. One member's missing tool must not degrade anybody else --
+    // this is the "otherwise healthy multi-member sprint" case.
+    assert.equal(result.members['healthy-member'].auth.status, 'present');
+    assert.equal(result.members['healthy-member'].sweep.status, 'ran');
+    assert.equal(result.members['healthy-member'].dpull.status, 'ran');
+    assert.deepEqual(
+        dpulls.map((c) => c.member), ['toolless-member', 'healthy-member'],
+        'both members must have completed prep; the sprint proceeds to its first dispatch',
+    );
+
+    // The stub was genuinely exercised on both members -- this test is not
+    // passing because the sweep never ran at all.
+    assert.ok(dispatched.some((d) => d.member === 'toolless-member'));
+    assert.ok(dispatched.some((d) => d.member === 'healthy-member'));
 });
 
 // ---------------------------------------------------------------------------
