@@ -937,6 +937,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // real runner.js phase probes for that file and skips the dispatch
         // entirely otherwise, same as deploy.md/integ-test-playbook.md.
         regressionHandler = null,
+        // apra-fleet-iiny.4.3: optional (opts, tempDir, runCmd, epicBead) =>
+        // result override for the 'sprint-doctor' dispatch (design doc
+        // escalate-to-llm-design.md section 2.1's zero-tool consult), mirroring
+        // deployHandler/integHandler/regressionHandler above. When ABSENT, a
+        // doctor dispatch falls through to the same "unhandled agentType"
+        // guard every other unrecognized agentType hits below -- which
+        // doctor-consult.mjs's own dispatch try/catch already treats as a
+        // failed consult and falls back to the pre-doctor behaviour
+        // (strictly additive, design doc section 2.3). That is deliberate:
+        // every EXISTING scenario that never configured a doctorHandler (the
+        // overwhelming majority -- doctor_enabled defaults to true,
+        // sprint-args.mjs) keeps behaving exactly as it did before this
+        // option existed. Only a scenario that explicitly wants a REAL
+        // doctor verdict (e.g. to exercise the T3 stall-interposition path
+        // end to end) supplies one.
+        doctorHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -1725,6 +1741,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 };
             }
 
+            // --- sprint-doctor consult (apra-fleet-iiny.4.3) ---
+            //
+            // Zero-tool, schema-validated verdict dispatch (design doc
+            // section 2.1). Only reached when a scenario's own T1-T5
+            // triggers actually fire (doctor_enabled defaults to true, but
+            // most scenarios never accumulate the repeated/stalled failures
+            // those triggers require). With no doctorHandler configured this
+            // falls through to the catch-all throw below exactly like any
+            // other unrecognized agentType -- see the doctorHandler option
+            // comment above for why that is the correct, additive default.
+            if (opts.agent === 'sprint-doctor' && doctorHandler) {
+                return doctorHandler({ opts, tempDir, runCmd, epicBead });
+            }
+
             // Any agentType reaching here means runner.js dispatched something
             // this mock doesn't know about -- fail loudly instead of silently
             // falling through to a generic stub (that's exactly the bug this
@@ -1954,6 +1984,10 @@ export async function runDevelopLoopScenario(tag, {
     // `withRegressionPlaybook` below (writes regression-test-playbook.md so
     // the real probe finds it and the phase actually dispatches).
     regressionHandler,
+    // apra-fleet-iiny.4.3: optional (opts, tempDir, runCmd, epicBead) =>
+    // result override for the 'sprint-doctor' dispatch -- see
+    // buildMockFleetApi's `doctorHandler` option comment above.
+    doctorHandler,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -2097,6 +2131,7 @@ export async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             regressionHandler,
+            doctorHandler,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,

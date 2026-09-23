@@ -4374,7 +4374,34 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredSuffix + grantSuffix + thrashSuffix + verifySuffix + doctorSuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, grantAwaitingBlockers, deferredIds: [...deferredEverIds], thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], doctorCreditIds: [...doctorCreditIds], cycle, ...(doctorStallVerdict ? { doctorVerdict: doctorStallVerdict } : {}) }
+                {
+                    // These six are StalledSprintError's OWN explicit
+                    // constructor params (errors.mjs) -- kept flat here so
+                    // `error.staleCycles`/`.closedCountHistory`/etc. keep
+                    // working exactly as every existing caller (e.g.
+                    // mock-sprint-stall-oscillation.test.mjs) already reads
+                    // them.
+                    staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, cycle,
+                    // apra-fleet-iiny.4.3: everything else must be nested
+                    // under `details` -- StalledSprintError's constructor
+                    // only ever merges an opts.details SUB-OBJECT into
+                    // err.details (`{..., ...details}`, errors.mjs); passing
+                    // these flat at the top level (the shape this line used
+                    // before) was silently dropped by that destructure, so
+                    // `doctorVerdict` (and every field beside it) never
+                    // reached `err.details` at all despite being computed
+                    // right here -- caught by replaying this exact incident
+                    // under the doctor-enabled wiring in
+                    // doctor-stall-interposition.test.mjs.
+                    details: {
+                        grantAwaitingBlockers,
+                        deferredIds: [...deferredEverIds],
+                        reopenCounts: Object.fromEntries(reopenCounts),
+                        verifyEverIds: [...verifyEverIds],
+                        doctorCreditIds: [...doctorCreditIds],
+                        ...(doctorStallVerdict ? { doctorVerdict: doctorStallVerdict } : {}),
+                    },
+                }
             );
         }
 

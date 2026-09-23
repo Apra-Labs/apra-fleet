@@ -419,8 +419,22 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // dump above. Each dynamic value (evidence bullets, human-referral text)
     // is sanitized individually, same rationale as safeCode/safeMessage/
     // safeDetails above -- this text can originate from agent output.
-    const doctorVerdictLines = (error instanceof SprintDoctorAbortError)
-        ? formatDoctorVerdictLines(error.verdict).map((line) => sanitizePrText(line)).filter((line) => line.length > 0)
+    //
+    // apra-fleet-iiny.4.3: the T3 stall-interposition path is a DIFFERENT
+    // typed error -- a StalledSprintError whose one doctored extra cycle
+    // still made no new high-water-mark progress, so the ORIGINAL
+    // stall-abort fires (design doc section 1.3 H3) rather than
+    // SprintDoctorAbortError. It carries the same verdict-shaped diagnosis,
+    // but nested at `error.details.doctorVerdict` (StalledSprintError's own
+    // constructor, errors.mjs) rather than on `error.verdict` (reserved for
+    // an actually-executed abort_sprint action) -- render that too, so a
+    // doctored-then-still-stalled abort's PR body explains the diagnosis
+    // exactly like a doctor-initiated abort's does.
+    const doctorVerdictSource = (error instanceof SprintDoctorAbortError)
+        ? error.verdict
+        : (error instanceof StalledSprintError && error.details ? error.details.doctorVerdict : null);
+    const doctorVerdictLines = doctorVerdictSource
+        ? formatDoctorVerdictLines(doctorVerdictSource).map((line) => sanitizePrText(line)).filter((line) => line.length > 0)
         : [];
     const prBody = [
         `Automated apra-fleet-se sprint ABORTED before reaching a final PASS/FAIL verdict.`,
