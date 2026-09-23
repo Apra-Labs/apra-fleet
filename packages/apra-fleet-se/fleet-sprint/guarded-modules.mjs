@@ -376,6 +376,17 @@ export const GUARDED_MODULES = [
     // exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The remote-only stray fleet-process sweep (member-stray-sweep.mjs). It
+    // issues no command()/agent() call of its own -- execution is behind an
+    // injected seam its caller supplies -- so it scans clean under
+    // dispatch-safety-guard, and it is registered rather than exempted
+    // deliberately: it BUILDS member-bound command strings, which is exactly
+    // the surface the shell-command invariant exists for. Its win32 branch
+    // carries PowerShell pipeline/local variables inside its own
+    // -EncodedCommand payload; those are suppressed one line at a time with
+    // documented `shell-guard-allow` directives rather than by exempting the
+    // whole module, so any NEW expansion added to it is still reported.
+    'member-stray-sweep.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',
