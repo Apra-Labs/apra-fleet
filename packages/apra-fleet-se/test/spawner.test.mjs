@@ -368,6 +368,52 @@ describe('supervisor sweep-config surface (target-owned data)', () => {
         assert.deepEqual(reparsed, loaded);
     });
 
+    // apra-fleet-i4ku.22: the supervisor loader (loadSweepConfig ->
+    // validateSweepConfig) and cli.mjs's resolveSweepConfig() are two
+    // independent, deliberately mirrored implementations -- this pins that
+    // they still AGREE on both halves of the top-level strictness: an
+    // unknown key (a typo such as "productionPort" for "productionPorts")
+    // is rejected by both, and the documented underscore-prefixed comment
+    // keys are accepted by both and dropped from the resolved config.
+    test('the supervisor loader and cli.mjs resolveSweepConfig agree on top-level strictness: unknown keys rejected by both, underscore keys accepted by both', async () => {
+        const badConfig = JSON.stringify({ productionPort: [8787] }); // typo: should be productionPorts
+        assert.throws(
+            () => loadSweepConfig({ env: { [SWEEP_CONFIG_ENV_VAR]: badConfig }, logger: { log() {} } }),
+            /"productionPort"/,
+            'the supervisor loader must reject the unknown key and name it',
+        );
+        await assert.rejects(
+            () => resolveSweepConfig(badConfig),
+            /"productionPort"/,
+            'cli.mjs resolveSweepConfig must reject the same unknown key and name it',
+        );
+
+        const commented = JSON.stringify({
+            _readme: 'top-level comment',
+            _readme_supervisor: 'another comment',
+            markers: [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }],
+            productionPorts: [8787],
+        });
+        const loaded = loadSweepConfig({ env: { [SWEEP_CONFIG_ENV_VAR]: commented }, logger: { log() {} } });
+        const resolved = await resolveSweepConfig(commented);
+        assert.ok(loaded, 'the supervisor loader must accept a config with only underscore-prefixed unknown keys');
+        assert.deepEqual(loaded, resolved, 'both layers must resolve to the same config, with no underscore key surviving into either');
+        assert.deepEqual(Object.keys(loaded).sort(), ['markers', 'productionPorts']);
+    });
+
+    // apra-fleet-i4ku.22: this repo's real .fleet/sweep-config.json carries
+    // four underscore-prefixed comment keys (_readme, _readme_supervisor,
+    // _readme_liveness, _readme_sprint_engine) alongside markers,
+    // productionPorts and livenessProbe -- exactly the shape the new
+    // top-level strictness must not reject. Read the raw file (not just its
+    // resolved config) so this pins the actual key set, not a re-derived one.
+    test("apra-fleet's own .fleet/sweep-config.json carries the documented four underscore comment keys, and still loads without error under the new top-level strictness", () => {
+        const raw = JSON.parse(fs.readFileSync(path.resolve(repoRoot, SWEEP_CONFIG_RELATIVE_PATH), 'utf-8'));
+        const underscoreKeys = Object.keys(raw).filter((k) => k.startsWith('_')).sort();
+        assert.deepEqual(underscoreKeys, ['_readme', '_readme_liveness', '_readme_sprint_engine', '_readme_supervisor']);
+        assert.doesNotThrow(() => loadSweepConfig({ repoRoot, env: {}, logger: { log() {} } }));
+    });
+
     // AC6: this repo, acting as its own target, actually declares a config --
     // so a supervisor-launched sprint here stops reporting "sweep skipped: no
     // fleet-start markers configured".

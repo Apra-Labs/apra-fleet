@@ -310,6 +310,29 @@ describe('parseCliArgs + resolveSweepConfig + buildRunnerArgs -> runner.js valid
     test('@file indirection surfaces a clear error when the file is missing', async () => {
         await assert.rejects(() => resolveSweepConfig('@/path/does/not/exist.json'), /could not read --sweep-config file/);
     });
+
+    // apra-fleet-i4ku.22: the top-level key set is now strict -- a typo such
+    // as "productionPort" (missing the trailing "s") used to be silently
+    // discarded, yielding productionPorts: [] with no error and quietly
+    // dropping a target's production-port protection.
+    test('rejects an unknown top-level key with the CLI-style error, naming the offending key', async () => {
+        await assert.rejects(
+            () => resolveSweepConfig('{"productionPort":[8787]}'),
+            /Error: --sweep-config unknown key\(s\) "productionPort"/,
+        );
+    });
+
+    test('accepts underscore-prefixed comment keys and drops them from the resolved config', async () => {
+        const sweepConfig = await resolveSweepConfig(JSON.stringify({
+            _readme: 'this file is a comment carrier',
+            _readme_supervisor: 'another comment',
+            markers: [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }],
+            productionPorts: [8787],
+        }));
+        assert.deepStrictEqual(Object.keys(sweepConfig).sort(), ['markers', 'productionPorts']);
+        assert.deepStrictEqual(sweepConfig.markers, [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }]);
+        assert.deepStrictEqual(sweepConfig.productionPorts, [8787]);
+    });
 });
 
 // ---------------------------------------------------------------------------
