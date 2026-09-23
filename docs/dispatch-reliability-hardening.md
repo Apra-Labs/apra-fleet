@@ -341,3 +341,80 @@ timeout's purpose. The durable shape:
   the instant the terminating signal is first observed, consulted at every
   place the wrapper can exit, rather than relying on one specific code path
   being the one that happens to run first.
+- **A deferred hard-kill timer armed by the signal handler must capture the
+  target process-group id at signal time, not read whatever `currentChild`
+  happens to hold when the timer fires.** The trailing `process.exit()` that
+  ends the wrapper's normal suite loop can run before the deferred timer
+  fires, and by the time it does fire the wrapper may already be recycling
+  `currentChild` for a different (or no) suite -- a timer that reads the
+  live variable at fire-time can silently kill nothing, or the wrong thing,
+  while a SIGTERM-ignoring descendant of the *original* suite survives. The
+  fix is for the signal handler to snapshot the group pid into the timer's
+  own closure the instant the signal is observed, and for the timer to kill
+  that captured pid unconditionally -- and for the wrapper to explicitly
+  clear its own "there is a deferred kill still armed" tracking state on
+  exit, so a signal delivered after the tracked child has already been
+  reaped and recycled can never be mistaken for still applying to the new
+  occupant of that slot. **Do not assume `currentChild` is null at the
+  trailing `process.exit()` and therefore safe to ignore** -- that
+  assumption does not hold in practice; this is exactly the race the guard
+  above exists to close.
+- **A process-tree-kill helper's own liveness check needs two independent
+  correctness fixes on POSIX, beyond "send the kill signal":**
+  - **Signal the process group (negative pid), not just the single given
+    pid.** A detached child can lead its own process group with descendants
+    of its own; signalling only the single pid leaves those descendants
+    running.
+  - **Disambiguate a zombie from a live process before reporting
+    liveness.** The cheapest liveness probe (`kill(pid, 0)`) succeeds for a
+    zombie (a killed-but-not-yet-reaped-by-its-parent process) exactly as it
+    does for a genuinely live one; the probe must additionally check the
+    process's reported state (e.g. `ps -o stat=`) and treat a zombie state
+    as "not alive," or a liveness check run immediately after a kill signal
+    can spuriously report the target as still alive.
+  - **`kill(2)` only queues a signal -- it does not block until the target
+    has actually exited.** A liveness probe run on the very next line after
+    sending a kill signal can still observe the target as alive purely
+    because the kernel has not yet delivered/processed the queued signal.
+    The kill helper must poll, under a short bounded wait, until the pid has
+    actually left the process table and the process group has no
+    non-zombie member left, rather than treating "the signal was sent" as
+    equivalent to "the process is gone."
+
+## The exit-drain grace timer is deliberately unref'd, and that is provably safe given every current call site
+
+Both completion-on-exit call sites (the local strategy and the SSH strategy)
+arm a short grace-window timer to drain buffered output before finalizing,
+and then immediately `unref()` that timer so it cannot itself hold the
+process's event loop open. An unref'd timer does not prevent the process
+from exiting if it becomes the *only* remaining live handle -- if that ever
+happened here, the process could exit before the timer fires, and the
+promise waiting on that timer would never settle. It never does, for a
+verifiable reason specific to each transport:
+
+- **Local strategy:** if the drain is actually needed (a grandchild still
+  holds the inherited stdio), the child's stdout/stderr read streams are
+  themselves open, flowing, ref'd handles -- they are exactly why the drain
+  exists, and they keep the loop alive independent of the timer. If the
+  drain is not needed (nothing inherited the pipes), the pipes have already
+  reached EOF, `close` is already queued, and finalize runs via `close`
+  without ever depending on the timer.
+- **SSH strategy:** the ssh2 client's own TCP socket to the remote host is
+  the handle that outlives the drain window -- the channel being open is
+  what makes the drain necessary in the first place, so the underlying
+  connection socket is necessarily still live, and the ssh2 client library
+  never unrefs that socket itself.
+- Every current caller of either completion-on-exit path runs inside the
+  long-lived MCP server process, which always has other ref'd handles of
+  its own; the one CLI caller holds a ref'd interval for its own watch loop.
+
+**This is a call-site-dependent invariant, not a Node guarantee, and it has
+a known narrow gap:** if a future caller ever spawns with stdio fully
+detached from the parent (no readable `stdout`/`stderr` objects at all) and
+the underlying process/channel exit races the `close` event, the unref'd
+timer could in principle be skipped with no other live handle to save it.
+The correct fix if that ever surfaces is to re-ref the timer for the
+duration of the drain window at that call site, not to remove the unref
+globally -- removing it globally would reintroduce the risk of this timer
+alone holding the process open long after every real handle it is draining
+has already gone away.
