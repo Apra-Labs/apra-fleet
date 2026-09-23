@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- scoped-replan findings threading, truthful planner KB contract, sprint-start member prep and stray-process sweep
+
+Sprint goal: three fixes -- thread the reviewer findings that trigger a
+scoped in-cycle replan into the replan prompt itself, make the KB step of
+every wrapper-injection role prompt (planner, plan-reviewer, deployer,
+integ-test-runner, regression-test-runner) truthful about what a dispatched
+member can actually do with the fleet MCP server disabled, and add a
+sprint-start Member Prep phase that verifies/provisions LLM auth and sweeps
+stray fleet processes left on remote members by an earlier sprint, alongside
+reported git- and beads-pull status. **Sprint verdict: PASS**, verified
+against the net diff against the three scope issues: build and both full
+test suites (root and `packages/apra-fleet-se`) green with zero failures,
+the generic-engine-boundary check clean, and all added lines ASCII-only. See
+`docs/scoped-replan-and-planner-kb-contract.md` for the replan-findings
+design and the wrapper-role KB contract rule, and
+`docs/member-prep-and-stray-sweep.md` for the Member Prep phase and the
+stray-process sweep's safety predicates.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $24.7956.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1265 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+stray-process sweep's configuration surface (`--sweep-config`) is wired for
+a direct CLI launch but the supervisor's own sprint-launch argument builder
+has no passthrough for it yet, so a supervisor-launched sprint still ships
+the sweep dormant; a sweep probe or kill failure currently aborts the whole
+sprint the same way an unprovisionable auth failure does, which was not a
+deliberate design decision for the sweep path specifically; the Member Prep
+kill-dispatch log line still labels itself a "probe" even when it performed
+a kill; and an unreachable/offline remote member is reported identically to
+one with a genuinely missing LLM credential, conflating two different
+operator remedies.
+
 ## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the
