@@ -63,6 +63,12 @@ const distArgsSkill = join(distDir, 'skills', 'auto-sprint-args');
 const fleetSprintCliSkill = join(root, 'packages', 'apra-fleet-se', 'fleet-sprint', 'skills', 'fleet-sprint-cli');
 const distCliSkill = join(distDir, 'skills', 'fleet-sprint-cli');
 
+// sprint-doctor skill: sourced from the fleet-sprint package (NOT apra-pm),
+// vendored to dist/ so npm-global installs (no packages/ tree) still find it.
+// Provider-agnostic -- installed for every LLM provider.
+const sprintDoctorSkill = join(root, 'packages', 'apra-fleet-se', 'fleet-sprint', 'skills', 'sprint-doctor');
+const distSprintDoctorSkill = join(distDir, 'skills', 'sprint-doctor');
+
 const isNonEmptyDir = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
 if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
@@ -91,6 +97,12 @@ if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
     mkdirSync(distCliSkill, { recursive: true });
     cpSync(fleetSprintCliSkill, distCliSkill, { recursive: true });
     console.log(`Vendored fleet-sprint/.claude/skills/fleet-sprint-cli -> dist/skills/fleet-sprint-cli`);
+  }
+
+  if (existsSync(sprintDoctorSkill)) {
+    mkdirSync(distSprintDoctorSkill, { recursive: true });
+    cpSync(sprintDoctorSkill, distSprintDoctorSkill, { recursive: true });
+    console.log(`Vendored fleet-sprint/skills/sprint-doctor -> dist/skills/sprint-doctor`);
   }
 } else if (isNonEmptyDir(distSkills) && isNonEmptyDir(distAgents)) {
   console.log('apra-pm not found but dist/ already populated -- skipping copy');
