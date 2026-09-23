@@ -136,7 +136,7 @@ import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 // unchanged -- Ensure Sprint Branch still runs where it ran, Plan still runs
 // at the top of every cycle.
 import { runEnsureSprintBranchPhase } from './phases/ensure-sprint-branch.mjs';
-import { runMemberPrepPhase } from './phases/member-prep.mjs';
+import { runMemberPrepPhase, memberPrepExecLabel } from './phases/member-prep.mjs';
 import { runPlanPhase } from './phases/plan.mjs';
 // apra-fleet-3swo.6.7: the next two phase() boundaries, sliced the same way
 // -- the in-cycle scoped Replan and one Develop round. Both live INSIDE the
@@ -1944,8 +1944,19 @@ async function runSprintCycle(context) {
     await runMemberPrepPhase({
         members: branchEnsureMembers,
         fleetApi: sprintState.fleetApi,
-        execCommand: ({ member: member_name, command: cmd }) => command(cmd, {
-            member_name, silent: true, failSoft: true, label: `Member Prep: stray-process probe on '${member_name}'`,
+        // `kind` (apra-fleet-i4ku.12) is the dispatch INTENT member-stray-
+        // sweep.mjs now tags each of its two dispatches with. This adapter
+        // previously hardcoded the probe label and reused it for BOTH, so
+        // every kill was recorded in the sprint log and ledger as a probe --
+        // destroying exactly the accountability the sweep's own
+        // formatStrayKillLog() provides. The label now follows the intent,
+        // via the shared memberPrepExecLabel() so this adapter and its
+        // verification cannot drift. Labelling only: `cmd` is passed through
+        // untouched, so the commands executed on the member are unchanged.
+        // `kind` is undefined for any caller that does not set it, and
+        // memberPrepExecLabel() defaults that to the probe wording.
+        execCommand: ({ member: member_name, command: cmd, kind }) => command(cmd, {
+            member_name, silent: true, failSoft: true, label: memberPrepExecLabel(member_name, kind),
         }),
         syncBeadsBefore: gitSync.syncBeadsBefore,
         log, group, phase, endGroup,

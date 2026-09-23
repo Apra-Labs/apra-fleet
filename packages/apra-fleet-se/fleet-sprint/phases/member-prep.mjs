@@ -198,6 +198,7 @@ import { resultText } from '../mcp-result.mjs';
 import { provisionOutcome } from '../vcs-auth.mjs';
 import {
     sweepMemberStrayProcesses, memberLocality, LOCALITY_REMOTE, StrayProbeError,
+    EXEC_KIND_KILL,
 } from '../member-stray-sweep.mjs';
 import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../errors.mjs';
 
@@ -215,6 +216,37 @@ const AUTH_OK_STATUSES = new Set(['oauth', 'api-key', 'api-key (warn: oauth)']);
  *  information about the member's credentials -- see checkMemberAuth()
  *  (apra-fleet-i4ku.13). */
 const AUTH_UNREACHABLE_STATUS = 'offline';
+
+/**
+ * The label a Member Prep sweep dispatch is recorded under in the sprint log
+ * and ledger (apra-fleet-i4ku.12).
+ *
+ * Lives here, beside the phase that owns the dispatch, rather than inline in
+ * fleet-sprint/runner.js's adapter, so the production adapter and the
+ * verification in test/member-prep.test.mjs render the SAME strings from one
+ * definition instead of two copies that can drift.
+ *
+ * `kind` comes straight off the execCommand seam member-stray-sweep.mjs now
+ * tags (EXEC_KIND_PROBE / EXEC_KIND_KILL). It is DEFAULTED to the probe
+ * wording, so an unlabelled dispatch -- any caller predating the seam's
+ * `kind` field -- renders exactly the label it rendered before. Only a
+ * dispatch that explicitly says it is a kill gets the kill wording, which is
+ * the conservative direction to be wrong in: an unlabelled dispatch is never
+ * described as destructive.
+ *
+ * GENERIC: names no target process, path or port -- only the member and what
+ * the engine itself is doing (docs/generic-engine-boundary.md).
+ *
+ * @param {string} member
+ * @param {'probe'|'kill'} [kind]
+ * @returns {string}
+ */
+export function memberPrepExecLabel(member, kind) {
+    const action = kind === EXEC_KIND_KILL
+        ? 'stray-process kill'
+        : 'stray-process probe';
+    return `Member Prep: ${action} on '${member}'`;
+}
 
 function line(log, member, step, status, detail) {
     log(`${LOG_PREFIX} member '${member}': ${step} -- ${status}${detail ? ` (${detail})` : ''}`);

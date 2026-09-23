@@ -118,6 +118,32 @@ export const PORT_WIN_PREFIX = 'SWEEP-PORT-WIN';
 export const MISSING_TOOL_PREFIX = 'SWEEP-NOTOOL';
 
 // ---------------------------------------------------------------------------
+// Execution-seam dispatch intent (apra-fleet-i4ku.12)
+// ---------------------------------------------------------------------------
+//
+// sweepMemberStrayProcesses() dispatches through ONE injected `execCommand`
+// seam twice with very different consequences: a read-only enumeration
+// probe, and a kill. Both used to arrive at the adapter carrying only
+// `{ member, command }`, which left an adapter no way to tell them apart --
+// so the Member Prep adapter in fleet-sprint/runner.js labelled BOTH as a
+// probe, and every kill was recorded in the sprint log and ledger as a
+// probe. That is exactly the accountability formatStrayKillLog() exists to
+// provide, undone one level up.
+//
+// The seam now carries `kind`, valued with one of the two constants below.
+// It is DESCRIPTIVE ONLY: it never changes the `command` string, so the set
+// of commands actually executed on a member is byte-identical to before.
+// It is also OPTIONAL by contract -- an adapter that destructures only
+// `{ member, command }` (every pre-existing caller) keeps working untouched,
+// and an adapter that wants the distinction defaults it to EXEC_KIND_PROBE,
+// which is the conservative reading of an unlabelled dispatch.
+
+/** A read-only process/socket enumeration dispatch. Kills nothing. */
+export const EXEC_KIND_PROBE = 'probe';
+/** A dispatch that signals selected pids. Destructive. */
+export const EXEC_KIND_KILL = 'kill';
+
+// ---------------------------------------------------------------------------
 // Errors. Both are LOUD by construction: the sweep throws rather than
 // returning an empty result, because "I could not look" and "there is nothing
 // there" must never be the same value to a caller.
@@ -949,7 +975,7 @@ export function formatStrayKillLog(memberName, decision) {
  *   markers?: Array<{ kind: string, token: string, evidence: string }>,
  *   productionPorts?: Array<number>,
  *   minAgeMs?: number,
- *   execCommand: (opts: { member: string, command: string }) => Promise<{ ok?: boolean, output?: string, error?: string }>,
+ *   execCommand: (opts: { member: string, command: string, kind: 'probe'|'kill' }) => Promise<{ ok?: boolean, output?: string, error?: string }>,
  *   now?: () => number,
  *   logger?: { log?: Function, error?: Function },
  * }} deps
@@ -975,7 +1001,13 @@ export async function sweepMemberStrayProcesses(deps = {}) {
 
     let probe;
     try {
-        probe = await execCommand({ member: name, command: buildProbeCommand(family) });
+        // `kind` (apra-fleet-i4ku.12) carries the dispatch INTENT through the
+        // seam so an adapter can label/audit a read-only probe and a kill
+        // differently. It is PURELY descriptive: the `command` string is
+        // unchanged, so what actually runs on the member is byte-identical.
+        // Optional by contract -- an adapter that ignores it behaves exactly
+        // as before.
+        probe = await execCommand({ member: name, command: buildProbeCommand(family), kind: EXEC_KIND_PROBE });
     } catch (err) {
         throw new StrayProbeError(
             `stray-process sweep probe could not run on member '${name}': ${err && err.message ? err.message : err}`,
@@ -1023,7 +1055,12 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         const killCommand = buildKillCommand(family, killPids);
         let res;
         try {
-            res = await execCommand({ member: name, command: killCommand });
+            // kind: 'kill' -- the accountability this dispatch needs. Before
+            // apra-fleet-i4ku.12 this arrived at the same adapter as the probe
+            // above with no way to tell the two apart, so a kill was recorded
+            // in the sprint log and ledger as a probe. Descriptive only:
+            // `killCommand` is unchanged.
+            res = await execCommand({ member: name, command: killCommand, kind: EXEC_KIND_KILL });
         } catch (err) {
             throw new StrayProbeError(
                 `stray-process sweep could not kill ${toKill.length} selected process(es) on member '${name}': `

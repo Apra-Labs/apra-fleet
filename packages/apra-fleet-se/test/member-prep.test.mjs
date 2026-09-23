@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runMemberPrepPhase, checkMemberAuth, runSweepStep } from '../fleet-sprint/phases/member-prep.mjs';
+import {
+    runMemberPrepPhase, checkMemberAuth, runSweepStep, memberPrepExecLabel,
+} from '../fleet-sprint/phases/member-prep.mjs';
 import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../fleet-sprint/errors.mjs';
 import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
 
@@ -606,6 +608,74 @@ test('member-prep: a configured marker set (the new target-owned config surface)
     const sweepLine = lines.find((l) => l.includes("member 'sandbox-member': sweep --"));
     assert.ok(sweepLine, 'expected a sweep summary log line');
     assert.match(sweepLine, /1 killed/);
+});
+
+// ---------------------------------------------------------------------------
+// 9b. apra-fleet-i4ku.12: a kill must not be recorded as a probe. One sweep
+//     issues TWO dispatches through the same execCommand seam -- the
+//     read-only probe and the kill -- and before this fix both reached
+//     runner.js's Member Prep adapter carrying only { member, command }, so
+//     the adapter labelled both with its single hardcoded probe string.
+//
+//     Asserted through memberPrepExecLabel(), the SAME label builder
+//     runner.js's adapter uses, so this test pins the production strings
+//     rather than a copy of them. BOTH labels are asserted: checking only
+//     the kill would leave the probe path free to drift into saying "kill".
+// ---------------------------------------------------------------------------
+
+test('member-prep: one sweep that probes and then kills reaches the exec seam with DISTINGUISHABLE probe and kill labels', async () => {
+    const fleetApi = makeFleetApi({
+        members: [{ name: 'sandbox-member', type: 'remote', os: 'linux', llm_auth: 'oauth' }],
+    });
+    const inner = makeKillCapableExecCommand(killableStrayProbeOutput());
+    // The adapter runner.js wires in production, reproduced here down to the
+    // label call, so what is asserted below is what an operator would see in
+    // the sprint log and ledger.
+    const labelled = [];
+    const execCommand = async ({ member, command, kind }) => {
+        labelled.push({ label: memberPrepExecLabel(member, kind), kind, command });
+        return inner.execCommand({ member, command });
+    };
+
+    await runMemberPrepPhase({
+        members: ['sandbox-member'],
+        fleetApi,
+        execCommand,
+        syncBeadsBefore: makeSyncBeadsBefore().syncBeadsBefore,
+        log: () => {},
+        sweepMarkers: CONFIGURED_MARKERS,
+        sweepProductionPorts: [7523, 8787],
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+    });
+
+    assert.equal(labelled.length, 2, 'expected exactly two dispatches: one probe, then one kill');
+
+    // Dispatch 1 is the PROBE: read-only enumeration, labelled a probe.
+    const [probeDispatch, killDispatch] = labelled;
+    assert.equal(probeDispatch.kind, 'probe');
+    assert.equal(probeDispatch.label, "Member Prep: stray-process probe on 'sandbox-member'");
+    assert.doesNotMatch(probeDispatch.command, new RegExp(KILL_BEGIN_PREFIX), 'dispatch 1 must be the read-only probe');
+
+    // Dispatch 2 is the KILL: it signals the selected pid, and must say so.
+    assert.equal(killDispatch.kind, 'kill');
+    assert.equal(killDispatch.label, "Member Prep: stray-process kill on 'sandbox-member'");
+    assert.match(killDispatch.command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`), 'dispatch 2 must be the real kill');
+
+    // The whole point: the two are DISTINGUISHABLE. Before the fix both read
+    // "stray-process probe on 'sandbox-member'".
+    assert.notEqual(
+        probeDispatch.label, killDispatch.label,
+        'a kill must never be recorded under the same label as a read-only probe',
+    );
+    assert.doesNotMatch(probeDispatch.label, /kill/, 'the read-only probe must not be described as a kill');
+
+    // Labelling ONLY: the commands themselves are exactly what the sweep
+    // built, byte for byte, with nothing added or reordered by the tagging.
+    assert.deepEqual(
+        labelled.map((d) => d.command),
+        inner.calls.map((c) => c.command),
+        'threading the dispatch intent must not change what is executed on the member',
+    );
 });
 
 test('member-prep: an UNCONFIGURED target (--sweep-config omitted -> no sweepMarkers passed) reports the sweep step SKIPPED, never a false "clean" scan', async () => {
