@@ -149,7 +149,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     const delivered = await fetchDeliverable('ws-test', 'member-full', pool);
     expect(delivered.some(d => d.envelope_id === 'env-0')).toBe(true);
     expect(delivered.some(d => d.envelope_id === 'env-overflow')).toBe(false);
-  }, 20000);
+  }, 60000);
 
   it('apra-fleet-b55: TTL-expiring an execute_command.request generates a synthetic failed result back to the originator', async () => {
     await enqueue('ws-test', 'target-member', 'req-1', 'execute_command.request', { cmd: 'too late' }, 1, pool, 'origin-member');

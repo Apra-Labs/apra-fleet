@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_context.request.json#",
+  "$ref": "#/$defs/v1-code_context-request",
+  "$defs": {
+    "v1-code_context-request": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Symbol name to retrieve callers, callees, and execution flows for, e.g. \"validateUser\""
+        },
+        "repo": {
+          "type": "string",
+          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
+        },
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-reason-required",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "e12c88e9-0a56-44dd-b1ee-c522b3559a3e"
+  },
+  "error": {
+    "message": "kb_promote requires a reason recording the evidence for this promotion (at least 20 characters stating what you checked). Entry: e12c88e9-0a56-44dd-b1ee-c522b3559a3e",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-REASON-REQUIRED"
+}

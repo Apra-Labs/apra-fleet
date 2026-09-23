@@ -28,15 +28,26 @@ export async function readLogTail(memberId: string, logFilePath: string): Promis
 
     if (result.code === 0) {
       const lines = result.stdout.split('\n').filter(l => l.trim());
-      const lastLine = lines[lines.length - 1];
-      if (!lastLine) return { lastTimestamp: null };
-      try {
-        const parsed = JSON.parse(lastLine) as Record<string, unknown>;
-        const ts = parsed['timestamp'];
-        return { lastTimestamp: typeof ts === 'string' ? ts : null };
-      } catch {
-        return { lastTimestamp: null };
+      // apra-fleet-qe83.2.2: scan backwards for the last entry that actually
+      // carries a timestamp, mirroring stall-poller.ts's
+      // extractClaudeTimestamp -- inspecting only the very last line missed
+      // a dated entry sitting one line above a trailing untimestamped record
+      // (e.g. an attachment or a last-prompt entry), exactly the shape of
+      // the recorded missed stall.
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(lines[i]) as Record<string, unknown>;
+          const ts = parsed['timestamp'];
+          if (typeof ts === 'string') {
+            return { lastTimestamp: ts };
+          }
+          // Entry with no timestamp (e.g. an attachment/last-prompt record)
+          // -- keep scanning backwards rather than giving up on the sample.
+        } catch {
+          // partial line at start of tail -- skip
+        }
       }
+      return { lastTimestamp: null };
     }
 
     // File not yet created — not an error per resilience decision

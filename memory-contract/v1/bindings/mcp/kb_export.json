@@ -1,0 +1,16 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_export.json#",
+  "name": "kb_export",
+  "description": "Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope=\"project\" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope=\"global\": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}, recording the commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed). An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_export.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_export.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/2"
+    }
+  ]
+}

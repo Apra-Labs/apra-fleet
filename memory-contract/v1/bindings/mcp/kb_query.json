@@ -1,0 +1,19 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_query.json#",
+  "name": "kb_query",
+  "description": "Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged.",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_query.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_query.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/0"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/0"
+    }
+  ]
+}

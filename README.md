@@ -442,6 +442,7 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
@@ -465,6 +466,9 @@ third-party verticals.
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
+| Memory contract v1 inventory findings and invariants (`kb_*`/`code_*` tool surface) | [docs/memory-contract-v1-inventory-notes.md](docs/memory-contract-v1-inventory-notes.md) |
+| Memory contract v1 schema generation design (zod -> JSON Schema 2020-12) | [docs/memory-contract-v1-generator-design.md](docs/memory-contract-v1-generator-design.md) |
+| Memory contract v1 round-trip validation, drift guard, and T1/T2/T3/T7 handoff design | [docs/memory-contract-v1-roundtrip-and-handoff.md](docs/memory-contract-v1-roundtrip-and-handoff.md) |
 
 ## Community
 
@@ -485,6 +489,11 @@ Build from source (also the path for Intel Macs):
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
 npm install && npm run build && npm test
 ```
+
+`npm test` runs the full local suite: the root vitest suite, the
+`apra-fleet-se` workspace suite, and the `apra-pm` suite (which is not an npm
+workspace and is otherwise only reachable via an explicit `--prefix`
+invocation) -- so a green local run and a green CI run see the same tests.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 

@@ -1,0 +1,16 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_reconcile_prefilter.json#",
+  "name": "kb_reconcile_prefilter",
+  "description": "Mechanical hash-basis prefilter over all flagged contradiction pairs (including stale members -- see flaggedPairs liveness contract). Re-hashes both sides of each pair against the CURRENT worktree: exactly one side fully matching wins mechanically via kb_resolve_contradiction (evidence \"hash-basis match on merged worktree\"); both match, both mismatch, or an empty/missing basis on either side leaves the pair for the reconciler agent. Pairs involving an ACTIVE user-directive are never touched. Returns {pairs, resolved, left_for_agent, skipped_directive}. Run after kb_import + kb_freshness_sweep, before dispatching the reconciler agent.",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_reconcile_prefilter.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_reconcile_prefilter.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/0"
+    }
+  ]
+}
