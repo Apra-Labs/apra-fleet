@@ -141,11 +141,18 @@ jobs:
       # *.test.mjs run via `node --test`, NOT vitest.config.ts's
       # 'packages/*/tests/**/*.test.ts' include (that pattern is real and
       # still needed -- it's what picks up packages/fleet-api-contract/tests/,
-      # the one workspace package that DOES use vitest). Without this step,
-      # `npm test` above never runs any of the three node:test suites, so a
-      # broken apra-fleet-se build could ship undetected. --if-present skips
+      # the one workspace package that DOES use vitest). --if-present skips
       # fleet-api-contract (already covered above, no "test" script of its
       # own) without failing.
+      #
+      # apra-fleet-oomh.9: `npm test` above (scripts/run-all-tests.mjs) now
+      # also runs the apra-fleet-se node:test suite directly, so THIS step's
+      # apra-fleet-se coverage is a deliberate, harmless duplicate -- kept as
+      # defence-in-depth so a future edit that drops apra-fleet-se from
+      # run-all-tests.mjs's suites array does not silently lose CI coverage.
+      # This step is still the ONLY CI path for the apra-fleet-workflow and
+      # apra-fleet-client node:test suites, which run-all-tests.mjs does not
+      # enumerate -- it cannot be dropped.
       - name: Run workspace package test suites (node:test)
         run: npm test --workspaces --if-present
 
@@ -153,12 +160,18 @@ jobs:
       # `workspaces` array lists packages/apra-fleet-se, and apra-fleet-se's
       # own package.json declares no nested `workspaces`, so apra-pm is a
       # workspace of nothing and the `--workspaces` step above never reaches
-      # it. Its 44 files / 418 tests therefore guarded nothing automatically.
-      # Run them explicitly rather than adding apra-pm to the root
+      # it. Run them explicitly rather than adding apra-pm to the root
       # `workspaces` array, which would churn package-lock.json (`npm ci`
       # above would then fail on an out-of-sync lock) for no packaging
       # benefit -- apra-pm is private, and its only devDependency (ajv) is
       # already hoisted into the root node_modules by apra-fleet-se.
+      #
+      # apra-fleet-oomh.9: `npm test` above (scripts/run-all-tests.mjs) now
+      # also runs this exact command as its "apra-pm" suite entry, so this
+      # step is a deliberate, harmless duplicate of that coverage -- kept as
+      # defence-in-depth against a future edit that drops the apra-pm entry
+      # from run-all-tests.mjs's suites array (see the regression guard for
+      # that array in tests/).
       - name: Run apra-pm test suite (node:test; not an npm workspace)
         run: npm test --prefix packages/apra-fleet-se/apra-pm
 

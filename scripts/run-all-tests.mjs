@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Runs vitest and the apra-fleet-se workspace's own test suite unconditionally
-// -- unlike `vitest run && npm test --workspace=...`, a failure (including a
-// flaky, unrelated one) in the first suite no longer silently skips the
-// second suite entirely. Exits non-zero if either suite failed.
+// Runs vitest, the apra-fleet-se workspace's own test suite, and the apra-pm
+// suite unconditionally -- unlike chaining them with `&&`, a failure
+// (including a flaky, unrelated one) in an earlier suite no longer silently
+// skips the later ones. Exits non-zero if any suite failed. This is the one
+// place that enumerates suites; .github/workflows/ci.yml's own
+// apra-fleet-se/apra-pm steps are deliberate, commented duplicates kept as
+// defence-in-depth (apra-fleet-oomh.9), not the primary coverage path.
 //
 // apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 15
 // minutes, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
