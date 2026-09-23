@@ -65,32 +65,36 @@ const distCliSkill = join(distDir, 'skills', 'fleet-sprint-cli');
 
 const isNonEmptyDir = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
-if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
-  mkdirSync(distSkills, { recursive: true });
-  cpSync(submoduleSkills, distSkills, { recursive: true });
-  console.log(`Vendored skills/pm -> dist/skills/pm`);
+// Vendors `src` into `dest`, removing any pre-existing `dest` tree first so a
+// file that no longer has a package-local source (e.g. an orphan left behind
+// by a prior checkout of a different branch, or a schema/agent file that was
+// renamed/deleted upstream) does not survive the refresh. Plain cpSync with
+// recursive:true only overlays -- it never deletes destination-only entries
+// -- which is exactly what made the schema staleness guard's "run npm run
+// dist-pm to fix it" remediation hint untruthful (apra-fleet-v6t7.4).
+function vendorDir(src, dest, label) {
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  cpSync(src, dest, { recursive: true });
+  console.log(`Vendored ${label}`);
+}
 
-  mkdirSync(distAgents, { recursive: true });
-  cpSync(submoduleAgents, distAgents, { recursive: true });
-  console.log(`Vendored agents -> dist/agents`);
+if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
+  vendorDir(submoduleSkills, distSkills, 'skills/pm -> dist/skills/pm');
+
+  vendorDir(submoduleAgents, distAgents, 'agents -> dist/agents');
   injectGraphSemantics(distAgents);
 
   if (existsSync(submoduleWorkflows)) {
-    mkdirSync(distWorkflows, { recursive: true });
-    cpSync(submoduleWorkflows, distWorkflows, { recursive: true });
-    console.log(`Vendored .claude/workflows -> dist/workflows`);
+    vendorDir(submoduleWorkflows, distWorkflows, '.claude/workflows -> dist/workflows');
   }
 
   if (existsSync(submoduleArgsSkill)) {
-    mkdirSync(distArgsSkill, { recursive: true });
-    cpSync(submoduleArgsSkill, distArgsSkill, { recursive: true });
-    console.log(`Vendored .claude/skills/auto-sprint-args -> dist/skills/auto-sprint-args`);
+    vendorDir(submoduleArgsSkill, distArgsSkill, '.claude/skills/auto-sprint-args -> dist/skills/auto-sprint-args');
   }
 
   if (existsSync(fleetSprintCliSkill)) {
-    mkdirSync(distCliSkill, { recursive: true });
-    cpSync(fleetSprintCliSkill, distCliSkill, { recursive: true });
-    console.log(`Vendored fleet-sprint/.claude/skills/fleet-sprint-cli -> dist/skills/fleet-sprint-cli`);
+    vendorDir(fleetSprintCliSkill, distCliSkill, 'fleet-sprint/.claude/skills/fleet-sprint-cli -> dist/skills/fleet-sprint-cli');
   }
 } else if (isNonEmptyDir(distSkills) && isNonEmptyDir(distAgents)) {
   console.log('apra-pm not found but dist/ already populated -- skipping copy');
