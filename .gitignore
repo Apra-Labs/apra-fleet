@@ -139,3 +139,15 @@ packages/apra-fleet-se/auto-sprint/logs/
 # (e.g. .fleet-out/plan-review-verdict.json) -- per-run, never commit. Its own
 # directory, so a directory rule shadows nothing tracked (unlike .fleet/).
 /.fleet-out/
+
+# apra-fleet-v6t7.6: per-package lockfiles for root npm workspace members
+# (packages/<name>/package-lock.json, one level under packages/). Once a
+# package is in the root workspaces array (package.json), npm resolves its
+# dependencies from the ROOT lockfile and ignores a nested one entirely --
+# `npm install` run from inside the package directory still writes one, and
+# it is then actively misleading, not just redundant. This pattern is exactly
+# one path segment deep so it never shadows
+# packages/apra-fleet-se/apra-pm/package-lock.json, which is intentionally
+# tracked: apra-pm is NOT a workspace member (see ci.yml's separate --prefix
+# test step and scripts/run-all-tests.mjs's matching suite entry).
+packages/*/package-lock.json
