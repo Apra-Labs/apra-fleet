@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint: Sprint Doctor, an LLM escalation layer for stalled/wedged sprints
+
+Sprint goal: land a first usable slice of the Sprint Doctor mechanism -- a zero-tool,
+premium-tier LLM consult the engine falls back to only after its own deterministic
+handlers and retry ladders are exhausted, plus the doer-BLOCKED re-plan lane that answers
+the sprint's own highest-priority wedge class. This iteration shipped: the dispatch-health
+ledger and T1-T5 trigger layer (pure, additive recorders wired at the engine's real
+dispatch sites, changing no outcomes on their own); the sprint-doctor persona, verdict/
+input schemas, and premium-tier registration; the general action executor mapping every
+doctor verdict to an existing engine verb under caps and latches; cycle-stall
+interposition (one doctor consult before a stall abort, carrying its diagnosis into the
+abort record and PR body); a symptom/remedy registry with seed entries (including the two
+incidents this epic was opened to fix: planner/reviewer-deferred beads counted as open
+blockers, and a provider/tool-registry mismatch that should fail fast with a diagnosis
+instead of degrading role by role); consent-gated, local-first engine-flaw telemetry; and
+the dual-mode (in-sprint + operator-invocable post-mortem) sprint-doctor skill, packaged
+into both the npm dist and the standalone binary build. Planner and plan-reviewer also
+gained a routing rule: any task whose acceptance can only be confirmed by CI or
+live-member evidence must be routed to the test-runner roles rather than left as plain
+doer work, and any task needing a permission a doer does not hold must name the missing
+capability at planning time.
+
+Carried forward, not yet complete: the doer-BLOCKED premium re-plan lane's own test
+coverage of its production wiring (the phase that actually invokes the re-plan executor
+during a live cycle has no test exercising it, only its two halves in isolation), and the
+follow-on fix for a wedge-regression risk this lane introduces -- a bead excluded from
+re-dispatch pending a re-plan that is refused, errors, or produces no content change stays
+counted as an open stall blocker even though nothing will ever offer it to a doer again.
+See `docs/sprint-doctor.md` for the durable design record, including that known gap.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $56.1846.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.7199 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 49 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- fleet-se supervisor: resolves, displays and enforces its beads tracker identity
 
 - **The supervisor now knows which `.beads` it runs against.** `bin/serve.mjs`

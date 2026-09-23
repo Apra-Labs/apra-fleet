@@ -180,6 +180,7 @@ flowchart LR
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
 - **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
+- **Sprint Doctor**: a zero-tool, premium-tier LLM escalation the engine consults only after its own deterministic handlers and retry ladders are exhausted. It classifies a stalled or failing sprint (environment vs. engine bug vs. task-shape problem) and returns one bounded action from a closed, schema-validated set; the engine is the only thing that ever executes it. A doer that reports it cannot do a task from its own seat earns a premium re-plan of that task instead of an unchanged re-dispatch. See [docs/sprint-doctor.md](docs/sprint-doctor.md).
 
 ## Knowledge Layer
 
@@ -435,6 +436,7 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Sprint Doctor (LLM escalation for stalled/wedged sprints: triage, re-plan lane, telemetry consent) | [docs/sprint-doctor.md](docs/sprint-doctor.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
