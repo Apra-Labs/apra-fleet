@@ -202,12 +202,12 @@ Options:
       --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
                                 either inline JSON or '@path/to/file.json'.
       --sweep-config <json|@file>  JSON object { markers: [{kind,token,evidence}], productionPorts: [n],
-                                   livenessProbe?: true|false|{path,timeoutMs} }. The liveness probe is
-                                   ARMED unless you set it to false: a candidate still answering HTTP on a
-                                   port it holds is spared instead of killed.
-                                configuring the Member Prep stray-process sweep for this target,
-                                either inline JSON or '@path/to/file.json'. Omitted: the sweep step
-                                reports a deliberate skip (no fleet-start evidence to act on).
+                                   livenessProbe?: true|false|{path,timeoutMs} } configuring the Member
+                                   Prep stray-process sweep for this target, either inline JSON or
+                                   '@path/to/file.json'. The liveness probe is ARMED unless you set it
+                                   to false: a candidate still answering HTTP on a port it holds is
+                                   spared instead of killed. Omitted: the sweep step reports a
+                                   deliberate skip (no fleet-start evidence to act on).
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
       --service-url <url>      The supervisor's own HTTP service URL (e.g. http://localhost:8787),
                                 enabling the HTTP-backed dolt-mutex/id-allocator clients. Normally
