@@ -251,12 +251,26 @@ describe('member_git_status live integration (apra-fleet-4qtu.3.3)', () => {
         .replace(/; if \(\$LASTEXITCODE[\s\S]*$/, '');
       expect(payload).not.toContain('$env:');
       expect(payload).not.toContain('%USERPROFILE%');
-      expect(payload).not.toContain('~');
+      // Reject '~' only when used as home-dir shorthand (a tilde starting a
+      // path token, followed by a path separator, quote, whitespace, or end
+      // of string). A literal resolved path can legitimately contain '~' as
+      // part of a Windows 8.3 short name -- e.g. GitHub windows-latest
+      // runners report os.tmpdir() as C:\Users\RUNNER~1\AppData\..., and
+      // fs.realpathSync does not expand 8.3 short names, so that '~1' can
+      // survive into the fully resolved folder embedded in the probe.
+      expect(payload).not.toMatch(/(^|[\s'"=])~(?=[\\/'"\s]|$)/);
       expect(payload).not.toMatch(/\$[A-Za-z_{]/);
       // The folder is embedded as a resolved literal, not left to the shell.
       expect(payload).toContain(repo);
     }
   }, 120_000);
+
+  it('the home-dir-tilde pattern accepts 8.3 short names and rejects shorthand tildes', () => {
+    const homeDirTilde = /(^|[\s'"=])~(?=[\\/'"\s]|$)/;
+    expect(homeDirTilde.test('C:\\Users\\RUNNER~1\\AppData')).toBe(false);
+    expect(homeDirTilde.test('~/repo')).toBe(true);
+    expect(homeDirTilde.test("'~\\repo'")).toBe(true);
+  });
 
   it('reaches the tool through the client memberGitStatus wrapper with the server-declared option names', async () => {
     const repo = makeRepo('client');
