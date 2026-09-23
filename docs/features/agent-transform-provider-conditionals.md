@@ -75,6 +75,26 @@ A tool is available only if both agree.
   through marker resolution with `declared = null`, so a marker added to one
   of those trees in the future is never accidentally missed.
 
+## Known gaps in the marker syntax (not yet enforced)
+
+The mechanism above describes intended behavior; two edge cases in the
+current marker regex are not yet guarded, so authors of role-prompt source
+files must avoid them by convention until an enforcement test lands:
+
+- **A marker must occupy a line of its own.** The regex that matches markers
+  tolerates leading whitespace but not an inline marker sharing a line with
+  prose. `pre <!-- if-tool: X -->mid<!-- end-tool: X --> post` resolves (on a
+  provider without `X`) to `prepost` -- the marker consumes the boundary
+  whitespace and silently joins two words that were never meant to touch.
+- **Markers are resolved even inside fenced code blocks.** There is no
+  fence-awareness in the resolver, so a code fence that quotes the marker
+  syntax itself (e.g. to document the mechanism inside a role prompt body)
+  gets its contents resolved like any other text -- an if/end pair for an
+  unavailable tool collapses to an empty fence. This mechanism therefore
+  cannot be demonstrated or quoted verbatim inside a role prompt's own body;
+  put syntax examples only in files (like this one) that never go through
+  `resolveConditionalBody`.
+
 ## Two independent implementations -- and why
 
 `src/cli/agent-transform.ts` is the canonical implementation, used by the
