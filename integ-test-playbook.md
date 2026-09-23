@@ -119,6 +119,18 @@ For each feature id handed to the runner:
      bd update <feature-id> --append-notes="integ-test-runner: inconclusive -- <reason>"
      ```
 
+## Agy-dedicated sprints: toy sprint on agy
+
+Exception to the no-toy-sprint rule above. When the sprint's target issue is
+about the agy/Antigravity provider (deployed with `install --llm agy`, see
+`deploy.md`), its end-to-end proof is a toy sprint run by an agy member:
+inside THIS sprint's sandbox (`env` values above), register the toy member
+with `--llm agy` instead of `--llm claude`, then seed and launch the toy
+sprint the way `regression-test-playbook.md`'s seed step and `## Test
+scenario` do (`maxCycles: 1`, via the sandbox `SUPERVISOR_PORT`). Record the
+installed commit, the provider, and the toy sprint's verdict. The regression
+playbook itself stays claude-only.
+
 ## Sandbox teardown (always, last)
 
 After every feature has been recorded -- pass, fail, or inconclusive -- run
