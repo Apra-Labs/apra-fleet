@@ -491,7 +491,16 @@ describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
     // connection failure instead of merely assumed correct.
     test('distinguishes "supervisor never logged its listening line" from "bound but /api/health did not answer"', async () => {
         const port = await getFreePort(); // closed immediately after allocation; nothing listens on it
+        // apra-fleet-v6t7.9 / apra-fleet-v6t7.7: the unexpected-success
+        // assertion MUST live outside this try/catch. An assert.fail()
+        // thrown inside the try produces an AssertionError, which the catch
+        // below would accept (it IS an Error) and stash into `caught` --
+        // silently passing the very case (the "unbound" port actually
+        // answering) this subtest exists to catch. `succeeded` is asserted
+        // after the try/catch so an unexpected success genuinely reds the
+        // test.
         let caught;
+        let succeeded = false;
         try {
             await waitFor(async () => {
                 try {
@@ -501,10 +510,11 @@ describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
                     return false;
                 }
             }, { timeoutMs: 300, intervalMs: 50, label: 'unbound port /api/health' });
-            assert.fail('expected the wait against an unbound port to time out');
+            succeeded = true;
         } catch (err) {
             caught = err;
         }
+        assert.equal(succeeded, false, 'expected the wait against an unbound port to time out');
         assert.ok(caught instanceof Error, 'the wait against an unbound port must reject with an Error');
 
         // describeHealthWaitFailure() mutates err.message in place (matching
