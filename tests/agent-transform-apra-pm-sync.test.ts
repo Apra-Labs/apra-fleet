@@ -264,7 +264,7 @@ describe('agent-transform.ts <-> apra-pm/install.mjs resolve conditional bodies 
 // tool the provider supports counts as available). This block adds real
 // `tools:` frontmatter declarations so two more branches get driven on BOTH
 // sides:
-//   - the INTERSECTION branch: declared tools ∩ provider-supported tools
+//   - the INTERSECTION branch: the intersection of declared tools and provider-supported tools
 //     (a tool the provider can express but the agent did not declare must
 //     still resolve to its else-branch);
 //   - the WILDCARD branch: `tools: [*]` means "everything this provider has",

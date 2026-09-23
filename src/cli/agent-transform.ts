@@ -33,7 +33,7 @@
  *   - BEHAVIOURAL guard (declared frontmatter tools, apra-fleet-oomh.15): a
  *     second fixture corpus adds real `tools:` frontmatter declarations --
  *     including `tools: [*]` -- so toolAvailability's INTERSECTION branch
- *     (declared tools ∩ provider-supported tools) and isWildcardTools() /
+ *     (the intersection of declared tools and provider-supported tools) and isWildcardTools() /
  *     install.mjs's inlined `declared.some(t => t === '*')` are also driven on
  *     both sides, alongside readFrontmatterTools. Because transformAgentForAgy/
  *     ForOpenCode also rewrite the frontmatter itself when one is present
