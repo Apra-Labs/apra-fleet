@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { Author } from '../services/knowledge/types.js';
 
 // D5 (T2.3) pattern, DUPLICATED here rather than imported: src/tools/kb-capture.ts
@@ -38,8 +39,9 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
 export async function kbFeedback(input: KbFeedbackInput): Promise<string> {
   const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const sqliteProvider = requireSqliteProject(providers.project, 'kb_feedback');
   const author = validateAuthor(input.role);
-  const entry = await providers.project.feedback(input.id, input.reason, author);
+  const entry = await sqliteProvider.feedback(input.id, input.reason, author);
   return JSON.stringify({
     id: entry.id,
     stale: entry.stale,

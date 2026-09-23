@@ -458,6 +458,62 @@ Pricing source: all 71 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
+## [Unreleased] -- restore config-driven HTTP KB provider selection
+
+Sprint goal: give `getKbProviders` back the provider-selection logic an
+earlier cleanup removed, so a stock, unmodified build can be pointed at a
+remote KB server by configuration alone, with the SQLite path staying
+byte-identical when no such configuration is present.
+
+What shipped:
+
+- **`getKbProviders` selects the project provider from config.** When
+  `FLEET_DIR/knowledge/config.json` (written by `kb_setup`) selects
+  `provider: "http"` with a URL and a decryptable token, the project KB
+  provider is now an `HttpKbProvider`; every other case -- no config file,
+  `provider: "sqlite"`, or a malformed/incomplete config -- degrades to the
+  existing `SqliteProvider` unchanged, with a malformed config logging one
+  loud warning instead of failing every KB tool.
+- **No new no-arg `SqliteProvider` construction.** The `HttpKbProvider` this
+  selection builds is always constructed with the already-built project
+  `SqliteProvider` as its explicit fallback, closing the specific hazard of
+  `HttpKbProvider`'s own default fallback resolving a database from the
+  wrong working directory.
+- **A `requireSqliteProject` narrowing guard** now sits in front of every KB
+  tool call site that needs `SqliteProvider`-only capabilities (list,
+  feedback, freshness sweep, reconcile/resolve-contradiction, directive
+  methods), so those operations refuse loudly and by name when the project
+  provider is remote instead of behaving unpredictably. That is eight of the
+  nine SqliteProvider-only call sites; the ninth, `kb_stats`, deliberately
+  degrades instead, using the non-throwing `isSqliteProject` guard to report
+  a not-computable bible block over a remote provider.
+- **`kb_setup` validates `remote`.** A value that is not an `http://` or
+  `https://` URL is rejected before any hook or config is written, and plain
+  `http://` to a non-loopback host returns a `warnings` entry (and logs one),
+  because the bearer token would travel in cleartext. Loopback http
+  (`localhost`, `127.0.0.0/8`, `[::1]`) does not warn. It warns rather than
+  refuses so existing LAN deployments keep working.
+- Test coverage is against real implementations only, including an
+  end-to-end test that runs `kb_setup` for real against a live local HTTP
+  server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`
+  for the full selection contract and its one remaining follow-up gap (an
+  audit of `kb_stats` consumers now that its response is a union shape).
+
+Carried forward as open backlog: auditing `kb_stats` consumers against its
+now-union response shape. The user-directive pending-proposal clamp and
+`kb serve`'s behaviour under a remote project provider were both listed here
+as follow-ups and are resolved in this same branch.
+
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.0737.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 15 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
 
 Sprint goal: fix a real, observed failure mode where a sprint decomposed a
