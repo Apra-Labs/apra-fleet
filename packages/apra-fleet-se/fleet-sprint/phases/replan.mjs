@@ -84,11 +84,16 @@ export async function runReplanPhase({
     verifySetThisCycle,
     pendingRejectedNewTasks,
     // Per-round inputs. `devRounds` arrives already incremented (see header);
-    // `replanIds` and `replannedThisCycle` are mutated in place.
+    // `replanIds` and `replannedThisCycle` are mutated in place. `perBeadFeedback`
+    // (runner.js:2495, a Map of beadId -> reviewer verdict.notes, populated in
+    // phases/review.mjs's applyGuardedReopens onReopened hook) is READ ONLY
+    // here -- this phase never mutates it -- to source the findings that
+    // triggered this scoped replan for the planner prompt below.
     devRounds,
     eligibleReplan,
     replanIds,
     replannedThisCycle,
+    perBeadFeedback,
 }) {
     const replanScopeIds = eligibleReplan.map((b) => b.id);
     phase(`Replan C${cycle} R${devRounds}`);
@@ -102,6 +107,26 @@ export async function runReplanPhase({
     // this cycle is refused (see the reviewer fold-in below), whatever
     // the outcome of this pass.
     for (const id of replanScopeIds) replannedThisCycle.add(id);
+
+    // The code-reviewer findings that TRIGGERED this scoped replan, one
+    // section per flagged bead, sourced from perBeadFeedback. Every id in
+    // replanScopeIds is guaranteed to have a perBeadFeedback entry --
+    // foldReplanIds (beads-transitions.mjs) only admits a replanIds id that
+    // was ALSO actually reopened, and review.mjs sets perBeadFeedback for
+    // every id it reopens -- so a missing map entry is not a case to guard
+    // against here; the only "no findings" case is a genuinely blank
+    // verdict.notes string, filtered out below. buildPlannerPrompt renders
+    // this only when non-null/non-blank, and bounds it deterministically at
+    // REPLAN_FINDINGS_MAX_LENGTH.
+    const findingsParts = replanScopeIds
+        .map((id) => {
+            const notes = perBeadFeedback.get(id);
+            return typeof notes === 'string' && notes.trim().length > 0
+                ? `${id}:\n${notes.trim()}`
+                : null;
+        })
+        .filter((part) => part !== null);
+    const replanFindings = findingsParts.length > 0 ? findingsParts.join('\n\n') : null;
 
     // --- Scoped planner pass ---
     // apra-fleet-3swo.5.3: the 'scoped-replan-planner' row of
@@ -131,6 +156,7 @@ export async function runReplanPhase({
             requirementsContent,
             feedback: null,
             replanScope: replanScopeIds,
+            replanFindings,
             // The scoped replan is a real planner dispatch like the
             // main Plan phase, so a pending rejected newTask must
             // resurface here too.
