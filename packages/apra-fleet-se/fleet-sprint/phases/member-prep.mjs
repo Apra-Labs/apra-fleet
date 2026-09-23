@@ -84,6 +84,54 @@
 // member's sweep step never even runs, rather than running and having its
 // kill downgraded).
 //
+// SWEEP-FAILURE POLICY -- DECIDED (apra-fleet-i4ku.11): a sweep failure
+// DOES NOT ABORT THE SPRINT. It records a loud per-member sweep FAILURE
+// line and the phase CONTINUES to the next step and the next member.
+// This is the single, decided behaviour -- not one of two options a reader
+// still has to choose between. Concretely: every StrayProbeError raised out
+// of sweepMemberStrayProcesses() -- an unrunnable probe, a member with no
+// supported enumeration tool (StrayProbeToolMissingError), or a kill the
+// member genuinely refused (permission denied) -- is caught by
+// runMemberPrepPhase() below, reported as `sweep -- FAILURE (...)` naming
+// the member and the specific cause, recorded on the phase result as
+// `{ status: 'failed', reason, error }`, and then execution proceeds.
+// Nothing else is caught: a non-StrayProbeError escaping the sweep (a
+// programming error such as the TypeError sweepMemberStrayProcesses()
+// throws for a missing seam) still propagates and still ends the sprint,
+// because that is a defect in the engine, not a condition on the member.
+//
+// WHY CONTINUE, and why this is NOT the "advisory warning that never
+// blocks" this repo otherwise forbids:
+//   1. The sweep is HYGIENE, not a dispatch precondition. LLM auth is a
+//      precondition -- without it every dispatch to that member fails, so
+//      its gate aborts (see above, and that policy is UNCHANGED by this
+//      decision). A member whose processes could not be enumerated can
+//      still be dispatched to, build, test and commit; the only cost is
+//      that a leftover process from a previous run may still be sitting
+//      there. Ending a healthy multi-member sprint before its first
+//      dispatch over that is a strictly worse outcome than running it.
+//   2. It cannot corrupt the other members. The sweep is per-member and
+//      read-then-kill-locally; one member's missing `ps` says nothing about
+//      any other member's state, so there is no shared invariant an abort
+//      would be protecting.
+//   3. ABORT WOULD BE UNACTIONABLE. StrayProbeToolMissingError's own text
+//      tells the operator to "install the tool or exclude this member from
+//      the sweep" -- but there is no per-member sweep exclusion surface.
+//      `--sweep-config` (bin/cli.mjs's resolveSweepConfig) configures
+//      markers and ports for the WHOLE sprint, not an exempt-member list.
+//      An abort would therefore hand the operator an instruction they
+//      cannot follow, leaving "unconfigure the sweep for every member" as
+//      the only way to start the sprint at all -- which disables the
+//      feature far more thoroughly than continuing past one bad member.
+//   4. LOUDNESS IS PRESERVED, which is the part the fail-loud rule actually
+//      protects. The failure is NEVER reported as 'clean' and NEVER as
+//      'skipped': it is its own FAILURE status, carrying the underlying
+//      error, both in the sprint log and on the returned phase result. The
+//      sweep module's own "I could not look != there is nothing there"
+//      guarantee is upheld exactly -- this phase never converts an
+//      unsuccessful probe into a clean scan; it converts it into a recorded
+//      failure the operator and any caller can see.
+//
 // READ-ONLY LOOKUPS DEGRADE, THE AUTH GATE DOES NOT: list_members is a
 // best-effort registry read used only to (a) skip a redundant provision call
 // when auth is already known-good and (b) classify locality for the sweep
@@ -130,7 +178,9 @@
 
 import { resultText } from '../mcp-result.mjs';
 import { provisionOutcome } from '../vcs-auth.mjs';
-import { sweepMemberStrayProcesses, memberLocality, LOCALITY_REMOTE } from '../member-stray-sweep.mjs';
+import {
+    sweepMemberStrayProcesses, memberLocality, LOCALITY_REMOTE, StrayProbeError,
+} from '../member-stray-sweep.mjs';
 import { LlmAuthUnprovisionableError } from '../errors.mjs';
 
 const LOG_PREFIX = '[member-prep]';
@@ -321,6 +371,13 @@ export async function checkMemberAuth({
  * dispatched probe could only ever produce a "clean, N scanned" result the
  * operator would wrongly read as real coverage (review blocker 2).
  *
+ * THROWS, deliberately: a StrayProbeError / StrayProbeToolMissingError out
+ * of sweepMemberStrayProcesses() is NOT caught here, so a direct caller of
+ * this helper still gets the sweep module's own "I could not look" signal
+ * unmodified. The decision about what a sprint should DO about it lives one
+ * level up, in runMemberPrepPhase() (apra-fleet-i4ku.11: record a loud
+ * per-member FAILURE and continue -- see this module's header).
+ *
  * @param {{ member: string, memberRecord: object|null, execCommand: Function,
  *           sweepMarkers?: Array<object>, sweepProductionPorts?: Array<number>,
  *           registryReadFailed?: boolean, now?: () => number }} opts
@@ -391,6 +448,13 @@ export async function runDPullStep({ member, syncBeadsBefore } = {}) {
  * therefore the sprint, before any role dispatch -- the instant a member's
  * auth step cannot be resolved.
  *
+ * A SWEEP failure does the OPPOSITE, by decided policy (apra-fleet-i4ku.11,
+ * rationale in this module's header): every StrayProbeError /
+ * StrayProbeToolMissingError out of the sweep is caught here, reported as a
+ * loud per-member `sweep -- FAILURE` line, recorded as
+ * `{ status: 'failed', reason, error }` on the returned result, and the
+ * phase CONTINUES. Only the auth gate aborts.
+ *
  * @param {{
  *   members: string[],
  *   fleetApi?: { listMembers?: Function, provisionLlmAuth?: Function },
@@ -446,10 +510,39 @@ export async function runMemberPrepPhase({
         // than silently saying nothing about VCS auth at all.
         line(log, member, 'auth', auth.status, `LLM auth: ${auth.detail}; VCS auth refreshed per-dispatch by the existing Sync preflight, not re-checked here`);
 
-        const sweep = await runSweepStep({
-            member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts, registryReadFailed, now,
-        });
-        if (sweep.status === 'skipped') {
+        // SWEEP-FAILURE POLICY (apra-fleet-i4ku.11) -- see this module's
+        // header for the decision and its rationale. A StrayProbeError (and
+        // its StrayProbeToolMissingError subclass) raised out of
+        // sweepMemberStrayProcesses() is CONTAINED here: it becomes a loud
+        // per-member FAILURE line plus a `{ status: 'failed' }` phase result
+        // and the phase CONTINUES -- to this member's remaining steps and to
+        // every later member. It never aborts the sprint, and it is never
+        // downgraded to 'skipped' or to a clean scan. Deliberately scoped to
+        // StrayProbeError alone: anything else escaping the sweep is an
+        // engine defect, not a member condition, and still propagates.
+        let sweep;
+        try {
+            sweep = await runSweepStep({
+                member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts, registryReadFailed, now,
+            });
+        } catch (err) {
+            if (!(err instanceof StrayProbeError)) throw err;
+            sweep = {
+                status: 'failed',
+                reason: err.message,
+                error: err,
+            };
+        }
+        if (sweep.status === 'failed') {
+            // FAILURE, never 'skipped' and never a clean scan: this member's
+            // processes could not be established, so nothing is claimed
+            // about them. The sprint continues by decided policy.
+            line(
+                log, member, 'sweep', 'FAILURE',
+                `${sweep.reason} -- the sprint CONTINUES by policy: the sweep is hygiene, not a dispatch `
+                + 'precondition, and this member was NOT scanned, so treat it as unswept rather than clean',
+            );
+        } else if (sweep.status === 'skipped') {
             line(log, member, 'sweep', 'skipped', sweep.reason);
         } else {
             const { result } = sweep;

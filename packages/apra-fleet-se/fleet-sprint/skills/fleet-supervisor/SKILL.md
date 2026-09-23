@@ -340,6 +340,33 @@ only when its parent process is gone; and never a process listening on the
 member's production fleet or supervisor port. Log every kill: pid, full
 command line, start time, and the reason it was selected.
 
+SWEEP-FAILURE POLICY (step 2 only, explicit -- this is the DECIDED
+behaviour, not a choice left to the operator): **a sweep failure does not
+abort the sprint.** If the sweep cannot run on a member -- the probe command
+will not execute, the member has none of the supported process-enumeration
+or listening-socket tools, or a selected pid's kill is genuinely refused
+(permission denied) -- the engine records a loud per-member
+`sweep -- FAILURE` line naming that member and the specific cause, and then
+CONTINUES: to that member's remaining prep steps, to every other member, and
+on to the sprint's first dispatch. Doing the same by hand means the same
+thing: note the failure against that member and carry on.
+
+Read a FAILURE line as **"this member was not swept"**, never as "this
+member is clean" and never as "the sweep was skipped here" -- those are
+three distinct outcomes and the engine reports them as three distinct
+statuses. The only consequence of a FAILURE is that a leftover process from
+an earlier run may still be running on that member; fix it by installing a
+supported enumeration tool on the member, or by clearing the leftovers
+there by hand.
+
+Contrast with step 1: an unprovisionable LLM credential DOES abort the
+sprint before the first dispatch. The two differ because auth is a
+precondition for dispatching to a member at all, whereas the sweep is
+hygiene -- an unswept member still builds, tests and commits normally, so
+ending an otherwise healthy multi-member sprint over one member's missing
+tool would cost more than it protects. Nothing in this sweep policy changes
+the auth policy.
+
 ## 2. Start a sprint
 
 ```bash
