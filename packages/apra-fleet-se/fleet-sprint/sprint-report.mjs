@@ -101,6 +101,44 @@ function formatDoctorProposalLine(p) {
 }
 
 /**
+ * apra-fleet-iiny.4.1: renders a sprint-doctor verdict (the same shape
+ * `SprintDoctorAbortError.verdict` carries -- see errors.mjs and
+ * apra-pm/agents/schemas/sprint-doctor-output.json) into PR-body-ready text
+ * lines: the classification/confidence headline, the evidence bullets
+ * verbatim, and -- when present -- the human-referral block (summary,
+ * suggested commands, why it is beyond the doctor's bounds). Pure
+ * formatting, no sanitization: the caller (finalizeAbort's PR body builder,
+ * abort.mjs) runs every dynamic value through the SAME sanitizePrText() pass
+ * every other PR-body value gets, exactly like `safeMessage`/`safeDetails`
+ * above. Returns an empty array for a null/undefined/malformed verdict, so a
+ * caller can always splice the result in with no extra branching.
+ * @param {object|null|undefined} verdict
+ * @returns {string[]}
+ */
+export function formatDoctorVerdictLines(verdict) {
+    if (!verdict || typeof verdict !== 'object') return [];
+    const lines = [];
+    if (verdict.classification) {
+        const confidencePart = verdict.confidence ? ` (confidence: ${verdict.confidence})` : '';
+        lines.push(`Doctor diagnosis: ${verdict.classification}${confidencePart}`);
+    }
+    if (Array.isArray(verdict.evidence) && verdict.evidence.length > 0) {
+        lines.push('Evidence:');
+        for (const bullet of verdict.evidence) lines.push(`- ${bullet}`);
+    }
+    const har = verdict.humanActionRequired;
+    if (har && typeof har === 'object') {
+        if (har.summary) lines.push(`Human action required: ${har.summary}`);
+        if (Array.isArray(har.suggestedCommands) && har.suggestedCommands.length > 0) {
+            lines.push('Suggested commands:');
+            for (const cmd of har.suggestedCommands) lines.push(`- ${cmd}`);
+        }
+        if (har.whyBeyondBounds) lines.push(`Why beyond bounds: ${har.whyBeyondBounds}`);
+    }
+    return lines;
+}
+
+/**
  * Assembles the `analysisText` block for the Harvester dispatch from this
  * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
  * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,

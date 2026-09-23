@@ -2,7 +2,7 @@
 // helpers, extracted out of runner.js (apra-fleet-3swo.6.16); runner.js
 // re-exports every symbol it previously exported from this region, so
 // existing importers of fleet-sprint/runner.js resolve unchanged.
-import { DoltDivergedError } from './errors.mjs';
+import { DoltDivergedError, SprintDoctorAbortError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Fatal-diagnostics guard
@@ -130,5 +130,36 @@ export function captureDoltConflictDump(err) {
         member: diverged.member ?? null,
         operation: diverged.operation ?? null,
         doltOutput: diverged.doltOutput ?? null,
+    };
+}
+
+/**
+ * apra-fleet-iiny.4.1 (design doc sections 2.5, 3.3): best-effort
+ * carry-forward of the sprint doctor's full diagnosis onto the terminal
+ * state record when a `SprintDoctorAbortError` caused the abort --
+ * classification, confidence, the evidence bullets, the matched registry
+ * entry (if any), and -- when present -- the human-referral and
+ * engine-flaw-report blocks verbatim, so an operator reading the terminal
+ * record sees WHY the doctor gave up, not just that it did. Mirrors
+ * `captureDoltConflictDump()` above: pure plumbing of already-captured data,
+ * no new computation, no throw. Returns `null` (never throws) when `err` is
+ * not a `SprintDoctorAbortError` or carries no verdict.
+ * @param {unknown} err
+ * @returns {{
+ *   classification: string|null, confidence: string|null, evidence: string[],
+ *   matchedRegistryEntry: string|null, humanActionRequired: object|null,
+ *   engineFlawReport: object|null,
+ * } | null}
+ */
+export function captureDoctorVerdictDump(err) {
+    if (!(err instanceof SprintDoctorAbortError) || !err.verdict || typeof err.verdict !== 'object') return null;
+    const v = err.verdict;
+    return {
+        classification: v.classification ?? null,
+        confidence: v.confidence ?? null,
+        evidence: Array.isArray(v.evidence) ? v.evidence : [],
+        matchedRegistryEntry: v.matchedRegistryEntry ?? null,
+        humanActionRequired: v.humanActionRequired ?? null,
+        engineFlawReport: v.engineFlawReport ?? null,
     };
 }

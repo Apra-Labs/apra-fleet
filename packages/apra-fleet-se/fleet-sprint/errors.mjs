@@ -202,6 +202,49 @@ export class ReviewerContractViolationError extends WorkflowError {
 }
 
 /**
+ * apra-fleet-iiny.4.1 (design doc `escalate-to-llm-design.md` sections 2.5,
+ * 3.3) -- thrown when the sprint doctor's own verdict prescribes
+ * `action.kind: 'abort_sprint'` (the T3 cycle-stall interposition's
+ * doctored-extra-cycle-still-stale case, or any other doctor-decided
+ * terminal verdict). This gives the doctor a terminal error of its own so an
+ * aborted sprint explains itself, instead of a bare `StalledSprintError`
+ * kill with no diagnosis attached.
+ *
+ * Routes through the EXISTING terminal machinery exactly like every other
+ * typed abort -- registered in `isTypedAbortError()` (abort.mjs) so
+ * `finalizeAbort()` still pushes the branch and raises the idempotent
+ * `[ABORTED]` PR; no new terminal/abort path is introduced. The full verdict
+ * travels in `details.verdict` (machine-readable, the same way every other
+ * typed error's `details` carries its own diagnostic fields) AND is rendered
+ * into readable text -- classification, the evidence bullets, and the
+ * human-referral block when present -- by `formatDoctorVerdictLines()`
+ * (sprint-report.mjs) for the aborted PR body, and by
+ * `captureDoctorVerdictDump()` (fatal-diagnostics.mjs) for the terminal
+ * history record, mirroring the existing `captureDoltConflictDump()`
+ * pattern for a `DoltDivergedError`.
+ *
+ * @property {object|null} verdict - the doctor's full schema-valid verdict
+ *   (classification, confidence, evidence, action, humanActionRequired,
+ *   engineFlawReport, matchedRegistryEntry, notes -- see
+ *   apra-pm/agents/schemas/sprint-doctor-output.json)
+ */
+export class SprintDoctorAbortError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ verdict?: object|null, cycle?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { verdict = null, cycle, details, cause } = opts;
+        super(message, {
+            code: 'SPRINT_DOCTOR_ABORT',
+            details: { verdict, cycle, ...details },
+            cause,
+        });
+        this.verdict = verdict;
+    }
+}
+
+/**
  * apra-fleet-eft.8.1 (Plan Part 3.1/3.3, risk 2) -- thrown when an
  * orchestrator-bracketed git sync (G-pull / G-push) discovers that a member
  * has DIVERGED from the shared sprint branch: a `git merge --ff-only` that

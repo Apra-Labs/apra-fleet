@@ -383,8 +383,12 @@ import {
 // (apra-fleet-3swo.6.16); main() below still calls installFatalDiagnosticsGuard,
 // resolveTerminalReason and captureDoltConflictDump directly, and this import
 // is also re-exported below so existing importers of runner.js keep working.
+// captureDoctorVerdictDump (apra-fleet-iiny.4.1) is the SprintDoctorAbortError
+// analogue of captureDoltConflictDump -- carries the doctor's verdict onto the
+// terminal history record the same way a Dolt conflict dump is carried today.
 import {
     installFatalDiagnosticsGuard, findDoltDivergedCause, resolveTerminalReason, captureDoltConflictDump,
+    captureDoctorVerdictDump,
 } from './fatal-diagnostics.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
@@ -546,6 +550,7 @@ export { isTerminalSprintFailure, isNoMutationDispatchFailure, withDispatchWatch
 // implementation (apra-fleet-3swo.6.16).
 export {
     installFatalDiagnosticsGuard, findDoltDivergedCause, resolveTerminalReason, captureDoltConflictDump,
+    captureDoctorVerdictDump,
 };
 
 // Pure clamp for the per-run dispatch INACTIVITY budget (apra-fleet-25yl.8):
@@ -4580,6 +4585,11 @@ export async function main(context) {
             // resolving it starts with the actual rejection text in hand -- see
             // resolveTerminalReason()/captureDoltConflictDump() above.
             const conflictDump = captureDoltConflictDump(err);
+            // apra-fleet-iiny.4.1: when the abort was the sprint doctor's own
+            // verdict (a SprintDoctorAbortError), carry its full diagnosis --
+            // classification, evidence, the human-referral block -- onto the
+            // terminal record too, mirroring conflictDump above.
+            const doctorVerdictDump = captureDoctorVerdictDump(err);
             publishState('terminal', {
                 verdict: 'ABORTED',
                 terminalReason: resolveTerminalReason(err),
@@ -4590,6 +4600,7 @@ export async function main(context) {
                 pushed: abortResult.pushed,
                 commitCount: abortResult.commitCount,
                 ...(conflictDump ? { conflictDump } : {}),
+                ...(doctorVerdictDump ? { doctorVerdict: doctorVerdictDump } : {}),
             });
         }
 

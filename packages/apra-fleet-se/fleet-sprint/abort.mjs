@@ -27,8 +27,9 @@
 import { CommandError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError,
-    UsageLimitWaitExhaustedError,
+    UsageLimitWaitExhaustedError, SprintDoctorAbortError,
 } from './errors.mjs';
+import { formatDoctorVerdictLines } from './sprint-report.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
@@ -220,7 +221,13 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
 //   - the plain `Error` pre-sprint validation failures, which are not
 //     WorkflowError subclasses and are identified by the stable
 //     'Pre-sprint validation failed:' message prefix every such throw site
-//     uses.
+//     uses;
+//   - SprintDoctorAbortError (apra-fleet-iiny.4.1, errors.mjs): the sprint
+//     doctor's own terminal verdict (`action.kind: 'abort_sprint'`). Same
+//     treatment as every other typed abort -- finalizeAbort()'s PR body and
+//     main()'s terminal record additionally render the doctor's full verdict
+//     (see formatDoctorVerdictLines()/captureDoctorVerdictDump()) so the
+//     abort explains itself instead of reading as a bare kill.
 //
 // Everything else is deliberately EXCLUDED, and the check is an explicit class
 // list rather than the blanket `instanceof WorkflowError` it used to be --
@@ -247,6 +254,7 @@ export function isTypedAbortError(err) {
     if (err instanceof BudgetExceededError) return true;
     if (err instanceof GitDivergedError) return true;
     if (err instanceof UsageLimitWaitExhaustedError) return true;
+    if (err instanceof SprintDoctorAbortError) return true;
     // Bare DoltDivergedError, or one wrapped inside a PostDispatchSyncError.
     if (findDoltDivergedCause(err)) return true;
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
@@ -405,12 +413,22 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     const safeDetails = sanitizePrText(
         error && error.details !== undefined ? JSON.stringify(error.details) : ''
     );
+    // apra-fleet-iiny.4.1: when the abort was the sprint doctor's own verdict
+    // (a SprintDoctorAbortError -- see errors.mjs), render its diagnosis
+    // readably instead of leaving it buried in the raw `safeDetails` JSON
+    // dump above. Each dynamic value (evidence bullets, human-referral text)
+    // is sanitized individually, same rationale as safeCode/safeMessage/
+    // safeDetails above -- this text can originate from agent output.
+    const doctorVerdictLines = (error instanceof SprintDoctorAbortError)
+        ? formatDoctorVerdictLines(error.verdict).map((line) => sanitizePrText(line)).filter((line) => line.length > 0)
+        : [];
     const prBody = [
         `Automated apra-fleet-se sprint ABORTED before reaching a final PASS/FAIL verdict.`,
         '',
         safeCode ? `Error code: ${safeCode}` : null,
         safeMessage ? `Error message: ${safeMessage}` : null,
         safeDetails ? `Error details: ${safeDetails}` : null,
+        ...(doctorVerdictLines.length > 0 ? ['', ...doctorVerdictLines] : []),
         '',
         'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
     ].filter((line) => line !== null).join('\n');
