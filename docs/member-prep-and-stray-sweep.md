@@ -76,6 +76,57 @@ anywhere.
    pass would recognize as itself.
 6. **Every kill is logged** with pid, command line, start time, and the
    reason the process was selected.
+7. **Never a process that is still answering HTTP on a port it holds.**
+   Predicate 4 is only as good as a *static* port list; this one asks the
+   port itself. See below -- it is armed by default.
+
+### The liveness probe is armed by default (DECIDED)
+
+This is settled, single behaviour. Every sweep pass arms the liveness
+predicate; only an explicit `"livenessProbe": false` in the target's sweep
+config turns it off. A config that never mentions the option is **armed**.
+
+Each candidate that has survived every other predicate gets a second
+dispatch: one plain HTTP GET per port it still holds. *Any* HTTP status at
+all spares it -- the probe never inspects the body and requires no
+particular status code, so it assumes nothing about a target's own health
+endpoint. `path` and `timeoutMs` are overridable
+(`"livenessProbe": { "path": "/healthz", "timeoutMs": 1500 }`).
+
+**Why armed rather than opt-in.** The predicate can only ever *spare*: there
+is no input that makes it select a process the other predicates had not
+already selected, so arming it cannot cause a wrong kill, only prevent one.
+The hole it closes is also not enumerable in advance -- a supervisor started
+on a non-default port, or a sprint child's `allocateFreePort()` viewer port,
+can never appear in a static `productionPorts` list, and both are daemonized
+so the parent-gone predicate is satisfied from the moment their launcher
+exits. That static list was the only thing standing between a live process
+and a kill. **Opt-in was rejected**: it leaves that hole open for exactly
+the targets that do not know to ask, and it cannot be made loud honestly --
+warning "this sweep may kill a live process" on every un-armed sprint would
+be an advisory that never blocks.
+
+**What arming costs, and how that cost is surfaced.** An unevaluable probe
+spares (the fail-safe direction, unchanged). So on a member with no `curl`
+or `Invoke-WebRequest`, *every* candidate is spared and the stale sandbox
+supervisor this feature exists to clear survives. That is the losing side of
+this decision, and it is never silent: Member Prep prints its own
+`sweep -- LIVENESS UNEVALUABLE` line naming the member, how many candidates
+were spared unchecked, and both ways out (install an HTTP probe tool on the
+member, or set `"livenessProbe": false` to accept kills that were never
+checked for life).
+
+**"Not armed" and "armed, nothing was live" are different results.** The
+sweep result carries a `liveness` record (`armed`, `dispatched`, `checked`,
+`spared`, `unevaluable`) and the phase summary line renders all three states
+distinctly, so an operator never has to guess how much safety was applied to
+a given set of kills. A malformed `livenessProbe` value is a hard error at
+the same config/CLI boundary that rejects a malformed marker -- it never
+silently disarms and never silently arms.
+
+The full rationale, including the rejected alternative, lives in the
+`LIVENESS PROBE: ARMED BY DEFAULT -- DECIDED` header section of
+`fleet-sprint/phases/member-prep.mjs`.
 
 ### Portability: absolute start time, one shape for both OS families
 

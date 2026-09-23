@@ -150,6 +150,53 @@
 //      unsuccessful probe into a clean scan; it converts it into a recorded
 //      failure the operator and any caller can see.
 //
+// LIVENESS PROBE: ARMED BY DEFAULT -- DECIDED (apra-fleet-i4ku.17). This is
+// the single, decided behaviour, not two behaviours a reader still has to
+// choose between. runSweepStep() arms member-stray-sweep.mjs's liveness
+// predicate (that module's header predicate 7) for EVERY sweep it runs.
+// Only an explicit `"livenessProbe": false` in the target's sweep config
+// disarms it; an option the target never mentioned is ARMED. Note the
+// asymmetry with the module itself, which defaults the option OFF: that
+// module is a library whose caller decides, and this phase IS the caller.
+//
+// WHY ARMED, and what the rejected option would have cost:
+//   1. The predicate can only ever SPARE. It has no path that selects a
+//      process the other predicates had not already selected (see
+//      decideStrayProcess(): a liveProbe value only ever appends a blocker).
+//      So arming it cannot cause a wrong kill -- it can only prevent one.
+//   2. The hole it closes is not hypothetical and not enumerable. The
+//      production-port predicate is only as good as a STATIC port list,
+//      which by construction cannot contain a supervisor someone started on
+//      a non-default port, or a sprint child's allocateFreePort() viewer
+//      port. Both are daemonized, so the parent-gone predicate is satisfied
+//      instantly, leaving that static list as the only thing between a LIVE
+//      process and a kill. No amount of target configuration can enumerate
+//      an OS-assigned port up front, so the only way to protect it is to
+//      ask the port itself.
+//   3. REJECTED: opt-in (arm only when the target asks). That leaves the
+//      hole open for every target that does not know to ask -- which is
+//      every target by default, and the ones least likely to be reading
+//      this file. A safety predicate that is off unless requested protects
+//      only the operators who already understood the danger. It also cannot
+//      be made loud honestly: warning "this sweep may kill a live process"
+//      on every armed-but-unprotected sprint would be exactly the advisory
+//      warning that never blocks which this repo forbids as a false
+//      success.
+//
+// WHAT ARMING COSTS, AND WHY THAT COST IS LOUD RATHER THAN SILENT: an
+// unevaluable probe spares (the module's fail-safe direction, unchanged
+// here), so on a member with no curl / Invoke-WebRequest EVERY candidate is
+// spared and the stale sandbox supervisor this feature exists to clean up
+// survives. That is the losing case of this decision and it is reported as
+// its own `sweep -- LIVENESS UNEVALUABLE` line naming the member, the count
+// spared, and BOTH ways out (install an HTTP probe tool on the member, or
+// set `"livenessProbe": false` to accept unchecked kills). It is never
+// folded into the ordinary summary and never reported as a clean sweep.
+// The ordinary summary line likewise distinguishes all three states via
+// formatSweepLivenessSummary(): not armed / armed-but-never-dispatched /
+// armed-and-dispatched-with-counts, so "armed and nothing was live" can
+// never be misread as "the predicate was off".
+//
 // READ-ONLY LOOKUPS DEGRADE, THE AUTH GATE DOES NOT: list_members is a
 // best-effort registry read used only to (a) skip a redundant provision call
 // when auth is already known-good and (b) classify locality for the sweep
@@ -453,14 +500,22 @@ export async function checkMemberAuth({
  * level up, in runMemberPrepPhase() (apra-fleet-i4ku.11: record a loud
  * per-member FAILURE and continue -- see this module's header).
  *
+ * THE LIVENESS PREDICATE IS ARMED HERE, and this is the only place that
+ * turns an unstated option into a decision -- see this module's header
+ * section "LIVENESS PROBE: ARMED BY DEFAULT -- DECIDED" for the reasoning
+ * and the rejected alternative. `sweepLivenessProbe === false` (and only
+ * that) disarms it; `undefined` means the target said nothing and the
+ * predicate is armed with member-stray-sweep.mjs's own defaults.
+ *
  * @param {{ member: string, memberRecord: object|null, execCommand: Function,
  *           sweepMarkers?: Array<object>, sweepProductionPorts?: Array<number>,
+ *           sweepLivenessProbe?: true|false|{ path?: string, timeoutMs?: number },
  *           registryReadFailed?: boolean, now?: () => number }} opts
  * @returns {Promise<{ status: string, reason?: string, result?: object }>}
  */
 export async function runSweepStep({
     member, memberRecord, execCommand, sweepMarkers = [], sweepProductionPorts = [],
-    registryReadFailed = false, now = () => Date.now(),
+    sweepLivenessProbe, registryReadFailed = false, now = () => Date.now(),
 } = {}) {
     const locality = memberLocality(memberRecord || {});
     if (locality !== LOCALITY_REMOTE) {
@@ -483,10 +538,17 @@ export async function runSweepStep({
                 + 'evidence, so none is dispatched',
         };
     }
+    // ARMED unless the target explicitly said `false` (this module's header
+    // records the decision). member-stray-sweep.mjs itself defaults the
+    // option OFF -- it is a library whose caller decides -- so the shipped
+    // sweep path arms it right here, which is also why an engine-level
+    // default change can never silently reach a target that opted out.
+    const livenessProbe = sweepLivenessProbe === false ? null : (sweepLivenessProbe ?? true);
     const result = await sweepMemberStrayProcesses({
         member: { name: member, ...(memberRecord || {}) },
         markers: sweepMarkers,
         productionPorts: sweepProductionPorts,
+        livenessProbe,
         execCommand,
         now,
         // Silenced: member-stray-sweep.mjs's own internal log/error calls are
@@ -497,6 +559,36 @@ export async function runSweepStep({
         logger: { log: () => {}, error: () => {} },
     });
     return { status: 'ran', result };
+}
+
+/**
+ * Renders the liveness half of a sweep summary line.
+ *
+ * THE POINT OF THIS FUNCTION (apra-fleet-i4ku.17): the three outcomes below
+ * must never read alike. "Armed and nothing was live" and "the predicate was
+ * off" describe opposite amounts of safety applied to the same kills, and an
+ * operator reading the sprint log has no other place to learn which one they
+ * got. `undefined` is reported as unknown rather than guessed in either
+ * direction, so a sweep result that carries no liveness accounting can never
+ * be narrated as if it had been checked.
+ *
+ * @param {{ armed?: boolean, dispatched?: boolean, checked?: number, spared?: number, unevaluable?: number }|undefined} liveness
+ * @returns {string}
+ */
+export function formatSweepLivenessSummary(liveness) {
+    if (!liveness || typeof liveness !== 'object') {
+        return 'liveness probe state NOT REPORTED by this sweep result';
+    }
+    if (liveness.armed !== true) {
+        return 'liveness probe NOT ARMED -- no candidate was checked for life before it was selected '
+            + '(the sweep config set "livenessProbe": false)';
+    }
+    if (!liveness.dispatched) {
+        return 'liveness probe armed but not dispatched -- no candidate survived the other predicates, '
+            + 'so there was nothing to check';
+    }
+    return `liveness probe armed and dispatched: ${liveness.checked || 0} candidate(s) checked, `
+        + `${liveness.spared || 0} spared as live, ${liveness.unevaluable || 0} unevaluable`;
 }
 
 /**
@@ -541,6 +633,7 @@ export async function runDPullStep({ member, syncBeadsBefore } = {}) {
  *   endGroup?: () => void,
  *   sweepMarkers?: Array<object>,
  *   sweepProductionPorts?: Array<number>,
+ *   sweepLivenessProbe?: true|false|{ path?: string, timeoutMs?: number },
  *   now?: () => number,
  * }} state
  * @returns {Promise<{ members: Record<string, { auth: object, sweep: object, gpull: object, dpull: object }> }>}
@@ -556,6 +649,10 @@ export async function runMemberPrepPhase({
     endGroup = () => {},
     sweepMarkers = [],
     sweepProductionPorts = [],
+    // NO DEFAULT VALUE ON PURPOSE (apra-fleet-i4ku.17): `undefined` means
+    // "the target said nothing", which runSweepStep() reads as ARMED. Giving
+    // it a default here would put the arming decision in two places.
+    sweepLivenessProbe,
     now = () => Date.now(),
 } = {}) {
     const list = Array.isArray(members)
@@ -598,7 +695,8 @@ export async function runMemberPrepPhase({
         let sweep;
         try {
             sweep = await runSweepStep({
-                member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts, registryReadFailed, now,
+                member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts,
+                sweepLivenessProbe, registryReadFailed, now,
             });
         } catch (err) {
             if (!(err instanceof StrayProbeError)) throw err;
@@ -628,10 +726,34 @@ export async function runMemberPrepPhase({
             // here rather than silently dropped, so this summary line still
             // accounts for every selected candidate.
             const alreadyGoneCount = Array.isArray(result.alreadyGone) ? result.alreadyGone.length : 0;
+            // apra-fleet-i4ku.17: the liveness state is part of the SAME
+            // line, not a separate optional one, so "armed and found nothing
+            // live" can never be read off the log as "not armed" (or the
+            // reverse) by an operator who happened to see only one line.
             line(
                 log, member, 'sweep', 'ran',
-                `${result.killed.length} killed, ${alreadyGoneCount} already exited, ${result.reported.length} reported, ${result.scanned} scanned`,
+                `${result.killed.length} killed, ${alreadyGoneCount} already exited, ${result.reported.length} reported, ${result.scanned} scanned; `
+                + formatSweepLivenessSummary(result.liveness),
             );
+            // THE LOSING CASE OF THE ARMED-BY-DEFAULT DECISION, MADE LOUD
+            // (see this module's header). An unevaluable probe SPARES, so on
+            // a member with no curl / Invoke-WebRequest the armed predicate
+            // turns real stray processes into survivors -- exactly the stale
+            // sandbox this sweep exists to clear. That is the right
+            // fail-safe direction, but it must never be silent, or the
+            // operator sees a "clean" sprint start while junk accumulates.
+            // It names both fixes, so the line is actionable rather than an
+            // advisory the reader can do nothing about.
+            if (result.liveness && result.liveness.armed && result.liveness.unevaluable > 0) {
+                line(
+                    log, member, 'sweep', 'LIVENESS UNEVALUABLE',
+                    `${result.liveness.unevaluable} candidate(s) were SPARED rather than killed because the liveness `
+                    + 'probe could not be evaluated on this member (no curl/Invoke-WebRequest there, or the probe '
+                    + 'dispatch itself failed). Stray processes will KEEP ACCUMULATING on this member until either '
+                    + 'an HTTP probe tool is installed on it, or the sweep config sets "livenessProbe": false to '
+                    + 'accept kills that were never checked for life',
+                );
+            }
         }
 
         // G-pull is reported, not re-dispatched -- see this module's header:

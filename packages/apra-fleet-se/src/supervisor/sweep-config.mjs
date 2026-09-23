@@ -41,6 +41,7 @@
 
 import fsDefault from 'node:fs';
 import path from 'node:path';
+import { normalizeLivenessProbeOption } from '../../fleet-sprint/member-stray-sweep.mjs';
 
 /** Env var that overrides the conventional location (inline JSON or a path). */
 export const SWEEP_CONFIG_ENV_VAR = 'FLEET_SE_SWEEP_CONFIG';
@@ -57,7 +58,8 @@ const EVIDENCE_KINDS = new Set(['path', 'flag', 'name']);
  *
  * @param {unknown} parsed - the parsed JSON value
  * @param {string} source - human-readable origin, used in error text
- * @returns {{ markers: Array<object>, productionPorts: Array<number> }}
+ * @returns {{ markers: Array<object>, productionPorts: Array<number>,
+ *             livenessProbe?: true|false|{ path?: string, timeoutMs?: number } }}
  */
 export function validateSweepConfig(parsed, source) {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -87,7 +89,22 @@ export function validateSweepConfig(parsed, source) {
         }
     });
 
-    return { markers, productionPorts };
+    // apra-fleet-i4ku.17: the liveness predicate's option. Optional, and its
+    // ABSENCE is not the same as `false` -- absent means "this target said
+    // nothing", which phases/member-prep.mjs reads as ARMED (its header
+    // records that decision); `false` is an operator explicitly turning a
+    // safety predicate off. Both survive this loader distinctly, so a target
+    // can never be silently disarmed by a link that merely dropped the key.
+    // Validated by the one shared normalizer the CLI and sprint-args layers
+    // also use, so these three boundaries cannot drift on what is legal.
+    const livenessProbe = normalizeLivenessProbeOption(
+        parsed.livenessProbe,
+        `[supervisor] sweep config ${source}: "livenessProbe"`,
+    );
+
+    const config = { markers, productionPorts };
+    if (livenessProbe !== undefined) config.livenessProbe = livenessProbe;
+    return config;
 }
 
 /**
@@ -108,7 +125,8 @@ export function validateSweepConfig(parsed, source) {
  *   fs?: { existsSync: Function, readFileSync: Function },
  *   logger?: { log?: Function, warn?: Function },
  * }} opts
- * @returns {{ markers: Array<object>, productionPorts: Array<number> }|undefined}
+ * @returns {{ markers: Array<object>, productionPorts: Array<number>,
+ *             livenessProbe?: true|false|{ path?: string, timeoutMs?: number } }|undefined}
  */
 export function loadSweepConfig(opts = {}) {
     const { repoRoot } = opts;
@@ -160,6 +178,13 @@ export function loadSweepConfig(opts = {}) {
     }
 
     const config = validateSweepConfig(parsed, source);
-    log(`[supervisor] sweep config loaded ${source}: ${config.markers.length} fleet-start marker(s), ${config.productionPorts.length} production port(s) never killed.`);
+    // The liveness state is named in this line, not left to the sprint log:
+    // it is the difference between "a live process on an unlisted port is
+    // protected" and "it is not", and an operator reading the supervisor's
+    // startup output should not have to infer which one they configured.
+    const livenessText = config.livenessProbe === false
+        ? 'liveness probe EXPLICITLY DISARMED by this config (a candidate on an unlisted port is NOT checked for life before it is killed)'
+        : `liveness probe armed${config.livenessProbe === undefined ? ' (default -- the config did not mention it)' : ''}`;
+    log(`[supervisor] sweep config loaded ${source}: ${config.markers.length} fleet-start marker(s), ${config.productionPorts.length} production port(s) never killed, ${livenessText}.`);
     return config;
 }

@@ -8,7 +8,7 @@ import {
     runMemberPrepPhase, checkMemberAuth, runSweepStep, memberPrepExecLabel,
 } from '../fleet-sprint/phases/member-prep.mjs';
 import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../fleet-sprint/errors.mjs';
-import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
+import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX, HEALTH_LINE_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -558,7 +558,17 @@ function killableStrayProbeOutput() {
 /** Same execCommand-shape stub runMemberPrepPhase's caller (runner.js) wires
  *  in production -- ({ member, command }) => Promise<{ ok, output, error }>
  *  -- but synthesizes a real kill-dispatch response for the configured pid,
- *  exactly like member-stray-sweep-safety-matrix.test.mjs's stubSeam(). */
+ *  exactly like member-stray-sweep-safety-matrix.test.mjs's stubSeam().
+ *
+ *  THREE dispatch shapes, not two (apra-fleet-i4ku.17): the phase now arms
+ *  the liveness predicate by default, so a sweep that reaches a kill issues
+ *  process probe -> liveness probe -> kill. This stub answers the liveness
+ *  dispatch with curl's '000' (no HTTP response at all) for every pid:port
+ *  it was asked about, i.e. "nothing on this member is answering" -- the
+ *  honest fixture for a STALE supervisor, and the state in which the kill
+ *  these tests are about still goes ahead. Discriminated on
+ *  HEALTH_LINE_PREFIX and checked AFTER the kill prefix, because the
+ *  liveness command legitimately contains probe-like text of its own. */
 function makeKillCapableExecCommand(probeOutput) {
     const calls = [];
     const execCommand = async ({ member, command }) => {
@@ -567,6 +577,14 @@ function makeKillCapableExecCommand(probeOutput) {
             const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
             const lines = pids.flatMap((pid) => [`${KILL_BEGIN_PREFIX} ${pid}`, `${KILL_STATUS_PREFIX} ${pid} 0`]);
             return { ok: true, output: lines.join('\n'), error: null };
+        }
+        if (command.includes(HEALTH_LINE_PREFIX)) {
+            const asked = [...command.matchAll(new RegExp(`${HEALTH_LINE_PREFIX} (\\d+) (\\d+)`, 'g'))];
+            return {
+                ok: true,
+                output: asked.map((m) => `${HEALTH_LINE_PREFIX} ${m[1]} ${m[2]} 000`).join('\n'),
+                error: null,
+            };
         }
         return { ok: true, output: probeOutput, error: null };
     };
@@ -606,10 +624,13 @@ test('member-prep: a configured marker set (the new target-owned config surface)
         'the configured marker must have matched the stale supervisor and produced exactly one kill decision',
     );
 
-    // A real kill dispatch was issued (probe, then kill -- two execCommand
-    // calls), naming the selected pid.
-    assert.equal(calls.length, 2, 'expected one probe dispatch and one kill dispatch');
-    assert.match(calls[1].command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`));
+    // A real kill dispatch was issued. THREE execCommand calls under the
+    // shipped default (apra-fleet-i4ku.17): process probe, liveness probe,
+    // then the kill. The middle one is the armed liveness predicate; the
+    // stale supervisor answers nothing, so the kill still happens.
+    assert.equal(calls.length, 3, 'expected a process probe, a liveness probe, then one kill dispatch');
+    assert.match(calls[1].command, new RegExp(HEALTH_LINE_PREFIX), 'dispatch 2 must be the armed liveness probe');
+    assert.match(calls[2].command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`));
 
     // The summary log line reports a nonzero killed count, not "0 killed".
     const sweepLine = lines.find((l) => l.includes("member 'sandbox-member': sweep --"));
@@ -655,18 +676,24 @@ test('member-prep: one sweep that probes and then kills reaches the exec seam wi
         now: () => Date.parse('2026-09-23T12:00:00.000Z'),
     });
 
-    assert.equal(labelled.length, 2, 'expected exactly two dispatches: one probe, then one kill');
+    // Three dispatches under the armed-by-default liveness predicate
+    // (apra-fleet-i4ku.17): process probe, liveness probe, kill. Both
+    // read-only dispatches must still be labelled probes, and only the last
+    // one a kill -- which is exactly what this test is about.
+    assert.equal(labelled.length, 3, 'expected three dispatches: process probe, liveness probe, then one kill');
 
     // Dispatch 1 is the PROBE: read-only enumeration, labelled a probe.
-    const [probeDispatch, killDispatch] = labelled;
+    const [probeDispatch, livenessDispatch, killDispatch] = labelled;
+    assert.equal(livenessDispatch.kind, 'probe', 'the liveness dispatch is read-only and must never be labelled a kill');
+    assert.doesNotMatch(livenessDispatch.label, /kill/, 'the read-only liveness probe must not be described as a kill');
     assert.equal(probeDispatch.kind, 'probe');
     assert.equal(probeDispatch.label, "Member Prep: stray-process probe on 'sandbox-member'");
     assert.doesNotMatch(probeDispatch.command, new RegExp(KILL_BEGIN_PREFIX), 'dispatch 1 must be the read-only probe');
 
-    // Dispatch 2 is the KILL: it signals the selected pid, and must say so.
+    // The LAST dispatch is the KILL: it signals the selected pid, and must say so.
     assert.equal(killDispatch.kind, 'kill');
     assert.equal(killDispatch.label, "Member Prep: stray-process kill on 'sandbox-member'");
-    assert.match(killDispatch.command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`), 'dispatch 2 must be the real kill');
+    assert.match(killDispatch.command, new RegExp(`${KILL_BEGIN_PREFIX} ${STALE_SUPERVISOR_PID}`), 'the last dispatch must be the real kill');
 
     // The whole point: the two are DISTINGUISHABLE. Before the fix both read
     // "stray-process probe on 'sandbox-member'".

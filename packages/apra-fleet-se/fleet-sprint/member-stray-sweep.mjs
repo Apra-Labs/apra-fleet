@@ -55,6 +55,16 @@
 //      than silently falling back to killing it -- see
 //      parseLivenessProbeOutput()'s `evaluable` and decideStrayProcess()'s
 //      `record.liveProbe` handling.
+//      WHO TURNS IT ON (apra-fleet-i4ku.17): this module stays opt-in --
+//      `livenessProbe` defaults to null here, so a direct caller gets the
+//      pre-predicate behaviour byte for byte. The SHIPPED sweep path is
+//      armed anyway, because phases/member-prep.mjs's runSweepStep() treats
+//      an unstated option as ARMED and only an explicit `false` disarms it;
+//      that decision, and the rejected alternative, are documented in that
+//      file's header ("LIVENESS PROBE: ARMED BY DEFAULT -- DECIDED") and in
+//      docs/member-prep-and-stray-sweep.md. The caller-facing option shape
+//      is validated in ONE place, normalizeLivenessProbeOption() below,
+//      which every config/CLI/args boundary that carries it imports.
 //
 // PRIOR ART this follows deliberately: src/supervisor/dolt-orphan-sweep.mjs
 // (same command-builder / output-parser / injected-seam split, same
@@ -492,6 +502,79 @@ export const DEFAULT_LIVENESS_PROBE_PATH = '/';
  *  only ever runs against candidates already headed for a kill, and a
  *  slow/hanging probe must not stall the whole sweep pass over one of them. */
 export const DEFAULT_LIVENESS_PROBE_TIMEOUT_MS = 2000;
+
+/** Upper bound on a caller-supplied liveness-probe timeout. This predicate
+ *  runs inline in Member Prep, once per member, before the sprint's first
+ *  dispatch -- a multi-minute per-request timeout would stall the whole
+ *  sprint start, so an absurd value is rejected at the config boundary
+ *  rather than discovered as a hang. */
+export const MAX_LIVENESS_PROBE_TIMEOUT_MS = 60000;
+
+/**
+ * THE single validator for the caller-facing `livenessProbe` option, shared
+ * by every layer that carries it (src/supervisor/sweep-config.mjs,
+ * bin/cli.mjs's resolveSweepConfig(), fleet-sprint/sprint-args.mjs's
+ * validateArgs()). Those three deliberately re-validate independently, so
+ * they must agree on WHAT is valid -- markers/productionPorts prove how
+ * easily three hand-copied shape checks drift apart. The semantics belong to
+ * this module because buildLivenessProbeCommand() above is what actually
+ * consumes `path`/`timeoutMs`.
+ *
+ * Returns the NORMALIZED option, never a mutated input:
+ *   undefined | null -> `undefined` -- "the config said nothing". The caller
+ *                       decides what silence means; phases/member-prep.mjs
+ *                       reads it as ARMED (see its DEFAULT header section).
+ *   true             -> `true`  -- armed, module defaults.
+ *   false            -> `false` -- explicitly DISARMED. Distinct from
+ *                       `undefined` on purpose: an operator who turned the
+ *                       predicate off said so, and the phase reports that
+ *                       differently from an armed pass that spared nothing.
+ *   { path?, timeoutMs? } -> the same object re-built with only known keys.
+ *
+ * Anything else THROWS. An unknown key throws too: silently ignoring
+ * `{ timeout: 5000 }` (no `Ms`) would leave the operator believing they had
+ * configured something they had not -- the exact "implicit environment
+ * decides behaviour and failure is silent" trap this repo forbids.
+ *
+ * @param {unknown} value raw option as it appeared in the config/args
+ * @param {string} label message prefix owned by the calling layer, so each
+ *   boundary's error text matches the rest of that boundary's errors
+ * @returns {true|false|{ path?: string, timeoutMs?: number }|undefined}
+ */
+export function normalizeLivenessProbeOption(value, label = 'livenessProbe') {
+    if (value === undefined || value === null) return undefined;
+    if (value === true || value === false) return value;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(
+            `${label} must be true, false, or an object { path?: "/...", timeoutMs?: <integer ms> } `
+            + `(got ${JSON.stringify(value)}).`,
+        );
+    }
+    const known = new Set(['path', 'timeoutMs']);
+    for (const key of Object.keys(value)) {
+        if (!known.has(key)) {
+            throw new Error(`${label} has unknown key "${key}": only "path" and "timeoutMs" are supported.`);
+        }
+    }
+    const out = {};
+    if (value.path !== undefined) {
+        if (typeof value.path !== 'string' || !value.path.startsWith('/')) {
+            throw new Error(`${label}.path must be a string starting with "/" (got ${JSON.stringify(value.path)}).`);
+        }
+        out.path = value.path;
+    }
+    if (value.timeoutMs !== undefined) {
+        if (typeof value.timeoutMs !== 'number' || !Number.isInteger(value.timeoutMs)
+            || value.timeoutMs < 1 || value.timeoutMs > MAX_LIVENESS_PROBE_TIMEOUT_MS) {
+            throw new Error(
+                `${label}.timeoutMs must be an integer in 1..${MAX_LIVENESS_PROBE_TIMEOUT_MS} `
+                + `(got ${JSON.stringify(value.timeoutMs)}).`,
+            );
+        }
+        out.timeoutMs = value.timeoutMs;
+    }
+    return out;
+}
 
 /**
  * Builds the liveness-probe dispatch for a set of already-provisionally-
@@ -1228,6 +1311,16 @@ export async function sweepMemberStrayProcesses(deps = {}) {
     // above already closed over, so re-running it recomputes only what the
     // new field can change; every record this pass never touches gets the
     // identical decision as before.
+    // apra-fleet-i4ku.17: ACCOUNTING ONLY -- no predicate reads this object,
+    // so nothing here can turn an unevaluable or unrun probe into a kill. It
+    // exists so a caller can tell the three outcomes apart on the RESULT
+    // rather than by parsing log prose: never armed, armed but no candidate
+    // ever reached it, and armed-and-ran-and-spared-nothing. Before this,
+    // all three produced a byte-identical result object, so a phase summary
+    // built from it could not report "not armed" honestly.
+    const liveness = {
+        armed: Boolean(livenessProbe), dispatched: false, checked: 0, spared: 0, unevaluable: 0,
+    };
     if (livenessProbe) {
         const provisionalToKill = decisions.filter((d) => d.action === ACTION_KILL);
         const candidates = [];
@@ -1238,6 +1331,11 @@ export async function sweepMemberStrayProcesses(deps = {}) {
             const livenessOpts = livenessProbe === true ? {} : livenessProbe;
             let livenessRes;
             let dispatchFailed = false;
+            // Recorded BEFORE the attempt: a dispatch that was issued and
+            // then failed is still a dispatch that happened, and the
+            // fail-safe spare below is only honest if the result says the
+            // probe was actually attempted.
+            liveness.dispatched = true;
             try {
                 livenessRes = await execCommand({
                     member: name,
@@ -1272,15 +1370,19 @@ export async function sweepMemberStrayProcesses(deps = {}) {
             for (const d of provisionalToKill) {
                 const record = records.find((r) => r.pid === d.pid);
                 if (!record) continue;
+                liveness.checked += 1;
                 if (!evaluable) {
                     record.liveProbe = 'unevaluable';
+                    liveness.unevaluable += 1;
                     continue;
                 }
                 const checkedPorts = record.listeningPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
                 if (checkedPorts.length === 0) {
                     record.liveProbe = 'unevaluable';
+                    liveness.unevaluable += 1;
                 } else if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === true)) {
                     record.liveProbe = 'responded';
+                    liveness.spared += 1;
                 } else {
                     record.liveProbe = 'no-response';
                 }
@@ -1384,5 +1486,6 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         killed,
         alreadyGone,
         reported,
+        liveness,
     };
 }

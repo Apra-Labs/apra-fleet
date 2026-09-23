@@ -19,6 +19,7 @@ import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
+import { normalizeLivenessProbeOption } from '../fleet-sprint/member-stray-sweep.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -200,7 +201,10 @@ Options:
       --requirements-file <p>  Path to a requirements file threaded into the planner's prompt.
       --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
                                 either inline JSON or '@path/to/file.json'.
-      --sweep-config <json|@file>  JSON object { markers: [{kind,token,evidence}], productionPorts: [n] }
+      --sweep-config <json|@file>  JSON object { markers: [{kind,token,evidence}], productionPorts: [n],
+                                   livenessProbe?: true|false|{path,timeoutMs} }. The liveness probe is
+                                   ARMED unless you set it to false: a candidate still answering HTTP on a
+                                   port it holds is spared instead of killed.
                                 configuring the Member Prep stray-process sweep for this target,
                                 either inline JSON or '@path/to/file.json'. Omitted: the sweep step
                                 reports a deliberate skip (no fleet-start evidence to act on).
@@ -387,7 +391,19 @@ export async function resolveSweepConfig(rawValue, deps = {}) {
         }
     });
 
-    return { markers, productionPorts };
+    // apra-fleet-i4ku.17: the liveness predicate's option, re-validated here
+    // exactly like markers/productionPorts above -- through the ONE shared
+    // normalizer in member-stray-sweep.mjs, so this boundary and the
+    // supervisor's validateSweepConfig() cannot disagree about what is legal.
+    // Absent stays ABSENT (not coerced to false): absence means "unstated",
+    // which phases/member-prep.mjs reads as armed, while an explicit `false`
+    // is an operator disarming the predicate. Collapsing the two here would
+    // silently disarm every target that never mentioned the option.
+    const livenessProbe = normalizeLivenessProbeOption(parsed.livenessProbe, 'Error: --sweep-config "livenessProbe"');
+
+    const resolved = { markers, productionPorts };
+    if (livenessProbe !== undefined) resolved.livenessProbe = livenessProbe;
+    return resolved;
 }
 
 /**
@@ -400,10 +416,11 @@ export async function resolveSweepConfig(rawValue, deps = {}) {
  *   targetIssues: string[], members: string[], branch: string, baseBranch: string,
  *   goal: string, maxCycles: number, requirementsFile: string|undefined, roleMap: object|undefined,
  *   budget: number|undefined, sweepMarkers: Array<object>|undefined, sweepProductionPorts: Array<number>|undefined,
+ *   sweepLivenessProbe: true|false|{ path?: string, timeoutMs?: number }|undefined,
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, sweepMarkers, sweepProductionPorts }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, sweepMarkers, sweepProductionPorts, sweepLivenessProbe }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -442,6 +459,13 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // falls back to `[]`/`[]`, matching pre-existing behavior exactly.
     if (sweepMarkers !== undefined) args.sweep_markers = sweepMarkers;
     if (sweepProductionPorts !== undefined) args.sweep_production_ports = sweepProductionPorts;
+    // apra-fleet-i4ku.17: the liveness predicate's option, forwarded as its
+    // own sprint-args key. Left UNSET when the config never mentioned it --
+    // runner.js's Member Prep call site passes that `undefined` straight
+    // through and phases/member-prep.mjs arms the predicate, which is the
+    // decided default (see its header). Setting it to `false` here on the
+    // caller's behalf would silently disarm a safety predicate.
+    if (sweepLivenessProbe !== undefined) args.sweep_liveness_probe = sweepLivenessProbe;
     return args;
 }
 
@@ -1121,6 +1145,7 @@ async function main() {
                 expectBeads,
                 sweepMarkers: sweepConfig?.markers,
                 sweepProductionPorts: sweepConfig?.productionPorts,
+                sweepLivenessProbe: sweepConfig?.livenessProbe,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

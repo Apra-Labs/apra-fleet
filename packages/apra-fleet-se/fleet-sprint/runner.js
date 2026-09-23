@@ -1962,6 +1962,14 @@ async function runSprintCycle(context) {
         log, group, phase, endGroup,
         sweepMarkers: validated.sweepMarkers || [],
         sweepProductionPorts: validated.sweepProductionPorts || [],
+        // apra-fleet-i4ku.17: the liveness predicate's option, forwarded
+        // WITHOUT a `|| default` of its own -- unlike the two lines above.
+        // That is deliberate: `undefined` here is meaningful ("the target
+        // said nothing"), and phases/member-prep.mjs's runSweepStep() is the
+        // single place that turns silence into ARMED. Defaulting it at this
+        // call site too would put the same decision in two files, where one
+        // could later be changed without the other.
+        sweepLivenessProbe: validated.sweepLivenessProbe,
     });
 
     // =======================

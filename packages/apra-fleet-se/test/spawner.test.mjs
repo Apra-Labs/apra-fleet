@@ -360,7 +360,12 @@ describe('supervisor sweep-config surface (target-owned data)', () => {
         const onTheWire = args[args.indexOf('--sweep-config') + 1];
 
         const reparsed = await resolveSweepConfig(onTheWire);
-        assert.deepEqual(reparsed, { markers: loaded.markers, productionPorts: loaded.productionPorts });
+        // Compared against the WHOLE loaded config, not a hand-listed subset
+        // of its keys: the earlier `{ markers, productionPorts }` literal
+        // would have stayed green while a newly added key (livenessProbe,
+        // apra-fleet-i4ku.17) was dropped on the wire, which is precisely
+        // the drift this test exists to catch.
+        assert.deepEqual(reparsed, loaded);
     });
 
     // AC6: this repo, acting as its own target, actually declares a config --

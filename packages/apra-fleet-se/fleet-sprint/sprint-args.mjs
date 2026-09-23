@@ -7,6 +7,7 @@
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
+import { normalizeLivenessProbeOption } from './member-stray-sweep.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -164,6 +165,15 @@ const KNOWN_ARG_KEYS = new Set([
     // scanned" result.
     'sweep_markers',
     'sweep_production_ports',
+    // `sweep_liveness_probe` (apra-fleet-i4ku.17) is the liveness predicate's
+    // option: `true`/omitted = armed, `false` = explicitly disarmed, or
+    // `{ path, timeoutMs }` to override the request. OMITTED IS NOT
+    // DISARMED -- phases/member-prep.mjs's runSweepStep() arms the predicate
+    // for any value that is not an explicit `false` (its header records that
+    // decision and the rejected alternative), so a target that says nothing
+    // still gets the safety check that spares a live process listening on a
+    // port no static `sweep_production_ports` list could have enumerated.
+    'sweep_liveness_probe',
 ]);
 
 /**
@@ -484,6 +494,18 @@ export function validateArgs(args) {
             }
         });
     }
+    // The liveness option is re-validated here, at the same boundary and with
+    // the same loudness as the two keys above, through the ONE normalizer
+    // member-stray-sweep.mjs owns -- so a malformed value is a hard arg error
+    // before any dispatch, and can never be quietly rounded to "armed" or
+    // "disarmed". `undefined` (unstated) is preserved as `undefined`, which
+    // phases/member-prep.mjs reads as armed.
+    const sweepLivenessProbe = normalizeLivenessProbeOption(
+        args.sweep_liveness_probe,
+        // No trailing colon: the normalizer appends '.path'/'.timeoutMs' to
+        // this label for the nested cases.
+        '[Arg Contract] Invalid sweep_liveness_probe',
+    );
 
     return {
         targetIssues,
@@ -508,5 +530,6 @@ export function validateArgs(args) {
         expectBeads,
         sweepMarkers: args.sweep_markers,
         sweepProductionPorts: args.sweep_production_ports,
+        sweepLivenessProbe,
     };
 }
