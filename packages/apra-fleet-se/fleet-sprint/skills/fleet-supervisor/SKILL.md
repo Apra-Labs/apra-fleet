@@ -283,6 +283,63 @@ start with no login (`loginctl enable-linger <username>`).
    launch crashes immediately with a topology error. If unsure, use ONE
    member. Don't guess a member list -- ask, or default to one.
 
+### Prepare each remote member
+
+Before dispatching any role to a member, run these four steps against it, in
+order. Each step follows the same command shape and safety rules the engine's
+own member-prep primitives use, so preparing a member by hand behaves
+identically to however the engine performs the same step.
+
+WINDOWS COMMAND CONVENTION -- read once, applies to every PowerShell command
+below: a Windows member with no POSIX-compatible shell available takes a
+command as `powershell -EncodedCommand <base64>`, never a raw script string.
+Build `<base64>` by wrapping the script as
+`$ErrorActionPreference = 'Stop'; try { <script>; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`
+and base64-encoding that wrapped string as UTF-16LE. This is a MIRROR of the
+engine's own convention, never shell-level variable expansion left for an
+unknown member shell to interpret: every `$variable` below is PowerShell's
+own pipeline/local variable, evaluated by the `powershell.exe` the wrapper
+explicitly execs, not an orchestrator-side value.
+
+1. **Provision/verify auth (LLM and VCS).** Call the fleet `provision_llm_auth`
+   and `provision_vcs_auth` tools for the member. Both are idempotent -- a
+   call when auth is already valid is a safe no-op -- so re-running them is
+   also how you verify auth without a separate check. This step has no
+   separate POSIX/Windows form: it is a fleet tool call, and the tool itself
+   does whatever the member's OS needs internally.
+2. **Sweep stray fleet processes.** List processes and listening TCP sockets,
+   decide, then kill only what survives every safety predicate below.
+   - POSIX: list processes with `ps -eo pid=,ppid=,etime=,args=`; list
+     listening sockets with `lsof -nP -iTCP -sTCP:LISTEN -Fpn` (fall back to
+     `ss -H -l -t -n -p` if `lsof` is absent or prints nothing for an
+     unprivileged user -- run both and union the results rather than
+     picking one). Kill a selected pid with `kill -9 <pid>`.
+   - Windows PowerShell (wrapped per the convention above): list processes
+     with `Get-CimInstance Win32_Process`; list listening sockets with
+     `Get-NetTCPConnection -State Listen`. Kill a selected pid with
+     `Stop-Process -Id <pid> -Force -ErrorAction SilentlyContinue`.
+3. **G-pull (git).** `git fetch <remote> <branch>`, then -- only if the fetch
+   succeeds -- `git merge --ff-only <remote>/<branch>`. A non-fast-forward
+   merge means the member has DIVERGED from the shared branch; stop and
+   reconcile it rather than force-merging. Identical command text on POSIX
+   and (wrapped) Windows PowerShell -- plain git, no OS-specific form needed.
+4. **D-pull (beads).** `bd dolt pull`. Identical command text on POSIX and
+   (wrapped) Windows PowerShell.
+
+LOCAL-MEMBER RULE (step 2 only, explicit): the stray-process sweep NEVER
+kills on a local member. A local member is the same machine as the
+orchestrator -- it hosts the production fleet MCP server, the supervisor,
+and possibly the operator's own session and checkout. On a local member (or
+any member whose locality cannot be verified as remote), at most REPORT
+candidates found by the sweep; never kill.
+
+KILL RULES the operator must follow by hand (step 2, on a verified remote
+member only): kill only a process fleet itself started -- evidenced by a
+fleet-chosen path or flag on its command line, never by process name alone;
+only when its parent process is gone; and never a process listening on the
+member's production fleet or supervisor port. Log every kill: pid, full
+command line, start time, and the reason it was selected.
+
 ## 2. Start a sprint
 
 ```bash
