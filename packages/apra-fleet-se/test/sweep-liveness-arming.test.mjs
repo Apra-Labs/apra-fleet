@@ -1,0 +1,412 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { loadSweepConfig } from '../src/supervisor/sweep-config.mjs';
+import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
+import { resolveSweepConfig, buildRunnerArgs } from '../bin/cli.mjs';
+import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
+import { runMemberPrepPhase } from '../fleet-sprint/phases/member-prep.mjs';
+import {
+    HEALTH_LINE_PREFIX, KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX,
+} from '../fleet-sprint/member-stray-sweep.mjs';
+
+// =============================================================================
+// apra-fleet-i4ku.18 -- the liveness predicate is ARMED on the real Member
+// Prep path, not merely implemented in the module.
+//
+// WHAT THIS FILE DOES NOT DO: it does not restate the module-level liveness
+// assertions. test/member-stray-sweep-safety-matrix.test.mjs owns those -- it
+// drives sweepMemberStrayProcesses() with livenessProbe set BY HAND and pins
+// what the predicate decides. That proves the predicate works; it can never
+// prove anything turns it on. This file owns the arming half: that a sweep
+// config's liveness option survives every link from the supervisor's loader
+// to sweepMemberStrayProcesses() with its VALUES intact, that an unstated
+// option is armed (the decided default -- see the "LIVENESS PROBE: ARMED BY
+// DEFAULT -- DECIDED" header section of fleet-sprint/phases/member-prep.mjs
+// and docs/member-prep-and-stray-sweep.md), and that an operator can tell
+// "not armed" from "armed and nothing was live".
+//
+// NO REAL PROCESS IS TOUCHED. Every dispatch goes through a hand-built
+// in-memory exec seam that records the command string and answers with
+// fabricated probe output; nothing is spawned, probed, signalled or written
+// to disk. The one file read is this repo's own committed runner.js, read
+// as text.
+// =============================================================================
+
+const RUNNER_PATH = path.join(import.meta.dirname, '..', 'fleet-sprint', 'runner.js');
+
+/** A path marker, so both fixture processes below are kill-grade evidence and
+ *  the liveness predicate is the only thing that can separate them. */
+const MARKERS = [{ kind: 'fleet-supervisor', token: 'apra-fleet-se/bin/serve.mjs', evidence: 'path' }];
+const PRODUCTION_PORTS = [7523, 8787];
+
+/** The stale sandbox supervisor this whole sweep exists to clear: hours old,
+ *  daemonized, on an OS-assigned port no productionPorts list could name. */
+const STALE_PID = 6642;
+const STALE_PORT = 41377;
+/** A supervisor deliberately started on a NON-DEFAULT port and still serving.
+ *  Structurally identical to the stale one -- same marker, same ppid 1, same
+ *  age, an unlisted port -- so the ONLY thing that can spare it is that it
+ *  still answers HTTP. That is the hole this predicate closes. */
+const LIVE_PID = 5120;
+const LIVE_PORT = 18999;
+
+/** Both processes in ONE probe table, so every assertion below is about a
+ *  single sweep pass that must treat them differently. */
+function twoCandidateProbeOutput() {
+    return [
+        `SWEEP-PROC  ${STALE_PID}  1 1-02:03:04 /usr/bin/node /home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${STALE_PORT}`,
+        `SWEEP-PROC  ${LIVE_PID}  1 1-02:03:04 /usr/bin/node /home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${LIVE_PORT}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${STALE_PORT} 0.0.0.0:* users:(("node",pid=${STALE_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${LIVE_PORT} 0.0.0.0:* users:(("node",pid=${LIVE_PID},fd=21))`,
+    ].join('\n');
+}
+
+/** A probe table with NO candidate that can survive the other predicates (the
+ *  probe process itself, too young, no marker match), used for the
+ *  "armed but never dispatched" state. */
+const NO_CANDIDATE_PROBE_OUTPUT = 'SWEEP-PROC 1 0 00:01 /sbin/init';
+
+/**
+ * The exec seam. Discriminates the THREE dispatch shapes, in this order:
+ * kill first, then liveness, then the process probe. The order matters --
+ * the liveness command carries probe-like text of its own, and a naive
+ * "is this a probe?" check would swallow the kill.
+ *
+ * `health` is the liveness answer: 'live' (the live supervisor answers 200,
+ * the stale one answers curl's 000 sentinel), 'dead' (nothing answers) or
+ * 'notool' (the member has no curl at all).
+ */
+function makeSeam({ probeOutput = twoCandidateProbeOutput(), health = 'live' } = {}) {
+    const dispatches = [];
+    const execCommand = async ({ member, command, kind }) => {
+        dispatches.push({ member, command, kind });
+        if (command.includes(KILL_BEGIN_PREFIX)) {
+            const pids = [...command.matchAll(new RegExp(`${KILL_BEGIN_PREFIX} (\\d+)`, 'g'))].map((m) => Number(m[1]));
+            const lines = pids.flatMap((pid) => [`${KILL_BEGIN_PREFIX} ${pid}`, `${KILL_STATUS_PREFIX} ${pid} 0`]);
+            return { ok: true, output: lines.join('\n'), error: null };
+        }
+        if (command.includes(HEALTH_LINE_PREFIX)) {
+            if (health === 'notool') return { ok: true, output: `${MISSING_TOOL_PREFIX} curl`, error: null };
+            const asked = [...command.matchAll(new RegExp(`${HEALTH_LINE_PREFIX} (\\d+) (\\d+)`, 'g'))];
+            return {
+                ok: true,
+                output: asked
+                    .map(([, pid, port]) => `${HEALTH_LINE_PREFIX} ${pid} ${port} `
+                        + (health === 'live' && Number(pid) === LIVE_PID ? '200' : '000'))
+                    .join('\n'),
+                error: null,
+            };
+        }
+        return { ok: true, output: probeOutput, error: null };
+    };
+    return { execCommand, dispatches, liveness: () => dispatches.filter((d) => d.command.includes(HEALTH_LINE_PREFIX)) };
+}
+
+function makeFleetApi() {
+    return {
+        async listMembers() {
+            return {
+                content: [{
+                    text: JSON.stringify({
+                        members: [{ name: 'remote-worker', type: 'remote', os: 'linux', llm_auth: 'oauth' }],
+                    }),
+                }],
+            };
+        },
+        async provisionLlmAuth() {
+            return { content: [{ text: '[OK] mock' }], structuredContent: { ok: true, reason: 'ok' } };
+        },
+    };
+}
+
+/**
+ * THE WHOLE CHAIN, driven for real, with nothing hand-carried past a link:
+ *   .fleet/sweep-config.json content
+ *     -> loadSweepConfig()        (supervisor-side parse + validate)
+ *     -> buildSprintArgv()        (--sweep-config on the wire)
+ *     -> resolveSweepConfig()     (the CLI parses it back)
+ *     -> buildRunnerArgs()        (the sprint-args key)
+ *     -> validateArgs()           (the runner's arg contract)
+ *     -> runMemberPrepPhase()     (which calls runSweepStep)
+ *
+ * The config is fed through FLEET_SE_SWEEP_CONFIG as INLINE JSON rather than
+ * a temp file, so this test writes nothing to disk anywhere (criterion 7).
+ */
+async function runWholeChain(configObject, seamOpts = {}) {
+    const loaded = loadSweepConfig({
+        repoRoot: '/nonexistent-repo-root',
+        env: { FLEET_SE_SWEEP_CONFIG: JSON.stringify(configObject) },
+        logger: { log: () => {} },
+    });
+    const argv = buildSprintArgv({
+        issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080, sweepConfig: loaded,
+    });
+    const flagIndex = argv.indexOf('--sweep-config');
+    assert.notEqual(flagIndex, -1, 'buildSprintArgv() must emit --sweep-config when a config is supplied');
+    const resolved = await resolveSweepConfig(argv[flagIndex + 1]);
+    const runnerArgs = buildRunnerArgs({
+        targetIssues: ['apra-fleet-demo'],
+        members: ['remote-worker'],
+        branch: 'b',
+        baseBranch: 'main',
+        goal: 'P1',
+        maxCycles: 1,
+        sweepMarkers: resolved.markers,
+        sweepProductionPorts: resolved.productionPorts,
+        sweepLivenessProbe: resolved.livenessProbe,
+    });
+    const validated = validateArgs(runnerArgs);
+
+    // A caller may hand in its OWN seam (rather than options for one) when it
+    // needs to inspect the seam after the chain has THROWN -- see the
+    // malformed-option test, whose whole point is that nothing was dispatched.
+    const seam = seamOpts.seam ?? makeSeam(seamOpts);
+    const lines = [];
+    const phase = await runMemberPrepPhase({
+        members: validated.members,
+        fleetApi: makeFleetApi(),
+        execCommand: seam.execCommand,
+        syncBeadsBefore: async () => ({ ok: true }),
+        log: (l) => lines.push(l),
+        sweepMarkers: validated.sweepMarkers || [],
+        sweepProductionPorts: validated.sweepProductionPorts || [],
+        // Forwarded exactly as runner.js's Member Prep call site forwards it:
+        // no default of its own, so `undefined` still means "unstated".
+        sweepLivenessProbe: validated.sweepLivenessProbe,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+    });
+
+    const sweep = phase.members['remote-worker'].sweep;
+    return {
+        loaded,
+        onTheWire: argv[flagIndex + 1],
+        resolved,
+        runnerArgs,
+        validated,
+        seam,
+        sweep,
+        sweepLines: lines.filter((l) => l.includes("member 'remote-worker': sweep --")),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 1: the round trip is closed ON VALUES, not on a flag being
+// present. GUARD FOR THE WHOLE CHAIN: reverting the liveness threading at
+// ANY single link (sweep-config.mjs's validate, cli.mjs's
+// resolveSweepConfig, buildRunnerArgs' sweep_liveness_probe key,
+// sprint-args' validateArgs, or runSweepStep's forward into
+// sweepMemberStrayProcesses) drops the option somewhere along here, and the
+// non-default path/timeout below stops appearing in the dispatched command.
+// ---------------------------------------------------------------------------
+
+test('GUARD (every link): a liveness option survives loader -> argv -> CLI -> arg contract -> runSweepStep with its VALUES intact', async () => {
+    // Deliberately NON-DEFAULT on both fields: the module's own defaults are
+    // '/' and 2000ms, so a link that dropped the option and let the defaults
+    // apply would still produce a liveness dispatch and still look armed.
+    // Only the values prove the option itself arrived.
+    const chain = await runWholeChain({
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        livenessProbe: { path: '/healthz', timeoutMs: 5000 },
+    });
+
+    assert.deepEqual(chain.loaded.livenessProbe, { path: '/healthz', timeoutMs: 5000 }, 'link 1: the supervisor loader dropped or mangled the option');
+    assert.deepEqual(JSON.parse(chain.onTheWire).livenessProbe, { path: '/healthz', timeoutMs: 5000 }, 'link 2: buildSprintArgv() did not serialize the option onto the wire');
+    assert.deepEqual(chain.resolved.livenessProbe, { path: '/healthz', timeoutMs: 5000 }, 'link 3: cli.mjs resolveSweepConfig() dropped the option');
+    assert.deepEqual(chain.runnerArgs.sweep_liveness_probe, { path: '/healthz', timeoutMs: 5000 }, 'link 4: buildRunnerArgs() did not forward the option as a sprint-args key');
+    assert.deepEqual(chain.validated.sweepLivenessProbe, { path: '/healthz', timeoutMs: 5000 }, 'link 5: sprint-args validateArgs() dropped the option');
+
+    // Link 6 -- the one no intermediate object can prove: the values reached
+    // the actual dispatch. Asserted on what was sent to the member, which is
+    // the only evidence that runSweepStep() forwarded the option into
+    // sweepMemberStrayProcesses() rather than merely receiving it.
+    const [liveness] = chain.seam.liveness();
+    assert.ok(liveness, 'link 6: runSweepStep() never issued a liveness dispatch, so the option never reached the sweep');
+    assert.match(liveness.command, new RegExp(`http://127\\.0\\.0\\.1:${LIVE_PORT}/healthz`), 'the configured path must be the path actually requested');
+    assert.match(liveness.command, /--max-time 5\b/, 'the configured timeout must be the timeout actually used (5000ms -> 5s), not the module default');
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 2: armed, through the phase, on a fixture holding BOTH shapes.
+// ---------------------------------------------------------------------------
+
+test('ARMED: a candidate answering HTTP on a port it holds is SPARED with a recorded reason, while the stale sandbox in the SAME pass is still killed', async () => {
+    const chain = await runWholeChain({ markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true });
+
+    assert.equal(chain.sweep.status, 'ran');
+    assert.equal(chain.seam.liveness().length, 1, 'an armed sweep must issue the second (liveness) dispatch');
+
+    // The live supervisor on an unlisted port: SPARED, and the log says why.
+    const sparedLive = chain.sweep.result.reported.find((d) => d.pid === LIVE_PID);
+    assert.ok(sparedLive, `the live supervisor must be reported, not killed: ${JSON.stringify(chain.sweep.result.killed)}`);
+    assert.ok(
+        sparedLive.sparedReasons.some((r) => r.includes('responded to a liveness probe')),
+        `the spare must be recorded as a liveness spare, not left unexplained: ${JSON.stringify(sparedLive.sparedReasons)}`,
+    );
+
+    // TURNING THE PREDICATE ON MUST NOT DISABLE THE SWEEP. Without this
+    // assertion, "spare everything" would pass the test above.
+    assert.deepEqual(
+        chain.sweep.result.killed.map((k) => k.pid), [STALE_PID],
+        'the stale sandbox supervisor in the same pass must still be killed -- an armed sweep that kills nothing is a disabled sweep',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 3: the three states must be DISTINGUISHABLE, not merely quiet.
+// The decided default is ARMED (member-prep.mjs's header), so "the option is
+// absent" is asserted to ARM, and only an explicit `false` disarms.
+// ---------------------------------------------------------------------------
+
+test('DEFAULT: a config that never mentions livenessProbe is ARMED -- the decided default, not silence', async () => {
+    const chain = await runWholeChain({ markers: MARKERS, productionPorts: PRODUCTION_PORTS });
+
+    assert.equal(chain.validated.sweepLivenessProbe, undefined, 'an unstated option must stay unstated through the chain, never coerced');
+    assert.equal(chain.seam.liveness().length, 1, 'an unstated option must still arm the predicate -- that is the decided default');
+    assert.equal(chain.sweep.result.liveness.armed, true);
+    assert.deepEqual(chain.sweep.result.killed.map((k) => k.pid), [STALE_PID]);
+    assert.ok(chain.sweep.result.reported.some((d) => d.pid === LIVE_PID), 'the live supervisor must be spared by default, without the target having to ask');
+});
+
+test('NOT ARMED is distinguishable: livenessProbe:false issues no liveness dispatch AND says so in the result and the summary line', async () => {
+    const disarmed = await runWholeChain({
+        markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: false,
+    });
+
+    assert.equal(disarmed.validated.sweepLivenessProbe, false, 'an explicit false must survive the chain as false, distinct from absent');
+    assert.equal(disarmed.seam.liveness().length, 0, 'a disarmed sweep must dispatch no liveness probe at all');
+    assert.deepEqual(disarmed.sweep.result.liveness, { armed: false, dispatched: false, checked: 0, spared: 0, unevaluable: 0 });
+    assert.equal(disarmed.sweepLines.length, 1);
+    assert.match(disarmed.sweepLines[0], /liveness probe NOT ARMED/);
+
+    // THE POINT: with the predicate off, the live supervisor is killed too --
+    // which is exactly why "not armed" must never read like a clean armed
+    // pass. Both candidates die here; nothing warned anyone in the old,
+    // unarmed world.
+    assert.deepEqual(
+        disarmed.sweep.result.killed.map((k) => k.pid).sort((a, b) => a - b), [LIVE_PID, STALE_PID],
+        'precondition for this whole feature: with the predicate off, a LIVE supervisor on an unlisted port is killed',
+    );
+
+    // ... and an ARMED pass that spared nothing must not look the same. Same
+    // fixture, same phase, liveness on, but nothing is answering.
+    const armedFoundNothing = await runWholeChain(
+        { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true },
+        { health: 'dead' },
+    );
+    assert.equal(armedFoundNothing.seam.liveness().length, 1);
+    assert.equal(armedFoundNothing.sweep.result.liveness.armed, true);
+    assert.equal(armedFoundNothing.sweep.result.liveness.spared, 0);
+    assert.match(armedFoundNothing.sweepLines[0], /liveness probe armed and dispatched: 2 candidate\(s\) checked, 0 spared as live/);
+    assert.notEqual(
+        armedFoundNothing.sweepLines[0].replace(/^.*sweep -- /, ''),
+        disarmed.sweepLines[0].replace(/^.*sweep -- /, ''),
+        'an armed pass that spared nothing must not render identically to a pass where the predicate never ran',
+    );
+
+    // The third state: armed, but no candidate ever reached the predicate.
+    // It must not read as "armed and found nothing live" either.
+    const nothingToCheck = await runWholeChain(
+        { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true },
+        { probeOutput: NO_CANDIDATE_PROBE_OUTPUT },
+    );
+    assert.equal(nothingToCheck.seam.liveness().length, 0);
+    assert.match(nothingToCheck.sweepLines[0], /liveness probe armed but not dispatched/);
+});
+
+test('the LOUD losing case: a member with no probe tool spares everything unchecked and says so on its own line', async () => {
+    // This is the documented cost of arming by default (member-prep.mjs's
+    // header): an unevaluable probe spares, so on a member without curl the
+    // stale sandbox this feature exists for survives. Fail-safe, but it must
+    // never be silent -- an operator seeing "0 killed" and nothing else would
+    // read it as a clean member.
+    const chain = await runWholeChain(
+        { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true },
+        { health: 'notool' },
+    );
+
+    assert.deepEqual(chain.sweep.result.killed, [], 'an unevaluable probe must SPARE -- never fall back to killing');
+    assert.equal(chain.sweep.result.liveness.unevaluable, 2);
+    const loud = chain.sweepLines.find((l) => l.includes('LIVENESS UNEVALUABLE'));
+    assert.ok(loud, `expected a dedicated loud line, got: ${JSON.stringify(chain.sweepLines)}`);
+    assert.match(loud, /SPARED rather than killed/);
+    assert.match(loud, /livenessProbe/, 'the loud line must name the way out, or it is an advisory the reader cannot act on');
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 4: malformed fails fast at the config/CLI boundary, BEFORE any
+// dispatch is issued.
+// ---------------------------------------------------------------------------
+
+test('a malformed liveness option fails fast at every config/CLI boundary, before any dispatch is issued', async () => {
+    const malformed = [
+        { livenessProbe: 'yes' },
+        { livenessProbe: { timeout: 5000 } },
+        { livenessProbe: { path: 'healthz' } },
+        { livenessProbe: { timeoutMs: 0 } },
+    ];
+
+    for (const bad of malformed) {
+        const config = { markers: MARKERS, productionPorts: PRODUCTION_PORTS, ...bad };
+
+        // Boundary 1: the supervisor's loader.
+        assert.throws(
+            () => loadSweepConfig({ repoRoot: '/nonexistent-repo-root', env: { FLEET_SE_SWEEP_CONFIG: JSON.stringify(config) }, logger: { log: () => {} } }),
+            /livenessProbe/,
+            `the supervisor loader accepted ${JSON.stringify(bad)}`,
+        );
+        // Boundary 2: the CLI's own re-validation of --sweep-config.
+        await assert.rejects(
+            () => resolveSweepConfig(JSON.stringify(config)),
+            /livenessProbe/,
+            `resolveSweepConfig() accepted ${JSON.stringify(bad)}`,
+        );
+        // Boundary 3: the runner's arg contract.
+        assert.throws(
+            () => validateArgs(buildRunnerArgs({
+                targetIssues: ['apra-fleet-demo'], members: ['remote-worker'], branch: 'b', baseBranch: 'main',
+                goal: 'P1', maxCycles: 1, sweepMarkers: MARKERS, sweepProductionPorts: PRODUCTION_PORTS,
+                sweepLivenessProbe: bad.livenessProbe,
+            })),
+            /sweep_liveness_probe/,
+            `validateArgs() accepted ${JSON.stringify(bad)}`,
+        );
+    }
+
+    // BEFORE ANY DISPATCH: the whole chain refuses to start, with an exec
+    // seam wired in that would have recorded a probe if one had been issued.
+    const seam = makeSeam();
+    await assert.rejects(
+        () => runWholeChain({ markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: 'yes' }, { seam }),
+        /livenessProbe/,
+    );
+    assert.equal(seam.dispatches.length, 0, 'a malformed option must be rejected before anything is dispatched to a member');
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 5, the ONE link the assertions above cannot observe: runner.js's
+// Member Prep call site. Everything else is driven through real functions,
+// but runner.js's call site lives inside the sprint's main body, so it is
+// pinned by reading the source -- the same technique
+// test/member-prep.test.mjs uses for that call site's execCommand adapter.
+// Deleting `sweepLivenessProbe` from that call fails THIS test.
+// ---------------------------------------------------------------------------
+
+test('GUARD (runner.js link): the production Member Prep call site still forwards sweepLivenessProbe from the validated args', () => {
+    const runnerSrc = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const callMatch = runnerSrc.match(/await runMemberPrepPhase\(\{([\s\S]*?)\n {4}\}\);/);
+    assert.ok(
+        callMatch,
+        'could not find the `await runMemberPrepPhase({ ... });` call site in runner.js -- if it was rewritten, '
+        + "update this pin's anchor pattern rather than deleting the pin",
+    );
+    assert.match(
+        callMatch[1], /sweepLivenessProbe:\s*validated\.sweepLivenessProbe/,
+        'runner.js no longer forwards `sweepLivenessProbe` from the validated args into Member Prep. That reverts '
+        + 'this whole feature to dormant for every supervisor-launched sprint: the option would be parsed, '
+        + 'validated and then dropped one call short of the sweep, and a target that set it would never be obeyed.',
+    );
+});
