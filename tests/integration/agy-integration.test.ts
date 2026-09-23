@@ -113,13 +113,12 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ]);
     });
 
-    it('refuses to auto-collapse mcp__<server>__<tool> entries into a broad server-level mcp rule', () => {
-      // AGY's permission model is server-granular, and 'apra-fleet' colocates safe
-      // KB tools with destructive fleet-admin tools (remove_member, shutdown_server,
-      // credential_store_*) on the same server -- collapsing a narrow per-tool grant
-      // like kb_query into { action: 'mcp', target: 'apra-fleet' } would silently
-      // hand out access to all of them. This must fall through to an explicit
-      // 'custom' rule (surfaced for manual escalation) instead of a 'mcp' rule.
+    it('maps mcp__<server>__<tool> to AGY\'s equally narrow per-tool mcp(server/tool) rule', () => {
+      // AGY expresses per-tool MCP grants as mcp(<server>/<tool>) -- the exact
+      // granularity Claude's mcp__<server>__<tool> carries, so the mapping
+      // widens nothing. Before this, the tokens were dropped and the
+      // deployer's Step 0 kb_session_prime was auto-denied in headless mode,
+      // failing the whole Deploy phase.
       const claudeAllow = [
         'mcp__apra-fleet__kb_session_prime',
         'mcp__apra-fleet__kb_query',
@@ -127,10 +126,28 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ];
       const rules = convertClaudeAllowToAgyPermissions(claudeAllow);
 
-      expect(rules.some((r) => r.action === 'mcp')).toBe(false);
-      expect(rules).toEqual(
-        claudeAllow.map((item) => ({ action: 'custom', target: item })),
+      expect(rules).toEqual([
+        { action: 'mcp', target: 'apra-fleet/kb_session_prime' },
+        { action: 'mcp', target: 'apra-fleet/kb_query' },
+        { action: 'mcp', target: 'apra-fleet/kb_capture' },
+      ]);
+      expect(formatAgyPermissionRules(rules)).toEqual([
+        'mcp(apra-fleet/kb_session_prime)',
+        'mcp(apra-fleet/kb_query)',
+        'mcp(apra-fleet/kb_capture)',
+      ]);
+    });
+
+    it('never widens a per-tool grant into blanket server-level MCP access', () => {
+      // 'apra-fleet' colocates safe read-only KB tools with destructive
+      // fleet-admin ones (remove_member, shutdown_server, credential_store_*),
+      // so a bare mcp(apra-fleet) rule would hand out all of them.
+      const allow = formatAgyPermissionRules(
+        convertClaudeAllowToAgyPermissions(['mcp__apra-fleet__kb_query']),
       );
+      expect(allow).not.toContain('mcp(apra-fleet)');
+      expect(allow).not.toContain('mcp(*)');
+      expect(allow).toEqual(['mcp(apra-fleet/kb_query)']);
     });
 
     it('delivers native AGY permissions to the HOME-anchored settings.json, not a work-folder copy', () => {
@@ -184,7 +201,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       // to 'custom' -- none of which are AGY permission actions (they are tool
       // names, or a fleet-internal marker). Writing them into the MACHINE-GLOBAL
       // settings.json the human user also owns is not a harmless no-op.
-      const rules = convertClaudeAllowToAgyPermissions(['Agent', 'mcp__apra-fleet__kb_query', 'Bash(git:*)']);
+      const rules = convertClaudeAllowToAgyPermissions(['Agent', 'NotAToolToken', 'Bash(git:*)']);
       expect(rules.some(r => r.action === 'invoke_subagent')).toBe(true);
       expect(rules.some(r => r.action === 'custom')).toBe(true);
       expect(formatAgyPermissionRules(rules)).toEqual(['command(git)']);

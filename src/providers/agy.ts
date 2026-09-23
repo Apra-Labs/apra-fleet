@@ -580,25 +580,31 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
     } else if (item === 'Mcp') {
       addRule('mcp', '*');
     } else if (item.startsWith('mcp__')) {
-      // Claude's real MCP permission-string format is `mcp__<server>__<tool>` (e.g.
-      // "mcp__apra-fleet__kb_capture") -- NOT the fictional `Mcp(name)` shape above.
-      // AGY's own permission model is server-granular, not per-tool (see the 'mcp'
-      // action's target). The 'apra-fleet' server deliberately colocates safe
-      // read-only KB tools (kb_query, kb_capture, ...) alongside destructive
-      // fleet-admin tools (remove_member, shutdown_server, credential_store_*) --
-      // see src/services/tool-registry.ts's registerAllTools. Auto-collapsing a
-      // narrow per-tool Claude grant like "mcp__apra-fleet__kb_query" into a
-      // server-level AGY rule would silently hand that member blanket access to
-      // every tool on the server, not just the one requested -- a real privilege
-      // escalation, not a convenience gap. Until the MCP surface is split by trust
-      // tier (or AGY gains per-tool granularity), do NOT auto-grant here; surface it
-      // so a human can escalate deliberately, same as the NEVER_AUTO_GRANT pattern
-      // in compose-permissions.ts.
+      // Claude's real MCP permission-string format is `mcp__<server>__<tool>`
+      // (e.g. "mcp__apra-fleet__kb_capture") -- NOT the fictional `Mcp(name)`
+      // shape above. AGY expresses the SAME per-tool granularity as
+      // `mcp(<server>/<tool>)` (its own docs: "mcp(<server_name>/<tool_name>)
+      // e.g. mcp(buganizer/get_bugs)", and a denial reads
+      // `user denied permission for mcp(apra-fleet/kb_session_prime)`), so the
+      // two map across exactly, with no widening.
+      //
+      // This previously refused to map at all, on the belief that AGY was
+      // server-granular only -- which WOULD have been a privilege escalation,
+      // since the 'apra-fleet' server colocates safe read-only KB tools with
+      // destructive fleet-admin ones (remove_member, shutdown_server,
+      // credential_store_*; see src/services/tool-registry.ts). That belief is
+      // wrong for AGY 1.2.8, and the cost of the workaround was real: the
+      // deployer's Step 0 kb_session_prime was auto-denied in headless mode,
+      // taking the whole Deploy phase down with it. Note what is NOT done here:
+      // a bare server-level `mcp(apra-fleet)` is still never emitted.
       const rest = item.slice('mcp__'.length);
       const sep = rest.indexOf('__');
-      const server = sep >= 0 ? rest.slice(0, sep) : rest;
-      console.warn(`[agy] refusing to auto-grant mcp permission "${item}": AGY has no per-tool MCP granularity, only server-level ("${server}"), and that server also exposes destructive tools. Escalate manually if this member genuinely needs it.`);
-      addRule('custom', item);
+      if (sep < 0) {
+        console.warn(`[agy] warning: unmapped mcp permission token "${item}" (expected mcp__<server>__<tool>)`);
+        addRule('custom', item);
+      } else {
+        addRule('mcp', `${rest.slice(0, sep)}/${rest.slice(sep + 2)}`);
+      }
     } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
       addRule('read_url', '*');
     } else {

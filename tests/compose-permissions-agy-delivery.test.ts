@@ -128,6 +128,12 @@ describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native 
       // (that would hand out remove_member/shutdown_server too).
       expect(entry.startsWith('mcp(apra-fleet)')).toBe(false);
     }
+    // ...but they must still be DELIVERED, per tool. The deployer's Step 0
+    // kb_session_prime is auto-denied in headless mode without this, which
+    // takes down the whole Deploy phase.
+    const allow = onDisk.permissions.allow as string[];
+    expect(allow).toContain('mcp(apra-fleet/kb_session_prime)');
+    expect(allow.some(e => e.startsWith('mcp(apra-fleet/kb_query'))).toBe(true);
   });
 
   it('preserves unrelated keys already in the user\'s machine-global settings.json', async () => {
