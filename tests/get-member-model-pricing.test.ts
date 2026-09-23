@@ -29,9 +29,9 @@ describe('get_member_model_pricing', () => {
   it('agy member with no override returns provider default pricing', async () => {
     addAgent(makeTestAgent({ id: 'm-agy', friendlyName: 'agy-member', llmProvider: 'agy' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-agy' }));
-    expect(result.pricing.cheap.model).toBe('gemini-3.5-flash-lite');
-    expect(result.pricing.standard.model).toBe('gemini-3.5-flash');
-    expect(result.pricing.premium.model).toBe('claude-sonnet-4.6');
+    expect(result.pricing.cheap.model).toBe('gemini-3.8-flash-low');
+    expect(result.pricing.standard.model).toBe('gemini-3.1-pro-low');
+    expect(result.pricing.premium.model).toBe('claude-opus-4-6-thinking');
     expect(result.pricing.premium.promptPrice).toBeGreaterThan(0);
   });
 

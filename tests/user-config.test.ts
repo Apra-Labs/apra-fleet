@@ -216,8 +216,8 @@ describe('agy provider uses user-config for display name', () => {
       promptFile: '.fleet-task.md',
       tier: 'cheap',
     });
-    // Default cheap display name
-    expect(cmd).toContain('Gemini 3.5 Flash (Medium)');
+    // Default cheap model id (AGY's stable slug, not a display name)
+    expect(cmd).toContain('gemini-3.8-flash-low');
   });
 
   it('uses user-config override when config is present', async () => {
@@ -249,6 +249,6 @@ describe('agy provider uses user-config for display name', () => {
       tier: 'standard',
     });
     // standard not overridden -- should use hardcoded default
-    expect(cmd).toContain('Gemini 3.1 Pro (Low)');
+    expect(cmd).toContain('gemini-3.1-pro-low');
   });
 });

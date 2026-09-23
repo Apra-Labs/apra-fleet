@@ -1035,9 +1035,11 @@ describe('AgyProvider', () => {
   });
 
   it('modelTiers and modelForTier return correct mappings', () => {
-    expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-    expect(p.modelForTier('standard')).toBe('gemini-3.5-flash');
-    expect(p.modelForTier('premium')).toBe('claude-sonnet-4.6');
+    // Pinned against `agy models` (1.2.8): AGY rejects an unknown --model
+    // outright, so a stale slug here fails the dispatch, it does not degrade.
+    expect(p.modelForTier('cheap')).toBe('gemini-3.8-flash-low');
+    expect(p.modelForTier('standard')).toBe('gemini-3.1-pro-low');
+    expect(p.modelForTier('premium')).toBe('claude-opus-4-6-thinking');
   });
 
   it('permissionConfigPaths is HOME-anchored -- AGY reads permissions only from the machine-global settings.json', () => {

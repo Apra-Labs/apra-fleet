@@ -14,10 +14,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
-  cheap:    'Gemini 3.5 Flash (Medium)',
-  standard: 'Gemini 3.1 Pro (Low)',
-  premium:  'Claude Opus 4.6 (Thinking)',
+/**
+ * SINGLE source of truth for AGY's tier -> model mapping, keyed by the STABLE
+ * slug ids `agy models` prints in its first column (verified accepted by
+ * `agy --model <slug>` on 1.2.8).
+ *
+ * This used to be two maps that drifted: display names ("Gemini 3.5 Flash
+ * (Medium)") for dispatch and slugs ("gemini-3.5-flash-lite") for
+ * modelTiers()/modelForTier(). Both catalogs went stale, and because the doer
+ * runs on the CHEAP tier, EVERY doer dispatch in an agy sprint came back as
+ *   invalid model selection (--model "Gemini 3.5 Flash (Medium)"): model ...
+ *   is not recognized as a known model or custom model in settings
+ * -- which the engine then reported as unparseable structured output, three
+ * rounds in a row, with no code ever written. Slugs are preferred over display
+ * names precisely because they are the stable identifier, and keeping ONE map
+ * removes the drift that caused this.
+ */
+export const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
+  cheap:    'gemini-3.8-flash-low',
+  standard: 'gemini-3.1-pro-low',
+  premium:  'claude-opus-4-6-thinking',
 };
 
 // Paths to the fleet-installed agy helper scripts on the member machine.
@@ -324,17 +340,11 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
-    return {
-      cheap: 'gemini-3.5-flash-lite',
-      standard: 'gemini-3.5-flash',
-      premium: 'claude-sonnet-4.6',
-    };
+    return { ...AGY_MODEL_FOR_TIER };
   }
 
   modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
-    if (tier === 'cheap') return 'gemini-3.5-flash-lite';
-    if (tier === 'premium') return 'claude-sonnet-4.6';
-    return 'gemini-3.5-flash';
+    return AGY_MODEL_FOR_TIER[tier];
   }
 
   modelFlag(model: string): string {

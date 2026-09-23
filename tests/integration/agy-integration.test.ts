@@ -60,10 +60,35 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       expect(cmd).toContain('--conversation "sess-agy-12345"');
     });
 
-    it('maps tier preferences seamlessly across cheap, standard, and premium', () => {
-      expect(provider.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-      expect(provider.modelForTier('standard')).toBe('gemini-3.5-flash');
-      expect(provider.modelForTier('premium')).toBe('claude-sonnet-4.6');
+    it('maps tier preferences to model ids AGY actually offers', () => {
+      // Pinned against `agy models` (1.2.8). A slug AGY does not recognize is
+      // NOT a soft fallback -- the dispatch returns
+      //   "invalid model selection (--model ...): model ... is not recognized"
+      // as its entire response, which the engine surfaces as unparseable
+      // structured output. The cheap tier is what doers run on, so a stale
+      // cheap slug silently costs a sprint every line of code it would write.
+      expect(provider.modelForTier('cheap')).toBe('gemini-3.8-flash-low');
+      expect(provider.modelForTier('standard')).toBe('gemini-3.1-pro-low');
+      expect(provider.modelForTier('premium')).toBe('claude-opus-4-6-thinking');
+    });
+
+    it('dispatches the SAME model id it reports for a tier (the two catalogs cannot drift)', () => {
+      // The original defect was two parallel maps: display names for dispatch,
+      // slugs for modelForTier(). They drifted, and only the dispatch one was
+      // load-bearing, so nothing caught it.
+      for (const tier of ['cheap', 'standard', 'premium'] as const) {
+        const cmd = provider.buildPromptCommand({
+          folder: '/home/user/project',
+          promptFile: '.fleet-task.md',
+          tier,
+        });
+        expect(cmd).toContain(`--model "${provider.modelForTier(tier)}"`);
+      }
+      expect(provider.modelTiers()).toEqual({
+        cheap: provider.modelForTier('cheap'),
+        standard: provider.modelForTier('standard'),
+        premium: provider.modelForTier('premium'),
+      });
     });
 
     it('handles supportsResume and supportsMaxTurns capabilities', () => {

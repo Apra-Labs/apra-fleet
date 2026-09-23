@@ -22,20 +22,22 @@ export const WORKFLOWS_DIR = path.join(FLEET_BASE, 'workflows');
 // current generation automatically, so they never go stale as Anthropic
 // ships new models. Other providers' CLIs don't share this alias support,
 // so their entries stay pinned to literal model IDs.
-// gemini-3.5-flash(-lite) remain here because they are AGY's (Antigravity's)
-// own model ids, not the removed gemini provider's -- AGY is built on
-// Google's Gemini stack and inherits its model catalog. See agy.ts's
-// modelTiers()/modelForTier().
+// The gemini-*/claude-*-thinking entries are AGY's (Antigravity's) own model
+// ids, not the removed gemini provider's -- AGY is built on Google's Gemini
+// stack and inherits its model catalog. They are the STABLE slug ids `agy
+// models` prints, and must stay in step with AGY_MODEL_FOR_TIER in
+// src/providers/agy.ts: a slug AGY does not recognize is not a soft fallback,
+// it fails the dispatch outright with "invalid model selection".
 export const CURATED_CHEAP_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
-  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash-low',
   'haiku',
   'gpt-5.4-mini',
 ] as const;
 
 export const CURATED_STANDARD_MODELS = [
-  'gemini-3.5-flash',
+  'gemini-3.1-pro-low',
   'gpt-oss-120b',
   'gpt-120',
   'sonnet',
@@ -45,6 +47,7 @@ export const CURATED_STANDARD_MODELS = [
 export const CURATED_PREMIUM_MODELS = [
   'sonnet',
   'opus',
+  'claude-opus-4-6-thinking',
   'gpt-oss-120b',
 ] as const;
 
@@ -52,7 +55,7 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
-  agy: 'gemini-3.5-flash',
+  agy: 'gemini-3.1-pro-low',
   opencode: 'ollama/qwen3-coder:30b',
 };
 
