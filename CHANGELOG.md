@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- sprint close-out corrects its own stale carried-forward claims
+
+Sprint goal: close out the scoped in-cycle replan / sprint-start Member Prep
+/ stray-process sweep work with the remaining backlog items from the
+previous two entries below. This round's own review found that the entry
+directly below had gone stale in the same way `docs/scoped-replan-and-
+planner-kb-contract.md`'s change already warned against: it still listed the
+garbled `--sweep-config` help text, the loopback-only liveness probe and the
+silently-ignored unknown sweep-config keys as deliberately deferred backlog,
+when all three had already been fixed later on this same branch. **Sprint
+verdict: FAIL** on that basis -- a release note asserting three already-fixed
+defects as still-open backlog is a defect in its own right, independent of
+the underlying fixes (which were verified correct). The entry below has now
+been corrected in place rather than left to compound further. Three items
+remain genuinely open and are listed there as backlog: the liveness probe's
+undocumented HTTP-only assumption, the fact that this exact staleness check
+is still a prompt instruction rather than an engine-enforced one, and a
+shell-command-guard blind spot for multi-digit positional parameters (for
+example `$12`). See `docs/member-prep-and-stray-sweep.md` and
+`docs/scoped-replan-and-planner-kb-contract.md` for the underlying designs;
+no new design doc was needed for this round since it corrects release notes
+rather than adding behaviour.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.3890.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2319 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 13 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+liveness probe assumes every candidate speaks HTTP and does not document
+that assumption, so a live non-HTTP listener on a target-declared killable
+port is still killed and counted as "checked"; the release-notes staleness
+check remains a prompt instruction a dispatched harvester could still skip,
+rather than a mechanical, engine-enforced check against actual bead status;
+and the shell-command-guard's special-parameter regex still does not flag a
+multi-digit positional-parameter expansion such as `$12`.
+
 ## [Unreleased] -- stray-process sweep: config wired end to end, sweep-failure policy decided, liveness probe armed by default
 
 Sprint goal: close out the sprint-start Member Prep and stray-process sweep
@@ -20,7 +61,7 @@ candidate's probe result, closed a shell-command-guard blind spot for POSIX
 special parameters (`$?` `$!` `$$` `$#` `$@` `$*` `$0`-`$9`) in dispatched
 kill commands, and made a POSIX kill tolerant of a target that already
 exited (a benign race, not a sweep failure). **Sprint verdict: PASS**,
-verified against the net diff for the scope issue and its 18 closed
+verified against the net diff for the scope issue and its 24 closed
 children: build and both full test suites (root and `packages/apra-fleet-se`)
 green with zero failures, the generic-engine-boundary check clean, and all
 added lines ASCII-only. See `docs/member-prep-and-stray-sweep.md` for the
@@ -35,14 +76,22 @@ Pricing source: all 27 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
-Carried forward as backlog (deliberately deferred, not blocking): the
-`--sweep-config` CLI help text is garbled where the liveness-probe option
-description was inserted, and `docs/cli-reference.md` does not yet document
-`livenessProbe`; the liveness probe only asks `127.0.0.1`, so a live process
-bound to a non-loopback interface currently reads as dead and gets swept;
-and the sweep-config validators silently ignore unknown top-level keys, so a
-typo'd key name (e.g. a misspelled `productionPorts`) quietly drops port
-protection instead of failing loud.
+The three items this entry originally carried forward as backlog were all
+closed later on this same branch: the garbled `--sweep-config` help text was
+rejoined and `livenessProbe` is now documented in `docs/cli-reference.md`;
+the liveness probe now asks each candidate on the address its own socket
+actually holds rather than always `127.0.0.1`, so a non-loopback-bound live
+process is no longer read as dead; and both sweep-config validator layers
+now reject an unknown top-level key outright instead of silently ignoring
+it. See `docs/member-prep-and-stray-sweep.md` and
+`packages/apra-fleet-se/docs/cli-reference.md` for the current behaviour of
+each. Carried forward as backlog, still open (deliberately deferred, not
+blocking): the liveness probe's HTTP-only assumption is undocumented and a
+live non-HTTP listener on a target-declared killable port is still killed
+and counted as "checked"; the release-notes staleness check this note itself
+exists to satisfy is still a prompt instruction rather than a mechanical,
+engine-enforced check; and the shell-command-guard's special-parameter regex
+still misses a multi-digit positional-parameter expansion like `$12`.
 
 ## [Unreleased] -- scoped-replan findings threading, truthful planner KB contract, sprint-start member prep and stray-process sweep
 
