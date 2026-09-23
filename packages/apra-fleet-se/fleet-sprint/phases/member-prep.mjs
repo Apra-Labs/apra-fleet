@@ -71,11 +71,29 @@
 //      a real (non-skip) reason.
 //   3. NOT PROVISIONABLE   -- provision_llm_auth failed, OR (an edge case: a
 //      member registered 'remote' whose credential the server nonetheless
-//      classifies skipped_local_member) reported that skip. This is the
-//      ONLY outcome that aborts.
-// FAIL LOUD: outcome 3 throws LlmAuthUnprovisionableError, naming the member
-// and the missing credential, before this phase (and therefore the sprint)
-// reaches its first role dispatch. Never a warning.
+//      classifies skipped_local_member) reported that skip.
+//   4. UNREACHABLE         -- the registry reports llm_auth 'offline', which
+//      getAuthStatus() returns for a FAILED CONNECTION TEST, not for a
+//      credential verdict. See below.
+// FAIL LOUD: outcomes 3 and 4 are the only two that abort, and they abort
+// with DIFFERENT, accurate errors before this phase (and therefore the
+// sprint) reaches its first role dispatch. Never a warning.
+//
+// UNREACHABLE IS NOT A MISSING CREDENTIAL (apra-fleet-i4ku.13).
+// src/tools/list-members.ts's getAuthStatus() returns 'offline' the instant
+// `strategy.testConnection()` fails or throws -- BEFORE it looks for an
+// OAuth credential file or an API-key env var -- so 'offline' says the
+// machine did not answer and says nothing at all about its credentials.
+// Folding it into the generic non-OK path sent it to provision_llm_auth,
+// which failed on the same dead transport, and aborted with
+// LlmAuthUnprovisionableError's "missing credential: LLM auth" wording:
+// the operator was told to go fix credentials on a host that is simply
+// switched off. checkMemberAuth() now branches on that status ahead of the
+// provision call and throws MemberUnreachableError instead -- equally
+// fail-loud (it still aborts the phase; downgrading it to a warning would
+// be a false success), but it names the member, says the member could not
+// be reached, and makes no claim about credentials. Outcome 3's error, its
+// message and its trigger conditions are unchanged.
 //
 // SWEEP is invoked ONLY for a member memberLocality() classifies as
 // LOCALITY_REMOTE -- everything else (local, relay, unknown) gets a logged
@@ -181,13 +199,22 @@ import { provisionOutcome } from '../vcs-auth.mjs';
 import {
     sweepMemberStrayProcesses, memberLocality, LOCALITY_REMOTE, StrayProbeError,
 } from '../member-stray-sweep.mjs';
-import { LlmAuthUnprovisionableError } from '../errors.mjs';
+import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../errors.mjs';
 
 const LOG_PREFIX = '[member-prep]';
 
 /** LLM-auth statuses list_members reports that mean "already usable" --
  *  mirrors src/tools/list-members.ts's getAuthStatus() return values. */
 const AUTH_OK_STATUSES = new Set(['oauth', 'api-key', 'api-key (warn: oauth)']);
+
+/** The one llm_auth status src/tools/list-members.ts's getAuthStatus()
+ *  returns for a CONNECTIVITY failure rather than a credential verdict: it
+ *  answers 'offline' the instant `strategy.testConnection()` fails or
+ *  throws, before it ever probes for an OAuth credential file or an API-key
+ *  env var. So this status is evidence about the MACHINE and carries no
+ *  information about the member's credentials -- see checkMemberAuth()
+ *  (apra-fleet-i4ku.13). */
+const AUTH_UNREACHABLE_STATUS = 'offline';
 
 function line(log, member, step, status, detail) {
     log(`${LOG_PREFIX} member '${member}': ${step} -- ${status}${detail ? ` (${detail})` : ''}`);
@@ -247,9 +274,14 @@ async function readMemberRecords(fleetApi, log) {
 
 /**
  * The auth step for ONE member. Returns `{ status: 'present'|'provisioned'|
- * 'skipped', detail }` on success. THROWS LlmAuthUnprovisionableError --
- * never returns a failure value -- when auth is missing and cannot be
- * provisioned, per this module's header.
+ * 'skipped', detail }` on success. THROWS -- never returns a failure value
+ * -- on either abort outcome, per this module's header:
+ *   - MemberUnreachableError, when the registry reports the member 'offline'
+ *     (a failed connection test, i.e. the machine did not answer). Checked
+ *     BEFORE the provision call, so the operator is pointed at the machine
+ *     and NOT told a credential is missing (apra-fleet-i4ku.13).
+ *   - LlmAuthUnprovisionableError, when the member IS reachable but its auth
+ *     is missing and cannot be provisioned. Unchanged.
  *
  * GATED ON LOCALITY, exactly like runSweepStep(): provision_llm_auth is
  * called ONLY for a member memberLocality() classifies LOCALITY_REMOTE, OR
@@ -292,6 +324,17 @@ export async function checkMemberAuth({
     const knownStatus = memberRecord && typeof memberRecord.llm_auth === 'string' ? memberRecord.llm_auth : null;
     if (knownStatus && AUTH_OK_STATUSES.has(knownStatus)) {
         return { status: 'present', detail: `registered llm-auth status '${knownStatus}'` };
+    }
+
+    // UNREACHABLE != MISSING CREDENTIAL (apra-fleet-i4ku.13). Checked BEFORE
+    // the provision call below, because there is nothing useful to provision
+    // against a host that never answered: provision_llm_auth would just fail
+    // on the same dead transport and the phase would then abort claiming a
+    // MISSING CREDENTIAL, pointing the operator at credentials when the real
+    // fault is that the machine is down. Still fail-loud -- this aborts the
+    // phase exactly as the credential path does -- just accurately diagnosed.
+    if (knownStatus === AUTH_UNREACHABLE_STATUS) {
+        throw new MemberUnreachableError(member, knownStatus);
     }
 
     if (!fleetApi || typeof fleetApi.provisionLlmAuth !== 'function') {

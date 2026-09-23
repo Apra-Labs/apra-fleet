@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runMemberPrepPhase, checkMemberAuth, runSweepStep } from '../fleet-sprint/phases/member-prep.mjs';
-import { LlmAuthUnprovisionableError } from '../fleet-sprint/errors.mjs';
+import { LlmAuthUnprovisionableError, MemberUnreachableError } from '../fleet-sprint/errors.mjs';
 import { KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX } from '../fleet-sprint/member-stray-sweep.mjs';
 
 // =============================================================================
@@ -227,6 +227,106 @@ test('member-prep: unprovisionable LLM auth throws a named error before any disp
     // auth step is checked BEFORE sweep/G-pull/D-pull, per this module's
     // documented per-member step order.
     assert.equal(syncBeadsBefore.calls?.length ?? 0, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 3b. apra-fleet-i4ku.13: UNREACHABLE is not MISSING CREDENTIAL. Both
+//     branches are asserted in ONE test, deliberately, so the pair cannot
+//     drift apart: a change that collapses them back into a single path has
+//     to break one half of this test.
+//
+//     src/tools/list-members.ts's getAuthStatus() returns 'offline' the
+//     moment strategy.testConnection() fails -- BEFORE it looks for any
+//     credential -- so 'offline' is evidence about the MACHINE. Before this
+//     fix both members below aborted with the same
+//     LlmAuthUnprovisionableError ("missing credential: LLM auth"), sending
+//     the operator after credentials on a host that is merely down.
+// ---------------------------------------------------------------------------
+
+test('member-prep: an UNREACHABLE member and a reachable member with no credential abort with DIFFERENT, accurate errors', async () => {
+    // (a) UNREACHABLE: the registry reports 'offline' -- a failed connection
+    // test. The distinct error must name the machine and must NOT claim a
+    // missing credential.
+    const unreachableApi = makeFleetApi({
+        members: [{ name: 'downed-member', type: 'remote', os: 'linux', llm_auth: 'offline' }],
+        // Deliberately EMPTY: makeFleetApi's provisionLlmAuth throws a
+        // "test fixture bug" error if it is ever called, which pins the
+        // second half of this branch -- provisioning must not even be
+        // ATTEMPTED against a host that never answered.
+        provisionOutcomes: {},
+    });
+    const { syncBeadsBefore, calls: unreachableDpulls } = makeSyncBeadsBefore();
+
+    await assert.rejects(
+        () => runMemberPrepPhase({
+            members: ['downed-member'],
+            fleetApi: unreachableApi,
+            execCommand: makeExecCommand().execCommand,
+            syncBeadsBefore,
+            log: () => {},
+        }),
+        (err) => {
+            assert.ok(
+                err instanceof MemberUnreachableError,
+                `expected MemberUnreachableError, got ${err && err.constructor && err.constructor.name}`,
+            );
+            assert.ok(
+                !(err instanceof LlmAuthUnprovisionableError),
+                'an unreachable member must NOT raise the missing-credential error',
+            );
+            assert.equal(err.member, 'downed-member');
+            assert.equal(err.status, 'offline');
+            assert.match(err.message, /could not be reached/);
+            assert.doesNotMatch(
+                err.message, /missing credential/,
+                'the unreachable message must never claim a credential is missing -- the machine simply did not answer',
+            );
+            return true;
+        },
+    );
+    assert.ok(
+        !unreachableApi.calls.some((c) => c.tool === 'provision_llm_auth'),
+        'provision_llm_auth must not be attempted against a member the registry already reports offline',
+    );
+    // Fail-loud, not a warning: the phase aborted, so later steps never ran.
+    assert.equal(unreachableDpulls.length, 0, 'the unreachable case must still ABORT the phase, not warn and continue');
+
+    // (b) REACHABLE but with no credential: unchanged -- still
+    // LlmAuthUnprovisionableError, still with its existing message.
+    const noCredentialApi = makeFleetApi({
+        members: [{ name: 'credential-less-member', type: 'remote', os: 'linux', llm_auth: 'none' }],
+        provisionOutcomes: {
+            'credential-less-member': { ok: false, reason: 'no_credential', text: '[FAIL] no LLM credential found' },
+        },
+    });
+
+    await assert.rejects(
+        () => runMemberPrepPhase({
+            members: ['credential-less-member'],
+            fleetApi: noCredentialApi,
+            execCommand: makeExecCommand().execCommand,
+            syncBeadsBefore: makeSyncBeadsBefore().syncBeadsBefore,
+            log: () => {},
+        }),
+        (err) => {
+            assert.ok(
+                err instanceof LlmAuthUnprovisionableError,
+                `expected LlmAuthUnprovisionableError, got ${err && err.constructor && err.constructor.name}`,
+            );
+            assert.ok(
+                !(err instanceof MemberUnreachableError),
+                'a reachable member with no credential must NOT be reported as unreachable',
+            );
+            assert.equal(err.member, 'credential-less-member');
+            assert.equal(err.credential, 'LLM auth');
+            assert.match(err.message, /missing credential: LLM auth/);
+            return true;
+        },
+    );
+    assert.ok(
+        noCredentialApi.calls.some((c) => c.tool === 'provision_llm_auth'),
+        'a reachable member must still go through the real provision_llm_auth attempt',
+    );
 });
 
 // ---------------------------------------------------------------------------
