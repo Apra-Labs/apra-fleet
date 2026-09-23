@@ -63,6 +63,13 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     // Windows read (Get-Content -Raw "<path>" ...)
     m = cmd.match(/Get-Content -Raw "(.+?)"/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Member home-directory probe (src/services/member-home.ts). A remote
+    // member's real shell answers this; without it, every home-anchored
+    // provider config path (AGY's settings.json) would look unresolvable and
+    // fail closed. Mirrors the registered test member's username.
+    if (cmd === 'printf \'%s\' "$HOME"') {
+      return { stdout: '/home/testuser', stderr: '', code: 0 };
+    }
     // mkdir, detectStacks (ls), workspace-trust writes/reads, everything else
     return { stdout: '', stderr: '', code: 0 };
   };
@@ -366,7 +373,7 @@ describe('composePermissions -- Claude proactive', () => {
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- AGY proactive', () => {
-  it('delivers settings.json with AGY native permission rule objects for doer', async () => {
+  it('delivers AGY-syntax permission strings to the member HOME, not the work folder', async () => {
     const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
     addAgent(member);
     installFsMock();
@@ -375,18 +382,41 @@ describe('composePermissions -- AGY proactive', () => {
 
     expect(result).toContain('agy-doer');
     expect(result).toContain('agy');
-    expect(result).toContain('.gemini/antigravity-cli/settings.json');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
 
-    expect(writes.some(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))).toBe(true);
-
+    // AGY reads permissions ONLY from the machine-global settings file, so the
+    // write must land under the PROBED member home -- never under workFolder.
     const settingsWrite = writes.find(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))!;
-    expect(settingsWrite).toContain('"action": "read_file"');
-    expect(settingsWrite).toContain('"action": "write_file"');
-    expect(settingsWrite).toContain('"action": "command"');
-    expect(settingsWrite).toContain('"target": "git"');
+    expect(settingsWrite).toBeDefined();
+    expect(settingsWrite).toContain('/home/testuser/.gemini/antigravity-cli/settings.json');
+    expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
+
+    // ...and as AGY's `action(target)` STRINGS, not {action,target} objects,
+    // which AGY's settings parser silently ignores.
+    expect(settingsWrite).toContain('"read_file(*)"');
+    expect(settingsWrite).toContain('"write_file(*)"');
+    expect(settingsWrite).toContain('"command(git)"');
+    expect(settingsWrite).not.toContain('"action"');
+  });
+
+  it('fails closed when the member home cannot be resolved, rather than writing the config somewhere AGY never reads', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-nohome', llmProvider: 'agy', os: 'linux' });
+    addAgent(member);
+    // Everything succeeds EXCEPT the home probe -- the one input a home-anchored
+    // config path cannot be guessed without.
+    const fsHandler = makeFsHandler();
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('$HOME')) return { stdout: '', stderr: 'no shell', code: 1 };
+      return fsHandler(cmd);
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('Failed to persist');
+    const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
+    expect(writes.some(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))).toBe(false);
   });
 });
 

@@ -13,6 +13,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
@@ -106,6 +107,12 @@ function escapeRegExpExceptStar(s: string): string {
 function matchesDenyPattern(pattern: string, permission: string): boolean {
   const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
   return regex.test(permission);
+}
+
+/** True for a config path anchored at the MEMBER's home directory rather than
+ *  at its work folder (see resolveRemotePath). */
+function isHomeAnchored(configPath: string): boolean {
+  return configPath.startsWith('~/') || configPath.startsWith('~\\');
 }
 
 /** Splits `Tool(payload)` into its parts; returns null for a bare tool name. */
@@ -418,7 +425,24 @@ function resolveRemotePath(
   relPath: string,
   isWindows: boolean,
   shell?: MemberShell,
+  homeDir?: string | null,
 ): string {
+  // A "~/"-prefixed config path is HOME-anchored on the MEMBER, not relative to
+  // its work folder. AGY needs this: its permissions live only in the
+  // machine-global ~/.gemini/antigravity-cli/settings.json, and a copy written
+  // under the work folder is never read (see AgyProvider.permissionConfigPaths).
+  // `homeDir` is resolved in JavaScript by the caller via getMemberHomeDir --
+  // never emitted as a literal "~/" or "$HOME" for the member's shell to
+  // expand, because that member's shell may be PowerShell.
+  if (relPath.startsWith('~/') || relPath.startsWith('~\\')) {
+    if (!homeDir) {
+      throw new ConfigDeliveryError(
+        relPath,
+        'config path is home-anchored but the member\'s home directory could not be resolved',
+      );
+    }
+    return resolveRemotePath(homeDir, relPath.slice(2), isWindows, shell);
+  }
   if (isWindows) {
     const base = workFolder.replace(/[\\/]+$/, '').replace(/\//g, '\\');
     const winPath = `${base}\\${relPath.replace(/\//g, '\\')}`;
@@ -441,10 +465,11 @@ async function deliverConfigFile(
   filePath: string,
   content: Record<string, unknown> | string,
   shell?: MemberShell,
+  homeDir?: string | null,
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
   const posix = isPosixShell(isWindows, shell);
-  const absPath = resolveRemotePath(workFolder, filePath, isWindows, shell);
+  const absPath = resolveRemotePath(workFolder, filePath, isWindows, shell, homeDir);
   const winPath = absPath.replace(/\//g, '\\');
   const dir = posix
     ? absPath.split('/').slice(0, -1).join('/')
@@ -548,6 +573,14 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   // The member's registered shell decides POSIX vs PowerShell command strings
   // for every config write below (apra-fleet-7dir.1.3).
   const agentShell = getAgentShell(agent);
+  // Resolved once per call, in JavaScript, for any provider whose
+  // permissionConfigPaths() are home-anchored ("~/..."). Cached per member by
+  // getMemberHomeDir, and null for a member whose probe fails -- in which case
+  // resolveRemotePath raises a ConfigDeliveryError rather than silently writing
+  // a home-anchored file to the wrong place.
+  const memberHomeDir = provider.permissionConfigPaths().some(isHomeAnchored)
+    ? await getMemberHomeDir(agent)
+    : null;
   const profilesDir = findProfilesDir();
   const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
 
@@ -597,7 +630,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const paths = provider.permissionConfigPaths();
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -640,7 +673,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {

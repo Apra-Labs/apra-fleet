@@ -962,7 +962,7 @@ describe('AgyProvider', () => {
 
   it('builds prompt command with defaults and --output-format json', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
-    expect(cmd).toContain('agy --model');
+    expect(cmd).toContain('agy --add-dir "/home/user/project" --model');
     expect(cmd).toContain('--output-format json');
     expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
@@ -1040,24 +1040,25 @@ describe('AgyProvider', () => {
     expect(p.modelForTier('premium')).toBe('claude-sonnet-4.6');
   });
 
-  it('permissionConfigPaths returns .gemini/antigravity-cli/settings.json', () => {
-    expect(p.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
+  it('permissionConfigPaths is HOME-anchored -- AGY reads permissions only from the machine-global settings.json', () => {
+    expect(p.permissionConfigPaths()).toEqual(['~/.gemini/antigravity-cli/settings.json']);
   });
 
-  it('composePermissionConfig produces AGY native permission rule objects', () => {
+  it('composePermissionConfig produces AGY native permission rule STRINGS', () => {
     const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
     const configs = p.composePermissionConfig('doer', claudeAllow);
     expect(configs).toHaveLength(1);
     const cfg = configs[0] as Record<string, any>;
     expect(cfg.permissions).toBeDefined();
+    // `Agent` maps to invoke_subagent/send_message, which are AGY tool names,
+    // not permission actions -- they are dropped rather than written as entries
+    // AGY's settings parser rejects.
     expect(cfg.permissions.allow).toEqual([
-      { action: 'read_file', target: '*' },
-      { action: 'write_file', target: '*' },
-      { action: 'command', target: 'git' },
-      { action: 'command', target: 'npm' },
-      { action: 'command', target: 'bd' },
-      { action: 'invoke_subagent', target: '*' },
-      { action: 'send_message', target: '*' },
+      'read_file(*)',
+      'write_file(*)',
+      'command(git)',
+      'command(npm)',
+      'command(bd)',
     ]);
   });
 });

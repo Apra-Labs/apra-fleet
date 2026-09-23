@@ -366,6 +366,18 @@ export interface ProviderAdapter {
    *  session id NOT derived from source context, same as a fresh dispatch),
    *  omit both this and {@link supportsFork} rather than faking support. */
   forkFlag?(sourceSessionId: string, newSessionId: string): string;
+  /** Builds the CLI flag that makes a folder the dispatched session's WORKSPACE,
+   *  for providers whose CLI does not adopt the process working directory as
+   *  its workspace (AGY: `--add-dir <folder>`). Optional -- omit it for any
+   *  provider where `cd <folder>` already establishes the workspace (claude,
+   *  codex, copilot, opencode), and callers MUST treat a missing
+   *  implementation as "nothing to add" rather than assuming a default flag.
+   *  @param escapedFolder  the work folder ALREADY escaped for the caller's own
+   *    target shell (same contract as {@link modelFlag}) -- a POSIX caller
+   *    passes escapeDoubleQuoted(folder), a Windows caller escapeWindowsArg(folder).
+   *    Escaping cannot be done here: this method does not know the member's shell,
+   *    and escapeDoubleQuoted would mangle the backslashes in a Windows path. */
+  workspaceDirFlag?(escapedFolder: string): string | null;
   /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
    *  ON THE MEMBER'S MACHINE.
    *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this

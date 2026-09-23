@@ -80,7 +80,15 @@ export class AgyProvider implements ProviderAdapter {
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
 
-    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
+    // --add-dir is REQUIRED, not cosmetic: AGY does not adopt the process's
+    // working directory as its workspace. A bare `cd <folder> && agy -p ...`
+    // starts with NO active workspace, so the model cannot see the repo at all
+    // and falls back to shelling out from ~/.gemini/antigravity-cli/scratch --
+    // which then trips the headless permission wall on the first run_command.
+    // (Live-verified on agy 1.2.8: the same prompt fails without --add-dir and
+    // succeeds with it.) The `cd` is kept so relative paths a dispatched agent
+    // builds itself still resolve.
+    let cmd = `cd "${escapedFolder}" && agy ${this.workspaceDirFlag(escapedFolder)} --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
     if (agentName) {
       cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
     }
@@ -109,6 +117,12 @@ export class AgyProvider implements ProviderAdapter {
 
   skipPermissionsFlag(): string {
     return '--dangerously-skip-permissions';
+  }
+
+  /** AGY's workspace is set by --add-dir, never inherited from the process cwd.
+   *  See the comment in buildPromptCommand for why this is load-bearing. */
+  workspaceDirFlag(escapedFolder: string): string {
+    return `--add-dir "${escapedFolder}"`;
   }
 
   permissionModeAutoFlag(): string | null {
@@ -345,11 +359,17 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   permissionConfigPaths(): string[] {
-    return ['.gemini/antigravity-cli/settings.json'];
+    // HOME-anchored, not work-folder-relative. AGY has no per-project config:
+    // it reads permissions only from the machine-global
+    // ~/.gemini/antigravity-cli/settings.json (same finding as
+    // ensureWorkspaceTrusted's "no per-project trust concept"). A copy written
+    // under the member's work folder is never read, so the member ran with an
+    // empty allow-list and every headless tool call was auto-denied.
+    return ['~/.gemini/antigravity-cli/settings.json'];
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    const agyAllow = convertClaudeAllowToAgyPermissions(allow);
+    const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
     return [{ permissions: { allow: agyAllow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
@@ -453,6 +473,44 @@ export class AgyProvider implements ProviderAdapter {
 export interface AgyPermissionRule {
   action: 'command' | 'read_file' | 'write_file' | 'mcp' | 'read_url' | 'execute_url' | 'custom' | 'invoke_subagent' | 'send_message';
   target: string;
+}
+
+/** The ONLY actions AGY accepts in `permissions.allow`. Taken verbatim from the
+ *  CLI's own validation regex (agy 1.2.8):
+ *    ^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$
+ *  `custom`, `invoke_subagent` and `send_message` are NOT permission actions --
+ *  the latter two are AGY *tool* names with no permission gate of their own --
+ *  so rules carrying them are dropped at serialization time rather than written
+ *  as entries AGY would reject. */
+const AGY_PERMISSION_ACTIONS = new Set(['command', 'read_file', 'write_file', 'read_url', 'mcp', 'execute_url', 'unsandboxed']);
+
+/**
+ * Render structured rules into the ONLY shape AGY's settings.json parser
+ * accepts: a flat array of `action(target)` STRINGS.
+ *
+ * Before this, fleet wrote the `{ action, target }` objects straight through.
+ * AGY silently ignored every one of them, so a headless `-p` dispatch behaved
+ * as if the member had no grants at all and died on the first tool call with
+ * "a tool required the \"command\" permission that headless mode cannot prompt
+ * for, so it was auto-denied" -- the failure this function exists to prevent.
+ *
+ * Rules whose action is outside AGY's vocabulary are dropped with a warning:
+ * AGY's settings.json is MACHINE-GLOBAL and shared with the human user's own
+ * Antigravity install, so writing entries its parser rejects is not a harmless
+ * no-op. The dropped tokens are already surfaced by
+ * convertClaudeAllowToAgyPermissions' own warnings for manual escalation.
+ */
+export function formatAgyPermissionRules(rules: AgyPermissionRule[]): string[] {
+  const out: string[] = [];
+  for (const rule of rules) {
+    if (!AGY_PERMISSION_ACTIONS.has(rule.action)) {
+      console.warn(`[agy] dropping permission rule "${rule.action}(${rule.target})": AGY's permissions.allow accepts only ${[...AGY_PERMISSION_ACTIONS].join(', ')}.`);
+      continue;
+    }
+    const entry = `${rule.action}(${rule.target})`;
+    if (!out.includes(entry)) out.push(entry);
+  }
+  return out;
 }
 
 export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {

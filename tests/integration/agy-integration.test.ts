@@ -3,7 +3,7 @@ import path from 'node:path';
 import { makeTestAgent, backupAndResetRegistry } from '../test-helpers.js';
 import { addAgent, getAgent } from '../../src/services/registry.js';
 import { getProvider } from '../../src/providers/index.js';
-import { AgyProvider, convertClaudeAllowToAgyPermissions } from '../../src/providers/agy.js';
+import { AgyProvider, convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../../src/providers/agy.js';
 import { resolveSessionLogPath, resolveSessionLogDir } from '../../src/services/stall/log-path-resolver.js';
 import { classifyPromptError } from '../../src/utils/prompt-errors.js';
 
@@ -44,7 +44,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         model: 'Gemini 3.5 Flash',
         unattended: 'dangerous',
       });
-      expect(cmd).toContain('agy --model');
+      expect(cmd).toContain('agy --add-dir "/home/user/workspace" --model');
       expect(cmd).toContain('--output-format json');
       expect(cmd).toContain('--dangerously-skip-permissions');
       expect(cmd).toContain('Your task is described in /home/user/workspace/.fleet-task.md');
@@ -108,19 +108,82 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       );
     });
 
-    it('delivers native AGY permissions to .gemini/antigravity-cli/settings.json', () => {
+    it('delivers native AGY permissions to the HOME-anchored settings.json, not a work-folder copy', () => {
       const provider = new AgyProvider();
-      expect(provider.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
+      // AGY reads permissions ONLY from the machine-global
+      // ~/.gemini/antigravity-cli/settings.json. A work-folder-relative path
+      // here is the defect that left every dispatched member with an empty
+      // allow-list and auto-denied every headless tool call.
+      expect(provider.permissionConfigPaths()).toEqual(['~/.gemini/antigravity-cli/settings.json']);
 
       const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken']);
       expect(configs).toHaveLength(1);
       const cfg = configs[0] as Record<string, any>;
       expect(cfg.permissions).toBeDefined();
-      expect(cfg.permissions.allow).toContainEqual({ action: 'read_file', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'write_file', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'command', target: 'git' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'read_url', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'custom', target: 'CustomToken' });
+      // Strings in AGY's own `action(target)` syntax -- NOT {action,target}
+      // objects, which AGY's settings parser silently ignores.
+      expect(cfg.permissions.allow).toContain('read_file(*)');
+      expect(cfg.permissions.allow).toContain('write_file(*)');
+      expect(cfg.permissions.allow).toContain('command(git)');
+      expect(cfg.permissions.allow).toContain('read_url(*)');
+      // 'custom' is not in AGY's action vocabulary -- it must not be written.
+      expect(cfg.permissions.allow.some((e: string) => e.includes('CustomToken'))).toBe(false);
+      expect(cfg.mcpServers['apra-fleet'].disabled).toBe(true);
+    });
+
+    it('serializes every rule as a string matching AGY\'s own settings.json validation regex', () => {
+      // Verbatim from the agy CLI binary (1.2.8): any entry in permissions.allow
+      // that fails this regex is rejected by AGY.
+      const AGY_RULE_RE = /^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$/;
+      const allow = formatAgyPermissionRules(
+        convertClaudeAllowToAgyPermissions(['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'WebSearch', 'Mcp(some-server)']),
+      );
+      expect(allow.length).toBeGreaterThan(0);
+      for (const entry of allow) {
+        expect(typeof entry).toBe('string');
+        expect(entry).toMatch(AGY_RULE_RE);
+      }
+      expect(allow).toEqual([
+        'read_file(*)',
+        'write_file(*)',
+        'command(git)',
+        'command(npm)',
+        'command(bd)',
+        'read_url(*)',
+        'mcp(some-server)',
+      ]);
+    });
+
+    it('drops rules whose action is outside AGY\'s vocabulary instead of writing entries AGY rejects', () => {
+      // 'Agent' maps to invoke_subagent/send_message and an unmapped token maps
+      // to 'custom' -- none of which are AGY permission actions (they are tool
+      // names, or a fleet-internal marker). Writing them into the MACHINE-GLOBAL
+      // settings.json the human user also owns is not a harmless no-op.
+      const rules = convertClaudeAllowToAgyPermissions(['Agent', 'mcp__apra-fleet__kb_query', 'Bash(git:*)']);
+      expect(rules.some(r => r.action === 'invoke_subagent')).toBe(true);
+      expect(rules.some(r => r.action === 'custom')).toBe(true);
+      expect(formatAgyPermissionRules(rules)).toEqual(['command(git)']);
+    });
+
+    it('de-duplicates identical rules produced by different Claude tokens', () => {
+      // Read + Glob + Grep all collapse to read_file(*); the file must not carry
+      // the same rule three times.
+      expect(formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(['Read', 'Glob', 'Grep']))).toEqual(['read_file(*)']);
+    });
+
+    it('names the dispatched work folder as the AGY workspace via --add-dir', () => {
+      const provider = new AgyProvider();
+      // AGY does NOT adopt the process cwd as its workspace: without --add-dir
+      // it runs with no workspace, shells out from its own scratch dir, and
+      // dies on the first auto-denied run_command in headless mode.
+      expect(provider.workspaceDirFlag('/home/user/workspace')).toBe('--add-dir "/home/user/workspace"');
+      const cmd = provider.buildPromptCommand({
+        folder: '/home/user/my repo',
+        promptFile: '.fleet-task.md',
+      });
+      expect(cmd).toContain('--add-dir "/home/user/my repo"');
+      // The cd is retained so relative paths the agent builds still resolve.
+      expect(cmd.startsWith('cd "/home/user/my repo" && agy ')).toBe(true);
     });
   });
 
