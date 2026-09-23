@@ -13,6 +13,7 @@ import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
+import { handleConsoleRequest, type ConsoleStaticHandler } from '../console/server.js';
 
 /**
  * apra-fleet-v6t7.5: minimal static serving for the built shell SPA
@@ -102,6 +103,16 @@ function serveUiAsset(shellDistDir: string, pathname: string, res: http.ServerRe
   res.end(body);
   return true;
 }
+
+/**
+ * Interim bridge from the console seam's static hook to the helpers above,
+ * which are still living in this file until the sibling static task
+ * (apra-fleet-v6t7.2.2) moves them to src/console/static.ts. It exists so
+ * the seam lands behaviour-preserving in its own commit; that task deletes
+ * this bridge together with the helper bodies it points at.
+ */
+const consoleStatic: ConsoleStaticHandler = (pathname, res, source) =>
+  serveUiAsset(source.shellDistDir ?? resolveDefaultShellDistDir(), pathname, res);
 
 interface Session {
   server: McpServer;
@@ -282,12 +293,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
-    if (req.method === 'GET' && (url === '/ui' || url.startsWith('/ui/'))) {
-      const pathname = new URL(url, 'http://localhost').pathname;
-      if (serveUiAsset(shellDistDir, pathname, res)) return;
-      // No shell dist here -- fall through to the same 404 every other
-      // unmatched route gets.
-    }
+    // Console seam (apra-fleet-v6t7.2.1): the ONE console branch in this
+    // file. Everything the console owns -- the shell and its api -- is
+    // handled inside src/console/server.ts; every other path falls through
+    // to the routing below exactly as before.
+    if (await handleConsoleRequest(req, res, { shellDistDir, serveStatic: consoleStatic })) return;
 
     if (url !== '/mcp' && !url.startsWith('/mcp?')) {
       res.writeHead(404);
