@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Windows dispatch pipe stall, missed-stall tail truncation and unbounded test runner (sprint goal not yet met -- see carried-forward items)
+
+Sprint goal: close three P1 regressions that could each hold a Windows-member
+dispatch open indefinitely -- a dispatch that never completed because a
+grandchild process inherited its stdout/stderr pipe, a stall detector that
+never fired against a frozen transcript whose tail ended in an
+untimestamped entry, and a root test-runner chain with no wall-clock bound
+that could hang the whole dispatch behind it. The epic's own acceptance
+criterion is `npm test` green on both Windows and Linux; that criterion is
+not yet met, so this entry documents real, verified progress and explicitly
+does not claim the epic is done.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.2194.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4967 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working on Windows:
+
+- **Windows dispatch completion now keys off the dispatched process's own
+  exit, not pipe EOF.** A grandchild started by a dispatched CLI (a sandbox
+  server, a nested test runner) can hold the dispatch's stdout/stderr pipe
+  open on Windows long after the process actually dispatched has exited.
+  The read side now treats process exit as the completion signal on
+  Windows only, with a short bounded grace window to drain any output
+  already buffered in the pipe; POSIX is unchanged, since a real EOF is
+  reachable there and remains the more complete signal. The two call sites
+  that implement this (local and SSH strategies) now finalize before
+  tearing down the readable stream, closing a prior ordering defect that
+  could silently drop output landing late inside the drain window. See
+  `docs/dispatch-reliability-hardening.md`.
+- **The stall detector now catches a frozen transcript whose tail read
+  finds no parseable timestamp at all**, instead of silently skipping the
+  threshold check for that poll. The tail read now scans backwards for the
+  most recent dated entry (a trailing untimestamped record no longer hides
+  one sitting just above it), and when no timestamp is found anywhere in
+  the tail window, the transcript's own file-modification time is used as
+  the staleness signal instead of treating the read as pure absence of
+  evidence. See `docs/stall-detector-resilience.md`.
+- **Both bundled test-runner chains (the root runner and the
+  workspace-local runner) are now bounded by a wall-clock timeout with a
+  process-tree kill cascade**: a graceful group-terminate first, escalating
+  to an unconditional group-kill if the tree hasn't exited, plus a forced
+  process-exit backstop in case the kill signal never produces an exit
+  event. An outer terminating signal delivered to the runner itself now
+  always yields a non-zero exit code, regardless of which internal code
+  path happens to reach `process.exit` first, and a deferred hard-kill
+  timer now captures its target process-group id at signal time so it
+  cannot lose track of (or kill the wrong occupant of) that slot. See
+  `docs/dispatch-reliability-hardening.md`.
+- The process-tree-kill reproduction/test harness used to prove the above
+  now signals the whole POSIX process group (not just one pid),
+  disambiguates a zombie from a genuinely live process before reporting
+  liveness, and polls with a bounded wait for the target to actually leave
+  the process table instead of assuming a sent kill signal took effect
+  immediately.
+
+Carried forward, not resolved by this release -- this is why the sprint
+verdict is FAIL against the epic's own acceptance criteria:
+
+- **No CI evidence exists yet at the tip of this work.** The epic requires
+  `npm test` green on Windows AND Linux; the most recent CI run available
+  predates several of the fixes above, and that run's Linux leg failed on
+  exactly the process-tree-kill correctness gaps this release addresses.
+  Local Windows verification is real (build, unit, and workspace test
+  suites all green) but is necessary, not sufficient, evidence for a
+  cross-platform acceptance criterion -- a fresh CI run on all target OSes
+  is required before this can be called done.
+- **A POSIX-only "outer signal produces a non-zero runner exit code"
+  ordering case was still failing against exit code 0 as of the last
+  available CI evidence**, despite its implementing subtasks having been
+  marked complete -- closing a subtask is not the same as the parent
+  behavior being independently confirmed against a deployed build. The gap
+  is filed and tracked; the dependent feature and its parent remain open
+  pending that confirmation.
+- A separate, out-of-scope macOS process-leak failure was observed and
+  filed under the task that claims that exact coverage, rather than folded
+  into this release's scope.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.4256.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4256 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 44 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
 ## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the

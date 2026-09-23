@@ -323,6 +323,35 @@ describe('pollLogFile', () => {
       expect(result.lastTimestamp).toBe('2026-05-05T10:07:00.000Z');
     });
 
+    // apra-fleet-qe83.2: reproduces the recorded missed-stall tail shape --
+    // a dated assistant entry padded large enough that the byte-capped tail
+    // read (`tail -n 20 | tail -c 65536`) truncates it entirely, followed by
+    // an attachment entry and a last-prompt entry, neither of which carries
+    // its own timestamp field. This is NOT the classification bug itself
+    // (that lives in stall-detector.ts's handling of a null lastTimestamp,
+    // see tests/stall-detector.test.ts's frozen-tail-null-timestamp block) --
+    // this test only pins that the extraction layer legitimately has nothing
+    // to report here, both before and after that fix.
+    it('returns no timestamp when the byte cap truncates the only dated entry and every trailing entry has none (apra-fleet-qe83.2)', async () => {
+      const fixture = fs.readFileSync(
+        path.join(__dirname, 'fixtures', 'stall-frozen-tail-no-timestamp.jsonl'),
+        'utf8'
+      );
+      // Mirror the exact POSIX pipeline pollLogFile issues:
+      // `tail -n ${TAIL_LINES} file | tail -c ${TAIL_BYTES}` (TAIL_LINES=20,
+      // TAIL_BYTES=65536 in src/services/stall/stall-poller.ts).
+      const lines = fixture.split('\n').filter(l => l.length > 0);
+      const tailedByLines = lines.slice(-20).join('\n') + '\n';
+      const TAIL_BYTES = 65536;
+      const stdout = tailedByLines.length > TAIL_BYTES
+        ? tailedByLines.slice(tailedByLines.length - TAIL_BYTES)
+        : tailedByLines;
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+    });
+
     it('skips partial/unparseable lines at start of tail', async () => {
       const stdout = 'partial-json-line\n' + jsonLines(
         { type: 'assistant', timestamp: '2026-05-05T10:05:00.000Z' },
