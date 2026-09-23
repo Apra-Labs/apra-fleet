@@ -15,9 +15,11 @@
 // literal from a file already checked into this repo, not external input) so a
 // human edit to one side without the other fails this suite instead of shipping.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { transformAgentForAgy, transformAgentForOpenCode } from '../src/cli/agent-transform.js';
 
 const TS_SOURCE_PATH = path.join(__dirname, '..', 'src', 'cli', 'agent-transform.ts');
 const MJS_SOURCE_PATH = path.join(
@@ -61,5 +63,194 @@ describe('agent-transform.ts <-> apra-pm/install.mjs mirrored literals stay in s
     const tsValue = parseLiteral(extractLiteralSource(tsSource, 'OPENCODE_NATIVE_TOOLS'));
     const mjsValue = parseLiteral(extractLiteralSource(mjsSource, 'OPENCODE_NATIVE_TOOLS'));
     expect(mjsValue).toEqual(tsValue);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-oomh.11: BEHAVIOURAL cross-implementation guard.
+//
+// The literal guards above are source-TEXT checks -- nothing executes the
+// mirrored code, so a drift in the marker RESOLVER itself (the six other
+// symbols on agent-transform.ts's keep-in-sync list) would sail past them.
+// This block feeds one shared fixture corpus through BOTH implementations and
+// compares real outputs and real thrown messages.
+//
+// HOW THE TWO SIDES ARE MADE COMPARABLE (the adapter the naming/structure
+// asymmetries force):
+//
+//  * NAMING: the .ts body resolver is resolveConditionalBody(text, isAvailable,
+//    label); the .mjs equivalent is resolveAgentConditionals(content, llm,
+//    label), which derives isAvailable from the provider internally.
+//
+//  * DIVISION OF LABOUR: .ts transformAgentForAgy/ForOpenCode resolve body
+//    markers INSIDE the transform; the .mjs copies of those two functions do
+//    NOT (install() resolves markers in a separate pass before calling them).
+//    So the .mjs counterpart of the .ts transforms' marker behaviour is
+//    resolveAgentConditionals, not the like-named .mjs transform.
+//
+//  * WHY FRONTMATTER-LESS FIXTURES: with no frontmatter, .ts
+//    transformAgentForAgy(text, label) takes its early-return path, which is
+//    exactly resolveConditionalBody(text, toolAvailability(null, <provider
+//    tools>), label) -- byte-for-byte the computation .mjs
+//    resolveAgentConditionals(text, 'agy', label) performs (its
+//    readFrontmatterTools returns null for the same input). That makes the two
+//    sides directly comparable through EXPORTED entry points only, so
+//    CONDITIONAL_MARKER_RE, resolveConditionalBody, toolAvailability and
+//    readFrontmatterTools are all driven transitively. No export is widened to
+//    reach a private helper.
+//
+//  * ERROR CLASS: .ts throws ConditionalMarkerError, .mjs throws a plain Error
+//    carrying the identical message. Assertions compare MESSAGE TEXT only -- an
+//    instanceof assertion cannot pass on both sides.
+//
+// "Telepathy" is an invented tool name, so a LACKS case cannot pass by
+// special-casing a real tool. Bash is present in BOTH agyToolMap and
+// OPENCODE_NATIVE_TOOLS, so it is the shared HAS case.
+
+interface MjsApi {
+  resolveAgentConditionals: (content: string, llm: string, label: string) => string;
+}
+
+const MJS_MODULE_URL = pathToFileURL(MJS_SOURCE_PATH).href;
+
+/** Providers whose availability rules BOTH implementations model. */
+const SHARED_PROVIDERS = ['agy', 'opencode'] as const;
+type SharedProvider = (typeof SHARED_PROVIDERS)[number];
+
+const LABEL = 'fixture.md';
+
+const WELL_FORMED: Array<{ name: string; text: string }> = [
+  {
+    name: 'if/else block for a tool the provider HAS (Bash)',
+    text: 'head\n<!-- if-tool: Bash -->\nuse-bash\n<!-- else-tool: Bash -->\nno-bash\n<!-- end-tool: Bash -->\ntail\n',
+  },
+  {
+    name: 'if/else block for a tool the provider LACKS (Telepathy)',
+    text: 'head\n<!-- if-tool: Telepathy -->\nuse-tp\n<!-- else-tool: Telepathy -->\nno-tp\n<!-- end-tool: Telepathy -->\ntail\n',
+  },
+  {
+    name: 'else-less if block for a tool the provider HAS (Bash)',
+    text: 'head\n<!-- if-tool: Bash -->\nkeep\n<!-- end-tool: Bash -->\ntail\n',
+  },
+  {
+    name: 'else-less if block for a tool the provider LACKS (Telepathy)',
+    text: 'head\n<!-- if-tool: Telepathy -->\ndrop\n<!-- end-tool: Telepathy -->\ntail\n',
+  },
+  {
+    name: 'nested blocks (HAS outside, LACKS inside)',
+    text: 'a\n<!-- if-tool: Bash -->\nb\n<!-- if-tool: Telepathy -->\nc\n<!-- else-tool: Telepathy -->\nd\n<!-- end-tool: Telepathy -->\ne\n<!-- end-tool: Bash -->\nf\n',
+  },
+  {
+    name: 'nested blocks (LACKS outside, HAS inside -- inner must be discarded with the outer if-branch)',
+    text: 'a\n<!-- if-tool: Telepathy -->\nb\n<!-- if-tool: Bash -->\nc\n<!-- end-tool: Bash -->\nd\n<!-- else-tool: Telepathy -->\ne\n<!-- end-tool: Telepathy -->\nf\n',
+  },
+  {
+    name: 'repeated blocks for the same tool',
+    text: '<!-- if-tool: Bash -->\none\n<!-- end-tool: Bash -->\nmid\n<!-- if-tool: Bash -->\ntwo\n<!-- else-tool: Bash -->\nnope\n<!-- end-tool: Bash -->\n',
+  },
+  {
+    name: 'repeated blocks for the same LACKED tool',
+    text: '<!-- if-tool: Telepathy -->\none\n<!-- else-tool: Telepathy -->\nalt1\n<!-- end-tool: Telepathy -->\nmid\n<!-- if-tool: Telepathy -->\ntwo\n<!-- else-tool: Telepathy -->\nalt2\n<!-- end-tool: Telepathy -->\n',
+  },
+  {
+    name: 'no markers at all (pass-through)',
+    text: 'plain prose with no markers\nand a second line\n',
+  },
+];
+
+const MALFORMED: Array<{ name: string; text: string }> = [
+  {
+    name: 'else-tool with no open if-tool',
+    text: 'a\n<!-- else-tool: Bash -->\nb\n',
+  },
+  {
+    name: 'end-tool whose tool name does not match the open if-tool',
+    text: '<!-- if-tool: Bash -->\na\n<!-- end-tool: Telepathy -->\n',
+  },
+  {
+    name: 'duplicate else-tool inside one block',
+    text: '<!-- if-tool: Bash -->\na\n<!-- else-tool: Bash -->\nb\n<!-- else-tool: Bash -->\nc\n<!-- end-tool: Bash -->\n',
+  },
+  {
+    name: 'if-tool still unclosed at end of file',
+    text: '<!-- if-tool: Bash -->\na\n',
+  },
+];
+
+/** Thin adapter: run the .ts resolver for `provider` over a frontmatter-less fixture. */
+function tsResolve(provider: SharedProvider, text: string, label: string): string {
+  return provider === 'agy'
+    ? transformAgentForAgy(text, label)
+    : transformAgentForOpenCode(text, label);
+}
+
+/** Captures a thrown message, or null when the call returned normally. */
+function thrownMessage(fn: () => unknown): string | null {
+  try {
+    fn();
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+describe('agent-transform.ts <-> apra-pm/install.mjs resolve conditional bodies identically', () => {
+  let mjs: MjsApi;
+
+  beforeAll(async () => {
+    mjs = (await import(MJS_MODULE_URL)) as unknown as MjsApi;
+  });
+
+  it('exposes the exported entry points both sides of the comparison need', () => {
+    expect(typeof mjs.resolveAgentConditionals).toBe('function');
+    expect(typeof transformAgentForAgy).toBe('function');
+    expect(typeof transformAgentForOpenCode).toBe('function');
+  });
+
+  for (const provider of SHARED_PROVIDERS) {
+    for (const fixture of WELL_FORMED) {
+      it(`${provider}: byte-identical output -- ${fixture.name}`, () => {
+        const tsOut = tsResolve(provider, fixture.text, LABEL);
+        const mjsOut = mjs.resolveAgentConditionals(fixture.text, provider, LABEL);
+        expect(mjsOut).toBe(tsOut);
+      });
+    }
+
+    for (const fixture of MALFORMED) {
+      it(`${provider}: both sides reject with the same message -- ${fixture.name}`, () => {
+        const tsMsg = thrownMessage(() => tsResolve(provider, fixture.text, LABEL));
+        const mjsMsg = thrownMessage(() => mjs.resolveAgentConditionals(fixture.text, provider, LABEL));
+
+        // Both must actually throw -- a silent pass-through on either side is
+        // the failure mode this case exists to catch.
+        expect(tsMsg, `.ts side must reject: ${fixture.name}`).not.toBeNull();
+        expect(mjsMsg, `.mjs side must reject: ${fixture.name}`).not.toBeNull();
+        // Message text only: .ts throws ConditionalMarkerError, .mjs a plain Error.
+        expect(mjsMsg).toBe(tsMsg);
+        expect(tsMsg).toContain(LABEL);
+      });
+    }
+  }
+
+  it('the corpus actually discriminates: a HAS fixture and a LACKS fixture resolve differently', () => {
+    // Guards the guard -- if availability ever became a constant-true/false on
+    // both sides in the same way, every comparison above would still pass.
+    const has = mjs.resolveAgentConditionals(WELL_FORMED[0].text, 'agy', LABEL);
+    const lacks = mjs.resolveAgentConditionals(WELL_FORMED[1].text, 'agy', LABEL);
+    expect(has).toContain('use-bash');
+    expect(has).not.toContain('no-bash');
+    expect(lacks).toContain('no-tp');
+    expect(lacks).not.toContain('use-tp');
+  });
+
+  it('no marker syntax survives on either side, for either provider', () => {
+    for (const provider of SHARED_PROVIDERS) {
+      for (const fixture of WELL_FORMED) {
+        const out = mjs.resolveAgentConditionals(fixture.text, provider, LABEL);
+        expect(out, `${provider}: ${fixture.name}`).not.toMatch(
+          /<!--\s*(if-tool|else-tool|end-tool):/
+        );
+      }
+    }
   });
 });

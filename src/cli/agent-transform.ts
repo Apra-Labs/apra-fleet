@@ -16,10 +16,27 @@
  *   - resolveConditionalBody
  *   - toolAvailability
  *   - readFrontmatterTools
- * tests/agent-transform-apra-pm-sync.test.ts asserts agyToolMap and
- * OPENCODE_NATIVE_TOOLS stay byte-identical between the two files, so drift in
- * those two fails a suite instead of shipping; the rest of the list above has no
- * automated guard -- update both files by hand.
+ * tests/agent-transform-apra-pm-sync.test.ts guards ALL of the above, in two
+ * complementary ways:
+ *   - SOURCE-TEXT guard: agyToolMap and OPENCODE_NATIVE_TOOLS are extracted from
+ *     both files and compared as parsed values, so an edit to one literal
+ *     without the other fails the suite.
+ *   - BEHAVIOURAL guard: one shared fixture corpus (if/else, else-less if,
+ *     nested, repeated, tool-present, tool-absent, plus the four malformed
+ *     cases) is fed through BOTH implementations for agy and opencode, and the
+ *     outputs must be byte-identical strings / the thrown MESSAGES must match.
+ *     That drives CONDITIONAL_MARKER_RE, resolveConditionalBody, toolAvailability
+ *     and readFrontmatterTools transitively through the exported transform entry
+ *     points -- none of those four is exported on either side, and the test does
+ *     not widen exports to reach them.
+ *
+ * Note the two structural asymmetries the test documents and works around: the
+ * .mjs body resolver is named resolveAgentConditionals (not
+ * resolveConditionalBody) and takes a provider string rather than a predicate,
+ * and the .mjs transformAgentForAgy/ForOpenCode do NOT resolve body markers
+ * (install() does that in a separate pass). Drift in the frontmatter-rewriting
+ * half of transformAgentForAgy/transformAgentForOpenCode is therefore still
+ * unguarded -- update those by hand on both sides.
  */
 
 interface PermissionMap {
