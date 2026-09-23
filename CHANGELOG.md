@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- stray-process sweep: config wired end to end, sweep-failure policy decided, liveness probe armed by default
+
+Sprint goal: close out the sprint-start Member Prep and stray-process sweep
+work from the previous entry below -- wire the sweep's `--sweep-config`
+surface through the supervisor's own sprint-launch path so a
+supervisor-launched sprint is no longer dormant, decide and implement the
+sweep-failure policy (a probe or kill failure now reports a loud per-member
+FAILURE and continues, never aborts the sprint), label a kill dispatch as a
+kill rather than reusing probe wording, and distinguish an unreachable
+remote member from one with a genuinely missing LLM credential. On top of
+those four closes, this round also added an opt-out liveness probe (armed by
+default) that asks a surviving candidate's own port for an HTTP response
+before killing it, decided per-candidate (not per-pass) so a candidate
+holding no listening port is never silently spared by an unrelated
+candidate's probe result, closed a shell-command-guard blind spot for POSIX
+special parameters (`$?` `$!` `$$` `$#` `$@` `$*` `$0`-`$9`) in dispatched
+kill commands, and made a POSIX kill tolerant of a target that already
+exited (a benign race, not a sweep failure). **Sprint verdict: PASS**,
+verified against the net diff for the scope issue and its 18 closed
+children: build and both full test suites (root and `packages/apra-fleet-se`)
+green with zero failures, the generic-engine-boundary check clean, and all
+added lines ASCII-only. See `docs/member-prep-and-stray-sweep.md` for the
+full sweep design including the liveness-probe decision record.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $34.0623.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1733 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 27 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+`--sweep-config` CLI help text is garbled where the liveness-probe option
+description was inserted, and `docs/cli-reference.md` does not yet document
+`livenessProbe`; the liveness probe only asks `127.0.0.1`, so a live process
+bound to a non-loopback interface currently reads as dead and gets swept;
+and the sweep-config validators silently ignore unknown top-level keys, so a
+typo'd key name (e.g. a misspelled `productionPorts`) quietly drops port
+protection instead of failing loud.
+
 ## [Unreleased] -- scoped-replan findings threading, truthful planner KB contract, sprint-start member prep and stray-process sweep
 
 Sprint goal: three fixes -- thread the reviewer findings that trigger a
@@ -29,17 +71,16 @@ Pricing source: all 18 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
-Carried forward as backlog (deliberately deferred, not blocking): the
-stray-process sweep's configuration surface (`--sweep-config`) is wired for
-a direct CLI launch but the supervisor's own sprint-launch argument builder
-has no passthrough for it yet, so a supervisor-launched sprint still ships
-the sweep dormant; a sweep probe or kill failure currently aborts the whole
-sprint the same way an unprovisionable auth failure does, which was not a
-deliberate design decision for the sweep path specifically; the Member Prep
-kill-dispatch log line still labels itself a "probe" even when it performed
-a kill; and an unreachable/offline remote member is reported identically to
-one with a genuinely missing LLM credential, conflating two different
-operator remedies.
+All four items this entry originally carried forward as backlog were closed
+later on this same branch: the supervisor now threads its own
+`--sweep-config` end to end so a supervisor-launched sprint no longer ships
+the sweep dormant; a sweep probe or kill failure now records a loud
+per-member FAILURE and continues rather than aborting the sprint; the Member
+Prep kill-dispatch log line now labels itself a kill, not a probe; and an
+unreachable/offline remote member now reports distinctly from one with a
+genuinely missing LLM credential. See the entry below for the round that
+closed them, and `docs/member-prep-and-stray-sweep.md` for the current
+behaviour of each.
 
 ## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
 
