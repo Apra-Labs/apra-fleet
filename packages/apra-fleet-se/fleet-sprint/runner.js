@@ -1918,10 +1918,13 @@ async function runSprintCycle(context) {
     // an unrelated non-zero-exit throw). `sweepMarkers`/`sweepProductionPorts`
     // are deliberately empty here -- this generic engine has no target-repo
     // paths, flags or ports of its own to hardcode (member-stray-sweep.mjs's
-    // own header), so with no caller-supplied evidence the sweep finds no
-    // fleet-started candidate and kills nothing; a target that wants real
-    // stray-process cleanup supplies its own markers/ports through this same
-    // call site.
+    // own header). With no caller-supplied markers, phases/member-prep.mjs's
+    // runSweepStep() reports the sweep step SKIPPED and dispatches no probe
+    // at all (apra-fleet-9be4.3 review blocker 2 -- a probe run with no
+    // markers can never identify a fleet-started process, so running it
+    // anyway would print a false "clean, N scanned" result); a target that
+    // wants real stray-process cleanup supplies its own markers/ports
+    // through this same call site.
     await runMemberPrepPhase({
         members: branchEnsureMembers,
         fleetApi: sprintState.fleetApi,

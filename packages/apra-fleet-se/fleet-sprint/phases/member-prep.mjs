@@ -87,16 +87,43 @@
 // READ-ONLY LOOKUPS DEGRADE, THE AUTH GATE DOES NOT: list_members is a
 // best-effort registry read used only to (a) skip a redundant provision call
 // when auth is already known-good and (b) classify locality for the sweep
-// gate. Any failure to read or parse it (offline fleet server, a test double
-// with no structuredContent) degrades to "unknown" -- which routes auth
-// straight to the real provision_llm_auth call (still fully fail-loud) and
-// routes the sweep to a safe skip (never a guessed kill). Nothing about the
-// LLM-auth abort path depends on this lookup succeeding.
+// gate. Two failure shapes are deliberately NOT the same:
+//   - No fleetApi wired, or a response with no parseable member list (a test
+//     double, or any caller that never bothered to configure list_members
+//     realistically) -- this is "no real registry data was ever available",
+//     and degrades exactly as before: unknown locality, safe skip, no abort.
+//   - The list_members call ITSELF rejects -- a genuinely live registry that
+//     broke mid-run (offline fleet server, transport error). THIS case must
+//     NOT fall back to "unknown == local" for the auth gate -- that earlier
+//     shape silently disarmed AC4 and mislabeled remote members as local in
+//     the operator log the instant list_members had one transient hiccup
+//     (apra-fleet-9be4.3 review blocker 1). Instead readMemberRecords()
+//     reports the read failure explicitly (readFailed:true, empty records
+//     Map), and checkMemberAuth() ATTEMPTS the real provision_llm_auth call
+//     for every member in that state, exactly as this header always
+//     promised -- still fully fail-loud on a genuine failure. The one
+//     exception: if that real call answers skipped_local_member while
+//     locality was unknown, the call itself has just proven the member IS
+//     local (a remote member's credential can never legitimately report that
+//     reason), so this is read as a confirmed, honest skip rather than an
+//     abort -- see checkMemberAuth()'s `registryReadFailed` handling below.
+// The sweep gate keeps degrading BOTH unknown-locality shapes to a safe skip
+// (never a guessed kill) -- see runSweepStep() -- because unlike auth, there
+// is no real check the sweep can run to resolve the ambiguity itself.
+// Nothing about the LLM-auth abort path for a KNOWN-remote member depends on
+// this lookup succeeding.
 //
 // GENERIC ENGINE: no target-repo names, paths or ports are hardcoded here.
 // `sweepMarkers`/`sweepProductionPorts` are caller-supplied inputs threaded
 // straight through to member-stray-sweep.mjs, exactly as that module's own
-// header requires.
+// header requires. When no markers are configured, runSweepStep() reports a
+// deliberate skip and dispatches NO probe at all -- with zero markers,
+// member-stray-sweep.mjs's classifyFleetEvidence() can never mark a process
+// fleet-started, so a dispatched probe could only ever produce a false "clean,
+// N scanned" result the operator would wrongly read as real coverage
+// (apra-fleet-9be4.3 review blocker 2). A target that wants real
+// stray-process cleanup supplies its own markers/ports through this same
+// call site.
 //
 // ASCII only.
 // =============================================================================
@@ -118,33 +145,46 @@ function line(log, member, step, status, detail) {
 
 /**
  * Best-effort member-registry read (list_members, format:'json'), keyed by
- * both name and id so a caller can look a member up either way. Returns an
- * EMPTY Map -- never throws -- on any failure: no fleetApi wired, the call
- * itself rejecting, or a response with no parseable JSON (e.g. a test double
- * that answers a bare `{ content }` shape with no structuredContent). This is
- * a pure optimization/classification input; every caller of this function
- * treats a missing entry as "unknown" and degrades safely (see this module's
- * header).
+ * both name and id so a caller can look a member up either way.
+ *
+ * Returns `{ records, readFailed }`. `records` is an EMPTY Map -- never
+ * throws -- on any failure. `readFailed` distinguishes WHY it is empty:
+ *   - no fleetApi wired at all, OR the list_members response had no
+ *     parseable member list (e.g. a test double, or any caller that simply
+ *     never bothered to configure a realistic list_members response,
+ *     answering a bare `{ content }` shape with no structuredContent) --
+ *     readFailed:false. Both are "no real registry data was ever available",
+ *     which is this module's long-standing safe-degrade case (present/no-op
+ *     elsewhere in checkMemberAuth() too) -- NOT the same thing as a live
+ *     registry that broke mid-run, so it must not switch the auth gate into
+ *     active-check mode (that regressed test/mock-sprint-planner-auth-
+ *     failure-no-retry.test.mjs, whose scenario deliberately leaves
+ *     list_members unconfigured to isolate the LOCAL-member no-retry path).
+ *   - the list_members call itself rejected -- readFailed:true. This is a
+ *     genuinely live registry that could not be read THIS run (offline fleet
+ *     server, transport error), so callers must NOT treat every member as
+ *     "known local" (see this module's header -- that conflation was review
+ *     blocker 1).
  *
  * @param {{ listMembers?: (opts: object) => Promise<any> }} fleetApi
  * @param {(msg: string) => void} log
- * @returns {Promise<Map<string, object>>}
+ * @returns {Promise<{ records: Map<string, object>, readFailed: boolean }>}
  */
 async function readMemberRecords(fleetApi, log) {
     const records = new Map();
-    if (!fleetApi || typeof fleetApi.listMembers !== 'function') return records;
+    if (!fleetApi || typeof fleetApi.listMembers !== 'function') return { records, readFailed: false };
     let raw;
     try {
         raw = await fleetApi.listMembers({ format: 'json' });
     } catch (err) {
-        log(`${LOG_PREFIX} could not read the member registry (list_members failed: ${err && err.message ? err.message : err}); member locality/auth-status will be treated as unknown for this run.`);
-        return records;
+        log(`${LOG_PREFIX} could not read the member registry (list_members failed: ${err && err.message ? err.message : err}); member locality is UNKNOWN for this run -- the LLM-auth gate will attempt a real provision_llm_auth check for every member rather than silently skipping it, and the sweep will stay skipped (fail-safe).`);
+        return { records, readFailed: true };
     }
     let parsed;
     try {
         parsed = JSON.parse(resultText(raw));
     } catch {
-        return records;
+        return { records, readFailed: false };
     }
     const members = Array.isArray(parsed && parsed.members) ? parsed.members : [];
     for (const m of members) {
@@ -152,7 +192,7 @@ async function readMemberRecords(fleetApi, log) {
         if (typeof m.name === 'string' && m.name) records.set(m.name, m);
         if (typeof m.id === 'string' && m.id) records.set(m.id, m);
     }
-    return records;
+    return { records, readFailed: false };
 }
 
 /**
@@ -162,20 +202,35 @@ async function readMemberRecords(fleetApi, log) {
  * provisioned, per this module's header.
  *
  * GATED ON LOCALITY, exactly like runSweepStep(): provision_llm_auth is
- * called ONLY for a member memberLocality() classifies LOCALITY_REMOTE.
- * Everything else (local, relay, unknown) is a logged 'skipped' outcome with
- * NO provisioning call at all -- see this module's header for the real
+ * called ONLY for a member memberLocality() classifies LOCALITY_REMOTE, OR
+ * for a member whose locality is UNKNOWN because the registry could not be
+ * read this run (`registryReadFailed`). A member the registry POSITIVELY
+ * identifies as local/relay is a logged 'skipped' outcome with NO
+ * provisioning call at all -- see this module's header for the real
  * regression (test/mock-sprint-planner-auth-failure-no-retry.test.mjs) that
  * proved calling provision_llm_auth unconditionally, and fail-looding on its
  * guaranteed skipped_local_member no-op, breaks every local-member sprint.
+ * `registryReadFailed` must NOT collapse into that same silent skip (review
+ * blocker 1): an unreadable registry tells us nothing about this member's
+ * real locality, so the gate actively checks rather than guessing "local".
  *
  * @param {{ member: string, memberRecord: object|null,
- *           fleetApi: { provisionLlmAuth?: Function }, log: Function }} opts
+ *           fleetApi: { provisionLlmAuth?: Function }, registryReadFailed?: boolean,
+ *           log: Function }} opts
  * @returns {Promise<{ status: string, detail: string }>}
  */
-export async function checkMemberAuth({ member, memberRecord, fleetApi, log = () => {} }) {
+export async function checkMemberAuth({
+    member, memberRecord, fleetApi, registryReadFailed = false, log = () => {},
+} = {}) {
     const locality = memberLocality(memberRecord || {});
-    if (locality !== LOCALITY_REMOTE) {
+    // Locality is only genuinely "known local" when the registry read
+    // actually succeeded and simply classified this member that way. If the
+    // registry read failed, memberRecord is always null/absent here (see
+    // readMemberRecords()), so `locality !== LOCALITY_REMOTE` is an artifact
+    // of the default-to-local fallback, not real registry evidence -- treat
+    // it as unknown and fall through to a real check instead of skipping.
+    const localityUnknown = registryReadFailed && !memberRecord;
+    if (locality !== LOCALITY_REMOTE && !localityUnknown) {
         return {
             status: 'skipped',
             detail: "local member -- provision_llm_auth is a no-op for local members (they share the operator's "
@@ -216,6 +271,22 @@ export async function checkMemberAuth({ member, memberRecord, fleetApi, log = ()
     // generic ok/fail branch below -- otherwise a local member's no-op skip
     // would be misread as a genuine, working credential.
     if (outcome.reason === 'skipped_local_member' || (outcome.reason === null && /^\[SKIP\]/.test(text))) {
+        if (localityUnknown) {
+            // The registry could not tell us this member's locality up
+            // front, so this gate attempted the real call rather than
+            // guessing -- and the call itself just answered definitively:
+            // provision_llm_auth only ever reports skipped_local_member for
+            // an actually-local member. That is real, honest evidence this
+            // member is local, not a silent skip based on a guess -- so it
+            // is reported as a confirmed skip, not an abort.
+            return {
+                status: 'skipped',
+                detail: 'registry could not be read this run, so locality was unknown; provision_llm_auth was '
+                    + 'attempted anyway and reported skipped_local_member, confirming this member is in fact '
+                    + `local -- only the REACTIVE self-heal after an actual dispatch failure can detect a broken `
+                    + `local session.${text ? ` ${text}` : ''}`,
+            };
+        }
         throw new LlmAuthUnprovisionableError(
             member, 'LLM auth',
             'provision_llm_auth reported skipped_local_member: this member shares the operator\'s own host '
@@ -237,21 +308,48 @@ export async function checkMemberAuth({ member, memberRecord, fleetApi, log = ()
  * member classified LOCALITY_REMOTE; every other locality (local, relay,
  * unknown) is a logged skip with NO call into the sweep module at all -- no
  * safety predicate is re-implemented here (apra-fleet-9be4.3 criterion 3).
+ * Unlike checkMemberAuth(), an UNKNOWN locality (registry unreadable) stays a
+ * safe skip here too (this module's header) -- there is no real check the
+ * sweep itself can run to resolve the ambiguity, so it never guesses a kill.
+ * The reported reason still names the real cause instead of claiming "local
+ * member" for a member the registry simply could not confirm either way
+ * (review blocker 1's log-accuracy requirement).
+ *
+ * Also skips (no probe dispatched at all) when `sweepMarkers` is empty: with
+ * no fleet-start evidence to match against, member-stray-sweep.mjs's
+ * classifyFleetEvidence() can never mark a process fleet-started, so a
+ * dispatched probe could only ever produce a "clean, N scanned" result the
+ * operator would wrongly read as real coverage (review blocker 2).
  *
  * @param {{ member: string, memberRecord: object|null, execCommand: Function,
  *           sweepMarkers?: Array<object>, sweepProductionPorts?: Array<number>,
- *           now?: () => number }} opts
+ *           registryReadFailed?: boolean, now?: () => number }} opts
  * @returns {Promise<{ status: string, reason?: string, result?: object }>}
  */
 export async function runSweepStep({
-    member, memberRecord, execCommand, sweepMarkers = [], sweepProductionPorts = [], now = () => Date.now(),
+    member, memberRecord, execCommand, sweepMarkers = [], sweepProductionPorts = [],
+    registryReadFailed = false, now = () => Date.now(),
 } = {}) {
     const locality = memberLocality(memberRecord || {});
     if (locality !== LOCALITY_REMOTE) {
+        if (registryReadFailed && !memberRecord) {
+            return {
+                status: 'skipped',
+                reason: 'registry could not be read this run so locality is unknown; the sweep only ever acts on '
+                    + 'a member confirmed remote, so it stays skipped (fail-safe, never a guessed kill)',
+            };
+        }
         return { status: 'skipped', reason: 'local member' };
     }
     if (typeof execCommand !== 'function') {
         return { status: 'skipped', reason: 'no execCommand seam wired' };
+    }
+    if (!Array.isArray(sweepMarkers) || sweepMarkers.length === 0) {
+        return {
+            status: 'skipped',
+            reason: 'no fleet-start markers configured; a probe cannot identify or act on any candidate without '
+                + 'evidence, so none is dispatched',
+        };
     }
     const result = await sweepMemberStrayProcesses({
         member: { name: member, ...(memberRecord || {}) },
@@ -330,12 +428,14 @@ export async function runMemberPrepPhase({
     group('Sprint Setup');
     phase('Member Prep');
 
-    const memberRecords = await readMemberRecords(fleetApi, log);
+    const { records: memberRecords, readFailed: registryReadFailed } = await readMemberRecords(fleetApi, log);
 
     for (const member of list) {
         const memberRecord = memberRecords.get(member) || null;
 
-        const auth = await checkMemberAuth({ member, memberRecord, fleetApi, log });
+        const auth = await checkMemberAuth({
+            member, memberRecord, fleetApi, registryReadFailed, log,
+        });
         // The "auth" step covers BOTH credentials named in this phase's own
         // task description ("provision/verify LLM auth and VCS auth"). VCS
         // auth needs no new work here -- like G-pull below, it is already
@@ -347,7 +447,7 @@ export async function runMemberPrepPhase({
         line(log, member, 'auth', auth.status, `LLM auth: ${auth.detail}; VCS auth refreshed per-dispatch by the existing Sync preflight, not re-checked here`);
 
         const sweep = await runSweepStep({
-            member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts, now,
+            member, memberRecord, execCommand, sweepMarkers, sweepProductionPorts, registryReadFailed, now,
         });
         if (sweep.status === 'skipped') {
             line(log, member, 'sweep', 'skipped', sweep.reason);

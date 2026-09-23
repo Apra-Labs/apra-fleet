@@ -159,6 +159,11 @@ test('member-prep: every prep-step call lands on the ledger before a simulated f
         execCommand,
         syncBeadsBefore,
         log: () => {},
+        // A non-empty marker is required for the sweep to actually probe
+        // (review blocker 2 -- with no markers configured the sweep step is
+        // a deliberate skip and dispatches no probe), so this ordering
+        // assertion's execCommand ledger entry stays reachable.
+        sweepMarkers: [{ kind: 'env', token: 'FLEET_SANDBOX=1', evidence: 'fleet sandbox marker' }],
     });
     // The real caller (runner.js) awaits Member Prep, THEN runs Ensure
     // Sprint Branch, THEN eventually dispatches a role -- simulate that
@@ -295,7 +300,27 @@ test('member-prep: sweep step is skipped (no kill attempted, no probe issued) fo
     assert.equal(calls.length, 0, 'execCommand (the sweep probe/kill seam) must never be called for a local member');
 });
 
-test('member-prep: sweep step DOES invoke the sweep module for a remote member', async () => {
+test('member-prep: sweep step DOES invoke the sweep module for a remote member when markers are configured', async () => {
+    const { execCommand, calls } = makeExecCommand();
+    const sweep = await runSweepStep({
+        member: 'remote-worker',
+        memberRecord: { type: 'remote', os: 'linux' },
+        execCommand,
+        sweepMarkers: [{ kind: 'env', token: 'FLEET_SANDBOX=1', evidence: 'fleet sandbox marker' }],
+        sweepProductionPorts: [],
+    });
+    assert.equal(sweep.status, 'ran');
+    assert.ok(calls.length > 0, 'execCommand should have been called at least once (the probe dispatch) for a remote member');
+});
+
+// ---------------------------------------------------------------------------
+// 7. Review blocker 2: with no sweep markers configured, the sweep step must
+//    report a deliberate SKIP and dispatch no probe at all -- a probe with no
+//    markers can never identify a fleet-started process, so running it
+//    anyway would only ever produce a false "clean, N scanned" result.
+// ---------------------------------------------------------------------------
+
+test('member-prep: sweep step is skipped and dispatches NO probe when no sweep markers are configured', async () => {
     const { execCommand, calls } = makeExecCommand();
     const sweep = await runSweepStep({
         member: 'remote-worker',
@@ -304,8 +329,92 @@ test('member-prep: sweep step DOES invoke the sweep module for a remote member',
         sweepMarkers: [],
         sweepProductionPorts: [],
     });
-    assert.equal(sweep.status, 'ran');
-    assert.ok(calls.length > 0, 'execCommand should have been called at least once (the probe dispatch) for a remote member');
+    assert.equal(sweep.status, 'skipped');
+    assert.match(sweep.reason, /no fleet-start markers configured/);
+    assert.equal(calls.length, 0, 'execCommand (the sweep probe seam) must never be called with no markers configured');
+});
+
+// ---------------------------------------------------------------------------
+// 8. Review blocker 1: a failed member-registry read must NOT be silently
+//    read as "every member is local". The auth gate must actively attempt
+//    provision_llm_auth instead of skipping, and the resulting outcome/log
+//    text must never claim the member is local when that was never
+//    confirmed. The sweep stays a safe skip on unknown locality, but with an
+//    honest reason instead of "local member".
+// ---------------------------------------------------------------------------
+
+test('member-prep: a list_members failure does NOT silently skip auth -- provision_llm_auth is still attempted and a real failure still aborts loud', async () => {
+    const fleetApi = {
+        async listMembers() { throw new Error('registry offline'); },
+        async provisionLlmAuth() {
+            return provisionResult('[FAIL] Member is offline: connection refused', { ok: false, reason: 'member_offline' });
+        },
+    };
+    const { execCommand } = makeExecCommand();
+    const { syncBeadsBefore } = makeSyncBeadsBefore();
+
+    await assert.rejects(
+        () => runMemberPrepPhase({
+            members: ['remote-member-with-broken-registry'],
+            fleetApi,
+            execCommand,
+            syncBeadsBefore,
+            log: () => {},
+        }),
+        (err) => {
+            assert.ok(err instanceof LlmAuthUnprovisionableError);
+            assert.equal(err.member, 'remote-member-with-broken-registry');
+            return true;
+        },
+    );
+    // D-pull must never have been reached -- the auth step aborts the whole
+    // phase before sweep/G-pull/D-pull run for this member.
+    assert.equal(syncBeadsBefore.calls?.length ?? 0, 0);
+});
+
+test('member-prep: a list_members failure lets a healthy member\'s auth actually provision (not a silent local-member skip)', async () => {
+    const provisionCalls = [];
+    const fleetApi = {
+        async listMembers() { throw new Error('registry offline'); },
+        async provisionLlmAuth({ member_name }) {
+            provisionCalls.push(member_name);
+            return provisionResult('[OK] mock', { ok: true, reason: 'ok' });
+        },
+    };
+    const outcome = await checkMemberAuth({
+        member: 'healthy-member', memberRecord: null, fleetApi, registryReadFailed: true, log: () => {},
+    });
+    assert.equal(outcome.status, 'provisioned');
+    assert.deepEqual(provisionCalls, ['healthy-member'], 'provision_llm_auth must actually be attempted when the registry could not be read');
+});
+
+test('member-prep: a list_members failure plus a skipped_local_member provision outcome is a confirmed skip, not an abort', async () => {
+    const fleetApi = {
+        async provisionLlmAuth() {
+            return provisionResult('[SKIP] local members use this machine\'s credentials directly.', { ok: true, reason: 'skipped_local_member' });
+        },
+    };
+    const outcome = await checkMemberAuth({
+        member: 'actually-local-member', memberRecord: null, fleetApi, registryReadFailed: true, log: () => {},
+    });
+    assert.equal(outcome.status, 'skipped');
+    assert.match(outcome.detail, /skipped_local_member/);
+    assert.doesNotMatch(outcome.detail, /^local member --/, 'must not be worded as a pre-emptive "local member" skip -- this was confirmed by a real provision_llm_auth call, not guessed from a missing registry entry');
+});
+
+test('member-prep: sweep step skips with an honest reason (not "local member") when the registry could not be read', async () => {
+    const { execCommand, calls } = makeExecCommand();
+    const sweep = await runSweepStep({
+        member: 'unknown-locality-member',
+        memberRecord: null,
+        execCommand,
+        registryReadFailed: true,
+        sweepMarkers: [{ kind: 'env', token: 'FLEET_SANDBOX=1', evidence: 'fleet sandbox marker' }],
+    });
+    assert.equal(sweep.status, 'skipped');
+    assert.notEqual(sweep.reason, 'local member', 'must not claim the member is local when locality was never confirmed');
+    assert.match(sweep.reason, /registry could not be read/);
+    assert.equal(calls.length, 0, 'execCommand (the sweep probe seam) must never be called when locality is unknown');
 });
 
 // ---------------------------------------------------------------------------
