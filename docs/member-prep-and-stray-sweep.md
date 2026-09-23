@@ -170,6 +170,27 @@ data-dir environment variable (the obvious marker) is passed to member
 processes through the environment and never appears in argv at all, making
 it unreadable to a command-line sweep by construction.
 
+### Kill-command safety: POSIX special parameters are not variables
+
+The shell-command-guard that blocks unresolved shell expansion in any
+dispatched command string (see this repo's convention on resolving
+`$VAR`/`~/`/backticks in JavaScript before dispatch, not relying on the
+member's shell) originally matched named variables only. A POSIX shell
+*special parameter* -- `$?` `$!` `$$` `$#` `$@` `$*` and `$0`-`$9` -- carries
+the exact same cross-shell ambiguity (it is evaluated by whatever shell
+actually runs the dispatch, which may be PowerShell, not POSIX) but starts
+with a digit or punctuation rather than a letter/underscore, so the
+named-variable pattern never saw it. The guard now flags these too, with two
+deliberate exclusions so it stays a real signal: `$$` immediately followed by
+`{` (a `${...}` template interpolation, not the shell pid), and a digit
+immediately followed by another digit or a `.` (a dollar-amount literal like
+`$5.00`, never a positional parameter, which is always exactly one digit).
+Kill-command construction for the stray sweep carries a documented
+`shell-guard-allow` carve-out for the one place it deliberately asks the
+*member's own* shell to evaluate `$?` right after a `kill` it just ran in the
+same dispatch -- the one case where special-parameter evaluation by the
+target shell is intentional rather than a bug.
+
 ### Generic by design
 
 The sweep module knows no process names, paths, or ports of its own -- the
