@@ -76,6 +76,38 @@
 //      docs/member-prep-and-stray-sweep.md. The caller-facing option shape
 //      is validated in ONE place, normalizeLivenessProbeOption() below,
 //      which every config/CLI/args boundary that carries it imports.
+//      WHICH ADDRESS IS ASKED (apra-fleet-i4ku.21) -- DECIDED: OPTION (a),
+//      PROBE THE ADDRESS THE SOCKET ACTUALLY HOLDS. The probe used to build
+//      http://127.0.0.1:<port> for every candidate on both shell families,
+//      because the listener table carried only { pid, port } -- the host half
+//      of each bound address was read and thrown away. A process bound ONLY
+//      to a specific interface (192.168.1.5:8080) answers nothing on
+//      loopback, so curl returned its '000' sentinel, the candidate was
+//      recorded as `no-response`, no blocker was added, and it was killed as
+//      though the predicate had checked it and found it dead. That is the one
+//      outcome this fail-safe predicate may never produce: "I asked the wrong
+//      address" read as "there is nothing there".
+//      The bound host now travels parseProbeOutput() -> listeners ->
+//      annotateCandidates() -> buildLivenessProbeCommand() as
+//      `probeHost`, and the probe asks THAT host. Option (b) (classify a
+//      non-loopback-only candidate as `unprobeable`) was REJECTED:
+//      `unprobeable` leaves the other predicates' verdict standing, which for
+//      a surviving candidate is a KILL, so option (b) would have kept killing
+//      the very live process this bead exists to spare -- it would only have
+//      made the counters honest about it. Option (a) also costs nothing at
+//      the wire: the host is already in every lsof/ss row, and Windows'
+//      Get-NetTCPConnection already has LocalAddress.
+//      WILDCARD BINDINGS STILL GO TO LOOPBACK: 0.0.0.0, ::, '*' and an empty
+//      host mean "every interface", and loopback is an interface, so those
+//      are probed on 127.0.0.1 exactly as before -- see
+//      livenessProbeHost().
+//      AN ADDRESS THIS MODULE CANNOT TURN INTO A URL (a hostname, a
+//      zone-scoped link-local, anything that is not a plain IP literal) is
+//      NOT silently probed on loopback and is NOT `unprobeable` either: a
+//      socket exists, so there IS something to ask, and we merely cannot
+//      phrase the question. That is the `unevaluable` case -- it spares. See
+//      the `unresolvedSockets` field annotateCandidates() puts on each record
+//      and the classification in sweepMemberStrayProcesses().
 //
 // PRIOR ART this follows deliberately: src/supervisor/dolt-orphan-sweep.mjs
 // (same command-builder / output-parser / injected-seam split, same
@@ -153,7 +185,17 @@ export const PROC_WIN_LINE_PREFIX = 'SWEEP-PROC-WIN';
 export const PORT_LSOF_PREFIX = 'SWEEP-PORT-LSOF';
 /** `ss -H -l -t -n -p` rows, used when lsof is absent. */
 export const PORT_SS_PREFIX = 'SWEEP-PORT-SS';
-/** `SWEEP-PORT-WIN <owningPid>|<localPort>` (Windows). */
+/**
+ * `SWEEP-PORT-WIN <owningPid>|<localPort>|<localAddress>` (Windows).
+ *
+ * apra-fleet-i4ku.21: the third field carries the address the socket is
+ * actually bound to, so the liveness probe can ask THAT host rather than
+ * assuming loopback. A row with only the first two fields (the pre-i4ku.21
+ * shape) still parses -- its port is attributed exactly as before -- but its
+ * bound host is UNKNOWN rather than assumed to be loopback, which routes the
+ * candidate to the fail-safe `unevaluable` branch instead of letting a probe
+ * of the wrong address read as "nothing is there".
+ */
 export const PORT_WIN_PREFIX = 'SWEEP-PORT-WIN';
 /** `SWEEP-NOTOOL <toolName>` -- the member has no usable probe tool. */
 export const MISSING_TOOL_PREFIX = 'SWEEP-NOTOOL';
@@ -331,7 +373,12 @@ export function buildProbeCommand(family) {
             '$portTool = Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue', // shell-guard-allow: PowerShell local variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
             'if ($portTool) {' // shell-guard-allow: PowerShell local variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
                 + ' Get-NetTCPConnection -State Listen -ErrorAction Stop'
-                + " | ForEach-Object { 'SWEEP-PORT-WIN ' + $_.OwningProcess + '|' + $_.LocalPort }" // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
+                // apra-fleet-i4ku.21: LocalAddress is emitted as a third
+                // field so the liveness probe can ask the address the socket
+                // actually holds. Get-NetTCPConnection reports it as '0.0.0.0'
+                // / '::' for a wildcard bind and as the literal interface
+                // address otherwise -- exactly the distinction the probe needs.
+                + " | ForEach-Object { 'SWEEP-PORT-WIN ' + $_.OwningProcess + '|' + $_.LocalPort + '|' + $_.LocalAddress }" // shell-guard-allow: PowerShell pipeline variable inside this module's own -EncodedCommand payload; see buildProbeCommand's doc comment.
                 + " } else { 'SWEEP-NOTOOL Get-NetTCPConnection' }",
         ].join('; ');
         return seWindows.wrapForMember(rawScript);
@@ -509,6 +556,13 @@ export const HEALTH_LINE_PREFIX = 'SWEEP-HEALTH';
  *  a safe, target-agnostic default; a caller may override it. */
 export const DEFAULT_LIVENESS_PROBE_PATH = '/';
 
+/** The host a WILDCARD-bound socket (0.0.0.0, ::, *) is probed on. Loopback
+ *  is one of the interfaces such a socket is listening on, so asking it needs
+ *  no assumption about the member's routing or its external address. It is
+ *  NOT a default for sockets bound elsewhere -- see livenessProbeHost() and
+ *  this file's header, "WHICH ADDRESS IS ASKED". */
+export const LOOPBACK_PROBE_HOST = '127.0.0.1';
+
 /** Default per-request timeout. Short and deliberately so: this predicate
  *  only ever runs against candidates already headed for a kill, and a
  *  slow/hanging probe must not stall the whole sweep pass over one of them. */
@@ -610,8 +664,18 @@ export function normalizeLivenessProbeOption(value, label = 'livenessProbe') {
  * header and buildKillCommand()'s `$?` carve-out for the one legitimate
  * exception to that rule, which this function does not need).
  *
+ * WHICH HOST IS ASKED (apra-fleet-i4ku.21): each candidate carries the
+ * `probeHost` its socket is actually bound to -- resolved by
+ * livenessProbeHost(), which maps every wildcard bind to loopback and every
+ * specific bind to itself. A candidate with no `probeHost` at all defaults to
+ * loopback, which is only correct for a caller that already knows the socket
+ * is wildcard-bound; sweepMemberStrayProcesses() never relies on that default
+ * and always passes an explicit host. The host is RE-VALIDATED here as a
+ * strict IP literal, because this is the last point before it becomes text in
+ * a command dispatched to a member.
+ *
  * @param {'win32'|'posix'} family
- * @param {Array<{ pid: number, port: number }>} candidates
+ * @param {Array<{ pid: number, port: number, probeHost?: string }>} candidates
  * @param {{ path?: string, timeoutMs?: number }} [opts]
  * @returns {string}
  */
@@ -619,7 +683,7 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
     if (!Array.isArray(candidates) || candidates.length === 0) {
         throw new TypeError('buildLivenessProbeCommand(family, candidates): candidates must be a non-empty array');
     }
-    const clean = candidates.map(({ pid, port } = {}) => {
+    const clean = candidates.map(({ pid, port, probeHost } = {}) => {
         const p = Number(pid);
         const prt = Number(port);
         if (!Number.isInteger(p) || p <= 1) {
@@ -628,7 +692,20 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
         if (!Number.isInteger(prt) || prt <= 0 || prt > 65535) {
             throw new TypeError(`buildLivenessProbeCommand: refusing an invalid port ${JSON.stringify(port)}`);
         }
-        return { pid: p, port: prt };
+        const host = probeHost === undefined || probeHost === null ? LOOPBACK_PROBE_HOST : probeHost;
+        // Re-validated rather than trusted: livenessProbeHost() already
+        // returns only IP literals, but this function is exported and this is
+        // the last gate before the value is spliced into a member-bound
+        // command string. An address that does not survive the round trip
+        // through livenessProbeHost() unchanged is refused outright -- never
+        // silently rewritten to loopback, which is the defect this bead fixed.
+        if (typeof host !== 'string' || livenessProbeHost(host) !== host) {
+            throw new TypeError(
+                `buildLivenessProbeCommand: refusing an unprobeable host ${JSON.stringify(probeHost)} `
+                + `for pid ${p} port ${prt} -- only a plain IPv4 literal or a bracketed IPv6 literal may be probed`,
+            );
+        }
+        return { pid: p, port: prt, host };
     });
     const reqPath = typeof opts.path === 'string' && opts.path ? opts.path : DEFAULT_LIVENESS_PROBE_PATH;
     if (!reqPath.startsWith('/')) {
@@ -638,9 +715,9 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
     const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
 
     if (family === 'win32') {
-        const rawScript = clean.map(({ pid, port }) => [
+        const rawScript = clean.map(({ pid, port, host }) => [
             'try {',
-            ` $r = Invoke-WebRequest -Uri 'http://127.0.0.1:${port}${reqPath}' -TimeoutSec ${timeoutSeconds}`, // shell-guard-allow: PowerShell local variable ($r, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's own carve-outs; never an orchestrator-side value left for an unknown member shell to expand.
+            ` $r = Invoke-WebRequest -Uri 'http://${host}:${port}${reqPath}' -TimeoutSec ${timeoutSeconds}`, // shell-guard-allow: PowerShell local variable ($r, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's own carve-outs; never an orchestrator-side value left for an unknown member shell to expand.
             ' -UseBasicParsing -ErrorAction Stop;',
             ` 'SWEEP-HEALTH ${pid} ${port} ' + [int]$r.StatusCode`, // shell-guard-allow: PowerShell local variable $r assigned two lines above in this same -EncodedCommand payload; see this function's try-block first line.
             ' } catch {',
@@ -658,9 +735,9 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
     // no external binary needed); every candidate is probed inside the same
     // `if`, so a missing tool produces exactly one SWEEP-NOTOOL line instead
     // of one per candidate.
-    const probes = clean.map(({ pid, port }) => (
+    const probes = clean.map(({ pid, port, host }) => (
         `curl -s -o /dev/null -w 'SWEEP-HEALTH ${pid} ${port} %{http_code}\\n' `
-        + `--max-time ${timeoutSeconds} http://127.0.0.1:${port}${reqPath} 2>/dev/null;`
+        + `--max-time ${timeoutSeconds} http://${host}:${port}${reqPath} 2>/dev/null;`
     )).join(' ');
     return `if ! command -v curl > /dev/null 2>&1; then echo '${MISSING_TOOL_PREFIX} curl'; else ${probes} fi`;
 }
@@ -695,7 +772,13 @@ export function parseLivenessProbeOutput(output) {
         const body = line.slice(HEALTH_LINE_PREFIX.length + 1).trim();
         const m = /^(\d+)\s+(\d+)\s+(\d{1,3})$/.exec(body);
         if (!m) continue;
-        byKey.set(`${m[1]}:${m[2]}`, m[3] !== '000');
+        const key = `${m[1]}:${m[2]}`;
+        // OR-combined, never last-wins (apra-fleet-i4ku.21): one pid may hold
+        // the same port on more than one address, so the same key can be
+        // reported twice in one dispatch. "Answered on ANY address it holds"
+        // is what this predicate means by alive, so a single non-000 result
+        // must not be overwritten by a 000 from a sibling address.
+        byKey.set(key, byKey.get(key) === true || m[3] !== '000');
     }
     return { evaluable, byKey };
 }
@@ -732,23 +815,99 @@ export function parseElapsedSeconds(etime) {
     return (((days * 24) + h) * 60 + m) * 60 + s;
 }
 
-/** Record `port` against `pid`. Returns true when the row was attributable
- *  (both a real pid and a real port), which is what the caller counts. */
-function pushPort(map, pid, port) {
+/** Record `{ port, probeHost }` against `pid`. Returns true when the row was
+ *  attributable (both a real pid and a real port), which is what the caller
+ *  counts -- an UNRESOLVED probeHost does not make a row unattributable: the
+ *  port itself is still known, and the production-port predicate depends on
+ *  that and nothing else. */
+function pushPort(map, pid, port, probeHost = null) {
     if (!Number.isInteger(pid) || !Number.isInteger(port)) return false;
     if (!map.has(pid)) map.set(pid, []);
     const list = map.get(pid);
-    if (!list.includes(port)) list.push(port);
+    const existing = list.find((entry) => entry.port === port && entry.probeHost === probeHost);
+    if (!existing) list.push({ port, probeHost });
     return true;
 }
 
-/** Pull the port out of a `host:port` / `[::1]:port` / `*:port` address. */
-function portFromAddress(address) {
+/**
+ * Split a listening socket's address into its host and port halves.
+ *
+ * Handles every shape the three enumeration tools emit: `0.0.0.0:8787` and
+ * `127.0.0.1:8787` (ss, lsof, Get-NetTCPConnection), `[::]:8787` / `[::1]:631`
+ * (bracketed IPv6, ss and lsof), `*:22` (lsof's wildcard), and a bare
+ * unbracketed IPv6 host, which is why the host half is taken as everything
+ * BEFORE the last colon rather than after the first.
+ *
+ * @param {string} address
+ * @returns {{ host: string, port: number }|null} null when no port could be read
+ */
+function splitListenAddress(address) {
     const text = String(address || '').trim();
     const idx = text.lastIndexOf(':');
     if (idx < 0) return null;
     const port = Number(text.slice(idx + 1));
-    return Number.isInteger(port) ? port : null;
+    if (!Number.isInteger(port)) return null;
+    return { host: text.slice(0, idx).trim(), port };
+}
+
+/** Every spelling of "bound to every interface". Loopback IS one of those
+ *  interfaces, so these are probed on 127.0.0.1 -- unchanged behaviour from
+ *  before apra-fleet-i4ku.21, and the case nearly every real fleet process
+ *  falls into. */
+const WILDCARD_BIND_HOSTS = new Set(['', '*', '0.0.0.0', '::', '[::]', '0', '[::ffff:0.0.0.0]', '::ffff:0.0.0.0']);
+
+/** A dotted-quad with every octet in range. Deliberately strict: this value is
+ *  interpolated into a member-bound command string, so "looks roughly like an
+ *  IP" is not good enough. */
+const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+/** An IPv6 literal's permitted character set. No '%' (a zone id such as
+ *  `fe80::1%eth0` is not something this module can reliably fetch from
+ *  another host), no letters beyond hex, nothing that could carry shell
+ *  meaning. Structure is validated by IPV6_SHAPE_RE below. */
+const IPV6_CHARS_RE = /^[0-9A-Fa-f:.]+$/;
+/** Rejects the shapes IPV6_CHARS_RE alone would let through: no colon at all,
+ *  or three-or-more consecutive colons. */
+const IPV6_SHAPE_RE = /^(?!.*:::)(?=.*:)[0-9A-Fa-f:.]+$/;
+
+/**
+ * Resolve the bound host of a listening socket to the host the liveness probe
+ * should actually ask, or null when this module cannot turn it into a URL.
+ *
+ * apra-fleet-i4ku.21. THE THREE OUTCOMES, and why each is what it is:
+ *
+ *   - a WILDCARD bind ('0.0.0.0', '::', '*', empty) -> '127.0.0.1'. The socket
+ *     is on every interface, loopback included, so loopback is the cheapest
+ *     correct address to ask and needs no assumption about the member's
+ *     routing. This is the pre-i4ku.21 behaviour, preserved exactly.
+ *   - a SPECIFIC IP literal -> that address, bracketed when it is IPv6 so it
+ *     is a legal URL authority. This is the case the old code got wrong: it
+ *     asked loopback, got nothing, and read that as a dead process.
+ *   - ANYTHING ELSE (a hostname, a zone-scoped link-local, an unparseable
+ *     string) -> null. NOT quietly downgraded to loopback, which is the exact
+ *     bug being fixed, and NOT treated as "no socket" either -- the caller
+ *     turns a null into the fail-safe `unevaluable` outcome (spare), because
+ *     a socket demonstrably exists and only the question is unformable.
+ *
+ * The return value is also the SANITISER for a value that reaches a
+ * member-bound command string: only a strict IP literal is ever returned, so
+ * no text a member's own socket table produced can splice into the dispatch.
+ *
+ * @param {string} boundHost host half of a listening address, as enumerated
+ * @returns {string|null} a URL-safe host, or null when it cannot be asked
+ */
+export function livenessProbeHost(boundHost) {
+    const raw = String(boundHost == null ? '' : boundHost).trim();
+    if (WILDCARD_BIND_HOSTS.has(raw) || WILDCARD_BIND_HOSTS.has(raw.toLowerCase())) return LOOPBACK_PROBE_HOST;
+    const unbracketed = (raw.startsWith('[') && raw.endsWith(']')) ? raw.slice(1, -1).trim() : raw;
+    if (WILDCARD_BIND_HOSTS.has(unbracketed.toLowerCase())) return LOOPBACK_PROBE_HOST;
+    const v4 = IPV4_RE.exec(unbracketed);
+    if (v4) {
+        return v4.slice(1).every((octet) => Number(octet) <= 255 && !(octet.length > 1 && octet.startsWith('0')))
+            ? unbracketed
+            : null;
+    }
+    if (IPV6_CHARS_RE.test(unbracketed) && IPV6_SHAPE_RE.test(unbracketed)) return `[${unbracketed}]`;
+    return null;
 }
 
 /**
@@ -764,7 +923,8 @@ function portFromAddress(address) {
  *
  * @param {string} output raw combined stdout/stderr from the probe dispatch
  * @param {{ nowMs?: number, memberName?: string|null }} [opts]
- * @returns {{ processes: Array<object>, listeners: Array<{pid:number, port:number}>,
+ * @returns {{ processes: Array<object>,
+ *             listeners: Array<{pid:number, port:number, probeHost:string|null}>,
  *             portsKnown: boolean, portRowsSeen: number }}
  */
 export function parseProbeOutput(output, opts = {}) {
@@ -835,9 +995,15 @@ export function parseProbeOutput(output, opts = {}) {
         }
 
         if (trimmed.startsWith(`${PORT_WIN_PREFIX} `)) {
-            const [pidText, portText] = trimmed.slice(PORT_WIN_PREFIX.length + 1).trim().split('|');
+            const [pidText, portText, addrText] = trimmed.slice(PORT_WIN_PREFIX.length + 1).trim().split('|');
             portRowsSeen += 1;
-            if (pushPort(portsByPid, Number(pidText), Number(portText))) portRowsAttributed += 1;
+            // apra-fleet-i4ku.21: a row with no third field is the pre-i4ku.21
+            // shape -- the bound host is UNKNOWN, not loopback. undefined ->
+            // probeHost null (fail-safe unevaluable), whereas an EMPTY third
+            // field is Get-NetTCPConnection reporting a wildcard bind and does
+            // resolve to loopback.
+            const probeHost = addrText === undefined ? null : livenessProbeHost(addrText);
+            if (pushPort(portsByPid, Number(pidText), Number(portText), probeHost)) portRowsAttributed += 1;
             continue;
         }
 
@@ -851,9 +1017,14 @@ export function parseProbeOutput(output, opts = {}) {
                 lsofPid = Number.isInteger(pid) ? pid : null;
             } else if (body.startsWith('n')) {
                 portRowsSeen += 1;
-                if (lsofPid != null && pushPort(portsByPid, lsofPid, portFromAddress(body.slice(1)))) {
-                    portRowsAttributed += 1;
-                }
+                // apra-fleet-i4ku.21: the host half of the SAME address line
+                // the port is read from -- lsof prints '*:22' for a wildcard
+                // bind and '127.0.0.1:631' / '[::1]:631' / '10.0.0.4:8080'
+                // for a specific one.
+                const split = splitListenAddress(body.slice(1));
+                const attributed = lsofPid != null && split != null
+                    && pushPort(portsByPid, lsofPid, split.port, livenessProbeHost(split.host));
+                if (attributed) portRowsAttributed += 1;
             }
             continue;
         }
@@ -863,14 +1034,19 @@ export function parseProbeOutput(output, opts = {}) {
             //   LISTEN 0 4096 0.0.0.0:8787 0.0.0.0:* users:(("node",pid=12,fd=20))
             const body = trimmed.slice(PORT_SS_PREFIX.length + 1).trim();
             const fields = body.split(/\s+/);
-            const port = portFromAddress(fields[3]);
-            if (port == null) continue;
+            const split = splitListenAddress(fields[3]);
+            if (split == null) continue;
+            const { port } = split;
+            // apra-fleet-i4ku.21: ss's local-address column carries the bound
+            // host ('0.0.0.0:8787' wildcard vs '192.168.1.5:8787' specific) --
+            // the half this module used to read and discard.
+            const probeHost = livenessProbeHost(split.host);
             portRowsSeen += 1;
             // An unprivileged ss omits the users:((...pid=N...)) column, so
             // this loop legitimately runs zero times -- which is what makes
             // the seen/attributed split load-bearing rather than cosmetic.
             for (const pidMatch of body.matchAll(/pid=(\d+)/g)) {
-                if (pushPort(portsByPid, Number(pidMatch[1]), port)) portRowsAttributed += 1;
+                if (pushPort(portsByPid, Number(pidMatch[1]), port, probeHost)) portRowsAttributed += 1;
             }
             continue;
         }
@@ -892,8 +1068,12 @@ export function parseProbeOutput(output, opts = {}) {
     }
 
     const listeners = [];
-    for (const [pid, ports] of portsByPid) {
-        for (const port of ports) listeners.push({ pid, port });
+    for (const [pid, sockets] of portsByPid) {
+        // apra-fleet-i4ku.21: each listener now carries `probeHost` -- the
+        // URL-safe host the liveness probe must ask for THIS socket, or null
+        // when the bound address is not something this module can turn into a
+        // URL. Null is deliberately not loopback: see livenessProbeHost().
+        for (const { port, probeHost } of sockets) listeners.push({ pid, port, probeHost });
     }
     // portsKnown is FALSE both when the port table was empty and when it had
     // rows none of which named a pid. Only an actually-attributed table lets
@@ -938,25 +1118,69 @@ export function computeParentGone(record, livePids) {
  * record, and the production port set -- with "were listening ports
  * observable at all?" being part of what the record says about itself.
  *
+ * apra-fleet-i4ku.21 adds two more fields, both about the LIVENESS predicate
+ * only -- `listeningPorts` keeps its exact previous shape (a deduplicated
+ * array of port NUMBERS), because that is what the production-port predicate
+ * consumes and that predicate's behaviour is unchanged:
+ *
+ *   - `probeTargets`: one `{ port, probeHost }` per port this pid holds that
+ *     CAN be asked, at most one entry per port. When a pid holds the same port
+ *     on several addresses, ONE is chosen (loopback-reachable first), so the
+ *     dispatch stays one probe per `pid:port` -- which is also the key
+ *     parseLivenessProbeOutput() attributes results by.
+ *   - `unresolvedSockets`: how many of this pid's ports have NO askable
+ *     address at all. Non-zero means the liveness answer for this candidate is
+ *     incomplete, which the caller must resolve fail-safe rather than read as
+ *     "nothing answered".
+ *
  * @param {Array<object>} processes
- * @param {Array<{pid:number, port:number}>} listeners
+ * @param {Array<{pid:number, port:number, probeHost?:string|null}>} listeners
  * @param {{ portsKnown?: boolean }} [opts]
  * @returns {Array<object>}
  */
 export function annotateCandidates(processes, listeners = [], opts = {}) {
     const portsKnown = opts.portsKnown === true;
     const livePids = new Set(processes.map((p) => p.pid));
-    const portsByPid = new Map();
+    // pid -> (port -> { probeHost: string|null }). Keyed by PORT rather than
+    // by port+address so that one pid:port yields exactly one probe.
+    const socketsByPid = new Map();
     for (const l of listeners) {
-        if (!portsByPid.has(l.pid)) portsByPid.set(l.pid, []);
-        if (!portsByPid.get(l.pid).includes(l.port)) portsByPid.get(l.pid).push(l.port);
+        if (!Number.isInteger(l.pid) || !Number.isInteger(l.port)) continue;
+        if (!socketsByPid.has(l.pid)) socketsByPid.set(l.pid, new Map());
+        const byPort = socketsByPid.get(l.pid);
+        const probeHost = typeof l.probeHost === 'string' ? l.probeHost : null;
+        const existing = byPort.get(l.port);
+        if (existing === undefined) {
+            byPort.set(l.port, { probeHost });
+            continue;
+        }
+        // Same pid:port on a second address. Prefer an askable host over an
+        // unaskable one, and prefer LOOPBACK over a specific interface when
+        // both are held -- a process bound to both 127.0.0.1:8080 and
+        // 10.0.0.4:8080 is reachable on loopback, which needs no assumption
+        // about the member's routing.
+        if (existing.probeHost === LOOPBACK_PROBE_HOST) continue;
+        if (probeHost === LOOPBACK_PROBE_HOST || existing.probeHost === null) {
+            byPort.set(l.port, { probeHost: probeHost ?? existing.probeHost });
+        }
     }
-    return processes.map((p) => ({
-        ...p,
-        parentGone: computeParentGone(p, livePids),
-        listeningPorts: portsByPid.get(p.pid) ?? [],
-        portsKnown,
-    }));
+    return processes.map((p) => {
+        const byPort = socketsByPid.get(p.pid) ?? new Map();
+        const probeTargets = [];
+        let unresolvedSockets = 0;
+        for (const [port, { probeHost }] of byPort) {
+            if (probeHost === null) unresolvedSockets += 1;
+            else probeTargets.push({ port, probeHost });
+        }
+        return {
+            ...p,
+            parentGone: computeParentGone(p, livePids),
+            listeningPorts: [...byPort.keys()],
+            probeTargets,
+            unresolvedSockets,
+            portsKnown,
+        };
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,12 +1588,49 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         // silent" shape this repo forbids, and it also made the result lie:
         // the pass reported `checked: 0` next to a kill. Splitting the set
         // here makes each candidate's outcome depend only on that candidate.
-        const probeable = provisionalToKill.filter((d) => d.listeningPorts.length > 0);
-        liveness.unprobeable = provisionalToKill.length - probeable.length;
+        //
+        // apra-fleet-i4ku.21 adds the THIRD outcome this split has to carry.
+        // A candidate can hold listening sockets whose bound address this
+        // module cannot turn into a URL (a hostname, a zone-scoped
+        // link-local). That is neither `unprobeable` (there IS a socket to
+        // ask) nor a legitimate loopback probe (asking the wrong address and
+        // reading silence as death is the whole defect this bead fixed) -- it
+        // is `unevaluable`: we could not phrase the question, so the
+        // candidate is SPARED. It is classified here, OUTSIDE the dispatch
+        // block below, because no dispatch is ever built for it and it must
+        // not depend on whether some OTHER candidate happened to be askable.
+        const recordFor = (d) => records.find((r) => r.pid === d.pid);
+        const portless = [];
+        const unaskable = [];
+        const probeable = [];
+        for (const d of provisionalToKill) {
+            const record = recordFor(d);
+            const targets = (record && record.probeTargets) || [];
+            if (targets.length > 0) probeable.push(d);
+            else if (record && record.listeningPorts.length > 0) unaskable.push(d);
+            else portless.push(d);
+        }
+        liveness.unprobeable = portless.length;
+        for (const d of unaskable) {
+            const record = recordFor(d);
+            if (!record) continue;
+            // NOT counted as `checked`: no probe was ever dispatched for this
+            // candidate, and the result object exists precisely so a caller
+            // can tell an unasked candidate from an asked one.
+            record.liveProbe = 'unevaluable';
+            liveness.unevaluable += 1;
+            logError(
+                `[member-stray-sweep] member '${name}': pid ${record.pid} holds listening port(s) `
+                + `${record.listeningPorts.join(', ')} whose bound address could not be resolved to a probeable `
+                + 'host, so the liveness probe could not be asked for it -- it is SPARED rather than killed.',
+            );
+        }
         const candidates = [];
         for (const d of probeable) {
-            for (const port of d.listeningPorts) candidates.push({ pid: d.pid, port });
+            const record = recordFor(d);
+            for (const { port, probeHost } of record.probeTargets) candidates.push({ pid: d.pid, port, probeHost });
         }
+        if (unaskable.length > 0) decisions = decideAll();
         if (candidates.length > 0) {
             const livenessOpts = livenessProbe === true ? {} : livenessProbe;
             let livenessRes;
@@ -1419,13 +1680,24 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                     liveness.unevaluable += 1;
                     continue;
                 }
-                const checkedPorts = record.listeningPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
-                if (checkedPorts.length === 0) {
-                    record.liveProbe = 'unevaluable';
-                    liveness.unevaluable += 1;
-                } else if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === true)) {
+                const askedPorts = record.probeTargets.map((t) => t.port);
+                const checkedPorts = askedPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
+                if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === true)) {
                     record.liveProbe = 'responded';
                     liveness.spared += 1;
+                } else if (checkedPorts.length === 0) {
+                    record.liveProbe = 'unevaluable';
+                    liveness.unevaluable += 1;
+                } else if (checkedPorts.length < askedPorts.length || record.unresolvedSockets > 0) {
+                    // apra-fleet-i4ku.21: some of this candidate's sockets
+                    // were never actually asked -- either the dispatch
+                    // returned no line for them, or their bound address was
+                    // not resolvable to a URL in the first place. "Everything
+                    // I managed to ask said no" is NOT "nothing is there"
+                    // while a socket remains unasked, so this resolves
+                    // fail-safe rather than falling through to the kill.
+                    record.liveProbe = 'unevaluable';
+                    liveness.unevaluable += 1;
                 } else {
                     record.liveProbe = 'no-response';
                 }

@@ -670,14 +670,20 @@ test('listening sockets are attributed from both lsof and ss output', () => {
         'SWEEP-PORT-LSOF n[::1]:631',
     ].join('\n'), {});
     assert.equal(lsof.portsKnown, true);
-    assert.deepEqual(lsof.listeners, [{ pid: 1, port: 22 }, { pid: 1, port: 631 }]);
+    // apra-fleet-i4ku.21: each listener carries the probe host its bound
+    // address resolves to -- lsof's '*' wildcard and a bracketed IPv6
+    // loopback both end up askable on loopback.
+    assert.deepEqual(lsof.listeners, [
+        { pid: 1, port: 22, probeHost: '127.0.0.1' },
+        { pid: 1, port: 631, probeHost: '[::1]' },
+    ]);
 
     const ss = parseProbeOutput([
         'SWEEP-PROC 1 0 00:01 /sbin/init',
         'SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:8787 0.0.0.0:* users:(("node",pid=55,fd=20))',
     ].join('\n'), {});
     assert.equal(ss.portsKnown, true);
-    assert.deepEqual(ss.listeners, [{ pid: 55, port: 8787 }]);
+    assert.deepEqual(ss.listeners, [{ pid: 55, port: 8787, probeHost: '127.0.0.1' }]);
 });
 
 test('port rows that name no pid are counted as SEEN but NOT attributed', () => {
@@ -922,8 +928,8 @@ test('a Windows remote member gets the encoded probe and an encoded kill naming 
     const winProbe = [
         `SWEEP-PROC-WIN ${STALE_PID}|${DEAD_PARENT_PID}|1758503655|C:\\fleetwork\\sandbox-run1\\supervisor.exe --listen 18701`,
         'SWEEP-PROC-WIN 4300|4|1758503655|C:\\fleetwork\\sandbox-run1\\api.exe --listen 8787',
-        `SWEEP-PORT-WIN ${STALE_PID}|18701`,
-        'SWEEP-PORT-WIN 4300|8787',
+        `SWEEP-PORT-WIN ${STALE_PID}|18701|0.0.0.0`,
+        'SWEEP-PORT-WIN 4300|8787|0.0.0.0',
     ].join('\n');
     const seam = stubSeam(winProbe);
     const result = await sweepMemberStrayProcesses({
