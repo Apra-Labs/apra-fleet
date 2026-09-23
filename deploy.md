@@ -229,6 +229,7 @@ Env-var driven only; there are no port/data-dir CLI flags.
 | `APRA_FLEET_DATA_DIR` | Fleet MCP server data dir: `server.json`, `registry.json`, credentials, salt, logs (`FLEET_DIR` in `src/paths.ts`) | `~/.apra-fleet/data` |
 | `APRA_FLEET_PORT` | Fleet MCP server HTTP port (`DEFAULT_PORT` in `src/paths.ts`) | `7523` |
 | `FLEET_SE_DATA_DIR` | Supervisor data dir: reservation ledger, sprint history, logs | `~/.apra-fleet-se` |
+| `FLEET_SE_SWEEP_CONFIG` | Member Prep stray-sweep config (inline JSON or a path), forwarded to every sprint as `--sweep-config` | this repo's own `.fleet/sweep-config.json` |
 
 Two load-bearing consequences:
 

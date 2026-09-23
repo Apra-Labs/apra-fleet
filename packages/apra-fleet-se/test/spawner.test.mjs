@@ -15,6 +15,17 @@ import {
     isPortAvailable,
     DEFAULT_SPAWNER_BASE_PORT,
 } from '../src/supervisor/spawner.mjs';
+import {
+    loadSweepConfig,
+    SWEEP_CONFIG_ENV_VAR,
+    SWEEP_CONFIG_RELATIVE_PATH,
+} from '../src/supervisor/sweep-config.mjs';
+// The REAL flag parser the spawned child uses, so the round-trip test proves
+// the supervisor and the CLI agree rather than asserting against a copy.
+import { resolveSweepConfig } from '../bin/cli.mjs';
+// The engine's own evidence classifier, used to prove the target-owned markers
+// match the processes they are meant to identify (and nothing else).
+import { classifyFleetEvidence } from '../fleet-sprint/member-stray-sweep.mjs';
 
 // apra-fleet-eft.4.2 -- detached child-per-sprint spawner with per-sprint
 // --viewer-port allocation.
@@ -245,6 +256,43 @@ describe('buildSprintArgv', () => {
         assert.ok(!args.includes('--expect-beads'));
     });
 
+    // apra-fleet-i4ku.10: --sweep-config carries the TARGET-OWNED fleet-start
+    // markers + production ports to the spawned child. Without this the flag
+    // was reachable only from a direct CLI launch, so every supervisor-launched
+    // sprint reported "sweep skipped: no fleet-start markers configured".
+    test('appends --sweep-config with the serialized config when sweepConfig is provided', () => {
+        const sweepConfig = {
+            markers: [{ kind: 'fleet-supervisor', token: 'pkg/bin/serve.mjs', evidence: 'path' }],
+            productionPorts: [7523, 8787],
+        };
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            sweepConfig,
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080',
+            '--sweep-config', JSON.stringify(sweepConfig),
+        ]);
+        // The value is real JSON carrying the actual markers, not a placeholder.
+        const sent = JSON.parse(args[args.indexOf('--sweep-config') + 1]);
+        assert.deepEqual(sent.markers[0], { kind: 'fleet-supervisor', token: 'pkg/bin/serve.mjs', evidence: 'path' });
+        assert.deepEqual(sent.productionPorts, [7523, 8787]);
+    });
+
+    test('passes an already-serialized sweepConfig string through verbatim', () => {
+        const raw = '{"markers":[],"productionPorts":[8787]}';
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080, sweepConfig: raw,
+        });
+        assert.equal(args[args.indexOf('--sweep-config') + 1], raw);
+    });
+
+    test('omits --sweep-config entirely when sweepConfig is not provided', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--sweep-config'));
+    });
+
     test('throws when a required flag is missing', () => {
         assert.throws(() => buildSprintArgv({ members: 'm', branch: 'b', base: 'main', viewerPort: 8080 }), /issue, members, branch, and base/);
     });
@@ -252,6 +300,162 @@ describe('buildSprintArgv', () => {
     test('throws for a non-integer or out-of-range viewerPort', () => {
         assert.throws(() => buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 'nope' }), /integer viewerPort/);
         assert.throws(() => buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 70000 }), /integer viewerPort/);
+    });
+});
+
+// apra-fleet-i4ku.10 -- the supervisor's own sweep-config surface: where a
+// TARGET declares its fleet-start markers/production ports, and the path that
+// actually carries them into a spawned sprint. The engine owns none of the
+// data (docs/generic-engine-boundary.md); it owns only the plumbing.
+describe('supervisor sweep-config surface (target-owned data)', () => {
+    const repoRoot = path.resolve(__dirname, '../../..');
+
+    test('createSpawner threads deps.sweepConfig into every spawned child argv, and a per-call opts value wins', async () => {
+        const instanceConfig = { markers: [{ kind: 'k', token: 't', evidence: 'path' }], productionPorts: [8787] };
+        const perCallConfig = { markers: [{ kind: 'k2', token: 't2', evidence: 'flag' }], productionPorts: [7523] };
+        const { spawnFn } = makeFakeSpawn([201, 202]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/usr/bin/node',
+            cliPath: '/repo/bin/cli.mjs',
+            basePort: 9100,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            sweepConfig: instanceConfig,
+        });
+
+        const fromInstance = await spawner.spawnSprint({ issue: 'i', members: 'm', branch: 'b', base: 'main' });
+        assert.deepEqual(
+            JSON.parse(fromInstance.args[fromInstance.args.indexOf('--sweep-config') + 1]),
+            instanceConfig,
+            'the supervisor instance config must reach the child -- an argv branch nothing can populate is not a passthrough',
+        );
+
+        const fromOpts = await spawner.spawnSprint({ issue: 'i', members: 'm', branch: 'b', base: 'main', sweepConfig: perCallConfig });
+        assert.deepEqual(JSON.parse(fromOpts.args[fromOpts.args.indexOf('--sweep-config') + 1]), perCallConfig);
+    });
+
+    test('a spawner with no sweepConfig omits the flag, leaving direct/legacy launches unchanged', async () => {
+        const { spawnFn } = makeFakeSpawn([203]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn, command: '/usr/bin/node', cliPath: '/repo/bin/cli.mjs',
+            basePort: 9200, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: fakeFs.fs,
+        });
+        const result = await spawner.spawnSprint({ issue: 'i', members: 'm', branch: 'b', base: 'main' });
+        assert.ok(!result.args.includes('--sweep-config'));
+    });
+
+    // AC5: whatever the supervisor serializes must be parseable by the flag
+    // parser on the other end. Driven through the REAL resolveSweepConfig from
+    // bin/cli.mjs, so the supervisor-side validator in sweep-config.mjs cannot
+    // silently drift away from the CLI's own shape checks.
+    test('round-trips: what the supervisor serializes is what cli.mjs resolveSweepConfig() parses back', async () => {
+        const loaded = loadSweepConfig({ repoRoot, env: {}, logger: { log() {} } });
+        assert.ok(loaded, `expected a target sweep config at ${SWEEP_CONFIG_RELATIVE_PATH}`);
+
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080, sweepConfig: loaded });
+        const onTheWire = args[args.indexOf('--sweep-config') + 1];
+
+        const reparsed = await resolveSweepConfig(onTheWire);
+        assert.deepEqual(reparsed, { markers: loaded.markers, productionPorts: loaded.productionPorts });
+    });
+
+    // AC6: this repo, acting as its own target, actually declares a config --
+    // so a supervisor-launched sprint here stops reporting "sweep skipped: no
+    // fleet-start markers configured".
+    test("apra-fleet's own .fleet/sweep-config.json is loadable and carries strong evidence markers", () => {
+        const loaded = loadSweepConfig({ repoRoot, env: {}, logger: { log() {} } });
+        assert.ok(loaded.markers.length > 0, 'a config with no markers leaves the sweep dormant');
+        assert.ok(
+            loaded.markers.some((m) => m.evidence === 'path' || m.evidence === 'flag'),
+            'name-only markers can never establish that fleet started a process, so the sweep would still act on nothing',
+        );
+        assert.ok(loaded.productionPorts.includes(8787), 'the supervisor production port must never be swept');
+
+    });
+
+    // The markers are only worth anything if they match the process this
+    // feature exists to sweep. Markers are matched as PLAIN SUBSTRINGS with no
+    // path-separator normalization, so a POSIX-only token silently matches
+    // nothing on the remote WINDOWS member that motivated the sweep -- a
+    // dormant-in-practice config that every structural check would call fine.
+    test("apra-fleet's markers actually identify a stale fleet process on both a POSIX and a Windows member", () => {
+        const { markers } = loadSweepConfig({ repoRoot, env: {}, logger: { log() {} } });
+        const classify = (commandLine, caseInsensitive) =>
+            classifyFleetEvidence({ commandLine }, markers, { caseInsensitive });
+
+        const posixSupervisor = classify('node /home/u/git/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port 8899', false);
+        assert.equal(posixSupervisor.fleetStarted, true);
+        assert.equal(posixSupervisor.kind, 'fleet-supervisor');
+
+        const winSupervisor = classify(
+            'C:\\Program Files\\nodejs\\node.exe C:\\Users\\u\\git\\apra-fleet\\packages\\apra-fleet-se\\bin\\serve.mjs --port 8899',
+            true,
+        );
+        assert.equal(winSupervisor.fleetStarted, true, 'a Windows command line must still match -- separators are NOT normalized');
+        assert.equal(winSupervisor.kind, 'fleet-supervisor');
+
+        const sprintChild = classify('node /home/u/git/apra-fleet/packages/apra-fleet-se/bin/cli.mjs --issue x --run-id r1', false);
+        assert.equal(sprintChild.fleetStarted, true);
+        assert.equal(sprintChild.kind, 'fleet-sprint-engine');
+
+        // Fail-safe direction: never claim an unrelated process was fleet-started.
+        assert.equal(classify('node /home/u/other-project/server.js --port 3000', false).fleetStarted, false);
+
+        // A 'name'-class marker labels a candidate but is never evidence, so it
+        // can never on its own get anything killed.
+        const nameOnly = classify('node /home/u/git/apra-fleet/dist/index.js --transport http', false);
+        assert.equal(nameOnly.fleetStarted, false);
+        assert.equal(nameOnly.nameOnly, true);
+        assert.equal(nameOnly.kind, 'fleet-mcp-server');
+    });
+
+    test('no config and no env var: returns undefined and says the sweep is dormant, rather than failing the sprint', () => {
+        const lines = [];
+        const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sweepcfg-none-'));
+        try {
+            const loaded = loadSweepConfig({ repoRoot: emptyRoot, env: {}, logger: { log: (m) => lines.push(String(m)) } });
+            assert.equal(loaded, undefined);
+            assert.match(lines.join('\n'), /dormant/);
+        } finally {
+            fs.rmSync(emptyRoot, { recursive: true, force: true });
+        }
+    });
+
+    // Explicit configuration plus LOUD failure: a target that declared a sweep
+    // config and got a silent no-op would believe its members were swept.
+    test('a declared-but-broken config throws instead of silently disarming the sweep', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sweepcfg-bad-'));
+        try {
+            fs.mkdirSync(path.join(root, '.fleet'), { recursive: true });
+            const file = path.join(root, SWEEP_CONFIG_RELATIVE_PATH);
+
+            fs.writeFileSync(file, '{ not json');
+            assert.throws(() => loadSweepConfig({ repoRoot: root, env: {}, logger: { log() {} } }), /not valid JSON/);
+
+            fs.writeFileSync(file, JSON.stringify({ markers: [{ kind: 'k', token: 't', evidence: 'vibes' }] }));
+            assert.throws(() => loadSweepConfig({ repoRoot: root, env: {}, logger: { log() {} } }), /markers\[0\]/);
+
+            fs.writeFileSync(file, JSON.stringify({ markers: [], productionPorts: [99999] }));
+            assert.throws(() => loadSweepConfig({ repoRoot: root, env: {}, logger: { log() {} } }), /productionPorts\[0\]/);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    test('FLEET_SE_SWEEP_CONFIG overrides the conventional location, inline or by path, and fails loudly when unreadable', () => {
+        const inline = JSON.stringify({ markers: [{ kind: 'k', token: 'tok', evidence: 'flag' }], productionPorts: [1234] });
+        const loaded = loadSweepConfig({ repoRoot, env: { [SWEEP_CONFIG_ENV_VAR]: inline }, logger: { log() {} } });
+        assert.deepEqual(loaded.productionPorts, [1234]);
+        assert.equal(loaded.markers[0].token, 'tok');
+
+        assert.throws(
+            () => loadSweepConfig({ repoRoot, env: { [SWEEP_CONFIG_ENV_VAR]: 'no/such/sweep.json' }, logger: { log() {} } }),
+            /could not be read/,
+        );
     });
 });
 

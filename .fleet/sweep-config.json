@@ -1,0 +1,36 @@
+{
+  "_readme": "apra-fleet's OWN stray-sweep config, as a fleet-sprint TARGET. The engine owns none of this (docs/generic-engine-boundary.md): it knows no process names, paths or ports of its own. Loaded by packages/apra-fleet-se/src/supervisor/sweep-config.mjs and forwarded to every sprint as --sweep-config. Markers are matched as PLAIN SUBSTRINGS of a process command line, with NO path-separator normalization (case-insensitive on Windows only), which is why each path marker is declared in both a POSIX and a Windows form -- a remote Windows member reports 'packages\\apra-fleet-se\\bin\\serve.mjs' and would not match the forward-slash token. Only 'path'/'flag' markers are evidence that fleet started a process; a 'name' marker only labels a candidate and can never by itself get anything killed. See docs/fleet-sprint-getting-started.md section 2.6.",
+  "markers": [
+    {
+      "kind": "fleet-supervisor",
+      "token": "apra-fleet-se/bin/serve.mjs",
+      "evidence": "path"
+    },
+    {
+      "kind": "fleet-supervisor",
+      "token": "apra-fleet-se\\bin\\serve.mjs",
+      "evidence": "path"
+    },
+    {
+      "kind": "fleet-sprint-engine",
+      "token": "apra-fleet-se/bin/cli.mjs",
+      "evidence": "path"
+    },
+    {
+      "kind": "fleet-sprint-engine",
+      "token": "apra-fleet-se\\bin\\cli.mjs",
+      "evidence": "path"
+    },
+    {
+      "kind": "fleet-mcp-server",
+      "token": "dist/index.js",
+      "evidence": "name"
+    },
+    {
+      "kind": "fleet-mcp-server",
+      "token": "dist\\index.js",
+      "evidence": "name"
+    }
+  ],
+  "productionPorts": [7523, 8787, 18700, 18701]
+}

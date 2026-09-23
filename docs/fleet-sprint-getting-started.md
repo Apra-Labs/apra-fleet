@@ -269,6 +269,57 @@ one -- the launch form will let you tick several members for one sprint, but tha
 configuration has not been exercised in practice, so treat it as experimental.
 Start with one member per sprint and add sprints, not doers.
 
+### 2.6 Optional: declare a stray-process sweep config
+
+At sprint start, Member Prep can sweep a **remote** member for processes a
+previous fleet run left behind (a stale supervisor, an orphaned sprint engine).
+The engine deliberately knows no process names, paths or ports of its own, so
+this does nothing until you tell it what *your* fleet-started processes look
+like. Declare that in your repo at:
+
+```
+.fleet/sweep-config.json
+```
+
+```json
+{
+  "markers": [
+    { "kind": "fleet-supervisor", "token": "yourpkg/bin/serve.mjs", "evidence": "path" },
+    { "kind": "fleet-supervisor", "token": "yourpkg\\bin\\serve.mjs", "evidence": "path" }
+  ],
+  "productionPorts": [7523, 8787]
+}
+```
+
+- **`markers`** describe something fleet itself put on a process's command
+  line. `evidence: "path"` (a path fleet chose) and `evidence: "flag"` (an
+  argument fleet passed) are the only things that count as proof fleet started
+  a process. `evidence: "name"` is a bare program name -- it can *label* a
+  candidate, but never by itself gets anything killed, because your editor or
+  language runtime shares that name.
+- **`productionPorts`** are ports whose listener must never be killed. Put
+  every real service port here.
+
+Two traps worth knowing before you write your markers:
+
+1. **Tokens are matched as plain substrings of the command line, with no
+   path-separator normalization** (matching is case-insensitive on Windows
+   only). A `some/path/x.mjs` token will not match a Windows member reporting
+   `some\path\x.mjs`, so declare both forms, as above.
+2. **Environment variables are not visible to this sweep.** A data dir passed
+   to a process through the environment never appears in its command line, so
+   it cannot be a marker. Pick something on the *outer* command line.
+
+The file is optional. With no `.fleet/sweep-config.json` the supervisor logs
+that the sweep is dormant and the sprint runs exactly as before; a file that
+*is* present but malformed fails the supervisor loudly at startup rather than
+silently sweeping nothing. To point somewhere else, set
+`FLEET_SE_SWEEP_CONFIG` to a path or to inline JSON.
+
+The sweep is conservative by construction: remote members only, only processes
+whose parent is already gone, never a listener on a production port, and never
+on a name match alone.
+
 ---
 
 ## 3. How do I run it
