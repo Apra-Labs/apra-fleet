@@ -186,7 +186,10 @@ export function buildOptionsSpec() {
     };
 }
 
-const USAGE_TEXT = `
+// Exported so a test can assert on the rendered help text directly (e.g. that
+// a flag's multi-line entry stays at one coherent continuation indent) without
+// having to spawn the CLI as a subprocess just to capture stdout.
+export const USAGE_TEXT = `
 Usage: fleet-se sprint [options]
 
 Options:

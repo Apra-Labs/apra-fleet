@@ -16,8 +16,10 @@ import {
     attachViewerErrorHandler,
     resolveExpectBeads,
     probeBeadsIdentityOnMember,
+    USAGE_TEXT,
 } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/runner.js';
+import { fileURLToPath } from 'node:url';
 
 // Tests for apra-fleet-unw2.16 (N14): CLI robustness fixes (a)-(e).
 //
@@ -332,6 +334,85 @@ describe('parseCliArgs + resolveSweepConfig + buildRunnerArgs -> runner.js valid
         assert.deepStrictEqual(Object.keys(sweepConfig).sort(), ['markers', 'productionPorts']);
         assert.deepStrictEqual(sweepConfig.markers, [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }]);
         assert.deepStrictEqual(sweepConfig.productionPorts, [8787]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.20: the --sweep-config help entry was once garbled by a
+// splice that inserted the liveness sentences mid-sentence and left a
+// dangling fragment at a different indent. These tests pin the entry's
+// coherence directly against the rendered USAGE_TEXT (not a re-typed copy),
+// and pin that the CLI reference doc mentions livenessProbe in the same row.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts one flag's help entry from USAGE_TEXT: its own line plus every
+ * following line that is a CONTINUATION (indented well past the two-space/
+ * six-space column where a new flag entry starts), stopping at the next flag
+ * entry, a blank line, or EOF.
+ * @param {string} usageText
+ * @param {RegExp} flagLineRe - matches the flag's own (first) line
+ * @returns {{ ownLine: string, continuationLines: string[] } | null}
+ */
+function extractHelpEntry(usageText, flagLineRe) {
+    const lines = usageText.split('\n');
+    const startIdx = lines.findIndex((l) => flagLineRe.test(l));
+    if (startIdx === -1) return null;
+
+    const continuationLines = [];
+    for (let i = startIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().length === 0) break;
+        const indent = line.length - line.trimStart().length;
+        // A new flag entry starts at column 2 ('-x, --flag') or column 6
+        // ('    --flag'); a continuation of the current entry is indented
+        // well past that (aligned under the entry's description column).
+        if (indent <= 6) break;
+        continuationLines.push(line);
+    }
+    return { ownLine: lines[startIdx], continuationLines };
+}
+
+describe('--sweep-config help entry stays coherent (no re-splice regression)', () => {
+    test('the rendered help entry mentions markers, productionPorts and livenessProbe', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        const wholeEntry = [entry.ownLine, ...entry.continuationLines].join(' ');
+        assert.match(wholeEntry, /markers/);
+        assert.match(wholeEntry, /productionPorts/);
+        assert.match(wholeEntry, /livenessProbe/);
+    });
+
+    test('the entry has no orphan fragment: every continuation line shares the same indent', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        assert.ok(entry.continuationLines.length > 1, 'expected a multi-line entry to have something to check');
+
+        const indents = entry.continuationLines.map((l) => l.length - l.trimStart().length);
+        const distinctIndents = new Set(indents);
+        assert.strictEqual(
+            distinctIndents.size, 1,
+            `expected every continuation line of --sweep-config to share one indent, got indents ${JSON.stringify(indents)} ` +
+            `for lines ${JSON.stringify(entry.continuationLines)}`,
+        );
+    });
+
+    test('the rendered help entry has no dangling low-level fragment ("configuring the Member Prep..." at the old indent)', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        // Pins the exact pre-fix regression shape: a continuation line
+        // sitting at column 32 while the rest of the entry sits at column 35.
+        const shallowFragment = entry.continuationLines.find((l) => (l.length - l.trimStart().length) === 32);
+        assert.strictEqual(shallowFragment, undefined, `found a stray shallow-indent continuation line: ${JSON.stringify(shallowFragment)}`);
+    });
+
+    test('docs/cli-reference.md mentions livenessProbe within its --sweep-config row', async () => {
+        const docPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'cli-reference.md');
+        const content = await fs.readFile(docPath, 'utf-8');
+        const lines = content.split('\n');
+        const sweepConfigRow = lines.find((l) => l.includes('--sweep-config'));
+        assert.ok(sweepConfigRow, 'docs/cli-reference.md has no --sweep-config row to inspect');
+        assert.match(sweepConfigRow, /livenessProbe/, 'the --sweep-config row must document livenessProbe');
     });
 });
 
