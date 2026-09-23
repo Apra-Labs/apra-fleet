@@ -48,18 +48,28 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 - This binds within the current review cycle only. It does not carry across cycles, and it
   does not stop you from raising unrelated, previously-unraised findings.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
-   for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under review.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. An entry
-   recording that a module is harder than it looks is a task-sizing input.
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the features in the DAG under
+review. Treat it as your PRIMARY source -- reading it needs no tool call. On most
+dispatched environments the fleet MCP server (mcp__apra-fleet__*) is disabled for this
+role, so the tool calls below are a BONUS path, not a requirement: attempt them
+opportunistically and fall back to the pre-fetched block (or no KB context at all) if
+ToolSearch surfaces nothing.
+
+1. If you want a live lookup beyond the pre-fetched block, run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
+   for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under
+   review.
+2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
+   as hints, not facts. An entry recording that a module is harder than it looks is a
+   task-sizing input.
 3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or
-   "learning".
-
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+   an invariant), call `mcp__apra-fleet__kb_capture` if it is reachable -- it usually is
+   not on a dispatched environment, in which case simply note the finding in your own
+   review notes instead.
 
 ## Step 1 -- Inspect the DAG
 

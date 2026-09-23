@@ -6,20 +6,29 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 # Regression Test Execution
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE bringing the sandbox up)
+## Step 0 -- Knowledge Bank (do this BEFORE bringing the sandbox up)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
-   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. Trust
-   CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
-   known sandbox setup/teardown gotchas are the point here -- they change whether a red run
-   is a real regression or a known environment failure.
-3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns out
-   to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
-   "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the
-   next sprint's run needs.
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the subsystems
+`regression-test-playbook.md` exercises. Treat it as your PRIMARY source -- reading it
+needs no tool call. On most dispatched environments the fleet MCP server
+(mcp__apra-fleet__*) is disabled for this role, so the tool calls below are a BONUS
+path, not a requirement: attempt them opportunistically and fall back to the
+pre-fetched block (or no KB context at all) if ToolSearch surfaces nothing.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+1. If you want a live lookup beyond the pre-fetched block, run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises.
+2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
+   as hints, not facts. Known-flaky tests and known sandbox setup/teardown gotchas are
+   the point here -- they change whether a red run is a real regression or a known
+   environment failure.
+3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns
+   out to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture`
+   if it is reachable -- it usually is not on a dispatched environment, in which case
+   simply note the regression gotcha in your own report instead. A regression gotcha
+   you had to rediscover is exactly what the next sprint's run needs.
 
 You own `regression-test-playbook.md` end to end: bring the test sandbox
 up, run both playbook parts, and ALWAYS tear the sandbox down -- pass or
