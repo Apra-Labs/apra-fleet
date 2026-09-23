@@ -841,8 +841,13 @@ test('remote member end to end: a selected pid that already exited (ESRCH) is TO
         logger: { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) },
     });
 
-    // The sweep did not throw, and it still reports the pid as selected.
-    assert.deepEqual(result.killed.map((k) => k.pid), [STALE_PID]);
+    // The sweep did not throw, and it still reports the pid as SELECTED --
+    // but apra-fleet-i4ku.9: NOT in `killed` (nothing was actually signalled
+    // for it), in its own `alreadyGone` bucket instead. Before this bead,
+    // `result.killed` still contained this pid, over-reporting the count
+    // phases/member-prep.mjs surfaces to the operator as "N killed".
+    assert.deepEqual(result.killed, [], 'an already-gone pid must NOT be counted in killed');
+    assert.deepEqual(result.alreadyGone.map((k) => k.pid), [STALE_PID], 'it must be pinned in its own alreadyGone bucket');
     // The race is stated, not silent -- and NOT reported as "KILLED", which
     // would misrepresent what actually happened to this pid.
     assert.ok(logs.some((l) => l.includes('already') && l.includes(String(STALE_PID))));

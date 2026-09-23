@@ -453,9 +453,16 @@ export async function runMemberPrepPhase({
             line(log, member, 'sweep', 'skipped', sweep.reason);
         } else {
             const { result } = sweep;
+            // apra-fleet-i4ku.9: `result.killed` no longer includes a pid
+            // that had already exited before the kill dispatch ran (that
+            // benign race -- apra-fleet-i4ku.3 -- is its own
+            // `result.alreadyGone` bucket now); surfaced as its own count
+            // here rather than silently dropped, so this summary line still
+            // accounts for every selected candidate.
+            const alreadyGoneCount = Array.isArray(result.alreadyGone) ? result.alreadyGone.length : 0;
             line(
                 log, member, 'sweep', 'ran',
-                `${result.killed.length} killed, ${result.reported.length} reported, ${result.scanned} scanned`,
+                `${result.killed.length} killed, ${alreadyGoneCount} already exited, ${result.reported.length} reported, ${result.scanned} scanned`,
             );
         }
 

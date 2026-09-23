@@ -1009,6 +1009,15 @@ export async function sweepMemberStrayProcesses(deps = {}) {
     const reported = decisions.filter((d) => d.action === ACTION_REPORT_ONLY);
 
     let killed = [];
+    // Selected pids that turned out to have ALREADY EXITED before the kill
+    // dispatch ran (apra-fleet-i4ku.3's benign probe/kill race) -- reported
+    // separately from `killed`, never folded into it. Before apra-fleet-
+    // i4ku.9, `killed` was set to the FULL `toKill` list regardless of this
+    // set, so `result.killed.length` over-reported: the per-pid LOG lines
+    // already skipped an already-gone pid (see the loop below), but the
+    // returned count did not, contradicting its own log output and whatever
+    // summary a caller (phases/member-prep.mjs) built from it.
+    let alreadyGone = [];
     if (toKill.length > 0) {
         const killPids = toKill.map((d) => d.pid);
         const killCommand = buildKillCommand(family, killPids);
@@ -1049,12 +1058,19 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 );
             }
         }
-        killed = toKill;
+        // Split, not filtered-then-discarded: an already-gone pid is real
+        // information about what this pass found (it WAS a selected stray
+        // candidate), just not something this dispatch had to signal --
+        // apra-fleet-i4ku.9 pulls it out of `killed` into its own bucket
+        // rather than dropping it, so a caller can still account for it.
+        killed = toKill.filter((d) => !goneSet.has(d.pid));
+        alreadyGone = toKill.filter((d) => goneSet.has(d.pid));
         // A pid the tolerant path above already logged as "already exited"
         // is not ALSO logged as KILLED -- the two lines would contradict each
-        // other about what actually happened to that pid.
+        // other about what actually happened to that pid. `killed` no longer
+        // contains it at all, so this loop needs no goneSet re-check.
         for (const decision of killed) {
-            if (!goneSet.has(decision.pid)) logError(formatStrayKillLog(name, decision));
+            logError(formatStrayKillLog(name, decision));
         }
     }
 
@@ -1066,7 +1082,7 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 + `${d.sparedReasons.join('; ')}`).join(' | '),
         );
     }
-    if (killed.length === 0 && reported.length === 0) {
+    if (killed.length === 0 && reported.length === 0 && alreadyGone.length === 0) {
         log(`[member-stray-sweep] member '${name}': ${records.length} process(es) scanned, no stray fleet processes found.`);
     }
 
@@ -1077,6 +1093,7 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         scanned: records.length,
         candidates: decisions,
         killed,
+        alreadyGone,
         reported,
     };
 }
