@@ -184,7 +184,16 @@ function routeHasParams(routePath: string): boolean {
 
 /** Does `pathname` match a route path that may contain ':name' segments?
  *  Segment counts must match exactly; a literal segment must match
- *  byte-for-byte. Returns the captured params on match, null otherwise. */
+ *  byte-for-byte. Returns the captured params on match, null otherwise.
+ *
+ *  apra-fleet-iywi.3.2: a parameterised segment carrying a malformed
+ *  percent-escape (e.g. '%zz', a trailing bare '%') makes
+ *  decodeURIComponent throw URIError. Treat that the same as an ordinary
+ *  literal mismatch -- a non-match (null) -- rather than letting it
+ *  propagate: this function is called from matchRoutes, which is called
+ *  from handleConsoleRequest OUTSIDE any try/catch, so an uncaught throw
+ *  here becomes an unhandled rejection in the transport's async request
+ *  listener and kills the whole server process. */
 function matchParamPath(routePath: string, pathname: string): Record<string, string> | null {
   const routeSegs = splitSegments(routePath);
   const pathSegs = splitSegments(pathname);
@@ -193,7 +202,13 @@ function matchParamPath(routePath: string, pathname: string): Record<string, str
   for (let i = 0; i < routeSegs.length; i++) {
     const seg = routeSegs[i];
     if (seg.startsWith(':')) {
-      params[seg.slice(1)] = decodeURIComponent(pathSegs[i]);
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(pathSegs[i]);
+      } catch {
+        return null;
+      }
+      params[seg.slice(1)] = decoded;
     } else if (seg !== pathSegs[i]) {
       return null;
     }
