@@ -523,9 +523,14 @@ order. Options: `member_id?`, `member_name?`, `role?`
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
 wildcard-matched (not exact-matched) against a normalized form of the
 request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
-`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, and any payload
-containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
--- rejected outright, for every caller.
+`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, any payload
+containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`),
+the apra-fleet server console endpoints (`/ui`, `/api`, `/ext` on its port,
+default 7523) and the fleet-supervisor port (default 8787) -- except the two
+supervisor grants `deploy.md` documents by name (the active-sprints gate
+`Bash(curl * localhost:8787/api/sprints*)` and the stale-reservation
+force-release `Bash(curl * localhost:8787/api/reservations/*)`), which
+remain grantable -- are rejected outright, for every caller.
 
 #### `setupSshKey(options: SetupSshKeyOptions)`
 

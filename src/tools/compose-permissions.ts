@@ -17,7 +17,7 @@ import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig 
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), any payload containing a shell-chaining metacharacter (| ; && backtick $(), the apra-fleet server console endpoints (/ui, /api, /ext on its port) and the fleet-supervisor port -- except the two supervisor grants deploy.md documents (the active-sprints gate and the stale-reservation force-release), which remain grantable by name. Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -74,6 +74,28 @@ const CO_OCCURRENCE: Record<string, string[]> = {
 // requested permission. A denylist can never be complete (`Bash(perl -e *)`,
 // `Bash(node -e *)`, `Bash(make *)` remain arbitrary-execution in practice);
 // it is the unconditional floor that applies to EVERY caller of this tool.
+// apra-fleet-iywi.5.1: console/supervisor endpoint refusals. The apra-fleet
+// server's console (RAW_DEFAULT_PORT in src/paths.ts, default 7523) serves
+// /ui, /api and /ext -- an auto-granted curl/wget/etc. to any of those hands
+// a caller the fleet-status API, the workflow-package registry and (once the
+// later /ext lane lands) an arbitrary proxied endpoint, none of which belong
+// in an auto-approved grant. /health and /mcp on that same port are
+// deliberately NOT covered here -- they are not console paths (see
+// src/console/server.ts's isConsolePath) and stay auto-grantable exactly as
+// before.
+//
+// The fleet-supervisor's own HTTP API (a separate process, default port
+// 8787 -- see deploy.md's Permissions section) is denied WHOLESALE by the
+// broad 'Bash(*8787*)' pattern below rather than enumerated endpoint by
+// endpoint: the supervisor exposes many sprint-control/dolt-mutex/
+// child-id-allocator endpoints today and will grow more, and a denylist
+// that only lists today's endpoints would silently stop covering tomorrow's.
+// deploy.md's Permissions section documents exactly TWO supervisor-port
+// curls as required for the deploy phase (the active-sprints gate and the
+// documented force-release of a stale reservation); isNeverAutoGrant()
+// below carves those back out via NEVER_AUTO_GRANT_EXCEPTIONS rather than
+// narrowing this pattern, because matchesDenyPattern has no way to express
+// "deny this port except these two paths" as a single wildcard string.
 const NEVER_AUTO_GRANT_PATTERNS = [
   'Bash(sudo*)',
   'Bash(su *)',
@@ -86,6 +108,25 @@ const NEVER_AUTO_GRANT_PATTERNS = [
   'Bash(printenv*)',
   'Bash(nc*)',
   'Bash(nmap*)',
+  'Bash(*7523/ui*)',
+  'Bash(*7523/api*)',
+  'Bash(*7523/ext*)',
+  'Bash(*8787*)',
+];
+
+// apra-fleet-iywi.5.1: the ONLY two grants NEVER_AUTO_GRANT_PATTERNS's broad
+// supervisor-port ('Bash(*8787*)') rule must not swallow -- deploy.md's
+// Permissions section documents these verbatim (the active-sprints gate and
+// the documented force-release of a stale reservation) and the deploy phase
+// breaks without them. Matched by exact string equality against the
+// NORMALIZED form (see normalizePermission) so a caller's whitespace/colon
+// formatting variant of the same request still matches. This list must
+// never grow to cover a `Bash(*)`-shaped or shell-chained entry -- see the
+// evaluation order in isNeverAutoGrant() below, which checks this list only
+// AFTER those two absolute rules, so it can never resurrect them.
+const NEVER_AUTO_GRANT_EXCEPTIONS = [
+  'Bash(curl * localhost:8787/api/sprints*)',
+  'Bash(curl * localhost:8787/api/reservations/*)',
 ];
 
 // Shell metacharacters that turn a single approved command into an arbitrary
@@ -131,11 +172,16 @@ export function normalizePermission(permission: string): string {
 
 /**
  * True when the requested permission must never be granted without explicit
- * user escalation. Three independent rules, any of which rejects:
+ * user escalation. Evaluated in this exact order:
  *  1. catch-all: a payload that is nothing but wildcards/whitespace -- e.g.
  *     `Bash(*)` -- which is not "a wider grant", it is unrestricted execution.
  *  2. shell chaining: the payload contains |, ;, &&, a backtick, or $( .
- *  3. pattern match against NEVER_AUTO_GRANT_PATTERNS.
+ *  3. explicit exceptions (NEVER_AUTO_GRANT_EXCEPTIONS) -- deploy.md's two
+ *     documented supervisor-port grants, carved back out of rule 4's broad
+ *     supervisor-port pattern. Checked strictly AFTER rules 1-2 so this list
+ *     can never resurrect a catch-all or a shell-chained payload -- those
+ *     two rules stay absolute regardless of what is added here.
+ *  4. pattern match against NEVER_AUTO_GRANT_PATTERNS (wildcard-aware).
  */
 export function isNeverAutoGrant(permission: string): boolean {
   const normalized = normalizePermission(permission);
@@ -148,7 +194,12 @@ export function isNeverAutoGrant(permission: string): boolean {
   // 2. Shell chaining metacharacters anywhere in the payload.
   if (SHELL_CHAINING_METACHARS.some(meta => payload.includes(meta))) return true;
 
-  // 3. Explicit deny patterns (wildcard-aware).
+  // 3. Explicit exceptions -- see NEVER_AUTO_GRANT_EXCEPTIONS above.
+  if (NEVER_AUTO_GRANT_EXCEPTIONS.some(exception => normalizePermission(exception) === normalized)) {
+    return false;
+  }
+
+  // 4. Explicit deny patterns (wildcard-aware).
   return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized));
 }
 

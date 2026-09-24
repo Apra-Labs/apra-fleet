@@ -447,9 +447,12 @@
  *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
  *   wildcard-matched (not exact-matched) against a normalized form of the
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
- *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
- *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   `chmod 777`, any catch-all such as `Bash(*)`, any payload containing a
+ *   shell-chaining metacharacter (| ; && backtick $(), the apra-fleet server
+ *   console endpoints (/ui, /api, /ext on its port) and the fleet-supervisor
+ *   port -- except the two supervisor grants deploy.md documents (the
+ *   active-sprints gate and the stale-reservation force-release), which
+ *   remain grantable by name -- are rejected outright, for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  */
 
