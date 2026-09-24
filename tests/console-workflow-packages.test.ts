@@ -15,7 +15,7 @@
  *    coupling (one unauthenticated 401), and the parameterised-route
  *    matcher not shadowing a literal sibling.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -30,6 +30,7 @@ import {
   createWorkflowPackageService,
   satisfiesVersionRange,
   normalizeServerVersion,
+  validateWorkflowPackageBaseUrlScheme,
   OFFLINE_THRESHOLD_MS,
 } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -233,6 +234,78 @@ describe('workflow-package registry service: health polling (fake clock, stub fe
   });
 });
 
+describe('workflow-package registry service: config-declared baseUrl scheme validation (apra-fleet-iywi.9/.12)', () => {
+  it('a config-declared entry with a non-http(s) baseUrl is not silently dropped, and reports a distinct error from a genuinely unreachable http:// package', async () => {
+    const filePath = await tmpRegistryPath();
+    let clock = 0;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const svc = createWorkflowPackageService({
+        filePath, now: () => clock, getServerVersion: () => 'v1.0.0',
+        getConfigPackages: () => [
+          { id: 'pkg-bad-scheme', baseUrl: 'ftp://localhost:9998' },
+          { id: 'pkg-unreachable-http', baseUrl: 'http://localhost:9999' },
+        ],
+        // Drives the offline half through this injected fetch -- never a
+        // real socket -- and OFFLINE_THRESHOLD_MS through the injected
+        // clock above -- never real wall-clock time.
+        fetchImpl: (async () => failResponse()) as unknown as typeof fetch,
+      });
+
+      // Not silently dropped: the misconfigured entry is present in list()
+      // immediately, before refreshHealth() has ever run, with a specific
+      // error naming the package id and the offending baseUrl.
+      const badBeforePoll = svc.list().find((p) => p.id === 'pkg-bad-scheme');
+      expect(badBeforePoll).toBeDefined();
+      expect(badBeforePoll?.offline).toBe(true);
+      expect(badBeforePoll?.configError).toContain('pkg-bad-scheme');
+      expect(badBeforePoll?.configError).toContain('ftp://localhost:9998');
+      expect(badBeforePoll?.configError).toMatch(/ftp:/);
+
+      // A genuinely unreachable http:// package is NOT yet offline before
+      // its first probe -- it carries no configError at all.
+      const unreachableBeforePoll = svc.list().find((p) => p.id === 'pkg-unreachable-http');
+      expect(unreachableBeforePoll?.configError).toBeNull();
+
+      // Run the health poll past OFFLINE_THRESHOLD_MS via the fake clock so
+      // the genuinely-unreachable http:// package ages into offline too --
+      // the two must still be distinguishable at that point.
+      clock = 1000;
+      await svc.refreshHealth();
+      clock = 1000 + OFFLINE_THRESHOLD_MS;
+      await svc.refreshHealth();
+
+      const bad = svc.list().find((p) => p.id === 'pkg-bad-scheme');
+      const unreachable = svc.list().find((p) => p.id === 'pkg-unreachable-http');
+      expect(bad?.offline).toBe(true);
+      expect(unreachable?.offline).toBe(true);
+      // Both report offline, but only the misconfigured one carries a
+      // configError -- this is the observable difference the operator sees.
+      expect(bad?.configError).not.toBeNull();
+      expect(unreachable?.configError).toBeNull();
+
+      // "Loud": refreshHealth() also logs the error, naming id and baseUrl,
+      // rather than only degrading it into the ordinary offline health poll.
+      expect(errorSpy.mock.calls.some(
+        (call) => typeof call[0] === 'string' && call[0].includes('pkg-bad-scheme') && call[0].includes('ftp://localhost:9998'),
+      )).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('reverting scheme validation would make the case above fail -- pinned directly against the shared validator', () => {
+    // This is the exact regression validateWorkflowPackageBaseUrlScheme
+    // exists to prevent: an ftp:// baseUrl parses fine as a WHATWG URL, so
+    // only an explicit protocol check (not mere parsability) catches it.
+    expect(validateWorkflowPackageBaseUrlScheme('http://localhost:9000')).toBeNull();
+    expect(validateWorkflowPackageBaseUrlScheme('https://localhost:9000')).toBeNull();
+    expect(validateWorkflowPackageBaseUrlScheme('ftp://localhost:9000')).toMatchObject({ scheme: 'ftp:' });
+    expect(validateWorkflowPackageBaseUrlScheme('file:///etc/passwd')).toMatchObject({ scheme: 'file:' });
+    expect(validateWorkflowPackageBaseUrlScheme('localhost:9000')).toMatchObject({ scheme: 'localhost:' });
+  });
+});
+
 // -----------------------------------------------------------------------------
 // Layer 2: the real HTTP surface (createHttpTransport).
 // -----------------------------------------------------------------------------
@@ -357,6 +430,42 @@ describe('workflow-package routes: register / list / unregister round trip over 
       JSON.stringify({ id: 'pkg-incompat-http', baseUrl: 'http://localhost:9202', apraFleetApi: '>=999.0.0' }),
     );
     expect(res.status).toBe(409);
+  });
+
+  it.each([
+    ['an ftp:// baseUrl', 'ftp://localhost:9210', 'ftp:'],
+    ['a file:/// baseUrl', 'file:///etc/passwd', 'file:'],
+    ["a scheme-less 'localhost:9000' baseUrl", 'localhost:9000', 'localhost:'],
+  ])('answers 400 naming the offending scheme for %s', async (_label, baseUrl, expectedScheme) => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+    const res = await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-bad-scheme-register', baseUrl, apraFleetApi: '*' }),
+    );
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body) as { error: string; field?: string };
+    expect(body.field).toBe('baseUrl');
+    expect(body.error).toContain(expectedScheme);
+
+    // Never persisted -- confirms the rejected package can never reach the
+    // registry file, and therefore never the /ext proxy.
+    const listRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
+    const listed = JSON.parse(listRes.body) as { packages: Array<{ id: string }> };
+    expect(listed.packages.find((p) => p.id === 'pkg-bad-scheme-register')).toBeUndefined();
+  });
+
+  it.each([
+    ['an http:// baseUrl', 'http://localhost:9211'],
+    ['an https:// baseUrl', 'https://localhost:9212'],
+  ])('still registers successfully with %s', async (_label, baseUrl) => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+    const res = await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: `pkg-good-scheme-${baseUrl.startsWith('https') ? 'https' : 'http'}`, baseUrl, apraFleetApi: '*' }),
+    );
+    expect(res.status).toBe(200);
   });
 
   it('answers 404 unregistering an id that was never registered', async () => {
