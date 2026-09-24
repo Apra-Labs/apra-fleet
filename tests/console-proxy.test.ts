@@ -466,6 +466,105 @@ describe('/ext proxy: unknown package vs unreachable upstream', () => {
 });
 
 // -----------------------------------------------------------------------------
+// Unusable baseUrl SCHEME -- the crash regression.
+//
+// A registered baseUrl whose scheme is not http(s) parses FINE as a WHATWG
+// URL, so the proxy's parse-only check never saw it: `new URL('ftp://h/')`
+// gives protocol 'ftp:' and the scheme-less `new URL('localhost:9000')` gives
+// protocol 'localhost:' with an empty host. Both were then handed to
+// http.request, which throws ERR_INVALID_PROTOCOL SYNCHRONOUSLY from inside
+// an async request listener -- an unhandled rejection that killed the console
+// process. Packages are third-party and registered at RUNTIME, so one of them
+// must never be able to take the server down just by declaring a baseUrl.
+//
+// The bad entries are written through the REGISTRY STORE (the same
+// `register()` every other case here uses, landing in the per-run isolated
+// data dir), deliberately NOT by weakening the registry lane's validation:
+// what is under test is the proxy's behaviour when it is handed such a value,
+// however it got there.
+// -----------------------------------------------------------------------------
+
+describe('/ext proxy: unusable baseUrl scheme', () => {
+  it('answers 502 naming the package id and the offending ftp:// baseUrl, and never contacts the upstream', async () => {
+    // A REAL listening server, addressed with the WRONG scheme. Its host and
+    // port are genuinely reachable, so "the upstream was never contacted" is
+    // a falsifiable assertion here rather than a tautology about a dead port.
+    let upstreamHits = 0;
+    const upstream = await startUpstream((_req, res) => {
+      upstreamHits += 1;
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('must never be reached');
+    });
+    const badBaseUrl = `ftp://127.0.0.1:${upstream.port}`;
+    // Parsability alone does not catch this -- pinned, because it is the
+    // exact reason the pre-existing try/catch was insufficient.
+    expect(() => new URL(badBaseUrl)).not.toThrow();
+    expect(new URL(badBaseUrl).protocol).toBe('ftp:');
+
+    const id = uniqueId('pkg-ftp');
+    await registerPackage(id, badBaseUrl);
+    const console_ = await startConsole();
+
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/anything`);
+    expect(res.status).toBe(502);
+    expect(res.body).toMatch(/offline/i);
+    expect(res.body).toContain(id);
+    expect(res.body).toContain(badBaseUrl);
+    // Never reached http.request -- the listening server saw nothing.
+    expect(upstreamHits).toBe(0);
+
+    // And the console survived it: without the scheme branch the synchronous
+    // ERR_INVALID_PROTOCOL throw took the process down, so a second request
+    // is the direct regression check on the recorded crash.
+    const after = await rawRequest(console_.port, 'GET', `/ext/${uniqueId('after-bad-scheme')}/x`);
+    expect(after.status).toBe(404);
+  });
+
+  it("answers 502 for the scheme-less 'localhost:9000' baseUrl, which also parses as a valid URL", async () => {
+    const badBaseUrl = 'localhost:9000';
+    expect(() => new URL(badBaseUrl)).not.toThrow();
+    expect(new URL(badBaseUrl).protocol).toBe('localhost:');
+    expect(new URL(badBaseUrl).host).toBe('');
+
+    const id = uniqueId('pkg-schemeless');
+    await registerPackage(id, badBaseUrl);
+    const console_ = await startConsole();
+
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/anything`);
+    expect(res.status).toBe(502);
+    expect(res.body).toMatch(/offline/i);
+    expect(res.body).toContain(id);
+    expect(res.body).toContain(badBaseUrl);
+
+    const after = await rawRequest(console_.port, 'GET', `/ext/${uniqueId('after-schemeless')}/x`);
+    expect(after.status).toBe(404);
+  });
+
+  it('keeps the bad-scheme 502 DISTINCT from the unreachable-upstream 502 -- same status, different diagnosis', async () => {
+    const dead = await closedPort();
+    const downId = uniqueId('pkg-down-scheme');
+    await registerPackage(downId, `http://127.0.0.1:${dead}`);
+    const badId = uniqueId('pkg-badscheme');
+    const badBaseUrl = 'ftp://127.0.0.1:1/';
+    await registerPackage(badId, badBaseUrl);
+    const console_ = await startConsole();
+
+    const down = await rawRequest(console_.port, 'GET', `/ext/${downId}/x`);
+    const bad = await rawRequest(console_.port, 'GET', `/ext/${badId}/x`);
+
+    expect(down.status).toBe(502);
+    expect(bad.status).toBe(502);
+    // "It is registered and reachable-looking but not answering" blames no
+    // baseUrl...
+    expect(down.body).not.toMatch(/baseUrl/i);
+    expect(down.body).not.toContain('ftp:');
+    // ...whereas "we refuse to dial this" names the value it refused.
+    expect(bad.body).toMatch(/baseUrl/i);
+    expect(bad.body).toContain(badBaseUrl);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // The credential reaching the upstream -- the sprint's highest-risk property.
 // -----------------------------------------------------------------------------
 
