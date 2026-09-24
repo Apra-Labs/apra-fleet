@@ -283,6 +283,19 @@ function restoreFile(p: string, backup: string | null): void {
 }
 
 beforeEach(async () => {
+  // apra-fleet-iywi.8: gate the delete-then-restore-later cycle below behind an
+  // explicit proof that FLEET_DIR resolved to the per-run isolated temp dir
+  // (tests/setup.ts asserts this at import time and fails the whole run loudly if
+  // not -- this is a second, local check so this file never unlinks a path that
+  // could resolve under os.homedir() even if that guard were ever bypassed).
+  if (!process.env.APRA_FLEET_DATA_DIR || FLEET_DIR !== process.env.APRA_FLEET_DATA_DIR) {
+    throw new Error(
+      `Refusing to delete files under FLEET_DIR ("${FLEET_DIR}"): it does not match the ` +
+        `isolated APRA_FLEET_DATA_DIR ("${process.env.APRA_FLEET_DATA_DIR}"), so it may ` +
+        'resolve under the real home directory instead of a per-run isolated temp dir.',
+    );
+  }
+
   realHome = process.env.HOME;
   tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-workflow-packages-home-'));
   process.env.HOME = tempHome;
