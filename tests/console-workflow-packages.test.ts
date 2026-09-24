@@ -454,3 +454,44 @@ describe('workflow-package routes: parameterised-path matcher', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('workflow-package routes: malformed percent-escape in a parameterised segment (apra-fleet-iywi.3.2)', () => {
+  it('a malformed percent-escape answers 404, a well-formed one still decodes, and the server survives to answer the next request', async () => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+
+    // A well-formed percent-encoded id must still decode to exactly the
+    // value it decoded to before the guard -- so the fix cannot have been
+    // satisfied by refusing to decode at all.
+    await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg with space', baseUrl: 'http://localhost:9501', apraFleetApi: '*' }),
+    );
+    const wellFormedRes = await rawRequest(handle.port, 'DELETE', '/api/workflow-packages/pkg%20with%20space', bearerHeader(fleetKey));
+    expect(wellFormedRes.status).toBe(200);
+
+    // '%zz' is not a valid percent-escape (not two hex digits) --
+    // decodeURIComponent throws URIError on it. Before the fix this was an
+    // UNHANDLED REJECTION that killed the process before any response was
+    // written; assert on the received status and body, never merely on "no
+    // exception was thrown here" (an unhandled rejection cannot be awaited
+    // by this test body at all).
+    const malformedRes = await rawRequest(handle.port, 'DELETE', '/api/workflow-packages/%zz', bearerHeader(fleetKey));
+    expect(malformedRes.status).toBe(404);
+    expect(malformedRes.body.length).toBeGreaterThan(0);
+
+    // A second malformed shape -- a trailing bare '%' with no hex digits
+    // after it -- behaves identically.
+    const trailingPercentRes = await rawRequest(handle.port, 'DELETE', '/api/workflow-packages/trailing%', bearerHeader(fleetKey));
+    expect(trailingPercentRes.status).toBe(404);
+    expect(trailingPercentRes.body.length).toBeGreaterThan(0);
+
+    // The point of this case: the server SURVIVES. A test asserting only
+    // the two 404s above would still pass against a process that dies a
+    // moment later (an unhandled rejection has no synchronous relationship
+    // to the client's response promise). Issue a normal request on the
+    // SAME handle afterwards and require it to succeed.
+    const survivedRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
+    expect(survivedRes.status).toBe(200);
+  });
+});
