@@ -47,6 +47,7 @@ import type http from 'node:http';
 import { isAuthorized as checkCredential, cookieFor, normalizePath } from '@apralabs/apra-fleet-client/auth/local-token';
 import { getOrCreateKey } from '../services/jwt.js';
 import { fleetRoutes } from './routes/fleet.js';
+import { workflowPackagesRoutes } from './routes/workflow-packages.js';
 import { serveUiAsset } from './static.js';
 
 /** Where the built shell lives, plus how to read it. Passed straight through
@@ -77,12 +78,19 @@ export interface ConsoleContext extends ConsoleStaticSource {
 
 export interface ConsoleRoute {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  /** Exact pathname match, e.g. '/api/fleet/members'. */
+  /** An exact pathname (e.g. '/api/fleet/members') OR a path containing one
+   *  or more ':name' parameter segments (e.g. '/api/workflow-packages/:id').
+   *  See matchRoutes() below: a literal path always matches before any
+   *  parameterised path, so a parameterised route can never shadow one. */
   path: string;
   handler: (
     req: http.IncomingMessage,
     res: http.ServerResponse,
     context: ConsoleContext,
+    /** Captured ':name' segments from a parameterised path match; {} for a
+     *  literal path. Extra parameter -- existing handlers that only declare
+     *  (req, res[, context]) keep compiling and simply ignore it. */
+    params: Record<string, string>,
   ) => void | Promise<void>;
 }
 
@@ -91,6 +99,7 @@ export interface ConsoleRoute {
 // ---------------------------------------------------------------------------
 const ROUTE_MODULES: ConsoleRoute[][] = [
   fleetRoutes,
+  workflowPackagesRoutes,
 ];
 
 /** '/api/fleet/members' -> '/api/fleet'. The set of these is what makes a
@@ -157,6 +166,62 @@ function isExtPath(pathname: string): boolean {
  *  belongs to the console before dispatching it. */
 export function isConsolePath(pathname: string): boolean {
   return isUiPath(pathname) || isApiPath(pathname) || isExtPath(pathname);
+}
+
+// ---------------------------------------------------------------------------
+// Route matching -- literal paths first, parameterised paths second
+// (apra-fleet-iywi.3.2). See the ConsoleRoute.path doc comment above: a
+// parameterised route (':name' segment) must never shadow a literal one.
+// ---------------------------------------------------------------------------
+
+function splitSegments(p: string): string[] {
+  return p.split('/').filter(Boolean);
+}
+
+function routeHasParams(routePath: string): boolean {
+  return splitSegments(routePath).some((seg) => seg.startsWith(':'));
+}
+
+/** Does `pathname` match a route path that may contain ':name' segments?
+ *  Segment counts must match exactly; a literal segment must match
+ *  byte-for-byte. Returns the captured params on match, null otherwise. */
+function matchParamPath(routePath: string, pathname: string): Record<string, string> | null {
+  const routeSegs = splitSegments(routePath);
+  const pathSegs = splitSegments(pathname);
+  if (routeSegs.length !== pathSegs.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < routeSegs.length; i++) {
+    const seg = routeSegs[i];
+    if (seg.startsWith(':')) {
+      params[seg.slice(1)] = decodeURIComponent(pathSegs[i]);
+    } else if (seg !== pathSegs[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
+interface RouteMatch {
+  route: ConsoleRoute;
+  params: Record<string, string>;
+}
+
+/** Every registered route whose PATH matches `pathname`, regardless of
+ *  method -- literal matches always win over parameterised ones (an exact
+ *  literal route is never shadowed). The caller uses this list to tell "no
+ *  route registered for this path at all" (404) from "a route exists for
+ *  this path, just not this method" (405). */
+function matchRoutes(pathname: string): RouteMatch[] {
+  const literalHits = routes.filter((r) => !routeHasParams(r.path) && r.path === pathname);
+  if (literalHits.length > 0) return literalHits.map((route) => ({ route, params: {} }));
+
+  const paramHits: RouteMatch[] = [];
+  for (const route of routes) {
+    if (!routeHasParams(route.path)) continue;
+    const params = matchParamPath(route.path, pathname);
+    if (params) paramHits.push({ route, params });
+  }
+  return paramHits;
 }
 
 /**
@@ -290,10 +355,10 @@ export async function handleConsoleRequest(
     return true;
   }
 
-  const route = routes.find((r) => r.path === pathname && r.method === method);
-  if (!route) {
-    const pathExists = routes.some((r) => r.path === pathname);
-    if (pathExists) {
+  const matches = matchRoutes(pathname);
+  const match = matches.find((m) => m.route.method === method);
+  if (!match) {
+    if (matches.length > 0) {
       jsonError(res, 405, 'method not allowed');
     } else {
       jsonError(res, 404, 'not found');
@@ -302,7 +367,7 @@ export async function handleConsoleRequest(
   }
 
   try {
-    await route.handler(req, res, context);
+    await match.route.handler(req, res, context, match.params);
   } catch (err) {
     if (!res.headersSent) {
       jsonError(res, 500, err instanceof Error ? err.message : String(err));
