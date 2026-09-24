@@ -632,3 +632,38 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
         );
     });
 });
+
+// apra-fleet-iywi.5.1/5.2: the server-side NEVER_AUTO_GRANT denylist
+// (src/tools/compose-permissions.ts) now refuses grants aimed at the
+// apra-fleet server console (/ui, /api, /ext) and the fleet-supervisor port.
+// The client's ComposePermissionsOptions typedef and the matching
+// docs/api-reference.md entry mirror that denylist's description in prose
+// (they have no compile-time link to the server tool, same as the other
+// typedefs this file checks) -- this pins that both were updated in the same
+// change as the server-side refusal, not left describing a surface the
+// server no longer accepts.
+describe('apra-fleet-client compose_permissions doc/typedef parity (apra-fleet-iywi.5.1/5.2)', () => {
+    test('the ComposePermissionsOptions typedef in api.mjs names the console refusal', () => {
+        const apiSrc = readFileSync(path.join(__dirname, '..', 'src', 'client', 'api.mjs'), 'utf8');
+        const typedefStart = apiSrc.indexOf('@typedef {Object} ComposePermissionsOptions');
+        assert.notStrictEqual(typedefStart, -1, 'ComposePermissionsOptions typedef not found in api.mjs');
+        const typedefEnd = apiSrc.indexOf('*/', typedefStart);
+        const typedefBlock = apiSrc.slice(typedefStart, typedefEnd);
+
+        assert.match(typedefBlock, /console/i, 'ComposePermissionsOptions typedef must mention the console refusal');
+        assert.match(typedefBlock, /8787/, 'ComposePermissionsOptions typedef must mention the fleet-supervisor port');
+    });
+
+    test('docs/api-reference.md composePermissions entry names the console refusal', () => {
+        const docsSrc = readFileSync(path.join(__dirname, '..', 'docs', 'api-reference.md'), 'utf8');
+        const sectionStart = docsSrc.indexOf('#### `composePermissions(');
+        assert.notStrictEqual(sectionStart, -1, 'composePermissions section not found in docs/api-reference.md');
+        const nextSectionOffset = docsSrc.slice(sectionStart + 1).search(/\n#### /);
+        const section = nextSectionOffset === -1
+            ? docsSrc.slice(sectionStart)
+            : docsSrc.slice(sectionStart, sectionStart + 1 + nextSectionOffset);
+
+        assert.match(section, /console/i, 'composePermissions doc section must mention the console refusal');
+        assert.match(section, /8787/, 'composePermissions doc section must mention the fleet-supervisor port');
+    });
+});

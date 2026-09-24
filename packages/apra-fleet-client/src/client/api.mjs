@@ -449,10 +449,11 @@
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
  *   `chmod 777`, any catch-all such as `Bash(*)`, any payload containing a
  *   shell-chaining metacharacter (| ; && backtick $(), the apra-fleet server
- *   console endpoints (/ui, /api, /ext on its port) and the fleet-supervisor
- *   port -- except the two supervisor grants deploy.md documents (the
- *   active-sprints gate and the stale-reservation force-release), which
- *   remain grantable by name -- are rejected outright, for every caller.
+ *   console endpoints (/ui, /api, /ext on its port, default 7523) and the
+ *   fleet-supervisor port (default 8787) -- except the two supervisor grants
+ *   deploy.md documents (the active-sprints gate and the stale-reservation
+ *   force-release), which remain grantable by name -- are rejected outright,
+ *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  */
 
