@@ -7,7 +7,7 @@ import { loadSweepConfig } from '../src/supervisor/sweep-config.mjs';
 import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 import { resolveSweepConfig, buildRunnerArgs } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
-import { runMemberPrepPhase } from '../fleet-sprint/phases/member-prep.mjs';
+import { runMemberPrepPhase, formatSweepLivenessSummary } from '../fleet-sprint/phases/member-prep.mjs';
 import {
     HEALTH_LINE_PREFIX, KILL_BEGIN_PREFIX, KILL_STATUS_PREFIX, MISSING_TOOL_PREFIX,
 } from '../fleet-sprint/member-stray-sweep.mjs';
@@ -471,6 +471,82 @@ test('TCP-ALIVE-NO-HTTP: a live non-HTTP listener is spared, counted in its own 
     assert.match(loud, /1 candidate\(s\) were SPARED rather than killed/);
     assert.match(loud, /ACCEPTED the TCP connection but returned no HTTP response/);
     assert.match(loud, /speaks HTTP only/, 'the loud line must name why this predicate cannot confirm the listener alive');
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.24.2.3: formatSweepLivenessSummary() wording, driven
+// directly on hand-built liveness records rather than through the whole
+// chain above -- these pin the RENDERING contract itself, independent of
+// whatever shape member-stray-sweep.mjs happens to produce today.
+// ---------------------------------------------------------------------------
+
+test('formatSweepLivenessSummary(): armed+dispatched with a tcpAliveNoHttp count names it and says SPARED, never checked-and-dead', () => {
+    const line = formatSweepLivenessSummary({
+        armed: true, dispatched: true, checked: 3, spared: 0, unevaluable: 0, tcpAliveNoHttp: 2, unprobeable: 0,
+    });
+    assert.match(
+        line,
+        /a further 2 candidate\(s\) held a live TCP connection that answered no HTTP and were SPARED rather than confirmed dead/,
+        'the dispatched branch must name the tcp-alive-no-http count and say SPARED',
+    );
+    assert.doesNotMatch(line, /checked-and-dead/, 'the clause must never read as a confirmed-dead verdict');
+    assert.doesNotMatch(
+        line, /^liveness probe armed and dispatched: 3 candidate\(s\) checked, 0 spared as live, 0 unevaluable$/,
+        'the tcp-alive-no-http clause must not be silently dropped from the rendered line',
+    );
+});
+
+test('formatSweepLivenessSummary(): armed+not-dispatched with a tcpAliveNoHttp count still names them -- the "nothing to check" wording is unreachable here', () => {
+    const line = formatSweepLivenessSummary({
+        armed: true, dispatched: false, checked: 0, spared: 0, unevaluable: 0, tcpAliveNoHttp: 1, unprobeable: 0,
+    });
+    assert.match(
+        line,
+        /so 1 candidate\(s\) were SPARED rather than confirmed dead -- this predicate speaks HTTP only/,
+        'the not-dispatched branch must still name the tcp-alive-no-http count',
+    );
+    assert.doesNotMatch(
+        line, /nothing to check/,
+        'the reassuring "nothing to check" wording must be unreachable once a tcp-alive-no-http candidate exists',
+    );
+});
+
+test('formatSweepLivenessSummary(): tcpAliveNoHttp absent renders identically to tcpAliveNoHttp: 0 (regression guard for older result shapes)', () => {
+    const withZeroField = formatSweepLivenessSummary({
+        armed: true, dispatched: true, checked: 2, spared: 1, unevaluable: 0, tcpAliveNoHttp: 0, unprobeable: 0,
+    });
+    const withoutField = formatSweepLivenessSummary({
+        armed: true, dispatched: true, checked: 2, spared: 1, unevaluable: 0, unprobeable: 0,
+    });
+    assert.equal(withoutField, withZeroField, 'an older result shape with no tcpAliveNoHttp field must render exactly like tcpAliveNoHttp: 0');
+    assert.equal(withoutField, 'liveness probe armed and dispatched: 2 candidate(s) checked, 1 spared as live, 0 unevaluable');
+});
+
+test('formatSweepLivenessSummary(): not armed renders the fixed wording regardless of a tcpAliveNoHttp count', () => {
+    const line = formatSweepLivenessSummary({ armed: false, tcpAliveNoHttp: 5 });
+    assert.equal(
+        line,
+        'liveness probe NOT ARMED -- no candidate was checked for life before it was selected '
+        + '(the sweep config set "livenessProbe": false)',
+        'the NOT ARMED wording must be unchanged, even when a stray tcpAliveNoHttp count is present on the record',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.24.2.3: docs coherence -- both docs/member-prep-and-stray-
+// sweep.md and packages/apra-fleet-se/docs/cli-reference.md must keep stating
+// the tcp-alive-no-http (non-HTTP listener) outcome, so a future edit that
+// drops the clause from either document is caught here, in the style the
+// existing --sweep-config docs/help coherence tests use (read the file,
+// assert required substrings).
+// ---------------------------------------------------------------------------
+
+test('docs/member-prep-and-stray-sweep.md documents the tcp-alive-no-http (non-HTTP listener) outcome', () => {
+    const docPath = path.join(import.meta.dirname, '..', '..', '..', 'docs', 'member-prep-and-stray-sweep.md');
+    const content = fs.readFileSync(docPath, 'utf8');
+    assert.match(content, /non-HTTP listener/, 'the doc must state the probe cannot vouch for a non-HTTP listener');
+    assert.match(content, /tcpAliveNoHttp/, 'the doc must name the dedicated result bucket');
+    assert.match(content, /LIVENESS TCP-ALIVE-NO-HTTP/, 'the doc must name the dedicated per-member notice line');
 });
 
 // ---------------------------------------------------------------------------

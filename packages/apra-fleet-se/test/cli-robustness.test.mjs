@@ -414,6 +414,22 @@ describe('--sweep-config help entry stays coherent (no re-splice regression)', (
         assert.ok(sweepConfigRow, 'docs/cli-reference.md has no --sweep-config row to inspect');
         assert.match(sweepConfigRow, /livenessProbe/, 'the --sweep-config row must document livenessProbe');
     });
+
+    test('docs/cli-reference.md mentions the tcp-alive-no-http (non-HTTP listener) outcome within its --sweep-config row', async () => {
+        const docPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'cli-reference.md');
+        const content = await fs.readFile(docPath, 'utf-8');
+        const lines = content.split('\n');
+        const sweepConfigRow = lines.find((l) => l.includes('--sweep-config'));
+        assert.ok(sweepConfigRow, 'docs/cli-reference.md has no --sweep-config row to inspect');
+        assert.match(
+            sweepConfigRow, /never speaks HTTP back/,
+            'the --sweep-config row must document the tcp-alive-no-http (non-HTTP listener) outcome',
+        );
+        assert.match(
+            sweepConfigRow, /spares that candidate rather than confirming it dead/,
+            'the row must state the outcome is a spare, not a confirmed-dead verdict',
+        );
+    });
 });
 
 // ---------------------------------------------------------------------------
