@@ -93,6 +93,19 @@ particular status code, so it assumes nothing about a target's own health
 endpoint. `path` and `timeoutMs` are overridable
 (`"livenessProbe": { "path": "/healthz", "timeoutMs": 1500 }`).
 
+**The probe speaks HTTP only -- it cannot vouch for a non-HTTP listener.**
+A port that *refuses* the connection is treated as dead and stays killable,
+exactly as before. A port that *accepts* the TCP connection but never speaks
+HTTP back -- a database server, for example -- is neither answered nor
+refused: this predicate has no way to tell whether it is alive, so the
+candidate is SPARED fail-safe, the same direction as an ordinary
+`unevaluable` spare, but counted in its own `tcpAliveNoHttp` bucket on the
+sweep result rather than folded into `unevaluable` (a single candidate is
+never counted in both). A target that wants such a daemon protected from an
+armed sweep must give it a matching `productionPorts` entry, or an HTTP
+health endpoint this probe can actually ask -- otherwise it survives an
+armed pass only because it was spared, not because the sweep understood it.
+
 **Why armed rather than opt-in.** The predicate can only ever *spare*: there
 is no input that makes it select a process the other predicates had not
 already selected, so arming it cannot cause a wrong kill, only prevent one.
@@ -134,7 +147,7 @@ never match is never a candidate at all.
 
 **"Not armed" and "armed, nothing was live" are different results.** The
 sweep result carries a `liveness` record (`armed`, `dispatched`, `checked`,
-`spared`, `unevaluable`, `unprobeable`) and the phase summary line renders
+`spared`, `unevaluable`, `tcpAliveNoHttp`, `unprobeable`) and the phase summary line renders
 each state distinctly -- including "armed but not dispatched because no
 surviving candidate held a port to probe, so N were selected unchecked",
 which must never be collapsed into "nothing survived, so there was nothing
