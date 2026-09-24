@@ -341,7 +341,9 @@ test('NOT ARMED is distinguishable: livenessProbe:false issues no liveness dispa
 
     assert.equal(disarmed.validated.sweepLivenessProbe, false, 'an explicit false must survive the chain as false, distinct from absent');
     assert.equal(disarmed.seam.liveness().length, 0, 'a disarmed sweep must dispatch no liveness probe at all');
-    assert.deepEqual(disarmed.sweep.result.liveness, { armed: false, dispatched: false, checked: 0, spared: 0, unevaluable: 0, unprobeable: 0 });
+    assert.deepEqual(disarmed.sweep.result.liveness, {
+        armed: false, dispatched: false, checked: 0, spared: 0, unevaluable: 0, tcpAliveNoHttp: 0, unprobeable: 0,
+    });
     assert.equal(disarmed.sweepLines.length, 1);
     assert.match(disarmed.sweepLines[0], /liveness probe NOT ARMED/);
 

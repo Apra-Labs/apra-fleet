@@ -65,7 +65,11 @@
 //      candidate and never dependent on whether some OTHER candidate in the
 //      same pass happened to hold a port. It is a kill that was never
 //      checked, so the phase narrates it as one rather than letting it hide
-//      inside an otherwise reassuring liveness summary.
+//      inside an otherwise reassuring liveness summary. Contrast the
+//      TCP-alive-no-HTTP bucket below (apra-fleet-i4ku.24): that candidate
+//      DID hold a port and WAS asked -- it just is not speaking HTTP -- so it
+//      resolves the opposite way, spared with its own `tcp-alive-no-http`
+//      verdict rather than left to a predicate that never touched it.
 //      WHO TURNS IT ON (apra-fleet-i4ku.17): this module stays opt-in --
 //      `livenessProbe` defaults to null here, so a direct caller gets the
 //      pre-predicate behaviour byte for byte. The SHIPPED sweep path is
@@ -125,6 +129,23 @@
 //      exists to spare, while making the report sound rigorous about it. A
 //      refusal is the only transport outcome that actually answers "there is
 //      nothing there", so it is the only one that may still lead to a kill.
+//      IMPLEMENTED (apra-fleet-i4ku.24.1.2): resolved per candidate, never
+//      per pass, matching every other predicate here. Any asked socket that
+//      ANSWERED HTTP wins outright ('responded', spared) even next to a
+//      sibling socket on the same candidate that was refused or merely
+//      TCP-alive -- an answered socket is never downgraded. Short of that, if
+//      ANY asked socket came back TCP-alive-no-HTTP, the candidate gets its
+//      OWN `record.liveProbe` verdict, `'tcp-alive-no-http'` (spared,
+//      fail-safe -- same SPARED direction as `unevaluable`, but a distinct
+//      value so decideStrayProcess() can name the real reason in its blocker
+//      instead of reusing the generic "could not be evaluated" text) and is
+//      counted in its OWN `liveness.tcpAliveNoHttp` bucket INSTEAD OF
+//      `liveness.unevaluable`, not in addition to it, so a single candidate
+//      is never double-counted across the two buckets. Only when EVERY asked
+//      socket was refused, and coverage was complete (no unasked socket, no
+//      unresolved address -- the existing partial-answer guards below still
+//      take precedence over this new check), does the candidate resolve to
+//      'no-response' and remain killable.
 //      AN ADDRESS THIS MODULE CANNOT TURN INTO A URL (a hostname, a
 //      zone-scoped link-local, anything that is not a plain IP literal) is
 //      NOT silently probed on loopback and is NOT `unprobeable` either: a
@@ -1618,6 +1639,18 @@ export function decideStrayProcess(input = {}) {
             'the liveness probe could not be evaluated for this candidate (no supported probe tool on the '
             + 'member, or the probe dispatch itself failed), so the liveness predicate could not be applied',
         );
+    } else if (record.liveProbe === 'tcp-alive-no-http') {
+        // apra-fleet-i4ku.24.1.2: DISTINCT from 'unevaluable' above -- the
+        // probe DID run and DID get an answer, it just was not HTTP, so this
+        // candidate gets its own, accurate blocker text rather than reusing
+        // the generic "could not be evaluated" message.
+        blockers.push(
+            'a liveness probe found this candidate still accepting TCP connections on a port it holds, but no '
+            + 'asked socket returned an HTTP response -- something IS still holding the port (a raw TCP '
+            + 'service, a TLS-only listener probed over plain HTTP, or a process still starting its server), '
+            + "so it may be a live fleet process a static production-port list does not know about -- see "
+            + "member-stray-sweep.mjs's liveness predicate",
+        );
     }
 
     return {
@@ -1757,6 +1790,15 @@ export async function sweepMemberStrayProcesses(deps = {}) {
         checked: 0,
         spared: 0,
         unevaluable: 0,
+        // apra-fleet-i4ku.24.1.2: candidates that WERE asked and DID have a
+        // socket accept TCP, but no asked socket spoke HTTP back. Spared,
+        // exactly like `unevaluable`, but counted here INSTEAD OF
+        // `unevaluable` (not in addition) so the same candidate is never
+        // counted in both buckets -- see the classification below and this
+        // file's header, "A PORT THAT ACCEPTS TCP BUT NEVER SPEAKS HTTP".
+        // Initialised to 0 like every other bucket so the result shape is
+        // stable whether or not the predicate is armed.
+        tcpAliveNoHttp: 0,
         // apra-fleet-i4ku.17 rework: candidates this predicate CANNOT ask a
         // question of, because they hold no listening port. Counted whether
         // or not any dispatch was issued -- see the classification below.
@@ -1878,11 +1920,17 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 }
                 const askedPorts = record.probeTargets.map((t) => t.port);
                 const checkedPorts = askedPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
-                // Only 'answered' spares here TODAY -- the decision-path
-                // mapping for 'tcp-alive-no-http' is the next task in this
-                // lane, and this task deliberately changes the WIRE FORMAT
-                // only, leaving every candidate's fate byte-for-byte as it
-                // was.
+                // apra-fleet-i4ku.24.1.2: resolved per candidate, never per
+                // pass -- see this file's header, "A PORT THAT ACCEPTS TCP
+                // BUT NEVER SPEAKS HTTP". An ANSWERED socket always wins
+                // outright, even next to a sibling that was refused or only
+                // TCP-alive. `liveness.checked` above is already incremented
+                // once per candidate that reached this loop, i.e. once a
+                // probe was genuinely dispatched for it -- whether or not any
+                // of its sockets answered -- so a candidate landing in the
+                // new tcp-alive-no-http bucket below (which only happens once
+                // `checkedPorts.length > 0`, meaning it WAS answered by at
+                // least one asked socket) is always counted as checked.
                 if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === LIVENESS_ANSWERED)) {
                     record.liveProbe = 'responded';
                     liveness.spared += 1;
@@ -1899,7 +1947,28 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                     // fail-safe rather than falling through to the kill.
                     record.liveProbe = 'unevaluable';
                     liveness.unevaluable += 1;
+                } else if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === LIVENESS_TCP_ALIVE_NO_HTTP)) {
+                    // apra-fleet-i4ku.24.1.2: full coverage (every asked
+                    // socket was answered, none unresolved) and nothing
+                    // answered HTTP, but at least one asked socket accepted
+                    // the TCP connection -- something IS still holding this
+                    // port, it just is not speaking HTTP. This is its OWN
+                    // `record.liveProbe` value (distinct from `unevaluable`)
+                    // so decideStrayProcess() can name the real reason in its
+                    // blocker rather than reusing the generic "could not be
+                    // evaluated" text -- but it resolves the same SPARED
+                    // direction as `unevaluable` (never killed), and is
+                    // counted in its OWN `liveness.tcpAliveNoHttp` bucket
+                    // INSTEAD OF `liveness.unevaluable` -- never both -- so a
+                    // single candidate can never be double-counted across the
+                    // two buckets.
+                    record.liveProbe = 'tcp-alive-no-http';
+                    liveness.tcpAliveNoHttp += 1;
                 } else {
+                    // Every asked socket was answered (full coverage) and
+                    // every answer was a REFUSAL -- the only transport
+                    // outcome that actually means "nothing is there". Still
+                    // killable, byte for byte as before this bead.
                     record.liveProbe = 'no-response';
                 }
             }
