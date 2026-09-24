@@ -723,6 +723,34 @@ function rawHostFor(host) {
 }
 
 /**
+ * The .NET AddressFamily the win32 branch's TcpClient must be CONSTRUCTED
+ * with for a given probe host, resolved here in JavaScript rather than left
+ * to the socket library to infer on the member.
+ *
+ * WHY THIS IS NOT OPTIONAL. `New-Object System.Net.Sockets.TcpClient` with no
+ * argument is documented as `TcpClient(AddressFamily.InterNetwork)` -- an
+ * IPv4-ONLY socket -- under Windows PowerShell 5.1 / .NET Framework, which is
+ * exactly what seWindows.wrapForMember() dispatches into (powershell.exe, not
+ * pwsh). Connecting that socket to an IPv6 literal THROWS, the throw lands in
+ * the probe's own catch, and the candidate would be reported REFUSED: the one
+ * transport outcome this module treats as "nothing is listening here", and
+ * therefore the only one that can still lead to a kill. A live IPv6-bound
+ * listener would be killed as dead -- the precise false-dead this predicate
+ * exists to prevent. It hides on a dev box because pwsh 7 / .NET Core made the
+ * parameterless ctor family-agnostic, so only the real dispatch shell bites.
+ *
+ * livenessProbeHost() emits an IPv6 literal ONLY in bracketed form and an IPv4
+ * literal only unbracketed, and buildLivenessProbeCommand() re-validates that
+ * round trip before calling this, so the brackets are a reliable family tell.
+ *
+ * @param {string} host an already-validated probe host, possibly `[::1]`-style
+ * @returns {'InterNetworkV6'|'InterNetwork'}
+ */
+function tcpAddressFamilyFor(host) {
+    return (host.startsWith('[') && host.endsWith(']')) ? 'InterNetworkV6' : 'InterNetwork';
+}
+
+/**
  * Builds the liveness-probe dispatch for a set of already-provisionally-
  * killable `{ pid, port }` candidates: one HTTP GET per candidate port,
  * tagged with pid+port so parseLivenessProbeOutput() can attribute a result
@@ -743,7 +771,18 @@ function rawHostFor(host) {
  * TRANSPORT-STATUS field that tells them apart. POSIX gets it for free --
  * curl's exit status already encodes it -- and the win32 branch asks the
  * same question explicitly with a TcpClient connect inside its own catch
- * block, bounded by the same timeout.
+ * block, bounded by the same timeout -- built on an EXPLICIT address family
+ * (tcpAddressFamilyFor(), see its header) because the default one is IPv4-only
+ * on the PowerShell this payload really runs under.
+ *
+ * WIN32 WORST-CASE WALL TIME IS 2x THE TIMEOUT PER CANDIDATE, POSIX'S IS 1x.
+ * The TCP question is only asked after Invoke-WebRequest has already spent its
+ * own -TimeoutSec, so a candidate that hangs at both layers costs
+ * timeoutSeconds twice; curl reports its transport status as part of the one
+ * request it already made, so POSIX pays once. Both stay bounded by the same
+ * opts.timeoutMs-derived value, and the bound is what matters here (this
+ * predicate must never stall a sprint start), but the two families are not
+ * symmetric in cost -- worth knowing before the default timeout is raised.
  *
  * NO SHELL-LEVEL EXPANSION AND NO COMMAND SUBSTITUTION: curl's `-w` format
  * string writes the tagged result line directly to stdout, so no `$(...)` is
@@ -826,7 +865,22 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
             // 7 / 28) so parseLivenessProbeOutput() needs exactly one rule
             // for both shell families.
             ' else {',
-            ` $sweepTcp = New-Object System.Net.Sockets.TcpClient;`, // shell-guard-allow: PowerShell local variable ($sweepTcp, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors this function's own $r carve-out above; never an orchestrator-side value left for an unknown member shell to expand.
+            // THE ADDRESS FAMILY IS EXPLICIT, resolved in JavaScript by
+            // tcpAddressFamilyFor() -- see its header. The parameterless
+            // TcpClient ctor is IPv4-only on the Windows PowerShell 5.1 this
+            // payload actually runs under, so an IPv6 candidate would throw
+            // into the catch below and be reported REFUSED, i.e. killed while
+            // alive.
+            //
+            // `New-Object` sits OUTSIDE the inner try ON PURPOSE: if
+            // constructing the socket itself fails, $ErrorActionPreference =
+            // 'Stop' aborts the whole dispatch, no further candidate emits a
+            // line, and every key is therefore absent from the parse -- which
+            // the caller already reads as "could not find out" and SPARES. A
+            // construction failure that swallowed itself into the catch would
+            // instead print REFUSED, the one killable outcome; failing the
+            // whole dispatch loudly is the fail-safe direction.
+            ` $sweepTcp = New-Object System.Net.Sockets.TcpClient([System.Net.Sockets.AddressFamily]::${tcpAddressFamilyFor(host)});`, // shell-guard-allow: PowerShell local variable ($sweepTcp, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors this function's own $r carve-out above; never an orchestrator-side value left for an unknown member shell to expand.
             ` try { $sweepConn = $sweepTcp.ConnectAsync('${rawHostFor(host)}', ${port});`, // shell-guard-allow: PowerShell local variables ($sweepTcp assigned on the line above, $sweepConn on this one) inside this module's own -EncodedCommand payload; see this function's $r carve-out.
             ` if ($sweepConn.Wait(${timeoutSeconds * 1000}))`, // shell-guard-allow: PowerShell local variable $sweepConn assigned on the line above in this same -EncodedCommand payload; see this function's $r carve-out.
             ` { '${HEALTH_LINE_PREFIX} ${pid} ${port} ${NO_HTTP_RESPONSE_CODE} ${PROBE_STATUS_OK}' }`,

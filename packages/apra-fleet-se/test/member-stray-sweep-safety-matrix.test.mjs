@@ -1192,6 +1192,26 @@ test('buildLivenessProbeCommand: win32 hands TcpClient a RAW IPv6 address, not t
     const script = decodeWinCommand(buildLivenessProbeCommand('win32', [{ pid: 100, port: 7000, probeHost: '[::1]' }]));
     assert.match(script, /Invoke-WebRequest -Uri 'http:\/\/\[::1\]:7000\/'/, 'a URL needs the brackets');
     assert.match(script, /ConnectAsync\('::1', 7000\)/, 'a socket API does not -- stripped in JavaScript, before dispatch');
+
+    // The parameterless TcpClient ctor is IPv4-only under the Windows
+    // PowerShell 5.1 that seWindows.wrapForMember() dispatches into, so an
+    // IPv6 candidate would throw, be caught, and be reported REFUSED -- the
+    // one outcome that still permits a kill. The family must be stated.
+    assert.match(
+        script,
+        /New-Object System\.Net\.Sockets\.TcpClient\(\[System\.Net\.Sockets\.AddressFamily\]::InterNetworkV6\)/,
+        'an IPv6 candidate must construct an IPv6 socket, not the IPv4-only default',
+    );
+});
+
+test('buildLivenessProbeCommand: win32 constructs an IPv4 TcpClient for an IPv4 candidate', () => {
+    const script = decodeWinCommand(buildLivenessProbeCommand('win32', [{ pid: 100, port: 7000, probeHost: '10.0.0.4' }]));
+    assert.match(
+        script,
+        /New-Object System\.Net\.Sockets\.TcpClient\(\[System\.Net\.Sockets\.AddressFamily\]::InterNetwork\)/,
+        'the family is stated explicitly for both families, never inferred by the member',
+    );
+    assert.doesNotMatch(script, /InterNetworkV6/, 'an IPv4 candidate must not get an IPv6 socket');
 });
 
 test('the generated win32 liveness-probe script PARSES as real PowerShell', { skip: POWERSHELL_SKIP }, () => {
@@ -1735,6 +1755,23 @@ test('apra-fleet-i4ku.21: parseLivenessProbeOutput OR-combines two results for o
             parseLivenessProbeOutput(lines.join('\n')).byKey.get('600:8081'),
             LIVENESS_TCP_ALIVE_NO_HTTP,
             `${order[0]}: a refusal on one address never cancels a live one on another`,
+        );
+    }
+
+    // The top rung, in both input orders: a confirmed HTTP answer must not be
+    // demoted by a sibling address that only got as far as TCP. This is the
+    // one pair where a future edit to the rank table would silently downgrade
+    // an already-proven-alive candidate.
+    for (const answeredFirst of [true, false]) {
+        const lines = [
+            `${HEALTH_LINE_PREFIX} 700 8082 204 ${PROBE_STATUS_OK}`,
+            `${HEALTH_LINE_PREFIX} 700 8082 000 ${PROBE_STATUS_TIMEOUT}`,
+        ];
+        if (!answeredFirst) lines.reverse();
+        assert.equal(
+            parseLivenessProbeOutput(lines.join('\n')).byKey.get('700:8082'),
+            LIVENESS_ANSWERED,
+            `answered-first=${answeredFirst}: a tcp-alive sibling never downgrades a real HTTP answer`,
         );
     }
 });
