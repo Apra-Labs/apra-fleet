@@ -83,6 +83,51 @@ Both credential paths are checked against a path normalised through the same
 `normalizePath()` helper the router uses, so the guard and the dispatcher can
 never disagree about which route a URL names.
 
+## The `/ext` reverse proxy and the per-package upstream credential
+
+`/ext/<package id>/*` is a **proxy mount, not a route table**: no route
+module declares it, and `handleConsoleRequest` dispatches it straight to
+`src/console/proxy.ts` from a single branch, after the guard above. The
+package id is resolved to a `baseUrl` through the registry service
+(`src/services/workflow-packages.ts`), read fresh per request so a package
+registered a moment ago is reachable immediately. An id that is not
+registered answers **404**; a registered package whose upstream is
+unreachable answers **502** with a package-offline body -- "does not exist"
+and "exists but is down" are deliberately distinct answers.
+
+Both directions stream via `pipe()`, so no body is ever held whole in
+memory. `text/event-stream` responses are additionally passed through
+unbuffered: `Accept-Encoding: identity` is sent upstream on every request
+(compression must never be negotiated, because a compressor aggregates bytes
+and destroys the per-event flush, and the content type is unknowable until
+the response headers arrive -- by which point negotiation has already
+happened), headers are flushed before the first event, and Nagle is disabled
+so a short event is not held back. Upstream `Location` headers are rewritten
+back under `/ext/<package id>`; a genuinely external origin is left
+untouched rather than re-mounted, so the console never becomes an open
+redirector.
+
+**The raw fleet key is never forwarded upstream.** It is the HS256 signing
+secret for member JWTs (see above), and workflow packages are third-party by
+design and registered at runtime -- forwarding it would let any of them mint
+member JWTs with an arbitrary `member_id`, `role` and `workspace_id`. What
+is sent instead is a per-package derived credential,
+`HMAC-SHA256(fleetKey, "<label>:<len(id)>:<id>")`, as an `Authorization`
+bearer. It is not reversible into the signing key, and it differs per
+package id, so one package cannot replay its credential against another.
+The length prefix makes the label/id encoding unambiguous, which is what
+actually guarantees that per-package property.
+
+The label is deliberately **different** from `CONSOLE_COOKIE_LABEL`: same
+primitive, same key, separate domain. Were they shared, a package could
+replay the credential the console just handed it back at the console as a
+valid `apra_console_token` cookie. For the same reason, the inbound `Cookie`
+and `Authorization` headers (which carry the console's own credentials) are
+stripped rather than relayed, and an upstream attempting to `Set-Cookie` the
+console's own cookie name is refused -- all packages share the console
+origin, so an unfiltered `Set-Cookie` would let one of them overwrite the
+console credential in the browser.
+
 ## Static asset serving: dev disk vs. packaged binary
 
 The shell is a normal Vite build (`packages/apra-fleet-shell-ui`, base path

@@ -46,6 +46,7 @@ import crypto from 'node:crypto';
 import type http from 'node:http';
 import { isAuthorized as checkCredential, cookieFor, normalizePath } from '@apralabs/apra-fleet-client/auth/local-token';
 import { getOrCreateKey } from '../services/jwt.js';
+import { handleExtProxyRequest } from './proxy.js';
 import { fleetRoutes } from './routes/fleet.js';
 import { workflowPackagesRoutes } from './routes/workflow-packages.js';
 import { serveUiAsset } from './static.js';
@@ -142,12 +143,14 @@ export function __registerTestRouteModule(moduleRoutes: ConsoleRoute[]): () => v
 
 const UI_PREFIX = '/ui';
 
-/** apra-fleet-iywi.2.1: no route module declares /ext -- the reverse proxy
- *  that will serve it lands in a later lane. This path class exists so
- *  mutating /ext/* requests can be guarded (and GET /ext/* left open) before
- *  that proxy exists; until it lands, a guarded-but-unhandled /ext path
- *  falls through to the same "no route registered" 404 every other
- *  unmatched console path gets -- never a 500. */
+/** apra-fleet-iywi.2.1 created this path class so mutating /ext/* requests
+ *  could be guarded (and GET /ext/* left open) BEFORE any handler existed
+ *  for them. apra-fleet-iywi.4.1 supplied that handler: the reverse proxy in
+ *  ./proxy.ts, dispatched from the ONE branch in handleConsoleRequest below.
+ *  /ext is still declared by no route module -- it is a proxy mount, not a
+ *  route table -- so this prefix remains the single definition of the path
+ *  class, shared by the guard and the dispatcher. Never add a second /ext
+ *  branch: widen the proxy instead. */
 const EXT_PREFIX = '/ext';
 
 function isUiPath(pathname: string): boolean {
@@ -367,6 +370,21 @@ export async function handleConsoleRequest(
     // No shell to serve (or a non-GET method): the same 404 every other
     // unmatched route gets.
     plainNotFound(res);
+    return true;
+  }
+
+  // apra-fleet-iywi.4.1: /ext/* is a PROXY MOUNT, not a route table -- it is
+  // dispatched straight to ./proxy.ts rather than going through matchRoutes
+  // (no route module declares /ext, so matchRoutes could only ever 404 it).
+  // This is the single /ext branch in the tree; it sits AFTER the guard
+  // above, so the non-GET guard the auth-core lane added still applies
+  // unchanged and an unauthorised write never reaches an upstream package.
+  if (isExtPath(pathname)) {
+    await handleExtProxyRequest(req, res, {
+      pathname,
+      rawUrl: req.url ?? '/',
+      reservedCookieName: CONSOLE_COOKIE_NAME,
+    });
     return true;
   }
 
