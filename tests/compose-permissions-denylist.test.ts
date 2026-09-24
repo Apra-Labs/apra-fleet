@@ -146,6 +146,31 @@ describe('isNeverAutoGrant -- console (7523) and supervisor (8787) endpoint refu
   });
 });
 
+describe('isNeverAutoGrant -- console refusals hold on a non-default port (apra-fleet-iywi.7)', () => {
+  // The console's port is only a DEFAULT (RAW_DEFAULT_PORT in src/paths.ts) --
+  // APRA_FLEET_PORT can move it. The literal-7523 patterns above would miss
+  // every one of these; the host+path-shaped patterns must still catch them.
+  const mustBlock = [
+    'Bash(curl * localhost:9001/ui)',
+    'Bash(curl * localhost:9001/ui/members)',
+    'Bash(curl * localhost:9001/api/fleet/members)',
+    'Bash(curl -X POST localhost:9001/api/workflow-packages)',
+    'Bash(curl * localhost:9001/ext/some-package/status)',
+    'Bash(curl * 127.0.0.1:9001/api/fleet/members)',
+  ];
+
+  for (const permission of mustBlock) {
+    it(`blocks ${JSON.stringify(permission)}`, () => {
+      expect(isNeverAutoGrant(permission)).toBe(true);
+    });
+  }
+
+  it('still does not widen onto /health or /mcp on a non-default port', () => {
+    expect(isNeverAutoGrant('Bash(curl * localhost:9001/health)')).toBe(false);
+    expect(isNeverAutoGrant('Bash(curl * localhost:9001/mcp)')).toBe(false);
+  });
+});
+
 describe('isNeverAutoGrant -- the two deploy.md-documented supervisor grants are accepted by name (apra-fleet-iywi.5.2)', () => {
   // Named explicitly (not just via the deploy.md parse below) so the intent
   // survives even if that parse is later changed or deploy.md's wording

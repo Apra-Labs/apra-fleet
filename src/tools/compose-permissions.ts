@@ -84,6 +84,17 @@ const CO_OCCURRENCE: Record<string, string[]> = {
 // src/console/server.ts's isConsolePath) and stay auto-grantable exactly as
 // before.
 //
+// apra-fleet-iywi.7: the original console patterns keyed on the literal
+// default port number (7523), so a member running the console on a
+// non-default APRA_FLEET_PORT escaped every one of them. The six
+// 'localhost */{ui,api,ext}' / '127.0.0.1 */{ui,api,ext}' patterns below key
+// on the host + path SHAPE instead, so they match any port the console
+// actually listens on. This is deliberate over-blocking of the same kind
+// already documented above (a denylist can never be complete, and denying
+// too much is the safe direction) -- a legitimate unrelated grant that
+// happens to curl "localhost:<port>/api..." on some other local service is
+// rare and can still be granted explicitly by the operator.
+//
 // The fleet-supervisor's own HTTP API (a separate process, default port
 // 8787 -- see deploy.md's Permissions section) is denied WHOLESALE by the
 // broad 'Bash(*8787*)' pattern below rather than enumerated endpoint by
@@ -96,6 +107,22 @@ const CO_OCCURRENCE: Record<string, string[]> = {
 // below carves those back out via NEVER_AUTO_GRANT_EXCEPTIONS rather than
 // narrowing this pattern, because matchesDenyPattern has no way to express
 // "deny this port except these two paths" as a single wildcard string.
+// apra-fleet-iywi.7: like the console, 8787 is only the supervisor's
+// DEFAULT_SERVICE_PORT (packages/apra-fleet-se/src/supervisor/server.mjs)
+// -- it is started with an arbitrary `--port`, and (unlike the console's
+// APRA_FLEET_PORT) that choice is never recorded anywhere this process can
+// read it back, so there is no reliable value to resolve dynamically here.
+// The supervisor's mutating/sensitive routes all live under /api (sprints,
+// dolt-push-mutex, child-id-allocator -- see registerSprintRoutes et al in
+// packages/apra-fleet-se/src/supervisor/*.mjs), and those are already
+// covered at ANY port by the console's own port-agnostic '*/api*' patterns
+// above, since the path shape is identical. The literal 'Bash(*8787*)'
+// pattern below is kept to also catch the supervisor's few non-/api,
+// read-mostly paths (bare '/', '/events', '/state', '/supervisor/log') --
+// but only at the DEFAULT port; those specific paths on a non-default
+// supervisor port remain an accepted, documented gap (no port-agnostic
+// pattern can name them without also matching unrelated local services'
+// root/`/events`/`/state` paths far too broadly).
 const NEVER_AUTO_GRANT_PATTERNS = [
   'Bash(sudo*)',
   'Bash(su *)',
@@ -111,6 +138,16 @@ const NEVER_AUTO_GRANT_PATTERNS = [
   'Bash(*7523/ui*)',
   'Bash(*7523/api*)',
   'Bash(*7523/ext*)',
+  // Matched against normalizePermission()'s output, where the host:port
+  // colon has already been collapsed to a space (see normalizePermission's
+  // doc comment) -- these patterns use a literal space, not ':', for
+  // exactly that reason.
+  'Bash(*localhost */ui*)',
+  'Bash(*localhost */api*)',
+  'Bash(*localhost */ext*)',
+  'Bash(*127.0.0.1 */ui*)',
+  'Bash(*127.0.0.1 */api*)',
+  'Bash(*127.0.0.1 */ext*)',
   'Bash(*8787*)',
 ];
 
