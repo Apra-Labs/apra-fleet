@@ -57,6 +57,32 @@ low-collision edit compared to interleaving logic in a shared handler body.
 - `src/console/static.ts` -- serves the built shell's static assets and
   index-fallback routing for client-side routes.
 
+## Auth guard and console cookie
+
+Every `/api/*` request and every non-`GET` `/ext/*` request is checked
+against the shared fleet key (`~/.apra-fleet/fleet.key`,
+`src/services/jwt.ts`) before route dispatch -- `handleConsoleRequest`
+(`src/console/server.ts`) runs the check itself, ahead of the route lookup,
+keyed on `API_NAMESPACES`/`isExtPath`, which are derived from
+`ROUTE_MODULES`/`EXT_PREFIX` rather than a hand-maintained path list. A route
+module appended later (per the seam above) is therefore guarded
+automatically with no second list to keep in sync. `/health` and `/mcp` are
+not console paths and never reach this guard; `GET /ui` and `GET /ext/*` stay
+open (`/ui` is the shell itself; `GET /ext/*` matches a normal
+reverse-proxy read path).
+
+A caller authenticates with either the raw fleet key as a bearer token
+(`Authorization: Bearer <fleet.key>`, unchanged for existing CLI/script
+callers) or the `apra_console_token` cookie set on every `GET /ui`. The
+cookie is **not** the raw fleet key -- the fleet key also signs member JWTs
+(`jwt.ts`'s HS256 HMAC secret), so handing it to a browser as a cookie would
+let anything that reads it mint arbitrary member JWTs. The cookie instead
+carries `HMAC-SHA256(fleetKey, CONSOLE_COOKIE_LABEL)`, a value verifiable
+server-side (recompute and compare) but not reversible into the signing key.
+Both credential paths are checked against a path normalised through the same
+`normalizePath()` helper the router uses, so the guard and the dispatcher can
+never disagree about which route a URL names.
+
 ## Static asset serving: dev disk vs. packaged binary
 
 The shell is a normal Vite build (`packages/apra-fleet-shell-ui`, base path
@@ -82,15 +108,6 @@ back to `index.html`, matching standard SPA router behavior.
 
 ## Known constraints (by design, this iteration)
 
-- **No auth guard on the console routes yet.** `handleConsoleRequest` is
-  wired ahead of `/mcp`'s auth-checked path with no bearer/cookie check of
-  its own. This is acceptable only because the server's default bind is
-  loopback-only; the moment non-loopback binding is in play, the console
-  routes (including the full member registry via `/api/fleet/members`)
-  are reachable to anything that can route to the port. A future iteration
-  must add a guard (session cookie or the same bearer scheme `/mcp` uses)
-  before non-loopback binding and the console feature set can coexist
-  safely.
 - **Packaging is dev-checkout-complete, distribution-incomplete.** The
   console seam and static-serving logic support both the disk path and the
   SEA-asset path, but as of this writing neither the SEA manifest generator
