@@ -386,19 +386,18 @@ describe('composePermissions -- AGY proactive', () => {
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
 
-    // AGY reads permissions ONLY from the machine-global settings file, so the
-    // write must land under the PROBED member home -- never under workFolder.
-    const settingsWrite = writes.find(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))!;
-    expect(settingsWrite).toBeDefined();
-    expect(settingsWrite).toContain('/home/testuser/.gemini/antigravity-cli/settings.json');
+    // AGY reads permissions from the per-project config file under ~/.gemini/config/projects/fleet-<id>.json
+    const projectWrite = writes.find(cmd => cmd.includes(`.gemini/config/projects/fleet-${member.id}.json`))!;
+    expect(projectWrite).toBeDefined();
+    expect(projectWrite).toContain(`/home/testuser/.gemini/config/projects/fleet-${member.id}.json`);
     expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
 
     // ...and as AGY's `action(target)` STRINGS, not {action,target} objects,
     // which AGY's settings parser silently ignores.
-    expect(settingsWrite).toContain('"read_file(*)"');
-    expect(settingsWrite).toContain('"write_file(*)"');
-    expect(settingsWrite).toContain('"command(git)"');
-    expect(settingsWrite).not.toContain('"action"');
+    expect(projectWrite).toContain('"read_file(*)"');
+    expect(projectWrite).toContain('"write_file(*)"');
+    expect(projectWrite).toContain('"command(git)"');
+    expect(projectWrite).not.toContain('"action"');
   });
 
   it('fails closed when the member home cannot be resolved, rather than writing the config somewhere AGY never reads', async () => {
@@ -416,7 +415,7 @@ describe('composePermissions -- AGY proactive', () => {
 
     expect(result).toContain('Failed to persist');
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
-    expect(writes.some(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))).toBe(false);
+    expect(writes.some(cmd => cmd.includes(`.gemini/config/projects/fleet-${member.id}.json`))).toBe(false);
   });
 });
 

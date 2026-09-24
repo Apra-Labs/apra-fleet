@@ -150,27 +150,34 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       expect(allow).toEqual(['mcp(apra-fleet/kb_query)']);
     });
 
-    it('delivers native AGY permissions to the HOME-anchored settings.json, not a work-folder copy', () => {
+    it('delivers native AGY permissions to the HOME-anchored project config, not settings.json', () => {
       const provider = new AgyProvider();
-      // AGY reads permissions ONLY from the machine-global
-      // ~/.gemini/antigravity-cli/settings.json. A work-folder-relative path
-      // here is the defect that left every dispatched member with an empty
-      // allow-list and auto-denied every headless tool call.
-      expect(provider.permissionConfigPaths()).toEqual(['~/.gemini/antigravity-cli/settings.json']);
+      const mockAgent = {
+        id: 'agent-123',
+        friendlyName: 'agy-doer',
+        llmProvider: 'agy',
+        workFolder: '/home/user/my-project',
+      } as any;
+      expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-123.json']);
+      expect(provider.permissionConfigPaths()).toEqual(['~/.gemini/config/projects/fleet-default.json']);
 
-      const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken']);
+      const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken'], mockAgent);
       expect(configs).toHaveLength(1);
       const cfg = configs[0] as Record<string, any>;
-      expect(cfg.permissions).toBeDefined();
+      expect(cfg.id).toBe('fleet-agent-123');
+      expect(cfg.name).toBe('/home/user/my-project');
+      expect(cfg.projectResources.resources).toEqual([
+        { gitFolder: { folderUri: 'file:///home/user/my-project', allowWrite: true } },
+      ]);
+      expect(cfg.permissionGrants).toBeDefined();
       // Strings in AGY's own `action(target)` syntax -- NOT {action,target}
       // objects, which AGY's settings parser silently ignores.
-      expect(cfg.permissions.allow).toContain('read_file(*)');
-      expect(cfg.permissions.allow).toContain('write_file(*)');
-      expect(cfg.permissions.allow).toContain('command(git)');
-      expect(cfg.permissions.allow).toContain('read_url(*)');
+      expect(cfg.permissionGrants.allow).toContain('read_file(*)');
+      expect(cfg.permissionGrants.allow).toContain('write_file(*)');
+      expect(cfg.permissionGrants.allow).toContain('command(git)');
+      expect(cfg.permissionGrants.allow).toContain('read_url(*)');
       // 'custom' is not in AGY's action vocabulary -- it must not be written.
-      expect(cfg.permissions.allow.some((e: string) => e.includes('CustomToken'))).toBe(false);
-      expect(cfg.mcpServers['apra-fleet'].disabled).toBe(true);
+      expect(cfg.permissionGrants.allow.some((e: string) => e.includes('CustomToken'))).toBe(false);
     });
 
     it('serializes every rule as a string matching AGY\'s own settings.json validation regex', () => {

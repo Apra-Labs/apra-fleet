@@ -267,6 +267,28 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   return [...found];
 }
 
+/**
+ * Detects whether the member's workFolder is inside a git repository or worktree.
+ * Uses `git rev-parse --is-inside-work-tree` which handles regular repos, git worktrees,
+ * submodules, and monorepos uniformly. Falls back to filesystem probe for local agents if git CLI is absent.
+ */
+export async function detectIsGit(agent: Agent): Promise<boolean> {
+  const strategy = getStrategy(agent);
+  const checkDir = agent.workFolder.replace(/\\/g, '/');
+  const result = await strategy.execCommand(
+    `git -C "${checkDir}" rev-parse --is-inside-work-tree 2>/dev/null || true`,
+    5000,
+  );
+  if (result.stdout.trim() === 'true') {
+    return true;
+  }
+  try {
+    return fs.existsSync(path.join(agent.workFolder, '.git'));
+  } catch {
+    return false;
+  }
+}
+
 function compose(profilesDir: string, role: string, stacks: string[], ledger: Ledger): string[] {
   const baseName = role === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
@@ -428,9 +450,9 @@ function resolveRemotePath(
   homeDir?: string | null,
 ): string {
   // A "~/"-prefixed config path is HOME-anchored on the MEMBER, not relative to
-  // its work folder. AGY needs this: its permissions live only in the
-  // machine-global ~/.gemini/antigravity-cli/settings.json, and a copy written
-  // under the work folder is never read (see AgyProvider.permissionConfigPaths).
+  // its work folder. AGY needs this: its project configs live under
+  // ~/.gemini/config/projects/fleet-<agent.id>.json, rather than under the work folder
+  // (see AgyProvider.permissionConfigPaths).
   // `homeDir` is resolved in JavaScript by the caller via getMemberHomeDir --
   // never emitted as a literal "~/" or "$HOME" for the member's shell to
   // expand, because that member's shell may be PowerShell.
@@ -570,6 +592,15 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
+
+  // Reactive grant mode -- validate dangerous grants FIRST before any member probe or command
+  if (input.grant?.length) {
+    const blocked = input.grant.filter(p => isNeverAutoGrant(p));
+    if (blocked.length) {
+      return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
+    }
+  }
+
   // The member's registered shell decides POSIX vs PowerShell command strings
   // for every config write below (apra-fleet-7dir.1.3).
   const agentShell = getAgentShell(agent);
@@ -578,7 +609,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   // getMemberHomeDir, and null for a member whose probe fails -- in which case
   // resolveRemotePath raises a ConfigDeliveryError rather than silently writing
   // a home-anchored file to the wrong place.
-  const memberHomeDir = provider.permissionConfigPaths().some(isHomeAnchored)
+  const memberHomeDir = provider.permissionConfigPaths(agent).some(isHomeAnchored)
     ? await getMemberHomeDir(agent)
     : null;
   const profilesDir = findProfilesDir();
@@ -586,11 +617,6 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   // Reactive grant mode
   if (input.grant?.length) {
-    const blocked = input.grant.filter(p => isNeverAutoGrant(p));
-    if (blocked.length) {
-      return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
-    }
-
     // Expand co-occurrences
     const expanded = new Set(input.grant);
     for (const p of input.grant) {
@@ -626,8 +652,12 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       allow = [...expanded];
     }
 
-    const configs = provider.composePermissionConfig(mode, allow);
-    const paths = provider.permissionConfigPaths();
+    if (provider.preparePermissionsDelivery) {
+      await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir);
+    }
+    const isGit = provider.name === 'agy' ? await detectIsGit(agent) : undefined;
+    const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
+    const paths = provider.permissionConfigPaths(agent);
     try {
       for (let i = 0; i < paths.length; i++) {
         await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
@@ -668,8 +698,13 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const allow = input.tags?.length
     ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger)
     : compose(profilesDir, mode, stacks, ledger);
-  const configs = provider.composePermissionConfig(mode, allow);
-  const paths = provider.permissionConfigPaths();
+
+  if (provider.preparePermissionsDelivery) {
+    await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir);
+  }
+  const isGit = provider.name === 'agy' ? await detectIsGit(agent) : undefined;
+  const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
+  const paths = provider.permissionConfigPaths(agent);
 
   try {
     for (let i = 0; i < paths.length; i++) {

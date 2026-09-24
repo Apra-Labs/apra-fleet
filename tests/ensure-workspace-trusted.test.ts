@@ -335,9 +335,8 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
   });
 });
 
-describe('ensureWorkspaceTrusted no-ops for non-Claude providers (apra-fleet-eft.40 provider trust matrix)', () => {
+describe('ensureWorkspaceTrusted no-ops for providers without trust requirements (apra-fleet-eft.40 provider trust matrix)', () => {
   const cases: Array<[string, () => { ensureWorkspaceTrusted: any }]> = [
-    ['agy', () => new AgyProvider()],
     ['opencode', () => new OpenCodeProvider()],
     ['codex', () => new CodexProvider()],
     ['copilot', () => new CopilotProvider()],

@@ -308,166 +308,169 @@ Under this corrected architecture, AGY achieves genuine role isolation:
 
 ---
 
-## 6. Implementation Blueprint
+## 6. Implementation Architecture
 
 ### Step 1: Update `ProviderAdapter` Interface (`src/providers/provider.ts`)
-Allow `permissionConfigPaths` to accept the target agent:
+Allow `permissionConfigPaths` and `composePermissionConfig` to accept the target agent and Git status, and add the optional `preparePermissionsDelivery` hook:
 
 ```typescript
 export interface ProviderAdapter {
-  // Pass agent to allow dynamic, per-member path resolution
-  permissionConfigPaths(agent?: Agent): Promise<string[]> | string[];
+  /** Optional hook called during compose_permissions before config delivery to clean up
+   *  or migrate provider-specific configuration artifacts (e.g. AGY claim & purge of
+   *  conflicting project UUID files). */
+  preparePermissionsDelivery?(agent: Agent, execCommand: WorkspaceTrustExecFn, memberHomeDir?: string | null): Promise<void>;
+
+  // Permission configuration
+  /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
+   *  Parallel to the array returned by composePermissionConfig(). */
+  permissionConfigPaths(agent?: Agent): string[];
+
+  /** Returns provider-native permission config for the given role.
+   *  Each element corresponds to the path at the same index in permissionConfigPaths().
+   *  JSON providers return Record<string, unknown>; TOML providers return a string. */
+  composePermissionConfig(
+    role: 'doer' | 'reviewer',
+    allow?: string[],
+    agent?: Agent,
+    isGit?: boolean,
+  ): Array<Record<string, unknown> | string>;
 }
 ```
 
-### Step 2: Implement Project Resolver & Purge in `src/providers/agy.ts`
+### Step 2: Implement Project Configuration & Claim & Purge in `src/providers/agy.ts`
 
 ```typescript
-export class AgyProvider extends BaseProviderAdapter {
-  private getProjectConfigFileName(agent: Agent): string {
-    return `fleet-${agent.id}.json`;
+  permissionConfigPaths(agent?: Agent): string[] {
+    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
+    return [`~/.gemini/config/projects/${id}.json`];
   }
 
-  async resolveAndClaimProjectConfigFile(agent: Agent, strategy: AgentStrategy): Promise<string> {
-    const homeDir = await getMemberHomeDir(agent);
-    const isWindows = (agent.os ?? 'linux') === 'windows';
-    const normalizedFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-    const folderUri = `file://${normalizedFolder.startsWith('/') ? '' : '/'}${normalizedFolder}`;
-    
-    const targetFileName = this.getProjectConfigFileName(agent);
-    const targetRelPath = `~/.gemini/config/projects/${targetFileName}`;
-    const targetAbsPath = `${homeDir}/.gemini/config/projects/${targetFileName}`;
-
-    // 1. Purge spurious duplicate files matching this folderUri
-    const purgeScript = `python3 -c '
-import os, glob, json, sys
-home, target_uri, target_file = sys.argv[1], sys.argv[2], sys.argv[3]
-p_dir = os.path.join(home, ".gemini", "config", "projects")
-if os.path.isdir(p_dir):
-    for f in glob.glob(os.path.join(p_dir, "*.json")):
-        if os.path.basename(f) == target_file:
-            continue
-        try:
-            with open(f) as fp:
-                d = json.load(fp)
-                for r in d.get("projectResources", {}).get("resources", []):
-                    uri = r.get("folderUri") or r.get("gitFolder", {}).get("folderUri")
-                    if uri == target_uri:
-                        os.remove(f)
-                        print(f"purged:{f}")
-        except Exception:
-            pass
-' "${homeDir}" "${folderUri}" "${targetFileName}" 2>/dev/null || true`;
-
-    await strategy.execCommand(purgeScript, 10000);
-
-    // 2. Check if target file already exists; if not, create initial skeleton
-    const checkTargetCmd = isPosixShell(isWindows, agent.shell)
-      ? `test -f "${targetAbsPath}" && echo "1" || echo "0"`
-      : `if (Test-Path "${targetAbsPath.replace(/\//g, '\\')}") { "1" } else { "0" }`;
-    const targetExistsRes = await strategy.execCommand(checkTargetCmd, 5000);
-    const targetExists = targetExistsRes.stdout.trim() === '1';
-
-    if (!targetExists) {
-      // Check if .git directory exists
-      const checkGitCmd = isPosixShell(isWindows, agent.shell)
-        ? `test -d "${agent.workFolder}/.git" && echo "1" || echo "0"`
-        : `if (Test-Path "${agent.workFolder}\\.git") { "1" } else { "0" }`;
-      const gitRes = await strategy.execCommand(checkGitCmd, 5000);
-      const isGit = gitRes.stdout.trim() === '1';
-
-      const projectId = `fleet-${agent.id}`;
-      const resourceObj = isGit
-        ? { gitFolder: { folderUri, allowWrite: true } }
-        : { folderUri };
-
-      const initialSkeleton = {
-        id: projectId,
-        name: agent.workFolder,
-        projectResources: {
-          resources: [resourceObj]
-        },
-        permissionGrants: {
-          permissionGrants: {
-            allow: [],
-            deny: [],
-            ask: []
-          }
-        }
-      };
-
-      await strategy.execCommand(`mkdir -p "${homeDir}/.gemini/config/projects"`, 5000);
-      const writeCmd = `cat > "${targetAbsPath}" << 'FLEET_EOF'\n${JSON.stringify(initialSkeleton, null, 2)}\nFLEET_EOF`;
-      await strategy.execCommand(writeCmd, 5000);
-    }
-
-    return targetRelPath;
-  }
-
-  async permissionConfigPaths(agent?: Agent): Promise<string[]> {
-    if (!agent) {
-      return ['~/.gemini/config/projects/fleet-default.json'];
-    }
-    const strategy = getStrategy(agent);
-    const projectPath = await this.resolveAndClaimProjectConfigFile(agent, strategy);
-    return [projectPath];
-  }
-
-  composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+  composePermissionConfig(
+    _role: 'doer' | 'reviewer',
+    allow: string[] = [],
+    agent?: Agent,
+    isGit = true,
+  ): Array<Record<string, unknown> | string> {
     const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
-    return [
-      {
-        permissionGrants: {
-          permissionGrants: {
-            allow: agyAllow,
-            deny: [],
-            ask: []
-          }
-        }
-      }
-    ];
+    const workFolder = agent ? agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '') : '';
+    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
+    const uri = `file://${workFolder}`;
+
+    const resource = isGit
+      ? { gitFolder: { folderUri: uri, allowWrite: true } }
+      : { folderUri: uri };
+
+    return [{
+      id,
+      name: workFolder,
+      projectResources: {
+        resources: [resource],
+      },
+      permissionGrants: {
+        allow: agyAllow,
+      },
+    }];
   }
-}
+
+  async purgeConflictingProjects(
+    agent: Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+  ): Promise<string[]> {
+    const normFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const targetUri = `file://${normFolder}`;
+    const keepId = `fleet-${agent.id}`;
+
+    const purgeScript = `const fs = require('fs'); const path = require('path'); const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'}; const dir = path.join(home, '.gemini', 'config', 'projects'); if (!fs.existsSync(dir)) { console.log('[]'); process.exit(0); } const targetUri = ${JSON.stringify(targetUri)}; const keepId = ${JSON.stringify(keepId)}; const files = fs.readdirSync(dir); const purged = []; for (const file of files) { if (!file.endsWith('.json') || file === keepId + '.json') continue; try { const raw = fs.readFileSync(path.join(dir, file), 'utf8'); const content = JSON.parse(raw); const resList = content.projectResources?.resources || []; let matches = false; for (const r of resList) { const uri = r.gitFolder?.folderUri || r.folderUri; if (uri && uri.replace(/\\/+$/, '') === targetUri) { matches = true; break; } } if (matches) { fs.unlinkSync(path.join(dir, file)); purged.push(file); } } catch (e) {} } console.log(JSON.stringify(purged));`;
+
+    const cmd = `node -e ${JSON.stringify(purgeScript)}`;
+    const result = await execCommand(cmd, 10000);
+    if (result.code === 0 && result.stdout) {
+      try {
+        const purged = JSON.parse(result.stdout.trim());
+        if (Array.isArray(purged) && purged.length > 0) {
+          logWarn('agy', `Purged ${purged.length} conflicting project configs for ${normFolder}: ${purged.join(', ')}`);
+          return purged;
+        }
+      } catch {}
+    }
+    return [];
+  }
+
+  async preparePermissionsDelivery(
+    agent: Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+  ): Promise<void> {
+    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir);
+  }
 ```
 
 ### Step 3: Implement Real `ensureWorkspaceTrusted` in `src/providers/agy.ts`
 
-Replace the no-op with real trust seeding in `~/.gemini/antigravity-cli/settings.json`:
+Seeds `workFolder` into `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`:
 
 ```typescript
-async ensureWorkspaceTrusted(
-  workFolder: string,
-  execCommand: WorkspaceTrustExecFn,
-  agentOs: 'linux' | 'macos' | 'windows' = 'linux',
-  shell?: MemberShell
-): Promise<EnsureWorkspaceTrustedResult> {
-  const homeDir = await this.resolveHomeDir(execCommand, agentOs, shell);
-  const settingsPath = `${homeDir}/.gemini/antigravity-cli/settings.json`;
+  async ensureWorkspaceTrusted(
+    workFolder: string,
+    execCommand: WorkspaceTrustExecFn,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
+    _transport?: WorkspaceTrustTransport,
+  ): Promise<EnsureWorkspaceTrustedResult> {
+    const normFolder = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const usePosix = isPosixShell(agentOs, shell);
+    const isWindows = !usePosix;
+    const homeFile = isWindows
+      ? '$env:USERPROFILE\\.gemini\\antigravity-cli\\settings.json'
+      : '$HOME/.gemini/antigravity-cli/settings.json';
+    const settingsDir = isWindows
+      ? '$env:USERPROFILE\\.gemini\\antigravity-cli'
+      : '$HOME/.gemini/antigravity-cli';
 
-  const script = `python3 -c '
-import os, json, sys
-p = sys.argv[1]
-wf = sys.argv[2]
-data = {}
-if os.path.exists(p):
-    try:
-        with open(p) as f: data = json.load(f)
-    except: pass
-trusted = set(data.get("trustedWorkspaces", []))
-if wf not in trusted:
-    trusted.add(wf)
-    data["trustedWorkspaces"] = sorted(list(trusted))
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f: json.dump(data, f, indent=2)
-    print("seeded")
-else:
-    print("already_trusted")
-' "${settingsPath}" "${workFolder}" 2>/dev/null || true`;
+    const readCmd = isWindows
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true`;
 
-  const res = await execCommand(script, 5000);
-  const seeded = res.stdout.includes('seeded');
-  return { seeded, detail: `agy: trustedWorkspaces updated in ${settingsPath}` };
-}
+    const readResult = await execCommand(readCmd, 5000);
+    let settings: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(readResult.stdout.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        settings = parsed;
+      }
+    } catch {
+      // missing or invalid JSON
+    }
+
+    const trusted = Array.isArray(settings.trustedWorkspaces)
+      ? (settings.trustedWorkspaces as string[])
+      : [];
+
+    if (trusted.includes(normFolder)) {
+      return { seeded: false, detail: `agy: workspace "${normFolder}" already in trustedWorkspaces` };
+    }
+
+    const updatedTrusted = [...trusted, normFolder];
+    settings.trustedWorkspaces = updatedTrusted;
+    const contentStr = JSON.stringify(settings, null, 2);
+
+    const mkdirCmd = isWindows
+      ? `if (-not (Test-Path "${settingsDir}")) { New-Item -ItemType Directory -Force "${settingsDir}" }`
+      : `mkdir -p "${settingsDir}"`;
+    await execCommand(mkdirCmd, 5000);
+
+    const writeCmd = isWindows
+      ? `[System.IO.File]::WriteAllText("${homeFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
+      : `cat > "${homeFile}" << 'FLEET_AGY_SETTINGS_EOF'\n${contentStr}\nFLEET_AGY_SETTINGS_EOF`;
+
+    const writeResult = await execCommand(writeCmd, 5000);
+    if (writeResult.code !== 0) {
+      throw new Error(`agy: failed to write trustedWorkspaces to settings.json (exit ${writeResult.code})`);
+    }
+
+    return { seeded: true, detail: `agy: added "${normFolder}" to trustedWorkspaces in settings.json` };
+  }
 ```
 
 ---

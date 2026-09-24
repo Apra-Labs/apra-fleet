@@ -30,17 +30,30 @@ export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): 
       const probed = await getMemberHomeDir(agent);
       if (!probed) throw new Error('member home directory could not be resolved');
       const home = sftpHomePath(probed, agent.os);
+      const relDir = path.dirname(relPath).replace(/\\/g, '/');
+      const targetDir = relDir && relDir !== '.' ? `${home}/${relDir}` : home;
       const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-trust-'));
       const local = path.join(staging, path.basename(relPath));
       try {
         fs.writeFileSync(local, content, { encoding: 'utf8' });
-        const result = await strat.transferFiles([local], home);
+        const result = await strat.transferFiles([local], targetDir);
         if (result.failed.length > 0) {
           throw new Error(`transfer of ~/${relPath} failed: ${result.failed[0].error}`);
         }
       } finally {
         fs.rmSync(staging, { recursive: true, force: true });
       }
+    },
+    readHomeFile: async (relPath: string): Promise<{ found: boolean; content?: string } | undefined> => {
+      if (agent.agentType !== 'local') return undefined;
+      const probed = await getMemberHomeDir(agent);
+      if (!probed) return undefined;
+      const home = sftpHomePath(probed, agent.os);
+      const filePath = path.join(home, relPath);
+      if (fs.existsSync(filePath)) {
+        return { found: true, content: fs.readFileSync(filePath, 'utf8') };
+      }
+      return { found: false };
     },
   };
 }

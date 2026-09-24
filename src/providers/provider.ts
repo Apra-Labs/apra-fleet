@@ -264,9 +264,11 @@ export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Prom
  *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
  *  failure so the adapter can fall back. */
 export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
 
 export interface WorkspaceTrustTransport {
   writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+  readHomeFile?: WorkspaceTrustReadHomeFileFn;
 }
 
 export interface EnsureWorkspaceTrustedResult {
@@ -417,14 +419,24 @@ export interface ProviderAdapter {
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
+  /** Optional hook called during compose_permissions before config delivery to clean up
+   *  or migrate provider-specific configuration artifacts (e.g. AGY claim & purge of
+   *  conflicting project UUID files). */
+  preparePermissionsDelivery?(agent: import('../types.js').Agent, execCommand: WorkspaceTrustExecFn, memberHomeDir?: string | null): Promise<void>;
+
   // Permission configuration
-  /** Returns the config file path(s) for this provider's permission config (relative to repo root).
+  /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
    *  Parallel to the array returned by composePermissionConfig(). */
-  permissionConfigPaths(): string[];
+  permissionConfigPaths(agent?: import('../types.js').Agent): string[];
   /** Returns provider-native permission config for the given role.
    *  Each element corresponds to the path at the same index in permissionConfigPaths().
    *  JSON providers return Record<string, unknown>; TOML providers return a string. */
-  composePermissionConfig(role: 'doer' | 'reviewer', allow?: string[]): Array<Record<string, unknown> | string>;
+  composePermissionConfig(
+    role: 'doer' | 'reviewer',
+    allow?: string[],
+    agent?: import('../types.js').Agent,
+    isGit?: boolean,
+  ): Array<Record<string, unknown> | string>;
 
   // Auth capabilities
   supportsOAuthCopy(): boolean;

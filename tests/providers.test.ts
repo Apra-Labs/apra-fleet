@@ -1042,20 +1042,28 @@ describe('AgyProvider', () => {
     expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-high');
   });
 
-  it('permissionConfigPaths is HOME-anchored -- AGY reads permissions only from the machine-global settings.json', () => {
-    expect(p.permissionConfigPaths()).toEqual(['~/.gemini/antigravity-cli/settings.json']);
+  it('permissionConfigPaths is HOME-anchored per-project config for AGY', () => {
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work' } as any;
+    expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-456.json']);
+    expect(p.permissionConfigPaths()).toEqual(['~/.gemini/config/projects/fleet-default.json']);
   });
 
-  it('composePermissionConfig produces AGY native permission rule STRINGS', () => {
+  it('composePermissionConfig produces AGY native project config and permission rule STRINGS', () => {
     const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
-    const configs = p.composePermissionConfig('doer', claudeAllow);
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work' } as any;
+    const configs = p.composePermissionConfig('doer', claudeAllow, mockAgent);
     expect(configs).toHaveLength(1);
     const cfg = configs[0] as Record<string, any>;
-    expect(cfg.permissions).toBeDefined();
+    expect(cfg.id).toBe('fleet-agent-456');
+    expect(cfg.name).toBe('/tmp/work');
+    expect(cfg.projectResources.resources).toEqual([
+      { gitFolder: { folderUri: 'file:///tmp/work', allowWrite: true } },
+    ]);
+    expect(cfg.permissionGrants).toBeDefined();
     // `Agent` maps to invoke_subagent/send_message, which are AGY tool names,
     // not permission actions -- they are dropped rather than written as entries
     // AGY's settings parser rejects.
-    expect(cfg.permissions.allow).toEqual([
+    expect(cfg.permissionGrants.allow).toEqual([
       'read_file(*)',
       'write_file(*)',
       'command(git)',

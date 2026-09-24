@@ -1,6 +1,6 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, WorkspaceTrustTransport, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
-import type { LlmProvider, SSHExecResult } from '../types.js';
+import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -8,6 +8,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
 import fs from 'node:fs';
@@ -368,19 +369,75 @@ export class AgyProvider implements ProviderAdapter {
     return classifyPromptError(output);
   }
 
-  permissionConfigPaths(): string[] {
-    // HOME-anchored, not work-folder-relative. AGY has no per-project config:
-    // it reads permissions only from the machine-global
-    // ~/.gemini/antigravity-cli/settings.json (same finding as
-    // ensureWorkspaceTrusted's "no per-project trust concept"). A copy written
-    // under the member's work folder is never read, so the member ran with an
-    // empty allow-list and every headless tool call was auto-denied.
-    return ['~/.gemini/antigravity-cli/settings.json'];
+  permissionConfigPaths(agent?: Agent): string[] {
+    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
+    return [`~/.gemini/config/projects/${id}.json`];
   }
 
-  composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+  composePermissionConfig(
+    _role: 'doer' | 'reviewer',
+    allow: string[] = [],
+    agent?: Agent,
+    isGit = true,
+  ): Array<Record<string, unknown> | string> {
     const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
-    return [{ permissions: { allow: agyAllow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    const workFolder = agent ? agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '') : '';
+    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
+    const uri = `file://${workFolder}`;
+
+    const resource = isGit
+      ? { gitFolder: { folderUri: uri, allowWrite: true } }
+      : { folderUri: uri };
+
+    return [{
+      id,
+      name: workFolder,
+      projectResources: {
+        resources: [resource],
+      },
+      permissionGrants: {
+        allow: agyAllow,
+      },
+    }];
+  }
+
+  /**
+   * Sweeps ~/.gemini/config/projects/*.json on the member machine and deletes any
+   * duplicate or stale project config file that claims the same workspace URI but
+   * does not match fleet-${agent.id}.json. This prevents AGY from picking the wrong
+   * project config or encountering conflicting permissions.
+   */
+  async purgeConflictingProjects(
+    agent: Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+  ): Promise<string[]> {
+    const normFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const targetUri = `file://${normFolder}`;
+    const keepId = `fleet-${agent.id}`;
+
+    const purgeScript = `const fs = require('fs'); const path = require('path'); const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'}; const dir = path.join(home, '.gemini', 'config', 'projects'); if (!fs.existsSync(dir)) { console.log('[]'); process.exit(0); } const targetUri = ${JSON.stringify(targetUri)}; const keepId = ${JSON.stringify(keepId)}; const files = fs.readdirSync(dir); const purged = []; for (const file of files) { if (!file.endsWith('.json') || file === keepId + '.json') continue; try { const raw = fs.readFileSync(path.join(dir, file), 'utf8'); const content = JSON.parse(raw); const resList = content.projectResources?.resources || []; let matches = false; for (const r of resList) { const uri = r.gitFolder?.folderUri || r.folderUri; if (uri && uri.replace(/\\/+$/, '') === targetUri) { matches = true; break; } } if (matches) { fs.unlinkSync(path.join(dir, file)); purged.push(file); } } catch (e) {} } console.log(JSON.stringify(purged));`;
+
+    const cmd = `node -e ${JSON.stringify(purgeScript)}`;
+    const result = await execCommand(cmd, 10000);
+    if (result.code === 0 && result.stdout) {
+      try {
+        const purged = JSON.parse(result.stdout.trim());
+        if (Array.isArray(purged) && purged.length > 0) {
+          logWarn('agy', `Purged ${purged.length} conflicting project configs for ${normFolder}: ${purged.join(', ')}`);
+          return purged;
+        }
+      } catch {}
+    }
+    return [];
+  }
+
+  async preparePermissionsDelivery(
+    agent: Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+  ): Promise<void> {
+    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir);
   }
 
   supportsOAuthCopy(): boolean {
@@ -472,11 +529,100 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
-    // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
-    // config is machine-global (live-verified, docs/member-onboarding-journey.md section
-    // 3a). No-op.
-    return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
+  async ensureWorkspaceTrusted(
+    workFolder: string,
+    execCommand: WorkspaceTrustExecFn,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
+    transport?: WorkspaceTrustTransport,
+  ): Promise<EnsureWorkspaceTrustedResult> {
+    const normFolder = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const usePosix = isPosixShell(agentOs, shell);
+    const isWindows = !usePosix;
+    const baseHome = isWindows ? '$env:USERPROFILE' : '$HOME';
+    const homeRel = isWindows
+      ? '.gemini\\antigravity-cli\\settings.json'
+      : '.gemini/antigravity-cli/settings.json';
+    const homeFile = isWindows
+      ? `${baseHome}\\${homeRel}`
+      : `${baseHome}/${homeRel}`;
+    const settingsDir = isWindows
+      ? `${baseHome}\\.gemini\\antigravity-cli`
+      : `${baseHome}/.gemini/antigravity-cli`;
+
+    let settings: Record<string, unknown> = {};
+
+    let transportReadAttempted = false;
+    if (transport?.readHomeFile) {
+      try {
+        const readRes = await transport.readHomeFile(homeRel);
+        if (readRes !== undefined) {
+          transportReadAttempted = true;
+          if (readRes.found && readRes.content) {
+            const parsed = JSON.parse(readRes.content.trim());
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              settings = parsed;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!transportReadAttempted) {
+      const readCmd = isWindows
+        ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
+        : `cat "${homeFile}" 2>/dev/null || true`;
+
+      const readResult = await execCommand(readCmd, 5000);
+      try {
+        const parsed = JSON.parse(readResult.stdout.trim());
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          settings = parsed;
+        }
+      } catch {
+        // missing or invalid JSON
+      }
+    }
+
+    const trusted = Array.isArray(settings.trustedWorkspaces)
+      ? (settings.trustedWorkspaces as string[])
+      : [];
+
+    if (trusted.includes(normFolder)) {
+      return { seeded: false, detail: `agy: workspace "${normFolder}" already in trustedWorkspaces` };
+    }
+
+    const updatedTrusted = [...trusted, normFolder];
+    settings.trustedWorkspaces = updatedTrusted;
+    const contentStr = JSON.stringify(settings, null, 2);
+
+    let deliveredViaTransport = false;
+    if (transport?.writeHomeFile) {
+      try {
+        await transport.writeHomeFile(homeRel, contentStr);
+        deliveredViaTransport = true;
+      } catch (err) {
+        logWarn('agy', `transport.writeHomeFile failed: ${err}`);
+      }
+    }
+
+    if (!deliveredViaTransport) {
+      const mkdirCmd = isWindows
+        ? `if (-not (Test-Path "${settingsDir}")) { New-Item -ItemType Directory -Force "${settingsDir}" }`
+        : `mkdir -p "${settingsDir}"`;
+      await execCommand(mkdirCmd, 5000);
+
+      const writeCmd = isWindows
+        ? `[System.IO.File]::WriteAllText("${homeFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
+        : `cat > "${homeFile}" << 'FLEET_AGY_SETTINGS_EOF'\n${contentStr}\nFLEET_AGY_SETTINGS_EOF`;
+
+      const writeResult = await execCommand(writeCmd, 5000);
+      if (writeResult.code !== 0) {
+        throw new Error(`agy: failed to write trustedWorkspaces to settings.json (exit ${writeResult.code})`);
+      }
+    }
+
+    return { seeded: true, detail: `agy: added "${normFolder}" to trustedWorkspaces in settings.json` };
   }
 }
 
@@ -495,8 +641,8 @@ export interface AgyPermissionRule {
 const AGY_PERMISSION_ACTIONS = new Set(['command', 'read_file', 'write_file', 'read_url', 'mcp', 'execute_url', 'unsandboxed']);
 
 /**
- * Render structured rules into the ONLY shape AGY's settings.json parser
- * accepts: a flat array of `action(target)` STRINGS.
+ * Render structured rules into the ONLY shape AGY's permission parser
+ * accepts: a flat array of `action(target)` STRINGS in permissionGrants.allow.
  *
  * Before this, fleet wrote the `{ action, target }` objects straight through.
  * AGY silently ignored every one of them, so a headless `-p` dispatch behaved
@@ -505,9 +651,8 @@ const AGY_PERMISSION_ACTIONS = new Set(['command', 'read_file', 'write_file', 'r
  * for, so it was auto-denied" -- the failure this function exists to prevent.
  *
  * Rules whose action is outside AGY's vocabulary are dropped with a warning:
- * AGY's settings.json is MACHINE-GLOBAL and shared with the human user's own
- * Antigravity install, so writing entries its parser rejects is not a harmless
- * no-op. The dropped tokens are already surfaced by
+ * writing entries its parser rejects causes validation failure.
+ * The dropped tokens are already surfaced by
  * convertClaudeAllowToAgyPermissions' own warnings for manual escalation.
  */
 export function formatAgyPermissionRules(rules: AgyPermissionRule[]): string[] {
