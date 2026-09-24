@@ -592,7 +592,7 @@ export async function runSweepStep({
  * be narrated as if it had been checked.
  *
  * @param {{ armed?: boolean, dispatched?: boolean, checked?: number, spared?: number,
- *           unevaluable?: number, unprobeable?: number }|undefined} liveness
+ *           unevaluable?: number, tcpAliveNoHttp?: number, unprobeable?: number }|undefined} liveness
  * @returns {string}
  */
 export function formatSweepLivenessSummary(liveness) {
@@ -627,6 +627,25 @@ export function formatSweepLivenessSummary(liveness) {
     // port worth checking. So this branch states the unevaluable spares too,
     // for the same reason the unprobeable kills are stated above.
     const unevaluable = liveness.unevaluable || 0;
+    // apra-fleet-i4ku.24.2.1: a candidate whose only answering socket ACCEPTED
+    // the TCP connection but spoke no HTTP is SPARED -- the same fail-safe
+    // direction as `unevaluable` -- but member-stray-sweep.mjs counts it in
+    // its OWN `tcpAliveNoHttp` bucket instead (never both, see that module's
+    // header). It is ALSO already folded into `checked` there, because a
+    // probe genuinely reached it and got an answer. Left unstated, the
+    // dispatched line below would read "N checked" with no hint that some of
+    // those N were a live non-HTTP listener (a database, for example) this
+    // predicate can never confirm alive because it only speaks HTTP -- the
+    // single most misleading place that outcome could land, since it reads
+    // exactly like "checked and found dead". `|| 0` matches every other
+    // bucket here: a sweep result from a code path that predates this field
+    // is narrated as 0, never guessed in either direction.
+    const tcpAliveNoHttp = liveness.tcpAliveNoHttp || 0;
+    const tcpAliveNoHttpClause = tcpAliveNoHttp > 0
+        ? `; a further ${tcpAliveNoHttp} candidate(s) held a live TCP connection that answered no HTTP and were `
+            + 'SPARED rather than confirmed dead -- this predicate speaks HTTP only and cannot tell whether a '
+            + 'non-HTTP listener is alive'
+        : '';
     if (!liveness.dispatched) {
         if (unevaluable > 0) {
             const alsoUnchecked = unprobeable > 0
@@ -634,11 +653,17 @@ export function formatSweepLivenessSummary(liveness) {
                 : '';
             return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port whose '
                 + `bound address could be resolved to a probeable host, so ${unevaluable} candidate(s) were SPARED `
-                + `unevaluable rather than checked${alsoUnchecked}`;
+                + `unevaluable rather than checked${alsoUnchecked}${tcpAliveNoHttpClause}`;
         }
         if (unprobeable > 0) {
             return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port '
-                + `to probe, so ${unprobeable} candidate(s) were selected UNCHECKED by this predicate`;
+                + `to probe, so ${unprobeable} candidate(s) were selected UNCHECKED by this predicate`
+                + `${tcpAliveNoHttpClause}`;
+        }
+        if (tcpAliveNoHttp > 0) {
+            return 'liveness probe armed but not dispatched -- no surviving candidate held a listening port that '
+                + `answered HTTP, so ${tcpAliveNoHttp} candidate(s) were SPARED rather than confirmed dead -- this `
+                + 'predicate speaks HTTP only and cannot tell whether a non-HTTP listener is alive';
         }
         return 'liveness probe armed but not dispatched -- no candidate survived the other predicates, '
             + 'so there was nothing to check';
@@ -647,7 +672,7 @@ export function formatSweepLivenessSummary(liveness) {
         ? `; a further ${unprobeable} candidate(s) held no listening port to probe and were selected UNCHECKED`
         : '';
     return `liveness probe armed and dispatched: ${liveness.checked || 0} candidate(s) checked, `
-        + `${liveness.spared || 0} spared as live, ${unevaluable} unevaluable${uncheckedClause}`;
+        + `${liveness.spared || 0} spared as live, ${unevaluable} unevaluable${uncheckedClause}${tcpAliveNoHttpClause}`;
 }
 
 /**
