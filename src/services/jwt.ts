@@ -3,18 +3,33 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 
-const KEY_PATH = path.join(os.homedir(), '.apra-fleet', 'fleet.key');
+/**
+ * Resolved lazily on every call (never cached at module load) so that
+ * changing `os.homedir()` -- e.g. a test pointing `process.env.HOME` at a
+ * temp directory before calling `getOrCreateKey()` -- actually takes effect.
+ * A module-load-time constant would freeze whatever home directory was
+ * current at first import, which on POSIX is read from `process.env.HOME`
+ * (`os.homedir()`'s own resolution order): a test that sets `HOME` in
+ * `beforeEach` (after the module has already been imported once) would
+ * silently keep reading/writing the real developer's `~/.apra-fleet/fleet.key`
+ * instead of the temp one it thinks it isolated to (apra-fleet-iywi.2.2 review
+ * finding).
+ */
+function keyPath(): string {
+  return path.join(os.homedir(), '.apra-fleet', 'fleet.key');
+}
 
 export function getOrCreateKey(): string {
+  const filePath = keyPath();
   try {
-    const existing = fs.readFileSync(KEY_PATH, 'utf8').trim();
+    const existing = fs.readFileSync(filePath, 'utf8').trim();
     if (existing.length === 64) return existing;
   } catch {
     // file missing or unreadable -- create it
   }
   const key = crypto.randomBytes(32).toString('hex');
-  fs.mkdirSync(path.dirname(KEY_PATH), { recursive: true });
-  fs.writeFileSync(KEY_PATH, key, { encoding: 'utf8', mode: 0o600 });
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, key, { encoding: 'utf8', mode: 0o600 });
   return key;
 }
 

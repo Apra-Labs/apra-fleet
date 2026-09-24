@@ -92,6 +92,37 @@ async function fetchConsoleCookie(port: number): Promise<string> {
   return firstSetCookie(res.headers).split(';')[0];
 }
 
+describe('console auth guard: the temp HOME isolation above is real, not vacuous', () => {
+  it('getOrCreateKey() actually writes fleet.key under the temp HOME, not the real one', async () => {
+    // Anti-vacuity for the file-header claim above: assert the fresh key this
+    // test mints lands inside tempHome (proving process.env.HOME really
+    // steered src/services/jwt.ts), and that nothing was written under the
+    // real developer HOME this suite saved off in beforeEach.
+    const fleetKey = getOrCreateKey();
+    expect(fleetKey).toMatch(/^[0-9a-f]{64}$/);
+
+    const tempKeyPath = path.join(tempHome, '.apra-fleet', 'fleet.key');
+    const written = await fsp.readFile(tempKeyPath, 'utf8');
+    expect(written.trim()).toBe(fleetKey);
+
+    if (realHome) {
+      const realKeyPath = path.join(realHome, '.apra-fleet', 'fleet.key');
+      let realKeyBefore: string | null = null;
+      try {
+        realKeyBefore = await fsp.readFile(realKeyPath, 'utf8');
+      } catch {
+        realKeyBefore = null;
+      }
+      // The temp-home key must never equal whatever (if anything) sits at
+      // the real path -- a collision here would mean this test read/wrote
+      // the developer's actual key instead of the isolated temp one.
+      if (realKeyBefore !== null) {
+        expect(realKeyBefore.trim()).not.toBe(fleetKey);
+      }
+    }
+  });
+});
+
 describe('console auth guard: credential x method matrix on /api/*', () => {
   it('GET /api/fleet/members: no credential -> 401', async () => {
     const handle = await startServer();

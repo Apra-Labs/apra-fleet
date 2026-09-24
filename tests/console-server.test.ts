@@ -8,6 +8,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type http from 'node:http';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { handleConsoleRequest, isConsolePath } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { addAgent } from '../src/services/registry.js';
@@ -79,6 +82,16 @@ function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${getOrCreateKey()}` };
 }
 
+// apra-fleet-iywi.2.2 review finding: authHeaders() above calls
+// getOrCreateKey(), which reads/mints ~/.apra-fleet/fleet.key
+// (src/services/jwt.ts). Without a temp HOME this describe block would
+// touch the real developer's key file exactly like tests/console-auth.test.ts
+// was found to do before its own isolation was fixed. jwt.ts now resolves
+// os.homedir() lazily on every call, so setting process.env.HOME here in
+// beforeEach (before authHeaders() is ever invoked) is sufficient isolation.
+let realHome: string | undefined;
+let tempHome: string;
+
 describe('console seam: handleConsoleRequest path ownership', () => {
   it('claims /ui, /ui/*, and /api/fleet/*', async () => {
     for (const url of ['/ui', '/ui/', '/ui/members', '/ui/assets/app.js', '/api/fleet/members', '/api/fleet/anything']) {
@@ -130,8 +143,17 @@ describe('console seam: handleConsoleRequest path ownership', () => {
 });
 
 describe('console seam: GET /api/fleet/members', () => {
-  beforeEach(() => backupAndResetRegistry());
-  afterEach(() => restoreRegistry());
+  beforeEach(async () => {
+    backupAndResetRegistry();
+    realHome = process.env.HOME;
+    tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-server-home-'));
+    process.env.HOME = tempHome;
+  });
+  afterEach(async () => {
+    restoreRegistry();
+    process.env.HOME = realHome;
+    await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  });
 
   it('answers 200 application/json with the list_members json payload, in-process', async () => {
     addAgent(makeTestLocalAgent({ id: 'member-a', friendlyName: 'alpha' }));

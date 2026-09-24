@@ -69,9 +69,11 @@ describe('(a) server binds to 127.0.0.1', () => {
 // ---------------------------------------------------------------------------
 describe('(l) APRA_FLEET_HOST configures the bind address', () => {
   // src/paths.ts reads process.env.APRA_FLEET_HOST ONCE at module load time
-  // (same eager-evaluation shape as jwt.ts's KEY_PATH) -- vi.resetModules()
-  // + a dynamic re-import is required for the env var to actually take
-  // effect, a plain env var set after import would silently no-op.
+  // (jwt.ts's KEY_PATH used to share this eager-evaluation shape too, but
+  // apra-fleet-iywi.2.2 made it resolve os.homedir() lazily on every call
+  // instead) -- vi.resetModules() + a dynamic re-import is required here for
+  // the env var to actually take effect, a plain env var set after import
+  // would silently no-op.
   afterEach(() => {
     delete process.env.APRA_FLEET_HOST;
     vi.resetModules();
