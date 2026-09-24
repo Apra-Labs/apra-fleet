@@ -159,7 +159,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         workFolder: '/home/user/my-project',
       } as any;
       expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-123.json']);
-      expect(provider.permissionConfigPaths()).toEqual(['~/.gemini/config/projects/fleet-default.json']);
+      expect(() => provider.permissionConfigPaths()).toThrow();
 
       const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken'], mockAgent);
       expect(configs).toHaveLength(1);
@@ -172,12 +172,13 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       expect(cfg.permissionGrants).toBeDefined();
       // Strings in AGY's own `action(target)` syntax -- NOT {action,target}
       // objects, which AGY's settings parser silently ignores.
-      expect(cfg.permissionGrants.allow).toContain('read_file(*)');
-      expect(cfg.permissionGrants.allow).toContain('write_file(*)');
-      expect(cfg.permissionGrants.allow).toContain('command(git)');
-      expect(cfg.permissionGrants.allow).toContain('read_url(*)');
+      const allowList = cfg.permissionGrants.permissionGrants.allow;
+      expect(allowList).toContain('read_file(*)');
+      expect(allowList).toContain('write_file(*)');
+      expect(allowList).toContain('command(git)');
+      expect(allowList).toContain('read_url(*)');
       // 'custom' is not in AGY's action vocabulary -- it must not be written.
-      expect(cfg.permissionGrants.allow.some((e: string) => e.includes('CustomToken'))).toBe(false);
+      expect(allowList.some((e: string) => e.includes('CustomToken'))).toBe(false);
     });
 
     it('serializes every rule as a string matching AGY\'s own settings.json validation regex', () => {

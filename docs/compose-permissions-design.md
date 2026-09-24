@@ -341,8 +341,10 @@ export interface ProviderAdapter {
 
 ```typescript
   permissionConfigPaths(agent?: Agent): string[] {
-    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
-    return [`~/.gemini/config/projects/${id}.json`];
+    if (!agent || !agent.id) {
+      throw new Error('AGY provider requires a valid Agent with an id to compose permission config');
+    }
+    return [`~/.gemini/config/projects/fleet-${agent.id}.json`];
   }
 
   composePermissionConfig(
@@ -351,10 +353,13 @@ export interface ProviderAdapter {
     agent?: Agent,
     isGit = true,
   ): Array<Record<string, unknown> | string> {
+    if (!agent || !agent.id || !agent.workFolder) {
+      throw new Error('AGY provider requires a valid Agent with workFolder to compose permission config');
+    }
     const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
-    const workFolder = agent ? agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '') : '';
-    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
-    const uri = `file://${workFolder}`;
+    const workFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const id = `fleet-${agent.id}`;
+    const uri = toAgyFileUri(agent.workFolder);
 
     const resource = isGit
       ? { gitFolder: { folderUri: uri, allowWrite: true } }
@@ -367,7 +372,11 @@ export interface ProviderAdapter {
         resources: [resource],
       },
       permissionGrants: {
-        allow: agyAllow,
+        permissionGrants: {
+          allow: agyAllow,
+          deny: [],
+          ask: [],
+        },
       },
     }];
   }
@@ -376,23 +385,42 @@ export interface ProviderAdapter {
     agent: Agent,
     execCommand: WorkspaceTrustExecFn,
     memberHomeDir?: string | null,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
   ): Promise<string[]> {
-    const normFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-    const targetUri = `file://${normFolder}`;
+    if (!agent || !agent.workFolder) {
+      throw new Error('AGY provider requires a valid Agent with workFolder to purge conflicting projects');
+    }
+    const targetUri = toAgyFileUri(agent.workFolder);
     const keepId = `fleet-${agent.id}`;
-
-    const purgeScript = `const fs = require('fs'); const path = require('path'); const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'}; const dir = path.join(home, '.gemini', 'config', 'projects'); if (!fs.existsSync(dir)) { console.log('[]'); process.exit(0); } const targetUri = ${JSON.stringify(targetUri)}; const keepId = ${JSON.stringify(keepId)}; const files = fs.readdirSync(dir); const purged = []; for (const file of files) { if (!file.endsWith('.json') || file === keepId + '.json') continue; try { const raw = fs.readFileSync(path.join(dir, file), 'utf8'); const content = JSON.parse(raw); const resList = content.projectResources?.resources || []; let matches = false; for (const r of resList) { const uri = r.gitFolder?.folderUri || r.folderUri; if (uri && uri.replace(/\\/+$/, '') === targetUri) { matches = true; break; } } if (matches) { fs.unlinkSync(path.join(dir, file)); purged.push(file); } } catch (e) {} } console.log(JSON.stringify(purged));`;
-
-    const cmd = `node -e ${JSON.stringify(purgeScript)}`;
+    const cmd = buildAgyPurgeCommand(targetUri, keepId, memberHomeDir, agentOs, shell);
     const result = await execCommand(cmd, 10000);
-    if (result.code === 0 && result.stdout) {
+    if (result.code !== 0) {
+      throw new Error(`agy: purgeConflictingProjects failed with exit code ${result.code}: ${result.stderr || result.stdout}`);
+    }
+    if (result.stdout) {
       try {
-        const purged = JSON.parse(result.stdout.trim());
-        if (Array.isArray(purged) && purged.length > 0) {
-          logWarn('agy', `Purged ${purged.length} conflicting project configs for ${normFolder}: ${purged.join(', ')}`);
+        const parsed = JSON.parse(result.stdout.trim());
+        if (parsed && typeof parsed === 'object') {
+          const purged = Array.isArray(parsed.purged) ? parsed.purged : [];
+          const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+          if (warnings.length > 0) {
+            logWarn(
+              'agy',
+              `Non-fleet project config file(s) [${warnings.join(', ')}] also target "${agent.workFolder}". Fleet project fleet-${agent.id}.json will take precedence.`
+            );
+          }
+          if (purged.length > 0) {
+            logWarn(
+              'agy',
+              `Purged (renamed to .bak) ${purged.length} conflicting project config(s) for ${agent.workFolder}: ${purged.join(', ')}`
+            );
+          }
           return purged;
         }
-      } catch {}
+      } catch (e) {
+        logWarn('agy', `Failed to parse purgeConflictingProjects stdout: ${result.stdout}`);
+      }
     }
     return [];
   }
@@ -401,8 +429,11 @@ export interface ProviderAdapter {
     agent: Agent,
     execCommand: WorkspaceTrustExecFn,
     memberHomeDir?: string | null,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
   ): Promise<void> {
-    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir);
+    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
+    await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
   }
 ```
 

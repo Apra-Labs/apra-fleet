@@ -1045,7 +1045,7 @@ describe('AgyProvider', () => {
   it('permissionConfigPaths is HOME-anchored per-project config for AGY', () => {
     const mockAgent = { id: 'agent-456', workFolder: '/tmp/work' } as any;
     expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-456.json']);
-    expect(p.permissionConfigPaths()).toEqual(['~/.gemini/config/projects/fleet-default.json']);
+    expect(() => p.permissionConfigPaths()).toThrow();
   });
 
   it('composePermissionConfig produces AGY native project config and permission rule STRINGS', () => {
@@ -1063,7 +1063,7 @@ describe('AgyProvider', () => {
     // `Agent` maps to invoke_subagent/send_message, which are AGY tool names,
     // not permission actions -- they are dropped rather than written as entries
     // AGY's settings parser rejects.
-    expect(cfg.permissionGrants.allow).toEqual([
+    expect((cfg.permissionGrants as any).permissionGrants.allow).toEqual([
       'read_file(*)',
       'write_file(*)',
       'command(git)',

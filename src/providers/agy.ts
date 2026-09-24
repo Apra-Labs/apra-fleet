@@ -11,6 +11,7 @@ import { logWarn } from '../utils/log-helpers.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
+import { deliverWorkspaceTrustFile, workspaceTrustStagingNames } from './claude.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -42,12 +43,168 @@ export const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = 
 const SCRIPTS_UNIX = '$HOME/.apra-fleet/scripts';
 const SCRIPTS_WIN  = '$env:USERPROFILE\\.apra-fleet\\scripts';
 
+/** Converts a workFolder path into AGY's required file URI format.
+ *  POSIX: file:///home/user/repo (3 slashes with leading /)
+ *  Windows: file:///C:/Users/user/repo (3 slashes with drive letter) */
+export function toAgyFileUri(workFolder: string): string {
+  const norm = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!norm) return '';
+  if (norm.startsWith('/')) {
+    return `file://${norm}`;
+  }
+  return `file:///${norm}`;
+}
+
+/** Normalizes a file URI for comparison (drive letter case, slashes, trailing slashes, 2 vs 3 slashes, percent encoding). */
+export function normalizeAgyUri(uri: string): string {
+  if (!uri) return '';
+  let s = String(uri).replace(/\\/g, '/').replace(/\/+$/, '');
+  try { s = decodeURIComponent(s); } catch {}
+  s = s.replace(/^file:\/\/([A-Za-z]:)/, 'file:///$1');
+  s = s.replace(/^file:\/\/\/([A-Za-z]):/, (_, drive) => `file:///${drive.toLowerCase()}:`);
+  return s.toLowerCase();
+}
+
+export function buildAgyPurgeScript(targetUri: string, keepId: string, memberHomeDir?: string | null): string {
+  return `const fs = require('fs');
+const path = require('path');
+function normalizeUri(u) {
+  if (!u) return '';
+  let s = String(u).replace(/\\\\/g, '/').replace(/\\/+$/, '');
+  try { s = decodeURIComponent(s); } catch (e) {}
+  s = s.replace(/^file:\\/\\/([A-Za-z]:)/, 'file:///$1');
+  s = s.replace(/^file:\\/\\/\\/([A-Za-z]):/, (_, d) => 'file:///' + d.toLowerCase() + ':');
+  return s;
+}
+const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
+const dir = path.join(home, '.gemini', 'config', 'projects');
+if (!fs.existsSync(dir)) {
+  console.log(JSON.stringify({ purged: [], warnings: [] }));
+  process.exit(0);
+}
+const targetNorm = normalizeUri(${JSON.stringify(targetUri)});
+const keepId = ${JSON.stringify(keepId)};
+const files = fs.readdirSync(dir);
+const purged = [];
+const warnings = [];
+for (const file of files) {
+  if (!file.endsWith('.json')) continue;
+  if (file === keepId + '.json') continue;
+  const isFleet = file.startsWith('fleet-');
+  const filePath = path.join(dir, file);
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const content = JSON.parse(raw);
+    const resList = content.projectResources?.resources || [];
+    let matches = false;
+    for (const r of resList) {
+      const uri = r.gitFolder?.folderUri || r.folderUri;
+      if (uri && normalizeUri(uri) === targetNorm) {
+        matches = true;
+        break;
+      }
+    }
+    if (matches) {
+      if (isFleet) {
+        const bakPath = filePath + '.bak';
+        fs.renameSync(filePath, bakPath);
+        purged.push(file);
+      } else {
+        warnings.push(file);
+      }
+    }
+  } catch (e) {}
+}
+console.log(JSON.stringify({ purged, warnings }));`;
+}
+
+export function buildAgyPurgeCommand(
+  targetUri: string,
+  keepId: string,
+  memberHomeDir?: string | null,
+  agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+  shell?: MemberShell,
+): string {
+  const jsCode = buildAgyPurgeScript(targetUri, keepId, memberHomeDir);
+  const usePosix = isPosixShell(agentOs, shell);
+  if (usePosix) {
+    return `cat << 'FLEET_PURGE_EOF' | node -\n${jsCode}\nFLEET_PURGE_EOF`;
+  }
+  const psScript = `$code = @'\n${jsCode}\n'@\n$code | node -`;
+  return wrapPowerShellEncoded(psScript);
+}
+
+export async function cleanGlobalAgySettings(
+  execCommand: WorkspaceTrustExecFn,
+  memberHomeDir?: string | null,
+  agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+  shell?: MemberShell,
+): Promise<boolean> {
+  const jsCode = `const fs = require('fs');
+const path = require('path');
+const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
+const settingsPath = path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+if (!fs.existsSync(settingsPath)) {
+  console.log(JSON.stringify({ cleaned: false, reason: 'not_found' }));
+  process.exit(0);
+}
+try {
+  const raw = fs.readFileSync(settingsPath, 'utf8');
+  const settings = JSON.parse(raw);
+  let modified = false;
+
+  if ('skillOverrides' in settings) {
+    delete settings.skillOverrides;
+    modified = true;
+  }
+
+  if (settings.mcpServers && typeof settings.mcpServers === 'object' && ('apra-fleet' in settings.mcpServers)) {
+    delete settings.mcpServers['apra-fleet'];
+    if (Object.keys(settings.mcpServers).length === 0) {
+      delete settings.mcpServers;
+    }
+    modified = true;
+  }
+
+  if ('permissions' in settings) {
+    delete settings.permissions;
+    modified = true;
+  }
+
+  if (modified) {
+    const tmpPath = settingsPath + '.tmp.' + Date.now();
+    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + '\\n', 'utf8');
+    fs.renameSync(tmpPath, settingsPath);
+    console.log(JSON.stringify({ cleaned: true }));
+  } else {
+    console.log(JSON.stringify({ cleaned: false, reason: 'no_changes' }));
+  }
+} catch (e) {
+  console.log(JSON.stringify({ cleaned: false, error: String(e) }));
+}`;
+
+  const usePosix = isPosixShell(agentOs, shell);
+  const cmd = usePosix
+    ? `cat << 'FLEET_CLEAN_EOF' | node -\n${jsCode}\nFLEET_CLEAN_EOF`
+    : wrapPowerShellEncoded(`$code = @'\n${jsCode}\n'@\n$code | node -`);
+
+  const result = await execCommand(cmd, 10000);
+  if (result.code === 0 && result.stdout) {
+    try {
+      const parsed = JSON.parse(result.stdout.trim());
+      return parsed.cleaned === true;
+    } catch {}
+  }
+  return false;
+}
+
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
   readonly processName = 'agy';
   readonly authEnvVar = 'ANTIGRAVITY_API_KEY';
   readonly credentialPath = '~/.gemini/antigravity-cli/settings.json';
   readonly instructionFileName = 'AGY.md';
+  readonly requiresGitAwareness = true;
 
   cliCommand(args: string): string {
     return `agy ${args}`;
@@ -370,8 +527,10 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   permissionConfigPaths(agent?: Agent): string[] {
-    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
-    return [`~/.gemini/config/projects/${id}.json`];
+    if (!agent || !agent.id) {
+      throw new Error('AGY provider requires a valid Agent with an id to compose permission config');
+    }
+    return [`~/.gemini/config/projects/fleet-${agent.id}.json`];
   }
 
   composePermissionConfig(
@@ -380,10 +539,13 @@ export class AgyProvider implements ProviderAdapter {
     agent?: Agent,
     isGit = true,
   ): Array<Record<string, unknown> | string> {
+    if (!agent || !agent.id || !agent.workFolder) {
+      throw new Error('AGY provider requires a valid Agent with workFolder to compose permission config');
+    }
     const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
-    const workFolder = agent ? agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '') : '';
-    const id = agent ? `fleet-${agent.id}` : 'fleet-default';
-    const uri = `file://${workFolder}`;
+    const workFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const id = `fleet-${agent.id}`;
+    const uri = toAgyFileUri(agent.workFolder);
 
     const resource = isGit
       ? { gitFolder: { folderUri: uri, allowWrite: true } }
@@ -396,38 +558,61 @@ export class AgyProvider implements ProviderAdapter {
         resources: [resource],
       },
       permissionGrants: {
-        allow: agyAllow,
+        permissionGrants: {
+          allow: agyAllow,
+          deny: [],
+          ask: [],
+        },
       },
     }];
   }
 
   /**
-   * Sweeps ~/.gemini/config/projects/*.json on the member machine and deletes any
-   * duplicate or stale project config file that claims the same workspace URI but
-   * does not match fleet-${agent.id}.json. This prevents AGY from picking the wrong
-   * project config or encountering conflicting permissions.
+   * Sweeps ~/.gemini/config/projects/*.json on the member machine and renames any
+   * duplicate or stale fleet project config file (matching folderUri but not matching
+   * fleet-${agent.id}.json) to .bak. Non-fleet project config files are left intact
+   * with a warning logged.
    */
   async purgeConflictingProjects(
     agent: Agent,
     execCommand: WorkspaceTrustExecFn,
     memberHomeDir?: string | null,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
   ): Promise<string[]> {
-    const normFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-    const targetUri = `file://${normFolder}`;
+    if (!agent || !agent.workFolder) {
+      throw new Error('AGY provider requires a valid Agent with workFolder to purge conflicting projects');
+    }
+    const targetUri = toAgyFileUri(agent.workFolder);
     const keepId = `fleet-${agent.id}`;
-
-    const purgeScript = `const fs = require('fs'); const path = require('path'); const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'}; const dir = path.join(home, '.gemini', 'config', 'projects'); if (!fs.existsSync(dir)) { console.log('[]'); process.exit(0); } const targetUri = ${JSON.stringify(targetUri)}; const keepId = ${JSON.stringify(keepId)}; const files = fs.readdirSync(dir); const purged = []; for (const file of files) { if (!file.endsWith('.json') || file === keepId + '.json') continue; try { const raw = fs.readFileSync(path.join(dir, file), 'utf8'); const content = JSON.parse(raw); const resList = content.projectResources?.resources || []; let matches = false; for (const r of resList) { const uri = r.gitFolder?.folderUri || r.folderUri; if (uri && uri.replace(/\\/+$/, '') === targetUri) { matches = true; break; } } if (matches) { fs.unlinkSync(path.join(dir, file)); purged.push(file); } } catch (e) {} } console.log(JSON.stringify(purged));`;
-
-    const cmd = `node -e ${JSON.stringify(purgeScript)}`;
+    const cmd = buildAgyPurgeCommand(targetUri, keepId, memberHomeDir, agentOs, shell);
     const result = await execCommand(cmd, 10000);
-    if (result.code === 0 && result.stdout) {
+    if (result.code !== 0) {
+      throw new Error(`agy: purgeConflictingProjects failed with exit code ${result.code}: ${result.stderr || result.stdout}`);
+    }
+    if (result.stdout) {
       try {
-        const purged = JSON.parse(result.stdout.trim());
-        if (Array.isArray(purged) && purged.length > 0) {
-          logWarn('agy', `Purged ${purged.length} conflicting project configs for ${normFolder}: ${purged.join(', ')}`);
+        const parsed = JSON.parse(result.stdout.trim());
+        if (parsed && typeof parsed === 'object') {
+          const purged = Array.isArray(parsed.purged) ? parsed.purged : [];
+          const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+          if (warnings.length > 0) {
+            logWarn(
+              'agy',
+              `Non-fleet project config file(s) [${warnings.join(', ')}] also target "${agent.workFolder}". Fleet project fleet-${agent.id}.json will take precedence.`
+            );
+          }
+          if (purged.length > 0) {
+            logWarn(
+              'agy',
+              `Purged (renamed to .bak) ${purged.length} conflicting project config(s) for ${agent.workFolder}: ${purged.join(', ')}`
+            );
+          }
           return purged;
         }
-      } catch {}
+      } catch (e) {
+        logWarn('agy', `Failed to parse purgeConflictingProjects stdout: ${result.stdout}`);
+      }
     }
     return [];
   }
@@ -436,8 +621,11 @@ export class AgyProvider implements ProviderAdapter {
     agent: Agent,
     execCommand: WorkspaceTrustExecFn,
     memberHomeDir?: string | null,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
   ): Promise<void> {
-    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir);
+    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
+    await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
   }
 
   supportsOAuthCopy(): boolean {
@@ -536,19 +724,18 @@ export class AgyProvider implements ProviderAdapter {
     shell?: MemberShell,
     transport?: WorkspaceTrustTransport,
   ): Promise<EnsureWorkspaceTrustedResult> {
-    const normFolder = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
     const usePosix = isPosixShell(agentOs, shell);
     const isWindows = !usePosix;
-    const baseHome = isWindows ? '$env:USERPROFILE' : '$HOME';
+    const key = isWindows
+      ? workFolder.replace(/\//g, '\\').replace(/\\+$/, '')
+      : workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const normKeyForCompare = workFolder.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+
     const homeRel = isWindows
       ? '.gemini\\antigravity-cli\\settings.json'
       : '.gemini/antigravity-cli/settings.json';
-    const homeFile = isWindows
-      ? `${baseHome}\\${homeRel}`
-      : `${baseHome}/${homeRel}`;
-    const settingsDir = isWindows
-      ? `${baseHome}\\.gemini\\antigravity-cli`
-      : `${baseHome}/.gemini/antigravity-cli`;
+    const staging = workspaceTrustStagingNames();
+    const tmpFile = isWindows ? `$env:USERPROFILE\\${staging.tmpRel}` : `$HOME/${staging.tmpRel}`;
 
     let settings: Record<string, unknown> = {};
 
@@ -558,10 +745,18 @@ export class AgyProvider implements ProviderAdapter {
         const readRes = await transport.readHomeFile(homeRel);
         if (readRes !== undefined) {
           transportReadAttempted = true;
-          if (readRes.found && readRes.content) {
-            const parsed = JSON.parse(readRes.content.trim());
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-              settings = parsed;
+          if (readRes.found) {
+            if (readRes.content) {
+              try {
+                const parsed = JSON.parse(readRes.content.trim());
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  settings = parsed;
+                } else {
+                  return { seeded: false, detail: 'agy: settings.json contains invalid non-object JSON -- aborted rewrite' };
+                }
+              } catch {
+                return { seeded: false, detail: 'agy: settings.json contains invalid JSON -- aborted rewrite' };
+              }
             }
           }
         }
@@ -570,17 +765,25 @@ export class AgyProvider implements ProviderAdapter {
 
     if (!transportReadAttempted) {
       const readCmd = isWindows
-        ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
-        : `cat "${homeFile}" 2>/dev/null || true`;
+        ? `if (Test-Path "$env:USERPROFILE\\${homeRel}") { Get-Content -Raw "$env:USERPROFILE\\${homeRel}" } else { Write-Output "FLEET_ENOENT" }`
+        : `if [ -f "$HOME/${homeRel}" ]; then cat "$HOME/${homeRel}"; else echo "FLEET_ENOENT"; fi`;
 
       const readResult = await execCommand(readCmd, 5000);
-      try {
-        const parsed = JSON.parse(readResult.stdout.trim());
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          settings = parsed;
+      if (readResult.code !== 0) {
+        return { seeded: false, detail: `agy: failed to read settings.json (exit ${readResult.code}) -- aborted rewrite` };
+      }
+      const raw = readResult.stdout.trim();
+      if (raw !== 'FLEET_ENOENT') {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            settings = parsed;
+          } else {
+            return { seeded: false, detail: 'agy: settings.json contains invalid non-object JSON -- aborted rewrite' };
+          }
+        } catch {
+          return { seeded: false, detail: 'agy: settings.json contains invalid JSON -- aborted rewrite' };
         }
-      } catch {
-        // missing or invalid JSON
       }
     }
 
@@ -588,41 +791,34 @@ export class AgyProvider implements ProviderAdapter {
       ? (settings.trustedWorkspaces as string[])
       : [];
 
-    if (trusted.includes(normFolder)) {
-      return { seeded: false, detail: `agy: workspace "${normFolder}" already in trustedWorkspaces` };
+    const isAlreadyTrusted = trusted.some(
+      t => typeof t === 'string' && t.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normKeyForCompare
+    );
+
+    if (isAlreadyTrusted) {
+      return { seeded: false, detail: `agy: workspace "${key}" already in trustedWorkspaces` };
     }
 
-    const updatedTrusted = [...trusted, normFolder];
+    const updatedTrusted = [...trusted, key];
     settings.trustedWorkspaces = updatedTrusted;
-    const contentStr = JSON.stringify(settings, null, 2);
+    const contentStr = JSON.stringify(settings, null, 2) + '\n';
 
-    let deliveredViaTransport = false;
-    if (transport?.writeHomeFile) {
-      try {
-        await transport.writeHomeFile(homeRel, contentStr);
-        deliveredViaTransport = true;
-      } catch (err) {
-        logWarn('agy', `transport.writeHomeFile failed: ${err}`);
-      }
-    }
+    const homeFile = isWindows
+      ? `$env:USERPROFILE\\${homeRel}`
+      : `$HOME/${homeRel}`;
 
-    if (!deliveredViaTransport) {
-      const mkdirCmd = isWindows
-        ? `if (-not (Test-Path "${settingsDir}")) { New-Item -ItemType Directory -Force "${settingsDir}" }`
-        : `mkdir -p "${settingsDir}"`;
-      await execCommand(mkdirCmd, 5000);
+    await deliverWorkspaceTrustFile(contentStr, {
+      isWindows,
+      agentOs,
+      execCommand,
+      transport,
+      homeFile,
+      tmpFile,
+      staging,
+      homeRel,
+    });
 
-      const writeCmd = isWindows
-        ? `[System.IO.File]::WriteAllText("${homeFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-        : `cat > "${homeFile}" << 'FLEET_AGY_SETTINGS_EOF'\n${contentStr}\nFLEET_AGY_SETTINGS_EOF`;
-
-      const writeResult = await execCommand(writeCmd, 5000);
-      if (writeResult.code !== 0) {
-        throw new Error(`agy: failed to write trustedWorkspaces to settings.json (exit ${writeResult.code})`);
-      }
-    }
-
-    return { seeded: true, detail: `agy: added "${normFolder}" to trustedWorkspaces in settings.json` };
+    return { seeded: true, detail: `agy: added "${key}" to trustedWorkspaces in settings.json` };
   }
 }
 

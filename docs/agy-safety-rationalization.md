@@ -56,11 +56,12 @@ Antigravity utilizes the "ANTIGRAVITY_API_KEY" environment variable to authentic
 When a member executes a task, it must run under a strictly bounded execution profile to prevent privilege escalation or recursive loops (e.g. the member invoking the fleet server recursively).
 
 ### Safety Mechanisms
-- Localized Directory Config: "permissionConfigPaths()" returns ".gemini/antigravity-cli/settings.json". This writes permission settings relative to the workspace folder of the active task, confining the member's sandbox to that repository.
-- Loop Prevention: "composePermissionConfig" generates the following configuration:
-  - Disables the "apra-fleet" MCP server on the member: "mcpServers: { 'apra-fleet': { disabled: true } }".
-  - Disables fleet orchestration skills: "skillOverrides: { pm: 'off', fleet: 'off' }".
-  This completely prevents recursive prompt dispatch loops where the agent could attempt to orchestrate itself.
+- Localized Project Config: `permissionConfigPaths()` returns `~/.gemini/config/projects/fleet-${agent.id}.json`. This writes permission settings specific to each member and workspace.
+- Loop Prevention & Isolation:
+  - Antigravity project JSON files strictly enforce Protobuf unmarshaling (`protojson.Unmarshal`), so extra fields such as `mcpServers` or `skillOverrides` are prohibited in project files.
+  - Member isolation is enforced via fine-grained `permissionGrants` whitelist rules in `fleet-${agent.id}.json`, which omit global orchestration grants like `mcp(apra-fleet/*)` and bare `mcp(*)`, auto-denying any member call to global fleet administration tools.
+  - Agent prompt transformation (`transformAgentForAgy`) strips orchestration instructions from member role prompts.
+  - Idempotent migration (`cleanGlobalAgySettings`) removes legacy fleet-authored entries from global `~/.gemini/antigravity-cli/settings.json`.
 
 ---
 

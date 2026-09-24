@@ -422,7 +422,17 @@ export interface ProviderAdapter {
   /** Optional hook called during compose_permissions before config delivery to clean up
    *  or migrate provider-specific configuration artifacts (e.g. AGY claim & purge of
    *  conflicting project UUID files). */
-  preparePermissionsDelivery?(agent: import('../types.js').Agent, execCommand: WorkspaceTrustExecFn, memberHomeDir?: string | null): Promise<void>;
+  preparePermissionsDelivery?(
+    agent: import('../types.js').Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+    agentOs?: 'linux' | 'macos' | 'windows',
+    shell?: MemberShell,
+  ): Promise<void>;
+
+  /** Optional capability flag indicating whether this provider requires Git repository
+   *  awareness during permission composition (e.g. AGY uses gitFolder vs folderUri). */
+  readonly requiresGitAwareness?: boolean;
 
   // Permission configuration
   /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).

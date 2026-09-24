@@ -700,7 +700,7 @@ export class ClaudeProvider implements ProviderAdapter {
     //   3. otherwise base64 chunks appended with several small execs, then one
     //      decode+move -- works for both PowerShell and gitbash members.
     // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging });
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel: '.claude.json' });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -807,7 +807,7 @@ export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindo
     : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
 }
 
-async function deliverWorkspaceTrustFile(
+export async function deliverWorkspaceTrustFile(
   contentStr: string,
   opts: {
     isWindows: boolean;
@@ -817,17 +817,20 @@ async function deliverWorkspaceTrustFile(
     homeFile: string;
     tmpFile: string;
     staging: WorkspaceTrustStagingNames;
+    homeRel?: string;
   },
 ): Promise<WorkspaceTrustWritePlan> {
-  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging } = opts;
+  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel } = opts;
   const onWindowsHost = agentOs === 'windows';
 
-  // 1. Out-of-band file channel: content never touches a command line. Stage under
-  //    the member's home and move into place with one tiny exec so the write stays
-  //    atomic from the member's point of view.
+  // 1. Out-of-band file channel: content never touches a command line.
   if (transport?.writeHomeFile) {
     try {
-      await transport.writeHomeFile(staging.tmpRel, contentStr);
+      const targetRel = homeRel ?? staging.tmpRel;
+      await transport.writeHomeFile(targetRel, contentStr);
+      if (homeRel) {
+        return { mechanism: 'file-channel', commands: [] };
+      }
       const moveCmd = isWindows
         ? `Move-Item -Force "${tmpFile}" "${homeFile}"`
         : `mv "${tmpFile}" "${homeFile}"`;

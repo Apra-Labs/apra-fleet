@@ -72,11 +72,13 @@ afterEach(() => {
   restoreRegistry();
   vi.restoreAllMocks();
   for (const dir of scratchDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {}
   }
 });
 
-describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native delivery', () => {
+describe('composePermissions -- AGY native delivery', { timeout: 30000 }, () => {
   async function composeForAgyDoer(): Promise<{ workFolder: string; member: any; result: string }> {
     const workFolder = makeScratch('fleet-agy-work-');
     const member = makeTestAgent({
@@ -100,35 +102,40 @@ describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native 
     // The workspace is trusted in settings.json.
     expect(fs.existsSync(agySettingsPath(fakeHome))).toBe(true);
     const settings = JSON.parse(fs.readFileSync(agySettingsPath(fakeHome), 'utf-8'));
-    expect(settings.trustedWorkspaces).toContain(workFolder);
+    const normWorkFolder = HOST_OS === 'windows'
+      ? workFolder.replace(/\//g, '\\').replace(/\\+$/, '')
+      : workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    expect(settings.trustedWorkspaces).toContain(normWorkFolder);
     // The file AGY never reads -- writing it was the original defect.
     expect(fs.existsSync(path.join(workFolder, '.gemini'))).toBe(false);
   });
 
-  it('persists the allow list as AGY-parseable strings carrying the role profile', async () => {
+  it('persists the allow list as AGY-parseable strings carrying the role profile in double-nested permissionGrants shape', async () => {
     const { member } = await composeForAgyDoer();
     const onDisk = JSON.parse(fs.readFileSync(agyProjectPath(fakeHome, member.id), 'utf-8'));
 
-    expect(Array.isArray(onDisk.permissionGrants.allow)).toBe(true);
-    expect(onDisk.permissionGrants.allow.length).toBeGreaterThan(0);
-    for (const entry of onDisk.permissionGrants.allow) {
+    const allowList = onDisk.permissionGrants.permissionGrants.allow;
+    expect(Array.isArray(allowList)).toBe(true);
+    expect(allowList.length).toBeGreaterThan(0);
+    for (const entry of allowList) {
       expect(typeof entry).toBe('string');
       expect(entry).toMatch(AGY_RULE_RE);
     }
     // The doer profile's core commands must survive the Claude -> AGY mapping:
     // a sprint member that cannot run git or bd cannot do anything at all.
-    expect(onDisk.permissionGrants.allow).toContain('command(git)');
-    expect(onDisk.permissionGrants.allow).toContain('command(bd)');
-    expect(onDisk.permissionGrants.allow).toContain('read_file(*)');
-    expect(onDisk.permissionGrants.allow).toContain('write_file(*)');
+    expect(allowList).toContain('command(git)');
+    expect(allowList).toContain('command(bd)');
+    expect(allowList).toContain('read_file(*)');
+    expect(allowList).toContain('write_file(*)');
     // Not a single {action,target} object survived serialization.
-    expect(onDisk.permissionGrants.allow.some((e: unknown) => typeof e === 'object')).toBe(false);
+    expect(allowList.some((e: unknown) => typeof e === 'object')).toBe(false);
   });
 
   it('never writes an action outside AGY\'s vocabulary, including the mcp__ tokens the doer profile carries', async () => {
     const { member } = await composeForAgyDoer();
     const onDisk = JSON.parse(fs.readFileSync(agyProjectPath(fakeHome, member.id), 'utf-8'));
-    for (const entry of onDisk.permissionGrants.allow as string[]) {
+    const allowList = onDisk.permissionGrants.permissionGrants.allow as string[];
+    for (const entry of allowList) {
       expect(entry.startsWith('custom(')).toBe(false);
       expect(entry.startsWith('invoke_subagent(')).toBe(false);
       expect(entry.startsWith('send_message(')).toBe(false);
@@ -139,9 +146,8 @@ describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native 
     // ...but they must still be DELIVERED, per tool. The deployer's Step 0
     // kb_session_prime is auto-denied in headless mode without this, which
     // takes down the whole Deploy phase.
-    const allow = onDisk.permissionGrants.allow as string[];
-    expect(allow).toContain('mcp(apra-fleet/kb_session_prime)');
-    expect(allow.some(e => e.startsWith('mcp(apra-fleet/kb_query'))).toBe(true);
+    expect(allowList).toContain('mcp(apra-fleet/kb_session_prime)');
+    expect(allowList.some(e => e.startsWith('mcp(apra-fleet/kb_query'))).toBe(true);
   });
 
   it('preserves unrelated keys already in the user\'s machine-global settings.json', async () => {
@@ -159,10 +165,13 @@ describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native 
     const onDisk = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     expect(onDisk.defaultModel).toBe('gemini-3.5-flash');
     expect(onDisk.mcpServers['some-user-server']).toEqual({ command: 'user-thing' });
-    expect(onDisk.trustedWorkspaces).toContain(workFolder);
+    const normWorkFolder = HOST_OS === 'windows'
+      ? workFolder.replace(/\//g, '\\').replace(/\\+$/, '')
+      : workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    expect(onDisk.trustedWorkspaces).toContain(normWorkFolder);
 
     const projectConfig = JSON.parse(fs.readFileSync(agyProjectPath(fakeHome, member.id), 'utf-8'));
-    expect(projectConfig.permissionGrants.allow).toContain('command(git)');
+    expect(projectConfig.permissionGrants.permissionGrants.allow).toContain('command(git)');
   });
 
   it('adds a mid-sprint grant in AGY syntax', async () => {
@@ -184,6 +193,6 @@ describe.skipIf(process.platform === 'win32')('composePermissions -- AGY native 
     expect(result).not.toContain('Failed to persist');
 
     const onDisk = JSON.parse(fs.readFileSync(agyProjectPath(fakeHome, member.id), 'utf-8'));
-    expect(onDisk.permissionGrants.allow).toContain('command(docker)');
+    expect(onDisk.permissionGrants.permissionGrants.allow).toContain('command(docker)');
   });
 });

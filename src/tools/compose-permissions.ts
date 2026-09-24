@@ -13,6 +13,8 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { escapeWindowsArg } from '../os/os-commands.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
@@ -272,21 +274,26 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
  * Uses `git rev-parse --is-inside-work-tree` which handles regular repos, git worktrees,
  * submodules, and monorepos uniformly. Falls back to filesystem probe for local agents if git CLI is absent.
  */
-export async function detectIsGit(agent: Agent): Promise<boolean> {
+export async function detectIsGit(agent: Agent, agentShell?: MemberShell): Promise<boolean> {
   const strategy = getStrategy(agent);
   const checkDir = agent.workFolder.replace(/\\/g, '/');
-  const result = await strategy.execCommand(
-    `git -C "${checkDir}" rev-parse --is-inside-work-tree 2>/dev/null || true`,
-    5000,
-  );
-  if (result.stdout.trim() === 'true') {
+  const usePosix = isPosixShell(agent.os ?? 'linux', agentShell);
+  const cmd = usePosix
+    ? `git -C "${checkDir}" rev-parse --is-inside-work-tree 2>/dev/null`
+    : wrapPowerShellEncoded(`$ErrorActionPreference = 'SilentlyContinue'; & git -C "${escapeWindowsArg(agent.workFolder)}" rev-parse --is-inside-work-tree 2>$null`);
+
+  const result = await strategy.execCommand(cmd, 5000);
+  if (result.code === 0 && result.stdout.trim() === 'true') {
     return true;
   }
-  try {
-    return fs.existsSync(path.join(agent.workFolder, '.git'));
-  } catch {
-    return false;
+  if (agent.agentType === 'local') {
+    try {
+      return fs.existsSync(path.join(agent.workFolder, '.git'));
+    } catch {
+      return false;
+    }
   }
+  return false;
 }
 
 function compose(profilesDir: string, role: string, stacks: string[], ledger: Ledger): string[] {
@@ -653,9 +660,9 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
 
     if (provider.preparePermissionsDelivery) {
-      await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir);
+      await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
     }
-    const isGit = provider.name === 'agy' ? await detectIsGit(agent) : undefined;
+    const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
     const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
     const paths = provider.permissionConfigPaths(agent);
     try {
@@ -700,9 +707,9 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     : compose(profilesDir, mode, stacks, ledger);
 
   if (provider.preparePermissionsDelivery) {
-    await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir);
+    await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
   }
-  const isGit = provider.name === 'agy' ? await detectIsGit(agent) : undefined;
+  const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
   const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
   const paths = provider.permissionConfigPaths(agent);
 
