@@ -112,6 +112,36 @@ a matching `productionPorts` entry, or an HTTP health endpoint this probe
 can actually ask -- otherwise it survives an armed pass only because it was
 spared, not because the sweep understood it.
 
+**Telling "refused" apart from "accepted but silent" is a distinct
+transport-status field, not inferred from the HTTP outcome.** Both outcomes
+produce the identical "no HTTP response" result, so each probe result line
+carries its own transport-status alongside the HTTP status: POSIX reads it
+straight off curl's own exit status (already free -- refused vs. timed-out/
+accepted-then-silent are different curl exit codes), and the win32 branch
+asks the same question explicitly with its own bounded TCP connect attempt
+after `Invoke-WebRequest` has already given up. A candidate can hold more
+than one socket answering the same pid:port key (bound to more than one
+address); results for the same key are combined **by precedence, never
+last-wins** -- answered beats tcp-alive-no-http beats refused -- so a more-
+alive sibling result can never be downgraded by a less-alive one reported
+for the same candidate in the same pass.
+
+**The win32 TCP question must construct its socket with an explicit address
+family.** `New-Object System.Net.Sockets.TcpClient` with no constructor
+argument defaults to an IPv4-only socket under Windows PowerShell 5.1 /
+.NET Framework -- the actual shell every dispatch to a Windows member runs
+under, not `pwsh`/.NET Core, where the parameterless constructor is family-
+agnostic and this bug cannot be observed. Connecting that IPv4-only socket
+to an IPv6 literal throws; the throw lands in the probe's own catch and gets
+reported as REFUSED -- the one transport outcome this predicate still treats
+as "nothing is listening here" and therefore killable. Left unfixed, a live
+IPv6-bound listener on Windows would be killed as dead: the exact failure
+this predicate exists to prevent, reintroduced through the one branch that
+never runs in a same-family dev-box test. The address family is resolved in
+JavaScript from the already-validated probe host (bracketed literal ->
+IPv6, unbracketed -> IPv4) before being interpolated into the dispatched
+PowerShell, never inferred by the socket library on the member.
+
 **Why armed rather than opt-in.** The predicate can only ever *spare*: there
 is no input that makes it select a process the other predicates had not
 already selected, so arming it cannot cause a wrong kill, only prevent one.
