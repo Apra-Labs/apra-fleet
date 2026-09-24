@@ -62,6 +62,86 @@ Carried forward (filed as follow-up work, not fixed this sprint):
 - `MemberOwnerStructured` (the client's owner-tool typedef) has no
   client-server typedef parity test case yet.
 
+## [Unreleased] -- Console seam and shell UI foundation for `/ui` (sprint goal not yet met -- see carried-forward items)
+
+Sprint goal: serve a React/Vite shell at `/ui` reading a live members table
+from `GET /api/fleet/members`, from a dev checkout and from the packaged SEA
+binary alike, behind a dedicated `src/console/` seam so later console
+features (secrets, health, workflow-package proxy) land as new files rather
+than edits to shared routing code. The workspace packages, the console seam
+itself (route dispatch, in-process API facade, static asset serving with a
+traversal guard and dev-disk/SEA-asset fallback), and several supervisor
+test-reliability fixes landed and are verified working. The binary-serving
+half of the goal -- packing the shell's built assets into the SEA manifest
+and into the distributed npm package -- was not implemented this sprint, so
+the epic's own acceptance criterion (the binary answering `GET /ui` 200) is
+not yet met; this entry documents real, verified progress and explicitly
+does not claim the epic is done.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $30.4730.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.2334 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 46 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **A dedicated console seam** (`src/console/server.ts`,
+  `src/console/routes/*.ts`, `src/console/local-api.ts`,
+  `src/console/static.ts`) delegates `/ui` and `/api/fleet/*` handling out of
+  the shared HTTP transport file via a single boolean-returning entry point,
+  called once before the existing `/mcp` 404 guard. Route registration uses
+  an explicit import list rather than a directory glob, since globbing does
+  not work against the SEA binary's virtual asset filesystem. See
+  `docs/console-architecture.md`.
+- **`/api/fleet/members` is served in-process**, calling the same tool
+  handler an MCP client would call rather than making an HTTP self-call.
+- **Static asset serving handles both a dev checkout and the packaged SEA
+  binary**, with a traversal guard that runs before any filesystem or asset
+  lookup (rejecting `../`, percent-encoded traversal, Windows drive-letter,
+  and UNC path shapes) and correct asset-vs-client-route fallback behavior
+  (a missing built asset 404s; an unknown client-side route falls back to
+  `index.html`).
+- **New workspace packages** `packages/apra-fleet-ui-kit` (design tokens,
+  a `Page` shell, a `Table` primitive) and `packages/apra-fleet-shell-ui` (a
+  Vite/React SPA with a Members page), wired into the root workspace with a
+  `build:ui` script; content is ASCII-only with no cloud/tenant/
+  auth-provider identifiers.
+- **`dist-pm` (the packaging step that vendors `apra-pm` content into
+  `dist/`) now prunes destination-only files instead of only overlaying
+  new ones**, so a schema-staleness guard's "run dist-pm to fix it"
+  remediation is actually truthful. See `docs/npm-packaging.md`.
+- **Supervisor test reliability**: `supervisor-guard-e2e` and
+  `supervisor-lifecycle` now derive their health/request-wait budgets from
+  named, env-overridable constants and emit a bind-state diagnostic
+  (distinguishing "never bound" from "bound but did not answer") on
+  timeout, proven by dedicated subtests rather than assumed correct. See
+  the testing-convention section in `packages/apra-fleet-se/docs/
+  architecture.md`.
+
+Carried forward (sprint goal not yet met):
+
+- Packing the shell's built assets into the SEA binary's manifest (so
+  `apra-fleet run` from the packaged binary can answer `GET /ui` 200) is
+  unimplemented.
+- Shipping the built shell assets in the distributed npm package (so an
+  npm-installed `apra-fleet` also answers `GET /ui` 200, not just a dev
+  checkout) is unimplemented.
+- A post-migration reconciliation confirming the sandbox-deploy `/ui` smoke
+  gate reports success against the migrated console seam (rather than the
+  earlier interim inline route) has not been performed.
+- No console route in this sprint has an auth guard; binding the server to
+  a non-loopback host currently exposes the full member registry and the
+  shell to any host that can route to the port. This is called out
+  explicitly in `docs/console-architecture.md` as a known constraint a
+  future iteration must close before console features and non-loopback
+  binding can safely coexist.
+- Integration test evidence for this epic is incomplete: environment
+  permission gaps (missing broad `curl`/`kill` allowances for the sandbox's
+  dynamically assigned ports) blocked full integration and regression runs
+  this sprint.
+
 ## [Unreleased] -- Windows dispatch pipe stall, missed-stall tail truncation and unbounded test runner (sprint goal not yet met -- see carried-forward items)
 
 Sprint goal: close three P1 regressions that could each hold a Windows-member
