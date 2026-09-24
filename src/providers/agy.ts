@@ -33,7 +33,7 @@ import os from 'node:os';
  */
 export const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
   cheap:    'gemini-3.8-flash-low',
-  standard: 'gemini-3.8-flash-medium',
+  standard: 'gemini-3.8-flash-high',
   premium:  'gemini-3.1-pro-high',
 };
 

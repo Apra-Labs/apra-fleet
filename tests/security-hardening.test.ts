@@ -203,11 +203,13 @@ describe('curated model tier validations', () => {
 
     // standard
     expect(registerMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.8-flash-high').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.1-pro-low').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
 
     expect(updateMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.8-flash-high').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.1-pro-low').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);

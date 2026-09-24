@@ -157,7 +157,7 @@
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle" on stdout.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode" | "none"} [llm_provider] - LLM provider for this member (default: "claude")
  * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.8-flash-low" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Custom cheap model choice from a curated list
- * @property {"gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
+ * @property {"gemini-3.8-flash-high" | "gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
  * @property {"sonnet" | "opus" | "gemini-3.1-pro-high" | "claude-opus-4-6-thinking" | "gpt-oss-120b"} [model_premium] - Custom premium model choice from a curated list
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Code-intelligence provider for this member (default: fleet-wide config)
@@ -190,7 +190,7 @@
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode"} [llm_provider] - Change the LLM provider
  * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.8-flash-low" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model
- * @property {"gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
+ * @property {"gemini-3.8-flash-high" | "gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
  * @property {"sonnet" | "opus" | "gemini-3.1-pro-high" | "claude-opus-4-6-thinking" | "gpt-oss-120b"} [model_premium] - Change custom premium model
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map with free-form model IDs. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member

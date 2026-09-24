@@ -37,6 +37,7 @@ export const CURATED_CHEAP_MODELS = [
 ] as const;
 
 export const CURATED_STANDARD_MODELS = [
+  'gemini-3.8-flash-high',
   'gemini-3.8-flash-medium',
   'gemini-3.1-pro-low',
   'gpt-oss-120b',
@@ -57,7 +58,7 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
-  agy: 'gemini-3.8-flash-medium',
+  agy: 'gemini-3.8-flash-high',
   opencode: 'ollama/qwen3-coder:30b',
 };
 
