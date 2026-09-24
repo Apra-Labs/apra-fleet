@@ -652,7 +652,12 @@ describe('/ext proxy: derived upstream credential', () => {
     expect(cookieHeader).toBeDefined();
     const cookieToken = decodeURIComponent(/apra_console_token=([^;]+)/.exec(String(cookieHeader))![1]);
 
-    expect((await rawRequest(console_.port, 'GET', `/ext/${id}/ping`)).status).toBe(200);
+    // apra-fleet-iywi.11: GET /ext/* only carries the derived credential when
+    // the GET itself is authenticated -- send the browser's own console
+    // cookie, exactly as a real shell-loaded package request would.
+    expect((await rawRequest(console_.port, 'GET', `/ext/${id}/ping`, {
+      cookie: `apra_console_token=${encodeURIComponent(cookieToken)}`,
+    })).status).toBe(200);
     const upstreamToken = captured[0];
 
     // Same primitive, same key, DIFFERENT label -- so the value handed to a
@@ -735,10 +740,12 @@ describe('/ext proxy: guarded/unguarded method split', () => {
     expect(upstreamHits).toBe(0);
   });
 
-  it('lets GET /ext/* through unguarded, and lets an authenticated non-GET through to the upstream', async () => {
+  it('lets GET /ext/* through unguarded but WITHOUT a credential when unauthenticated, forwards a credential when authenticated, and lets an authenticated non-GET through to the upstream (apra-fleet-iywi.11)', async () => {
     const methodsSeen: string[] = [];
+    const authorizationSeen: Array<string | undefined> = [];
     const upstream = await startUpstream((req, res) => {
       methodsSeen.push(String(req.method));
+      authorizationSeen.push(req.headers.authorization as string | undefined);
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end(`saw ${req.method}`);
     });
@@ -747,15 +754,61 @@ describe('/ext proxy: guarded/unguarded method split', () => {
     const console_ = await startConsole();
     const fleetKey = getOrCreateKey();
 
+    // Unauthenticated GET: still reaches the upstream (the read path stays
+    // open)...
     const read = await rawRequest(console_.port, 'GET', `/ext/${id}/read`);
     expect(read.status).toBe(200);
     expect(read.body).toBe('saw GET');
+
+    // Authenticated GET: reaches the upstream WITH the derived credential.
+    const authedRead = await rawRequest(console_.port, 'GET', `/ext/${id}/read-authed`, bearer(fleetKey));
+    expect(authedRead.status).toBe(200);
 
     const write = await rawRequest(console_.port, 'POST', `/ext/${id}/write`, bearer(fleetKey));
     expect(write.status).toBe(200);
     expect(write.body).toBe('saw POST');
 
-    expect(methodsSeen).toEqual(['GET', 'POST']);
+    expect(methodsSeen).toEqual(['GET', 'GET', 'POST']);
+    // ...but WITHOUT the derived credential -- the load-bearing half of this
+    // decision. The authenticated GET and the authenticated POST both carry
+    // one; the unauthenticated GET carries none at all.
+    expect(authorizationSeen[0]).toBeUndefined();
+    expect(authorizationSeen[1]).toBe(`Bearer ${deriveUpstreamCredential(fleetKey, id)}`);
+    expect(authorizationSeen[2]).toBe(`Bearer ${deriveUpstreamCredential(fleetKey, id)}`);
+  });
+
+  it('closes the credentialed cross-origin GET: an unauthenticated, cross-origin-shaped GET reaches the upstream with zero credential headers, never with the derived credential (apra-fleet-iywi.11)', async () => {
+    // "cross-origin-shaped" here means exactly what a third-party page's
+    // <img>/<script>/fetch GET to this loopback port would look like: no
+    // Authorization header, no console cookie -- nothing this process did not
+    // put there itself. rawRequest() below never attaches either.
+    const seenHeaders: http.IncomingHttpHeaders[] = [];
+    const upstream = await startUpstream((req, res) => {
+      seenHeaders.push(req.headers);
+      res.writeHead(200);
+      res.end('ok');
+    });
+    const id = uniqueId('pkg-cross-origin');
+    await registerPackage(id, upstream.baseUrl);
+    const console_ = await startConsole();
+    const fleetKey = getOrCreateKey();
+
+    // A plausible attacker-controlled Origin header changes nothing here --
+    // the decision is keyed on whether a valid credential is present, not on
+    // Origin/Referer, which a non-browser client (or a browser sending a
+    // simple cross-origin GET) does not have to supply honestly anyway.
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/anything`, {
+      origin: 'http://attacker.example',
+    });
+    expect(res.status).toBe(200);
+    expect(seenHeaders).toHaveLength(1);
+    expect(seenHeaders[0].authorization).toBeUndefined();
+
+    // Reverting the forwardCredential gating in src/console/proxy.ts (i.e.
+    // always attaching the derived credential regardless of
+    // options.forwardCredential) makes this assertion fail: the upstream
+    // would see `Bearer ${deriveUpstreamCredential(fleetKey, id)}` here too.
+    expect(JSON.stringify(seenHeaders[0])).not.toContain(deriveUpstreamCredential(fleetKey, id));
   });
 
   it('answers 404 (never a crash) for a malformed percent-escape in the package id segment', async () => {

@@ -135,6 +135,30 @@ export interface ExtProxyOptions {
    *  the single owner of the constant. An upstream trying to Set-Cookie this
    *  name is refused (see `filterResponseHeaders`). */
   reservedCookieName: string;
+  /**
+   * apra-fleet-iywi.11: does the INBOUND request itself carry a valid console
+   * credential (bearer fleet key or console cookie)? Decided by ../server.ts
+   * -- for a non-GET request this is always true (requiresConsoleGuard
+   * already 401ed anything else before this module is ever reached); for a
+   * GET request (never guarded, matching a normal reverse-proxy's read path)
+   * ../server.ts checks it explicitly and passes the result through here.
+   *
+   * When `false`, the derived per-package upstream credential (see the
+   * CREDENTIAL FORWARDING note above) is NOT attached: the request still
+   * reaches the upstream (GET stays open), but carries no `Authorization`
+   * header. This closes the credentialed cross-origin GET this task
+   * adjudicates -- see docs/console-architecture.md for the recorded
+   * decision and the two rejected alternatives -- without changing the
+   * unknown-id 404 / unreachable-upstream 502 / success 200 contract for an
+   * unauthenticated GET, which is unaffected by whether a credential rides
+   * along.
+   *
+   * Defaults to `true` (the credential is attached) so a caller that omits
+   * this option -- an existing test seam, or a future caller that has
+   * already authenticated by some other means -- keeps the original
+   * behaviour rather than silently losing the credential.
+   */
+  forwardCredential?: boolean;
   /** Test seam: resolve a package id to its baseUrl. Defaults to the real
    *  registry service. */
   resolveBaseUrl?: (packageId: string) => string | null;
@@ -350,10 +374,18 @@ export async function handleExtProxyRequest(
   // only point at which the SSE case can be guaranteed.
   outHeaders['accept-encoding'] = 'identity';
 
-  const fleetKey = (options.getFleetKey ?? getOrCreateKey)();
-  // Derived, per-package, domain-separated -- NEVER the raw fleet key.
-  outHeaders.authorization = `Bearer ${deriveUpstreamCredential(fleetKey, parsed.id)}`;
-  outHeaders['x-apra-fleet-package-id'] = parsed.id;
+  // apra-fleet-iywi.11: only attach the derived credential when the inbound
+  // request itself was authenticated (always true for a non-GET request,
+  // since ../server.ts's guard already 401ed anything else; explicitly
+  // decided per-request for GET). An unauthenticated GET still reaches the
+  // upstream -- see ExtProxyOptions.forwardCredential's doc comment -- it
+  // simply carries nothing an observer could use as a credential.
+  if (options.forwardCredential ?? true) {
+    const fleetKey = (options.getFleetKey ?? getOrCreateKey)();
+    // Derived, per-package, domain-separated -- NEVER the raw fleet key.
+    outHeaders.authorization = `Bearer ${deriveUpstreamCredential(fleetKey, parsed.id)}`;
+    outHeaders['x-apra-fleet-package-id'] = parsed.id;
+  }
 
   const transport = upstreamUrl.protocol === 'https:' ? https : http;
 

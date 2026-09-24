@@ -21,7 +21,11 @@
  * path list, so a route module appended later is covered automatically --
  * see `requiresConsoleGuard` below. `/health` and `/mcp` are not console
  * paths at all and never reach this file. `/ui` (the shell) stays open and
- * additionally sets the console cookie on every GET.
+ * additionally sets the console cookie on every GET. GET `/ext/*` also stays
+ * open (401-free), but as of apra-fleet-iywi.11 an unauthenticated GET is
+ * proxied WITHOUT the derived per-package upstream credential -- see the
+ * `isExtPath` dispatch branch below and docs/console-architecture.md for the
+ * adjudicated decision and its rejected alternatives.
  *
  * SECURITY CONSTRAINT (verified against src/services/jwt.ts): the fleet key
  * this guard checks against is ALSO the HS256 HMAC signing secret for member
@@ -150,7 +154,9 @@ const UI_PREFIX = '/ui';
  *  /ext is still declared by no route module -- it is a proxy mount, not a
  *  route table -- so this prefix remains the single definition of the path
  *  class, shared by the guard and the dispatcher. Never add a second /ext
- *  branch: widen the proxy instead. */
+ *  branch: widen the proxy instead. GET /ext/* stays UNGUARDED (no 401) --
+ *  apra-fleet-iywi.11 instead gates the derived upstream credential on
+ *  whether the GET itself was authenticated; see that dispatch branch. */
 const EXT_PREFIX = '/ext';
 
 function isUiPath(pathname: string): boolean {
@@ -401,10 +407,35 @@ export async function handleConsoleRequest(
     // still applies unchanged and an unauthorised write never reaches an
     // upstream package.
     if (isExtPath(pathname)) {
+      // apra-fleet-iywi.11: GET /ext/* is deliberately left OUTSIDE
+      // requiresConsoleGuard above (matching a normal reverse-proxy's read
+      // path -- see the doc comment on EXT_PREFIX), so an unauthenticated GET
+      // is never 401ed here. But left fully open, ANY third-party page the
+      // operator's browser has open could issue a plain cross-origin GET (no
+      // preflight; <img>/<script> included) to this loopback port and cause a
+      // CREDENTIALED request to a registered workflow package -- the console
+      // derives and attaches the per-package upstream credential regardless
+      // of whether the caller proved who they are. Decision (recorded in
+      // detail in docs/console-architecture.md, next to the guard and /ext
+      // sections): keep GET unguarded, but only ATTACH the derived credential
+      // when the inbound request itself carries a valid console credential
+      // (bearer fleet key or the console cookie) -- so an unauthenticated GET
+      // still reaches the upstream (unchanged 404/502/200 behaviour for the
+      // existing "read path stays open" contract) but never carries anything
+      // the upstream, or anyone observing it, could use as a credential.
+      // A non-GET request that reached this point already passed the guard
+      // above, so it is always authenticated by construction.
+      let extRequestAuthenticated = true;
+      if (method === 'GET') {
+        const fleetKey = getOrCreateKey();
+        const cookieToken = deriveConsoleCookieToken(fleetKey);
+        extRequestAuthenticated = isConsoleAuthorized(req, fleetKey, cookieToken);
+      }
       await handleExtProxyRequest(req, res, {
         pathname,
         rawUrl: req.url ?? '/',
         reservedCookieName: CONSOLE_COOKIE_NAME,
+        forwardCredential: extRequestAuthenticated,
       });
       return true;
     }

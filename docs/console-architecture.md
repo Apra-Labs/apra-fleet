@@ -68,8 +68,27 @@ keyed on `API_NAMESPACES`/`isExtPath`, which are derived from
 module appended later (per the seam above) is therefore guarded
 automatically with no second list to keep in sync. `/health` and `/mcp` are
 not console paths and never reach this guard; `GET /ui` and `GET /ext/*` stay
-open (`/ui` is the shell itself; `GET /ext/*` matches a normal
-reverse-proxy read path).
+open, and neither ever answers 401 (`/ui` is the shell itself; `GET /ext/*`
+matches a normal reverse-proxy read path). `GET /ext/*` staying open does
+**not** mean it is unconditionally credentialed toward the upstream package,
+though -- see "GET `/ext/*` and the unauthenticated-credential decision"
+below.
+
+`handleConsoleRequest` is also **total**: once it has recognised a request as
+a console path, it never lets a throw escape as an unhandled rejection.
+Everything from the guard check above through the `/ui` branch, the `/ext`
+proxy dispatch and `matchRoutes` is covered by one outer `try`/`catch` (in
+addition to the route-handler's own, pre-existing catch) that answers 500
+(carrying the error message) when headers are not yet sent, or ends the
+response otherwise -- never rethrows. This matters because
+`src/services/http-transport.ts` awaits `handleConsoleRequest` from inside an
+async request listener with nothing else guarding it: before this guarantee,
+a throw anywhere in that region (the recorded incident: a registered
+package's non-`http(s)` `baseUrl` making `http.request` throw synchronously
+inside the `/ext` proxy) surfaced as an unhandled rejection and killed the
+whole MCP server process. The false-return contract for a non-console path
+is unaffected -- that check runs before the `try`, so a path outside the
+console never has anything written to `res`.
 
 A caller authenticates with either the raw fleet key as a bearer token
 (`Authorization: Bearer <fleet.key>`, unchanged for existing CLI/script
@@ -127,6 +146,70 @@ stripped rather than relayed, and an upstream attempting to `Set-Cookie` the
 console's own cookie name is refused -- all packages share the console
 origin, so an unfiltered `Set-Cookie` would let one of them overwrite the
 console credential in the browser.
+
+### GET `/ext/*` and the unauthenticated-credential decision (apra-fleet-iywi.11)
+
+`GET /ext/*` stays unguarded (see "Auth guard and console cookie" above), so
+`handleConsoleRequest` never answers 401 for it. Left unqualified, that has a
+consequence worth naming explicitly: **any page the operator's browser has
+open can issue a plain cross-origin `GET` to this loopback port** -- no
+preflight, and `<img>`/`<script>` tags work too -- and, before this decision,
+that GET reached `src/console/proxy.ts` exactly like a legitimate one, which
+derived and attached the per-package upstream credential regardless of
+whether the caller proved who it was. CORS stops the attacker reading the
+response body, but any state-changing or information-triggering `GET`
+endpoint a package exposes was reachable, credentialed, with the console
+supplying the credential on the attacker's behalf.
+
+**Decision: keep `GET /ext/*` open, but attach the derived upstream
+credential only when the inbound request itself carries a valid console
+credential** (the fleet-key bearer, or the `apra_console_token` cookie).
+`src/console/server.ts`'s `isExtPath` dispatch branch checks this explicitly
+for a `GET` (a non-`GET` request that reaches the branch at all has already
+passed the guard, so it is always treated as authenticated) and passes the
+result to `src/console/proxy.ts` as `ExtProxyOptions.forwardCredential`;
+`handleExtProxyRequest` skips attaching `Authorization` entirely when it is
+`false`. An unauthenticated `GET` still reaches the upstream -- the 404
+(unknown id) / 502 (unreachable or bad-scheme upstream) / 200 (success)
+contract is unchanged -- it simply carries nothing usable as a credential.
+This is enforced in code (the `forwardCredential` branch), not left to
+operator convention or to documentation alone.
+
+Weighed against the two alternatives considered and rejected:
+
+- **(a) Guard `GET /ext/*` like every other console path.** Rejected: it
+  would require the shell to send the console cookie (or bearer) on every
+  package-UI load, which is a same-origin request and would work, but it
+  also flips the answer to "can a script/`<img>` tag on a third-party page
+  even reach `/ext/*` at all" to a flat no for anything without a credential
+  -- a much larger behavioural change than the credential the review was
+  actually worried about, and it stops matching "a normal reverse-proxy's
+  read path" (the reason `GET` was left open in the first place). The
+  chosen option gets the same security outcome (no credentialed request from
+  an unauthenticated caller) without that behavioural change.
+- **(c) Require an `Origin`/`Sec-Fetch-Site` check on the unguarded path.**
+  Rejected: it is enforced by header presence rather than a credential check,
+  so it degrades silently for any client that does not send those headers
+  (plain `curl`/scripted health checks, and some older or non-browser HTTP
+  clients) -- a check that fails open for missing headers is weaker than one
+  that fails closed on a missing credential, and it would duplicate
+  protection the existing bearer/cookie check already provides more
+  reliably.
+
+Both rejected options were judged against the same three questions as the
+chosen one: whether the shell can still load package UI from the browser
+(yes, unaffected under all three -- package-UI loads are same-origin, so the
+console cookie is sent automatically regardless of which option is chosen);
+whether a third-party page can still cause a *credentialed* upstream request
+(no, under the chosen option and (a); under (c), only if the third-party page
+also spoofs `Sec-Fetch-Site`/`Origin`, which a browser prevents but a
+non-browser HTTP client does not); and whether the choice is enforced by code
+rather than convention (yes for the chosen option and (a); weaker for (c), as
+above). No regression to the derived-credential property itself: an
+AUTHORISED GET (or any authenticated non-GET) still receives a credential
+that is not byte-equal to the fleet key and still differs per package id --
+`forwardCredential` only ever removes the header, it never changes how the
+credential the removed header would have carried is derived.
 
 ## Static asset serving: dev disk vs. packaged binary
 
