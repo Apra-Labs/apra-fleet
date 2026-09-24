@@ -321,6 +321,21 @@ const staticHandlerDefault: ConsoleStaticHandler = serveUiAsset;
  * false when the path does not belong to the console at all -- in which case
  * nothing has been written to res and the caller's routing continues
  * unchanged.
+ *
+ * TOTALITY (apra-fleet-iywi.10): once a request is recognised as a console
+ * path (the check just above), this function must NEVER reject -- a throw
+ * anywhere past that point, including the guard region, the /ui branch, the
+ * /ext proxy dispatch and matchRoutes, is caught by the outer try/catch below
+ * and turned into a 500 (or a plain end() if headers are already on the
+ * wire), rather than escaping as an unhandled rejection. `src/services/http-
+ * transport.ts` awaits this function from inside an async request listener
+ * with nothing else guarding it, so an escaping throw there kills the whole
+ * MCP server process for every in-flight and future request on that server
+ * instance -- this is the backstop that makes that impossible for any
+ * request this function has already claimed (returned would-be `true` for).
+ * The route-handler's own try/catch below is kept as-is (it already had this
+ * shape); the outer catch is deliberately redundant with it so a throw from
+ * ANY of the other branches gets the identical treatment.
  */
 export async function handleConsoleRequest(
   req: http.IncomingMessage,
@@ -331,83 +346,102 @@ export async function handleConsoleRequest(
   // against a dummy origin, take .pathname) so this dispatcher and the guard
   // below can never disagree about which route a URL names. An unparseable
   // URL is not recognised as a console path at all (same as before this
-  // task) -- the caller's own routing continues unchanged.
+  // task) -- the caller's own routing continues unchanged. This check stays
+  // OUTSIDE the totality try/catch below: the false-return contract requires
+  // that a non-console path never has anything written to res, and a throw
+  // converted to a 500 would violate that.
   const pathname = normalizePath(req.url ?? '/');
   if (pathname === null || !isConsolePath(pathname)) return false;
 
-  const method = (req.method ?? 'GET').toUpperCase();
+  try {
+    const method = (req.method ?? 'GET').toUpperCase();
 
-  if (requiresConsoleGuard(pathname, method)) {
-    const fleetKey = getOrCreateKey();
-    const cookieToken = deriveConsoleCookieToken(fleetKey);
-    if (!isConsoleAuthorized(req, fleetKey, cookieToken)) {
-      jsonError(res, 401, 'unauthorized');
-      return true;
-    }
-  }
-
-  if (isUiPath(pathname)) {
-    if (method === 'GET') {
-      // apra-fleet-iywi.2.1: the console cookie carries a value DERIVED from
-      // the fleet key (never the raw key -- see the SECURITY CONSTRAINT note
-      // at the top of this file), set on every GET so the shell works from
-      // any client-side route, not just the literal "/ui" entry path.
+    if (requiresConsoleGuard(pathname, method)) {
       const fleetKey = getOrCreateKey();
-      res.setHeader('Set-Cookie', cookieFor(deriveConsoleCookieToken(fleetKey), { cookieName: CONSOLE_COOKIE_NAME }));
-      const serveStatic = context.serveStatic ?? staticHandlerDefault;
-      try {
-        const served = await serveStatic(pathname, res, {
-          shellDistDir: context.shellDistDir,
-          getAsset: context.getAsset,
-        });
-        if (served) return true;
-      } catch {
-        // A broken shell dist must never take the MCP server down with it.
-        if (!res.headersSent) plainNotFound(res);
+      const cookieToken = deriveConsoleCookieToken(fleetKey);
+      if (!isConsoleAuthorized(req, fleetKey, cookieToken)) {
+        jsonError(res, 401, 'unauthorized');
         return true;
       }
     }
-    // No shell to serve (or a non-GET method): the same 404 every other
-    // unmatched route gets.
-    plainNotFound(res);
-    return true;
-  }
 
-  // apra-fleet-iywi.4.1: /ext/* is a PROXY MOUNT, not a route table -- it is
-  // dispatched straight to ./proxy.ts rather than going through matchRoutes
-  // (no route module declares /ext, so matchRoutes could only ever 404 it).
-  // This is the single /ext branch in the tree; it sits AFTER the guard
-  // above, so the non-GET guard the auth-core lane added still applies
-  // unchanged and an unauthorised write never reaches an upstream package.
-  if (isExtPath(pathname)) {
-    await handleExtProxyRequest(req, res, {
-      pathname,
-      rawUrl: req.url ?? '/',
-      reservedCookieName: CONSOLE_COOKIE_NAME,
-    });
-    return true;
-  }
+    if (isUiPath(pathname)) {
+      if (method === 'GET') {
+        // apra-fleet-iywi.2.1: the console cookie carries a value DERIVED
+        // from the fleet key (never the raw key -- see the SECURITY
+        // CONSTRAINT note at the top of this file), set on every GET so the
+        // shell works from any client-side route, not just the literal
+        // "/ui" entry path.
+        const fleetKey = getOrCreateKey();
+        res.setHeader('Set-Cookie', cookieFor(deriveConsoleCookieToken(fleetKey), { cookieName: CONSOLE_COOKIE_NAME }));
+        const serveStatic = context.serveStatic ?? staticHandlerDefault;
+        try {
+          const served = await serveStatic(pathname, res, {
+            shellDistDir: context.shellDistDir,
+            getAsset: context.getAsset,
+          });
+          if (served) return true;
+        } catch {
+          // A broken shell dist must never take the MCP server down with it.
+          if (!res.headersSent) plainNotFound(res);
+          return true;
+        }
+      }
+      // No shell to serve (or a non-GET method): the same 404 every other
+      // unmatched route gets.
+      plainNotFound(res);
+      return true;
+    }
 
-  const matches = matchRoutes(pathname);
-  const match = matches.find((m) => m.route.method === method);
-  if (!match) {
-    if (matches.length > 0) {
-      jsonError(res, 405, 'method not allowed');
-    } else {
-      jsonError(res, 404, 'not found');
+    // apra-fleet-iywi.4.1: /ext/* is a PROXY MOUNT, not a route table -- it
+    // is dispatched straight to ./proxy.ts rather than going through
+    // matchRoutes (no route module declares /ext, so matchRoutes could only
+    // ever 404 it). This is the single /ext branch in the tree; it sits
+    // AFTER the guard above, so the non-GET guard the auth-core lane added
+    // still applies unchanged and an unauthorised write never reaches an
+    // upstream package.
+    if (isExtPath(pathname)) {
+      await handleExtProxyRequest(req, res, {
+        pathname,
+        rawUrl: req.url ?? '/',
+        reservedCookieName: CONSOLE_COOKIE_NAME,
+      });
+      return true;
+    }
+
+    const matches = matchRoutes(pathname);
+    const match = matches.find((m) => m.route.method === method);
+    if (!match) {
+      if (matches.length > 0) {
+        jsonError(res, 405, 'method not allowed');
+      } else {
+        jsonError(res, 404, 'not found');
+      }
+      return true;
+    }
+
+    try {
+      await match.route.handler(req, res, context, match.params);
+    } catch (err) {
+      if (!res.headersSent) {
+        jsonError(res, 500, err instanceof Error ? err.message : String(err));
+      } else {
+        res.end();
+      }
     }
     return true;
-  }
-
-  try {
-    await match.route.handler(req, res, context, match.params);
   } catch (err) {
+    // apra-fleet-iywi.10: a throw from the guard region, the /ui branch, the
+    // /ext proxy dispatch or matchRoutes lands here instead of escaping this
+    // function as a rejected promise. Loud, not swallowed -- same shape as
+    // the route-handler catch above -- and the request is still considered
+    // claimed (true), since a console path had a response written to it.
     if (!res.headersSent) {
       jsonError(res, 500, err instanceof Error ? err.message : String(err));
     } else {
       res.end();
     }
+    return true;
   }
-  return true;
 }
 
