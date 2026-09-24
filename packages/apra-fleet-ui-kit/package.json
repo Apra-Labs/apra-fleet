@@ -1,0 +1,37 @@
+{
+  "name": "@apralabs/apra-fleet-ui-kit",
+  "version": "0.1.0",
+  "description": "Presentational design tokens and layout primitives for the Apra Fleet dashboard UI (Page shell, Table primitive). No data fetching, no routing.",
+  "author": "Apra Labs",
+  "homepage": "https://github.com/Apra-Labs/apra-fleet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Apra-Labs/apra-fleet.git",
+    "directory": "packages/apra-fleet-ui-kit"
+  },
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "typescript": "^5.6.0"
+  }
+}

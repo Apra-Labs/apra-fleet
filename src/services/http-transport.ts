@@ -10,6 +10,7 @@ import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
+import { handleConsoleRequest } from '../console/server.js';
 
 interface Session {
   server: McpServer;
@@ -23,6 +24,11 @@ interface Session {
 export interface HttpTransportOptions {
   registerTools: (server: McpServer) => void | Promise<void>;
   preferredPort?: number;
+  /** Testability seam (mirrors version.ts's rootDir param): overrides the
+   *  disk root the console serves the built shell from. Undefined (the
+   *  production case) lets src/console/static.ts resolve the real
+   *  packages/apra-fleet-shell-ui/dist path itself. */
+  shellDistDir?: string;
 }
 
 export interface HttpTransportHandle {
@@ -125,7 +131,7 @@ function extractBearer(req: http.IncomingMessage): string | null {
 }
 
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
-  const { registerTools, preferredPort } = options;
+  const { registerTools, preferredPort, shellDistDir } = options;
   const sessions = new Map<string, Session>();
   const startedAt = Date.now();
 
@@ -184,6 +190,13 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       }, 100);
       return;
     }
+
+    // Console seam (apra-fleet-v6t7.2.1): the ONE console branch in this
+    // file. Everything the console owns -- the shell and its api -- is
+    // handled inside src/console/server.ts (static serving lives in
+    // src/console/static.ts); every other path falls through to the routing
+    // below exactly as before.
+    if (await handleConsoleRequest(req, res, { shellDistDir })) return;
 
     if (url !== '/mcp' && !url.startsWith('/mcp?')) {
       res.writeHead(404);

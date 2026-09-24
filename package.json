@@ -16,7 +16,9 @@
     "packages/apra-fleet-client",
     "packages/apra-fleet-workflow",
     "packages/apra-fleet-se",
-    "packages/fleet-api-contract"
+    "packages/fleet-api-contract",
+    "packages/apra-fleet-ui-kit",
+    "packages/apra-fleet-shell-ui"
   ],
   "main": "dist/index.js",
   "bin": {
@@ -53,6 +55,7 @@
   "scripts": {
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
+    "build:ui": "npm run build --workspace=@apralabs/apra-fleet-ui-kit && npm run build --workspace=@apralabs/apra-fleet-shell-ui",
     "contract:generate": "node memory-contract/v1/generate-contract.mjs",
     "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",

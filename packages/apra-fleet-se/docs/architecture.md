@@ -1551,6 +1551,41 @@ anything, would still report a clean marker file and a zero exit code,
 silently passing a vacuous check. Parse the child's own TAP summary line
 (`# tests`, `# pass`) and assert it clears a known floor.
 
+## Testing convention: named, env-overridable timeout budgets with bind-state diagnostics
+
+Tests that boot a real supervisor/server child process and then poll an HTTP
+endpoint against a hardcoded millisecond timeout have two recurring failure
+modes: the budget is too tight for a loaded machine (a cold beads-database
+render, or a concurrent build competing for CPU), and a bare "timed out"
+assertion message gives a reviewer no way to tell a flake from a real
+regression without re-running and re-instrumenting by hand.
+
+The fix applied across the supervisor test suite is a small, repeatable
+shape:
+
+- The timeout value is a single named constant, overridable via an
+  environment variable, with a code comment stating why the default is sized
+  the way it is (explicitly calling out the slow case it must tolerate, e.g.
+  a cold-database render) -- so the number is a documented decision, not an
+  implicit assumption baked into the assertion.
+- On timeout, the failure message distinguishes "the child process never
+  logged its listening line" from "it bound but the endpoint never answered,"
+  using the child's already-captured stdout/stderr, and includes the
+  captured output tail in the assertion failure so the first failure report
+  is enough to diagnose without a manual re-run.
+- The diagnostic branches themselves are proven with a dedicated subtest
+  (e.g. pointing the client at a deliberately unbound port) rather than
+  assumed correct by construction, since a diagnostic path that only ever
+  fires in a genuine flake is otherwise untested code.
+- The fix is verified against a bounded test run executed while a concurrent
+  build is loading the machine -- the exact condition that produced the
+  original flake -- not just a quiet-machine pass.
+
+This shape generalizes to any test that boots a subprocess and polls it: the
+timeout is a documented, overridable constant; a timeout failure explains
+which side of "bound vs. answered" failed; and the diagnostic is exercised
+directly rather than trusted.
+
 ## Module decomposition: `runner.js` as a strangler-fig facade
 
 `runner.js` began as a single ~11,850-line file and has been decomposed

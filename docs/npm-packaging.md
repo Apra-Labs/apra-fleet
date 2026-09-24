@@ -237,7 +237,12 @@ TypeScript output:
   and `.claude/workflows/` into `dist/skills/pm`, `dist/agents/`, and
   `dist/workflows/` respectively -- needed because most of `packages/` is not
   shipped in `dist/`-copied form; this content ships only if copied into
-  `dist/`.
+  `dist/`. Each destination directory is cleared before the copy rather than
+  overlaid, so a file that no longer has a package-local source (an orphan
+  left over from a different branch or a since-removed source file) does not
+  survive a re-run -- a schema-staleness guard that tells a developer to
+  "run dist-pm to fix it" is only trustworthy if dist-pm actually prunes,
+  not just adds.
 
 **The fleet-sprint engine ships as source, not a bundle.** There is no
 `scripts/bundle-se.mjs` or `build:se` script -- no esbuild step produces

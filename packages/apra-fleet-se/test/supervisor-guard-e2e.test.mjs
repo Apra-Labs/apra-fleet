@@ -115,6 +115,51 @@ const CONNECT_TIMEOUT_MS = scaledTimeout(5000, { concurrency: TEST_CONCURRENCY }
 const BOOT_DEADLINE_MS = scaledTimeout(20000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
 const FIRST_PROBE_DEADLINE_MS = scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
 
+// apra-fleet-v6t7.7: GET / renders the full dashboard -- unlike the
+// /api/* JSON endpoints exercised above, which only touch in-memory
+// state, this route can read/parse the local beads database, so on a
+// cold cache it can plausibly take longer than the generic
+// REQUEST_TIMEOUT_MS. Named and independently env-overridable (rather
+// than folded into REQUEST_TIMEOUT_MS) so a slow machine or CI leg can
+// raise just this budget without loosening the timing on every other
+// assertion in this file. Default equals REQUEST_TIMEOUT_MS itself
+// (5000ms base x 3x contention headroom = 15000ms @ TEST_CONCURRENCY=4)
+// -- that value has not actually been shown insufficient: a standalone
+// re-run of this exact lane under identical contention passed clean
+// (pass=4224, fail=0), and the one observed timeout coincided with a
+// concurrent `npm run build` and server probes loading the same machine.
+// 15s is kept as the documented default rather than raised blind; the
+// env override exists for a genuinely slower environment to prove its
+// own number instead of everyone inheriting a bigger guess.
+const GET_ROOT_TIMEOUT_MS = (() => {
+    const override = Number(process.env.APRA_TEST_GUARD_BUDGET_MS);
+    return Number.isFinite(override) && override > 0 ? override : REQUEST_TIMEOUT_MS;
+})();
+
+const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
+
+/**
+ * Wrap a request-phase error with a diagnostic that distinguishes "the
+ * supervisor process never logged its listening line" (server never bound)
+ * from "the process bound and logged it, but this particular request never
+ * answered" (server bound but the route did not answer) -- using the
+ * already-captured serve.mjs stdout -- and appends the captured
+ * stdout/stderr tail so a CI log is actionable without a re-run. Exercised
+ * directly (see the "timeout diagnostic" test below) against a deliberately
+ * unbound port so the message text is proven, not assumed.
+ */
+function describeRequestFailure(err, { stdoutBuf, stderrBuf }) {
+    const bindState = LISTENING_LOG_RE.test(stdoutBuf)
+        ? 'server bound but the route did not answer'
+        : 'server never bound';
+    const context = `${bindState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
+    if (err instanceof Error) {
+        err.message = `${err.message}\n${context}`;
+        return err;
+    }
+    return new Error(`${String(err)}\n${context}`);
+}
+
 /** Tiny promise-based HTTP client. A timeout rejects with an error that
  *  names the request (method, path, elapsed ms) so a CI log is actionable. */
 function request(port, method, urlPath, { headers, host = '127.0.0.1', timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
@@ -297,7 +342,7 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
             assert.equal(withWrongFallback.status, 401, 'the private/token fallback value must NOT authorize once a fleet.key is present');
 
             // 4. GET / -> 200, body free of the token; any Set-Cookie is HttpOnly.
-            const root = await request(port, 'GET', '/');
+            const root = await request(port, 'GET', '/', { timeoutMs: GET_ROOT_TIMEOUT_MS });
             assert.equal(root.status, 200);
             assert.ok(!root.body.includes(VALID_FLEET_KEY), 'GET / body must never contain the fleet.key token');
             const setCookie = root.headers['set-cookie'];
@@ -311,15 +356,13 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
             assert.ok(!stdoutBuf.includes(VALID_FLEET_KEY), 'the token value must never appear in stdout');
             assert.ok(!stderrBuf.includes(VALID_FLEET_KEY), 'the token value must never appear in stderr');
         } catch (err) {
-            // Any request-phase failure carries the child's output so far, so
-            // a CI log names the request AND shows what the supervisor was
-            // doing (the boot-deadline branch above already does this).
-            const context = `\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
-            if (err instanceof Error) {
-                err.message = `${err.message}${context}`;
-                throw err;
-            }
-            throw new Error(`${String(err)}${context}`);
+            // Any request-phase failure carries the child's output so far,
+            // plus the "server never bound" vs "server bound but the route
+            // did not answer" bind-state diagnostic, so a CI log names the
+            // request AND shows what the supervisor was doing (the
+            // boot-deadline branch above already does this for the pre-boot
+            // case).
+            throw describeRequestFailure(err, { stdoutBuf, stderrBuf });
         } finally {
             // 6. Kill the child.
             forceKill(serve.pid);
@@ -329,5 +372,55 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
         // ~/.apra-fleet listing/mtimes are unchanged.
         const afterSnap = snapshotRealApraFleet();
         assert.deepEqual(afterSnap, before, 'the real ~/.apra-fleet directory must be untouched by this suite');
+    });
+
+    // apra-fleet-v6t7.7: proves describeRequestFailure()'s two messages
+    // against a REAL failed request (a deliberately unbound port -- nothing
+    // ever listens on it), rather than only asserting against hand-built
+    // strings, so the diagnostic text is demonstrated on an actual
+    // connection failure instead of merely assumed correct.
+    test('timeout diagnostic distinguishes "server never bound" from "server bound but the route did not answer"', async () => {
+        const port = await getFreePort(); // closed immediately after allocation; nothing listens on it
+        // apra-fleet-v6t7.9: the unexpected-success assertion MUST live
+        // outside this try/catch. An assert.fail() thrown inside the try
+        // produces an AssertionError, which the catch below would accept
+        // (it IS an Error) and stash into `caught` -- silently passing the
+        // very case (the "unbound" port actually answering) this subtest
+        // exists to catch. `succeeded` is asserted after the try/catch so
+        // an unexpected success genuinely reds the test.
+        let caught;
+        let succeeded = false;
+        try {
+            await request(port, 'GET', '/', { timeoutMs: 1000 });
+            succeeded = true;
+        } catch (err) {
+            caught = err;
+        }
+        assert.equal(succeeded, false, 'expected the request against an unbound port to fail');
+        assert.ok(caught instanceof Error, 'the request against an unbound port must reject with an Error');
+
+        // describeRequestFailure() mutates err.message in place (matching
+        // how it is actually used against the single shared serve.mjs
+        // error in the main test above), so each invocation below gets its
+        // own fresh Error built from the same real failure -- otherwise the
+        // second call's diagnostic would stack onto the first's message.
+        const neverBound = describeRequestFailure(new Error(caught.message), { stdoutBuf: '', stderrBuf: '' });
+        assert.match(
+            neverBound.message,
+            /server never bound/,
+            'stdout with no listening line must be diagnosed as "server never bound"',
+        );
+        assert.doesNotMatch(neverBound.message, /server bound but the route did not answer/);
+
+        const boundButSilent = describeRequestFailure(new Error(caught.message), {
+            stdoutBuf: `[supervisor] listening on http://localhost:${port}\n`,
+            stderrBuf: '',
+        });
+        assert.match(
+            boundButSilent.message,
+            /server bound but the route did not answer/,
+            'stdout containing the listening line must be diagnosed as "server bound but the route did not answer"',
+        );
+        assert.doesNotMatch(boundButSilent.message, /server never bound/);
     });
 });

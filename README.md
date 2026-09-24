@@ -421,6 +421,13 @@ hardening autonomous sprint execution (the toughest workflow we know of),
 supervisor-orchestrated multi-sprint operation, and the workflow SDK for
 third-party verticals.
 
+A small web console (a `/ui` shell backed by `/api/fleet/*`, starting with a
+members table) is taking shape behind its own seam so it can grow one route
+module at a time; today it serves from a dev checkout only -- packaging it
+into the SEA binary and the npm-distributed package, and adding an auth
+guard ahead of non-loopback binding, are still open. See
+[docs/console-architecture.md](docs/console-architecture.md).
+
 ## Documentation
 
 | Topic | Link |
@@ -442,6 +449,7 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Console server (`/ui` shell, `/api/fleet/*`, seam design) | [docs/console-architecture.md](docs/console-architecture.md) |
 | Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |

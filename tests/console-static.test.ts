@@ -1,0 +1,209 @@
+/**
+ * Console static serving (apra-fleet-v6t7.2.2): src/console/static.ts is the
+ * single index.html-serving code path in the tree, fed by either a disk dist
+ * or SEA assets. Both sources are injected here -- a temp directory and a
+ * fake getAsset -- so nothing in this file builds a binary or probes SEA
+ * state.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  resolveUiAsset,
+  serveUiAsset,
+  uiContentType,
+  isSafeUiRelPath,
+  UI_ASSET_PREFIX,
+} from '../src/console/static.js';
+import type http from 'node:http';
+
+const INDEX_HTML = '<html><body>shell</body></html>';
+const APP_JS = 'console.log("hi");';
+const APP_CSS = 'body{color:red}';
+
+describe('console static: disk mode', () => {
+  let shellDistDir: string;
+
+  beforeEach(() => {
+    shellDistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'console-dist-'));
+    fs.writeFileSync(path.join(shellDistDir, 'index.html'), INDEX_HTML);
+    fs.mkdirSync(path.join(shellDistDir, 'assets'));
+    fs.writeFileSync(path.join(shellDistDir, 'assets', 'app-abc123.js'), APP_JS);
+    fs.writeFileSync(path.join(shellDistDir, 'assets', 'app-abc123.css'), APP_CSS);
+  });
+
+  afterEach(() => {
+    fs.rmSync(shellDistDir, { recursive: true, force: true });
+  });
+
+  it('serves index.html for /ui and /ui/', () => {
+    for (const pathname of ['/ui', '/ui/']) {
+      const asset = resolveUiAsset(pathname, { shellDistDir, getAsset: null });
+      expect(asset?.status).toBe(200);
+      expect(asset?.contentType).toBe('text/html');
+      expect(asset?.body.toString('utf8')).toBe(INDEX_HTML);
+    }
+  });
+
+  it('serves a real asset from the dist with the right content-type', () => {
+    const js = resolveUiAsset('/ui/assets/app-abc123.js', { shellDistDir, getAsset: null });
+    expect(js?.status).toBe(200);
+    expect(js?.contentType).toBe('application/javascript');
+    expect(js?.body.toString('utf8')).toBe(APP_JS);
+
+    const css = resolveUiAsset('/ui/assets/app-abc123.css', { shellDistDir, getAsset: null });
+    expect(css?.status).toBe(200);
+    expect(css?.contentType).toBe('text/css');
+    expect(css?.body.toString('utf8')).toBe(APP_CSS);
+  });
+
+  it('falls back to index.html for an unknown client-side route', () => {
+    const asset = resolveUiAsset('/ui/members/detail', { shellDistDir, getAsset: null });
+    expect(asset?.status).toBe(200);
+    expect(asset?.contentType).toBe('text/html');
+    expect(asset?.body.toString('utf8')).toBe(INDEX_HTML);
+  });
+
+  it('404s a missing hashed asset instead of handing back the SPA shell', () => {
+    const asset = resolveUiAsset('/ui/assets/missing-hash.js', { shellDistDir, getAsset: null });
+    expect(asset?.status).toBe(404);
+    expect(asset?.body.toString('utf8')).not.toContain('shell');
+  });
+
+  it('returns null when there is no shell dist and no SEA assets at all', () => {
+    const missing = path.join(os.tmpdir(), 'no-such-console-dist-' + Date.now());
+    expect(resolveUiAsset('/ui/', { shellDistDir: missing, getAsset: null })).toBeNull();
+  });
+
+  it('rejects every traversal shape without reading outside the root', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'SECRET-DO-NOT-SERVE');
+    try {
+      const attempts = [
+        '/ui/../../etc/passwd',
+        '/ui/' + encodeURIComponent('../../../../etc/passwd'),
+        '/ui/' + encodeURIComponent('C:\\Windows\\win.ini'),
+        '/ui/' + encodeURIComponent('\\\\server\\share\\secret.txt'),
+        '/ui/' + encodeURIComponent('//server/share/secret.txt'),
+        '/ui/' + encodeURIComponent('..\\..\\secret.txt'),
+        '/ui/' + encodeURIComponent('/etc/passwd'),
+        '/ui/' + encodeURIComponent(outside + '/secret.txt'),
+      ];
+      for (const attempt of attempts) {
+        const asset = resolveUiAsset(attempt, { shellDistDir, getAsset: null });
+        // Either the SPA shell or an honest 404 -- never content from
+        // outside shellDistDir.
+        expect(asset).not.toBeNull();
+        expect([200, 404]).toContain(asset?.status);
+        const body = asset?.body.toString('utf8') ?? '';
+        expect(body).not.toContain('SECRET-DO-NOT-SERVE');
+        expect(body).not.toContain('root:');
+        if (asset?.status === 200) expect(body).toBe(INDEX_HTML);
+      }
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('isSafeUiRelPath names the rejected shapes directly', () => {
+    expect(isSafeUiRelPath('assets/app.js')).toBe(true);
+    expect(isSafeUiRelPath('members/detail')).toBe(true);
+    expect(isSafeUiRelPath('../../etc/passwd')).toBe(false);
+    expect(isSafeUiRelPath('..\\..\\etc\\passwd')).toBe(false);
+    expect(isSafeUiRelPath('/etc/passwd')).toBe(false);
+    expect(isSafeUiRelPath('C:\\Windows\\win.ini')).toBe(false);
+    expect(isSafeUiRelPath('C:/Windows/win.ini')).toBe(false);
+    expect(isSafeUiRelPath('\\\\server\\share')).toBe(false);
+    expect(isSafeUiRelPath('//server/share')).toBe(false);
+    expect(isSafeUiRelPath('assets/app.js\0.txt')).toBe(false);
+  });
+
+  it('serveUiAsset writes the response and reports handled/unhandled', () => {
+    const written: { status?: number; headers?: Record<string, string>; body: string } = { body: '' };
+    const res = {
+      writeHead(status: number, headers?: Record<string, string>) {
+        written.status = status;
+        written.headers = headers;
+        return res;
+      },
+      end(chunk?: Buffer | string) {
+        if (chunk !== undefined) written.body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      },
+    } as unknown as http.ServerResponse;
+
+    expect(serveUiAsset('/ui/', res, { shellDistDir, getAsset: null })).toBe(true);
+    expect(written.status).toBe(200);
+    expect(written.headers?.['Content-Type']).toBe('text/html');
+    expect(written.body).toBe(INDEX_HTML);
+
+    const missing = path.join(os.tmpdir(), 'no-such-console-dist-' + Date.now());
+    expect(serveUiAsset('/ui/', res, { shellDistDir: missing, getAsset: null })).toBe(false);
+  });
+});
+
+describe('console static: SEA mode (injected fake getAsset)', () => {
+  const assets: Record<string, string> = {
+    [UI_ASSET_PREFIX + 'index.html']: INDEX_HTML,
+    [UI_ASSET_PREFIX + 'assets/app-abc123.js']: APP_JS,
+  };
+  const reads: string[] = [];
+  const getAsset = (key: string): ArrayBuffer | undefined => {
+    reads.push(key);
+    const value = assets[key];
+    if (value === undefined) return undefined;
+    const buf = Buffer.from(value, 'utf8');
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  };
+  // A disk root that does not exist, so only the SEA source can answer.
+  const shellDistDir = path.join(os.tmpdir(), 'no-such-sea-dist-' + Date.now());
+
+  it('serves index.html through the injected asset reader', () => {
+    const asset = resolveUiAsset('/ui/', { shellDistDir, getAsset });
+    expect(asset?.status).toBe(200);
+    expect(asset?.contentType).toBe('text/html');
+    expect(asset?.body.toString('utf8')).toBe(INDEX_HTML);
+  });
+
+  it('serves an asset under the ui/ namespace with the right content-type', () => {
+    reads.length = 0;
+    const asset = resolveUiAsset('/ui/assets/app-abc123.js', { shellDistDir, getAsset });
+    expect(asset?.status).toBe(200);
+    expect(asset?.contentType).toBe('application/javascript');
+    expect(asset?.body.toString('utf8')).toBe(APP_JS);
+    expect(reads).toContain('ui/assets/app-abc123.js');
+  });
+
+  it('falls back to the shell for a client route and 404s a missing asset', () => {
+    const route = resolveUiAsset('/ui/members', { shellDistDir, getAsset });
+    expect(route?.status).toBe(200);
+    expect(route?.body.toString('utf8')).toBe(INDEX_HTML);
+
+    const missing = resolveUiAsset('/ui/assets/missing-hash.js', { shellDistDir, getAsset });
+    expect(missing?.status).toBe(404);
+  });
+
+  it('returns null when the binary carries no ui/index.html', () => {
+    expect(resolveUiAsset('/ui/', { shellDistDir, getAsset: () => undefined })).toBeNull();
+  });
+
+  it('normalises backslashed keys to forward slashes so Windows and POSIX agree', () => {
+    reads.length = 0;
+    const asset = resolveUiAsset('/ui/' + encodeURIComponent('assets/app-abc123.js'), { shellDistDir, getAsset });
+    expect(asset?.status).toBe(200);
+    expect(reads.every((k) => !k.includes('\\'))).toBe(true);
+  });
+});
+
+describe('console static: MIME map', () => {
+  it('maps the shell build outputs', () => {
+    expect(uiContentType('index.html')).toBe('text/html');
+    expect(uiContentType('assets/app.js')).toBe('application/javascript');
+    expect(uiContentType('assets/app.css')).toBe('text/css');
+    expect(uiContentType('data.json')).toBe('application/json');
+    expect(uiContentType('icon.svg')).toBe('image/svg+xml');
+    expect(uiContentType('logo.png')).toBe('image/png');
+    expect(uiContentType('font.woff2')).toBe('font/woff2');
+    expect(uiContentType('unknown.bin')).toBe('application/octet-stream');
+  });
+});

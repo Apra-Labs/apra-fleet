@@ -87,6 +87,16 @@ Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `s
 
 `execute_prompt` (`src/tools/execute-prompt.ts`) itself is dual-path: for a member with NO live interactive session, it behaves exactly as before (subprocess/SSH, unchanged). For a member that IS interactively connected, it routes through the same channel instead of spawning anything -- `send_message` pushes the prompt and the caller awaits the member's `respond_to_message({reply_to, content})` call, correlated purely in-memory by `src/services/pending-responses.ts` (a `msgid` -> pending-promise map, timeout-bound by the same `timeout_s` the subprocess path uses). Mode selection is decided tier-2-locally against this machine's own `sessionRegistry` -- never from caller-side or (future) hub-side state -- so it is unaffected by whether `execute_prompt` is invoked directly or eventually relayed through a hub. This interactive mode is gated to Claude members only: `docs/interactive-injection-provider-survey.md` confirms it is POC-proven on Claude alone (the other five providers are confirmed unsupported or unconfirmed) -- a non-Claude member with a live session (e.g. from `registerMcpEndpoint`, which gives several providers basic MCP tool access) still falls through to the subprocess path.
 
+## Console Server (`/ui`, `/api/fleet/*`)
+
+The server also exposes a small web console -- a React/Vite shell at `/ui`
+backed by a `/api/fleet/*` JSON API -- through a dedicated seam
+(`src/console/`) kept deliberately separate from `/mcp` transport handling
+so that later console features are added as new files rather than edits to
+shared routing logic. See `docs/console-architecture.md` for the seam
+design, the dev-disk-vs-SEA-asset static serving split, the traversal guard,
+and the current no-auth-yet constraint on non-loopback binding.
+
 ## Provider Abstraction
 
 Fleet supports five LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and OpenCode -- plus a sixth null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
