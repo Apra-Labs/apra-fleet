@@ -1059,6 +1059,26 @@ test('decideStrayProcess: a candidate whose liveness probe could not be EVALUATE
     assert.match(decision.sparedReasons.join(' '), /liveness probe could not be evaluated/);
 });
 
+test('decideStrayProcess: a candidate whose liveness probe found it TCP-alive but silent on HTTP is spared, '
+    + 'with a reason DISTINCT from the generic unevaluable spare', () => {
+    // apra-fleet-i4ku.24.1.2 gives this outcome its own record.liveProbe
+    // value ('tcp-alive-no-http') rather than folding it into 'unevaluable'
+    // -- this pins that decideStrayProcess() actually reads that distinct
+    // value and produces distinct prose for it, not merely that SOME spare
+    // happens.
+    const decision = decideRemote(staleSandboxSupervisor({ liveProbe: 'tcp-alive-no-http' }));
+    assert.equal(decision.action, ACTION_REPORT_ONLY, 'a live non-HTTP listener must never be killed');
+    assert.notEqual(decision.action, ACTION_KILL);
+    assert.match(
+        decision.sparedReasons.join(' '),
+        /still accepting TCP connections on a port it holds, but no asked socket returned an HTTP response/,
+    );
+    assert.doesNotMatch(
+        decision.sparedReasons.join(' '), /could not be evaluated/,
+        'a tcp-alive-no-http spare must read differently from the fail-safe "could not be evaluated" unevaluable spare',
+    );
+});
+
 test('decideStrayProcess: a candidate that was probed and got NO response is unaffected -- still killable', () => {
     // Control for the predicate above: "probed, and confirmed silent" must
     // not spare a process, or the stale-sandbox case this sweep exists for
@@ -1795,6 +1815,204 @@ test('apra-fleet-i4ku.21: the Windows port table carries LocalAddress, and a leg
     ].join('\n'), {});
     assert.deepEqual(legacy.listeners, [{ pid: 700, port: 9600, probeHost: null }]);
     assert.equal(legacy.portsKnown, true, 'the PORT is still attributed -- only the host is unknown');
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.24.1.3 -- END TO END, through sweepMemberStrayProcesses()
+// itself (the entry point phases/member-prep.mjs actually calls), not just
+// the lower-level decideStrayProcess()/parseLivenessProbeOutput() units
+// pinned above.
+//
+// THE DEFECT THIS GUARDS: before apra-fleet-i4ku.24.1.2, a candidate whose
+// port ACCEPTED the TCP connection but spoke no HTTP fell into the SAME
+// `unevaluable` bucket as a candidate this predicate could not even ask --
+// indistinguishable on the result -- and before this predicate existed at
+// all, such a candidate could be killed outright as if "no HTTP response"
+// meant "nothing is there". These cases prove a live non-HTTP listener (a
+// raw TCP service, a database server) is spared rather than killed, that a
+// genuinely refused port is still swept (the fix must not become a
+// no-op), that mixed sockets on one candidate never double-count, and that
+// neither OS family degrades.
+// ---------------------------------------------------------------------------
+
+/** Decodes a win32-wrapped command and classifies it by DECODED content, so a
+ *  stub seam can answer the process probe, the liveness probe, and the kill
+ *  dispatch with three different scripted outputs. livenessStubSeam's own
+ *  `command.includes(HEALTH_LINE_PREFIX)` check only works for POSIX: a win32
+ *  dispatch's raw command string is an opaque `-EncodedCommand` base64
+ *  envelope (see decodeWinCommand() above), so the same substring check on
+ *  the raw string would never match. */
+function win32LivenessStubSeam(processProbeOutput, healthOutput) {
+    const issued = [];
+    return {
+        issued,
+        execCommand: async ({ member, command }) => {
+            issued.push({ member, command });
+            if (!command.startsWith('powershell')) return { ok: true, output: '' };
+            const script = decodeWinCommand(command);
+            if (script.includes('Stop-Process')) {
+                // The win32 kill dispatch's own output is never parsed by
+                // this module (Stop-Process -ErrorAction SilentlyContinue
+                // already tolerates an already-gone pid) -- mirrors stubSeam's
+                // own comment for the POSIX kill branch above.
+                return { ok: true, output: '' };
+            }
+            if (script.includes(HEALTH_LINE_PREFIX)) return { ok: true, output: healthOutput };
+            return { ok: true, output: processProbeOutput };
+        },
+    };
+}
+
+/** The canonical killable record (STALE_PID), alone on the wire -- no
+ *  siblings, so every assertion below is about THIS candidate's fate and
+ *  nothing else in the pass. */
+function staleSupervisorOnlyProbeOutput() {
+    return [
+        `SWEEP-PROC  ${STALE_PID}  ${DEAD_PARENT_PID} 1-02:03:04 ${SANDBOX_SUPERVISOR_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:18701 0.0.0.0:* users:(("node",pid=${STALE_PID},fd=20))`,
+    ].join('\n');
+}
+
+/** Same candidate, win32-shaped process/port rows. */
+function staleSupervisorOnlyWinProbeOutput() {
+    return [
+        `SWEEP-PROC-WIN ${STALE_PID}|${DEAD_PARENT_PID}|1758503655|C:\\fleetwork\\sandbox-run1\\supervisor.exe --listen 18701`,
+        `SWEEP-PORT-WIN ${STALE_PID}|18701|0.0.0.0`,
+    ].join('\n');
+}
+
+/** Windows paths are case-insensitive; the sweep lowercases both sides for a
+ *  win32 member (see the existing "Windows remote member" test above), so a
+ *  differently-cased marker still matches this fixture's own command line. */
+const WIN_SANDBOX_MARKERS = [{ kind: 'sandbox-supervisor', token: 'C:\\FleetWork\\Sandbox-Run1\\', evidence: 'path' }];
+
+test('CASE 1 (POSIX): a live non-HTTP listener is SPARED -- never killed -- and counted in its own '
+    + 'tcpAliveNoHttp bucket, with a reason distinct from the generic unevaluable spare. Would FAIL (the '
+    + 'candidate lands in result.killed, or the bucket stays 0) if the tcp-alive-no-http classification '
+    + 'were reverted', async () => {
+    const seam = livenessStubSeam(
+        staleSupervisorOnlyProbeOutput(),
+        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000 ${PROBE_STATUS_TIMEOUT}`,
+    );
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: () => {}, error: () => {} },
+    });
+
+    assert.deepEqual(result.killed, [], 'a live non-HTTP listener must never be killed');
+    assert.equal(result.reported.length, 1);
+    assert.equal(result.reported[0].pid, STALE_PID);
+    assert.match(
+        result.reported[0].sparedReasons.join(' '),
+        /still accepting TCP connections on a port it holds, but no asked socket returned an HTTP response/,
+    );
+    assert.doesNotMatch(
+        result.reported[0].sparedReasons.join(' '), /could not be evaluated/,
+        'a tcp-alive-no-http spare must read differently from the generic unevaluable spare',
+    );
+    assert.equal(result.liveness.tcpAliveNoHttp, 1, 'counted in its own bucket');
+    assert.equal(result.liveness.unevaluable, 0, 'never double-counted into unevaluable');
+    assert.equal(result.liveness.spared, 0, '`spared` is reserved for an ANSWERED HTTP response, not this outcome');
+    assert.equal(result.liveness.checked, 1, 'a probe genuinely reached and answered this candidate');
+});
+
+test('CASE 2 (POSIX regression guard): a genuinely REFUSED port is still killed -- the tcp-alive-no-http fix '
+    + 'must not turn the sweep into a no-op. Would FAIL (candidate ends up in result.reported instead of '
+    + 'result.killed) if refused sockets were accidentally folded into the new spared bucket', async () => {
+    const seam = livenessStubSeam(
+        staleSupervisorOnlyProbeOutput(),
+        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000 ${PROBE_STATUS_REFUSED}`,
+    );
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: () => {}, error: () => {} },
+    });
+
+    assert.deepEqual(result.killed.map((k) => k.pid), [STALE_PID], 'a refused port is still killable');
+    assert.deepEqual(result.reported, []);
+    assert.equal(result.liveness.tcpAliveNoHttp, 0, 'a refused port must never land in the live-non-HTTP bucket');
+    assert.equal(result.liveness.checked, 1);
+});
+
+test('CASE 3 (mixed sockets, one pid): one socket answers HTTP, its sibling is TCP-alive-no-http -- '
+    + 'ANSWERED wins outright and the candidate is never double-counted across buckets', async () => {
+    const MIXED_PID = 6300;
+    const HTTP_PORT = 18701;
+    const TCP_ONLY_PORT = 18702;
+    const probeOutput = [
+        `SWEEP-PROC  ${MIXED_PID}  ${DEAD_PARENT_PID} 1-02:03:04 ${SANDBOX_SUPERVISOR_CMD}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${HTTP_PORT} 0.0.0.0:* users:(("node",pid=${MIXED_PID},fd=20))`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${TCP_ONLY_PORT} 0.0.0.0:* users:(("node",pid=${MIXED_PID},fd=21))`,
+    ].join('\n');
+    const healthOutput = [
+        `${HEALTH_LINE_PREFIX} ${MIXED_PID} ${HTTP_PORT} 200 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} ${MIXED_PID} ${TCP_ONLY_PORT} 000 ${PROBE_STATUS_TIMEOUT}`,
+    ].join('\n');
+    const seam = livenessStubSeam(probeOutput, healthOutput);
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'linux-member-1', os: 'linux', type: 'remote' },
+        markers: MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: () => {}, error: () => {} },
+    });
+
+    assert.deepEqual(result.killed, [], 'the candidate answered HTTP on one of its sockets -- it must be spared');
+    assert.equal(result.reported.length, 1);
+    assert.equal(result.reported[0].pid, MIXED_PID);
+    assert.match(result.reported[0].sparedReasons.join(' '), /responded to a liveness probe/, 'answered wins outright');
+    assert.doesNotMatch(
+        result.reported[0].sparedReasons.join(' '),
+        /still accepting TCP connections/,
+        'a candidate spared as ANSWERED must not also read as tcp-alive-no-http',
+    );
+    assert.equal(result.liveness.spared, 1, 'counted once, in the answered bucket');
+    assert.equal(result.liveness.tcpAliveNoHttp, 0, 'never double-counted alongside the answered bucket');
+    assert.equal(result.liveness.checked, 1, 'one candidate checked, not one count per socket');
+});
+
+test('CASE 4 (win32): a live non-HTTP listener is spared exactly like POSIX -- neither OS family degrades. '
+    + 'Would FAIL (candidate lands in result.killed) if the win32 liveness-probe script stopped reporting the '
+    + 'TCP-accepted-but-no-HTTP outcome', async () => {
+    const seam = win32LivenessStubSeam(
+        staleSupervisorOnlyWinProbeOutput(),
+        // The win32 script's own ConnectAsync-succeeded-but-no-HTTP shape
+        // (see buildLivenessProbeCommand's win32 tests above): '000' paired
+        // with PROBE_STATUS_OK, not PROBE_STATUS_REFUSED.
+        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000 ${PROBE_STATUS_OK}`,
+    );
+    const result = await sweepMemberStrayProcesses({
+        member: { name: 'win-member-7', os: 'windows', type: 'remote' },
+        markers: WIN_SANDBOX_MARKERS,
+        productionPorts: PRODUCTION_PORTS,
+        execCommand: seam.execCommand,
+        now: () => Date.parse('2026-09-23T12:00:00.000Z'),
+        livenessProbe: true,
+        logger: { log: () => {}, error: () => {} },
+    });
+
+    assert.deepEqual(result.killed, [], 'a live non-HTTP listener must never be killed, on win32 either');
+    assert.equal(result.reported.length, 1);
+    assert.equal(result.reported[0].pid, STALE_PID);
+    assert.match(
+        result.reported[0].sparedReasons.join(' '),
+        /still accepting TCP connections on a port it holds, but no asked socket returned an HTTP response/,
+    );
+    assert.equal(result.liveness.tcpAliveNoHttp, 1, 'counted in its own bucket on win32 too');
+    assert.equal(result.liveness.unevaluable, 0);
+    assert.equal(seam.issued.length, 2, 'process probe + liveness probe only -- nothing was selected to kill');
 });
 
 // ---------------------------------------------------------------------------
