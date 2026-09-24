@@ -211,6 +211,49 @@ flowchart TD
 
 ---
 
+### 4.4 Git vs. Non-Git Workspaces: Protobuf oneof Safety & Worktree Support
+
+A critical question is whether a single project configuration file can safely define both `gitFolder` and `folderUri` nodes simultaneously to hedge against uncertainty.
+
+#### 1. Inside the Same Resource Object: Strictly Prohibited by Protobuf Schema
+In Antigravity's underlying protobuf definition (`exa.project_pb.Resource`):
+```protobuf
+message Resource {
+  oneof type {
+    string folder_uri = 1;
+    Google3 google3 = 2;
+    GitFolder git_folder = 3;
+  }
+}
+```
+Because `type` is a Protobuf **`oneof`**, setting both `folderUri` and `gitFolder` in the same JSON object is a fatal schema violation. When Go's `protojson.Unmarshal` parses the file, it rejects it with:
+```text
+cannot set multiple fields in oneof "type": "folder_uri" and "git_folder"
+```
+This causes AGY to mark the file as corrupted (`ReloadPermissions: project <id> corrupted or unreadable`) and silently discard all permissions. Therefore, **co-locating both keys inside a single resource object is strictly forbidden**.
+
+#### 2. As Multiple Elements in the resources Array: Redundant Roots Hazard
+While having two array elements in `resources` (`[{gitFolder: ...}, {folderUri: ...}]`) is valid protobuf syntax, in AGY `resources` defines the set of top-level workspace roots. Having two entries for the identical directory path leads AGY to treat the project as a multi-root workspace with duplicate roots, risking double-indexing and redundant file watchers.
+
+#### 3. Why 'test -d .git' Fails on Git Worktrees
+In Apra-Fleet, members frequently execute within **Git Worktrees** (e.g. parallel sprint sandboxes). In a Git worktree, `.git` is **a regular text file** containing a `gitdir:` reference, NOT a directory! A naive shell test like `test -d "${workFolder}/.git"` evaluates to false, erroneously classifying an active Git worktree as a non-git folder.
+
+#### 4. The Robust Solution: VCS Probing and In-Place Morphing
+To achieve 100% safety across all workspace types (standard clones, worktrees, monorepo subfolders, and plain folders):
+
+1. **Accurate Git Probing:** Use Git's native plumbing command:
+   ```bash
+   git -C "${workFolder}" rev-parse --is-inside-work-tree 2>/dev/null
+   ```
+   If this exits 0 and prints `true`, the folder is guaranteed to be a Git workspace (even in worktrees and monorepos). Otherwise, it is a plain folder.
+2. **Deterministic Single Resource:**
+   - If Git: Write `resources: [{ gitFolder: { folderUri: "file://${workFolder}", allowWrite: true } }]`.
+   - If Non-Git: Write `resources: [{ folderUri: "file://${workFolder}" }]`.
+3. **In-Place Morphing via Pre-Dispatch Rule:**
+   Because Apra-Fleet enforces that `compose_permissions` is called before **EVERY** dispatch, if a plain folder is later initialized with `git init` during a task, the subsequent `compose_permissions` run automatically detects the new Git state and updates `resources[0]` in-place inside `fleet-${agent.id}.json` without altering the project ID or losing permission grants.
+
+---
+
 ## 5. Target Design & Implementation Specification
 
 ### 5.1 Project Schema Definition
