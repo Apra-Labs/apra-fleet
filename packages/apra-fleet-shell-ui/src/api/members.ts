@@ -75,12 +75,17 @@ export function provisionLlmAuth(memberId: string): Promise<MemberActionResult> 
   return postJson("/api/fleet/provision-llm-auth", { member_id: memberId });
 }
 
-export function provisionVcsAuth(memberId: string): Promise<MemberActionResult> {
-  return postJson("/api/fleet/provision-vcs-auth", { member_id: memberId });
+/** provider is REQUIRED by provisionVcsAuthSchema (src/tools/provision-vcs-auth.ts) --
+ *  a bare {member_id} body 400s before dispatch (routes/fleet.ts), so the caller
+ *  must always thread a provider choice through. */
+export function provisionVcsAuth(memberId: string, provider: string): Promise<MemberActionResult> {
+  return postJson("/api/fleet/provision-vcs-auth", { member_id: memberId, provider });
 }
 
-export function revokeVcsAuth(memberId: string): Promise<MemberActionResult> {
-  return postJson("/api/fleet/revoke-vcs-auth", { member_id: memberId });
+/** provider is REQUIRED by revokeVcsAuthSchema (src/tools/revoke-vcs-auth.ts) --
+ *  see provisionVcsAuth's note above. */
+export function revokeVcsAuth(memberId: string, provider: string): Promise<MemberActionResult> {
+  return postJson("/api/fleet/revoke-vcs-auth", { member_id: memberId, provider });
 }
 
 export function setupSshKey(memberId: string): Promise<MemberActionResult> {

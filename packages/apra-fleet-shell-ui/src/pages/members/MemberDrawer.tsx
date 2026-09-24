@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Drawer } from "@apralabs/apra-fleet-ui-kit";
+import { Drawer, SelectField } from "@apralabs/apra-fleet-ui-kit";
 import {
   composePermissions,
   provisionLlmAuth,
@@ -12,16 +12,28 @@ import {
   type MemberActionResult
 } from "../../api/members";
 
+/** Providers provision-vcs-auth/revoke-vcs-auth accept (provisionVcsAuthSchema /
+ *  revokeVcsAuthSchema in src/tools/, both z.enum(['github','bitbucket','azure-devops'])
+ *  with no .optional() -- a bare {member_id} body 400s before dispatch). */
+const VCS_PROVIDERS = [
+  { value: "github", label: "GitHub" },
+  { value: "bitbucket", label: "Bitbucket" },
+  { value: "azure-devops", label: "Azure DevOps" }
+];
+
 interface ActionDef {
   key: string;
   label: string;
-  call: (memberId: string) => Promise<MemberActionResult>;
+  /** True when the action's schema requires a provider choice (provision-vcs-auth,
+   *  revoke-vcs-auth) -- rendered as a SelectField ahead of the button. */
+  needsProvider?: boolean;
+  call: (memberId: string, provider: string) => Promise<MemberActionResult>;
 }
 
 const ACTIONS: ActionDef[] = [
   { key: "provision-llm-auth", label: "Provision LLM auth", call: provisionLlmAuth },
-  { key: "provision-vcs-auth", label: "Provision VCS auth", call: provisionVcsAuth },
-  { key: "revoke-vcs-auth", label: "Revoke VCS auth", call: revokeVcsAuth },
+  { key: "provision-vcs-auth", label: "Provision VCS auth", needsProvider: true, call: provisionVcsAuth },
+  { key: "revoke-vcs-auth", label: "Revoke VCS auth", needsProvider: true, call: revokeVcsAuth },
   { key: "setup-ssh-key", label: "Setup SSH key", call: setupSshKey },
   { key: "compose-permissions", label: "Compose permissions", call: composePermissions },
   { key: "update-llm-cli", label: "Update LLM CLI", call: updateLlmCli },
@@ -43,6 +55,13 @@ interface MemberDrawerProps {
  *  inline -- the drawer never closes itself on failure. */
 export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
   const [states, setStates] = useState<Record<string, ActionState>>({});
+  // One provider choice per needsProvider action, defaulting to the first
+  // VCS_PROVIDERS option so a plain button click always posts a valid body.
+  const [providers, setProviders] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      ACTIONS.filter((a) => a.needsProvider).map((a) => [a.key, VCS_PROVIDERS[0].value])
+    )
+  );
 
   if (!member) return null;
   const memberId = member.id;
@@ -50,7 +69,8 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
   async function runAction(action: ActionDef) {
     setStates((prev) => ({ ...prev, [action.key]: { status: "loading" } }));
     try {
-      const result = await action.call(memberId);
+      const provider = providers[action.key] ?? VCS_PROVIDERS[0].value;
+      const result = await action.call(memberId, provider);
       setStates((prev) => ({
         ...prev,
         [action.key]: { status: "done", message: result.text ?? "", isError: false }
@@ -82,6 +102,17 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
           const state = states[action.key] ?? { status: "idle" };
           return (
             <li key={action.key} style={{ marginBottom: "12px" }}>
+              {action.needsProvider ? (
+                <SelectField
+                  label={`${action.label} provider`}
+                  name={`${action.key}-provider`}
+                  value={providers[action.key] ?? VCS_PROVIDERS[0].value}
+                  onChange={(value) =>
+                    setProviders((prev) => ({ ...prev, [action.key]: value }))
+                  }
+                  options={VCS_PROVIDERS}
+                />
+              ) : null}
               <button
                 type="button"
                 onClick={() => void runAction(action)}
