@@ -16,6 +16,7 @@ import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { validateEnvMap } from '../utils/env-map-validation.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -71,6 +72,12 @@ export const updateMemberSchema = z.object({
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
+  owner: z.object({
+    package: z.string().min(1),
+    ref: z.string().min(1),
+  }).optional().describe('Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.'),
+  env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Pass {} to clear.'),
+  llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -108,6 +115,19 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const resultingLlmProvider = input.llm_provider ?? existing.llmProvider ?? 'claude';
   if (resultingUnreservable && resultingLlmProvider !== 'none') {
     return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
+  }
+
+  // apra-fleet-4qtu.1: update_member must not become a way around the
+  // member_owner tool's member-held refusal -- applying the same check here
+  // rather than omitting `owner` from this schema (which would just silently
+  // drop it, per zod's default strip-unknown-keys behaviour).
+  if (input.owner !== undefined && existing.reservedBy) {
+    return `❌ Cannot set owner: member is held (reservedBy=${existing.reservedBy}). Member was NOT updated.`;
+  }
+
+  if (input.env !== undefined) {
+    const envResult = validateEnvMap(input.env);
+    if (!envResult.ok) return `❌ ${envResult.error} Member was NOT updated.`;
   }
 
   const needsUniquenessCheck = existing.agentType === 'remote'
@@ -232,6 +252,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.work_folder) updates.workFolder = input.work_folder;
   if (input.git_access) updates.gitAccess = input.git_access;
   if (input.git_repos) updates.gitRepos = input.git_repos;
+  if (input.owner !== undefined) updates.owner = input.owner;
+  if (input.env !== undefined) updates.env = Object.keys(input.env).length === 0 ? undefined : input.env;
+  if (input.llm_auth_expires_at !== undefined) updates.llmAuthExpiresAt = input.llm_auth_expires_at;
 
   // Cloud field updates: merge into existing cloud config
   const cloudFields = ['cloud_region', 'cloud_profile', 'cloud_idle_timeout_min', 'cloud_activity_command'] as const;

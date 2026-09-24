@@ -39,6 +39,7 @@ const updateMemberSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'update
 const resolveMemberSrc = readFileSync(path.join(repoRoot, 'src', 'utils', 'resolve-member.ts'), 'utf8');
 const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-detail.ts'), 'utf8');
 const credentialStoreSetSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'credential-store-set.ts'), 'utf8');
+const memberGitStatusSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-git-status.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -246,5 +247,23 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('expiresAt'), 'sanity: CredentialStoreSetResult should declare expiresAt');
 
         assertFieldParity('CredentialStoreSetResult vs CredentialStoreSetUrlResult', interfaceFields, typedefFields);
+    });
+
+    // apra-fleet-4qtu.3.2 (F2): pins the client's MemberGitStatusResult
+    // typedef (the structuredContent shape of member_git_status) against the
+    // server's MemberGitStatusFields interface in member-git-status.ts. That
+    // tool has no zod schema for its RESULT shape either -- only its input --
+    // so the interface is the ground truth, exactly as for
+    // CredentialStoreSetUrlResult above.
+    test('MemberGitStatusResult matches the MemberGitStatusFields interface field-for-field', () => {
+        const interfaceFields = extractInterfaceFields(memberGitStatusSrc, 'MemberGitStatusFields');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'MemberGitStatusResult');
+
+        assert.ok(interfaceFields.has('checkout'), 'sanity: MemberGitStatusFields should declare checkout');
+        assert.ok(interfaceFields.has('outcome'), 'sanity: MemberGitStatusFields should declare outcome');
+        assert.ok(typedefFields.has('checkout'), 'sanity: MemberGitStatusResult should declare checkout');
+        assert.ok(typedefFields.has('outcome'), 'sanity: MemberGitStatusResult should declare outcome');
+
+        assertFieldParity('MemberGitStatusResult vs MemberGitStatusFields', interfaceFields, typedefFields);
     });
 });
