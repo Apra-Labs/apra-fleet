@@ -24,7 +24,10 @@
  *    held back waiting for more bytes.
  *  - rewrite upstream `Location` headers so a redirect stays under
  *    `/ext/<package id>` instead of escaping the console origin.
- *  - answer 502 with a package-offline body when the upstream is unreachable.
+ *  - answer 502 with a package-offline body when the upstream is unreachable,
+ *    or when the registered baseUrl is unusable (unparseable, or carrying a
+ *    scheme other than http:/https: -- see the branch below, which must run
+ *    BEFORE any transport is selected).
  *
  * ---------------------------------------------------------------------------
  * CREDENTIAL FORWARDING -- the security core of this module. Read before
@@ -272,17 +275,49 @@ export async function handleExtProxyRequest(
     return;
   }
 
-  let baseUrl: URL;
+  // An unusable registered baseUrl answers 502 package-offline WITHOUT ever
+  // reaching http.request. One branch covers both ways a baseUrl can be
+  // unusable, because to the caller they are the same failure -- the package
+  // cannot be talked to:
+  //
+  //   - it does not parse as a URL at all;
+  //   - it parses, but its scheme is neither http: nor https:.
+  //
+  // The second case is NOT caught by parsing, which is why the parse alone
+  // was not enough. `new URL()` happily accepts 'ftp://host/' (protocol
+  // 'ftp:'), 'file:///x' (protocol 'file:') and even the scheme-less
+  // 'localhost:9000' (protocol 'localhost:', empty host). Any of those would
+  // previously have been handed straight to http.request below, which throws
+  // ERR_INVALID_PROTOCOL SYNCHRONOUSLY -- from inside an async request
+  // listener, so it surfaced as an unhandled rejection and took the whole
+  // console process down (observed stack: new ClientRequest -> Object.request
+  // -> proxy -> handleExtProxyRequest -> handleConsoleRequest). Packages are
+  // third-party and registered at runtime, so one of them must never be able
+  // to kill the server just by declaring a baseUrl. The scheme is therefore
+  // checked HERE, before any transport is selected.
+  let parsedBaseUrl: URL | null = null;
   try {
-    baseUrl = new URL(rawBaseUrl);
+    parsedBaseUrl = new URL(rawBaseUrl);
   } catch {
+    parsedBaseUrl = null;
+  }
+  if (
+    parsedBaseUrl === null ||
+    (parsedBaseUrl.protocol !== 'http:' && parsedBaseUrl.protocol !== 'https:')
+  ) {
+    const why =
+      parsedBaseUrl === null
+        ? 'is not a valid URL'
+        : `has unsupported scheme "${parsedBaseUrl.protocol}" (only http: and https: can be proxied)`;
     jsonError(res, 502, {
-      error: `workflow package "${parsed.id}" is offline: its registered baseUrl "${rawBaseUrl}" is not a valid URL`,
+      error: `workflow package "${parsed.id}" is offline: its registered baseUrl "${rawBaseUrl}" ${why}`,
       packageId: parsed.id,
+      baseUrl: rawBaseUrl,
       offline: true,
     });
     return;
   }
+  const baseUrl = parsedBaseUrl;
 
   // Rebuild the upstream URL: the package's base path + whatever followed
   // /ext/<id>, plus the original query string. `pathname` has the query
