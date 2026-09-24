@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,8 +14,14 @@ import {
     HEALTH_LINE_PREFIX,
     KILL_BEGIN_PREFIX,
     KILL_STATUS_PREFIX,
+    LIVENESS_ANSWERED,
+    LIVENESS_REFUSED,
+    LIVENESS_TCP_ALIVE_NO_HTTP,
     LOCALITY_LOCAL,
     LOCALITY_REMOTE,
+    PROBE_STATUS_OK,
+    PROBE_STATUS_REFUSED,
+    PROBE_STATUS_TIMEOUT,
     StrayProbeError,
     StrayProbeToolMissingError,
     annotateCandidates,
@@ -568,6 +575,15 @@ const POWERSHELL_SKIP = POWERSHELL
       + ' win32 probe script is only checked as text and its SYNTAX is unverified on this host.'
       + ' Install PowerShell 7 (pwsh) -- it is cross-platform -- to run this test.';
 
+// Same DEGRADED-not-silent discipline for the POSIX side: the liveness
+// probe's whole refused-vs-silent distinction is a claim about how the real
+// curl binary behaves, so where curl exists that claim is tested against it.
+const CURL_SKIP = (process.platform !== 'win32'
+    && spawnSync('curl', ['--version'], { encoding: 'utf8' }).status === 0)
+    ? false
+    : 'DEGRADED: no curl on PATH (or a non-POSIX host), so the liveness probe wire format is only checked'
+      + ' as text and curl\'s real refused-vs-connected exit statuses are unverified here.';
+
 test('the generated win32 probe script PARSES as real PowerShell', { skip: POWERSHELL_SKIP }, () => {
     const script = decodeWinCommand(buildProbeCommand('win32'));
     // Parse only -- never execute. This test must not enumerate or signal
@@ -1068,10 +1084,64 @@ test('buildLivenessProbeCommand: POSIX shape -- one curl per candidate, tagged w
     assert.match(cmd, /http:\/\/127\.0\.0\.1:8555\//);
     assert.match(cmd, /--max-time 2\b/, 'DEFAULT_LIVENESS_PROBE_TIMEOUT_MS (2000ms) rounds up to 2 seconds');
 
-    // No shell-level expansion of an orchestrator-side value -- curl's own -w
+    // apra-fleet-i4ku.24: the result line must carry curl's EXIT STATUS as a
+    // fourth field -- it is the only thing that can tell a refused connection
+    // (nothing there) apart from one that was accepted and then said nothing
+    // (a live listener that does not speak HTTP). Both collapse to
+    // http_code '000'.
+    assert.equal(
+        (cmd.match(/echo "\$\?";/g) || []).length, 2,
+        "each candidate's curl must be followed by its own exit-status echo",
+    );
+    assert.doesNotMatch(
+        cmd, /%\{http_code\}\\n/,
+        'the -w format must NOT terminate the line: the exit-status echo completes it',
+    );
+
+    // No shell-level expansion of an ORCHESTRATOR-side value -- curl's own -w
     // writes the tagged result directly, so no "$(" capture is ever needed.
+    // `$?` is the sole exception and belongs to the MEMBER's own shell, taken
+    // under the same carve-out buildKillCommand() documents.
     assert.doesNotMatch(cmd, /\$\(/, 'no POSIX command substitution');
     assert.doesNotMatch(cmd, /\$HOME|\$\{/, 'no variable expansion');
+    assert.doesNotMatch(cmd, /\$[A-Za-z_]/, 'no named variable expansion of any kind');
+});
+
+test('apra-fleet-i4ku.24: against a REAL curl, a silent-but-listening TCP port and a closed one produce '
+    + 'DIFFERENT outcomes -- the defect this wire format exists to fix',
+{ skip: CURL_SKIP }, async () => {
+    // The whole predicate rests on a claim about curl's behaviour: that it
+    // still writes its -w output when the transfer fails, and that its exit
+    // status tells "could not connect" (7) apart from "connected, then
+    // nothing" (28/52/56). Asserted against the real binary and a real
+    // socket rather than assumed, because a candidate's life depends on it.
+    const server = net.createServer(() => { /* accept, then say nothing at all */ });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const livePort = server.address().port;
+
+    // A port nothing is listening on: bind one, read its number, close it.
+    const spare = net.createServer();
+    await new Promise((resolve) => spare.listen(0, '127.0.0.1', resolve));
+    const deadPort = spare.address().port;
+    await new Promise((resolve) => spare.close(resolve));
+
+    try {
+        const run = (port) => spawnSync('/bin/sh', ['-c', buildLivenessProbeCommand(
+            'posix', [{ pid: 100, port }], { timeoutMs: 1000 },
+        )], { encoding: 'utf8' });
+
+        const live = parseLivenessProbeOutput(run(livePort).stdout).byKey.get(`100:${livePort}`);
+        const dead = parseLivenessProbeOutput(run(deadPort).stdout).byKey.get(`100:${deadPort}`);
+
+        assert.equal(
+            live, LIVENESS_TCP_ALIVE_NO_HTTP,
+            'a live listener that never speaks HTTP must NOT look dead -- this is the whole bead',
+        );
+        assert.equal(dead, LIVENESS_REFUSED, 'a closed port is the one case that still reads as nothing-there');
+        assert.notEqual(live, dead, 'the two must never again collapse to the same value');
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
 });
 
 test('buildLivenessProbeCommand: a custom path and timeout are honoured', () => {
@@ -1098,6 +1168,30 @@ test('buildLivenessProbeCommand: win32 is -EncodedCommand wrapped and its decode
     assert.match(script, /Invoke-WebRequest -Uri 'http:\/\/127\.0\.0\.1:9100\/'/);
     assert.match(script, /SWEEP-HEALTH 100 9100/);
     assert.doesNotMatch(script, /\$\(/, 'no "$(" subexpression/command-substitution spelling');
+
+    // apra-fleet-i4ku.24: when the catch block has NO HTTP response to read a
+    // status off, it must ask the smaller transport question rather than
+    // asserting '000 = nothing there'.
+    assert.match(script, /ConnectAsync\('127\.0\.0\.1', 9100\)/, 'the no-response path must test the TCP port itself');
+    assert.match(script, /Wait\(2000\)/, 'the TCP test stays bounded by the same opts.timeoutMs-derived seconds');
+    assert.match(
+        script, new RegExp(`SWEEP-HEALTH 100 9100 000 ${PROBE_STATUS_OK}`),
+        'an ACCEPTED connection with no HTTP behind it has its own outcome',
+    );
+    assert.match(
+        script, new RegExp(`SWEEP-HEALTH 100 9100 000 ${PROBE_STATUS_REFUSED}`),
+        'a REFUSED connection keeps the only status that means nothing-is-there',
+    );
+    assert.match(
+        script, new RegExp(`SWEEP-HEALTH 100 9100 000 ${PROBE_STATUS_TIMEOUT}`),
+        'a connect that ran out of time is not a refusal, so it gets its own non-refused status',
+    );
+});
+
+test('buildLivenessProbeCommand: win32 hands TcpClient a RAW IPv6 address, not the bracketed URL form', () => {
+    const script = decodeWinCommand(buildLivenessProbeCommand('win32', [{ pid: 100, port: 7000, probeHost: '[::1]' }]));
+    assert.match(script, /Invoke-WebRequest -Uri 'http:\/\/\[::1\]:7000\/'/, 'a URL needs the brackets');
+    assert.match(script, /ConnectAsync\('::1', 7000\)/, 'a socket API does not -- stripped in JavaScript, before dispatch');
 });
 
 test('the generated win32 liveness-probe script PARSES as real PowerShell', { skip: POWERSHELL_SKIP }, () => {
@@ -1116,17 +1210,33 @@ test('the generated win32 liveness-probe script PARSES as real PowerShell', { sk
     assert.match(probe.stdout, /PARSE-OK/, `generated script has syntax errors: ${probe.stdout}`);
 });
 
-test('parseLivenessProbeOutput: attributes an HTTP status to its pid:port, and treats curl\'s "000" as no response', () => {
+test('parseLivenessProbeOutput: attributes an HTTP status to its pid:port, and splits "000" into refused vs TCP-alive', () => {
     const output = [
-        `${HEALTH_LINE_PREFIX} 100 9100 200`,
-        `${HEALTH_LINE_PREFIX} 200 8555 503`,
-        `${HEALTH_LINE_PREFIX} 300 18701 000`,
+        `${HEALTH_LINE_PREFIX} 100 9100 200 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} 200 8555 503 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} 300 18701 000 ${PROBE_STATUS_REFUSED}`,
+        `${HEALTH_LINE_PREFIX} 400 18702 000 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} 500 18703 000 ${PROBE_STATUS_TIMEOUT}`,
+        `${HEALTH_LINE_PREFIX} 600 18704 000 52`,
     ].join('\n');
     const { evaluable, byKey } = parseLivenessProbeOutput(output);
     assert.equal(evaluable, true);
-    assert.equal(byKey.get('100:9100'), true, 'any HTTP status at all counts as answered');
-    assert.equal(byKey.get('200:8555'), true, 'even a 5xx is a real HTTP response');
-    assert.equal(byKey.get('300:18701'), false, "curl's 000 sentinel is the only 'no response' outcome");
+    assert.equal(byKey.get('100:9100'), LIVENESS_ANSWERED, 'any HTTP status at all counts as answered');
+    assert.equal(byKey.get('200:8555'), LIVENESS_ANSWERED, 'even a 5xx is a real HTTP response');
+    assert.equal(byKey.get('300:18701'), LIVENESS_REFUSED, 'a REFUSED connection is the only nothing-is-there outcome');
+    assert.equal(
+        byKey.get('400:18702'), LIVENESS_TCP_ALIVE_NO_HTTP,
+        'accepted then silent is a LIVE listener, not a dead port',
+    );
+    assert.equal(byKey.get('500:18703'), LIVENESS_TCP_ALIVE_NO_HTTP, 'a timeout is not a refusal');
+    assert.equal(byKey.get('600:18704'), LIVENESS_TCP_ALIVE_NO_HTTP, "curl's 52 (empty reply) is a live listener too");
+});
+
+test('parseLivenessProbeOutput: a line with no transport status is MALFORMED, so its key is simply absent '
+    + '(the caller already reads an absent key as "could not find out" -> spare)', () => {
+    const { evaluable, byKey } = parseLivenessProbeOutput(`${HEALTH_LINE_PREFIX} 100 9100 000`);
+    assert.equal(evaluable, true);
+    assert.equal(byKey.has('100:9100'), false, 'a three-field line must never be read as a confident "nothing there"');
 });
 
 test('parseLivenessProbeOutput: a SWEEP-NOTOOL line marks the whole dispatch unevaluable', () => {
@@ -1210,9 +1320,9 @@ function livenessStubSeam(processProbeOutput, healthOutput) {
 test('DONE WHEN (apra-fleet-i4ku.17): a healthy non-default-port supervisor and a live re-adoptable sprint '
     + 'child are both spared with a recorded reason, while the stale-sandbox case is still killed', async () => {
     const healthOutput = [
-        `${HEALTH_LINE_PREFIX} ${LIVENESS_SUPERVISOR_PID} ${LIVENESS_SUPERVISOR_PORT} 200`,
-        `${HEALTH_LINE_PREFIX} ${LIVENESS_SPRINT_CHILD_PID} ${LIVENESS_SPRINT_CHILD_PORT} 200`,
-        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000`,
+        `${HEALTH_LINE_PREFIX} ${LIVENESS_SUPERVISOR_PID} ${LIVENESS_SUPERVISOR_PORT} 200 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} ${LIVENESS_SPRINT_CHILD_PID} ${LIVENESS_SPRINT_CHILD_PORT} 200 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} ${STALE_PID} 18701 000 ${PROBE_STATUS_REFUSED}`,
     ].join('\n');
     const seam = livenessStubSeam(livenessScenarioProbeOutput(), healthOutput);
     const logs = [];
@@ -1353,7 +1463,11 @@ function ifaceBoundProbeOutput(address = IFACE_ADDR) {
 function ifaceAwareSeam(probeOutput, { listenHost, status = '200', port = IFACE_PORT, pid = IFACE_PID }) {
     return livenessStubSeamWithCommand(probeOutput, (command) => {
         const answered = command.includes(`http://${listenHost}:${port}/`);
-        return `${HEALTH_LINE_PREFIX} ${pid} ${port} ${answered ? status : '000'}`;
+        // A probe aimed at an address this socket is NOT bound to is refused
+        // by the member's TCP stack, which is what curl reports as 000/7.
+        return answered
+            ? `${HEALTH_LINE_PREFIX} ${pid} ${port} ${status} ${PROBE_STATUS_OK}`
+            : `${HEALTH_LINE_PREFIX} ${pid} ${port} 000 ${PROBE_STATUS_REFUSED}`;
     });
 }
 
@@ -1546,7 +1660,7 @@ test('apra-fleet-i4ku.21: a candidate whose sockets are only PARTLY askable is s
     ].join('\n');
     const { result } = await sweepIfaceScenario({
         probeOutput,
-        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000`,
+        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000 ${PROBE_STATUS_REFUSED}`,
     });
 
     assert.deepEqual(result.killed.map((k) => k.pid), []);
@@ -1561,7 +1675,7 @@ test('apra-fleet-i4ku.21: an interface-bound candidate that genuinely does NOT a
     // become "spare everything".
     const { result } = await sweepIfaceScenario({
         probeOutput: ifaceBoundProbeOutput(),
-        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000`,
+        healthOutput: `${HEALTH_LINE_PREFIX} ${IFACE_PID} ${IFACE_PORT} 000 ${PROBE_STATUS_REFUSED}`,
     });
 
     assert.deepEqual(result.killed.map((k) => k.pid), [IFACE_PID], 'a genuinely dead candidate is still swept');
@@ -1603,10 +1717,26 @@ test('apra-fleet-i4ku.21: one pid holding the same port on loopback AND an inter
 test('apra-fleet-i4ku.21: parseLivenessProbeOutput OR-combines two results for one pid:port -- an answer is never '
     + 'overwritten by a sibling address\'s 000', () => {
     const { byKey } = parseLivenessProbeOutput([
-        `${HEALTH_LINE_PREFIX} 500 8080 200`,
-        `${HEALTH_LINE_PREFIX} 500 8080 000`,
+        `${HEALTH_LINE_PREFIX} 500 8080 200 ${PROBE_STATUS_OK}`,
+        `${HEALTH_LINE_PREFIX} 500 8080 000 ${PROBE_STATUS_REFUSED}`,
     ].join('\n'));
-    assert.equal(byKey.get('500:8080'), true, 'answered on one address means alive');
+    assert.equal(byKey.get('500:8080'), LIVENESS_ANSWERED, 'answered on one address means alive');
+
+    // apra-fleet-i4ku.24 extends the same rule down the new middle rung: a
+    // refused sibling address may not downgrade a TCP-alive result either,
+    // and order must not matter.
+    for (const order of [['tcp-first'], ['refused-first']]) {
+        const lines = [
+            `${HEALTH_LINE_PREFIX} 600 8081 000 ${PROBE_STATUS_OK}`,
+            `${HEALTH_LINE_PREFIX} 600 8081 000 ${PROBE_STATUS_REFUSED}`,
+        ];
+        if (order[0] === 'refused-first') lines.reverse();
+        assert.equal(
+            parseLivenessProbeOutput(lines.join('\n')).byKey.get('600:8081'),
+            LIVENESS_TCP_ALIVE_NO_HTTP,
+            `${order[0]}: a refusal on one address never cancels a live one on another`,
+        );
+    }
 });
 
 test('apra-fleet-i4ku.21: the Windows port table carries LocalAddress, and a legacy two-field row is UNKNOWN rather than assumed loopback', () => {

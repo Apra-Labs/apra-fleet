@@ -134,8 +134,9 @@ function portlessWithPortedSiblingProbeOutput() {
  * "is this a probe?" check would swallow the kill.
  *
  * `health` is the liveness answer: 'live' (the live supervisor answers 200,
- * the stale one answers curl's 000 sentinel), 'dead' (nothing answers) or
- * 'notool' (the member has no curl at all).
+ * the stale one's port REFUSES the connection -- curl's 000 sentinel with
+ * exit status 7), 'dead' (nothing answers) or 'notool' (the member has no
+ * curl at all).
  */
 function makeSeam({ probeOutput = twoCandidateProbeOutput(), health = 'live' } = {}) {
     const dispatches = [];
@@ -153,7 +154,11 @@ function makeSeam({ probeOutput = twoCandidateProbeOutput(), health = 'live' } =
                 ok: true,
                 output: asked
                     .map(([, pid, port]) => `${HEALTH_LINE_PREFIX} ${pid} ${port} `
-                        + (health === 'live' && Number(pid) === LIVE_PID ? '200' : '000'))
+                        // The fourth field is the TRANSPORT status: a stale
+                        // candidate's port is REFUSED (curl 7 -- the only
+                        // outcome that means nothing is there), a live one
+                        // answered over a healthy transport (0).
+                        + (health === 'live' && Number(pid) === LIVE_PID ? '200 0' : '000 7'))
                     .join('\n'),
                 error: null,
             };

@@ -563,8 +563,9 @@ function killableStrayProbeOutput() {
  *  THREE dispatch shapes, not two (apra-fleet-i4ku.17): the phase now arms
  *  the liveness predicate by default, so a sweep that reaches a kill issues
  *  process probe -> liveness probe -> kill. This stub answers the liveness
- *  dispatch with curl's '000' (no HTTP response at all) for every pid:port
- *  it was asked about, i.e. "nothing on this member is answering" -- the
+ *  dispatch with curl's '000' and transport status 7 (the connection was
+ *  REFUSED -- not merely "no HTTP", but nothing listening at all) for every
+ *  pid:port it was asked about, i.e. "nothing on this member is there" -- the
  *  honest fixture for a STALE supervisor, and the state in which the kill
  *  these tests are about still goes ahead. Discriminated on
  *  HEALTH_LINE_PREFIX and checked AFTER the kill prefix, because the
@@ -582,7 +583,7 @@ function makeKillCapableExecCommand(probeOutput) {
             const asked = [...command.matchAll(new RegExp(`${HEALTH_LINE_PREFIX} (\\d+) (\\d+)`, 'g'))];
             return {
                 ok: true,
-                output: asked.map((m) => `${HEALTH_LINE_PREFIX} ${m[1]} ${m[2]} 000`).join('\n'),
+                output: asked.map((m) => `${HEALTH_LINE_PREFIX} ${m[1]} ${m[2]} 000 7`).join('\n'),
                 error: null,
             };
         }

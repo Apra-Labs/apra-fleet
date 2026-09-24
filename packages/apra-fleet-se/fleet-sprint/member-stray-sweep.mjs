@@ -101,6 +101,30 @@
 //      host mean "every interface", and loopback is an interface, so those
 //      are probed on 127.0.0.1 exactly as before -- see
 //      livenessProbeHost().
+//      A PORT THAT ACCEPTS TCP BUT NEVER SPEAKS HTTP (apra-fleet-i4ku.24) --
+//      DECIDED: TCP-ACCEPTED-BUT-NO-HTTP SPARES; TCP-REFUSED STILL KILLS.
+//      "Answering ANY HTTP status at all" above was implemented with curl's
+//      '000' sentinel as its whole negative case -- and '000' means only "no
+//      HTTP response was received", which curl reports both for a REFUSED
+//      connection (exit 7 -- nothing is listening, genuinely dead) and for a
+//      connection that was ACCEPTED and then timed out or returned an empty
+//      reply (exit 28/52 -- something IS holding the port, it just does not
+//      speak HTTP, or not on this path, or not within the timeout). A live
+//      non-HTTP listener -- a raw TCP service, a TLS-only port asked over
+//      plain HTTP, a process still starting its server -- therefore looked
+//      exactly like a dead port and was killed by a predicate whose entire
+//      job is to prevent that. The probe wire format now carries a fourth
+//      TRANSPORT-STATUS field so the two are different values end to end
+//      (HEALTH_LINE_PREFIX, buildLivenessProbeCommand(),
+//      parseLivenessProbeOutput()'s three-state outcome).
+//      THE REJECTED ALTERNATIVE was to keep the kill and merely COUNT the
+//      case honestly -- report "killed, TCP-alive but no HTTP" in the
+//      summary. That is the same mistake option (b) made for the wrong-address
+//      defect above: an accurate counter changes nothing about the process's
+//      fate, so it would have gone on killing the very live process this work
+//      exists to spare, while making the report sound rigorous about it. A
+//      refusal is the only transport outcome that actually answers "there is
+//      nothing there", so it is the only one that may still lead to a kill.
 //      AN ADDRESS THIS MODULE CANNOT TURN INTO A URL (a hostname, a
 //      zone-scoped link-local, anything that is not a plain IP literal) is
 //      NOT silently probed on loopback and is NOT `unprobeable` either: a
@@ -544,12 +568,55 @@ export function parseKillOutput(output, pids) {
 // predicate 7.
 // ---------------------------------------------------------------------------
 
-/** `SWEEP-HEALTH <pid> <port> <httpStatusOr000>` -- one liveness-probe result
- *  line. Built and emitted IDENTICALLY for both shell families (unlike the
- *  process/port tables): the value is computed in JavaScript-authored format
- *  strings on both sides, so there is no OS-specific shape for the parser to
- *  tell apart. */
+/** `SWEEP-HEALTH <pid> <port> <httpStatusOr000> <transportStatus>` -- one
+ *  liveness-probe result line. Built and emitted IDENTICALLY for both shell
+ *  families (unlike the process/port tables): the value is computed in
+ *  JavaScript-authored format strings on both sides, so there is no
+ *  OS-specific shape for the parser to tell apart.
+ *
+ *  THE FOURTH FIELD IS WHY THIS PREDICATE IS HONEST: an HTTP status of
+ *  `000` means "no HTTP response was received", which covers BOTH a refused
+ *  connection (nothing is listening -- genuinely dead) and a connection that
+ *  was ACCEPTED and then timed out or returned an empty reply (a live
+ *  listener that does not speak HTTP). Those two were the same value until
+ *  this field existed, so a live non-HTTP listener was read as dead and
+ *  killed. The transport status separates them; see
+ *  parseLivenessProbeOutput(). */
 export const HEALTH_LINE_PREFIX = 'SWEEP-HEALTH';
+
+/** The HTTP-status field's value when no HTTP response was received at all
+ *  (curl's own sentinel; the win32 branch emits the same three characters so
+ *  one parser rule serves both families). */
+export const NO_HTTP_RESPONSE_CODE = '000';
+
+/** Transport-status field values, deliberately spelled as CURL'S OWN exit
+ *  codes so the POSIX branch can pass `$?` through untouched and the win32
+ *  branch has one obvious, already-documented numbering to map its
+ *  TcpClient outcome onto:
+ *    0  -- the transport did its job (an HTTP response came back, or the TCP
+ *          connection was accepted);
+ *    7  -- could not connect: the port REFUSED the connection. The only
+ *          value that means "nothing is listening here";
+ *    28 -- connected far enough to wait, then ran out of time. NOT a refusal,
+ *          so it resolves to the sparing outcome, matching this module's
+ *          "I could not find out != there is nothing there" discipline. */
+export const PROBE_STATUS_OK = '0';
+export const PROBE_STATUS_REFUSED = '7';
+export const PROBE_STATUS_TIMEOUT = '28';
+
+/** The three-state outcome parseLivenessProbeOutput() reports per
+ *  `${pid}:${port}`, most-alive first. The ORDER IS THE PRECEDENCE used when
+ *  one pid holds the same port on more than one address: an address that
+ *  answered HTTP can never be downgraded by a sibling that did not, and a
+ *  TCP-alive result can never be downgraded by a refused sibling. */
+export const LIVENESS_ANSWERED = 'answered';
+export const LIVENESS_TCP_ALIVE_NO_HTTP = 'tcp-alive-no-http';
+export const LIVENESS_REFUSED = 'refused';
+const LIVENESS_OUTCOME_RANK = new Map([
+    [LIVENESS_REFUSED, 0],
+    [LIVENESS_TCP_ALIVE_NO_HTTP, 1],
+    [LIVENESS_ANSWERED, 2],
+]);
 
 /** Default path requested by the liveness probe. Only whether SOMETHING
  *  answers HTTP here matters -- never the response body -- so a bare `/` is
@@ -642,6 +709,20 @@ export function normalizeLivenessProbeOption(value, label = 'livenessProbe') {
 }
 
 /**
+ * The bracketed IPv6 form an IPv6 literal must take inside a URL is NOT what
+ * a raw socket API accepts as a host, so the win32 branch's TcpClient probe
+ * gets the address with its URL brackets stripped. Done in JavaScript, before
+ * the value becomes dispatched text, exactly like every other host handling
+ * in this module.
+ *
+ * @param {string} host an already-validated probe host, possibly `[::1]`-style
+ * @returns {string}
+ */
+function rawHostFor(host) {
+    return (host.startsWith('[') && host.endsWith(']')) ? host.slice(1, -1) : host;
+}
+
+/**
  * Builds the liveness-probe dispatch for a set of already-provisionally-
  * killable `{ pid, port }` candidates: one HTTP GET per candidate port,
  * tagged with pid+port so parseLivenessProbeOutput() can attribute a result
@@ -653,16 +734,26 @@ export function normalizeLivenessProbeOption(value, label = 'livenessProbe') {
  * particular status code -- doing so would require knowing what a target's
  * own health endpoint returns, which is exactly the target knowledge this
  * generic module must not hardcode (see this file's GENERIC ENGINE note).
- * Any HTTP status at all (2xx-5xx) counts as "answered"; curl's own '000'
- * sentinel (no HTTP response was received at all -- connection refused,
- * reset, or the request timed out) is the only "not answering" outcome.
+ * Any HTTP status at all (2xx-5xx) counts as "answered".
+ *
+ * WHEN NOTHING ANSWERS HTTP, THE WIRE FORMAT STILL DISTINGUISHES TWO CASES
+ * (see HEALTH_LINE_PREFIX and the PROBE_STATUS_* constants): the HTTP-status
+ * field is '000' for both a REFUSED connection and a connection that was
+ * ACCEPTED and then stayed silent, so each result line carries a fourth
+ * TRANSPORT-STATUS field that tells them apart. POSIX gets it for free --
+ * curl's exit status already encodes it -- and the win32 branch asks the
+ * same question explicitly with a TcpClient connect inside its own catch
+ * block, bounded by the same timeout.
  *
  * NO SHELL-LEVEL EXPANSION AND NO COMMAND SUBSTITUTION: curl's `-w` format
  * string writes the tagged result line directly to stdout, so no `$(...)` is
  * needed to capture it -- matching this module's "no orchestrator-side value
  * left for the member shell to expand" discipline (see buildProbeCommand()'s
- * header and buildKillCommand()'s `$?` carve-out for the one legitimate
- * exception to that rule, which this function does not need).
+ * header). The POSIX branch's trailing `echo "$?"` is this function's ONE
+ * sanctioned shell-level construct, taken under exactly the same carve-out
+ * buildKillCommand() documents for its own kill status: `$?` is the member
+ * shell's OWN exit-status variable for the command immediately before it in
+ * the same dispatch, never an orchestrator-side value left unexpanded.
  *
  * WHICH HOST IS ASKED (apra-fleet-i4ku.21): each candidate carries the
  * `probeHost` its socket is actually bound to -- resolved by
@@ -719,14 +810,29 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
             'try {',
             ` $r = Invoke-WebRequest -Uri 'http://${host}:${port}${reqPath}' -TimeoutSec ${timeoutSeconds}`, // shell-guard-allow: PowerShell local variable ($r, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's own carve-outs; never an orchestrator-side value left for an unknown member shell to expand.
             ' -UseBasicParsing -ErrorAction Stop;',
-            ` 'SWEEP-HEALTH ${pid} ${port} ' + [int]$r.StatusCode`, // shell-guard-allow: PowerShell local variable $r assigned two lines above in this same -EncodedCommand payload; see this function's try-block first line.
+            ` '${HEALTH_LINE_PREFIX} ${pid} ${port} ' + [int]$r.StatusCode + ' ${PROBE_STATUS_OK}'`, // shell-guard-allow: PowerShell local variable $r assigned two lines above in this same -EncodedCommand payload; see this function's try-block first line.
             ' } catch {',
             // A non-2xx HTTP status still throws under -ErrorAction Stop, but
             // it IS a real HTTP response (the port answered) -- read the
             // status back off the exception's own Response when present,
             // rather than reading it as "no response" (000).
-            ` if ($_.Exception.Response) { 'SWEEP-HEALTH ${pid} ${port} ' + [int]$_.Exception.Response.StatusCode }`, // shell-guard-allow: PowerShell's own $_ catch-block variable inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's $_ carve-out.
-            ` else { 'SWEEP-HEALTH ${pid} ${port} 000' }`,
+            ` if ($_.Exception.Response) { '${HEALTH_LINE_PREFIX} ${pid} ${port} ' + [int]$_.Exception.Response.StatusCode + ' ${PROBE_STATUS_OK}' }`, // shell-guard-allow: PowerShell's own $_ catch-block variable inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors buildProbeCommand's $_ carve-out.
+            // NO HTTP RESPONSE EXISTS AT ALL. Before asserting the one thing
+            // this module must never get wrong -- "there is nothing there" --
+            // ask the strictly smaller question the transport can still
+            // answer: does the TCP port ACCEPT a connection? A live listener
+            // that does not speak HTTP accepts and then says nothing; a dead
+            // one refuses. The status field carries curl's OWN numbering (0 /
+            // 7 / 28) so parseLivenessProbeOutput() needs exactly one rule
+            // for both shell families.
+            ' else {',
+            ` $sweepTcp = New-Object System.Net.Sockets.TcpClient;`, // shell-guard-allow: PowerShell local variable ($sweepTcp, assigned on this same line) inside this module's own -EncodedCommand payload, evaluated by the powershell.exe the envelope explicitly execs -- mirrors this function's own $r carve-out above; never an orchestrator-side value left for an unknown member shell to expand.
+            ` try { $sweepConn = $sweepTcp.ConnectAsync('${rawHostFor(host)}', ${port});`, // shell-guard-allow: PowerShell local variables ($sweepTcp assigned on the line above, $sweepConn on this one) inside this module's own -EncodedCommand payload; see this function's $r carve-out.
+            ` if ($sweepConn.Wait(${timeoutSeconds * 1000}))`, // shell-guard-allow: PowerShell local variable $sweepConn assigned on the line above in this same -EncodedCommand payload; see this function's $r carve-out.
+            ` { '${HEALTH_LINE_PREFIX} ${pid} ${port} ${NO_HTTP_RESPONSE_CODE} ${PROBE_STATUS_OK}' }`,
+            ` else { '${HEALTH_LINE_PREFIX} ${pid} ${port} ${NO_HTTP_RESPONSE_CODE} ${PROBE_STATUS_TIMEOUT}' } }`,
+            ` catch { '${HEALTH_LINE_PREFIX} ${pid} ${port} ${NO_HTTP_RESPONSE_CODE} ${PROBE_STATUS_REFUSED}' }`,
+            ` finally { $sweepTcp.Close() } }`, // shell-guard-allow: PowerShell local variable $sweepTcp assigned earlier in this same -EncodedCommand payload; see this function's $r carve-out.
             ' }',
         ].join('')).join('; ');
         return seWindows.wrapForMember(rawScript);
@@ -735,9 +841,18 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
     // no external binary needed); every candidate is probed inside the same
     // `if`, so a missing tool produces exactly one SWEEP-NOTOOL line instead
     // of one per candidate.
+    //
+    // The -w format deliberately ends WITHOUT a newline: the `echo` that
+    // follows completes the same line with curl's own exit status, which is
+    // the only thing that can tell '000-because-refused' (exit 7) apart from
+    // '000-because-it-connected-and-then-said-nothing' (exit 28/52/56). If
+    // curl somehow emits no -w output at all, the stray status number lands
+    // on a line of its own, fails the parser's shape check, and the candidate
+    // resolves unevaluable -- i.e. spared, never killed on a half-read line.
     const probes = clean.map(({ pid, port, host }) => (
-        `curl -s -o /dev/null -w 'SWEEP-HEALTH ${pid} ${port} %{http_code}\\n' `
-        + `--max-time ${timeoutSeconds} http://${host}:${port}${reqPath} 2>/dev/null;`
+        `curl -s -o /dev/null -w '${HEALTH_LINE_PREFIX} ${pid} ${port} %{http_code} ' `
+        + `--max-time ${timeoutSeconds} http://${host}:${port}${reqPath} 2>/dev/null; `
+        + `echo "$?";` // shell-guard-allow: $? is the invoking POSIX shell's OWN exit-status variable for the `curl` immediately above in this same dispatch, evaluated on the member -- the same carve-out buildKillCommand() takes for its kill status, and the only way a refused connection can be told apart from a connected-but-silent one; never an orchestrator-side value left for an unknown member shell to expand.
     )).join(' ');
     return `if ! command -v curl > /dev/null 2>&1; then echo '${MISSING_TOOL_PREFIX} curl'; else ${probes} fi`;
 }
@@ -753,10 +868,28 @@ export function buildLivenessProbeCommand(family, candidates, opts = {}) {
  * discipline everywhere else (StrayProbeToolMissingError, the portsKnown
  * guard).
  *
+ * THE OUTCOME IS THREE-STATE, NOT A BOOLEAN. A boolean could only say
+ * "answered / did not answer", and "did not answer" silently contained a LIVE
+ * process: a listener that accepts the connection and then never speaks HTTP
+ * produces the same '000' HTTP status as a port with nothing behind it at
+ * all. The transport-status field written by both builders separates them:
+ *
+ *   'answered'          -- some HTTP status came back (any status at all).
+ *   'tcp-alive-no-http' -- no HTTP response, but the TCP connection was
+ *                          ACCEPTED (or the attempt ran out of time rather
+ *                          than being refused). Something IS holding this
+ *                          port.
+ *   'refused'           -- the connection was REFUSED. This is the only
+ *                          outcome that means "nothing is listening here".
+ *
+ * A line that does not match the expected shape is SKIPPED, exactly as
+ * before, which leaves its key absent from `byKey` -- and an absent key is
+ * already read by the caller as "I could not find out" (spare), never as a
+ * kill. A SWEEP-NOTOOL line still makes the whole dispatch unevaluable.
+ *
  * @param {string} output raw combined stdout/stderr from the liveness-probe dispatch
- * @returns {{ evaluable: boolean, byKey: Map<string, boolean> }} byKey maps
- *   `${pid}:${port}` -> true (answered some HTTP status) | false (curl's
- *   '000' sentinel -- no HTTP response at all).
+ * @returns {{ evaluable: boolean, byKey: Map<string, 'answered'|'tcp-alive-no-http'|'refused'> }}
+ *   byKey maps `${pid}:${port}` -> its outcome.
  */
 export function parseLivenessProbeOutput(output) {
     const byKey = new Map();
@@ -770,15 +903,24 @@ export function parseLivenessProbeOutput(output) {
         }
         if (!line.startsWith(`${HEALTH_LINE_PREFIX} `)) continue;
         const body = line.slice(HEALTH_LINE_PREFIX.length + 1).trim();
-        const m = /^(\d+)\s+(\d+)\s+(\d{1,3})$/.exec(body);
+        const m = /^(\d+)\s+(\d+)\s+(\d{1,3})\s+(\d{1,3})$/.exec(body);
         if (!m) continue;
         const key = `${m[1]}:${m[2]}`;
-        // OR-combined, never last-wins (apra-fleet-i4ku.21): one pid may hold
-        // the same port on more than one address, so the same key can be
-        // reported twice in one dispatch. "Answered on ANY address it holds"
-        // is what this predicate means by alive, so a single non-000 result
-        // must not be overwritten by a 000 from a sibling address.
-        byKey.set(key, byKey.get(key) === true || m[3] !== '000');
+        let outcome;
+        if (m[3] !== NO_HTTP_RESPONSE_CODE) outcome = LIVENESS_ANSWERED;
+        else if (m[4] === PROBE_STATUS_REFUSED) outcome = LIVENESS_REFUSED;
+        else outcome = LIVENESS_TCP_ALIVE_NO_HTTP;
+        // COMBINED BY PRECEDENCE, never last-wins (apra-fleet-i4ku.21): one
+        // pid may hold the same port on more than one address, so the same
+        // key can be reported twice in one dispatch. "Alive on ANY address it
+        // holds" is what this predicate means, so a more-alive result is
+        // never overwritten by a less-alive sibling -- an HTTP answer is not
+        // downgraded by a sibling's '000', and a TCP-alive result is not
+        // downgraded by a sibling's refusal.
+        const prior = byKey.get(key);
+        if (prior === undefined || LIVENESS_OUTCOME_RANK.get(outcome) > LIVENESS_OUTCOME_RANK.get(prior)) {
+            byKey.set(key, outcome);
+        }
     }
     return { evaluable, byKey };
 }
@@ -1682,7 +1824,12 @@ export async function sweepMemberStrayProcesses(deps = {}) {
                 }
                 const askedPorts = record.probeTargets.map((t) => t.port);
                 const checkedPorts = askedPorts.filter((port) => byKey.has(`${record.pid}:${port}`));
-                if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === true)) {
+                // Only 'answered' spares here TODAY -- the decision-path
+                // mapping for 'tcp-alive-no-http' is the next task in this
+                // lane, and this task deliberately changes the WIRE FORMAT
+                // only, leaving every candidate's fate byte-for-byte as it
+                // was.
+                if (checkedPorts.some((port) => byKey.get(`${record.pid}:${port}`) === LIVENESS_ANSWERED)) {
                     record.liveProbe = 'responded';
                     liveness.spared += 1;
                 } else if (checkedPorts.length === 0) {
