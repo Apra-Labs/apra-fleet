@@ -196,4 +196,42 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(() => agy.composePermissionConfig('doer', [], undefined)).toThrow();
     });
   });
+
+  describe('AGY ensureWorkspaceTrusted atomic staging & abort on invalid read', () => {
+    it('stages settings write to temp file and moves into place via transport', async () => {
+      const agy = new AgyProvider();
+      const transport = {
+        readHomeFile: vi.fn().mockResolvedValue({ found: true, content: '{"trustedWorkspaces":[]}' }),
+        writeHomeFile: vi.fn().mockResolvedValue(undefined),
+      };
+      const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+      const res = await agy.ensureWorkspaceTrusted('/tmp/work', exec, 'linux', undefined, transport as any);
+      expect(res.seeded).toBe(true);
+
+      // Writes to temp file first (not settings.json directly)
+      expect(transport.writeHomeFile).toHaveBeenCalledTimes(1);
+      const targetRel = transport.writeHomeFile.mock.calls[0][0];
+      expect(targetRel).not.toBe('.gemini/antigravity-cli/settings.json');
+      expect(targetRel).toMatch(/settings\.json\.fleet-trust-.*\.tmp/);
+
+      // Exec moves temp file into place (mkdir + move)
+      expect(exec).toHaveBeenCalledTimes(2);
+      expect(exec.mock.calls[1][0]).toMatch(/mv ".*\.tmp" ".*settings\.json"/);
+    });
+
+    it('aborts rewrite when settings.json read fails or contains invalid JSON', async () => {
+      const agy = new AgyProvider();
+      const transport = {
+        readHomeFile: vi.fn().mockResolvedValue({ found: true, content: '{invalid-json' }),
+        writeHomeFile: vi.fn().mockResolvedValue(undefined),
+      };
+      const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+      const res = await agy.ensureWorkspaceTrusted('/tmp/work', exec, 'linux', undefined, transport as any);
+      expect(res.seeded).toBe(false);
+      expect(res.detail).toContain('aborted rewrite');
+      expect(transport.writeHomeFile).not.toHaveBeenCalled();
+    });
+  });
 });

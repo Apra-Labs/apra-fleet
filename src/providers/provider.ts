@@ -502,7 +502,7 @@ export interface ProviderAdapter {
    *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
    *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
    *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult>;
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

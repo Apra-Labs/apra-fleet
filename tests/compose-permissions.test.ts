@@ -1108,7 +1108,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, null);
     spy.mockRestore();
   });
 
@@ -1124,7 +1124,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, null);
     spy.mockRestore();
   });
 

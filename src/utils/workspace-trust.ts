@@ -91,10 +91,15 @@ export function sftpHomePath(home: string, agentOs: Agent['os']): string {
  *   compose_permissions, should pass it instead of paying for a second lookup).
  * @param tag Log tag identifying the call site (e.g. 'register_member').
  */
+const isHomeAnchored = (p: string) => p.startsWith('~/') || p.startsWith('~\\');
+
 export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy, tag = 'workspace-trust'): Promise<void> {
   try {
     const provider = getProvider(agent.llmProvider);
     const strat = strategy ?? getStrategy(agent);
+    const memberHomeDir = provider.permissionConfigPaths(agent).some(isHomeAnchored)
+      ? await getMemberHomeDir(agent)
+      : null;
     const result = await provider.ensureWorkspaceTrusted(
       agent.workFolder,
       (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),
@@ -105,6 +110,7 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
       // File channel so a large merged ~/.claude.json never rides a Windows
       // command line (GitHub #499); the adapter falls back to exec delivery.
       workspaceTrustTransportFor(agent, strat),
+      memberHomeDir,
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {

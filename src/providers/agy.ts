@@ -723,6 +723,7 @@ export class AgyProvider implements ProviderAdapter {
     agentOs: 'linux' | 'macos' | 'windows' = 'linux',
     shell?: MemberShell,
     transport?: WorkspaceTrustTransport,
+    memberHomeDir?: string | null,
   ): Promise<EnsureWorkspaceTrustedResult> {
     const usePosix = isPosixShell(agentOs, shell);
     const isWindows = !usePosix;
@@ -734,8 +735,43 @@ export class AgyProvider implements ProviderAdapter {
     const homeRel = isWindows
       ? '.gemini\\antigravity-cli\\settings.json'
       : '.gemini/antigravity-cli/settings.json';
-    const staging = workspaceTrustStagingNames();
-    const tmpFile = isWindows ? `$env:USERPROFILE\\${staging.tmpRel}` : `$HOME/${staging.tmpRel}`;
+    const settingsDirRel = isWindows
+      ? '.gemini\\antigravity-cli'
+      : '.gemini/antigravity-cli';
+
+    const resolvedHome = memberHomeDir ? memberHomeDir.trim() : null;
+    const settingsDir = resolvedHome
+      ? (isWindows
+          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${settingsDirRel}`
+          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${settingsDirRel}`)
+      : (isWindows
+          ? `$env:USERPROFILE\\${settingsDirRel}`
+          : `$HOME/${settingsDirRel}`);
+
+    const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+    const tmpRel = isWindows
+      ? `.gemini\\antigravity-cli\\settings.json.fleet-trust-${token}.tmp`
+      : `.gemini/antigravity-cli/settings.json.fleet-trust-${token}.tmp`;
+    const b64Rel = isWindows
+      ? `.gemini\\antigravity-cli\\settings.json.fleet-trust-${token}.b64`
+      : `.gemini/antigravity-cli/settings.json.fleet-trust-${token}.b64`;
+    const staging = { tmpRel, b64Rel };
+
+    const homeFile = resolvedHome
+      ? (isWindows
+          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${homeRel}`
+          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${homeRel}`)
+      : (isWindows
+          ? `$env:USERPROFILE\\${homeRel}`
+          : `$HOME/${homeRel}`);
+
+    const tmpFile = resolvedHome
+      ? (isWindows
+          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${tmpRel}`
+          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${tmpRel}`)
+      : (isWindows
+          ? `$env:USERPROFILE\\${tmpRel}`
+          : `$HOME/${tmpRel}`);
 
     let settings: Record<string, unknown> = {};
 
@@ -803,9 +839,10 @@ export class AgyProvider implements ProviderAdapter {
     settings.trustedWorkspaces = updatedTrusted;
     const contentStr = JSON.stringify(settings, null, 2) + '\n';
 
-    const homeFile = isWindows
-      ? `$env:USERPROFILE\\${homeRel}`
-      : `$HOME/${homeRel}`;
+    const mkdirCmd = isWindows
+      ? `if (-not (Test-Path "${settingsDir}")) { New-Item -ItemType Directory -Force "${settingsDir}" }`
+      : `mkdir -p "${settingsDir}"`;
+    await execCommand(mkdirCmd, 5000);
 
     await deliverWorkspaceTrustFile(contentStr, {
       isWindows,
@@ -815,7 +852,6 @@ export class AgyProvider implements ProviderAdapter {
       homeFile,
       tmpFile,
       staging,
-      homeRel,
     });
 
     return { seeded: true, detail: `agy: added "${key}" to trustedWorkspaces in settings.json` };

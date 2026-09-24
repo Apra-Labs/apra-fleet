@@ -568,7 +568,7 @@ export class ClaudeProvider implements ProviderAdapter {
     };
   }
 
-  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
     // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
     // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
@@ -592,13 +592,24 @@ export class ClaudeProvider implements ProviderAdapter {
     // byte-identical PowerShell strings it got before.
     const usePosix = isPosixShell(agentOs, shell);
     const isWindows = !usePosix;
-    const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
-    // Per-call staging names: register_member and compose_permissions can seed the
-    // same home concurrently (or two local ephemeral members can), and fixed names
-    // would interleave chunk appends / clobber each other's tmp. The same names are
-    // used by the file channel and every exec command below.
     const staging = workspaceTrustStagingNames();
-    const tmpFile = isWindows ? `$env:USERPROFILE\\${staging.tmpRel}` : `$HOME/${staging.tmpRel}`;
+
+    const resolvedHome = memberHomeDir ? memberHomeDir.trim() : null;
+    const homeFile = resolvedHome
+      ? (isWindows
+          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\.claude.json`
+          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude.json`)
+      : (isWindows
+          ? '$env:USERPROFILE\\.claude.json'
+          : '$HOME/.claude.json');
+
+    const tmpFile = resolvedHome
+      ? (isWindows
+          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${staging.tmpRel}`
+          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${staging.tmpRel}`)
+      : (isWindows
+          ? `$env:USERPROFILE\\${staging.tmpRel}`
+          : `$HOME/${staging.tmpRel}`);
 
     // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
     // the orchestrator host, so it must be read through the same execCommand channel --
@@ -700,7 +711,7 @@ export class ClaudeProvider implements ProviderAdapter {
     //   3. otherwise base64 chunks appended with several small execs, then one
     //      decode+move -- works for both PowerShell and gitbash members.
     // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel: '.claude.json' });
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --

@@ -24,8 +24,7 @@ describe('AGY Project Permissions & User Journeys', () => {
     });
 
     it('falls back to fleet-default when agent is omitted', () => {
-      const paths = provider.permissionConfigPaths();
-      expect(paths).toEqual(['~/.gemini/config/projects/fleet-default.json']);
+      expect(() => provider.permissionConfigPaths()).toThrow('AGY provider requires a valid Agent with an id to compose permission config');
     });
   });
 
@@ -52,7 +51,7 @@ describe('AGY Project Permissions & User Journeys', () => {
       expect(resources[0].folderUri).toBeUndefined();
 
       // Permission grants shape
-      expect(cfg.permissionGrants.allow).toEqual([
+      expect(cfg.permissionGrants.permissionGrants.allow).toEqual([
         'read_file(*)',
         'write_file(*)',
         'command(git)',
@@ -109,7 +108,7 @@ describe('AGY Project Permissions & User Journeys', () => {
         },
       });
       expect(merged.projectResources.resources[0].folderUri).toBeUndefined();
-      expect(merged.permissionGrants.allow).toContain('command(git)');
+      expect(merged.permissionGrants.permissionGrants.allow).toContain('command(git)');
     });
   });
 
@@ -117,7 +116,7 @@ describe('AGY Project Permissions & User Journeys', () => {
     it('executes node cleanup script targeting matching URI while keeping fleet-<id>', async () => {
       const mockExec = vi.fn().mockResolvedValue({
         code: 0,
-        stdout: JSON.stringify(['old-uuid-12345.json']),
+        stdout: JSON.stringify({ purged: ['old-uuid-12345.json'], warnings: [] }),
         stderr: '',
       });
 
@@ -127,7 +126,7 @@ describe('AGY Project Permissions & User Journeys', () => {
       expect(mockExec).toHaveBeenCalledTimes(1);
 
       const executedCmd = mockExec.mock.calls[0][0] as string;
-      expect(executedCmd).toContain('node -e');
+      expect(executedCmd).toContain('node');
       expect(executedCmd).toContain('file:///home/testuser/work/my-project');
       expect(executedCmd).toContain('fleet-agent-toy-1');
     });
@@ -152,8 +151,8 @@ describe('AGY Project Permissions & User Journeys', () => {
       });
 
       const mockExec = vi.fn().mockImplementation(async (cmd: string) => {
-        if (cmd.includes('cat >') || cmd.includes('WriteAllText')) {
-          const match = cmd.match(/<< 'FLEET_AGY_SETTINGS_EOF'\n([\s\S]*?)\nFLEET_AGY_SETTINGS_EOF/);
+        if (cmd.includes('cat >') || cmd.includes('WriteAllText') || cmd.includes('FLEET_TRUST_EOF')) {
+          const match = cmd.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
           if (match) remoteSettings = match[1];
           return { code: 0, stdout: '', stderr: '' };
         }

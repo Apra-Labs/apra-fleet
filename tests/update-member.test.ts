@@ -444,7 +444,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null);
     spy.mockRestore();
   });
 
@@ -475,7 +475,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });
