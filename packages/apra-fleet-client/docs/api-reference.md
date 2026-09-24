@@ -824,3 +824,68 @@ parity), which is consistent with this path being unexercised. The `.`,
 `./client`,
 and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
 the transports can be used standalone without going through this factory.
+
+## `src/auth/local-token.mjs` (subpath: `@apralabs/apra-fleet-client/auth/local-token`)
+
+Shared local-credential helper (apra-fleet-iywi.1.1, C3/DQ-20/s4.4). Lifted
+out of the fleet-sprint supervisor's `src/supervisor/auth.mjs` so any local
+HTTP surface on the machine -- the supervisor and the apra-fleet server
+console today -- can share ONE token-resolution and bearer/cookie credential
+check without sharing route policy. Route policy (which paths are guarded,
+which cookie name to use) is intentionally NOT here: each caller keeps its
+own guard, so one caller's rule can never leak into another's route table
+(see the closed regression apra-fleet-hzb2, where a blanket `/api/` rule in
+the supervisor 401ed an unauthenticated `GET /api/health`).
+
+### `readLocalToken(dataDir, opts?)`
+
+Resolves a caller's local credential: prefers the shared
+`<home>/.apra-fleet/fleet.key` (the same file `src/services/jwt.ts`'s
+`getOrCreateKey()` reads/mints) over a `<dataDir>/private/token` file it
+mints-or-reuses via `loadOrCreateToken()`. Never mints `fleet.key` itself. A
+present-but-malformed `fleet.key` is rejected (never used) and logged as a
+warning; resolution then falls through to the private/token fallback as if
+`fleet.key` were absent.
+
+| Option | Type | Notes |
+|---|---|---|
+| `home` | `string?` | Overrides where the fleet-key lookup is rooted. Defaults to `os.homedir()`. Tests MUST pass a temp dir. |
+| `logger` | `{ warn?: Function }?` | Receives the malformed-key warning. Defaults to `console`. |
+| `createIfMissing` | `boolean?` | Default `true` (mint-or-reuse the private/token fallback). Pass `false` for a read-only probe: no mkdir, no write, no mode healing -- returns `null` if no well-formed token exists at either source. |
+
+Returns `{ token, path, source: 'fleet-key' | 'private-token', aclVerified, created } | null`.
+
+### `loadOrCreateToken(dir)`
+
+Idempotent mint-or-reuse of `<dir>/private/token` (0600 on POSIX; on Windows
+the caller relies on directory ACL inheritance and gets `aclVerified: false`
+back). Returns `{ token, path, created, aclVerified }`.
+
+### `isAuthorized(req, token, opts?)`
+
+Does `req` carry `token`, via `Authorization: Bearer <token>` (case-insensitive
+scheme) or a named cookie? `opts.cookieName` defaults to `'local_token'` --
+callers with an existing cookie name (e.g. the supervisor's `se_token`) must
+pass it explicitly. Token comparison is constant-time.
+
+### `readCookie(header, name)`
+
+Extracts one cookie by exact name from a raw `Cookie` header value, or `null`
+if absent. Matches on the parsed name, never a substring of the raw header.
+
+### `cookieFor(token, opts?)`
+
+Builds a `Set-Cookie` header value for `token` under `opts.cookieName`
+(default `'local_token'`), always `HttpOnly; SameSite=Strict; Path=/`. Callers
+handing out a value derived from a signing secret (rather than the secret
+itself) pass that derived value here -- this function has no opinion on what
+`token` is, only how the cookie is shaped.
+
+### `normalizePath(urlPath)`
+
+Parses a raw request path the same way an HTTP router normally does (parse
+against a dummy origin, take `.pathname`), so a raw `req.url` and a
+pre-parsed `url.pathname` always answer the same. This is the PATH NORMALISER
+ONLY -- it carries no route policy. Returns the normalised pathname, or
+`null` if `urlPath` could not be parsed; every caller in this codebase treats
+`null` as "guarded" (fail closed).
