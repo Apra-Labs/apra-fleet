@@ -472,6 +472,18 @@ describe.each(ROUTE_CASES)('POST $path ($method)', (route) => {
     expect(out.body).toContain(text);
   });
 
+  // apra-fleet-9h9j.1.2: the isError case above is only half the contract --
+  // a tool that THROWS must produce the same 4xx carrying the same text, not
+  // the seam's catch-all 500.
+  it('a tool that THROWS -> 4xx carrying the thrown message verbatim', async () => {
+    const text = `STUB-THROWN-ERROR ${route.method}`;
+    route.tool().mockRejectedValue(new Error(text));
+    const out = await post(route.path, route.validBody);
+    expect(out.status).toBeGreaterThanOrEqual(400);
+    expect(out.status).toBeLessThan(500);
+    expect(out.body).toContain(text);
+  });
+
   it('a bad body -> 400 naming the offending field, without calling the tool', async () => {
     route.tool().mockResolvedValue(route.okResult);
     const out = await post(route.path, route.badBody);
@@ -525,5 +537,137 @@ describe('console fleet routes: seam behaviour is unchanged', () => {
     const out = fakeRes();
     expect(await handleConsoleRequest(fakeReq('/api/fleet/version', 'GET'), out.res, {})).toBe(true);
     expect(out.status).toBe(405);
+  });
+
+  // apra-fleet-9h9j.1.2: widening the /api/fleet/ table must not widen what
+  // the console CLAIMS. A path outside /api/fleet/ and /ui is still declined
+  // with nothing written, so the transport's own routing continues.
+  it.each([
+    '/',
+    '/mcp',
+    '/health',
+    '/shutdown',
+    '/api',
+    '/api/other/thing',
+    '/uix',
+    '/api/fleetx/version',
+  ])('declines %s without touching the response', async (url) => {
+    const out = fakeRes();
+    expect(await handleConsoleRequest(fakeReq(url, 'POST', '{}'), out.res, {})).toBe(false);
+    expect(out.status).toBeNull();
+    expect(out.writes).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-9h9j.1.2: no credential route may leak a secret VALUE.
+//
+// Each stub below deliberately carries the sentinel in a field the route's
+// whitelist has to drop (tool prose, or an extra key alongside the metadata).
+// The stub payload itself is asserted to contain the sentinel first, so a
+// future stub that quietly stops carrying it cannot make these vacuous.
+// ---------------------------------------------------------------------------
+
+const SENTINEL = 'SENTINEL-SECRET-DO-NOT-LEAK';
+
+interface CredentialLeakCase {
+  path: string;
+  tool: () => any;
+  body: Record<string, unknown>;
+  stubResult: unknown;
+}
+
+const CREDENTIAL_LEAK_CASES: CredentialLeakCase[] = [
+  {
+    path: '/api/fleet/credential-store-set',
+    tool: m(credentialStoreSet),
+    body: { name: 'my_token', prompt: 'Paste it' },
+    stubResult: {
+      text: `Stored "my_token" = ${SENTINEL}`,
+      structuredContent: {
+        url: 'http://127.0.0.1:9999/secret/abc',
+        expiresAt: '2026-03-03T00:00:00.000Z',
+        value: SENTINEL,
+        plaintext: SENTINEL,
+      },
+    },
+  },
+  {
+    path: '/api/fleet/credential-store-list',
+    tool: m(credentialStoreList),
+    body: {},
+    stubResult: JSON.stringify([
+      {
+        name: 'my_token',
+        scope: 'session',
+        network_policy: 'confirm',
+        members: '*',
+        expiry: 'none',
+        created_at: '2026-01-01',
+        value: SENTINEL,
+        plaintext: SENTINEL,
+      },
+    ]),
+  },
+  {
+    path: '/api/fleet/credential-store-update',
+    tool: m(credentialStoreUpdate),
+    body: { name: 'my_token', members: 'box' },
+    stubResult: `Credential "my_token" updated. value=${SENTINEL}`,
+  },
+  {
+    path: '/api/fleet/credential-store-delete',
+    tool: m(credentialStoreDelete),
+    body: { name: 'my_token' },
+    stubResult: `Credential "my_token" (${SENTINEL}) deleted.`,
+  },
+];
+
+describe.each(CREDENTIAL_LEAK_CASES)('credential route $path is secret-free', (leak) => {
+  it('never serialises a secret value the tool handed it', async () => {
+    const stubText = typeof leak.stubResult === 'string' ? leak.stubResult : JSON.stringify(leak.stubResult);
+    // The stub really is carrying a secret -- otherwise the assertion below
+    // would pass for the wrong reason.
+    expect(stubText).toContain(SENTINEL);
+
+    leak.tool().mockResolvedValue(leak.stubResult);
+    const out = await post(leak.path, leak.body);
+
+    expect(out.status).toBe(200);
+    expect(out.body).not.toContain(SENTINEL);
+    // Same check over the reparsed-and-reserialised body, so a secret hidden
+    // behind an escape sequence cannot slip past the raw string search.
+    expect(JSON.stringify(JSON.parse(out.body))).not.toContain(SENTINEL);
+  });
+
+  it('answers only whitelisted credential metadata', async () => {
+    leak.tool().mockResolvedValue(leak.stubResult);
+    const out = await post(leak.path, leak.body);
+    const parsed = JSON.parse(out.body);
+    const allowed = new Set([
+      'name',
+      'scope',
+      'network_policy',
+      'members',
+      'expiry',
+      'created_at',
+      'ttl_seconds',
+      'url',
+      'expiresAt',
+      'credentials',
+    ]);
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(walk);
+        return;
+      }
+      if (value && typeof value === 'object') {
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+          expect(allowed).toContain(key);
+          walk(child);
+        }
+      }
+    };
+    walk(parsed);
   });
 });
