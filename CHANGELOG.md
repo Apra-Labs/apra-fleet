@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- liveness probe tells a live non-HTTP listener apart from a refused port; win32 socket family fixed
+
+Sprint goal: close the liveness probe's remaining blind spot, where a live
+TCP listener that never speaks HTTP (for example a bare database process)
+produced the identical "no HTTP response" result as a genuinely refused
+port, so it was killed by the stray-process sweep and miscounted as
+"checked". The probe's wire format now carries a fourth transport-status
+field so a refused connection can be told apart from one that was accepted
+(or timed out) but never answered HTTP, combining results across a
+candidate's multiple sockets by precedence -- answered beats tcp-alive-no-
+http beats refused -- rather than last-wins. A TCP-alive-no-HTTP candidate
+is now spared instead of killed, counted in its own accounting bucket
+distinct from both "checked" and the general "unevaluable" bucket (never
+double-counted), and Member Prep prints a dedicated per-member summary line
+for it so this outcome is never narrated the same as an unevaluated probe
+or an actual kill. On Windows, the TCP half of the probe now constructs its
+socket with an explicit address family instead of relying on the platform
+default, which is IPv4-only under the PowerShell 5.1 / .NET Framework the
+dispatch actually runs under -- an IPv6-bound live listener would otherwise
+throw on connect and be reported as refused, i.e. killed while alive. See
+`docs/member-prep-and-stray-sweep.md` for the full three-outcome liveness
+model, the rank-precedence combining rule, and the win32 address-family
+fix.
+
+**Sprint verdict: FAIL.** The engineering above is correct and covered by a
+strong, non-redundant test matrix -- build and both full test suites green
+with zero failures, the generic-engine-boundary check clean, all added
+lines ASCII-only -- but the entry immediately below this one had gone stale
+in exactly the way it was itself written to guard against: it still listed
+this round's fix as open backlog, and this file otherwise carried no entry
+for this round at all despite eleven closed issues and a user-visible
+safety-behaviour change. That entry has now been corrected in place. This
+is the second time this exact failure mode -- a release note asserting an
+already-fixed defect as still-open backlog -- has recurred on this branch;
+the first occurrence produced a prompt-instruction guard in the harvester's
+own close-out contract, and that guard did not hold, which is why making
+the check mechanical rather than prompt-text-only remains open backlog
+below.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $20.0459.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5247 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as backlog (deliberately deferred, not blocking): the
+release-notes staleness check remains a prompt instruction a dispatched
+harvester could still skip, rather than a mechanical, engine-enforced check
+against actual bead status -- now tracked as its own scoped follow-up
+rather than relying on prompt text alone; the shell-command-guard's
+special-parameter regex still does not flag a multi-digit positional-
+parameter expansion such as `$12`; the sweep-config `_readme_liveness`
+comment has not yet been updated to describe the three-outcome liveness
+model; and the curl-exit-7 ("failed to connect") kill path has not yet been
+narrowed or documented as distinct from a general "refused" classification.
+
 ## [Unreleased] -- sprint close-out corrects its own stale carried-forward claims
 
 Sprint goal: close out the scoped in-cycle replan / sprint-start Member Prep
@@ -42,6 +101,18 @@ check remains a prompt instruction a dispatched harvester could still skip,
 rather than a mechanical, engine-enforced check against actual bead status;
 and the shell-command-guard's special-parameter regex still does not flag a
 multi-digit positional-parameter expansion such as `$12`.
+
+The liveness-probe HTTP-only item this entry carried forward above was fixed
+later on this same branch: a candidate that accepts a TCP connection but
+never answers HTTP is now told apart from one that refuses the connection
+outright, spared instead of killed, counted in its own accounting bucket
+distinct from "checked", and the HTTP-only assumption is documented. See the
+newest entry at the top of this file for the fix and the current, still-open
+backlog. The release-notes staleness check itself remained a prompt
+instruction through that round too -- this is the second time the same
+release-notes-went-stale failure has recurred on this branch, which is why
+making that check mechanical (engine-enforced, not prompt text) is called
+out again as open backlog above this paragraph.
 
 ## [Unreleased] -- stray-process sweep: config wired end to end, sweep-failure policy decided, liveness probe armed by default
 
