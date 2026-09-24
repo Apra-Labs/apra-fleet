@@ -101,10 +101,16 @@ refused: this predicate has no way to tell whether it is alive, so the
 candidate is SPARED fail-safe, the same direction as an ordinary
 `unevaluable` spare, but counted in its own `tcpAliveNoHttp` bucket on the
 sweep result rather than folded into `unevaluable` (a single candidate is
-never counted in both). A target that wants such a daemon protected from an
-armed sweep must give it a matching `productionPorts` entry, or an HTTP
-health endpoint this probe can actually ask -- otherwise it survives an
-armed pass only because it was spared, not because the sweep understood it.
+never counted in both). Member Prep prints its own
+`sweep -- LIVENESS TCP-ALIVE-NO-HTTP` line naming the member and how many
+candidates were spared this way, distinct from the `LIVENESS UNEVALUABLE`
+line below -- "the probe could not be evaluated" and "the probe was
+evaluated and found something alive it cannot confirm over HTTP" are
+different findings with different fixes, so they are never narrated alike.
+A target that wants such a daemon protected from an armed sweep must give it
+a matching `productionPorts` entry, or an HTTP health endpoint this probe
+can actually ask -- otherwise it survives an armed pass only because it was
+spared, not because the sweep understood it.
 
 **Why armed rather than opt-in.** The predicate can only ever *spare*: there
 is no input that makes it select a process the other predicates had not

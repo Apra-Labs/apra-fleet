@@ -135,8 +135,11 @@ function portlessWithPortedSiblingProbeOutput() {
  *
  * `health` is the liveness answer: 'live' (the live supervisor answers 200,
  * the stale one's port REFUSES the connection -- curl's 000 sentinel with
- * exit status 7), 'dead' (nothing answers) or 'notool' (the member has no
- * curl at all).
+ * exit status 7), 'dead' (nothing answers), 'notool' (the member has no
+ * curl at all), or 'tcpalive' (apra-fleet-i4ku.24.5: the live supervisor's
+ * port ACCEPTS the TCP connection but returns no HTTP response -- curl's 000
+ * sentinel with exit status 0, DISTINCT from the stale port's 000/7 refusal;
+ * this is the tcp-alive-no-http outcome, not a plain refusal).
  */
 function makeSeam({ probeOutput = twoCandidateProbeOutput(), health = 'live' } = {}) {
     const dispatches = [];
@@ -157,8 +160,15 @@ function makeSeam({ probeOutput = twoCandidateProbeOutput(), health = 'live' } =
                         // The fourth field is the TRANSPORT status: a stale
                         // candidate's port is REFUSED (curl 7 -- the only
                         // outcome that means nothing is there), a live one
-                        // answered over a healthy transport (0).
-                        + (health === 'live' && Number(pid) === LIVE_PID ? '200 0' : '000 7'))
+                        // answered over a healthy transport (0). 'tcpalive'
+                        // gives the live pid the SAME transport status (0,
+                        // connection accepted) but the '000' no-HTTP-response
+                        // code, which is exactly the tcp-alive-no-http shape
+                        // -- distinguishable from the stale port's refusal
+                        // (000/7) only by that transport status.
+                        + (health === 'live' && Number(pid) === LIVE_PID ? '200 0'
+                            : health === 'tcpalive' && Number(pid) === LIVE_PID ? '000 0'
+                                : '000 7'))
                     .join('\n'),
                 error: null,
             };
@@ -399,6 +409,68 @@ test('the LOUD losing case: a member with no probe tool spares everything unchec
     assert.ok(loud, `expected a dedicated loud line, got: ${JSON.stringify(chain.sweepLines)}`);
     assert.match(loud, /SPARED rather than killed/);
     assert.match(loud, /livenessProbe/, 'the loud line must name the way out, or it is an advisory the reader cannot act on');
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.24.5: a candidate the probe DID reach -- its port ACCEPTED
+// the TCP connection, it just answered no HTTP -- must narrate distinctly
+// from BOTH the "checked and found dead" shape and the plain `unevaluable`
+// shape above (no tool / no dispatch / unaskable address). Before this task,
+// member-prep.mjs had no clause and no per-member line for this bucket at
+// all, so such a spare was invisible in the phase summary and in the
+// per-member notices, even though member-stray-sweep.mjs already counted it
+// in its own `tcpAliveNoHttp` field (apra-fleet-i4ku.24.1.2).
+// ---------------------------------------------------------------------------
+
+test('TCP-ALIVE-NO-HTTP: a live non-HTTP listener is spared, counted in its own bucket, and narrated on its own summary clause and per-member line', async () => {
+    const chain = await runWholeChain(
+        { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true },
+        { health: 'tcpalive' },
+    );
+
+    // The stale sandbox (genuinely refused) is still killed -- this fix must
+    // not weaken the predicate where it already worked.
+    assert.deepEqual(chain.sweep.result.killed.map((k) => k.pid), [STALE_PID]);
+
+    // The live-but-non-HTTP listener is SPARED, never killed, and its reason
+    // is the dedicated tcp-alive-no-http blocker text, not the generic
+    // unevaluable one.
+    const spared = chain.sweep.result.reported.find((d) => d.pid === LIVE_PID);
+    assert.ok(spared, `the tcp-alive-no-http candidate must be reported, not killed: ${JSON.stringify(chain.sweep.result.killed)}`);
+    assert.ok(
+        spared.sparedReasons.some((r) => r.includes('still accepting TCP connections') && r.includes('no asked socket returned an HTTP response')),
+        `expected the dedicated tcp-alive-no-http blocker text, got: ${JSON.stringify(spared.sparedReasons)}`,
+    );
+
+    // Counted in its OWN bucket -- never folded into `unevaluable`, and still
+    // folded into `checked` because a probe genuinely reached it.
+    assert.equal(chain.sweep.result.liveness.tcpAliveNoHttp, 1);
+    assert.equal(chain.sweep.result.liveness.unevaluable, 0, 'a definite tcp-alive-no-http answer is not the same as "could not evaluate"');
+    assert.equal(chain.sweep.result.liveness.checked, 2, 'a probe that got a definite answer (even non-HTTP) still counts as checked');
+
+    // The phase summary line names the new outcome, worded as a spare rather
+    // than a confirmed-dead verdict.
+    assert.match(
+        chain.sweepLines[0],
+        /liveness probe armed and dispatched: 2 candidate\(s\) checked, 0 spared as live, 0 unevaluable; a further 1 candidate\(s\) held a live TCP connection that answered no HTTP and were SPARED rather than confirmed dead/,
+    );
+
+    // A DEDICATED per-member notice line, distinct from LIVENESS UNEVALUABLE
+    // and LIVENESS UNPROBEABLE -- this is the line member-prep.mjs did not
+    // emit before this task.
+    assert.ok(
+        !chain.sweepLines.some((l) => l.includes('LIVENESS UNEVALUABLE')),
+        'a definite tcp-alive-no-http answer must never also print the generic unevaluable notice',
+    );
+    assert.ok(
+        !chain.sweepLines.some((l) => l.includes('LIVENESS UNPROBEABLE')),
+        'the tcp-alive-no-http candidate held a port and was asked -- it is not the portless-unchecked case',
+    );
+    const loud = chain.sweepLines.find((l) => l.includes('LIVENESS TCP-ALIVE-NO-HTTP'));
+    assert.ok(loud, `expected a dedicated per-member loud line, got: ${JSON.stringify(chain.sweepLines)}`);
+    assert.match(loud, /1 candidate\(s\) were SPARED rather than killed/);
+    assert.match(loud, /ACCEPTED the TCP connection but returned no HTTP response/);
+    assert.match(loud, /speaks HTTP only/, 'the loud line must name why this predicate cannot confirm the listener alive');
 });
 
 // ---------------------------------------------------------------------------

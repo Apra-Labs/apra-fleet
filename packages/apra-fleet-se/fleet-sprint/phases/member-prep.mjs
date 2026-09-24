@@ -860,6 +860,30 @@ export async function runMemberPrepPhase({
                     + 'this target, tighten the sweep markers so the process is never a candidate',
                 );
             }
+            // A THIRD, DISTINCT SPARE (apra-fleet-i4ku.24.5) -- NOT the same
+            // gap as LIVENESS UNEVALUABLE above. There, the probe could not
+            // be evaluated at all (no tool, a failed dispatch, or an
+            // unresolvable bound address); here the probe DID reach the
+            // candidate and DID get a definite transport-level answer: the
+            // port ACCEPTED the TCP connection, it just never spoke HTTP
+            // back. This predicate only ever asks HTTP, so it cannot confirm
+            // such a listener alive -- but "I could not check" and "I
+            // checked and something is genuinely there, just not over HTTP"
+            // are different findings and need different next steps, so they
+            // get their own line rather than being folded into the
+            // unevaluable one.
+            if (result.liveness && result.liveness.armed && result.liveness.tcpAliveNoHttp > 0) {
+                line(
+                    log, member, 'sweep', 'LIVENESS TCP-ALIVE-NO-HTTP',
+                    `${result.liveness.tcpAliveNoHttp} candidate(s) were SPARED rather than killed because their `
+                    + 'listening port ACCEPTED the TCP connection but returned no HTTP response -- this predicate '
+                    + 'speaks HTTP only and cannot confirm whether a non-HTTP listener (for example a database '
+                    + 'server) is alive. Something IS still holding the port; if this member intentionally runs a '
+                    + 'non-HTTP process this sweep marks killable, point its sweep config at an HTTP health '
+                    + 'endpoint that process exposes, or accept that this predicate will keep sparing it rather '
+                    + 'than ever confirming it dead',
+                );
+            }
         }
 
         // G-pull is reported, not re-dispatched -- see this module's header:
