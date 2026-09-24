@@ -143,6 +143,61 @@ export function normalizeServerVersion(raw: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// baseUrl scheme validation -- ONE shared check for both entry points that
+// can place a baseUrl in front of the /ext proxy (apra-fleet-iywi.9):
+// POST /api/workflow-packages/register (routes/workflow-packages.ts) and the
+// workflowPackages config key (this file's getConfigPackages() reader,
+// below). src/console/proxy.ts also refuses a non-http(s) upstream, but that
+// is a separate, belt-and-braces backstop for baseUrls this validator never
+// sees (e.g. a hand-edited registry file) -- it must not be treated as a
+// second copy of this check.
+//
+// `new URL()` happily parses strings that are useless as an http.request
+// target: 'ftp://host/' (protocol 'ftp:'), 'file:///x' (protocol 'file:')
+// and even the scheme-less 'localhost:9000' (protocol 'localhost:', empty
+// host). A WHATWG-valid URL is therefore not sufficient -- the protocol must
+// be checked explicitly.
+// ---------------------------------------------------------------------------
+
+export interface BaseUrlSchemeError {
+  /** The offending protocol (e.g. "ftp:"), or null when the string does not
+   *  parse as a URL at all. */
+  scheme: string | null;
+  /** Human-readable message naming the offending scheme (or "not a valid
+   *  URL") and the raw baseUrl -- safe to surface directly to the operator. */
+  message: string;
+}
+
+/** Validate that `baseUrl` parses as a URL and uses the http: or https:
+ *  scheme -- the only schemes the /ext proxy (src/console/proxy.ts) can
+ *  hand to http.request. Returns null when valid, otherwise an error
+ *  describing the offending scheme (or the parse failure). */
+export function validateWorkflowPackageBaseUrlScheme(baseUrl: string): BaseUrlSchemeError | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { scheme: null, message: `baseUrl "${baseUrl}" is not a valid URL` };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      scheme: parsed.protocol,
+      message: `baseUrl "${baseUrl}" has unsupported scheme "${parsed.protocol}" (only http: and https: are supported)`,
+    };
+  }
+  return null;
+}
+
+/** Loud, specific message for a config-declared entry with a bad scheme --
+ *  used both for the console.error in refreshHealth() and the `configError`
+ *  field in list(), so the two always agree. */
+function describeConfigBaseUrlError(id: string, baseUrl: string): string | null {
+  const err = validateWorkflowPackageBaseUrlScheme(baseUrl);
+  if (!err) return null;
+  return `workflow package "${id}" declared in config has an invalid baseUrl "${baseUrl}": ${err.message}`;
+}
+
+// ---------------------------------------------------------------------------
 // Registry storage + health polling
 // ---------------------------------------------------------------------------
 
@@ -176,6 +231,15 @@ export interface WorkflowPackageView {
   configDeclared: boolean;
   offline: boolean;
   lastCheckedAt: number | null;
+  /** Non-null only for a config-declared entry whose baseUrl fails the
+   *  http(s) scheme check -- an operator misconfiguration, not a transient
+   *  outage. Deliberately distinct from `offline` (which this also forces
+   *  true, since the entry is unusable either way) so the two cases never
+   *  read the same to a caller: a genuinely unreachable http:// package
+   *  always has `configError: null`. A registered package can never carry a
+   *  non-null configError -- the register route rejects a bad scheme before
+   *  the entry is ever persisted. */
+  configError: string | null;
 }
 
 export type RegisterResult =
@@ -339,7 +403,23 @@ export function createWorkflowPackageService(deps: WorkflowPackageServiceDeps = 
     const targets = new Map<string, string>();
     for (const c of getConfigPackages()) targets.set(c.id, c.baseUrl);
     for (const p of map.values()) if (!targets.has(p.id)) targets.set(p.id, p.baseUrl);
-    await Promise.all([...targets.entries()].map(([id, baseUrl]) => probeOne(id, baseUrl)));
+
+    const probes: Promise<void>[] = [];
+    for (const [id, baseUrl] of targets) {
+      // A misconfigured scheme is an operator error, not a transient
+      // outage -- log it loudly and never hand it to probeOne. Letting it
+      // reach fetch() would just fail (differently across platforms) and
+      // age into the same "offline after 10 minutes" bucket as a real
+      // outage, which is exactly the silent-misconfiguration-looks-like-a-
+      // blip shape this task exists to remove.
+      const configError = describeConfigBaseUrlError(id, baseUrl);
+      if (configError) {
+        console.error(`[fleet] ${configError}`);
+        continue;
+      }
+      probes.push(probeOne(id, baseUrl));
+    }
+    await Promise.all(probes);
   }
 
   function isOffline(id: string): boolean {
@@ -357,13 +437,19 @@ export function createWorkflowPackageService(deps: WorkflowPackageServiceDeps = 
     for (const c of getConfigPackages()) {
       seen.add(c.id);
       const rec = health.get(c.id);
+      const configError = describeConfigBaseUrlError(c.id, c.baseUrl);
       out.push({
         id: c.id,
         baseUrl: c.baseUrl,
         apraFleetApi: null,
         configDeclared: true,
-        offline: isOffline(c.id),
+        // A scheme error makes the package unusable regardless of what (if
+        // anything) the health poll recorded for it -- never let a probe
+        // that happened to run before this call's config changed leave a
+        // stale `offline: false` for an entry that can never be reached.
+        offline: configError !== null ? true : isOffline(c.id),
         lastCheckedAt: rec?.lastCheckedAt ?? null,
+        configError,
       });
     }
     for (const p of readPackages().values()) {
@@ -376,6 +462,7 @@ export function createWorkflowPackageService(deps: WorkflowPackageServiceDeps = 
         configDeclared: false,
         offline: isOffline(p.id),
         lastCheckedAt: rec?.lastCheckedAt ?? null,
+        configError: null,
       });
     }
     return out;

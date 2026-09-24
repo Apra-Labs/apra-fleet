@@ -9,7 +9,7 @@
  */
 import type http from 'node:http';
 import type { ConsoleRoute } from '../server.js';
-import { workflowPackageService } from '../../services/workflow-packages.js';
+import { workflowPackageService, validateWorkflowPackageBaseUrlScheme } from '../../services/workflow-packages.js';
 
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -52,6 +52,16 @@ export const workflowPackagesRoutes: ConsoleRoute[] = [
         typeof apraFleetApi !== 'string' || apraFleetApi === ''
       ) {
         jsonResponse(res, 400, { error: 'id, baseUrl and apraFleetApi are required non-empty strings' });
+        return;
+      }
+
+      // Fail closed on a non-http(s) baseUrl HERE, at the boundary, so a
+      // scheme-less or wrong-scheme typo is rejected before it can ever
+      // reach the /ext proxy (apra-fleet-iywi.9) -- shared with the
+      // config-declared entry path in workflowPackageService.
+      const schemeError = validateWorkflowPackageBaseUrlScheme(baseUrl);
+      if (schemeError) {
+        jsonResponse(res, 400, { error: schemeError.message, field: 'baseUrl' });
         return;
       }
 
