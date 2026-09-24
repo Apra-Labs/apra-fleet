@@ -23,7 +23,7 @@
         },
         "remote": {
           "type": "string",
-          "description": "Remote KB server URL (required when provider=http)"
+          "description": "Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext."
         },
         "token": {
           "type": "string",

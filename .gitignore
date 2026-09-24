@@ -29,6 +29,8 @@ CLAUDE.md
 .beads/
 # Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
 .beads.bak-*/
+# beads runtime gate lock (created next to .beads/ by bd); never commit
+.beads.gate.lock
 
 # Beads gate hook lock file, written at repo root (named after the local
 # Dolt database, which can differ per clone -- see CLAUDE.md). Without this
