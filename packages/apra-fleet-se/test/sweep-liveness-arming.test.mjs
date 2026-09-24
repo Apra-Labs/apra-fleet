@@ -64,6 +64,28 @@ function twoCandidateProbeOutput() {
     ].join('\n');
 }
 
+/** The live candidate ALONE in the pass (apra-fleet-i4ku.24.4): used together
+ *  with `staleOnlyProbeOutput()` below to produce two SEPARATE single-
+ *  candidate passes -- one that spares a live tcp-alive-no-http listener,
+ *  one that kills a genuinely refused candidate -- so their rendered
+ *  liveness summaries can be compared on equal footing (both start from
+ *  `checked: 1`). */
+function liveOnlyProbeOutput() {
+    return [
+        `SWEEP-PROC  ${LIVE_PID}  1 1-02:03:04 /usr/bin/node /home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${LIVE_PORT}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${LIVE_PORT} 0.0.0.0:* users:(("node",pid=${LIVE_PID},fd=21))`,
+    ].join('\n');
+}
+
+/** The stale candidate ALONE in the pass -- the "genuinely refused" half of
+ *  the apra-fleet-i4ku.24.4 differential pair. */
+function staleOnlyProbeOutput() {
+    return [
+        `SWEEP-PROC  ${STALE_PID}  1 1-02:03:04 /usr/bin/node /home/fleet/apra-fleet/packages/apra-fleet-se/bin/serve.mjs --port ${STALE_PORT}`,
+        `SWEEP-PORT-SS LISTEN 0 4096 0.0.0.0:${STALE_PORT} 0.0.0.0:* users:(("node",pid=${STALE_PID},fd=20))`,
+    ].join('\n');
+}
+
 /** A probe table with NO candidate that can survive the other predicates (the
  *  probe process itself, too young, no marker match), used for the
  *  "armed but never dispatched" state. */
@@ -547,6 +569,60 @@ test('docs/member-prep-and-stray-sweep.md documents the tcp-alive-no-http (non-H
     assert.match(content, /non-HTTP listener/, 'the doc must state the probe cannot vouch for a non-HTTP listener');
     assert.match(content, /tcpAliveNoHttp/, 'the doc must name the dedicated result bucket');
     assert.match(content, /LIVENESS TCP-ALIVE-NO-HTTP/, 'the doc must name the dedicated per-member notice line');
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.24.4: a spared live non-HTTP listener and a killed refused
+// candidate must not narrate alike. Before the tcp-alive-no-http clause
+// existed, formatSweepLivenessSummary() rendered the SAME string
+// ("liveness probe armed and dispatched: 1 candidate(s) checked, 0 spared as
+// live, 0 unevaluable") for both a pass that SPARED a live TCP-alive-no-HTTP
+// listener and a pass that KILLED a genuinely refused candidate -- the one
+// line an operator reads could not tell a spared live process from a killed
+// dead one. This test drives the two liveness records through the real
+// phase (not hand-built objects), reading `tcpAliveNoHttp` off the sweep
+// result the way member-stray-sweep.mjs actually names it, and asserts the
+// two RENDERED strings differ.
+// ---------------------------------------------------------------------------
+
+test('REGRESSION (operator cannot tell a spared live listener from a killed dead one): a spared tcp-alive-no-http pass and a killed-refused pass render DIFFERENT liveness summaries', async () => {
+    const config = { markers: MARKERS, productionPorts: PRODUCTION_PORTS, livenessProbe: true };
+
+    // Pass A: ONE candidate, genuinely alive on TCP but silent over HTTP --
+    // spared, never killed.
+    const sparedLive = await runWholeChain(config, { probeOutput: liveOnlyProbeOutput(), health: 'tcpalive' });
+    assert.equal(sparedLive.seam.liveness().length, 1, 'the sole live candidate must still be dispatched a liveness probe');
+    assert.deepEqual(sparedLive.sweep.result.killed, [], 'a tcp-alive-no-http candidate must be SPARED, never killed');
+    assert.equal(sparedLive.sweep.result.liveness.checked, 1);
+    assert.equal(sparedLive.sweep.result.liveness.tcpAliveNoHttp, 1, "reading the bucket member-stray-sweep.mjs actually sets, not a second name");
+
+    // Pass B: ONE candidate, genuinely refused on its port -- killed, as it
+    // was before this whole feature existed.
+    const killedRefused = await runWholeChain(config, { probeOutput: staleOnlyProbeOutput(), health: 'live' });
+    assert.equal(killedRefused.seam.liveness().length, 1, 'the sole refused candidate must still be dispatched a liveness probe');
+    assert.deepEqual(killedRefused.sweep.result.killed.map((k) => k.pid), [STALE_PID], 'a genuinely refused candidate must still be killed');
+    assert.equal(killedRefused.sweep.result.liveness.checked, 1);
+    assert.equal(killedRefused.sweep.result.liveness.tcpAliveNoHttp, 0);
+
+    // THE BYTE-IDENTICAL LINE THIS BEAD WAS REOPENED FOR: this is exactly
+    // what BOTH passes rendered before the tcp-alive-no-http clause existed.
+    const preFixLine = 'liveness probe armed and dispatched: 1 candidate(s) checked, 0 spared as live, 0 unevaluable';
+    assert.equal(
+        formatSweepLivenessSummary(killedRefused.sweep.result.liveness), preFixLine,
+        'the killed-refused pass has nothing new to report and must still render the plain pre-fix shape',
+    );
+
+    // THE POINT: the spared-live pass must no longer render that same line.
+    const sparedLiveLine = formatSweepLivenessSummary(sparedLive.sweep.result.liveness);
+    assert.notStrictEqual(
+        sparedLiveLine, formatSweepLivenessSummary(killedRefused.sweep.result.liveness),
+        'FAILURE MEANS: the operator can no longer tell a spared live listener from a killed dead one -- '
+        + 'both a spare and a kill render the exact same liveness summary line',
+    );
+    assert.match(
+        sparedLiveLine, /SPARED rather than confirmed dead/,
+        'the spared-live rendering must state SPARED and must never be readable as checked-and-dead',
+    );
 });
 
 // ---------------------------------------------------------------------------
