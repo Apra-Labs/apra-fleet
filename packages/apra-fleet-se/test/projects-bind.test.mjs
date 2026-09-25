@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createProject } from '../src/projects/store/projects.mjs';
-import { getMemberGit, listMemberGit } from '../src/projects/store/member-git.mjs';
+import { getMemberGit, listMemberGit, upsertMemberGit } from '../src/projects/store/member-git.mjs';
 import { OWNER_PACKAGE, BEADS_DIR_ENV } from '../src/projects/projects.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
@@ -88,6 +88,7 @@ function memberRecord(name, overrides = {}) {
 function makeClient() {
     const registry = new Map();
     const gitStatusResponders = new Map();
+    const ownerResponders = new Map();
     const calls = { memberOwner: [], updateMember: [], memberGitStatus: [], executeCommand: [], listMembers: 0 };
 
     return {
@@ -101,6 +102,18 @@ function makeClient() {
         setGitStatus(name, responderOrValue) {
             gitStatusResponders.set(name, typeof responderOrValue === 'function' ? responderOrValue : () => responderOrValue);
         },
+        /**
+         * Force the NEXT (and every subsequent, until cleared) member_owner
+         * call for `name` to answer with an arbitrary raw result, bypassing
+         * the registry-driven set/clear/held/not-found branching below. Used
+         * to reach outcomes (`invalid_input`, `failed`, a `clear` answering
+         * `member_not_found` while the member IS still registered) that the
+         * registry model above has no state for -- see apra-fleet-vcnl.10.
+         * @param {string} name @param {object | (() => object)} responderOrValue
+         */
+        setOwnerResult(name, responderOrValue) {
+            ownerResponders.set(name, typeof responderOrValue === 'function' ? responderOrValue : () => responderOrValue);
+        },
         async listMembers() {
             calls.listMembers += 1;
             const members = [...registry.values()].map(({ held, envWriteFails, ...rest }) => ({
@@ -111,6 +124,8 @@ function makeClient() {
         },
         async memberOwner({ member_name, action, package: pkg, ref }) {
             calls.memberOwner.push({ member_name, action, package: pkg, ref });
+            const override = ownerResponders.get(member_name);
+            if (override) return override();
             const rec = registry.get(member_name);
             if (!rec) {
                 return { content: [{ type: 'text', text: '[-] member not found' }], structuredContent: { outcome: 'member_not_found', action } };
@@ -522,5 +537,149 @@ describe('11. OWNER_PACKAGE stays aligned with the workflow-package id', () => {
             workflow.name,
             `OWNER_PACKAGE ('${OWNER_PACKAGE}') has drifted from the name packages/apra-fleet-se/workflow.json declares ('${workflow.name}') -- reconcile the OWNER_PACKAGE constant in src/projects/projects.mjs (see apra-fleet-vcnl.13)`,
         );
+    });
+});
+
+// =============================================================================
+// 12. POST /:id/members/:member/refresh -- happy path (apra-fleet-vcnl.10)
+// =============================================================================
+describe('12. POST refresh: happy path re-probes and updates the cached row', { skip }, () => {
+    test('2xx, probedAt advances past a seeded stale value, and a changed branch/dirty value is persisted', async () => {
+        const { db, client, supervisor } = setup();
+        client.addMember('ed');
+        client.setGitStatus('ed', () => checkoutStatus({
+            path: '/home/ed/repo', branch: 'main', dirty: false, originSlug: 'github.com/acme/repo',
+        }));
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members', { member: 'ed' }), mockRes());
+        const bound = getMemberGit(db, 'proj-1', 'ed');
+        assert.equal(bound.branch, 'main');
+        assert.equal(bound.dirty, false);
+
+        // Force the cached probedAt into the past so refresh's advance is an
+        // observable inequality, rather than comparing two ISO timestamps
+        // taken microseconds apart in the same test run.
+        const STALE = '2020-01-01T00:00:00.000Z';
+        upsertMemberGit(db, { ...bound, probedAt: STALE });
+
+        client.setGitStatus('ed', () => checkoutStatus({
+            path: '/home/ed/repo', branch: 'feature-x', dirty: true, originSlug: 'github.com/acme/repo',
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members/ed/refresh'), res);
+        assert.equal(res.statusCode, 200);
+        const payload = payloadOf(res);
+        assert.notEqual(payload.probedAt, STALE, 'probedAt must advance past the seeded stale value');
+        assert.equal(payload.branch, 'feature-x');
+        assert.equal(payload.dirty, true);
+
+        const row = getMemberGit(db, 'proj-1', 'ed');
+        assert.equal(row.branch, 'feature-x');
+        assert.equal(row.dirty, true);
+        assert.notEqual(row.probedAt, STALE);
+    });
+});
+
+// =============================================================================
+// 13. POST refresh -- 501 guard (apra-fleet-vcnl.10)
+// =============================================================================
+describe('13. POST refresh: 501 guard when the client lacks memberGitStatus', { skip }, () => {
+    test('501 client-missing-method; the member_git row is unchanged', async () => {
+        const { store, db, client, supervisor } = setup();
+        client.addMember('finn');
+        client.setGitStatus('finn', () => checkoutStatus({ path: '/home/finn/repo', branch: 'main' }));
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members', { member: 'finn' }), mockRes());
+        const before = getMemberGit(db, 'proj-1', 'finn');
+
+        delete client.memberGitStatus;
+        const noProbeSupervisor = createSupervisor();
+        registerProjectRoutes(noProbeSupervisor, { store, client });
+
+        const res = mockRes();
+        await noProbeSupervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members/finn/refresh'), res);
+        assert.equal(res.statusCode, 501);
+        assert.deepEqual(payloadOf(res), { error: 'client-missing-method', method: 'memberGitStatus' });
+
+        assert.deepEqual(getMemberGit(db, 'proj-1', 'finn'), before, 'a 501-guarded refresh must not touch the cached row');
+    });
+});
+
+// =============================================================================
+// 14. POST refresh -- member not bound (apra-fleet-vcnl.10)
+// =============================================================================
+describe('14. POST refresh: member not bound to this project', { skip }, () => {
+    test('404 member-not-bound; no member_git row is created', async () => {
+        const { db, client, supervisor } = setup();
+        client.addMember('greta');
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members/greta/refresh'), res);
+        assert.equal(res.statusCode, 404);
+        assert.equal(payloadOf(res).error, 'member-not-bound');
+        assert.equal(getMemberGit(db, 'proj-1', 'greta'), null);
+    });
+});
+
+// =============================================================================
+// 15. assertOwnerApplied fallthrough on bind (apra-fleet-vcnl.10)
+// =============================================================================
+describe('15. bind 502s on a member_owner outcome assertOwnerApplied does not recognize', { skip }, () => {
+    test('outcome invalid_input -> 502 member-owner-failed; no half-applied member_git row', async () => {
+        const { db, client, supervisor } = setup();
+        client.addMember('hank');
+        client.setOwnerResult('hank', () => ({
+            content: [{ type: 'text', text: '[-] invalid input' }],
+            structuredContent: { outcome: 'invalid_input', action: 'set' },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members', { member: 'hank' }), res);
+        assert.equal(res.statusCode, 502);
+        assert.equal(payloadOf(res).error, 'member-owner-failed');
+        assert.equal(getMemberGit(db, 'proj-1', 'hank'), null, 'a 502 bind must leave no member_git row');
+    });
+
+    test('outcome failed -> 502 member-owner-failed; no half-applied member_git row', async () => {
+        const { db, client, supervisor } = setup();
+        client.addMember('iris');
+        client.setOwnerResult('iris', () => ({
+            content: [{ type: 'text', text: '[-] failed' }],
+            structuredContent: { outcome: 'failed', action: 'set' },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members', { member: 'iris' }), res);
+        assert.equal(res.statusCode, 502);
+        assert.equal(payloadOf(res).error, 'member-owner-failed');
+        assert.equal(getMemberGit(db, 'proj-1', 'iris'), null, 'a 502 bind must leave no member_git row');
+    });
+});
+
+// =============================================================================
+// 16. unbind when member_owner answers member_not_found on clear (apra-fleet-vcnl.10)
+// =============================================================================
+describe('16. unbind still succeeds when member_owner reports member_not_found on clear', { skip }, () => {
+    test('2xx, the member_git row IS deleted, and the response carries owner-clear-member-missing', async () => {
+        const { db, client, supervisor } = setup();
+        client.addMember('jill');
+        client.setGitStatus('jill', () => noCheckoutStatus('/home/jill/repo'));
+        await supervisor.handleRequest(mockReq('POST', '/api/projects/proj-1/members', { member: 'jill' }), mockRes());
+        assert.ok(getMemberGit(db, 'proj-1', 'jill') !== null);
+
+        client.setOwnerResult('jill', () => ({
+            content: [{ type: 'text', text: '[-] member not found' }],
+            structuredContent: { outcome: 'member_not_found', action: 'clear' },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('DELETE', '/api/projects/proj-1/members/jill'), res);
+        assert.equal(res.statusCode, 200);
+        const payload = payloadOf(res);
+        assert.ok(
+            payload.warnings.includes('owner-clear-member-missing'),
+            `expected owner-clear-member-missing in ${JSON.stringify(payload.warnings)}`,
+        );
+
+        assert.equal(getMemberGit(db, 'proj-1', 'jill'), null, 'unbind must still delete the cached row');
     });
 });
