@@ -41,6 +41,7 @@ const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member
 const credentialStoreSetSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'credential-store-set.ts'), 'utf8');
 const memberGitStatusSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-git-status.ts'), 'utf8');
 const memberReservationSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-reservation.ts'), 'utf8');
+const listMembersSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'list-members.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -195,6 +196,19 @@ function memberDetailResultFields() {
     return fields;
 }
 
+/** list_members's "json"-format `members` array entries have no zod schema of their own
+ * (list_members has no INPUT schema fields for its result shape either) -- ground truth is
+ * the imperative object literal built by `members: agents.map((a, i) => ({ ... })),` in
+ * list-members.ts. */
+function listMembersMemberFields() {
+    const block = extractBlock(
+        listMembersSrc,
+        'members: agents.map((a, i) => ({',
+        '\n      })),',
+    );
+    return extractTopLevelKeys(block, 8);
+}
+
 function assertFieldParity(label, schemaFields, typedefFields) {
     const missingFromTypedef = [...schemaFields].filter((f) => !typedefFields.has(f)).sort();
     const extraInTypedef = [...typedefFields].filter((f) => !schemaFields.has(f)).sort();
@@ -252,6 +266,24 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    // Pins the client's ListedMember typedef (the "json"-format `members` array entry
+    // shape list_members returns) against the object literal list-members.ts builds --
+    // including `reservation`, the structured view alongside the legacy `reservedBy`
+    // string, so a future field added there can no longer land without the client
+    // declaring it too.
+    test('ListedMember matches the json-format member object list-members.ts builds', () => {
+        const resultFields = listMembersMemberFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'ListedMember');
+
+        assert.ok(resultFields.size > 5, `expected several list-members.ts member fields, parsed ${resultFields.size}`);
+        assert.ok(typedefFields.size > 5, `expected several ListedMember properties, parsed ${typedefFields.size}`);
+
+        assert.ok(resultFields.has('reservation'), 'sanity: list-members.ts member object should assign reservation');
+        assert.ok(typedefFields.has('reservation'), 'sanity: ListedMember should declare reservation');
+
+        assertFieldParity('ListedMember vs list-members.ts member object', resultFields, typedefFields);
     });
 
     // apra-fleet-ecjf.4.2 (F12): pins the client's MemberReservationOptions

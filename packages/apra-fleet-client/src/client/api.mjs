@@ -118,6 +118,40 @@
  */
 
 /**
+ * One member entry inside listMembers()'s "json"-format `members` array.
+ * @typedef {Object} ListedMember
+ * @property {string} id - UUID of the member
+ * @property {string} name - Friendly name of the member
+ * @property {string} icon - Emoji icon for this member
+ * @property {"local" | "remote"} type - Member type
+ * @property {string} host - "local", "relay", or "host:port"
+ * @property {string} [username] - SSH username (remote members)
+ * @property {string} os - Detected/registered operating system, or "unknown"
+ * @property {string} folder - Working directory on the target machine
+ * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {string} llm_auth - Resolved LLM auth status
+ * @property {string} [ssh_auth] - SSH auth type, remote members only
+ * @property {string|null} session - Current session id, or null
+ * @property {string} created - ISO 8601 creation timestamp
+ * @property {string} lastUsed - ISO 8601 last-used timestamp, or "never"
+ * @property {string|null} category - Group label, or null
+ * @property {string[]|null} tags - Free-form labels, or null
+ * @property {string|null} reservedBy - sprintId currently reserving this member, or null when unreserved
+ * @property {{runId: string, pid: number|null, at: string|null}|null} reservation - Structured
+ *   reservation view alongside `reservedBy`: pid/at are null for a legacy string-only
+ *   reservation, and the whole field is null when unreserved.
+ * @property {boolean} unreservable - True when this member is never exclusively reservable
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Registered Windows shell
+ * @property {{cheap?: string, standard?: string, premium?: string}} [modelTiers] - Per-member model tier map
+ * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member
+ *
+ * Mirrors the `members` array entries list-members.ts's json format builds field-for-field
+ * (pinned by test/client-server-typedef-parity.test.mjs).
+ */
+
+/**
  * @typedef {Object} FleetStatusOptions
  * @property {"compact" | "json"} [format] - Output format
  */
@@ -759,6 +793,9 @@ export class ApraFleet {
      * a dead sprint frees itself.
      *
      * @param {ListMembersOptions} [options]
+     * @returns {Promise<string|{server_version: string, total: number, cloud?: Object, members: ListedMember[]}>}
+     *   A compact text summary when format is "compact" (default), or the structured envelope
+     *   (with `members: ListedMember[]`) when format is "json".
      */
     async listMembers(options = {}) {
         return this.mcpClient.callTool('list_members', options);

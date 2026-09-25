@@ -301,7 +301,10 @@ In `"json"` format each member carries both reservation views: `reservedBy`
 fleet-supervisor overlap check use) and `reservation` (`{runId, pid, at}` or
 `null`; `pid`/`at` are `null` for a legacy string-only reservation). Listing
 also reaps a holder whose recorded pid no longer exists on the fleet server's
-host, so a member wedged by a dead sprint frees itself.
+host, so a member wedged by a dead sprint frees itself. Each entry's full
+field set is typed as `ListedMember` in `api.mjs`, pinned against the
+`members` object list-members.ts builds by
+`test/client-server-typedef-parity.test.mjs`.
 
 #### `fleetStatus(options: FleetStatusOptions = {})`
 

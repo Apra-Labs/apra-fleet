@@ -46,6 +46,9 @@ What shipped and is verified working:
 - **`packages/apra-fleet-client` kept in lockstep** with both changes:
   wrappers, typedefs and `api-reference.md` rows for the new reservation
   fields and the owner-tag refusal parameter.
+- **The `member.env` map a project bind writes (S8) is now exported into
+  every dispatch**, since S8's project-bind env entries flow through the
+  same registry `env` field this sprint wires into the dispatch path.
 
 Carried forward (filed as follow-up work, not fixed this sprint, all
 lower priority than the goal and left open for a future sprint):
