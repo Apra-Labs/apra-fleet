@@ -14,7 +14,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "apra-fleet": "dist/index.js"
+    "apra-fleet": "dist/index.js",
+    "lazyfleet": "dist/lazy/cli.js"
   },
   "engines": {
     "node": ">=22.0.0"
