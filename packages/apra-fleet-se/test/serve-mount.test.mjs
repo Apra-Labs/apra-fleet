@@ -9,7 +9,7 @@ import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
 import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
 import { registerProjectsStoreUnavailableRoutes } from '../bin/serve.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
-import { PACKAGE_ID } from '../src/registration/manifest.mjs';
+import { PACKAGE_ID, buildManifest } from '../src/registration/manifest.mjs';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 
 // =============================================================================
@@ -142,6 +142,45 @@ describe('serve-mount: /api/projects, /ui, store-unavailable, proxy-hop credenti
         assert.equal(uiProjectsRes.statusCode, 200);
         assert.ok(uiProjectsRes.headers['Content-Type'].includes('text/html'));
         assert.ok(uiProjectsRes.body.includes('fleet-supervisor UI arrives in a later sprint'));
+    });
+
+    test('GET /ui/panels/git (two-segment manifest panel path) without a token -> 200 text/html placeholder', async () => {
+        // apra-fleet-g6ap.11: manifest.mjs declares panels: [{path: '/ui/panels/git'}],
+        // a TWO-segment path -- server.mjs's `:param` matcher only ever matches
+        // one segment, so a bare /ui/:rest pattern route cannot reach this path.
+        // registerUiRoutes() must register it as its own exact route (derived
+        // from the manifest itself) for the shell's panel iframe not to 404.
+        const token = 'f'.repeat(64);
+        const supervisor = createSupervisor({ token });
+        registerUiRoutes(supervisor);
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/ui/panels/git', {}), res);
+        assert.equal(res.statusCode, 200);
+        assert.ok(res.headers['Content-Type'].includes('text/html'));
+        assert.ok(res.body.includes('fleet-supervisor UI arrives in a later sprint'));
+    });
+
+    test('every nav[].path and panels[].path buildManifest() declares resolves to 200 text/html against the placeholder', async () => {
+        // Guards against the manifest ever outrunning the placeholder's routes
+        // again: whatever paths buildManifest() declares -- of ANY depth --
+        // must all answer 200, not just the ones the routing table happens to
+        // hardcode today.
+        const token = 'g'.repeat(64);
+        const supervisor = createSupervisor({ token });
+        registerUiRoutes(supervisor);
+
+        const manifest = buildManifest({ baseUrl: 'http://127.0.0.1:1' });
+        const declaredPaths = [...manifest.nav, ...manifest.panels].map((entry) => entry.path);
+        assert.ok(declaredPaths.length > 0, 'expected buildManifest() to declare at least one nav/panel path');
+
+        for (const path of declaredPaths) {
+            const res = mockRes();
+            // eslint-disable-next-line no-await-in-loop
+            await supervisor.handleRequest(mockReq('GET', path, {}), res);
+            assert.equal(res.statusCode, 200, `expected GET ${path} -> 200, got ${res.statusCode}`);
+            assert.ok(res.headers['Content-Type'].includes('text/html'), `expected GET ${path} -> text/html`);
+        }
     });
 
     test('store-unavailable: supervisor starts, GET /api/projects -> 503 store-unavailable', async () => {
