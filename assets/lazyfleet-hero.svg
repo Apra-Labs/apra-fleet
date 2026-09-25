@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560" role="img" aria-labelledby="t d">
+  <title id="t">lazyfleet</title>
+  <desc id="d">A large, very relaxed manager naps on a couch with a laptop on his belly and a drink nearby, while three busy workers type at their desks behind him.</desc>
+  <defs>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbf5ea"/>
+      <stop offset="1" stop-color="#f3e8d6"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bfe3f7"/>
+      <stop offset="1" stop-color="#e6f5fd"/>
+    </linearGradient>
+    <linearGradient id="couch" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f7d74"/>
+      <stop offset="1" stop-color="#23605a"/>
+    </linearGradient>
+    <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf77"/>
+      <stop offset="1" stop-color="#f59e4b"/>
+    </linearGradient>
+    <g id="worker-desk">
+      <!-- desk -->
+      <rect x="-40" y="300" width="150" height="12" rx="3" fill="#a16207"/>
+      <rect x="-32" y="312" width="8" height="46" fill="#854d0e"/>
+      <rect x="92" y="312" width="8" height="46" fill="#854d0e"/>
+      <!-- laptop -->
+      <polygon points="18,298 78,298 86,252 30,252" fill="#1f2937"/>
+      <polygon points="24,293 76,293 82,257 34,257" fill="#60a5fa"/>
+      <rect x="10" y="296" width="80" height="5" rx="2" fill="#374151"/>
+      <!-- code lines on screen -->
+      <rect x="38" y="262" width="26" height="3" rx="1.5" fill="#dbeafe"/>
+      <rect x="36" y="270" width="36" height="3" rx="1.5" fill="#bfdbfe"/>
+      <rect x="34" y="278" width="20" height="3" rx="1.5" fill="#dbeafe"/>
+      <!-- mug -->
+      <rect x="-26" y="284" width="16" height="16" rx="3" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+      <path d="M-10 288 q8 4 0 9" fill="none" stroke="#9ca3af" stroke-width="2"/>
+      <!-- chair -->
+      <rect x="-86" y="296" width="44" height="10" rx="4" fill="#475569"/>
+      <rect x="-92" y="248" width="10" height="56" rx="4" fill="#475569"/>
+      <rect x="-68" y="306" width="6" height="40" fill="#334155"/>
+      <rect x="-84" y="344" width="38" height="5" rx="2.5" fill="#334155"/>
+      <!-- body -->
+      <rect x="-80" y="250" width="34" height="50" rx="14" fill="var(--c)"/>
+      <!-- legs -->
+      <path d="M-60 300 h36 v40" fill="none" stroke="#1e3a5f" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- arm reaching keyboard -->
+      <path d="M-52 266 q20 14 46 28" fill="none" stroke="var(--c)" stroke-width="10" stroke-linecap="round"/>
+      <circle cx="-4" cy="294" r="5" fill="#f1c9a5"/>
+      <!-- head -->
+      <circle cx="-60" cy="232" r="17" fill="#f1c9a5"/>
+      <path d="M-77 228 q17 -22 34 0 q-6 -8 -17 -8 q-11 0 -17 8z" fill="var(--h)"/>
+      <circle cx="-51" cy="233" r="2" fill="#1f2937"/>
+      <path d="M-52 242 q4 2 7 0" fill="none" stroke="#1f2937" stroke-width="1.6" stroke-linecap="round"/>
+      <!-- sweat and motion -->
+      <path d="M-82 222 q-4 7 0 10 q4 -3 0 -10z" fill="#38bdf8"/>
+      <path d="M4 280 l8 -6 M6 288 l10 -2 M4 296 l9 3" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <!-- room -->
+  <rect width="1200" height="560" fill="url(#wall)"/>
+  <rect y="360" width="1200" height="200" fill="#e7d5b8"/>
+  <rect y="356" width="1200" height="8" fill="#d6bf99"/>
+  <g stroke="#dcc7a4" stroke-width="2">
+    <line x1="0" y1="420" x2="1200" y2="420"/>
+    <line x1="0" y1="490" x2="1200" y2="490"/>
+  </g>
+
+  <!-- window -->
+  <rect x="40" y="40" width="200" height="150" rx="8" fill="#ffffff"/>
+  <rect x="50" y="50" width="180" height="130" rx="4" fill="url(#sky)"/>
+  <circle cx="196" cy="84" r="18" fill="#fde047"/>
+  <path d="M50 162 q34 -34 66 0 q26 -26 52 0 q30 -24 62 0 v18 h-180z" fill="#86efac"/>
+  <path d="M76 96 q12 -12 26 0 q10 -8 20 2 h-50z" fill="#ffffff" opacity="0.9"/>
+  <line x1="140" y1="50" x2="140" y2="180" stroke="#ffffff" stroke-width="6"/>
+  <line x1="50" y1="116" x2="230" y2="116" stroke="#ffffff" stroke-width="6"/>
+
+  <!-- clock -->
+  <circle cx="690" cy="84" r="30" fill="#ffffff" stroke="#57534e" stroke-width="4"/>
+  <line x1="690" y1="84" x2="690" y2="64" stroke="#1f2937" stroke-width="3" stroke-linecap="round"/>
+  <line x1="690" y1="84" x2="704" y2="92" stroke="#1f2937" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- board -->
+  <rect x="880" y="40" width="270" height="170" rx="6" fill="#ffffff" stroke="#a8a29e" stroke-width="4"/>
+  <text x="900" y="76" font-family="Verdana, sans-serif" font-size="20" font-weight="700" fill="#1f2937">TODAY</text>
+  <g font-family="Verdana, sans-serif" font-size="15" fill="#374151">
+    <text x="928" y="108">parser rewrite</text>
+    <text x="928" y="136">fix flaky tests</text>
+    <text x="928" y="164">update docs</text>
+    <text x="928" y="192">nap</text>
+  </g>
+  <g stroke="#16a34a" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M902 102 l6 6 l10 -12"/>
+    <path d="M902 130 l6 6 l10 -12"/>
+    <path d="M902 158 l6 6 l10 -12"/>
+  </g>
+  <rect x="902" y="178" width="16" height="16" rx="3" fill="none" stroke="#c2410c" stroke-width="3"/>
+  <text x="1010" y="192" font-family="Verdana, sans-serif" font-size="13" font-style="italic" fill="#c2410c">(in progress)</text>
+
+  <!-- workers -->
+  <use href="#worker-desk" x="560" y="20" style="--c:#6366f1;--h:#3f2d1f"/>
+  <use href="#worker-desk" x="790" y="20" style="--c:#ec4899;--h:#111827"/>
+  <use href="#worker-desk" x="1020" y="20" style="--c:#14b8a6;--h:#92400e"/>
+
+  <!-- worker chatter -->
+  <g font-family="Verdana, sans-serif" font-size="14" font-weight="700">
+    <rect x="560" y="196" width="92" height="30" rx="15" fill="#ffffff" stroke="#6366f1" stroke-width="2.5"/>
+    <text x="606" y="216" text-anchor="middle" fill="#4338ca">on it!</text>
+    <rect x="730" y="176" width="130" height="30" rx="15" fill="#ffffff" stroke="#ec4899" stroke-width="2.5"/>
+    <text x="795" y="196" text-anchor="middle" fill="#be185d">tests green</text>
+    <rect x="968" y="226" width="96" height="30" rx="15" fill="#ffffff" stroke="#14b8a6" stroke-width="2.5"/>
+    <text x="1016" y="246" text-anchor="middle" fill="#0f766e">merged</text>
+  </g>
+
+  <!-- rug -->
+  <ellipse cx="320" cy="490" rx="300" ry="42" fill="#fca5a5" opacity="0.55"/>
+  <ellipse cx="320" cy="490" rx="250" ry="30" fill="none" stroke="#f87171" stroke-width="3" stroke-dasharray="10 8" opacity="0.7"/>
+
+  <!-- couch -->
+  <rect x="70" y="330" width="480" height="80" rx="28" fill="#1d4f4a"/>
+  <rect x="80" y="380" width="460" height="80" rx="22" fill="url(#couch)"/>
+  <rect x="36" y="350" width="70" height="116" rx="28" fill="#2a7068"/>
+  <rect x="514" y="350" width="70" height="116" rx="28" fill="#2a7068"/>
+  <rect x="100" y="460" width="16" height="22" rx="4" fill="#44403c"/>
+  <rect x="504" y="460" width="16" height="22" rx="4" fill="#44403c"/>
+
+  <!-- manager: legs and feet up on the right armrest -->
+  <path d="M400 392 q70 -4 150 -30" fill="none" stroke="#334155" stroke-width="40" stroke-linecap="round"/>
+  <ellipse cx="578" cy="344" rx="26" ry="15" fill="#1c1917" transform="rotate(-24 578 344)"/>
+  <ellipse cx="566" cy="364" rx="24" ry="14" fill="#292524" transform="rotate(-18 566 364)"/>
+
+  <!-- manager: big belly -->
+  <ellipse cx="300" cy="370" rx="150" ry="66" fill="url(#shirt)"/>
+  <path d="M190 350 q110 -50 220 0" fill="none" stroke="#f08a2c" stroke-width="3" opacity="0.6"/>
+  <circle cx="300" cy="352" r="3" fill="#b45309"/>
+  <circle cx="302" cy="372" r="3" fill="#b45309"/>
+  <circle cx="300" cy="392" r="3" fill="#b45309"/>
+  <!-- tie, loosened -->
+  <path d="M196 350 l26 6 l-8 14 z" fill="#dc2626"/>
+  <path d="M214 368 q30 14 36 44 l-14 4 q-10 -26 -30 -40z" fill="#dc2626"/>
+
+  <!-- laptop on belly -->
+  <g transform="rotate(-8 318 300)">
+    <rect x="264" y="252" width="112" height="70" rx="6" fill="#111827"/>
+    <rect x="271" y="259" width="98" height="56" rx="3" fill="#0f172a"/>
+    <text x="320" y="282" text-anchor="middle" font-family="Verdana, sans-serif" font-size="13" font-weight="700" fill="#fb923c">lazyfleet</text>
+    <text x="320" y="302" text-anchor="middle" font-family="Verdana, sans-serif" font-size="11" fill="#4ade80">3/3 done</text>
+    <rect x="256" y="320" width="128" height="8" rx="3" fill="#374151"/>
+  </g>
+
+  <!-- manager: arms folded behind head -->
+  <path d="M214 344 Q204 270 160 276 Q124 280 116 306" fill="none" stroke="#f59e4b" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M214 344 Q204 270 160 276" fill="none" stroke="#fbbf77" stroke-width="8" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- manager: head resting on the left armrest -->
+  <circle cx="132" cy="332" r="38" fill="#f5c9a0"/>
+  <path d="M96 318 q10 -34 50 -30 q-26 4 -34 30z" fill="#57534e"/>
+  <circle cx="166" cy="322" r="7" fill="#f5c9a0"/>
+  <!-- double chin -->
+  <path d="M150 360 q-18 12 -40 4" fill="none" stroke="#e0a97e" stroke-width="3" stroke-linecap="round"/>
+  <!-- sunglasses -->
+  <rect x="112" y="318" width="22" height="13" rx="5" fill="#111827"/>
+  <rect x="140" y="318" width="22" height="13" rx="5" fill="#111827"/>
+  <line x1="134" y1="323" x2="140" y2="323" stroke="#111827" stroke-width="3"/>
+  <rect x="116" y="320" width="7" height="3" rx="1.5" fill="#6b7280"/>
+  <!-- content smile -->
+  <path d="M124 346 q14 10 28 0" fill="none" stroke="#7c2d12" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- zzz -->
+  <g font-family="Verdana, sans-serif" font-weight="700" fill="#7c3aed">
+    <text x="70" y="262" font-size="22">z</text>
+    <text x="50" y="236" font-size="30">z</text>
+    <text x="24" y="202" font-size="40">Z</text>
+  </g>
+
+  <!-- side table with drink -->
+  <rect x="610" y="400" width="80" height="10" rx="4" fill="#a16207"/>
+  <rect x="646" y="410" width="8" height="64" fill="#854d0e"/>
+  <rect x="626" y="472" width="48" height="8" rx="4" fill="#854d0e"/>
+  <path d="M632 356 h36 l-6 44 h-24z" fill="#fef9c3" opacity="0.9" stroke="#eab308" stroke-width="2"/>
+  <path d="M634 368 h32 l-4 30 h-24z" fill="#fb923c" opacity="0.85"/>
+  <line x1="658" y1="372" x2="676" y2="330" stroke="#ef4444" stroke-width="4" stroke-linecap="round"/>
+  <path d="M630 346 q14 -22 32 -4z" fill="#ec4899"/>
+  <line x1="646" y1="340" x2="648" y2="362" stroke="#78350f" stroke-width="2"/>
+
+  <!-- speech bubble -->
+  <g>
+    <path d="M282 110 h232 a18 18 0 0 1 18 18 v36 a18 18 0 0 1 -18 18 h-168 l-126 76 l70 -76 h-8 a18 18 0 0 1 -18 -18 v-36 a18 18 0 0 1 18 -18z" fill="#ffffff" stroke="#1f2937" stroke-width="3"/>
+    <text x="398" y="139" text-anchor="middle" font-family="Verdana, sans-serif" font-size="17" font-weight="700" fill="#1f2937">Ship it.</text>
+    <text x="398" y="163" text-anchor="middle" font-family="Verdana, sans-serif" font-size="15" fill="#44403c">Wake me when it is green.</text>
+  </g>
+</svg>

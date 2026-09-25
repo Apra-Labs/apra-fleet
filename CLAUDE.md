@@ -1,6 +1,6 @@
-# Apra Fleet — Claude Code Context
+# Apra Fleet - Claude Code Context
 
-Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
+Read `README.md` for what lazyfleet is and `docs/reference.md` for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
 
 ## Dev commands
 
