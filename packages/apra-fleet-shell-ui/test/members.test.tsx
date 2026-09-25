@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Members } from "../src/pages/Members";
+import { MEMBERS_A, MEMBERS_B } from "./member-fixtures";
 
 // apra-fleet-9h9j.2.3: end-to-end coverage for the Members screen (W1 table,
 // drawer actions, background refresh, apra-fleet-9h9j.2.1) against a mocked
@@ -15,49 +16,6 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const MEMBERS_A = {
-  members: [
-    {
-      id: "member-1",
-      name: "alpha",
-      type: "worker",
-      os: "linux",
-      shell: "gitbash",
-      llmProvider: "anthropic",
-      llm_auth: "ok",
-      tags: ["core", "gpu"],
-      reservedBy: "sprint-42",
-      owner: "alice@example.com"
-    },
-    {
-      id: "member-2",
-      name: "beta",
-      type: "orchestrator",
-      os: "windows",
-      llmProvider: "openai",
-      llm_auth: "expired",
-      tags: null,
-      reservedBy: null,
-      owner: null
-    }
-  ]
-};
-
-const MEMBERS_B = {
-  members: [
-    {
-      id: "member-3",
-      name: "gamma",
-      type: "worker",
-      os: "macos",
-      llmProvider: "claude",
-      llm_auth: "ok",
-      tags: null,
-      reservedBy: null,
-      owner: null
-    }
-  ]
-};
 
 interface FetchCall {
   url: string;
@@ -149,9 +107,12 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
       "Owner"
     ]);
 
-    const rowText = container.textContent ?? "";
-    expect(rowText).toContain("alice@example.com");
-    expect(rowText).toContain("(none)");
+    // owner is the server's {package, ref} object, rendered "<package>@<ref>";
+    // an absent owner renders "(none)".
+    const ownerCells = Array.from(container.querySelectorAll("tbody tr")).map(
+      (tr) => tr.querySelectorAll("td")[7]?.textContent
+    );
+    expect(ownerCells).toEqual(["fleet-sprint@proj-alpha", "(none)"]);
   });
 
   it("opens a drawer on row click and issues exactly one request per action button", async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Page, Table, type TableColumn } from "@apralabs/apra-fleet-ui-kit";
-import { fetchMembers, type FleetMember } from "../api/members";
+import { fetchMembers, formatOwner, type FleetMember } from "../api/members";
 import { MemberDrawer } from "./members/MemberDrawer";
 import { AddMemberWizard } from "./members/AddMemberWizard";
 
@@ -26,7 +26,7 @@ const columns: Array<TableColumn<FleetMember>> = [
     render: (row) => (row.tags && row.tags.length > 0 ? row.tags.join(", ") : "-")
   },
   { key: "reservedBy", header: "Reserved by", render: (row) => row.reservedBy ?? "-" },
-  { key: "owner", header: "Owner", render: (row) => row.owner ?? "(none)" }
+  { key: "owner", header: "Owner", render: (row) => formatOwner(row.owner) }
 ];
 
 export interface MembersProps {

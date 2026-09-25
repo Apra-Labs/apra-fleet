@@ -2,12 +2,21 @@
 // Each page gets its own api module (apra-fleet-9h9j.2.1) so the members and
 // secrets/health lanes never contend for one shared src/api/fleet.ts file.
 
-/** Shape mirrors the "member" entries list_members(format: "json") returns
- *  (src/tools/list-members.ts) -- only the fields the S1/W1 table needs are
- *  declared here. `owner` is populated by a sibling sprint that owns
- *  src/tools/ -- absent today, rendered as "(none)" until it lands. `shell`
- *  is likewise not yet emitted by list_members; rendered as "-" when absent. */
-export interface FleetMember extends Record<string, unknown> {
+/** list_members' owner tag: which package/consumer currently owns the member
+ *  (Agent.owner in src/types.ts). An object, NOT a string -- rendering it
+ *  directly as a React child throws and blanks the whole screen. */
+export interface MemberOwner {
+  package: string;
+  ref: string;
+}
+
+/** The fields the shell-ui reads from each "member" entry list_members(format:
+ *  "json") returns (src/tools/list-members.ts). Kept free of an index
+ *  signature so memberFieldGuards below can be checked for completeness
+ *  (keyof) -- FleetMember adds the index signature Table needs. Fields a
+ *  given server build may not emit (owner/env/shell) are optional and
+ *  render as "(none)"/"-". */
+export interface FleetMemberFields {
   id: string;
   name: string;
   type: string;
@@ -17,7 +26,52 @@ export interface FleetMember extends Record<string, unknown> {
   llm_auth: string;
   tags?: string[] | null;
   reservedBy?: string | null;
-  owner?: string | null;
+  owner?: MemberOwner | null;
+  env?: Record<string, string> | null;
+  vcsTokenExpiresAt?: string | null;
+}
+
+export interface FleetMember extends FleetMemberFields, Record<string, unknown> {}
+
+const isString = (v: unknown): v is string => typeof v === "string";
+const optional = (guard: (v: unknown) => boolean) => (v: unknown) =>
+  v === undefined || v === null || guard(v);
+
+export function isMemberOwner(v: unknown): v is MemberOwner {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    isString((v as { package?: unknown }).package) &&
+    isString((v as { ref?: unknown }).ref)
+  );
+}
+
+/** Runtime shape check per declared field. The drift guard
+ *  (test/list-members-drift.test.tsx) runs these against the REAL server
+ *  list_members json output; the mapped type makes tsc (npm run build:ui)
+ *  fail if a field is added to FleetMemberFields without a guard. */
+export const memberFieldGuards: { [K in keyof FleetMemberFields]-?: (v: unknown) => boolean } = {
+  id: isString,
+  name: isString,
+  type: isString,
+  os: optional(isString),
+  shell: optional(isString),
+  llmProvider: isString,
+  llm_auth: isString,
+  tags: optional((v) => Array.isArray(v) && v.every(isString)),
+  reservedBy: optional(isString),
+  owner: optional(isMemberOwner),
+  env: optional(
+    (v) => typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every(isString)
+  ),
+  vcsTokenExpiresAt: optional(isString)
+};
+
+/** Display form of the owner tag: "<package>@<ref>", or "(none)". A
+ *  malformed value renders "(none)" rather than crashing the table. */
+export function formatOwner(owner: unknown): string {
+  return isMemberOwner(owner) ? `${owner.package}@${owner.ref}` : "(none)";
 }
 
 interface ListMembersResponse {
