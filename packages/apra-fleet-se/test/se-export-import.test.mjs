@@ -258,6 +258,75 @@ describe('se-export-import', { skip }, () => {
         await ledgerB.stop();
     });
 
+    test('refusal covers a member bound in the TARGET store even when the import payload never names it', async () => {
+        // Regression for apra-fleet-vcnl.7: importProject() used to build its
+        // affected-member set entirely from the incoming payload
+        // (backlogMember + memberGit[].member). If a live reservation holds a
+        // member that is bound to project P in the TARGET store but does NOT
+        // appear in the file being imported, the refusal must still fire --
+        // otherwise import silently rewrites P's row out from under a
+        // running sprint on that resident member.
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        createProject(storeA.db, {
+            id: 'resident-1',
+            name: 'Resident One',
+            backlogMember: 'member-y',
+            beads: { dir: '/tmp/resident-1/.beads' },
+        });
+        // Export only mentions member-y -- NOT member-x.
+        upsertMemberGit(storeA.db, { projectId: 'resident-1', member: 'member-y', branch: 'main' });
+        const exported = exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'resident-1' });
+        assert.ok(
+            !exported.memberGit.some((mg) => mg.member === 'member-x')
+                && exported.project.backlogMember !== 'member-x',
+            'sanity: the export payload must not name member-x anywhere',
+        );
+
+        const dirB = await tempDataDir();
+        const storeB = openTempStore(dirB);
+        const ledgerB = createLedger({ dataDir: dirB });
+        await ledgerB.start();
+
+        // Store B already has the SAME project bound to member-x (e.g. it
+        // was bound after this export was taken, or was pruned from it).
+        createProject(storeB.db, {
+            id: 'resident-1',
+            name: 'Resident One (in B)',
+            backlogMember: 'member-x',
+            beads: { dir: '/tmp/resident-1/.beads' },
+        });
+        upsertMemberGit(storeB.db, { projectId: 'resident-1', member: 'member-x', branch: 'main' });
+
+        // A live run in B holds member-x.
+        await ledgerB.claim('live-sprint-resident', { members: ['member-x'] });
+
+        const beforeProject = getProject(storeB.db, 'resident-1');
+        const beforeMemberGit = listMemberGit(storeB.db, 'resident-1');
+
+        assert.throws(
+            () => importProject({ db: storeB.db, ledger: ledgerB, data: exported }),
+            { code: 'ERR_LIVE_RUN' },
+        );
+
+        assert.deepEqual(
+            getProject(storeB.db, 'resident-1'),
+            beforeProject,
+            'B\'s resident project row must be unchanged after the refused import',
+        );
+        assert.deepEqual(
+            listMemberGit(storeB.db, 'resident-1'),
+            beforeMemberGit,
+            'B\'s resident member_git rows must be unchanged after the refused import',
+        );
+
+        await ledgerA.stop();
+        await ledgerB.stop();
+    });
+
     test('export of an unknown project and import of a wrong-format file both fail without writing anything', async () => {
         const dirA = await tempDataDir();
         const storeA = openTempStore(dirA);

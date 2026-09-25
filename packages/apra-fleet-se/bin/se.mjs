@@ -121,6 +121,11 @@ export function importProject({ db, ledger, data }) {
     const liveRuns = reservations.filter((r) => !r.exitedAt);
 
     // Collect all members that would be affected: bound members from member_git + backlog member
+    // from the incoming payload, unioned with the target store's own resident view of this
+    // project (a live run may hold a member bound in the TARGET store that the import file
+    // never mentions -- e.g. it was bound after the export was taken, or dropped from the
+    // export -- and the refusal must still cover it, or import would silently rewrite the
+    // project out from under that running sprint).
     const affectedMembers = new Set();
     if (project.backlogMember) {
         affectedMembers.add(project.backlogMember);
@@ -130,6 +135,15 @@ export function importProject({ db, ledger, data }) {
             if (mg && mg.member) {
                 affectedMembers.add(mg.member);
             }
+        }
+    }
+    const residentProject = getProject(db, project.id);
+    if (residentProject && residentProject.backlogMember) {
+        affectedMembers.add(residentProject.backlogMember);
+    }
+    for (const mg of listMemberGit(db, project.id)) {
+        if (mg && mg.member) {
+            affectedMembers.add(mg.member);
         }
     }
 
@@ -148,7 +162,7 @@ export function importProject({ db, ledger, data }) {
     }
 
     // Upsert project: create if absent, else update
-    const existing = getProject(db, project.id);
+    const existing = residentProject;
     let result;
     if (existing) {
         result = updateProject(db, project.id, {
