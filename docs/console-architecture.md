@@ -246,6 +246,105 @@ back to `index.html`, matching standard SPA router behavior.
   distribution channel's asset manifest; the serving code on the receiving
   end is already in place and does not need to change.
 
+## Shared local-token helper: generic mechanism vs. per-caller route policy
+
+The token resolution, bearer/cookie credential check, and fail-closed path
+normaliser used by the console guard live in a shared helper in the client
+package (`packages/apra-fleet-client`'s `./auth/*` subpath export), not in
+`src/console/`. This is a deliberate split: the *mechanism* (resolve
+`~/.apra-fleet/fleet.key` with a `private/token` fallback, compare tokens in
+constant time, parse a cookie by exact name, normalise a path the same way a
+router does) is identical for any local HTTP surface on the machine -- today
+that is both the fleet-sprint supervisor and this console -- so it is lifted
+once and shared. The *route policy* (which paths are guarded, which cookie
+name to use) is deliberately kept local to each caller instead of also being
+centralised. A previously-fixed regression is the reason: a blanket
+guard-by-prefix rule shared across callers once caused an unauthenticated
+`GET /api/health` to be 401'd because a different caller's prefix rule
+matched it too. Sharing the mechanism but not the policy means one caller's
+route table can never leak into another's.
+
+The token itself is never logged or included in a thrown `Error` message, on
+either side of this split.
+
+**Invariant for any path derived from `os.homedir()`/`process.env.HOME` that a
+test needs to isolate:** compute it lazily, inside the function that uses it,
+never as a module-load-time constant. A constant computed once at import time
+freezes whatever `HOME` was set to at first import, so a test that sets
+`process.env.HOME` in a `beforeEach` (after the module has already been
+imported once in that process) silently keeps reading/writing the real
+developer's files instead of the isolated temp one -- with no error, because
+the code path still "works," just against the wrong file. This bit the
+console's own key path once; the fix is to read the environment fresh on
+every call rather than adding test-only indirection.
+
+## Workflow-package registry
+
+A workflow package is a third-party HTTP service the console can reverse-proxy
+to under `/ext/<package id>/*` (see below). The registry
+(`src/services/workflow-packages.ts`) is the single source of truth for which
+package ids exist and what their upstream `baseUrl` is:
+
+- **Storage**: one JSON file in the fleet data directory, written atomically
+  (temp file + rename, never an in-place truncate-and-write) so a crash
+  mid-write can never leave a half-written registry. Every register/list/
+  unregister call re-reads the file fresh rather than trusting an in-memory
+  cache, matching the pattern the main fleet member registry already uses --
+  there is no separate "loaded" state to keep in sync across calls or forget
+  to reset between tests.
+- **Two sources merge into one list**: packages registered at runtime through
+  the HTTP routes, and packages declared statically in user config under the
+  `workflowPackages` key. Both are read from through the same service so the
+  proxy and the health poll never need to know which source a given package
+  id came from.
+- **Compatibility check at registration**: each package declares an
+  `apraFleetApi` version range it requires; registration checks the running
+  server's version against that range and rejects an incompatible package
+  rather than accepting one that will fail at first use. Because this repo
+  has no semver dependency, the range matcher is a narrow, deliberately
+  hand-rolled subset (exact version, single comparator, or caret/tilde range;
+  `*`; space-separated AND; no OR or hyphen ranges) that throws a clear error
+  for any syntax outside that subset -- a range check that fails open on
+  unrecognised syntax would be worse than one that refuses to guess.
+- **baseUrl scheme is validated in two places on purpose**: once at
+  registration (rejecting the package before it is ever persisted) and again
+  in the proxy's own resolution path (refusing to dispatch to a persisted
+  entry whose scheme is bad). The second check exists because a package can
+  reach the registry through the static config path, which is not gated by
+  the registration route at all -- validating only at registration would
+  leave a hole for anything declared directly in config.
+- **Health polling** runs per package (registered or config-declared) with an
+  injectable clock and an injectable fetch, so tests never depend on a real
+  timer; a failing probe is swallowed inside the poll itself and only
+  degrades that one package's health record; it must never throw into a
+  request path. "Not registered" (404) and "registered but unreachable"
+  (502, package-offline body) are kept as distinct answers throughout this
+  service and the proxy, deliberately -- collapsing them would make it
+  impossible for an operator to tell "typo'd package id" from "package
+  crashed" from the response alone.
+
+## compose_permissions denylist for console and supervisor endpoints
+
+`compose_permissions` (the tool that composes a member's auto-granted
+permission profile) hard-refuses any requested grant that targets the
+console's own HTTP surface (`/ui`, `/api`, `/ext` on the console's port) or
+the fleet-supervisor's HTTP API port, regardless of role or tags. The
+supervisor port is denied wholesale (not enumerated endpoint-by-endpoint)
+because its route table keeps growing -- an allowlist-by-enumeration approach
+would need a matching edit on every future supervisor route, and a forgotten
+edit fails open. The rationale is the same shape as the console's own guard:
+these are local control-plane surfaces, and a member should never be able to
+grant itself a shell command that curls its own control plane's credentialed
+endpoints.
+
+The one exception mechanism is a short, explicit allow-list of exact grants
+that a deployment's own documented operational runbook already relies on
+(e.g. a stale-reservation force-release curl) -- checked strictly *after* the
+catch-all and shell-chaining denial rules, specifically so the exception
+mechanism itself can never be used to resurrect a broader grant than the
+runbook actually documents. There is no general carve-out mechanism: an
+exception is an exact string match against a fixed list, not a pattern.
+
 ## Fitting into the layering model
 
 The console seam follows the same "each layer depends only on layers below
