@@ -935,6 +935,12 @@ export class AgyProvider implements ProviderAdapter {
   }
 }
 
+export const AGY_MEMBER_ALLOWED_TOOLS = [
+  'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
+  'code_flow', 'code_tests', 'kb_session_prime', 'kb_query', 'kb_stats',
+  'kb_capture', 'kb_feedback', 'kb_list',
+];
+
 export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
   'register_member', 'list_members', 'get_member_model_pricing', 'remove_member',
   'update_member', 'dolt_push_mutex', 'child_id_allocator', 'member_reservation',
@@ -944,7 +950,10 @@ export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
   'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
   'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
   'credential_store_list', 'credential_store_delete', 'credential_store_update',
-  'send_email', 'send_message'
+  'send_email', 'send_message', 'report_status', 'respond_to_message',
+  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
+  'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
+  'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
 ];
 
 export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [

@@ -11,6 +11,7 @@ import {
   checkAgyGlobalSkillsWarning,
   AGY_ORCHESTRATOR_DENY_RULES,
   AGY_ORCHESTRATOR_DENIED_TOOLS,
+  AGY_MEMBER_ALLOWED_TOOLS,
   AgyProvider,
   convertClaudeAllowToAgyPermissions,
   formatAgyPermissionRules,
@@ -326,6 +327,35 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(warn).not.toBeNull();
       expect(warn).toContain('Global skill(s) [pm]');
       expect(warn).toContain('visible to AGY members');
+    });
+  });
+
+  describe('Tool registry coverage verification', () => {
+    it('ensures every tool registered in tool-registry.ts is in AGY_MEMBER_ALLOWED_TOOLS or AGY_ORCHESTRATOR_DENIED_TOOLS', () => {
+      const registryPath = path.resolve(__dirname, '../../src/services/tool-registry.ts');
+      const content = fs.readFileSync(registryPath, 'utf8');
+      const matches = [...content.matchAll(/server\.tool\s*\(\s*'([^']+)'/g)].map(m => m[1]);
+
+      const allowedSet = new Set(AGY_MEMBER_ALLOWED_TOOLS);
+      const deniedSet = new Set(AGY_ORCHESTRATOR_DENIED_TOOLS);
+
+      const missing: string[] = [];
+      const duplicates: string[] = [];
+
+      for (const tool of matches) {
+        const inAllowed = allowedSet.has(tool);
+        const inDenied = deniedSet.has(tool);
+
+        if (!inAllowed && !inDenied) {
+          missing.push(tool);
+        }
+        if (inAllowed && inDenied) {
+          duplicates.push(tool);
+        }
+      }
+
+      expect(missing).toEqual([]);
+      expect(duplicates).toEqual([]);
     });
   });
 });
