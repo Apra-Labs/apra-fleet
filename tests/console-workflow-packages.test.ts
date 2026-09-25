@@ -32,7 +32,10 @@ import {
   normalizeServerVersion,
   validateWorkflowPackageBaseUrlScheme,
   OFFLINE_THRESHOLD_MS,
+  DEFAULT_HEALTH_PATH,
+  MAX_MANIFEST_ARRAY_ENTRIES,
 } from '../src/services/workflow-packages.js';
+import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 function noop(_server: McpServer): void {
@@ -602,5 +605,424 @@ describe('workflow-package routes: malformed percent-escape in a parameterised s
     // SAME handle afterwards and require it to succeed.
     const survivedRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
     expect(survivedRes.status).toBe(200);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Manifest fields, credentialed health probe, and the holds/owner-ref consults.
+//
+// Split deliberately: the manifest round-trip and the 400-per-field rejections
+// run over the REAL HTTP route (that is where the {error, field} contract
+// lives), while the probe/consult cases run against a directly-constructed
+// service with fetch, clock and fleet key all injected -- so no case here
+// opens a socket to a package or depends on wall-clock time.
+// -----------------------------------------------------------------------------
+
+/** A baseUrl that fails to connect immediately (port 1 is unroutable), used
+ *  where a case does not care about the probe result. */
+const UNREACHABLE_BASE_URL = 'http://127.0.0.1:1';
+
+const FULL_MANIFEST = {
+  name: 'Example Package',
+  process: 'example-process',
+  version: '2.1.0',
+  health: '/healthz',
+  nav: [
+    { label: 'Overview', path: '/ui/overview' },
+    { label: 'Project View', path: '/ui/project', scope: 'project' },
+  ],
+  panels: [{ slot: 'member-detail', path: '/ui/panel' }],
+  ownerRefs: '/api/owner-refs',
+  holds: '/api/holds/:id',
+};
+
+describe('workflow-package manifest: register round trip over HTTP', () => {
+  it('registers a full manifest and returns every optional field through GET /api/workflow-packages', async () => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+
+    const registerRes = await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-manifest', baseUrl: UNREACHABLE_BASE_URL, apraFleetApi: '*', ...FULL_MANIFEST }),
+    );
+    expect(registerRes.status).toBe(200);
+
+    const listRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
+    expect(listRes.status).toBe(200);
+    const listed = JSON.parse(listRes.body) as { packages: Array<Record<string, unknown>> };
+    const pkg = listed.packages.find((p) => p.id === 'pkg-manifest');
+
+    expect(pkg).toMatchObject({
+      id: 'pkg-manifest',
+      name: 'Example Package',
+      version: '2.1.0',
+      health: '/healthz',
+      ownerRefs: '/api/owner-refs',
+      holds: '/api/holds/:id',
+      panels: [{ slot: 'member-detail', path: '/ui/panel' }],
+    });
+    // nav round-trips with its per-entry scope intact -- the absent-scope and
+    // 'project'-scope entries must stay distinguishable.
+    expect(pkg?.nav).toEqual([
+      { label: 'Overview', path: '/ui/overview' },
+      { label: 'Project View', path: '/ui/project', scope: 'project' },
+    ]);
+  });
+
+  it('re-registering the same id replaces the stored manifest rather than merging it', async () => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+
+    await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-replace', baseUrl: UNREACHABLE_BASE_URL, apraFleetApi: '*', ...FULL_MANIFEST }),
+    );
+    // Re-register WITHOUT the manifest (the supervisor re-registers on every
+    // start; a dropped field must actually disappear, not linger).
+    await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-replace', baseUrl: UNREACHABLE_BASE_URL, apraFleetApi: '*' }),
+    );
+
+    const listRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
+    const listed = JSON.parse(listRes.body) as { packages: Array<Record<string, unknown>> };
+    const pkg = listed.packages.find((p) => p.id === 'pkg-replace');
+    expect(pkg).toMatchObject({ name: null, version: null, health: null, ownerRefs: null, holds: null });
+    expect(pkg?.nav).toEqual([]);
+    expect(pkg?.panels).toEqual([]);
+  });
+});
+
+describe('workflow-package manifest: a malformed optional field answers 400 and persists nothing', () => {
+  it.each([
+    ['a health path with no leading slash', { health: 'healthz' }, 'health'],
+    ['a health path containing a ".." segment', { health: '/a/../../etc' }, 'health'],
+    ['an ownerRefs given as an absolute URL', { ownerRefs: 'https://evil.example/refs' }, 'ownerRefs'],
+    ['a protocol-relative holds path', { holds: '//evil.example/holds/:id' }, 'holds'],
+    ['a holds path missing the ":id" placeholder', { holds: '/api/holds' }, 'holds'],
+    ['an unknown nav scope', { nav: [{ label: 'X', path: '/x', scope: 'global' }] }, 'nav[0].scope'],
+    ['a nav entry with an empty label', { nav: [{ label: '', path: '/x' }] }, 'nav[0].label'],
+    [
+      'an oversize nav array',
+      { nav: Array.from({ length: MAX_MANIFEST_ARRAY_ENTRIES + 1 }, (_, i) => ({ label: `L${i}`, path: `/p${i}` })) },
+      'nav',
+    ],
+    [
+      'an oversize panels array',
+      { panels: Array.from({ length: MAX_MANIFEST_ARRAY_ENTRIES + 1 }, (_, i) => ({ slot: `s${i}`, path: `/p${i}` })) },
+      'panels',
+    ],
+  ])('answers 400 naming the offending field for %s', async (_label, badManifest, expectedField) => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+
+    // Register a good package FIRST so the registry file exists and has
+    // content -- otherwise "nothing was written" would be trivially true.
+    await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-untouched', baseUrl: UNREACHABLE_BASE_URL, apraFleetApi: '*' }),
+    );
+    const fileBefore = fs.readFileSync(REGISTRY_FILE, 'utf-8');
+
+    const res = await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: 'pkg-bad-manifest', baseUrl: UNREACHABLE_BASE_URL, apraFleetApi: '*', ...badManifest }),
+    );
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body) as { error: string; field?: string };
+    expect(body.field).toBe(expectedField);
+    expect(body.error).toBeTruthy();
+
+    // NOTHING persisted: the registry file is byte-identical, so the rejected
+    // package was never partially written and the good entry is untouched.
+    expect(fs.readFileSync(REGISTRY_FILE, 'utf-8')).toBe(fileBefore);
+    expect(fileBefore).not.toContain('pkg-bad-manifest');
+  });
+});
+
+describe('workflow-package manifest: backward compatibility with a pre-manifest registry file', () => {
+  it('a legacy workflow-packages.json without the new fields still loads and lists, with the fields null/[]', async () => {
+    const filePath = await tmpRegistryPath();
+    // Exactly the shape the registry wrote BEFORE the manifest fields
+    // existed -- no name/version/health/nav/panels/ownerRefs/holds keys at all.
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        packages: [{ id: 'pkg-legacy', baseUrl: 'http://localhost:9600', apraFleetApi: '^1.0.0', registeredAt: 123 }],
+      }),
+      'utf-8',
+    );
+
+    const svc = createWorkflowPackageService({
+      filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => 'k'.repeat(64),
+    });
+
+    const listed = svc.list();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: 'pkg-legacy',
+      baseUrl: 'http://localhost:9600',
+      apraFleetApi: '^1.0.0',
+      name: null,
+      version: null,
+      health: null,
+      ownerRefs: null,
+      holds: null,
+    });
+    expect(listed[0].nav).toEqual([]);
+    expect(listed[0].panels).toEqual([]);
+  });
+});
+
+interface RecordedCall {
+  url: string;
+  authorization: string | undefined;
+}
+
+/** Build an injected fetch that records every call's URL and Authorization
+ *  header and answers with `responder`. */
+function recordingFetch(
+  calls: RecordedCall[],
+  responder: (url: string) => Response,
+): typeof fetch {
+  return (async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ url, authorization: headers.authorization });
+    return responder(url);
+  }) as unknown as typeof fetch;
+}
+
+const TEST_FLEET_KEY = 'f'.repeat(64);
+
+describe('workflow-package health probe: manifest path + derived credential', () => {
+  it('probes the manifest health path with Authorization Bearer set to the package-derived credential', async () => {
+    const filePath = await tmpRegistryPath();
+    const calls: RecordedCall[] = [];
+    const svc = createWorkflowPackageService({
+      filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      fetchImpl: recordingFetch(calls, () => okResponse()),
+    });
+    await svc.register({ id: 'pkg-probe', baseUrl: 'http://localhost:9700', apraFleetApi: '*', health: '/custom/health' });
+
+    await svc.refreshHealth();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://localhost:9700/custom/health');
+    // The credential is the DERIVED, per-package one -- never the raw fleet key.
+    expect(calls[0].authorization).toBe(`Bearer ${deriveUpstreamCredential(TEST_FLEET_KEY, 'pkg-probe')}`);
+    expect(calls[0].authorization).not.toContain(TEST_FLEET_KEY);
+    expect(svc.list()[0].offline).toBe(false);
+  });
+
+  it(`falls back to ${DEFAULT_HEALTH_PATH} when the manifest declares no health field`, async () => {
+    const filePath = await tmpRegistryPath();
+    const calls: RecordedCall[] = [];
+    const svc = createWorkflowPackageService({
+      filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      fetchImpl: recordingFetch(calls, () => okResponse()),
+    });
+    await svc.register({ id: 'pkg-default-health', baseUrl: 'http://localhost:9701', apraFleetApi: '*' });
+
+    await svc.refreshHealth();
+
+    expect(calls[0].url).toBe(`http://localhost:9701${DEFAULT_HEALTH_PATH}`);
+  });
+
+  it('a 401 answer counts as a failed probe and ages into offline, exactly like an unreachable package', async () => {
+    const filePath = await tmpRegistryPath();
+    let clock = 0;
+    const svc = createWorkflowPackageService({
+      filePath, now: () => clock, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      // A guarded health route that REFUSES the credential. This must not be
+      // mistaken for "the package answered, so it is up".
+      fetchImpl: (async () => failResponse(401)) as unknown as typeof fetch,
+    });
+    await svc.register({ id: 'pkg-401', baseUrl: 'http://localhost:9702', apraFleetApi: '*', health: '/guarded' });
+
+    clock = 1000;
+    await svc.refreshHealth();
+    expect(svc.list()[0].offline).toBe(false); // failing, but not yet 10 minutes
+
+    clock = 1000 + OFFLINE_THRESHOLD_MS;
+    await svc.refreshHealth();
+    expect(svc.list()[0].offline).toBe(true);
+  });
+});
+
+describe('workflow-package consultHolds', () => {
+  async function holdsService(filePath: string, responder: (url: string) => Response, calls: RecordedCall[] = []) {
+    const svc = createWorkflowPackageService({
+      filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      fetchImpl: recordingFetch(calls, responder),
+    });
+    return svc;
+  }
+
+  it('reports a held package, a not-held package, and replaces ":id" with the URL-encoded member id', async () => {
+    const calls: RecordedCall[] = [];
+    const svc = await holdsService(
+      await tmpRegistryPath(),
+      (url) => ({
+        ok: true,
+        status: 200,
+        json: async () => (url.includes('9801') ? { held: true, reason: 'running a job' } : { held: false }),
+      }) as unknown as Response,
+      calls,
+    );
+    await svc.register({ id: 'pkg-holding', baseUrl: 'http://localhost:9801', apraFleetApi: '*', holds: '/api/holds/:id' });
+    await svc.register({ id: 'pkg-free', baseUrl: 'http://localhost:9802', apraFleetApi: '*', holds: '/api/holds/:id' });
+
+    const results = await svc.consultHolds('member/one?x');
+
+    expect(results.find((r) => r.packageId === 'pkg-holding')).toEqual({
+      packageId: 'pkg-holding', held: true, reason: 'running a job',
+    });
+    expect(results.find((r) => r.packageId === 'pkg-free')).toEqual({ packageId: 'pkg-free', held: false });
+
+    // URL-encoded: a member id containing '/' or '?' must not change the
+    // path shape or graft a query string onto the package's URL.
+    const holdingCall = calls.find((c) => c.url.includes('9801'));
+    expect(holdingCall?.url).toBe(`http://localhost:9801/api/holds/${encodeURIComponent('member/one?x')}`);
+    expect(holdingCall?.url).not.toContain('?x');
+    expect(holdingCall?.authorization).toBe(`Bearer ${deriveUpstreamCredential(TEST_FLEET_KEY, 'pkg-holding')}`);
+  });
+
+  it('an unreachable package comes back as an error entry rather than throwing or reading as "not held"', async () => {
+    const svc = await holdsService(await tmpRegistryPath(), () => {
+      throw new Error('connection refused');
+    });
+    await svc.register({ id: 'pkg-down', baseUrl: 'http://localhost:9803', apraFleetApi: '*', holds: '/api/holds/:id' });
+
+    const results = await svc.consultHolds('member-1');
+
+    expect(results).toHaveLength(1);
+    expect(results[0].packageId).toBe('pkg-down');
+    expect(results[0].error).toMatch(/connection refused/);
+    // held is false ONLY because nothing is known -- the error is what says so.
+    expect(results[0].held).toBe(false);
+  });
+
+  it('a non-ok HTTP answer is an error entry, not a verdict', async () => {
+    const svc = await holdsService(await tmpRegistryPath(), () => failResponse(500));
+    await svc.register({ id: 'pkg-500', baseUrl: 'http://localhost:9804', apraFleetApi: '*', holds: '/api/holds/:id' });
+
+    const results = await svc.consultHolds('member-1');
+    expect(results[0].error).toMatch(/500/);
+  });
+
+  it('a package that declares no holds path is skipped entirely, never reported as "not held"', async () => {
+    const calls: RecordedCall[] = [];
+    const svc = await holdsService(await tmpRegistryPath(), () => okResponse(), calls);
+    await svc.register({ id: 'pkg-no-holds', baseUrl: 'http://localhost:9805', apraFleetApi: '*' });
+
+    const results = await svc.consultHolds('member-1');
+
+    // Absent from the results AND never contacted -- silence from a package
+    // that was never asked must not read as consent.
+    expect(results).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('an offline package is skipped, so a package known to be down cannot silently clear a hold', async () => {
+    const filePath = await tmpRegistryPath();
+    let clock = 0;
+    const calls: RecordedCall[] = [];
+    const svc = createWorkflowPackageService({
+      filePath, now: () => clock, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      fetchImpl: recordingFetch(calls, () => failResponse(503)),
+    });
+    await svc.register({ id: 'pkg-offline', baseUrl: 'http://localhost:9806', apraFleetApi: '*', holds: '/api/holds/:id' });
+
+    // Age it past the offline threshold on the fake clock.
+    clock = 1000;
+    await svc.refreshHealth();
+    clock = 1000 + OFFLINE_THRESHOLD_MS;
+    await svc.refreshHealth();
+    expect(svc.list()[0].offline).toBe(true);
+
+    calls.length = 0;
+    const results = await svc.consultHolds('member-1');
+
+    expect(results).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('workflow-package checkOwnerRef', () => {
+  function ownerRefService(filePath: string, responder: (url: string) => Response, calls: RecordedCall[] = []) {
+    return createWorkflowPackageService({
+      filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [],
+      getFleetKey: () => TEST_FLEET_KEY,
+      fetchImpl: recordingFetch(calls, responder),
+    });
+  }
+
+  const refsResponse = () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ refs: [{ id: 'ref-known', name: 'Known Ref' }, { id: 'ref-other', name: 'Other' }] }),
+  }) as unknown as Response;
+
+  it('answers known: true for a ref the package lists, and known: false for one it does not', async () => {
+    const calls: RecordedCall[] = [];
+    const svc = ownerRefService(await tmpRegistryPath(), refsResponse, calls);
+    await svc.register({ id: 'pkg-refs', baseUrl: 'http://localhost:9901', apraFleetApi: '*', ownerRefs: '/api/owner-refs' });
+
+    expect(await svc.checkOwnerRef('pkg-refs', 'ref-known')).toEqual({ known: true });
+    expect(await svc.checkOwnerRef('pkg-refs', 'ref-missing')).toEqual({ known: false });
+
+    expect(calls[0].url).toBe('http://localhost:9901/api/owner-refs');
+    expect(calls[0].authorization).toBe(`Bearer ${deriveUpstreamCredential(TEST_FLEET_KEY, 'pkg-refs')}`);
+  });
+
+  it('an unreachable package answers {error}, never a bare {known: false}', async () => {
+    const svc = ownerRefService(await tmpRegistryPath(), () => {
+      throw new Error('connection refused');
+    });
+    await svc.register({ id: 'pkg-refs-down', baseUrl: 'http://localhost:9902', apraFleetApi: '*', ownerRefs: '/api/owner-refs' });
+
+    const result = await svc.checkOwnerRef('pkg-refs-down', 'ref-known');
+
+    // "Could not ask" must be distinguishable from "asked, and the answer is
+    // no" -- collapsing them would silently accept an unknown owner ref.
+    expect(result).toHaveProperty('error');
+    expect(result).not.toHaveProperty('known');
+    expect((result as { error: string }).error).toMatch(/connection refused/);
+  });
+
+  it('an unregistered package, and one declaring no ownerRefs path, both answer {error}', async () => {
+    const calls: RecordedCall[] = [];
+    const svc = ownerRefService(await tmpRegistryPath(), refsResponse, calls);
+    await svc.register({ id: 'pkg-no-refs', baseUrl: 'http://localhost:9903', apraFleetApi: '*' });
+
+    expect(await svc.checkOwnerRef('pkg-never-registered', 'ref-known')).toMatchObject({
+      error: expect.stringContaining('pkg-never-registered'),
+    });
+    expect(await svc.checkOwnerRef('pkg-no-refs', 'ref-known')).toMatchObject({
+      error: expect.stringContaining('ownerRefs'),
+    });
+    // Neither case contacted anything.
+    expect(calls).toEqual([]);
+  });
+
+  it('a response without a refs array is an error, not a silent known: false', async () => {
+    const svc = ownerRefService(
+      await tmpRegistryPath(),
+      () => ({ ok: true, status: 200, json: async () => ({ unexpected: true }) }) as unknown as Response,
+    );
+    await svc.register({ id: 'pkg-bad-refs', baseUrl: 'http://localhost:9904', apraFleetApi: '*', ownerRefs: '/api/owner-refs' });
+
+    const result = await svc.checkOwnerRef('pkg-bad-refs', 'ref-known');
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toMatch(/refs/);
   });
 });
