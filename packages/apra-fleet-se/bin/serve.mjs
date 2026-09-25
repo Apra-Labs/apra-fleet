@@ -61,7 +61,12 @@ import { buildManifest } from '../src/registration/manifest.mjs';
 import { createRegistration } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
+import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
 import { openStore, NodeSqliteUnavailableError } from '../src/projects/store/db.mjs';
+import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
+import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
+import { McpClient } from '@apralabs/apra-fleet-client/client';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -122,6 +127,34 @@ export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
             throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
         }
     };
+}
+
+/**
+ * apra-fleet-g6ap.3.1: the /api/projects* fallback registered instead of
+ * registerProjectRoutes() (src/projects/routes/projects.mjs) when the
+ * projects store failed to open with NodeSqliteUnavailableError (an old Node
+ * runtime -- see src/projects/store/db.mjs). Answers every /api/projects*
+ * path with 503 {error: 'store-unavailable', detail}, matching the parent
+ * feature's contract (apra-fleet-g6ap.3's description) -- never a silent
+ * empty list, which would wrongly read as "no projects exist" rather than
+ * "projects are unknown right now".
+ *
+ * Extracted as its own export -- same rationale as composeBeforeLaunch()
+ * above -- so the fallback itself is directly unit-testable (a supervisor
+ * built the way serve.mjs builds it, minus the real store) without needing
+ * to force a real NodeSqliteUnavailableError out of openStore().
+ *
+ * @param {{ route: (method: string, path: string, handler: Function) => void }} supervisor
+ * @param {string} detail Human-readable reason the store is unavailable
+ *   (typically the NodeSqliteUnavailableError's own message).
+ */
+export function registerProjectsStoreUnavailableRoutes(supervisor, detail) {
+    const projectsUnavailable = async (req, res) => sendJson(res, 503, { error: 'store-unavailable', detail });
+    supervisor.route('GET', '/api/projects', projectsUnavailable);
+    supervisor.route('POST', '/api/projects', projectsUnavailable);
+    supervisor.route('GET', '/api/projects/:id', projectsUnavailable);
+    supervisor.route('PUT', '/api/projects/:id', projectsUnavailable);
+    supervisor.route('DELETE', '/api/projects/:id', projectsUnavailable);
 }
 
 export function parseServeArgs(argv) {
@@ -495,17 +528,64 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // supervisor down; any other open failure (a corrupt store) still fails
     // loudly. `projectStore` is closed on shutdown, below.
     let projectStore = null;
+    let projectStoreOpenError = null;
     try {
         projectStore = openStore();
     } catch (err) {
         if (err instanceof NodeSqliteUnavailableError) {
-            console.warn(`[supervisor] WARNING: ${err.message} GET /api/owner-refs will answer 503 store-unavailable.`);
+            projectStoreOpenError = err;
+            console.warn(`[supervisor] WARNING: ${err.message} GET /api/owner-refs and /api/projects* will answer 503 store-unavailable.`);
         } else {
             throw err;
         }
     }
     registerHoldsRoute(supervisor, { ledger });
     registerOwnerRefsRoute(supervisor, { store: projectStore });
+
+    // apra-fleet-g6ap.3.1: mount the /api/projects CRUD routes (registered
+    // module, src/projects/routes/projects.mjs -- untouched by this task) --
+    // reusing the SAME projectStore handle opened above -- plus the /ui
+    // placeholder. registerProjectRoutes() itself throws if handed a
+    // store/client of the wrong shape, so when the store failed to open
+    // (NodeSqliteUnavailableError only, caught above) every /api/projects*
+    // path is answered by a local 503 store-unavailable fallback instead of
+    // calling it at all; a real client is still built either way since the
+    // client is independent of the store.
+    //
+    // `client` is a REAL ApraFleet instance (not a narrow wrapper) so the
+    // concurrent project-domain sprint's bind/overview routes can reuse it
+    // once merged -- built from the SAME apra-fleet HTTP singleton
+    // resolveFleetServerConnection() resolves elsewhere in this file. When
+    // no singleton is reachable yet, a minimal executeCommand-only stand-in
+    // degrades every DQ-12 beads.remote probe to a loud isError result
+    // instead of crashing supervisor startup; project CRUD that never
+    // touches beads.remote is unaffected either way.
+    let projectsClient;
+    let projectsTransport = null;
+    try {
+        const projectsConnection = await resolveFleetServerConnection();
+        if (projectsConnection && projectsConnection.mode === 'http') {
+            projectsTransport = new StreamableHttpTransport(projectsConnection.url);
+            await projectsTransport.start();
+            projectsClient = new ApraFleet(new McpClient(projectsTransport));
+        } else {
+            console.warn(`[projects] WARNING: no reachable apra-fleet HTTP singleton (${projectsConnection && projectsConnection.reason}); beads.remote probes will fail until one is reachable and the supervisor is restarted.`);
+            projectsClient = { executeCommand: async () => ({ isError: true, content: [{ text: 'apra-fleet HTTP singleton not reachable' }] }) };
+        }
+    } catch (err) {
+        console.warn(`[projects] WARNING: could not connect to the apra-fleet server; beads.remote probes will fail: ${err && err.message ? err.message : err}`);
+        projectsClient = { executeCommand: async () => ({ isError: true, content: [{ text: `apra-fleet server connection failed: ${err && err.message ? err.message : err}` }] }) };
+    }
+
+    if (projectStore) {
+        registerProjectRoutes(supervisor, { store: projectStore, client: projectsClient });
+    } else {
+        registerProjectsStoreUnavailableRoutes(supervisor, projectStoreOpenError ? projectStoreOpenError.message : 'store unavailable');
+    }
+
+    // apra-fleet-g6ap.3.1: /ui placeholder -- outside the /api guard, swapped
+    // for the real static-file handler by a later UI-bundle sprint.
+    registerUiRoutes(supervisor);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
@@ -593,6 +673,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // shutdownRequested" reasoning as unregister() above.
     if (projectStore) {
         try { projectStore.close(); } catch (err) { console.error('[supervisor] projectStore.close() failed:', err); }
+    }
+    // apra-fleet-g6ap.3.1: tear down the projects fleet client's transport
+    // (only constructed when an HTTP singleton was actually reachable at
+    // startup -- see projectsTransport above), same best-effort teardown
+    // pattern as fleet-members.mjs's own short-lived connections.
+    if (projectsTransport) {
+        try { projectsTransport.stop(); } catch (err) { console.error('[supervisor] projectsTransport.stop() failed:', err); }
     }
     return { exitCode: 0 };
 }
