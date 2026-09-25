@@ -84,8 +84,25 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 // "health-wait budget resolution" tests below, which drive it with injected
 // concurrency/override inputs so the cases cannot leak into sibling
 // subtests running concurrently in the same suite.
-function resolveSupervisorHealthBudgetMs({ concurrency, override } = {}) {
-    const rawOverride = override !== undefined ? override : process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS;
+// apra-fleet-ecjf.6: `env` is an injectable parameter (defaulting to the real
+// process.env) rather than a hardcoded process.env reference, so a test can
+// drive the ACTUAL env-var-read code path (same property names, same
+// selection logic) with a synthetic object -- proving the wiring works
+// (including that the var names are spelled correctly) without ever
+// mutating global process.env, which would leak between concurrent
+// subtests in this suite. The real call site below (module-load default)
+// still resolves against the real process.env via the default parameter.
+//
+// Also fixes the concurrency-fallback bug named by apra-fleet-ecjf.6: an
+// empty-string APRA_FLEET_TEST_CONCURRENCY used to parse as Number('') = 0,
+// and Number.isFinite(0) is true, so the fallback to TEST_CONCURRENCY was
+// silently skipped and scaledTimeout() got concurrency 0 (== unscaled
+// base) -- reverting the exact contention-scaling fix this resolver exists
+// for. envConcurrency is now only computed from a defined, non-empty raw
+// value; anything else (undefined, '', unparseable) falls through to
+// TEST_CONCURRENCY.
+function resolveSupervisorHealthBudgetMs({ concurrency, override, env = process.env } = {}) {
+    const rawOverride = override !== undefined ? override : env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS;
     const numOverride = Number(rawOverride);
     if (rawOverride !== undefined && rawOverride !== null && Number.isFinite(numOverride) && numOverride > 0) {
         return numOverride;
@@ -93,7 +110,10 @@ function resolveSupervisorHealthBudgetMs({ concurrency, override } = {}) {
     const resolvedConcurrency = concurrency !== undefined
         ? concurrency
         : (() => {
-            const envConcurrency = Number(process.env.APRA_FLEET_TEST_CONCURRENCY);
+            const rawConcurrency = env.APRA_FLEET_TEST_CONCURRENCY;
+            const envConcurrency = rawConcurrency !== undefined && rawConcurrency !== null && rawConcurrency !== ''
+                ? Number(rawConcurrency)
+                : NaN;
             return Number.isFinite(envConcurrency) ? envConcurrency : TEST_CONCURRENCY;
         })();
     return scaledTimeout(15000, { concurrency: resolvedConcurrency });
@@ -684,5 +704,45 @@ describe('supervisor lifecycle -- health-wait budget resolution', () => {
     // this assertion would see 9999 * 3 = 29997 instead of 9999 and go red.
     test('an explicit override resolves verbatim, unscaled, at high concurrency (falsification: fails if override is routed through scaledTimeout)', () => {
         assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 8, override: 9999 }), 9999);
+    });
+
+    // apra-fleet-ecjf.6: the four cases above drive the resolver exclusively
+    // via injected `override`/`concurrency` arguments, leaving the env-var
+    // READ itself (process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS and the
+    // APRA_FLEET_TEST_CONCURRENCY fallback) unexercised -- a misspelled var
+    // name or a regressed `override !== undefined ? override : env...`
+    // selection would stay green through all four. These cases pass a
+    // synthetic `env` object (never mutating global process.env, so nothing
+    // leaks between concurrent subtests) through the SAME property-access
+    // code the real default call site uses via env's default parameter.
+    test('env wiring: APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS from env resolves verbatim when no override arg is given', () => {
+        const result = resolveSupervisorHealthBudgetMs({
+            concurrency: 8,
+            env: { APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS: '4242' },
+        });
+        assert.equal(result, 4242, 'the env-var override must win over concurrency scaling, verbatim');
+    });
+
+    test('env wiring: no env override falls through to the env-derived APRA_FLEET_TEST_CONCURRENCY fallback', () => {
+        const expected = scaledTimeout(15000, { concurrency: 5 });
+        const result = resolveSupervisorHealthBudgetMs({
+            env: { APRA_FLEET_TEST_CONCURRENCY: '5' },
+        });
+        assert.equal(result, expected, 'concurrency read from env must feed scaledTimeout() the same way an injected concurrency does');
+    });
+
+    // FALSIFICATION CHECK (apra-fleet-ecjf.6): proves the empty-string fix.
+    // Number('') is 0 and Number.isFinite(0) is true, so before the fix an
+    // empty-string APRA_FLEET_TEST_CONCURRENCY silently passed the
+    // finiteness guard and made the resolver use concurrency 0 (unscaled
+    // base), reverting the exact contention-scaling behaviour this
+    // resolver exists to provide. If that guard regressed, this would see
+    // 15000 instead of the TEST_CONCURRENCY-scaled value.
+    test('env wiring: an empty-string APRA_FLEET_TEST_CONCURRENCY does not silently disable concurrency scaling', () => {
+        const expected = scaledTimeout(15000, { concurrency: TEST_CONCURRENCY });
+        const result = resolveSupervisorHealthBudgetMs({
+            env: { APRA_FLEET_TEST_CONCURRENCY: '' },
+        });
+        assert.equal(result, expected, 'an empty-string concurrency env var must fall back to TEST_CONCURRENCY, not parse as 0');
     });
 });
