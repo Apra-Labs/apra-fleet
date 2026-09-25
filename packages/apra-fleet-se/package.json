@@ -10,7 +10,8 @@
   },
   "bin": {
     "fleet-sprint": "./bin/cli.mjs",
-    "fleet-se-serve": "./bin/serve.mjs"
+    "fleet-se-serve": "./bin/serve.mjs",
+    "fleet-se-pr": "./bin/open-pr.mjs"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs mock",
