@@ -57,6 +57,8 @@ import {
     formatNoBeadsWarning, formatProbeFailedWarning,
 } from '../src/supervisor/beads-identity.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
+import { buildManifest } from '../src/registration/manifest.mjs';
+import { createRegistration } from '../src/registration/register.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -490,6 +492,53 @@ export async function serveMain(argv = process.argv.slice(2)) {
 
     await supervisor.start();
 
+    // apra-fleet-g6ap.2.1: register this supervisor as workflow package 'se'
+    // with the apra-fleet server, so its shell can proxy /ext/se/* and show
+    // this package's nav/panels. Registration REQUIRES a fleet.key-sourced
+    // token -- the apra-fleet server's /api/ guard
+    // (src/console/server.ts's requiresConsoleGuard) only accepts the raw
+    // fleet key on the bearer path, never the private/token fallback -- and a
+    // reachable apra-fleet HTTP singleton. Either missing is an expected,
+    // loudly-logged skip, not a supervisor startup failure. register() runs
+    // unawaited in the background: it retries with capped backoff while the
+    // server is unreachable/5xx, so a supervisor started before the
+    // apra-fleet server is up still converges once it comes online.
+    // unregister() runs once shutdown completes, below -- covers both the
+    // signal path (onSignal -> supervisor.stop()) and the in-band
+    // POST /api/shutdown path (server.mjs's own route also calls stop()),
+    // since both resolve the SAME supervisor.shutdownRequested promise.
+    let registration = null;
+    if (serviceTokenSource !== 'fleet-key') {
+        console.warn(
+            '[registration] WARNING: no fleet.key found at ~/.apra-fleet/fleet.key (service token source '
+            + `'${serviceTokenSource}'); skipping workflow-package registration. Run any apra-fleet CLI `
+            + 'command once to mint fleet.key, then restart the supervisor to register.',
+        );
+    } else {
+        let connection = null;
+        try {
+            connection = await resolveFleetServerConnection();
+        } catch (err) {
+            console.warn(`[registration] WARNING: could not resolve the apra-fleet server connection; skipping workflow-package registration: ${err && err.message ? err.message : err}`);
+        }
+        if (connection && connection.mode === 'http' && typeof connection.url === 'string' && connection.url !== '') {
+            const manifest = buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` });
+            registration = createRegistration({ serverUrl: connection.url, token: serviceToken, manifest });
+            registration.register().catch((err) => {
+                console.error(
+                    '[registration] register() failed unexpectedly (it should catch its own errors):',
+                    err,
+                );
+            });
+        } else {
+            console.warn(
+                '[registration] WARNING: no apra-fleet HTTP server URL configured; skipping workflow-package '
+                + "registration. Start the apra-fleet server ('apra-fleet start') or configure "
+                + 'APRA_FLEET_TRANSPORT=http, then restart the supervisor to register.',
+            );
+        }
+    }
+
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
     // seam has now loaded from disk. Start the history log, then PID-probe
     // every reloaded entry -- dead children release both axes and are marked
@@ -504,6 +553,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+
+    // apra-fleet-g6ap.2.1: best-effort, time-bounded unregister from the
+    // apra-fleet server's registry, after the supervisor's own teardown
+    // (ledger/history/watchdog/etc, all inside supervisor.stop()) has already
+    // completed -- see the comment above register()'s call site for why this
+    // one hook covers both the signal and /api/shutdown stop paths.
+    if (registration) {
+        await registration.unregister();
+    }
     return { exitCode: 0 };
 }
 
