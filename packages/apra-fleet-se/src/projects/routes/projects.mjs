@@ -69,6 +69,7 @@ import {
     buildOverview,
     listBoundMembers,
 } from '../projects.mjs';
+import { addCheckout, suggestCheckoutName, originSlugFromUrl } from '../checkout.mjs';
 import { registerGitRoutes } from './git.mjs';
 
 /** The Dolt-backed beads sync ref every remote probe checks for. */
@@ -379,6 +380,56 @@ export function registerProjectRoutes(supervisor, deps = {}) {
                 }
             }
             sendJson(res, 200, await buildOverview({ db, client }, ctx.params.id));
+        });
+    });
+
+    // == Add checkout on a machine (apra-fleet-vcnl.2, DQ-16 / A10) ==========
+    //
+    // Two more endpoints delegating to ../checkout.mjs. Reuses guardClient/
+    // withBindErrors above -- addCheckout throws the SAME ProjectBindError
+    // shape the bind routes do, translated the same way.
+    // ------------------------------------------------------------------------
+
+    // -- GET /api/projects/:id/checkouts/suggest : DQ-16 name suggestion ------
+    supervisor.route('GET', '/api/projects/:id/checkouts/suggest', async (req, res, ctx) => {
+        const project = getProject(db, ctx.params.id);
+        if (!project) {
+            sendJson(res, 404, { error: `no project '${ctx.params.id}'` });
+            return;
+        }
+        const sibling = ctx.url ? ctx.url.searchParams.get('sibling') : null;
+        const origin = ctx.url ? ctx.url.searchParams.get('origin') : null;
+        if (!sibling || !origin) {
+            sendJson(res, 400, { error: 'invalid query', reason: "'sibling' and 'origin' query params are required" });
+            return;
+        }
+        const roleHint = (ctx.url && ctx.url.searchParams.get('roleHint')) || undefined;
+        const name = suggestCheckoutName({
+            projectId: ctx.params.id,
+            machineMember: sibling,
+            originSlug: originSlugFromUrl(origin),
+            roleHint,
+        });
+        sendJson(res, 200, { name });
+    });
+
+    // -- POST /api/projects/:id/checkouts : the five-step A10 flow ------------
+    // 200 {name, steps} when every step is done/skipped, 422 with the same
+    // body when a step failed (the request was understood but the flow could
+    // not complete), 400 on bad input, 404 unknown project (both raised by
+    // addCheckout itself as a ProjectBindError).
+    supervisor.route('POST', '/api/projects/:id/checkouts', async (req, res, ctx) => {
+        const body = (await readJsonBody(req)) ?? {};
+        const methods = ['listMembers', 'memberDetail', 'memberGitStatus', 'executeCommand', 'registerMember', 'memberOwner', 'updateMember'];
+        if (body.provisionVcs) methods.push('provisionVcsAuth');
+        if (body.provisionLlm) methods.push('provisionLlmAuth');
+        if (body.composePermissions) methods.push('composePermissions');
+        if (guardClient(res, methods)) return;
+
+        await withBindErrors(res, async () => {
+            const result = await addCheckout({ db, client }, ctx.params.id, body);
+            const allOk = result.steps.every((s) => s.status === 'done' || s.status === 'skipped');
+            sendJson(res, allOk ? 200 : 422, result);
         });
     });
 
