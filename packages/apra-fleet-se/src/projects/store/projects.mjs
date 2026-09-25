@@ -36,6 +36,26 @@
 // a probe CACHE, not durable state of their own, so losing them alongside
 // their project is the correct (and only) behaviour, not a hazard to guard
 // against with a pre-delete check.
+//
+// S8 branch file-scope exception (apra-fleet-vcnl.16)
+// -----------------------------------------------------
+// This file is NOT in the apra-fleet-vcnl epic's declared FILE SCOPE (that
+// list covers projects.mjs, health.mjs, checkout.mjs, routes/projects.mjs,
+// routes/git.mjs, store/member-git.mjs, bin/se.mjs, and the test files --
+// deliberately not store/projects.mjs). Commit 2c752477 on the S8 branch
+// (feat/v05-s8-project-bind-health) nonetheless extended createProject()
+// here to accept an explicit `createdAt`, because bin/se.mjs's
+// importProject() (in scope) needs it to restore a project's original
+// creation time on export/import round-trip -- see se-export-import.test.mjs
+// and the JSDoc on createProject() below. Reverting it would silently break
+// that round-trip and its regression coverage in projects-store.test.mjs and
+// projects-routes.test.mjs (the untrusted POST /api/projects route already
+// strips a client-supplied createdAt, so this cannot be spoofed over HTTP).
+// Decision, made deliberately rather than left unmet: keep the change and
+// record this as an explicit, agreed exception to the epic's file scope
+// instead of reverting it. See apra-fleet-vcnl.16 and the epic
+// apra-fleet-vcnl description for the corresponding record on the beads
+// side.
 // =============================================================================
 
 /** Columns making up the `projects` table, in schema order. */
