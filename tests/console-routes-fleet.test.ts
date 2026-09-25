@@ -11,9 +11,12 @@
  * module so the zod schemas the routes validate against stay REAL), so no
  * test here touches a member, a credential store, or a shell.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type http from 'node:http';
 import { Readable } from 'node:stream';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 // --- tool module mocks -----------------------------------------------------
 // importOriginal is spread back in on purpose: the routes import each tool's
@@ -111,6 +114,7 @@ vi.mock('../src/tools/execute-command.js', async (importOriginal) => ({
 
 import { handleConsoleRequest } from '../src/console/server.js';
 import { fleetRoutes } from '../src/console/routes/fleet.js';
+import { getOrCreateKey } from '../src/services/jwt.js';
 
 import { memberDetail } from '../src/tools/member-detail.js';
 import { registerMember } from '../src/tools/register-member.js';
@@ -169,12 +173,19 @@ export function fakeRes(): CapturedRes {
 }
 
 /** A real Readable so the routes' body reader has a stream to drain -- the
- *  seam's older {url, method} object literal cannot carry a POST body. */
-export function fakeReq(url: string, method = 'GET', body?: string): http.IncomingMessage {
+ *  seam's older {url, method} object literal cannot carry a POST body.
+ *
+ *  Every /api/fleet/* request now passes through the console auth guard
+ *  (apra-fleet-iywi.2.1), so every request built here carries the fleet-key
+ *  bearer by default (see the HOME isolation in beforeEach/afterEach below,
+ *  which keeps getOrCreateKey() away from the real developer key) -- pass
+ *  headers explicitly to exercise the guard itself. */
+export function fakeReq(url: string, method = 'GET', body?: string, headers?: Record<string, string>): http.IncomingMessage {
   const stream = Readable.from(body === undefined ? [] : [Buffer.from(body, 'utf8')]);
-  const req = stream as unknown as http.IncomingMessage & { url: string; method: string };
+  const req = stream as unknown as http.IncomingMessage & { url: string; method: string; headers: Record<string, string> };
   req.url = url;
   req.method = method;
+  req.headers = headers ?? { authorization: `Bearer ${getOrCreateKey()}` };
   return req;
 }
 
@@ -424,8 +435,30 @@ export const ROUTE_CASES: RouteCase[] = [
   },
 ];
 
-beforeEach(() => {
+// -----------------------------------------------------------------------------
+// Test isolation: every /api/fleet/* request now passes through the console
+// auth guard (apra-fleet-iywi.2.1), which is keyed on the real fleet.key
+// under HOME. Point HOME (and, on Windows, USERPROFILE -- os.homedir() never
+// reads HOME there) at a fresh temp dir per test so getOrCreateKey() here is
+// never the real developer's key.
+// -----------------------------------------------------------------------------
+let realHome: string | undefined;
+let realUserProfile: string | undefined;
+let tempHome: string;
+
+beforeEach(async () => {
   vi.clearAllMocks();
+  realHome = process.env.HOME;
+  realUserProfile = process.env.USERPROFILE;
+  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-routes-fleet-home-'));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+});
+
+afterEach(async () => {
+  process.env.HOME = realHome;
+  process.env.USERPROFILE = realUserProfile;
+  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
 });
 
 // ---------------------------------------------------------------------------
