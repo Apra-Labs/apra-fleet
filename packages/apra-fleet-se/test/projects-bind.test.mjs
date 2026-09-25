@@ -1,5 +1,6 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createProject } from '../src/projects/store/projects.mjs';
@@ -508,4 +509,18 @@ describe('10. a client lacking memberOwner refuses the bind route with 501', { s
     // The rest of this case ("projects-routes.test.mjs still passes unchanged") is
     // satisfied structurally: this file makes no edit to that one, and both run
     // together under the same bounded `npm test` invocation.
+});
+
+// =============================================================================
+// 11. OWNER_PACKAGE drift guard (apra-fleet-vcnl.13)
+// =============================================================================
+describe('11. OWNER_PACKAGE stays aligned with the workflow-package id', () => {
+    test('OWNER_PACKAGE equals the name declared in workflow.json', () => {
+        const workflow = JSON.parse(fs.readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
+        assert.equal(
+            OWNER_PACKAGE,
+            workflow.name,
+            `OWNER_PACKAGE ('${OWNER_PACKAGE}') has drifted from the name packages/apra-fleet-se/workflow.json declares ('${workflow.name}') -- reconcile the OWNER_PACKAGE constant in src/projects/projects.mjs (see apra-fleet-vcnl.13)`,
+        );
+    });
 });

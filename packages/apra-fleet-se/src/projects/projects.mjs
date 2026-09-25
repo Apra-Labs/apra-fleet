@@ -67,6 +67,19 @@ import {
  * The `owner.package` value this package stamps on every member it binds. The
  * `owner.ref` half is always the project id, so a member's owner tag answers
  * "which fleet-sprint project holds this member" without a second lookup.
+ *
+ * Reconciled against the workflow-package id (apra-fleet-vcnl.13): three
+ * candidates were on the table -- 'fleet-sprint' (this constant today, and
+ * the name packages/apra-fleet-se/workflow.json declares), 'se' (the S8 epic
+ * text, DQ-28), and 'fleet-supervisor' (design doc s3.1). 'fleet-sprint' wins
+ * because it is the id workflow.json actually declares, which is the only
+ * source read here rather than guessed. OPEN QUESTION: the S7 registration
+ * work (src/registration/**) had not yet landed a manifest id on
+ * origin/v0.5_dashboard as of this reconciliation, so there was no second,
+ * independently-landed id to cross-check against -- re-verify this constant
+ * once S7's manifest lands. test/projects-bind.test.mjs's drift assertion
+ * only guards this constant against workflow.json drift, not against a
+ * future S7 manifest id that turns out to differ from both.
  */
 export const OWNER_PACKAGE = 'fleet-sprint';
 
