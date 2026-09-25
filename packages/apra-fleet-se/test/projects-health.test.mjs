@@ -763,3 +763,193 @@ describe('12. no-shell-expansion guard over every recorded command string', () =
         );
     });
 });
+
+// =============================================================================
+// 13. quoteArg hardening: unsafe beads dirs are screened BEFORE interpolation,
+//     and quoting branches on the member's registered shell
+// =============================================================================
+//
+// Paired verification for the quoteArg/validation hardening. health.mjs
+// interpolates two values it never used to validate at all -- the project's
+// configured `beads.dir` and the member's own `BEADS_DIR` env entry. Both are
+// now screened first: an unsafe value becomes that check's own FAIL, naming
+// the problem, and NO command is sent to the member. What survives the screen
+// is then quoted for the TARGET member's shell, POSIX or PowerShell.
+//
+// Every emitted command string here is asserted exactly and run through
+// findShellCommandViolations.
+// =============================================================================
+
+const BEADS_DIR_KEY = 'BEADS_DIR';
+const HEALTH_BACKTICK = String.fromCharCode(0x60);
+
+/** The exact message checkout.mjs's shellMetaCharError emits -- duplicated so the assertion is a real pin. */
+function healthMetaCharDetail(field, ch) {
+    return `'${field}' must not contain the shell metacharacter ${JSON.stringify(ch)} `
+        + '-- resolve or remove it in JavaScript before sending a literal value to a member';
+}
+
+describe('13a. an unsafe project.beads.dir sends no probe and FAILs the check', { skip }, () => {
+    const cases = [
+        ['a semicolon', '/repo/proj-1/.beads;id', ';'],
+        ['a backtick', `/repo/proj-1/.beads${HEALTH_BACKTICK}id${HEALTH_BACKTICK}`, HEALTH_BACKTICK],
+        ['a dollar-paren substitution', '/repo/proj-1/.beads$(id)', '$'],
+        ['a newline', '/repo/proj-1/.beads\nid', '\n'],
+    ];
+
+    for (const [label, beadsDir, offender] of cases) {
+        test(`${label} -> backlogCloneStatus FAIL naming the problem, zero dolt status calls`, async () => {
+            const { db, client } = setup({ backlogMember: 'alice', beadsDir });
+            client.addMember('alice');
+
+            const { checks } = await runHealth({ db, client }, 'proj-1');
+            const check = checks.find((c) => c.id === 'backlogCloneStatus');
+
+            assert.equal(check.level, 'FAIL');
+            assert.equal(check.scope, 'project');
+            assert.equal(
+                check.message,
+                `no bd dolt status probe sent to alice: ${healthMetaCharDetail('project.beads.dir', offender)}`,
+            );
+            assert.deepEqual(
+                client.calls.executeCommand.filter((c) => c.command.includes('dolt status')),
+                [],
+                'an unsafe beads dir must never reach the member as a command',
+            );
+        });
+    }
+});
+
+describe("13b. an unsafe member BEADS_DIR sends no probe and FAILs that member's check", { skip }, () => {
+    const cases = [
+        ['a semicolon', '/repo/proj-1/.beads;id', ';'],
+        ['a pipe', '/repo/proj-1/.beads|id', '|'],
+        ['a dollar-paren substitution', '/repo/proj-1/.beads$(id)', '$'],
+        ['a tilde', '~/proj-1/.beads', '~'],
+    ];
+
+    for (const [label, envDir, offender] of cases) {
+        test(`${label} -> beadsDirSyncRemote FAIL naming the problem, zero calls to that member`, async () => {
+            const { db, client } = setup({ backlogMember: 'alice', beadsRemote: 'https://dolt.example.com/proj-1' });
+            client.addMember('alice');
+            client.addMember('worker1', { env: { [BEADS_DIR_KEY]: envDir } });
+            seedMemberGit(db, 'proj-1', 'worker1');
+
+            const { checks } = await runHealth({ db, client }, 'proj-1');
+            const check = checks.find((c) => c.id === 'beadsDirSyncRemote' && c.scope === 'member:worker1');
+
+            assert.equal(check.level, 'FAIL');
+            assert.equal(
+                check.message,
+                `worker1: no sync.remote probe sent: ${healthMetaCharDetail(`${BEADS_DIR_KEY} on worker1`, offender)}`,
+            );
+            assert.deepEqual(
+                client.calls.executeCommand.filter((c) => c.member_name === 'worker1'),
+                [],
+                'an unsafe BEADS_DIR must never reach the member as a command',
+            );
+        });
+    }
+});
+
+describe('13c. a safe beads dir is quoted for the TARGET member shell', { skip }, () => {
+    const beadsDir = "/repo/o'brien/.beads";
+
+    test('POSIX backlog member: the apostrophe is broken out as the POSIX escape', async () => {
+        const { db, client } = setup({ backlogMember: 'alice', beadsDir });
+        client.addMember('alice', { os: 'linux' });
+
+        const { checks } = await runHealth({ db, client }, 'proj-1');
+        assert.equal(checks.find((c) => c.id === 'backlogCloneStatus').level, 'OK');
+
+        const commands = client.calls.executeCommand.map((c) => c.command);
+        assert.deepEqual(commands, ["bd -C '/repo/o'\\''brien/.beads' dolt status"]);
+        for (const command of commands) {
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        }
+    });
+
+    test('PowerShell backlog member: the apostrophe is doubled, never backslash-escaped', async () => {
+        const { db, client } = setup({ backlogMember: 'alice', beadsDir });
+        client.addMember('alice', { os: 'windows', shell: 'pwsh7' });
+
+        const { checks } = await runHealth({ db, client }, 'proj-1');
+        assert.equal(checks.find((c) => c.id === 'backlogCloneStatus').level, 'OK');
+
+        const commands = client.calls.executeCommand.map((c) => c.command);
+        assert.deepEqual(commands, ["bd -C '/repo/o''brien/.beads' dolt status"]);
+        for (const command of commands) {
+            assert.ok(!command.includes('\\"'), `PowerShell member must never see the POSIX escape: ${JSON.stringify(command)}`);
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        }
+    });
+
+    test('a Windows member registered as gitbash still gets POSIX quoting', async () => {
+        const { db, client } = setup({ backlogMember: 'alice', beadsDir });
+        client.addMember('alice', { os: 'windows', shell: 'gitbash' });
+
+        await runHealth({ db, client }, 'proj-1');
+        assert.deepEqual(
+            client.calls.executeCommand.map((c) => c.command),
+            ["bd -C '/repo/o'\\''brien/.beads' dolt status"],
+        );
+    });
+});
+
+describe("13d. a member's own BEADS_DIR is quoted for that member, not for the backlog member", { skip }, () => {
+    test('the sync.remote probe quotes the member BEADS_DIR PowerShell-style for a PowerShell member', async () => {
+        const { db, client } = setup({ backlogMember: 'alice', beadsRemote: 'https://dolt.example.com/proj-1' });
+        client.addMember('alice', { os: 'linux' });
+        client.addMember('worker1', { os: 'windows', shell: 'pwsh7', env: { [BEADS_DIR_KEY]: "C:\\repo\\o'brien\\.beads" } });
+        client.setSyncRemote('worker1', 'https://dolt.example.com/proj-1');
+        seedMemberGit(db, 'proj-1', 'worker1');
+
+        const { checks } = await runHealth({ db, client }, 'proj-1');
+        assert.equal(checks.find((c) => c.id === 'beadsDirSyncRemote' && c.scope === 'member:worker1').level, 'OK');
+
+        const workerCommands = client.calls.executeCommand.filter((c) => c.member_name === 'worker1').map((c) => c.command);
+        assert.deepEqual(workerCommands, ["bd -C 'C:\\repo\\o''brien\\.beads' config get sync.remote"]);
+        for (const command of workerCommands) {
+            assert.ok(!command.includes('\\"'), `PowerShell member must never see the POSIX escape: ${JSON.stringify(command)}`);
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        }
+    });
+});
+
+describe('13e. the two checks report a configError directly, without any exec input', () => {
+    test('backlogCloneStatus: configError outranks a missing execResult', () => {
+        const check = backlogCloneStatus({
+            project: { backlogMember: 'alice' },
+            execResult: null,
+            configError: "'project.beads.dir' must not contain the shell metacharacter \";\"",
+        });
+        assert.equal(check.level, 'FAIL');
+        assert.equal(check.scope, 'project');
+        assert.match(check.message, /alice/);
+        assert.match(check.message, /project\.beads\.dir/);
+    });
+
+    test('beadsDirSyncRemote: configError outranks a missing execResult, but a missing BEADS_DIR still WARNs first', () => {
+        const configError = "'BEADS_DIR on worker1' must not contain the shell metacharacter \";\"";
+        const failed = beadsDirSyncRemote({
+            member: 'worker1',
+            beadsDir: '/repo/x;id',
+            execResult: null,
+            expectedRemote: 'https://dolt.example.com/proj-1',
+            configError,
+        });
+        assert.equal(failed.level, 'FAIL');
+        assert.equal(failed.scope, 'member:worker1');
+        assert.match(failed.message, /BEADS_DIR on worker1/);
+
+        const noDir = beadsDirSyncRemote({
+            member: 'worker1',
+            beadsDir: null,
+            execResult: null,
+            expectedRemote: 'https://dolt.example.com/proj-1',
+            configError: null,
+        });
+        assert.equal(noDir.level, 'WARN');
+        assert.match(noDir.message, /no BEADS_DIR configured/);
+    });
+});

@@ -8,7 +8,7 @@ import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createProject } from '../src/projects/store/projects.mjs';
 import { getMemberGit } from '../src/projects/store/member-git.mjs';
 import { OWNER_PACKAGE, BEADS_DIR_ENV } from '../src/projects/projects.mjs';
-import { suggestCheckoutName, originSlugFromUrl } from '../src/projects/checkout.mjs';
+import { suggestCheckoutName, originSlugFromUrl, quoteArg, isPosixMemberShell } from '../src/projects/checkout.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
 import { findShellCommandViolations, checkShellCommandPath, formatShellCommandViolation } from '../fleet-sprint/shell-command-guard.mjs';
@@ -957,6 +957,261 @@ describe('11b. originSlugFromUrl drift guard against src/services/git-status-pro
                 + 'drift makes addCheckout re-clone over an existing checkout or refuse a matching one. Copy the '
                 + 'authoritative implementation across (adjusting only the TypeScript annotations and indentation).',
             );
+        }
+    });
+});
+
+// =============================================================================
+// 12. quoteArg hardening: the metacharacter policy and cross-shell quoting
+// =============================================================================
+//
+// Paired verification for the quoteArg/validation hardening in
+// ../src/projects/checkout.mjs. Its module header states ONE policy in two
+// layers: every caller-supplied value that reaches a command string is
+// screened (HTTP 400 naming the field and the offending character), and
+// quoteArg then quotes what survives UNCONDITIONALLY, in the style the TARGET
+// member's registered shell actually speaks.
+//
+// Every case here asserts the EXACT emitted command string (or the exact 400
+// detail) -- "it did not throw" is not an assertion -- and runs each emitted
+// string through findShellCommandViolations so a future change cannot
+// reintroduce a value the member shell would expand.
+// =============================================================================
+
+/** A sibling on a POSIX machine; getAgentOS's own default when `os` is absent. */
+const POSIX_SIBLING = { os: 'linux' };
+/** A sibling on a Windows machine running PowerShell 7 -- NOT a POSIX shell. */
+const PWSH_SIBLING = { os: 'windows', shell: 'pwsh7' };
+/** A Windows machine registered as Git-for-Windows bash IS a POSIX shell. */
+const GITBASH_SIBLING = { os: 'windows', shell: 'gitbash' };
+
+const CLONE_URL = 'https://github.com/acme/shop-api.git';
+
+/** The exact message shellMetaCharError emits -- duplicated so the assertion is a real pin. */
+function metaCharDetail(field, ch) {
+    return `'${field}' must not contain the shell metacharacter ${JSON.stringify(ch)} `
+        + '-- resolve or remove it in JavaScript before sending a literal value to a member';
+}
+
+const BACKTICK = String.fromCharCode(0x60);
+
+/**
+ * One row per metacharacter class. `refusedDetail` is the exact 400 detail a
+ * rejected value must produce; `posix`/`pwsh` are the exact quoted forms an
+ * ACCEPTED value must reach the member as.
+ */
+const CHECKOUT_DIR_CASES = [
+    { label: 'a semicolon', dir: '/home/lin1/repo;id', refusedDetail: metaCharDetail('checkoutDir', ';') },
+    { label: 'an ampersand', dir: '/home/lin1/repo&id', refusedDetail: metaCharDetail('checkoutDir', '&') },
+    { label: 'a pipe', dir: '/home/lin1/repo|id', refusedDetail: metaCharDetail('checkoutDir', '|') },
+    { label: 'a backtick', dir: `/home/lin1/repo${BACKTICK}id${BACKTICK}`, refusedDetail: metaCharDetail('checkoutDir', BACKTICK) },
+    {
+        label: 'a dollar-paren substitution',
+        dir: '/home/lin1/repo$(id)',
+        // The DQ-16 spec names '$' explicitly, so pathValidationError keeps its
+        // own, more specific message ahead of the general screen.
+        refusedDetail: "'checkoutDir' must not contain '$' -- resolve any variable in JavaScript before sending a literal path",
+    },
+    { label: 'an angle bracket', dir: '/home/lin1/repo>out', refusedDetail: metaCharDetail('checkoutDir', '>') },
+    { label: 'a newline', dir: '/home/lin1/repo\nid', refusedDetail: metaCharDetail('checkoutDir', '\n') },
+    {
+        label: 'a leading tilde',
+        dir: '~/repo',
+        refusedDetail: "'checkoutDir' must not start with '~' -- resolve it in JavaScript before sending an absolute path",
+    },
+    { label: 'an embedded tilde', dir: '/home/li~n1/repo', refusedDetail: metaCharDetail('checkoutDir', '~') },
+    {
+        label: 'a quote',
+        dir: "/home/lin1/o'brien",
+        posix: "'/home/lin1/o'\\''brien'",
+        pwsh: "'/home/lin1/o''brien'",
+    },
+    {
+        label: 'whitespace',
+        dir: '/home/lin1/my repo',
+        posix: "'/home/lin1/my repo'",
+        pwsh: "'/home/lin1/my repo'",
+    },
+];
+
+/** Runs one addCheckout request against a sibling with the given os/shell. */
+async function postCheckoutOnShell(siblingShell, body) {
+    const { client, supervisor } = setup();
+    client.addMember('proj-1-lin1', { type: 'remote', ...siblingShell });
+    const res = await postCheckout(supervisor, 'proj-1', {
+        siblingMember: 'proj-1-lin1',
+        originUrl: CLONE_URL,
+        checkoutDir: '/home/proj-1-lin1/shop-api',
+        ...body,
+    });
+    return { client, res };
+}
+
+describe('12a. checkoutDir metacharacters: refused with 400, or quoted for a POSIX member', { skip }, () => {
+    for (const testCase of CHECKOUT_DIR_CASES) {
+        test(`${testCase.label} -> ${testCase.refusedDetail ? 'HTTP 400 naming the field and the character' : 'an exactly-quoted POSIX command'}`, async () => {
+            const { client, res } = await postCheckoutOnShell(POSIX_SIBLING, { checkoutDir: testCase.dir });
+
+            if (testCase.refusedDetail) {
+                assert.equal(res.statusCode, 400, JSON.stringify(payloadOf(res)));
+                assert.deepEqual(payloadOf(res), { error: 'invalid-input', detail: testCase.refusedDetail });
+                assert.equal(client.calls.executeCommand.length, 0, 'a refused value must never reach a member');
+                assert.equal(client.calls.listMembers, 0, 'the screen runs before any client call');
+                return;
+            }
+
+            assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+            assert.equal(client.calls.executeCommand.length, 1);
+            const { command } = client.calls.executeCommand[0];
+            assert.equal(command, `git clone '${CLONE_URL}' ${testCase.posix}`);
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        });
+    }
+});
+
+describe('12b. the same table against a PowerShell-registered member', { skip }, () => {
+    for (const testCase of CHECKOUT_DIR_CASES) {
+        test(`${testCase.label} -> ${testCase.refusedDetail ? 'the same HTTP 400' : 'PowerShell quoting, never a backslash-escaped double quote'}`, async () => {
+            const { client, res } = await postCheckoutOnShell(PWSH_SIBLING, { checkoutDir: testCase.dir });
+
+            if (testCase.refusedDetail) {
+                assert.equal(res.statusCode, 400, JSON.stringify(payloadOf(res)));
+                assert.deepEqual(payloadOf(res), { error: 'invalid-input', detail: testCase.refusedDetail });
+                assert.equal(client.calls.executeCommand.length, 0);
+                return;
+            }
+
+            assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+            assert.equal(client.calls.executeCommand.length, 1);
+            const { command } = client.calls.executeCommand[0];
+            assert.equal(command, `git clone '${CLONE_URL}' ${testCase.pwsh}`);
+            assert.ok(
+                !command.includes('\\"'),
+                `a PowerShell member must never receive the POSIX backslash-escaped double quote: ${JSON.stringify(command)}`,
+            );
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        });
+    }
+});
+
+describe('12c. quoteArg and isPosixMemberShell, directly', () => {
+    test("the empty string keeps its empty-quoted form: '\"\"' on POSIX, \"''\" on PowerShell", () => {
+        assert.equal(quoteArg('', POSIX_SIBLING), '""');
+        assert.equal(quoteArg('', PWSH_SIBLING), "''");
+        assert.equal(quoteArg('', null), '""', 'an unknown member defaults to POSIX, matching getAgentOS');
+    });
+
+    test('a value with no metacharacter at all is STILL quoted -- quoteArg never returns verbatim', () => {
+        assert.equal(quoteArg('/home/lin1/repo', POSIX_SIBLING), "'/home/lin1/repo'");
+        assert.equal(quoteArg('/home/lin1/repo', PWSH_SIBLING), "'/home/lin1/repo'");
+    });
+
+    test('an apostrophe is broken out on POSIX and doubled on PowerShell', () => {
+        assert.equal(quoteArg("o'brien", POSIX_SIBLING), "'o'\\''brien'");
+        assert.equal(quoteArg("o'brien", PWSH_SIBLING), "'o''brien'");
+    });
+
+    test('isPosixMemberShell mirrors isPosixShell: non-windows, or windows+gitbash', () => {
+        assert.equal(isPosixMemberShell(POSIX_SIBLING), true);
+        assert.equal(isPosixMemberShell(GITBASH_SIBLING), true);
+        assert.equal(isPosixMemberShell(PWSH_SIBLING), false);
+        assert.equal(isPosixMemberShell({ os: 'windows', shell: 'powershell5' }), false);
+        assert.equal(isPosixMemberShell({ os: 'windows' }), false, 'a windows member with no shell recorded is PowerShell');
+        assert.equal(isPosixMemberShell({}), true, "getAgentOS's default is 'linux'");
+        assert.equal(isPosixMemberShell(null), true);
+    });
+});
+
+describe('12d. a Windows-registered gitbash member gets POSIX quoting, not PowerShell quoting', { skip }, () => {
+    test("C:\\checkouts\\o'brien is quoted POSIX-style for a gitbash member", async () => {
+        const { client, res } = await postCheckoutOnShell(GITBASH_SIBLING, { checkoutDir: "C:\\checkouts\\o'brien" });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const { command } = client.calls.executeCommand[0];
+        assert.equal(command, `git clone '${CLONE_URL}' 'C:\\checkouts\\o'\\''brien'`);
+        assert.deepEqual(findShellCommandViolations(command), []);
+    });
+});
+
+describe('12e. originUrl is screened too -- nothing validated it before', { skip }, () => {
+    const originCases = [
+        ['a semicolon', `${CLONE_URL};id`, metaCharDetail('originUrl', ';')],
+        ['a dollar-paren substitution', `${CLONE_URL}$(id)`, metaCharDetail('originUrl', '$')],
+        ['a backtick', `${CLONE_URL}${BACKTICK}id${BACKTICK}`, metaCharDetail('originUrl', BACKTICK)],
+        ['a newline', `${CLONE_URL}\nid`, metaCharDetail('originUrl', '\n')],
+        ['an ampersand', `${CLONE_URL}&id`, metaCharDetail('originUrl', '&')],
+    ];
+    for (const [label, originUrl, detail] of originCases) {
+        test(`${label} in originUrl -> 400 naming the field and the character, zero client calls`, async () => {
+            const { client, res } = await postCheckoutOnShell(POSIX_SIBLING, { originUrl });
+            assert.equal(res.statusCode, 400, JSON.stringify(payloadOf(res)));
+            assert.deepEqual(payloadOf(res), { error: 'invalid-input', detail });
+            assert.equal(client.calls.listMembers, 0);
+            assert.equal(client.calls.executeCommand.length, 0);
+        });
+    }
+
+    test('an ordinary scp-like remote is still accepted and quoted', async () => {
+        const { client, res } = await postCheckoutOnShell(POSIX_SIBLING, {
+            originUrl: 'git@github.com:acme/shop-api.git',
+            checkoutDir: '/home/proj-1-lin1/shop-api',
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const { command } = client.calls.executeCommand[0];
+        assert.equal(command, "git clone 'git@github.com:acme/shop-api.git' '/home/proj-1-lin1/shop-api'");
+        assert.deepEqual(findShellCommandViolations(command), []);
+    });
+});
+
+describe('12f. the beads-bootstrap commands are quoted for the target shell too', { skip }, () => {
+    const beadsDir = "/repo/proj 1/.beads";
+    const remote = 'https://dolt.example.com/proj-1-beads';
+
+    test('POSIX member: every bd command quotes the beads dir and the remote', async () => {
+        const { client, supervisor } = setup({ beadsRemote: remote });
+        client.addMember('proj-1-lin1', { type: 'remote', ...POSIX_SIBLING });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin1',
+            originUrl: CLONE_URL,
+            checkoutDir: '/home/proj-1-lin1/shop-api',
+            beadsDir,
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+
+        const commands = client.calls.executeCommand.map((c) => c.command);
+        assert.deepEqual(commands, [
+            `git clone '${CLONE_URL}' '/home/proj-1-lin1/shop-api'`,
+            `bd -C '${beadsDir}' config get sync.remote`,
+            `bd -C '${beadsDir}' config set sync.remote '${remote}'`,
+            `bd -C '${beadsDir}' bootstrap --yes`,
+        ]);
+        for (const command of commands) {
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
+        }
+    });
+
+    test('PowerShell member: the same commands, never a backslash-escaped double quote', async () => {
+        const { client, supervisor } = setup({ beadsRemote: remote });
+        client.addMember('proj-1-lin1', { type: 'remote', ...PWSH_SIBLING });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin1',
+            originUrl: CLONE_URL,
+            checkoutDir: 'C:\\checkouts\\shop-api',
+            beadsDir: 'C:\\repo\\proj 1\\.beads',
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+
+        const commands = client.calls.executeCommand.map((c) => c.command);
+        assert.deepEqual(commands, [
+            `git clone '${CLONE_URL}' 'C:\\checkouts\\shop-api'`,
+            "bd -C 'C:\\repo\\proj 1\\.beads' config get sync.remote",
+            `bd -C 'C:\\repo\\proj 1\\.beads' config set sync.remote '${remote}'`,
+            "bd -C 'C:\\repo\\proj 1\\.beads' bootstrap --yes",
+        ]);
+        for (const command of commands) {
+            assert.ok(!command.includes('\\"'), `PowerShell member must never see the POSIX escape: ${JSON.stringify(command)}`);
+            assert.deepEqual(findShellCommandViolations(command), [], `command leaks shell expansion: ${JSON.stringify(command)}`);
         }
     });
 });
