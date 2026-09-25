@@ -68,20 +68,14 @@ import {
  * `owner.ref` half is always the project id, so a member's owner tag answers
  * "which fleet-sprint project holds this member" without a second lookup.
  *
- * Reconciled against the workflow-package id (apra-fleet-vcnl.13): three
- * candidates were on the table -- 'fleet-sprint' (this constant today, and
- * the name packages/apra-fleet-se/workflow.json declares), 'se' (the S8 epic
- * text, DQ-28), and 'fleet-supervisor' (design doc s3.1). 'fleet-sprint' wins
- * because it is the id workflow.json actually declares, which is the only
- * source read here rather than guessed. OPEN QUESTION: the S7 registration
- * work (src/registration/**) had not yet landed a manifest id on
- * origin/v0.5_dashboard as of this reconciliation, so there was no second,
- * independently-landed id to cross-check against -- re-verify this constant
- * once S7's manifest lands. test/projects-bind.test.mjs's drift assertion
- * only guards this constant against workflow.json drift, not against a
- * future S7 manifest id that turns out to differ from both.
+ * Must equal the registered workflow-package id the fleet-supervisor console
+ * registers under, i.e. S7's src/registration/manifest.mjs PACKAGE_ID ('se'),
+ * per DQ-28 -- not workflow.json's package name. A mismatch here means the
+ * server's owner-ref checks refuse or silently skip this domain's binds.
+ * test/projects-bind.test.mjs's drift assertion guards this constant against
+ * that mismatch directly.
  */
-export const OWNER_PACKAGE = 'fleet-sprint';
+export const OWNER_PACKAGE = 'se';
 
 /** The env key a bound member gets, pointing at the project's beads dir. */
 export const BEADS_DIR_ENV = 'BEADS_DIR';

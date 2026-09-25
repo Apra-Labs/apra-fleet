@@ -1,6 +1,5 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 
 import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createProject } from '../src/projects/store/projects.mjs';
@@ -529,13 +528,16 @@ describe('10. a client lacking memberOwner refuses the bind route with 501', { s
 // =============================================================================
 // 11. OWNER_PACKAGE drift guard (apra-fleet-vcnl.13)
 // =============================================================================
-describe('11. OWNER_PACKAGE stays aligned with the workflow-package id', () => {
-    test('OWNER_PACKAGE equals the name declared in workflow.json', () => {
-        const workflow = JSON.parse(fs.readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
+describe('11. OWNER_PACKAGE stays aligned with the registered workflow-package id', () => {
+    test('OWNER_PACKAGE equals \'se\'', () => {
+        // Must equal the fleet-supervisor workflow-package manifest id (S7's
+        // src/registration/manifest.mjs PACKAGE_ID), not workflow.json's
+        // package name -- see DQ-28. A mismatch means the server's owner-ref
+        // checks refuse or silently skip this domain's binds.
         assert.equal(
             OWNER_PACKAGE,
-            workflow.name,
-            `OWNER_PACKAGE ('${OWNER_PACKAGE}') has drifted from the name packages/apra-fleet-se/workflow.json declares ('${workflow.name}') -- reconcile the OWNER_PACKAGE constant in src/projects/projects.mjs (see apra-fleet-vcnl.13)`,
+            'se',
+            `OWNER_PACKAGE ('${OWNER_PACKAGE}') has drifted from the registered workflow-package id 'se' -- reconcile the OWNER_PACKAGE constant in src/projects/projects.mjs (see apra-fleet-vcnl.13, DQ-28)`,
         );
     });
 });
