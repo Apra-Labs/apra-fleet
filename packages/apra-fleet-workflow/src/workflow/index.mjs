@@ -290,6 +290,39 @@ function buildRepairPrompt(errorsText, initialPrompt) {
         `text outside the JSON.`;
 }
 
+// apra-fleet-c98q.6 -- transport/SSH-drop signature.
+//
+// When execute_prompt throws SERVER-SIDE (an unguarded await between claiming
+// the per-member lock and the guarded try -- e.g. writePromptFile losing its
+// SSH channel), the MCP SDK does NOT produce the tool's structuredContent
+// envelope at all. It marshals the exception into a plain CallToolResult with
+// a TOP-LEVEL `isError: true` whose only text is `err.message` -- raw library
+// prose such as ssh2's "No response from server". That text is not an LLM
+// answer and must never reach the schema extractor.
+//
+// This regex exists only to pick the more specific `transport` reason over the
+// generic `dispatch_failed` for such a result. It deliberately encodes the
+// GENERIC transport/SSH vocabulary the engine already recognises elsewhere --
+// the socket-level codes isTransientFetchError() keys on in
+// packages/apra-fleet-client/src/client/transport.mjs, plus the channel/
+// handshake wording ssh2 emits -- never one specific server message. Detection
+// of the FAILURE itself never depends on this regex (that is the top-level
+// isError flag's job); a text that matches nothing here still fails the
+// dispatch, just as `dispatch_failed`.
+const TRANSPORT_FAILURE_RE = /\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|UND_ERR_SOCKET|UND_ERR_CLOSED)\b|no response from server|socket hang up|fetch failed|connection (?:lost|closed|reset|refused)|(?:channel|handshake|transport|ssh)[^.\n]{0,40}(?:closed|failed|timed out|timeout|lost)|timed out while waiting for handshake|not connected/i;
+
+/**
+ * True when a dispatch-failure text carries a generic transport/SSH-drop
+ * signature (see TRANSPORT_FAILURE_RE). Used only to refine the reason code on
+ * an otherwise unclassified dispatch failure -- never to decide whether the
+ * dispatch failed.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksLikeTransportFailure(text) {
+    return typeof text === 'string' && TRANSPORT_FAILURE_RE.test(text);
+}
+
 /**
  * @typedef {Object} AgentOptions
  * @property {string} [label] - UI label for this run
@@ -1266,8 +1299,30 @@ export class FleetWorkflow extends EventEmitter {
                 // The caller's own top-level retry (e.g. the streak-dispatch
                 // "retrying once" wrapper in apra-fleet-se's runner.js) still
                 // applies on top of this.
-                if (structured && structured.isError) {
+                // apra-fleet-c98q.6: a TOP-LEVEL `result.isError` (no
+                // structuredContent at all) is the SDK's marshalling of a
+                // server-side throw inside execute_prompt -- see
+                // TRANSPORT_FAILURE_RE above. It is exactly as much a
+                // dispatch-level failure as the structured shape, so it takes
+                // the same branch: logged, recorded success:false, thrown as
+                // AgentDispatchError, and never handed to the schema/JSON
+                // extractor or charged a schema-repair attempt.
+                const topLevelIsError = !!(result && result.isError === true);
+                if ((structured && structured.isError) || topLevelIsError) {
                     const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
+                    // Reason resolution: the server's own classification wins
+                    // whenever it sent one. A top-level-only failure has no
+                    // structured reason to read, so it is classified generically
+                    // -- `transport` when the text carries the transport/SSH
+                    // signature, else `dispatch_failed`. A STRUCTURED failure
+                    // that reported no reason keeps its pre-existing
+                    // undefined/"unknown" rendering rather than being silently
+                    // reclassified.
+                    const failureReason = (structured && structured.reason)
+                        ? structured.reason
+                        : (structured && structured.isError)
+                            ? undefined
+                            : (looksLikeTransportFailure(text) ? 'transport' : 'dispatch_failed');
                     console.error(`[Agent API Error]`, text);
                     // apra-fleet-202.3: a dispatch that FAILED (isError) but still
                     // reported real input/output tokens really did consume that
@@ -1289,7 +1344,7 @@ export class FleetWorkflow extends EventEmitter {
                     // the fleet-sprint pause/resume policy can read
                     // err.details.usageLimit.resumeAt / err.details.sessionId directly
                     // instead of re-parsing the failure text.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${failureReason || 'unknown'}): ${text}`, { details: { text, reason: failureReason, member: opts.member_name || opts.member_id, ...(structured && structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured && structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id

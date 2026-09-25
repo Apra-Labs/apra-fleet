@@ -468,7 +468,17 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline']);
+//   - 'transport'              -- CLIENT-synthesized (not a server reason
+//                                 code): execute_prompt threw server-side and
+//                                 the MCP SDK returned a bare top-level
+//                                 `isError` CallToolResult carrying only the
+//                                 raw exception text, with a transport/SSH-drop
+//                                 signature (see TRANSPORT_FAILURE_RE in
+//                                 packages/apra-fleet-workflow/src/workflow/
+//                                 index.mjs). Same meaning as dispatch_failed
+//                                 for callers: the prompt never reached a
+//                                 conclusion, so it is infra, never a verdict.
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline', 'transport']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
