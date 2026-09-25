@@ -169,6 +169,29 @@ export function removeMember(memberId: string): Promise<MemberActionResult> {
   return postJson("/api/fleet/remove-member", { member_id: memberId });
 }
 
+/** The deliberately-scoped subset of updateMemberSchema (src/tools/update-member.ts)
+ *  the drawer's edit form exposes (apra-fleet-i9ag.6.1). password, rotate_password,
+ *  key_path, cloud_* and model_* are excluded -- see the parent feature for why.
+ *  Every field is optional and MUST be omitted (not sent as "" or []) unless the
+ *  operator actually changed it: a non-empty `tags` REPLACES the existing tag
+ *  list and an empty `tags` array CLEARS it, so sending an untouched tags value
+ *  back would silently rewrite it on every save. */
+export interface UpdateMemberBody {
+  friendly_name?: string;
+  category?: string;
+  tags?: string[];
+  icon?: string;
+  unattended?: "false" | "auto" | "dangerous";
+  llm_provider?: "claude" | "codex" | "copilot" | "agy" | "opencode";
+  host?: string;
+  port?: number;
+  username?: string;
+}
+
+export function updateMember(memberId: string, body: UpdateMemberBody): Promise<MemberActionResult> {
+  return postJson("/api/fleet/update-member", { member_id: memberId, ...body });
+}
+
 // ---------------------------------------------------------------------------
 // Add-member wizard submission.
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Drawer, SelectField } from "@apralabs/apra-fleet-ui-kit";
+import { Drawer, SelectField, TextField } from "@apralabs/apra-fleet-ui-kit";
 import {
   composePermissions,
   fetchMemberDetail,
@@ -9,8 +9,10 @@ import {
   revokeVcsAuth,
   setupSshKey,
   updateLlmCli,
+  updateMember,
   type FleetMember,
-  type MemberActionResult
+  type MemberActionResult,
+  type UpdateMemberBody
 } from "../../api/members";
 
 /** Providers provision-vcs-auth/revoke-vcs-auth accept (provisionVcsAuthSchema /
@@ -41,6 +43,134 @@ const ACTIONS: ActionDef[] = [
   { key: "remove", label: "Remove member", call: removeMember }
 ];
 
+/** llm_provider choices updateMemberSchema accepts (src/tools/update-member.ts) --
+ *  narrower than register_member's list: no "none" here. */
+const LLM_PROVIDER_OPTIONS = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+  { value: "copilot", label: "Copilot" },
+  { value: "agy", label: "Agy" },
+  { value: "opencode", label: "Opencode" }
+];
+
+const UNATTENDED_OPTIONS = [
+  { value: "false", label: "Interactive (false)" },
+  { value: "auto", label: "Auto-approve safe ops (auto)" },
+  { value: "dangerous", label: "Skip all checks (dangerous)" }
+];
+
+interface EditFormState {
+  friendlyName: string;
+  category: string;
+  tagsText: string;
+  icon: string;
+  unattended: "false" | "auto" | "dangerous";
+  llmProvider: string;
+  host: string;
+  port: string;
+  username: string;
+}
+
+/** list_members'/member_detail's raw fields the shell-ui does not (yet) declare
+ *  in FleetMemberFields -- read loosely through FleetMember's index signature
+ *  rather than widening the drift-guarded interface for a display-only read. */
+function rawString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** formatAgentHost (src/utils/agent-helpers.ts) emits a combined "host:port"
+ *  string for a remote member -- list_members has no separate raw host/port
+ *  field. Split on the LAST ':' so a bare hostname/IPv4 host survives; a
+ *  literal IPv6 host (itself containing colons) is a known, narrow gap --
+ *  register_member's own host input has no IPv6 affordance either. */
+function splitHostPort(combined: string): { host: string; port: string } {
+  const idx = combined.lastIndexOf(":");
+  if (idx === -1) return { host: combined, port: "" };
+  return { host: combined.slice(0, idx), port: combined.slice(idx + 1) };
+}
+
+function initialEditState(member: FleetMember | null): EditFormState {
+  const combinedHost = member ? rawString(member.host) : "";
+  const { host, port } = member?.type === "remote" ? splitHostPort(combinedHost) : { host: "", port: "" };
+  return {
+    friendlyName: member?.name ?? "",
+    category: member ? rawString(member.category) : "",
+    tagsText: (member?.tags ?? []).join(", "),
+    icon: member ? rawString(member.icon) : "",
+    // NOTE: Agent.unattended (src/types.ts) is not surfaced by list_members
+    // or member_detail (src/tools/list-members.ts / member-detail.ts never
+    // emit it), so the drawer has no way to read the member's actual current
+    // value -- this defaults to "false" and is only sent if the operator
+    // explicitly picks a different option (a no-op if the true value already
+    // was "false").
+    unattended: "false",
+    llmProvider: member?.llmProvider ?? "",
+    host,
+    port,
+    username: member ? rawString(member.username) : ""
+  };
+}
+
+function tagsEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Builds the update_member body from the edit form's CURRENT state against
+ *  the member's baseline (re-derived from `member`, not stored separately --
+ *  MemberDrawer remounts fresh per selected member, so the baseline is stable
+ *  for the component's lifetime). Returns null when nothing changed. Every
+ *  field is included ONLY when it actually differs from the baseline --
+ *  sending an untouched field back would rewrite it (and, for tags, replace
+ *  or clear the existing list) on every submit. */
+function buildUpdateBody(member: FleetMember, state: EditFormState): UpdateMemberBody | null {
+  const baseline = initialEditState(member);
+  const body: UpdateMemberBody = {};
+  let dirty = false;
+
+  if (state.friendlyName !== baseline.friendlyName) {
+    body.friendly_name = state.friendlyName;
+    dirty = true;
+  }
+  if (state.category !== baseline.category) {
+    body.category = state.category;
+    dirty = true;
+  }
+  const newTags = state.tagsText.split(",").map((t) => t.trim()).filter(Boolean);
+  if (!tagsEqual(newTags, member.tags ?? [])) {
+    body.tags = newTags;
+    dirty = true;
+  }
+  const trimmedIcon = state.icon.trim();
+  if (trimmedIcon && trimmedIcon !== baseline.icon) {
+    body.icon = trimmedIcon;
+    dirty = true;
+  }
+  if (state.unattended !== baseline.unattended) {
+    body.unattended = state.unattended;
+    dirty = true;
+  }
+  if (state.llmProvider !== baseline.llmProvider) {
+    body.llm_provider = state.llmProvider as UpdateMemberBody["llm_provider"];
+    dirty = true;
+  }
+  if (member.type === "remote") {
+    if (state.host !== baseline.host) {
+      body.host = state.host;
+      dirty = true;
+    }
+    if (state.port !== baseline.port) {
+      body.port = Number(state.port);
+      dirty = true;
+    }
+    if (state.username !== baseline.username) {
+      body.username = state.username;
+      dirty = true;
+    }
+  }
+
+  return dirty ? body : null;
+}
+
 type ActionState =
   | { status: "idle" }
   | { status: "loading" }
@@ -64,12 +194,15 @@ function detailValue(value: unknown): string {
 interface MemberDrawerProps {
   member: FleetMember | null;
   onClose: () => void;
+  /** Called after a successful update_member submit so the caller can
+   *  re-fetch the members list (apra-fleet-i9ag.6.1). */
+  onUpdated: () => void;
 }
 
 /** Row-click drawer (S1/W1): member detail plus one control per fleet
  *  action, each hitting its own /api/fleet/ route. A tool error renders
  *  inline -- the drawer never closes itself on failure. */
-export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
+export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) {
   const [states, setStates] = useState<Record<string, ActionState>>({});
   const [detail, setDetail] = useState<DetailState>({ status: "idle" });
   // One provider choice per needsProvider action, defaulting to the first
@@ -79,8 +212,18 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
       ACTIONS.filter((a) => a.needsProvider).map((a) => [a.key, VCS_PROVIDERS[0].value])
     )
   );
+  // MemberDrawer is re-keyed per selected member (Members.tsx), so this
+  // initializer only runs once for the currently-open member -- it is the
+  // dirty-diff baseline for the whole life of this mount.
+  const [editState, setEditState] = useState<EditFormState>(() => initialEditState(member));
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editResult, setEditResult] = useState<{ message: string; isError: boolean } | null>(null);
 
   if (!member) return null;
+  // Re-bound to a plain const so nested function declarations below keep the
+  // non-null narrowing (TS does not carry a parameter's narrowed type across
+  // a function-declaration closure boundary).
+  const currentMember: FleetMember = member;
   const memberId = member.id;
 
   async function loadDetail() {
@@ -107,6 +250,29 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
         ...prev,
         [action.key]: { status: "done", message, isError: true }
       }));
+    }
+  }
+
+  function updateEditField<K extends keyof EditFormState>(key: K, value: EditFormState[K]) {
+    setEditState((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleEditSubmit() {
+    const body = buildUpdateBody(currentMember, editState);
+    if (!body) {
+      setEditResult({ message: "No changes to submit.", isError: true });
+      return;
+    }
+    setEditSubmitting(true);
+    setEditResult(null);
+    try {
+      const result = await updateMember(memberId, body);
+      setEditResult({ message: result.text ?? "", isError: false });
+      onUpdated();
+    } catch (err) {
+      setEditResult({ message: err instanceof Error ? err.message : "unknown error", isError: true });
+    } finally {
+      setEditSubmitting(false);
     }
   }
 
@@ -139,6 +305,71 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
             ))}
           </dl>
         ) : null}
+      </section>
+
+      <section aria-label="Edit member" style={{ marginBottom: "16px" }}>
+        <h3>Edit member</h3>
+        <TextField
+          label="Friendly name"
+          name="edit-friendly-name"
+          value={editState.friendlyName}
+          onChange={(v) => updateEditField("friendlyName", v)}
+        />
+        <TextField
+          label="Category"
+          name="edit-category"
+          value={editState.category}
+          onChange={(v) => updateEditField("category", v)}
+        />
+        <TextField
+          label="Tags (comma-separated)"
+          name="edit-tags"
+          value={editState.tagsText}
+          onChange={(v) => updateEditField("tagsText", v)}
+        />
+        <TextField
+          label="Icon"
+          name="edit-icon"
+          value={editState.icon}
+          onChange={(v) => updateEditField("icon", v)}
+        />
+        <SelectField
+          label="Unattended mode"
+          name="edit-unattended"
+          value={editState.unattended}
+          onChange={(v) => updateEditField("unattended", v as EditFormState["unattended"])}
+          options={UNATTENDED_OPTIONS}
+        />
+        <SelectField
+          label="LLM provider"
+          name="edit-llm-provider"
+          value={editState.llmProvider}
+          onChange={(v) => updateEditField("llmProvider", v)}
+          options={LLM_PROVIDER_OPTIONS}
+        />
+        {member.type === "remote" ? (
+          <>
+            <TextField label="Host" name="edit-host" value={editState.host} onChange={(v) => updateEditField("host", v)} />
+            <TextField
+              label="Port"
+              name="edit-port"
+              type="number"
+              value={editState.port}
+              onChange={(v) => updateEditField("port", v)}
+            />
+            <TextField
+              label="Username"
+              name="edit-username"
+              value={editState.username}
+              onChange={(v) => updateEditField("username", v)}
+            />
+          </>
+        ) : null}
+        <button type="button" onClick={() => void handleEditSubmit()} disabled={editSubmitting}>
+          Save changes
+        </button>
+        {editSubmitting ? <span> working...</span> : null}
+        {editResult ? <p role={editResult.isError ? "alert" : "status"}>{editResult.message}</p> : null}
       </section>
 
       <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
