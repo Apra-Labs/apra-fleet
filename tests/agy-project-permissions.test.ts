@@ -57,6 +57,9 @@ describe('AGY Project Permissions & User Journeys', () => {
         'command(git)',
         'command(npm)',
       ]);
+      expect(cfg.permissionGrants.permissionGrants.deny).toContain('mcp(apra-fleet/remove_member)');
+      expect(cfg.permissionGrants.permissionGrants.deny).toContain('mcp(apra-fleet/execute_prompt)');
+      expect(cfg.permissionGrants.permissionGrants.deny).toContain('mcp(apra-fleet-member/remove_member)');
     });
   });
 

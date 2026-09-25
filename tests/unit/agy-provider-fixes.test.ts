@@ -8,6 +8,9 @@ import {
   buildAgyPurgeCommand,
   buildAgyPurgeScript,
   cleanGlobalAgySettings,
+  checkAgyGlobalSkillsWarning,
+  AGY_ORCHESTRATOR_DENY_RULES,
+  AGY_ORCHESTRATOR_DENIED_TOOLS,
   AgyProvider,
 } from '../../src/providers/agy.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
@@ -266,11 +269,48 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
         writeHomeFile: vi.fn().mockResolvedValue(undefined),
       };
       const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-
       const res = await agy.ensureWorkspaceTrusted('/tmp/work', exec, 'linux', undefined, transport as any);
       expect(res.seeded).toBe(false);
       expect(res.detail).toContain('aborted rewrite');
       expect(transport.writeHomeFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('AGY Fix 519 - FIX 2: Member Isolation & Deny Rules', () => {
+    it('populates permissionGrants.deny with explicit orchestrator deny rules in composePermissionConfig', () => {
+      const agy = new AgyProvider();
+      const agent = makeTestAgent({
+        id: 'agent-deny-test',
+        agentType: 'local',
+        llmProvider: 'agy',
+        workFolder: '/tmp/work-folder',
+      });
+      const configs = agy.composePermissionConfig('doer', ['Read', 'Write'], agent, true);
+      expect(configs).toHaveLength(1);
+      const cfg = configs[0] as Record<string, any>;
+
+      const denyList: string[] = cfg.permissionGrants.permissionGrants.deny;
+      expect(denyList).toEqual(AGY_ORCHESTRATOR_DENY_RULES);
+      expect(denyList).toContain('mcp(apra-fleet/remove_member)');
+      expect(denyList).toContain('mcp(apra-fleet-member/remove_member)');
+      expect(denyList).toContain('mcp(apra-fleet/execute_prompt)');
+      expect(denyList).toContain('mcp(apra-fleet-member/execute_prompt)');
+      expect(denyList).toContain('mcp(apra-fleet/shutdown_server)');
+
+      // Member-needed read tools must NOT be in deny list
+      expect(denyList).not.toContain('mcp(apra-fleet/kb_query)');
+      expect(denyList).not.toContain('mcp(apra-fleet/code_query)');
+    });
+
+    it('detects global pm and fleet skills and returns warning via checkAgyGlobalSkillsWarning', () => {
+      const home = makeScratch('fleet-skills-home-');
+      const pmSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm');
+      fs.mkdirSync(pmSkillDir, { recursive: true });
+
+      const warn = checkAgyGlobalSkillsWarning(home);
+      expect(warn).not.toBeNull();
+      expect(warn).toContain('Global skill(s) [pm]');
+      expect(warn).toContain('visible to AGY members');
     });
   });
 });

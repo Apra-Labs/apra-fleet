@@ -624,7 +624,7 @@ export class AgyProvider implements ProviderAdapter {
       permissionGrants: {
         permissionGrants: {
           allow: agyAllow,
-          deny: [],
+          deny: AGY_ORCHESTRATOR_DENY_RULES,
           ask: [],
         },
       },
@@ -690,6 +690,10 @@ export class AgyProvider implements ProviderAdapter {
   ): Promise<void> {
     await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
     await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
+    const warn = checkAgyGlobalSkillsWarning(memberHomeDir);
+    if (warn) {
+      logWarn('agy', warn);
+    }
   }
 
   supportsOAuthCopy(): boolean {
@@ -920,6 +924,36 @@ export class AgyProvider implements ProviderAdapter {
 
     return { seeded: true, detail: `agy: added "${key}" to trustedWorkspaces in settings.json` };
   }
+}
+
+export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
+  'register_member', 'list_members', 'get_member_model_pricing', 'remove_member',
+  'update_member', 'dolt_push_mutex', 'child_id_allocator', 'member_reservation',
+  'send_files', 'receive_files', 'execute_prompt', 'execute_command',
+  'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
+  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
+  'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
+  'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
+  'credential_store_list', 'credential_store_delete', 'credential_store_update',
+  'send_email', 'send_message'
+];
+
+export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [
+  `mcp(apra-fleet/${tool})`,
+  `mcp(apra-fleet-member/${tool})`
+]);
+
+export function checkAgyGlobalSkillsWarning(homeDir?: string | null): string | null {
+  const home = resolveHomeDir(homeDir);
+  if (!home) return null;
+  const skillsDir = path.join(home, '.gemini', 'antigravity-cli', 'skills');
+  const pmInstalled = fs.existsSync(path.join(skillsDir, 'pm'));
+  const fleetInstalled = fs.existsSync(path.join(skillsDir, 'fleet'));
+  if (pmInstalled || fleetInstalled) {
+    const list = [pmInstalled && 'pm', fleetInstalled && 'fleet'].filter(Boolean).join(', ');
+    return `[fleet:warn] agy: AGY provider has no per-member skill isolation mechanism. Global skill(s) [${list}] are installed in ${skillsDir} and will be visible to AGY members.`;
+  }
+  return null;
 }
 
 export interface AgyPermissionRule {
