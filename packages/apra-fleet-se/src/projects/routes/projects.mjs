@@ -204,7 +204,15 @@ export function registerProjectRoutes(supervisor, deps = {}) {
             return;
         }
         try {
-            const project = createProject(db, body);
+            // Strip createdAt (and updatedAt) from the request body before
+            // delegating to createProject(): that store function now accepts
+            // an explicit createdAt so bin/se.mjs's importProject() can
+            // restore a project's ORIGINAL creation time on a fresh-store
+            // import (apra-fleet-vcnl.8), but an HTTP client is untrusted --
+            // it must not be able to spoof a project's creation timestamp
+            // through this route.
+            const { createdAt, updatedAt, ...safeBody } = body;
+            const project = createProject(db, safeBody);
             sendJson(res, 201, project);
         } catch (err) {
             if (err instanceof StoreValidationError) {

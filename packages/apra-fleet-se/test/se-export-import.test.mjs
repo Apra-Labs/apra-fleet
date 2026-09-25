@@ -144,15 +144,22 @@ describe('se-export-import', { skip }, () => {
         const importedProject = getProject(storeB.db, 'rt-1');
         const importedMemberGit = listMemberGit(storeB.db, 'rt-1');
 
-        // `createdAt` is also excluded here: importing into an EMPTY store B
-        // creates a brand-new row (createProject(), not a raw INSERT of the
-        // exported timestamps), so its createdAt legitimately reflects when
-        // it was written into B, not the original creation time in A -- the
-        // same reason `updatedAt` is excluded.
+        // `updatedAt` is excluded because importing into an EMPTY store B
+        // creates a brand-new row via createProject(), which always stamps
+        // "now" into updated_at regardless of the export -- that field
+        // legitimately reflects when the row was written into B, not A's
+        // original last-update time.
+        //
+        // `createdAt`, in contrast, round-trips losslessly (apra-fleet-vcnl.8):
+        // createProject() now accepts an explicit `createdAt` and
+        // importProject() forwards the export's project.createdAt through on
+        // the create path, so restoring a committed .fleet/project.json into
+        // a fresh machine preserves the project's ORIGINAL creation time
+        // instead of silently overwriting it with the import moment.
         assert.deepEqual(
-            omit(importedProject, ['updatedAt', 'createdAt']),
-            omit(originalProject, ['updatedAt', 'createdAt']),
-            'imported project must deep-equal the original modulo updatedAt/createdAt',
+            omit(importedProject, ['updatedAt']),
+            omit(originalProject, ['updatedAt']),
+            'imported project must deep-equal the original modulo updatedAt (createdAt must survive the round trip)',
         );
         assert.deepEqual(
             importedMemberGit,

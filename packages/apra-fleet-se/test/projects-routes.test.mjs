@@ -180,6 +180,30 @@ describe('POST /api/projects -- create success', { skip }, () => {
         const project = payloadOf(res);
         assert.equal(project.beads.remote, 'https://example.invalid/o/beads.git');
     });
+
+    test('a client-supplied createdAt/updatedAt in the request body is ignored, not spoofed into the row (apra-fleet-vcnl.8)', async () => {
+        // createProject() now accepts an explicit createdAt so bin/se.mjs's
+        // importProject() can restore a project's original creation time
+        // from a trusted export -- but this HTTP route is an untrusted
+        // surface and must strip createdAt/updatedAt from the body before
+        // delegating, so a client cannot spoof either timestamp.
+        const { supervisor } = await setup();
+        const before = new Date();
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/projects', validBody({
+                id: 'proj-spoof',
+                createdAt: '1999-01-01T00:00:00.000Z',
+                updatedAt: '1999-01-01T00:00:00.000Z',
+            })),
+            res,
+        );
+        assert.equal(res.statusCode, 201);
+        const project = payloadOf(res);
+        assert.notEqual(project.createdAt, '1999-01-01T00:00:00.000Z');
+        assert.notEqual(project.updatedAt, '1999-01-01T00:00:00.000Z');
+        assert.ok(new Date(project.createdAt) >= before, 'createdAt must reflect the actual create time, not the spoofed value');
+    });
 });
 
 describe('POST /api/projects -- validation failures (400, {field, reason})', { skip }, () => {

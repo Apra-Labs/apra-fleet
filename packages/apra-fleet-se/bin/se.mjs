@@ -172,12 +172,21 @@ export function importProject({ db, ledger, data }) {
             operator: project.operator,
         });
     } else {
+        // Restore the ORIGINAL createdAt from the export when creating a
+        // fresh row (apra-fleet-vcnl.8): without this, createProject() would
+        // stamp "now" into created_at, and restoring a committed
+        // .fleet/project.json into a fresh machine would silently lose the
+        // project's real creation time. Omit the key entirely when the
+        // export payload does not carry one (e.g. an older export format)
+        // so createProject() falls back to its own "now" default rather
+        // than being handed an empty string.
         result = createProject(db, {
             id: project.id,
             name: project.name,
             backlogMember: project.backlogMember,
             beads: project.beads,
             operator: project.operator,
+            ...(project.createdAt ? { createdAt: project.createdAt } : {}),
         });
     }
 

@@ -153,18 +153,31 @@ function fromRow(row) {
  * Create a project row.
  *
  * @param {any} db An open supervisor store (see ./db.mjs `openStore`).
- * @param {object} input `{id, name, backlogMember, beads:{kind?, dir, remote?, prefix?}, operator?}`.
+ * @param {object} input `{id, name, backlogMember, beads:{kind?, dir, remote?, prefix?}, operator?, createdAt?}`.
  *   `beads.kind` defaults to `'clone'` (matching the column default) when omitted.
+ *   `createdAt`, when given, is an ISO-8601 string used verbatim for the
+ *   `created_at` column instead of "now" -- this is what lets
+ *   `bin/se.mjs`'s `importProject()` restore a project's ORIGINAL creation
+ *   time from an export into a fresh store, rather than stamping the moment
+ *   of import (see se-export-import.test.mjs's round-trip case). Untrusted
+ *   callers (e.g. the `POST /api/projects` HTTP route) must not forward a
+ *   client-supplied `createdAt` -- that route strips it before calling in.
+ *   `updated_at` always gets "now", regardless of `createdAt`.
  * @returns {object} The created project, in the shape returned by `getProject`.
  * @throws {StoreValidationError} On a missing/malformed required field.
  * @throws {Error} On a duplicate `id` (SQLite UNIQUE/PRIMARY KEY violation).
  */
 export function createProject(db, input) {
     const errors = validateFields(input ?? {}, { requireAll: true });
+    if (Object.prototype.hasOwnProperty.call(input ?? {}, 'createdAt')
+        && !isNonEmptyString(input.createdAt)) {
+        errors.push({ field: 'createdAt', reason: 'must be a non-empty string' });
+    }
     if (errors.length > 0) throw new StoreValidationError(errors);
 
     const beads = input.beads ?? {};
-    const timestamp = nowIso();
+    const now = nowIso();
+    const createdAt = isNonEmptyString(input.createdAt) ? input.createdAt : now;
 
     db.prepare(
         `INSERT INTO projects (id, name, backlog_member, beads_kind, beads_dir, beads_remote, beads_prefix, operator, created_at, updated_at)
@@ -178,8 +191,8 @@ export function createProject(db, input) {
         beads.remote ?? null,
         beads.prefix ?? null,
         input.operator ?? null,
-        timestamp,
-        timestamp,
+        createdAt,
+        now,
     );
 
     return getProject(db, input.id);
