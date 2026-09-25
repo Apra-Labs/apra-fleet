@@ -10,6 +10,7 @@ import {
   setupSshKey,
   updateLlmCli,
   updateMember,
+  type ComposePermissionsBody,
   type FleetMember,
   type MemberActionResult,
   type UpdateMemberBody
@@ -33,14 +34,27 @@ interface ActionDef {
   call: (memberId: string, provider: string) => Promise<MemberActionResult>;
 }
 
+// Compose permissions is NOT a generic ACTIONS entry (apra-fleet-i9ag.6.2.1):
+// every ACTIONS entry is a bare button whose call signature is (memberId,
+// provider), but compose needs four operator-supplied values (role, tags,
+// grant, grant reason), so it gets its own section below with real inputs.
 const ACTIONS: ActionDef[] = [
   { key: "provision-llm-auth", label: "Provision LLM auth", call: provisionLlmAuth },
   { key: "provision-vcs-auth", label: "Provision VCS auth", needsProvider: true, call: provisionVcsAuth },
   { key: "revoke-vcs-auth", label: "Revoke VCS auth", needsProvider: true, call: revokeVcsAuth },
   { key: "setup-ssh-key", label: "Setup SSH key", call: setupSshKey },
-  { key: "compose-permissions", label: "Compose permissions", call: composePermissions },
   { key: "update-llm-cli", label: "Update LLM CLI", call: updateLlmCli },
   { key: "remove", label: "Remove member", call: removeMember }
+];
+
+/** doer/reviewer role options for compose-permissions -- role is optional
+ *  (composePermissionsSchema has no .refine(); the "at least one of role or
+ *  tags" rule is enforced client-side below), so an empty choice is valid
+ *  when tags alone are supplied. */
+const COMPOSE_ROLE_OPTIONS = [
+  { value: "", label: "(none)" },
+  { value: "doer", label: "Doer" },
+  { value: "reviewer", label: "Reviewer" }
 ];
 
 /** llm_provider choices updateMemberSchema accepts (src/tools/update-member.ts) --
@@ -171,6 +185,15 @@ function buildUpdateBody(member: FleetMember, state: EditFormState): UpdateMembe
   return dirty ? body : null;
 }
 
+interface ComposeFormState {
+  role: "" | "doer" | "reviewer";
+  tagsText: string;
+  grantText: string;
+  grantReason: string;
+}
+
+const COMPOSE_INITIAL_STATE: ComposeFormState = { role: "", tagsText: "", grantText: "", grantReason: "" };
+
 type ActionState =
   | { status: "idle" }
   | { status: "loading" }
@@ -218,6 +241,9 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
   const [editState, setEditState] = useState<EditFormState>(() => initialEditState(member));
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editResult, setEditResult] = useState<{ message: string; isError: boolean } | null>(null);
+  const [composeState, setComposeState] = useState<ComposeFormState>(COMPOSE_INITIAL_STATE);
+  const [composeSubmitting, setComposeSubmitting] = useState(false);
+  const [composeResult, setComposeResult] = useState<{ message: string; isError: boolean } | null>(null);
 
   if (!member) return null;
   // Re-bound to a plain const so nested function declarations below keep the
@@ -273,6 +299,47 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
       setEditResult({ message: err instanceof Error ? err.message : "unknown error", isError: true });
     } finally {
       setEditSubmitting(false);
+    }
+  }
+
+  function updateComposeField<K extends keyof ComposeFormState>(key: K, value: ComposeFormState[K]) {
+    setComposeState((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleComposeSubmit() {
+    const tags = composeState.tagsText.split(",").map((t) => t.trim()).filter(Boolean);
+    const role = composeState.role || undefined;
+    // composePermissionsSchema has no .refine() -- a bare body with neither
+    // role nor tags answers HTTP 200 with a prose "provide at least one..."
+    // string (isToolFailure treats a bare string as success), so this guard
+    // must run client-side and issue NO fetch at all.
+    if (!role && tags.length === 0) {
+      setComposeResult({
+        message: "Provide at least one of role or tags to compose permissions.",
+        isError: true
+      });
+      return;
+    }
+    const grant = composeState.grantText.split(",").map((g) => g.trim()).filter(Boolean);
+    const body: ComposePermissionsBody = {};
+    if (role) body.role = role;
+    if (tags.length > 0) body.tags = tags;
+    if (grant.length > 0) body.grant = grant;
+    if (composeState.grantReason.trim()) body.grant_reason = composeState.grantReason.trim();
+
+    setComposeSubmitting(true);
+    setComposeResult(null);
+    try {
+      // A NEVER_AUTO_GRANT refusal arrives as an HTTP 200 {text} envelope, not
+      // a thrown error (composePermissions returns a plain string and
+      // isToolFailure ignores strings) -- render it verbatim on the success
+      // path exactly like any other result.
+      const result = await composePermissions(memberId, body);
+      setComposeResult({ message: result.text ?? "", isError: false });
+    } catch (err) {
+      setComposeResult({ message: err instanceof Error ? err.message : "unknown error", isError: true });
+    } finally {
+      setComposeSubmitting(false);
     }
   }
 
@@ -403,6 +470,40 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
           );
         })}
       </ul>
+
+      <section aria-label="Compose permissions" style={{ marginTop: "16px" }}>
+        <h3>Compose permissions</h3>
+        <SelectField
+          label="Role"
+          name="compose-role"
+          value={composeState.role}
+          onChange={(v) => updateComposeField("role", v as ComposeFormState["role"])}
+          options={COMPOSE_ROLE_OPTIONS}
+        />
+        <TextField
+          label="Tags (comma-separated)"
+          name="compose-tags"
+          value={composeState.tagsText}
+          onChange={(v) => updateComposeField("tagsText", v)}
+        />
+        <TextField
+          label="Grant (comma-separated)"
+          name="compose-grant"
+          value={composeState.grantText}
+          onChange={(v) => updateComposeField("grantText", v)}
+        />
+        <TextField
+          label="Grant reason"
+          name="compose-grant-reason"
+          value={composeState.grantReason}
+          onChange={(v) => updateComposeField("grantReason", v)}
+        />
+        <button type="button" onClick={() => void handleComposeSubmit()} disabled={composeSubmitting}>
+          Compose permissions
+        </button>
+        {composeSubmitting ? <span> working...</span> : null}
+        {composeResult ? <p role={composeResult.isError ? "alert" : "status"}>{composeResult.message}</p> : null}
+      </section>
     </Drawer>
   );
 }

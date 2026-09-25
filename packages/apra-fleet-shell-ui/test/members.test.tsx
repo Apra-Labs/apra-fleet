@@ -129,12 +129,14 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
 
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 
+    // Compose permissions is no longer a generic ACTIONS entry (it needs
+    // role/tags/grant/grant_reason inputs, apra-fleet-i9ag.6.2.1) -- its own
+    // coverage lives in the paired [test] task's suite.
     const actions: Array<[string, string]> = [
       ["Provision LLM auth", "/api/fleet/provision-llm-auth"],
       ["Provision VCS auth", "/api/fleet/provision-vcs-auth"],
       ["Revoke VCS auth", "/api/fleet/revoke-vcs-auth"],
       ["Setup SSH key", "/api/fleet/setup-ssh-key"],
-      ["Compose permissions", "/api/fleet/compose-permissions"],
       ["Update LLM CLI", "/api/fleet/update-llm-cli"],
       ["Remove member", "/api/fleet/remove-member"]
     ];

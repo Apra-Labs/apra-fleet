@@ -157,8 +157,24 @@ export function setupSshKey(memberId: string): Promise<MemberActionResult> {
   return postJson("/api/fleet/setup-ssh-key", { member_id: memberId });
 }
 
-export function composePermissions(memberId: string): Promise<MemberActionResult> {
-  return postJson("/api/fleet/compose-permissions", { member_id: memberId });
+/** Widened per apra-fleet-i9ag.6.2.1: composePermissionsSchema (src/tools/
+ *  compose-permissions.ts) has NO .refine() -- role and tags are both plain
+ *  .optional(), so the "at least one of role or tags" rule must be enforced
+ *  CLIENT-SIDE (the caller-facing guard lives in MemberDrawer, not here).
+ *  Every field is optional and should be OMITTED from the body when empty --
+ *  callers must not pass "" or [] for an unset field. */
+export interface ComposePermissionsBody {
+  role?: "doer" | "reviewer";
+  tags?: string[];
+  grant?: string[];
+  grant_reason?: string;
+}
+
+export function composePermissions(
+  memberId: string,
+  body: ComposePermissionsBody = {}
+): Promise<MemberActionResult> {
+  return postJson("/api/fleet/compose-permissions", { member_id: memberId, ...body });
 }
 
 export function updateLlmCli(memberId: string): Promise<MemberActionResult> {
