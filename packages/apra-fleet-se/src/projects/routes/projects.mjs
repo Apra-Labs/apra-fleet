@@ -68,25 +68,73 @@ import {
     refreshMember,
     buildOverview,
     listBoundMembers,
+    parseMemberList,
 } from '../projects.mjs';
-import { addCheckout, suggestCheckoutName, originSlugFromUrl } from '../checkout.mjs';
+import {
+    addCheckout,
+    suggestCheckoutName,
+    originSlugFromUrl,
+    quoteArg,
+    shellMetaCharError,
+} from '../checkout.mjs';
 import { registerGitRoutes } from './git.mjs';
 
 /** The Dolt-backed beads sync ref every remote probe checks for. */
 const DOLT_DATA_REF = 'refs/dolt/data';
 
 /**
+ * The target member's own listMembers record, or null when the client has no
+ * `listMembers` method, the call throws, or the member is not (yet) found.
+ * `probeBeadsRemote`'s command runs ON `member`, so `quoteArg` below must
+ * branch on THAT member's registered shell rather than assume POSIX
+ * (apra-fleet-vcnl.15). A missing/failing `listMembers` is tolerated as a
+ * `null` record: `registerProjectRoutes`'s constructor contract requires only
+ * `executeCommand` (see this module's own header), so a caller wired before
+ * `listMembers` existed still gets a working probe -- `quoteArg(value, null)`
+ * defaults to POSIX quoting -- rather than a thrown TypeError.
+ *
+ * @param {{ listMembers?: (opts: {format: string}) => Promise<any> }} client
+ * @param {string} member
+ * @returns {Promise<object | null>}
+ */
+async function resolveMemberRecord(client, member) {
+    if (typeof client.listMembers !== 'function') return null;
+    try {
+        const records = parseMemberList(await client.listMembers({ format: 'json' }));
+        return records.find((r) => r && r.name === member) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Probe a beads remote via `git ls-remote <remote> refs/dolt/data`, run on
  * `member` through the injected fleet client. DQ-12: this only READS whether
  * the remote exists and is reachable -- it never creates one.
  *
- * @param {{ executeCommand: (opts: {command: string, member_name: string}) => Promise<any> }} client
+ * `remote` is caller-supplied (a create/update request body's `beads.remote`,
+ * or a stored project row's own value) and reaches a command string bound to
+ * a fleet member, so it goes through the same two-layer policy
+ * ../checkout.mjs's module header establishes: `shellMetaCharError` screens
+ * it at the edge FIRST (a shell metacharacter refuses with zero
+ * `executeCommand` calls, never a dispatched command), then `quoteArg` quotes
+ * it unconditionally, branching on `member`'s own registered shell via
+ * `resolveMemberRecord` above rather than assuming POSIX (apra-fleet-vcnl.15
+ * -- this call site predates apra-fleet-vcnl.12's hardening of
+ * ../checkout.mjs and ../health.mjs and was left unquoted then).
+ *
+ * @param {{ executeCommand: (opts: {command: string, member_name: string}) => Promise<any>, listMembers?: Function }} client
  * @param {string} member
  * @param {string} remote
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 export async function probeBeadsRemote(client, member, remote) {
-    const command = `git ls-remote ${remote} ${DOLT_DATA_REF}`;
+    const remoteError = shellMetaCharError(remote, 'remote');
+    if (remoteError) {
+        return { ok: false, error: remoteError };
+    }
+    const record = await resolveMemberRecord(client, member);
+    const command = `git ls-remote ${quoteArg(remote, record)} ${DOLT_DATA_REF}`;
     let res;
     try {
         res = await client.executeCommand({ command, member_name: member });

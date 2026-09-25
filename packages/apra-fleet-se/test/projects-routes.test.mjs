@@ -7,6 +7,7 @@ import path from 'node:path';
 import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { registerProjectRoutes, probeBeadsRemote } from '../src/projects/routes/projects.mjs';
+import { findShellCommandViolations } from '../fleet-sprint/shell-command-guard.mjs';
 
 // =============================================================================
 // apra-fleet-972p.4.1 -- /api/projects route module (impl-task coverage).
@@ -75,11 +76,22 @@ const payloadOf = (res) => JSON.parse(res.body);
 /**
  * A stub fleet client whose executeCommand records every call and answers
  * according to `outcome` ('ok' | 'error' | 'nonzero-exit' | 'throws').
+ *
+ * `members` (apra-fleet-vcnl.15), when supplied, wires up a `listMembers`
+ * method too -- so `probeBeadsRemote`'s `resolveMemberRecord` can resolve the
+ * target member's registered os/shell for `quoteArg`. When omitted (the
+ * default, matching every pre-existing test in this file), the client carries
+ * NO `listMembers` method at all -- exactly the narrower constructor contract
+ * `registerProjectRoutes` documents (only `executeCommand` is required) --
+ * and `probeBeadsRemote` must tolerate that by falling back to `quoteArg`'s
+ * own POSIX default rather than throwing.
  */
-function stubClient(outcome = 'ok') {
+function stubClient(outcome = 'ok', { members } = {}) {
     const calls = [];
-    return {
+    const listMembersCalls = [];
+    const client = {
         calls,
+        listMembersCalls,
         async executeCommand(opts) {
             calls.push(opts);
             if (outcome === 'throws') throw new Error('transport unreachable');
@@ -100,6 +112,13 @@ function stubClient(outcome = 'ok') {
             };
         },
     };
+    if (members) {
+        client.listMembers = async () => {
+            listMembersCalls.push(1);
+            return { content: [{ type: 'text', text: JSON.stringify({ members }) }] };
+        };
+    }
+    return client;
 }
 
 function validBody(overrides = {}) {
@@ -127,7 +146,7 @@ describe('probeBeadsRemote', { skip }, () => {
         const result = await probeBeadsRemote(client, 'alice', 'https://example.invalid/x/beads.git');
         assert.equal(result.ok, true);
         assert.equal(client.calls.length, 1);
-        assert.equal(client.calls[0].command, 'git ls-remote https://example.invalid/x/beads.git refs/dolt/data');
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/x/beads.git' refs/dolt/data");
         assert.equal(client.calls[0].member_name, 'alice');
     });
 
@@ -150,6 +169,77 @@ describe('probeBeadsRemote', { skip }, () => {
         assert.equal(result.ok, false);
         assert.match(result.error, /unreachable/);
     });
+});
+
+// =============================================================================
+// apra-fleet-vcnl.15 -- probeBeadsRemote screens and quotes `remote` before it
+// reaches a member. Mirrors ../checkout.mjs's own two-layer policy (screen at
+// the edge via shellMetaCharError, then quote unconditionally via quoteArg,
+// branching on the TARGET member's own registered shell). This call site was
+// deliberately left unquoted by apra-fleet-vcnl.12 (scoped to checkout.mjs
+// and health.mjs) and is fixed here.
+// =============================================================================
+
+describe('probeBeadsRemote quotes the emitted command for the resolved member shell', { skip }, () => {
+    test('a POSIX member (no shell recorded) gets the remote single-quoted', async () => {
+        const client = stubClient('ok', { members: [{ name: 'alice', os: 'linux' }] });
+        const result = await probeBeadsRemote(client, 'alice', 'https://example.invalid/x/beads.git');
+        assert.equal(result.ok, true);
+        assert.equal(client.listMembersCalls.length, 1, 'resolves the target member record before building the command');
+        assert.equal(client.calls.length, 1);
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/x/beads.git' refs/dolt/data");
+        assert.equal(client.calls[0].member_name, 'alice');
+        assert.deepEqual(findShellCommandViolations(client.calls[0].command), [], 'command leaks shell expansion');
+    });
+
+    test('a PowerShell member (windows, pwsh7) gets the same single-quote style, never a backslash-escaped double quote', async () => {
+        const client = stubClient('ok', { members: [{ name: 'winbox', os: 'windows', shell: 'pwsh7' }] });
+        const remote = "https://example.invalid/o'brien/beads.git";
+        const result = await probeBeadsRemote(client, 'winbox', remote);
+        assert.equal(result.ok, true);
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/o''brien/beads.git' refs/dolt/data");
+        assert.ok(
+            !client.calls[0].command.includes('\\"'),
+            'a PowerShell member must never receive the POSIX backslash-escaped double quote',
+        );
+        assert.deepEqual(findShellCommandViolations(client.calls[0].command), [], 'command leaks shell expansion');
+    });
+
+    test('a client with no listMembers method at all (the narrower constructor contract) still probes, defaulting to POSIX quoting', async () => {
+        const client = stubClient('ok'); // no `members` option -> no listMembers method, matching every other pre-existing test in this file
+        assert.equal(typeof client.listMembers, 'undefined');
+        const result = await probeBeadsRemote(client, 'alice', 'https://example.invalid/x/beads.git');
+        assert.equal(result.ok, true);
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/x/beads.git' refs/dolt/data");
+    });
+
+    test('a listMembers call that throws still probes, degrading to a null record rather than a thrown error', async () => {
+        const client = stubClient('ok');
+        client.listMembers = async () => { throw new Error('listMembers unreachable'); };
+        const result = await probeBeadsRemote(client, 'alice', 'https://example.invalid/x/beads.git');
+        assert.equal(result.ok, true);
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/x/beads.git' refs/dolt/data");
+    });
+});
+
+describe('probeBeadsRemote screens `remote` for shell metacharacters BEFORE any client call', { skip }, () => {
+    const BACKTICK = String.fromCharCode(0x60);
+    const cases = [
+        ['a semicolon', 'https://example.invalid/x/beads.git;id'],
+        ['a dollar-paren substitution', 'https://example.invalid/x/beads.git$(id)'],
+        ['a backtick', `https://example.invalid/x/beads.git${BACKTICK}id${BACKTICK}`],
+        ['an ampersand', 'https://example.invalid/x/beads.git&id'],
+    ];
+    for (const [label, remote] of cases) {
+        test(`${label} in remote -> refused, zero execute_command calls, zero listMembers calls`, async () => {
+            const client = stubClient('ok', { members: [{ name: 'alice', os: 'linux' }] });
+            const result = await probeBeadsRemote(client, 'alice', remote);
+            assert.equal(result.ok, false);
+            assert.match(result.error, /must not contain the shell metacharacter/);
+            assert.equal(client.calls.length, 0, 'the refusal path must never dispatch a command');
+            assert.equal(client.listMembersCalls.length, 0, 'the screen runs before any client call, including listMembers');
+        });
+    }
 });
 
 describe('POST /api/projects -- create success', { skip }, () => {
@@ -175,7 +265,7 @@ describe('POST /api/projects -- create success', { skip }, () => {
         await supervisor.handleRequest(mockReq('POST', '/api/projects', body), res);
         assert.equal(res.statusCode, 201);
         assert.equal(client.calls.length, 1);
-        assert.equal(client.calls[0].command, 'git ls-remote https://example.invalid/o/beads.git refs/dolt/data');
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/o/beads.git' refs/dolt/data");
         assert.equal(client.calls[0].member_name, 'alice');
         const project = payloadOf(res);
         assert.equal(project.beads.remote, 'https://example.invalid/o/beads.git');
@@ -352,7 +442,7 @@ describe('PUT /api/projects/:id -- beads.remote probe (DQ-12, 972p.5)', { skip }
         assert.equal(putRes.statusCode, 200);
         assert.equal(payloadOf(putRes).beads.remote, 'https://example.invalid/new/beads.git');
         assert.equal(client.calls.length, 1, 'the changed remote was probed exactly once');
-        assert.equal(client.calls[0].command, 'git ls-remote https://example.invalid/new/beads.git refs/dolt/data');
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/new/beads.git' refs/dolt/data");
         assert.equal(client.calls[0].member_name, 'alice');
         assert.doesNotMatch(client.calls[0].command, /remote add/, 'DQ-12: never creates a remote');
 
@@ -480,7 +570,7 @@ describe('POST /api/projects -- failed remote probe (400, DQ-12)', { skip }, () 
         assert.equal(res.statusCode, 400);
         assert.equal(payloadOf(res).field, 'beads.remote');
         assert.equal(client.calls.length, 1, 'the probe was genuinely attempted');
-        assert.equal(client.calls[0].command, 'git ls-remote https://example.invalid/o/beads.git refs/dolt/data');
+        assert.equal(client.calls[0].command, "git ls-remote 'https://example.invalid/o/beads.git' refs/dolt/data");
 
         // DQ-12: no row is left behind by a failed probe -- the console never
         // creates the remote OR the project row when the probe fails.

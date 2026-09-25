@@ -85,7 +85,7 @@
 //   1. REJECT at the edge. Every caller-supplied value that reaches a
 //      command string -- `checkoutDir`, `beadsDir`, `originUrl` -- is
 //      screened by `shellMetaCharError` and refused with HTTP 400 naming the
-//      field and the offending character. See SHELL_METACHAR_RE for the set.
+//      field and the offending character. See SHELL_METACHARS for the set.
 //   2. QUOTE unconditionally. `quoteArg` NEVER returns a value verbatim; a
 //      value with no metacharacter at all still comes back quoted, so no
 //      future call site can grow an unquoted path by forgetting the screen.
@@ -454,7 +454,7 @@ function pathValidationError(value, field) {
  * Reject an `originUrl` that is empty or carries a shell metacharacter. It
  * reaches the member as `git clone <originUrl> ...`, and until this screen
  * existed NOTHING validated it. No deliberate remote spelling needs any
- * character in SHELL_METACHAR_RE: the three shapes
+ * character in SHELL_METACHARS: the three shapes
  * `git@host:owner/repo.git`, `https://host/owner/repo.git` and
  * `ssh://git@host:22/owner/repo` are all made of characters this allows.
  *
