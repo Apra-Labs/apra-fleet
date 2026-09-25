@@ -410,6 +410,16 @@ function looksLikeTransportFailure(text) {
  *   throw, the pre-existing behavior). Each poll is a cheap re-dispatch attempt (the
  *   server rejects busy calls in milliseconds with no side effects).
  * @property {number} [busyPollMs] - Poll interval (ms) for the busy-wait above. Default 15s.
+ * @property {number} [busyWedgedWaitMs] - Upper bound (ms) on the busy-wait for a member
+ *   whose lock is already known to be WEDGED -- i.e. it was still busy after agent() had
+ *   force-cleared a leaked lock with stop_prompt (apra-fleet-c98q.8). Defaults to 60s, and
+ *   is only ever applied as a CAP on busyWaitMs, never as an extension. Rationale: a lock
+ *   that survives being force-cleared will not free itself, so the remaining budget buys
+ *   nothing -- the incident this came from burned ~50 minutes because each caller-level
+ *   retry granted the wedged member a fresh full-length 600s wait. Failing typed in
+ *   ~a minute lets the caller's own retry/escalation policy act while the sprint is still
+ *   alive. The wedged flag is cleared as soon as any dispatch to that member settles
+ *   normally, so a recovered member gets the full budget again.
  * @property {string} [sprint_id] - Opaque sprint identity to pass straight through to
  *   execute_prompt's server-side reservation check (apra-fleet-eft.29.1). Callers that
  *   also reserve members via member_reservation (e.g. auto-sprint's
@@ -482,6 +492,25 @@ export class FleetWorkflow extends EventEmitter {
         // warning for (apra-fleet-dv5.6 acceptance criteria: log ONCE per
         // member, not once per dispatch).
         this._warnedPricingMembers = new Set();
+        // apra-fleet-c98q.8: member key -> how THIS process's most recent
+        // execute_prompt dispatch to that member ended, plus whether its lock
+        // has already been found wedged. This is what lets agent() tell a
+        // LEAKED busy lock (the server still holds the lock for a dispatch of
+        // OURS that never settled) apart from a genuine peer dispatch. See
+        // _recordDispatchOutcome() and the busy-recovery block in
+        // _agentDispatch() for the full semantics.
+        //   lastOutcome: 'settled'  -- the server answered us normally (even
+        //                              an error answer: its own lock
+        //                              lifecycle ran to completion).
+        //                'failed'   -- transport error, thrown dispatch,
+        //                              abort, client timeout, or a top-level
+        //                              isError CallToolResult (a server-side
+        //                              throw, which is exactly the case that
+        //                              leaks the lock -- apra-fleet-c98q.6).
+        //   wedged:      the stop_prompt recovery already ran for this member
+        //                and it came back busy anyway, so the busy path stays
+        //                short-bounded until a dispatch settles normally.
+        this._memberDispatchState = new Map();
         // (apra-fleet-unw.10) runId -> AbortController for every currently
         // active runWithContext() run. requestStop() aborts every entry in
         // this map; agent()/command() default to the current run's
@@ -961,6 +990,88 @@ export class FleetWorkflow extends EventEmitter {
         return cost;
     }
 
+    // -----------------------------------------------------------------
+    // apra-fleet-c98q.8 -- leaked-busy-lock recovery
+    //
+    // The incident this exists for: a dispatch to fleet-lin1 failed with a
+    // server-side throw (SSH dropped inside writePromptFile) that left the
+    // per-member execute_prompt lock held with no process behind it. Every
+    // subsequent dispatch was rejected as busy, so the engine busy-waited
+    // 5 x 600s -- about 50 minutes -- and failed the sprint, while nothing
+    // was running on the member at all.
+    //
+    // A busy rejection that follows OUR OWN failed/abandoned dispatch to that
+    // member is not a peer dispatch: whatever the server thinks it is holding
+    // the lock for, this process has already given up on it and will never
+    // consume its result. That is a leaked lock, and the fleet already has
+    // the verb that clears it unconditionally -- stop_prompt, which deletes
+    // the in-flight entry even in the pid-less case. So: stop once,
+    // re-dispatch once, latched, instead of waiting out a full budget for a
+    // lock that can never free itself.
+    // -----------------------------------------------------------------
+
+    /** The key the dispatch-outcome map is tracked under (whichever identifier the caller used). */
+    _memberKey(opts) {
+        return opts.member_name || opts.member_id;
+    }
+
+    /** True for a dispatch the server rejected because the member's lock is held. */
+    _isBusyResult(result) {
+        return !!(result && result.structuredContent && result.structuredContent.isError
+            && result.structuredContent.reason === 'busy');
+    }
+
+    /**
+     * Record how this process's most recent dispatch to `memberKey` ended.
+     *
+     * A 'busy' answer deliberately records NOTHING: the server never ran a
+     * dispatch for us, so it says nothing about whether our previous one
+     * settled -- and overwriting the remembered 'failed' with it would erase
+     * the very signal the recovery below keys on.
+     *
+     * @param {string|undefined} memberKey
+     * @param {'settled'|'failed'|'busy'} outcome
+     */
+    _recordDispatchOutcome(memberKey, outcome) {
+        if (!memberKey || outcome === 'busy') return;
+        const prev = this._memberDispatchState.get(memberKey) || { lastOutcome: null, wedged: false };
+        this._memberDispatchState.set(memberKey, {
+            lastOutcome: outcome,
+            // A dispatch the server answered normally proves the lock is
+            // healthy again, so the short-bounded "wedged" busy budget is
+            // released; a failure leaves the flag as it was.
+            wedged: outcome === 'settled' ? false : prev.wedged,
+        });
+    }
+
+    /**
+     * executePrompt() plus the outcome bookkeeping above. Every dispatch site
+     * in _agentDispatch() goes through this so no path can silently skip the
+     * recording and leave a stale outcome behind.
+     *
+     * @param {object} payload
+     * @param {string|undefined} memberKey
+     */
+    async _executePromptTracked(payload, memberKey) {
+        let result;
+        try {
+            result = await this.fleetApi.executePrompt(payload);
+        } catch (err) {
+            // Transport error, client-side timeout, cooperative abort: the
+            // remote side may well still hold the lock for work we have just
+            // abandoned.
+            this._recordDispatchOutcome(memberKey, 'failed');
+            throw err;
+        }
+        // A top-level isError with no structuredContent is the MCP SDK
+        // marshalling a server-side throw (apra-fleet-c98q.6) -- the shape
+        // that leaks the lock. Anything else, including a structured error
+        // answer, means the server's own lock lifecycle ran to completion.
+        const abandoned = !!(result && result.isError === true && !result.structuredContent);
+        this._recordDispatchOutcome(memberKey, this._isBusyResult(result) ? 'busy' : (abandoned ? 'failed' : 'settled'));
+        return result;
+    }
+
     /**
      * @param {string} prompt
      * @param {AgentOptions} [opts]
@@ -1029,6 +1140,14 @@ export class FleetWorkflow extends EventEmitter {
         // reuses an older round's id.
         let failedAttemptSessionId = null;
         const budget = this._currentBudget();
+
+        // apra-fleet-c98q.8: the member this step dispatches to, and the
+        // per-STEP latch for its leaked-busy-lock recovery. Scoped to this
+        // _agentDispatch call (so every schema-repair round shares one latch)
+        // -- a member may be stop_prompt-ed and re-dispatched at most once per
+        // step, never in a loop.
+        const memberKey = this._memberKey(opts);
+        const busyRecoveryAttempted = new Set();
 
         // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
         // ONCE per logical agent() call (not per schema-repair attempt) from
@@ -1213,7 +1332,60 @@ export class FleetWorkflow extends EventEmitter {
             };
 
             try {
-                let result = await this.fleetApi.executePrompt(payload);
+                let result = await this._executePromptTracked(payload, memberKey);
+
+                // apra-fleet-c98q.8 -- LEAKED-LOCK RECOVERY, ahead of any
+                // busy-wait. See the block comment on _memberKey() above for
+                // why a busy rejection that follows this process's own
+                // failed/abandoned dispatch is a leaked lock rather than a
+                // peer dispatch, and why waiting it out can never work.
+                //
+                // Latched to at most once per member per step (this
+                // _agentDispatch call, schema-repair rounds included): the
+                // whole point is ONE stop_prompt and ONE re-dispatch, never a
+                // kill-retry loop against a member that might legitimately be
+                // running something.
+                const lockState = memberKey ? this._memberDispatchState.get(memberKey) : null;
+                if (
+                    this._isBusyResult(result)
+                    && !busyRecoveryAttempted.has(memberKey)
+                    && lockState && lockState.lastOutcome === 'failed'
+                    && !(payload.signal && payload.signal.aborted)
+                ) {
+                    busyRecoveryAttempted.add(memberKey);
+                    if (typeof this.fleetApi.stopPrompt !== 'function') {
+                        // An older/partial client without the wrapper: say so
+                        // loudly once and let the busy-wait below run, rather
+                        // than pretending the lock was cleared.
+                        console.error(`[Agent Busy-Recovery] member '${memberKey}' rejected this dispatch as busy right after THIS process's own dispatch to it failed (a leaked lock), but the configured fleet client exposes no stopPrompt() -- cannot clear it; falling back to the bounded busy-wait.`);
+                    } else {
+                        console.error(`[Agent Busy-Recovery] member '${memberKey}' is busy, but THIS process's own most recent dispatch to it failed or was abandoned -- treating the lock as LEAKED (nothing of ours is still running behind it) rather than a concurrent peer dispatch. Calling stop_prompt once and re-dispatching once, with no busy-wait first.`);
+                        try {
+                            await this.fleetApi.stopPrompt({
+                                ...(opts.member_name ? { member_name: opts.member_name } : {}),
+                                ...(opts.member_id ? { member_id: opts.member_id } : {}),
+                            });
+                        } catch (stopErr) {
+                            // Best-effort: a stop_prompt that itself failed
+                            // leaves us exactly where we were, so fall through
+                            // to the re-dispatch + busy-wait rather than
+                            // failing the step on the recovery attempt.
+                            console.error(`[Agent Busy-Recovery] stop_prompt for member '${memberKey}' failed (non-fatal, continuing): ${stopErr && stopErr.message ? stopErr.message : stopErr}`);
+                        }
+                        result = await this._executePromptTracked(payload, memberKey);
+                        if (this._isBusyResult(result)) {
+                            // Still busy after the lock was force-cleared:
+                            // this member is wedged beyond what we can repair.
+                            // Mark it so neither this step nor a caller's
+                            // retry spends another full busy budget on it.
+                            const wedgedState = this._memberDispatchState.get(memberKey) || { lastOutcome: 'failed', wedged: false };
+                            this._memberDispatchState.set(memberKey, { ...wedgedState, wedged: true });
+                            console.error(`[Agent Busy-Recovery] member '${memberKey}' is STILL busy after stop_prompt -- the lock is wedged beyond recovery; falling back to a short-bounded busy-wait so this surfaces as a typed dispatch failure in minutes instead of repeating the full busy budget.`);
+                        } else {
+                            console.error(`[Agent Busy-Recovery] member '${memberKey}' accepted the re-dispatch after stop_prompt -- the leaked lock is cleared.`);
+                        }
+                    }
+                }
 
                 // Busy-wait (see AgentOptions.busyWaitMs): a busy member is
                 // transient-but-slow -- an orphaned prior session can hold
@@ -1224,7 +1396,19 @@ export class FleetWorkflow extends EventEmitter {
                 const busyWaitMs = opts.busyWaitMs ?? 600000;
                 const busyPollMs = opts.busyPollMs ?? 15000;
                 if (busyWaitMs > 0) {
-                    const busyDeadline = Date.now() + busyWaitMs;
+                    // apra-fleet-c98q.8: a member already known to be wedged
+                    // (stop_prompt did not free it) gets the SHORT budget --
+                    // see AgentOptions.busyWedgedWaitMs. Waiting longer cannot
+                    // help a lock that survived being force-cleared, and the
+                    // 5 x 600s the incident burned came exactly from each
+                    // caller-level retry granting a fresh full-length wait.
+                    // The flag is cleared the moment any dispatch to that
+                    // member settles normally again.
+                    const wedged = !!(memberKey && this._memberDispatchState.get(memberKey)?.wedged);
+                    const effectiveBusyWaitMs = wedged
+                        ? Math.min(busyWaitMs, opts.busyWedgedWaitMs ?? 60000)
+                        : busyWaitMs;
+                    const busyDeadline = Date.now() + effectiveBusyWaitMs;
                     while (
                         result && result.structuredContent && result.structuredContent.isError
                         && result.structuredContent.reason === 'busy'
@@ -1233,7 +1417,7 @@ export class FleetWorkflow extends EventEmitter {
                     ) {
                         console.error(`[Agent Busy-Wait] member '${opts.member_name || opts.member_id}' is busy (a prior dispatch still holds its lock); retrying in ${Math.round(busyPollMs / 1000)}s (up to ${Math.round((busyDeadline - Date.now()) / 1000)}s left)...`);
                         await new Promise((resolve) => setTimeout(resolve, busyPollMs));
-                        result = await this.fleetApi.executePrompt(payload);
+                        result = await this._executePromptTracked(payload, memberKey);
                     }
                 }
 
@@ -1259,7 +1443,7 @@ export class FleetWorkflow extends EventEmitter {
                 ) {
                     console.error(`[Agent Schema Repair] the session targeted by this repair re-ask (${payload.resume}) is gone or expired on member '${opts.member_name || opts.member_id}'; re-dispatching the same repair prompt once in a fresh self-contained session (resume: false).`);
                     payload.resume = false;
-                    result = await this.fleetApi.executePrompt(payload);
+                    result = await this._executePromptTracked(payload, memberKey);
                 }
 
                 // execute_prompt's dispatch-level structuredContent (added

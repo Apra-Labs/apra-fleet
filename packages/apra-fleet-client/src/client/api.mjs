@@ -566,6 +566,27 @@ export class ApraFleet {
     }
 
     /**
+     * Stop whatever execute_prompt dispatch a member is currently running
+     * (src/tools/stop-prompt.ts): kills the recorded pid if there is one,
+     * drops the member from the stall detector, and UNCONDITIONALLY clears
+     * its in-flight (busy) entry -- including the pid-less case where a
+     * server-side throw left the busy lock held with no process behind it.
+     *
+     * That last property is why the engine needs this verb rather than a
+     * longer busy-wait: a busy rejection that follows this process's own
+     * failed/abandoned dispatch is a LEAKED lock, and nothing else will ever
+     * release it (see the busy-recovery path in
+     * packages/apra-fleet-workflow/src/workflow/index.mjs).
+     *
+     * @param {{ member_id?: string, member_name?: string }} options
+     * @returns {Promise<{content?: {type: string, text: string}[]}>} the raw
+     *   callTool() result -- stop_prompt returns a human-readable summary only.
+     */
+    async stopPrompt(options) {
+        return this.mcpClient.callTool('stop_prompt', options);
+    }
+
+    /**
      * Run a shell command on a member.
      * @param {ExecuteCommandOptions} options
      */
