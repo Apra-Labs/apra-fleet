@@ -9,7 +9,11 @@
  */
 import type http from 'node:http';
 import type { ConsoleRoute } from '../server.js';
-import { workflowPackageService, validateWorkflowPackageBaseUrlScheme } from '../../services/workflow-packages.js';
+import {
+  workflowPackageService,
+  validateWorkflowPackageBaseUrlScheme,
+  parseWorkflowPackageManifest,
+} from '../../services/workflow-packages.js';
 
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -65,7 +69,17 @@ export const workflowPackagesRoutes: ConsoleRoute[] = [
         return;
       }
 
-      const result = await workflowPackageService.register({ id, baseUrl, apraFleetApi });
+      // Optional manifest fields. Validated BEFORE the service is called, so
+      // a malformed field answers 400 {error, field} with NOTHING persisted
+      // -- a partially-accepted manifest would leave the shell rendering nav
+      // entries the operator never successfully registered.
+      const manifestResult = parseWorkflowPackageManifest((body ?? {}) as Record<string, unknown>);
+      if (!manifestResult.ok) {
+        jsonResponse(res, 400, { error: manifestResult.error.message, field: manifestResult.error.field });
+        return;
+      }
+
+      const result = await workflowPackageService.register({ id, baseUrl, apraFleetApi, ...manifestResult.manifest });
       if (result.ok) {
         jsonResponse(res, 200, { ok: true });
         return;

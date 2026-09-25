@@ -952,3 +952,40 @@ pre-parsed `url.pathname` always answer the same. This is the PATH NORMALISER
 ONLY -- it carries no route policy. Returns the normalised pathname, or
 `null` if `urlPath` could not be parsed; every caller in this codebase treats
 `null` as "guarded" (fail closed).
+
+### `UPSTREAM_CREDENTIAL_LABEL`
+
+Fixed label (`'apra-fleet-ext-upstream-v1'`) mixed into every derived
+per-package upstream credential. It MUST stay different from any cookie or
+session label signed with the same fleet key -- equal labels would let a
+workflow package replay its upstream credential as a console credential. That
+domain separation is the whole reason the label is part of the HMAC input.
+Changing this string rotates every registered package's credential.
+
+### `deriveUpstreamCredential(fleetKey, packageId)`
+
+Derives the per-package upstream credential the apra-fleet console attaches
+when it talks to a registered workflow package -- both on the `/ext` reverse-
+proxy hop (`src/console/proxy.ts`) and on the registry health probe
+(`src/services/workflow-packages.ts`), as `Authorization: Bearer <value>`. A
+package's own supervisor derives the same value from the shared fleet key to
+authenticate the caller.
+
+```js
+const credential = deriveUpstreamCredential(fleetKey, 'my-package');
+// -> hex sha256 HMAC, e.g. '4f2b...'
+```
+
+Returns a hex-encoded sha256 HMAC of `` `${UPSTREAM_CREDENTIAL_LABEL}:${packageId.length}:${packageId}` ``
+keyed by `fleetKey`. Two properties matter and are pinned by tests:
+
+- **Not reversible into `fleetKey`** -- the raw fleet key is never handed to a
+  package, only a value derived from it.
+- **Unambiguously bound to one package id** -- the `packageId.length` prefix is
+  what removes id/label ambiguity. Without it, a crafted id could collide with
+  another package's HMAC input and derive that package's credential.
+
+This function lives here (rather than in the console) so both ends of the hop
+share one derivation. `src/console/proxy.ts` re-exports both names unchanged;
+the output is byte-identical to the derivation that shipped there before the
+lift, so no already-registered package's credential changed.
