@@ -192,15 +192,42 @@ function waitDead(pid, timeoutMs = 8000) {
 const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
 
 /**
+ * Attach a listener that captures a child's 'error' event (ENOENT, EACCES,
+ * EAGAIN, ...) onto the child object itself, as `child.spawnError`, so a
+ * later describeChildExitState() call can report it. Node emits 'error'
+ * asynchronously and independently of 'exit' -- a child that fails to spawn
+ * at all gets NEITHER an 'exit' event nor a pid, so without this the
+ * diagnostic's `exited` check (both exitCode and signalCode null) falls
+ * through to "still alive", actively misleading in exactly the
+ * starved-vs-never-started scenario this diagnostic exists to disambiguate
+ * (apra-fleet-ecjf.7). Must be attached immediately after spawn(), before
+ * any later describeChildExitState() call, and Node requires an 'error'
+ * listener to exist or an unhandled spawn failure crashes the process.
+ */
+function trackSpawnError(child) {
+    child.spawnError = null;
+    child.on('error', (err) => { child.spawnError = err; });
+    return child;
+}
+
+/**
  * Describe whether a spawned child had already exited (vs. was still
  * running) at the time a health-wait timeout fired, plus its exit
  * code/signal -- this is what distinguishes "silently starved while still
  * alive" (a scheduling/contention symptom) from "silently exited early"
  * (a spawn/crash symptom that empty stderr alone cannot rule out, since
- * some exits produce no stack trace).
+ * some exits produce no stack trace). A child that failed to spawn at all
+ * (see trackSpawnError above) is reported as its own distinct state,
+ * separate from both "still alive" and "exited" -- apra-fleet-ecjf.7.
  */
 function describeChildExitState(child) {
     if (!child) return 'child process state: unknown (no child reference provided)';
+    if (child.spawnError) {
+        return `child process state: never spawned (spawn error: ${child.spawnError.message})`;
+    }
+    if (child.pid === undefined) {
+        return 'child process state: never spawned (pid undefined, no spawn error observed yet)';
+    }
     const exited = child.exitCode !== null || child.signalCode !== null;
     if (!exited) return 'child process state: still alive (not exited)';
     return `child process state: exited (code=${child.exitCode === null ? 'null' : child.exitCode}, signal=${child.signalCode === null ? 'null' : child.signalCode})`;
@@ -668,6 +695,24 @@ describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
         const noChildCaught = await waitTimeout();
         const noChildMsg = describeHealthWaitFailure(new Error(noChildCaught.message), { stdoutBuf: '', stderrBuf: '' });
         assert.match(noChildMsg.message, /child process state: unknown \(no child reference provided\)/);
+
+        // Case 4 (apra-fleet-ecjf.7): the child never spawned at all (a real
+        // ENOENT against a genuinely nonexistent executable), so it has
+        // NEITHER a pid NOR an 'exit' event -- before the fix this fell
+        // through describeChildExitState()'s `exited` check straight to
+        // "still alive (not exited)", actively misleading in exactly the
+        // starved-vs-never-started scenario the diagnostic exists to
+        // disambiguate. trackSpawnError() must be attached before spawn()
+        // returns control to this test so the real, asynchronous 'error'
+        // event is never missed.
+        const bogusExecutable = path.join(__dirname, 'this-executable-does-not-exist-ecjf7.exe');
+        const neverSpawnedChild = trackSpawnError(spawn(bogusExecutable, [], { stdio: ['ignore', 'ignore', 'ignore'] }));
+        await waitFor(() => neverSpawnedChild.spawnError !== null, { timeoutMs: 5000, label: 'spawn error event on a nonexistent executable' });
+        assert.equal(neverSpawnedChild.pid, undefined, 'a child that failed to spawn must never have been assigned a pid');
+        const neverSpawnedCaught = await waitTimeout();
+        const neverSpawnedMsg = describeHealthWaitFailure(new Error(neverSpawnedCaught.message), { stdoutBuf: '', stderrBuf: '', child: neverSpawnedChild });
+        assert.match(neverSpawnedMsg.message, /child process state: never spawned \(spawn error: /);
+        assert.doesNotMatch(neverSpawnedMsg.message, /child process state: still alive \(not exited\)/);
     });
 });
 
