@@ -160,6 +160,14 @@ interface AssetManifest {
   // Optional for the same additive-only reason: older manifests (built before
   // this skill existed) simply omit it and the install step skips.
   fleetSupervisorSkill?: Record<string, string>;
+  // Optional for the same additive-only reason: older manifests (built before
+  // the console shell shipped) simply omit it. UNLIKE every other section
+  // above, install.ts never extracts this one to disk: src/console/static.ts
+  // seaSource() reads 'ui/'-prefixed SEA assets directly via getAsset() at
+  // request time (apra-fleet-v6t7.3.1), so the runtime never needs UI files
+  // on disk. Present here only so gen-sea-config.mjs's manifest shape and
+  // install.ts's AssetManifest type stay in lockstep.
+  ui?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';

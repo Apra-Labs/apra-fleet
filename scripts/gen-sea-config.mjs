@@ -5,6 +5,19 @@
  * Scans hooks/, scripts/, packages/apra-fleet-se/apra-pm/skills/pm/ and builds:
  * 1. dist/sea-manifest.json — asset index for install.ts
  * 2. dist/sea-config.json   — Node.js SEA configuration
+ *
+ * UI (console shell) asset section (apra-fleet-v6t7.3.1):
+ * Ships packages/apra-fleet-shell-ui/dist under the 'ui/' manifest prefix, so
+ * the SEA binary can serve GET /ui from src/console/static.ts's seaSource()
+ * (reads SEA assets keyed under UI_ASSET_PREFIX = 'ui/'). Two modes when the
+ * shell dist (or its index.html) is missing:
+ *   - default (any invocation without --require-ui): prints a stderr warning
+ *     naming the missing directory, emits no ui/ manifest or asset entries,
+ *     and exits 0. Intended for a standalone dev run of this script.
+ *   - strict (--require-ui flag): prints a stderr error naming
+ *     packages/apra-fleet-shell-ui/dist and exits non-zero. Intended for the
+ *     release build chain (npm run build:binary), which must never produce a
+ *     binary silently missing its console shell.
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
@@ -200,6 +213,22 @@ const builtinWorkflows = {
   ...collectPackageTree(join(root, 'examples', 'workflows', 'hello-world'), 'hello-world'),
 };
 
+// UI (console shell) asset section -- see the file-level comment above for the
+// default-vs-strict --require-ui behaviour.
+const requireUi = process.argv.includes('--require-ui');
+const shellDistDir = join(root, 'packages', 'apra-fleet-shell-ui', 'dist');
+const shellDistPresent = existsSync(join(shellDistDir, 'index.html'));
+let ui = {};
+if (shellDistPresent) {
+  ui = collectPackageTree(shellDistDir, 'ui');
+} else if (requireUi) {
+  console.error(`Error: packages/apra-fleet-shell-ui/dist is missing or has no index.html (required by --require-ui).`);
+  console.error('Run: npm run build:ui');
+  process.exit(1);
+} else {
+  console.error(`Warning: packages/apra-fleet-shell-ui/dist is missing or has no index.html -- GET /ui will 404 in this build. Run "npm run build:ui" to include the console shell.`);
+}
+
 const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf-8'));
 
 const manifest = {
@@ -216,6 +245,7 @@ const manifest = {
   autoSprintArgsSkill,
   fleetSprintCliSkill,
   fleetSupervisorSkill,
+  ui,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -232,6 +262,7 @@ console.log(`  Built-in workflows: ${Object.keys(builtinWorkflows).length} files
 console.log(`  Skill (auto-sprint-args): ${Object.keys(autoSprintArgsSkill).length} files`);
 console.log(`  Skill (fleet-sprint-cli): ${Object.keys(fleetSprintCliSkill).length} files`);
 console.log(`  Skill (fleet-supervisor): ${Object.keys(fleetSupervisorSkill).length} files`);
+console.log(`  UI (console shell): ${Object.keys(ui).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -290,6 +321,14 @@ for (const [, relPath] of Object.entries(fleetSprintCliSkill)) {
 // Add fleet-supervisor skill files
 for (const [, relPath] of Object.entries(fleetSupervisorSkill)) {
   assets[relPath] = join(root, relPath);
+}
+// Add UI (console shell) files. UNLIKE every other section above, the asset
+// map key here is the ui/-prefixed MANIFEST key, not the disk-relative path
+// -- src/console/static.ts's seaSource() reads SEA assets directly via
+// getAsset(UI_ASSET_PREFIX + requestPath) at request time (never extracted
+// to disk), so the SEA asset must be retrievable under that exact key.
+for (const [manifestKey, diskPath] of Object.entries(ui)) {
+  assets[manifestKey] = join(root, diskPath);
 }
 
 const seaConfig = {
