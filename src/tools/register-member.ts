@@ -80,7 +80,7 @@ export const registerMemberSchema = z.object({
     package: z.string().min(1),
     ref: z.string().min(1),
   }).optional().describe('Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.'),
-  env: z.record(z.string(), z.string()).optional().describe('Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.'),
+  env: z.record(z.string(), z.string()).optional().describe('Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one.'),
   llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
 });
 

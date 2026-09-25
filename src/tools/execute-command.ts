@@ -4,7 +4,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
+import { buildEnvPrefix, buildEnvAssignments } from '../utils/env-prefix.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
@@ -266,6 +266,18 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const taskId = 'task-' + Date.now().toString(36);
     registerTaskCredentials(taskId, credentials);
 
+    // F14: member.env ONLY on this path. The wrapper script is written to a
+    // FILE that persists under .fleet-tasks/<taskId>/run.{sh,ps1}, so
+    // decrypted auth credentials must never be baked into it -- that would
+    // leave secrets in plaintext on the member's disk. The synchronous path
+    // below deliberately DOES include auth env, because its prefix is
+    // transient. See TaskConfig.env in src/services/cloud/task-wrapper.ts.
+    const taskEnv = buildEnvAssignments(agent, {
+      os: agentOsVal,
+      shell: getAgentShell(agent),
+      include: { auth: false, member: true },
+    });
+
     let launchCmd: string;
     if (agentOsVal === 'windows') {
       // Detached spawn via WMI (Invoke-CimMethod Win32_Process.Create): the
@@ -289,6 +301,11 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         restartCommand: resolvedRestartCommand,
         maxRetries: input.max_retries ?? 3,
         activityIntervalSec: 300,
+        // buildEnvAssignments' output is unescaped and shell-agnostic, so the
+        // same taskEnv feeds both generators; generateTaskWrapperWindows
+        // emits PowerShell $env: lines for it, which is correct even for a
+        // gitbash member because this script is always run by powershell.exe.
+        env: taskEnv,
       });
       const scriptB64 = Buffer.from(wrapperScript, 'utf-8').toString('base64');
       const taskDir = `$env:USERPROFILE\\.fleet-tasks\\${taskId}`;
@@ -321,6 +338,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         restartCommand: resolvedRestartCommand,
         maxRetries: input.max_retries ?? 3,
         activityIntervalSec: 300,
+        env: taskEnv,
       });
       const scriptB64 = Buffer.from(wrapperScript).toString('base64');
 
@@ -353,13 +371,19 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Regular (synchronous) command path --
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  // F14: member.env AND auth env, rendered in the member's ACTUAL shell form
+  // (getAgentShell, so a gitbash Windows member gets POSIX exports rather
+  // than PowerShell $env: assignments its shell would mis-parse). Unlike the
+  // long_running path below, this prefix is transient -- it lives only in the
+  // dispatched command string, never in a file on the member -- so it is
+  // safe to carry decrypted auth credentials here.
+  const envPrefix = buildEnvPrefix(agent, { os: getAgentOS(agent), shell: getAgentShell(agent) });
   // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
   // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  const wrapped = envPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));

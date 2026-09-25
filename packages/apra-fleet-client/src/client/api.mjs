@@ -171,7 +171,7 @@
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
- * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision.
  * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
@@ -208,7 +208,7 @@
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.
- * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass {} to clear.
+ * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision. Pass {} to clear.
  * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
