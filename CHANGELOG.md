@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Shell pages: Members, Secrets, Health (sprint goal not met -- blocking defect found in review)
+
+Sprint goal: complete the S1 members table (drawer actions, add-member
+wizard), S2 Secrets and S3 Health screens against `/api/fleet/*`, with every
+action in the design's screen action table backed by a tested route and a
+tested UI control. The 18 `/api/fleet/*` routes, the Secrets and Health
+pages, hash-based shell navigation, and a shared `@apralabs/apra-fleet-ui-kit`
+primitives package all landed and are verified working. Review found the
+epic is not yet done: the Members table renders the `owner` field as a raw
+value, but the field is a structured `{package, ref}` object on the branch
+this sprint merges against, so a real payload crashes the screen with no
+error boundary to contain it (the shipped UI test fixture hardcodes the old
+string shape, so the suite does not catch it); and the `member_detail` route
+has a passing route-level test but no UI control actually calls it, so the
+"route with a test and a UI control with a test" criterion is unmet for that
+action. Both gaps are in this sprint's own package (`packages/apra-fleet-shell-ui/`)
+and carry forward as open work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.9450.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.2040 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **18 `/api/fleet/*` routes** mapping 1:1 to the client API, each validated
+  against its own tool's zod schema, with a thrown-error -> 400 / tool
+  `isError` -> 422 mapping, and credential responses built from an explicit
+  field whitelist so no secret value leaks through a route response.
+- **The Members table (S1/W1)**: background-refreshing table (no flash back
+  to loading on a failed refresh), a row-click drawer with the member action
+  set (provision LLM auth, provision/revoke VCS auth, setup SSH key, compose
+  permissions, update LLM CLI, remove), and an add-member wizard for local
+  and SSH-remote members.
+- **Secrets (S2)**: list, add via the out-of-band credential URL, update
+  policy/members/expiry, delete, GitHub App setup -- with no secret value
+  ever appearing in a request body or the DOM.
+- **Health (S3)**: fleet status, version, data directory, update-available
+  state, and a workflow-packages list that degrades to the same empty state
+  on both a 404 and a network failure.
+- **Hash-based shell navigation** across the three pages, and a shared
+  `@apralabs/apra-fleet-ui-kit` package (`Table`, `Drawer`, `Form`, `Wizard`,
+  `Page`) so future console pages compose from common primitives.
+- File ownership held: no file under `src/tools/`, `src/types.ts`, or
+  `src/console/server.ts` was touched.
+
+Known gap carried forward (blocks the epic acceptance criterion):
+
+- The Members table's owner column must render the structured
+  `{package, ref}` owner object (not treat it as a plain string), and the
+  shell needs a rendering safety net (an error boundary) so a future
+  shape mismatch degrades to a visible error instead of a blank screen.
+- `member_detail` needs an actual UI control (e.g. in the member drawer)
+  that calls the route, not just route-level test coverage.
+- See `docs/console-architecture.md` for the durable client/server
+  type-drift risk this defect is an instance of.
+
+
 ## [Unreleased] -- Console seam and shell UI foundation for `/ui` (sprint goal not yet met -- see carried-forward items)
 
 Sprint goal: serve a React/Vite shell at `/ui` reading a live members table
