@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Drawer, SelectField } from "@apralabs/apra-fleet-ui-kit";
 import {
   composePermissions,
+  fetchMemberDetail,
   provisionLlmAuth,
   provisionVcsAuth,
   removeMember,
@@ -45,6 +46,21 @@ type ActionState =
   | { status: "loading" }
   | { status: "done"; message: string; isError: boolean };
 
+type DetailState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; detail: Record<string, unknown> }
+  | { status: "error"; message: string };
+
+/** member_detail values are arbitrary json (nested connectivity/cloud/
+ *  tokenUsage objects) -- stringify anything non-primitive so no object is
+ *  ever handed to React as a child. */
+function detailValue(value: unknown): string {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 interface MemberDrawerProps {
   member: FleetMember | null;
   onClose: () => void;
@@ -55,6 +71,7 @@ interface MemberDrawerProps {
  *  inline -- the drawer never closes itself on failure. */
 export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
   const [states, setStates] = useState<Record<string, ActionState>>({});
+  const [detail, setDetail] = useState<DetailState>({ status: "idle" });
   // One provider choice per needsProvider action, defaulting to the first
   // VCS_PROVIDERS option so a plain button click always posts a valid body.
   const [providers, setProviders] = useState<Record<string, string>>(() =>
@@ -65,6 +82,15 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
 
   if (!member) return null;
   const memberId = member.id;
+
+  async function loadDetail() {
+    setDetail({ status: "loading" });
+    try {
+      setDetail({ status: "loaded", detail: await fetchMemberDetail(memberId) });
+    } catch (err) {
+      setDetail({ status: "error", message: err instanceof Error ? err.message : "unknown error" });
+    }
+  }
 
   async function runAction(action: ActionDef) {
     setStates((prev) => ({ ...prev, [action.key]: { status: "loading" } }));
@@ -96,6 +122,24 @@ export function MemberDrawer({ member, onClose }: MemberDrawerProps) {
         <dt>Auth state</dt>
         <dd>{member.llm_auth}</dd>
       </dl>
+
+      <section aria-label="Member detail" style={{ marginBottom: "16px" }}>
+        <button type="button" onClick={() => void loadDetail()} disabled={detail.status === "loading"}>
+          Show member detail
+        </button>
+        {detail.status === "loading" ? <span> working...</span> : null}
+        {detail.status === "error" ? <p role="alert">{detail.message}</p> : null}
+        {detail.status === "loaded" ? (
+          <dl data-testid="member-detail">
+            {Object.entries(detail.detail).map(([key, value]) => (
+              <div key={key}>
+                <dt>{key}</dt>
+                <dd>{detailValue(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+      </section>
 
       <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
         {ACTIONS.map((action) => {

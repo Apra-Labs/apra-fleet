@@ -125,6 +125,17 @@ export async function fetchMembers(): Promise<FleetMember[]> {
 // Drawer actions -- one call per action button, each hitting its own route.
 // ---------------------------------------------------------------------------
 
+/** POST /api/fleet/member-detail (format json). On success the route writes
+ *  member_detail's json object through unparsed; a non-json tool answer
+ *  (e.g. "member not found" prose) arrives as the {text} envelope instead.
+ *  Either way the caller gets a plain object back. */
+export async function fetchMemberDetail(memberId: string): Promise<Record<string, unknown>> {
+  return (await postJson("/api/fleet/member-detail", {
+    member_id: memberId,
+    format: "json"
+  })) as Record<string, unknown>;
+}
+
 export function provisionLlmAuth(memberId: string): Promise<MemberActionResult> {
   return postJson("/api/fleet/provision-llm-auth", { member_id: memberId });
 }

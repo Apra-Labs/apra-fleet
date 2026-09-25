@@ -152,6 +152,61 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
     }
   });
 
+  it("Show member detail posts to /api/fleet/member-detail and renders the returned detail", async () => {
+    const { fn, calls } = makeFetchMock(MEMBERS_A, {
+      "/api/fleet/member-detail": jsonResponse(200, {
+        name: "alpha",
+        id: "member-1",
+        llm_cli: "claude 2.1.0",
+        connectivity: { status: "online" }
+      })
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await renderMembers();
+    const row = container.querySelector("tbody tr");
+    await act(async () => {
+      (row as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      findButton("Show member detail").click();
+    });
+
+    const detailCalls = calls.filter((c) => c.url === "/api/fleet/member-detail");
+    expect(detailCalls).toHaveLength(1);
+    expect(detailCalls[0].method).toBe("POST");
+    expect(detailCalls[0].body).toEqual({ member_id: "member-1", format: "json" });
+
+    const detail = container.querySelector('[data-testid="member-detail"]');
+    expect(detail).not.toBeNull();
+    const text = detail?.textContent ?? "";
+    expect(text).toContain("claude 2.1.0");
+    // Nested objects are stringified, never rendered as a React child.
+    expect(text).toContain('{"status":"online"}');
+  });
+
+  it("Show member detail renders a route error inline", async () => {
+    const { fn } = makeFetchMock(MEMBERS_A, {
+      "/api/fleet/member-detail": jsonResponse(400, { error: "stub: member_id required" })
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await renderMembers();
+    const row = container.querySelector("tbody tr");
+    await act(async () => {
+      (row as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      findButton("Show member detail").click();
+    });
+
+    const alert = Array.from(container.querySelectorAll('[role="alert"]')).find((el) =>
+      (el.textContent ?? "").includes("stub: member_id required")
+    );
+    expect(alert).toBeDefined();
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it("renders a 4xx tool error inline while the drawer stays open", async () => {
     const { fn } = makeFetchMock(MEMBERS_A, {
       "/api/fleet/remove-member": jsonResponse(422, { error: "stub: member is busy" })

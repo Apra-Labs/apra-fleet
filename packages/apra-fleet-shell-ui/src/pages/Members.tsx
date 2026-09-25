@@ -91,7 +91,9 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
         />
       ) : null}
 
-      <MemberDrawer member={selected} onClose={() => setSelected(null)} />
+      {/* keyed per member so action results / loaded detail never carry over
+          from a previously opened member */}
+      <MemberDrawer key={selected?.id ?? "none"} member={selected} onClose={() => setSelected(null)} />
       <AddMemberWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onRegistered={() => void load(false)} />
     </Page>
   );
