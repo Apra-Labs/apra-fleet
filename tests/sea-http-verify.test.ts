@@ -10,7 +10,10 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
+import { spawn, type ChildProcess } from 'node:child_process';
+import net from 'node:net';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -93,4 +96,105 @@ describe('SEA bundle compatibility: http-transport', () => {
       await handle.close();
     }
   });
+});
+
+// apra-fleet-v6t7.3.2: binary smoke -- GET /ui and GET /api/fleet/members
+// against the REAL packaged SEA binary (dist/apra-fleet-installer-<platform>
+// -<arch>[.exe]), not an in-process bundle. Skips cleanly with an explicit
+// logged reason when no binary has been built (npm run build:binary is a
+// separate, expensive step -- never required just to run `npm test`).
+describe('SEA binary smoke: GET /ui and GET /api/fleet/members (apra-fleet-v6t7.3.2)', () => {
+  const platformMap: Record<string, string> = { win32: 'win', darwin: 'darwin', linux: 'linux' };
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const binaryName = `apra-fleet-installer-${platformMap[process.platform] ?? process.platform}-${process.arch}${ext}`;
+  const binaryPath = path.join(root, 'dist', binaryName);
+  const binaryExists = fs.existsSync(binaryPath);
+
+  if (!binaryExists) {
+    console.log(
+      `SKIP: SEA binary smoke -- ${binaryPath} not found. Run "npm run build:binary" first to exercise this suite; ` +
+        'this is not required for a plain "npm test" run.',
+    );
+  }
+
+  /** Ask the OS for a free ephemeral port -- never 7601/8801 (staging-reserved), never the fleet default (7523). */
+  async function getFreePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const srv = net.createServer();
+      srv.unref();
+      srv.on('error', reject);
+      srv.listen(0, '127.0.0.1', () => {
+        const address = srv.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        srv.close(() => resolve(port));
+      });
+    });
+  }
+
+  async function waitForUi(port: number, timeoutMs: number): Promise<Response> {
+    const deadline = Date.now() + timeoutMs;
+    let lastErr: unknown;
+    while (Date.now() < deadline) {
+      try {
+        return await fetch(`http://127.0.0.1:${port}/ui`);
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    throw new Error(`binary never answered GET /ui on port ${port} within ${timeoutMs}ms: ${String(lastErr)}`);
+  }
+
+  it.skipIf(!binaryExists)('serves the shell at GET /ui, and gates GET /api/fleet/members on the fleet key', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sea-binary-smoke-'));
+    const dataDir = path.join(tmpHome, 'data');
+    let child: ChildProcess | undefined;
+
+    try {
+      const port = await getFreePort();
+      expect(port).not.toBe(7601);
+      expect(port).not.toBe(8801);
+
+      child = spawn(binaryPath, ['run'], {
+        env: {
+          ...process.env,
+          HOME: tmpHome,
+          USERPROFILE: tmpHome,
+          APRA_FLEET_DATA_DIR: dataDir,
+          APRA_FLEET_PORT: String(port),
+          APRA_FLEET_HOST: '127.0.0.1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderrBuf = '';
+      child.stderr?.on('data', (d) => { stderrBuf += d.toString(); });
+
+      const exitedEarly = new Promise<never>((_, reject) => {
+        child!.once('exit', (code) => reject(new Error(`binary exited early with code ${code}. stderr:\n${stderrBuf}`)));
+      });
+
+      const uiResp = await Promise.race([waitForUi(port, 20000), exitedEarly]);
+      expect(uiResp.status).toBe(200);
+      const uiHtml = await uiResp.text();
+      expect(uiHtml.toLowerCase()).toContain('<html');
+
+      const unauthedResp = await fetch(`http://127.0.0.1:${port}/api/fleet/members`);
+      expect(unauthedResp.status).toBe(401);
+
+      const fleetKey = (await fsp.readFile(path.join(tmpHome, '.apra-fleet', 'fleet.key'), 'utf-8')).trim();
+      expect(fleetKey.length).toBe(64);
+
+      const authedResp = await fetch(`http://127.0.0.1:${port}/api/fleet/members`, {
+        headers: { Authorization: `Bearer ${fleetKey}` },
+      });
+      expect(authedResp.status).toBe(200);
+      const membersJson = await authedResp.json();
+      expect(membersJson).toBeTruthy();
+    } finally {
+      if (child && !child.killed) {
+        child.kill();
+      }
+      await fsp.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30000);
 });

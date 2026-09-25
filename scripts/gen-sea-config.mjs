@@ -214,9 +214,14 @@ const builtinWorkflows = {
 };
 
 // UI (console shell) asset section -- see the file-level comment above for the
-// default-vs-strict --require-ui behaviour.
+// default-vs-strict --require-ui behaviour. APRA_FLEET_SHELL_DIST_DIR_OVERRIDE
+// lets tests exercise the "dist absent" branches against a scratch directory
+// without ever touching the live packages/apra-fleet-shell-ui/dist tree
+// (apra-fleet-v6t7.3.2) -- unset in every real build invocation.
 const requireUi = process.argv.includes('--require-ui');
-const shellDistDir = join(root, 'packages', 'apra-fleet-shell-ui', 'dist');
+const shellDistDir = process.env.APRA_FLEET_SHELL_DIST_DIR_OVERRIDE
+  ? process.env.APRA_FLEET_SHELL_DIST_DIR_OVERRIDE
+  : join(root, 'packages', 'apra-fleet-shell-ui', 'dist');
 const shellDistPresent = existsSync(join(shellDistDir, 'index.html'));
 let ui = {};
 if (shellDistPresent) {
