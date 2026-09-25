@@ -126,6 +126,7 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       const settingsDir = path.join(home, '.gemini', 'antigravity-cli');
       fs.mkdirSync(settingsDir, { recursive: true });
       const settingsFile = path.join(settingsDir, 'settings.json');
+      const installerPath = path.join(home, '.gemini', 'antigravity-cli', 'skills');
 
       fs.writeFileSync(
         settingsFile,
@@ -135,8 +136,16 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
             'apra-fleet': { disabled: true },
             'user-mcp': { command: 'node user.js' },
           },
-          skillOverrides: { pm: 'off', fleet: 'off' },
-          permissions: { allow: ['read_file(*)', 'write_file(*)'] },
+          skillOverrides: { pm: 'off', fleet: 'off', customSkill: 'off' },
+          permissions: {
+            allow: [
+              'read_file(*)',
+              'write_file(*)',
+              'command(git)',
+              'command(my-custom-cmd)',
+              `read_file(${installerPath})`,
+            ],
+          },
         })
       );
 
@@ -157,8 +166,14 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(after.defaultModel).toBe('gemini-3.5-flash');
       expect(after.mcpServers['user-mcp']).toBeDefined();
       expect(after.mcpServers['apra-fleet']).toBeUndefined();
-      expect(after.skillOverrides).toBeUndefined();
-      expect(after.permissions).toBeUndefined();
+      expect(after.skillOverrides).toEqual({ customSkill: 'off' });
+      expect(after.permissions.allow).toEqual([
+        'command(my-custom-cmd)',
+        `read_file(${installerPath})`,
+      ]);
+
+      // Marker file must exist
+      expect(fs.existsSync(path.join(settingsDir, '.fleet-cleaned-v1'))).toBe(true);
 
       // Idempotent re-run
       const cleanedAgain = await cleanGlobalAgySettings(
@@ -167,6 +182,30 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
         process.platform === 'win32' ? 'windows' : 'linux',
       );
       expect(cleanedAgain).toBe(false);
+    });
+
+    it('does not modify settings.json if it contains unparseable invalid JSON', async () => {
+      const home = makeScratch('fleet-clean-invalid-');
+      const settingsDir = path.join(home, '.gemini', 'antigravity-cli');
+      fs.mkdirSync(settingsDir, { recursive: true });
+      const settingsFile = path.join(settingsDir, 'settings.json');
+      const rawContent = '{ invalid json content';
+      fs.writeFileSync(settingsFile, rawContent);
+
+      const execFn = async (cmd: string) => {
+        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
+        return { code: 0, stdout, stderr: '' };
+      };
+
+      const cleaned = await cleanGlobalAgySettings(
+        execFn,
+        home,
+        process.platform === 'win32' ? 'windows' : 'linux',
+      );
+
+      expect(cleaned).toBe(false);
+      expect(fs.readFileSync(settingsFile, 'utf-8')).toBe(rawContent);
+      expect(fs.existsSync(path.join(settingsDir, '.fleet-cleaned-v1'))).toBe(false);
     });
   });
 

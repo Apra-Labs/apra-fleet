@@ -143,45 +143,109 @@ export async function cleanGlobalAgySettings(
   const jsCode = `const fs = require('fs');
 const path = require('path');
 const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
-const settingsPath = path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+const agyDir = path.join(home, '.gemini', 'antigravity-cli');
+const markerPath = path.join(agyDir, '.fleet-cleaned-v1');
+
+if (fs.existsSync(markerPath)) {
+  console.log(JSON.stringify({ cleaned: false, reason: 'already_cleaned' }));
+  process.exit(0);
+}
+
+const settingsPath = path.join(agyDir, 'settings.json');
 if (!fs.existsSync(settingsPath)) {
+  try {
+    fs.mkdirSync(agyDir, { recursive: true });
+    fs.writeFileSync(markerPath, 'v1\\n', 'utf8');
+  } catch (e) {}
   console.log(JSON.stringify({ cleaned: false, reason: 'not_found' }));
   process.exit(0);
 }
+
 try {
   const raw = fs.readFileSync(settingsPath, 'utf8');
   const settings = JSON.parse(raw);
   let modified = false;
 
-  if ('skillOverrides' in settings) {
-    delete settings.skillOverrides;
-    modified = true;
-  }
-
-  if (settings.mcpServers && typeof settings.mcpServers === 'object' && ('apra-fleet' in settings.mcpServers)) {
-    delete settings.mcpServers['apra-fleet'];
-    if (Object.keys(settings.mcpServers).length === 0) {
-      delete settings.mcpServers;
+  if (settings.skillOverrides && typeof settings.skillOverrides === 'object') {
+    if (settings.skillOverrides.pm === 'off') {
+      delete settings.skillOverrides.pm;
+      modified = true;
     }
-    modified = true;
+    if (settings.skillOverrides.fleet === 'off') {
+      delete settings.skillOverrides.fleet;
+      modified = true;
+    }
+    if (Object.keys(settings.skillOverrides).length === 0) {
+      delete settings.skillOverrides;
+      modified = true;
+    }
   }
 
-  if ('permissions' in settings) {
-    delete settings.permissions;
-    modified = true;
+  if (settings.mcpServers && typeof settings.mcpServers === 'object') {
+    const s = settings.mcpServers['apra-fleet'];
+    if (s && typeof s === 'object' && Object.keys(s).length === 1 && s.disabled === true) {
+      delete settings.mcpServers['apra-fleet'];
+      modified = true;
+      if (Object.keys(settings.mcpServers).length === 0) {
+        delete settings.mcpServers;
+      }
+    }
+  }
+
+  if (settings.permissions && typeof settings.permissions === 'object') {
+    if (Array.isArray(settings.permissions.allow)) {
+      const legacy = new Set([
+        'read_file(*)', 'write_file(*)', 'read_url(*)',
+        'write_file(docs)', 'write_file(feedback.md)', 'write_file(feedback-*.md)', 'write_file(progress.json)',
+        'command(*)', 'command(git)', 'command(bd)', 'command(which)', 'command(ls)', 'command(cat)',
+        'command(head)', 'command(tail)', 'command(mkdir)', 'command(cp)', 'command(mv)', 'command(rm)',
+        'command(find)', 'command(wc)', 'command(sort)', 'command(diff)', 'command(echo)', 'command(touch)',
+        'command(chmod)', 'command(curl)', 'command(tar)', 'command(unzip)', 'command(grep)', 'command(sed)',
+        'command(awk)', 'command(tee)', 'command(xargs)', 'command(sleep)', 'command(kill)', 'command(pkill)',
+        'command(bash)', 'command(sh)', 'command(gh)', 'command(jq)', 'command(npm)', 'command(npx)',
+        'command(node)', 'command(yarn)', 'command(pnpm)', 'command(tsx)', 'command(python)', 'command(python3)',
+        'command(pip)', 'command(pip3)', 'command(pytest)', 'command(uv)', 'command(poetry)', 'command(ruff)',
+        'command(mypy)', 'command(cargo)', 'command(rustc)', 'command(rustup)', 'command(make)', 'command(cmake)',
+        'command(gcc)', 'command(g++)', 'command(clang)', 'command(ninja)', 'command(dotnet)', 'command(go)',
+        'command(gofmt)', 'command(golangci-lint)', 'command(gradle)', 'command(./gradlew)', 'command(mvn)',
+        'command(java)', 'command(javac)', 'command(terraform)', 'command(terragrunt)', 'command(kubectl)',
+        'command(helm)', 'command(ansible)', 'command(ansible-playbook)', 'command(docker)', 'command(docker-compose)',
+        'command(docker buildx)', 'command(nvidia-smi)', 'command(nvidia-docker)',
+        'mcp(*)', 'mcp(apra-fleet)', 'mcp(apra-fleet/*)',
+        'mcp(apra-fleet/kb_session_prime)', 'mcp(apra-fleet/kb_query)', 'mcp(apra-fleet/kb_stats)',
+        'mcp(apra-fleet/kb_capture)', 'mcp(apra-fleet/kb_feedback)', 'mcp(apra-fleet/code_context)',
+        'mcp(apra-fleet/code_graph)', 'mcp(apra-fleet/code_impact)', 'mcp(apra-fleet/code_query)',
+        'mcp(apra-fleet/kb_resolve_contradiction)', 'mcp(apra-fleet/kb_list)', 'mcp(apra-fleet/kb_export)'
+      ]);
+      const initialLen = settings.permissions.allow.length;
+      settings.permissions.allow = settings.permissions.allow.filter(entry => !legacy.has(entry));
+      if (settings.permissions.allow.length !== initialLen) {
+        modified = true;
+      }
+      if (settings.permissions.allow.length === 0) {
+        delete settings.permissions.allow;
+        modified = true;
+      }
+    }
+    if (Object.keys(settings.permissions).length === 0) {
+      delete settings.permissions;
+      modified = true;
+    }
   }
 
   if (modified) {
     const tmpPath = settingsPath + '.tmp.' + Date.now();
     fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + '\\n', 'utf8');
     fs.renameSync(tmpPath, settingsPath);
-    console.log(JSON.stringify({ cleaned: true }));
-  } else {
-    console.log(JSON.stringify({ cleaned: false, reason: 'no_changes' }));
   }
+
+  fs.mkdirSync(agyDir, { recursive: true });
+  fs.writeFileSync(markerPath, 'v1\\n', 'utf8');
+  console.log(JSON.stringify({ cleaned: modified }));
 } catch (e) {
   console.log(JSON.stringify({ cleaned: false, error: String(e) }));
-}`;
+}
+`;
 
   const usePosix = isPosixShell(agentOs, shell);
   const cmd = usePosix
