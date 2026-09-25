@@ -29,6 +29,8 @@ CLAUDE.md
 .beads/
 # Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
 .beads.bak-*/
+# beads runtime gate lock (created next to .beads/ by bd); never commit
+.beads.gate.lock
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
