@@ -421,12 +421,22 @@ hardening autonomous sprint execution (the toughest workflow we know of),
 supervisor-orchestrated multi-sprint operation, and the workflow SDK for
 third-party verticals.
 
-A small web console (a `/ui` shell backed by `/api/fleet/*`, starting with a
-members table) is taking shape behind its own seam so it can grow one route
-module at a time; today it serves from a dev checkout only -- packaging it
-into the SEA binary and the npm-distributed package, and adding an auth
-guard ahead of non-loopback binding, are still open. See
-[docs/console-architecture.md](docs/console-architecture.md).
+A small web console (a `/ui` shell backed by `/api/fleet/*`) is taking shape
+behind its own seam so it can grow one route module at a time. It now serves
+Members, Secrets and Health pages with drawer actions and an add-member
+wizard, built on a shared `@apralabs/apra-fleet-ui-kit` primitives package,
+and is guarded end to end: every `/api/*` request and every mutating
+`/ext/*` request requires the fleet key (bearer) or the console cookie,
+third-party workflow packages can be registered and reached through a
+`/ext/<package id>/*` reverse proxy (SSE included) using a per-package
+derived upstream credential rather than the raw fleet key, and
+`compose_permissions` refuses to auto-grant a member curl access to the
+console or supervisor's own control-plane ports. Today it serves from a dev
+checkout only -- packaging it into the SEA binary and the npm-distributed
+package is still open. A known gap: the Members table's owner column and the
+member-detail drawer action need further work before every screen action in
+the design's action table has both a tested route and a tested UI control.
+See [docs/console-architecture.md](docs/console-architecture.md).
 
 ## Documentation
 

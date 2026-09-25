@@ -44,6 +44,13 @@ const defaultSuites = [
     // it is otherwise reached only by CI's explicit --prefix invocation.
     // Mirror that here so local runs get the same signal as CI.
     { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
+    // apra-fleet-iywi.6: packages/apra-fleet-client has its own `node --test
+    // test/*.test.mjs` script and is an npm workspace, but was not among the
+    // suites above, so `npm test` never ran it locally -- only CI's separate
+    // `npm test --workspaces --if-present` step (ci.yml) caught a regression
+    // there. Run it explicitly here too so it inherits the same wall-clock
+    // bound and process-tree kill as the others.
+    { name: 'apra-fleet-client', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-client'] },
 ];
 
 const suites = process.env.APRA_TEST_SUITES_JSON
