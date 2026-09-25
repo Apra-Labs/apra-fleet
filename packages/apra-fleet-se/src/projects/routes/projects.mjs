@@ -23,6 +23,23 @@
 // bin/cli.mjs's `runProbe()` for the established unwrap pattern this reuses,
 // so there is one shape for "did a fleet-run command succeed", not several.
 //
+// Member binding + overview (apra-fleet-vcnl.1.1)
+// ------------------------------------------------
+// Four more endpoints live here, all delegating to ../projects.mjs: POST /:id/
+// members (bind), DELETE /:id/members/:member (unbind), POST /:id/members/
+// :member/refresh (re-probe) and GET /:id/overview (the wireframe-W2 read
+// model). They are registered INSIDE registerProjectRoutes on purpose -- the
+// mount in bin/serve.mjs stays a single call, so adding an endpoint here never
+// costs a serve.mjs edit. The related health/git-drawer endpoints get the same
+// treatment one level down, via ./git.mjs (called at the end of this function).
+//
+// The constructor contract did NOT widen for them: registerProjectRoutes still
+// requires only `client.executeCommand`, and the bind-specific client methods
+// (listMembers/memberOwner/updateMember/memberGitStatus) are checked
+// per-request, answering 501 client-missing-method. See
+// missingClientMethod()'s own note for why that is per-request rather than at
+// construction.
+//
 // DQ-12 (the console never creates remotes)
 // ------------------------------------------
 // When a create payload's `beads.remote` is supplied, `create` PROBES it with
@@ -44,22 +61,80 @@ import {
     deleteProject,
 } from '../store/projects.mjs';
 import { readJsonBody, sendJson } from '../../supervisor/server.mjs';
+import {
+    ProjectBindError,
+    bindMember,
+    unbindMember,
+    refreshMember,
+    buildOverview,
+    listBoundMembers,
+    parseMemberList,
+} from '../projects.mjs';
+import {
+    addCheckout,
+    suggestCheckoutName,
+    originSlugFromUrl,
+    quoteArg,
+    shellMetaCharError,
+} from '../checkout.mjs';
+import { registerGitRoutes } from './git.mjs';
 
 /** The Dolt-backed beads sync ref every remote probe checks for. */
 const DOLT_DATA_REF = 'refs/dolt/data';
+
+/**
+ * The target member's own listMembers record, or null when the client has no
+ * `listMembers` method, the call throws, or the member is not (yet) found.
+ * `probeBeadsRemote`'s command runs ON `member`, so `quoteArg` below must
+ * branch on THAT member's registered shell rather than assume POSIX
+ * (apra-fleet-vcnl.15). A missing/failing `listMembers` is tolerated as a
+ * `null` record: `registerProjectRoutes`'s constructor contract requires only
+ * `executeCommand` (see this module's own header), so a caller wired before
+ * `listMembers` existed still gets a working probe -- `quoteArg(value, null)`
+ * defaults to POSIX quoting -- rather than a thrown TypeError.
+ *
+ * @param {{ listMembers?: (opts: {format: string}) => Promise<any> }} client
+ * @param {string} member
+ * @returns {Promise<object | null>}
+ */
+async function resolveMemberRecord(client, member) {
+    if (typeof client.listMembers !== 'function') return null;
+    try {
+        const records = parseMemberList(await client.listMembers({ format: 'json' }));
+        return records.find((r) => r && r.name === member) ?? null;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Probe a beads remote via `git ls-remote <remote> refs/dolt/data`, run on
  * `member` through the injected fleet client. DQ-12: this only READS whether
  * the remote exists and is reachable -- it never creates one.
  *
- * @param {{ executeCommand: (opts: {command: string, member_name: string}) => Promise<any> }} client
+ * `remote` is caller-supplied (a create/update request body's `beads.remote`,
+ * or a stored project row's own value) and reaches a command string bound to
+ * a fleet member, so it goes through the same two-layer policy
+ * ../checkout.mjs's module header establishes: `shellMetaCharError` screens
+ * it at the edge FIRST (a shell metacharacter refuses with zero
+ * `executeCommand` calls, never a dispatched command), then `quoteArg` quotes
+ * it unconditionally, branching on `member`'s own registered shell via
+ * `resolveMemberRecord` above rather than assuming POSIX (apra-fleet-vcnl.15
+ * -- this call site predates apra-fleet-vcnl.12's hardening of
+ * ../checkout.mjs and ../health.mjs and was left unquoted then).
+ *
+ * @param {{ executeCommand: (opts: {command: string, member_name: string}) => Promise<any>, listMembers?: Function }} client
  * @param {string} member
  * @param {string} remote
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 export async function probeBeadsRemote(client, member, remote) {
-    const command = `git ls-remote ${remote} ${DOLT_DATA_REF}`;
+    const remoteError = shellMetaCharError(remote, 'remote');
+    if (remoteError) {
+        return { ok: false, error: remoteError };
+    }
+    const record = await resolveMemberRecord(client, member);
+    const command = `git ls-remote ${quoteArg(remote, record)} ${DOLT_DATA_REF}`;
     let res;
     try {
         res = await client.executeCommand({ command, member_name: member });
@@ -125,6 +200,30 @@ function isUniqueViolation(err) {
 }
 
 /**
+ * The first of `methods` the client does not implement, or null when it
+ * implements all of them.
+ *
+ * The CONSTRUCTOR contract is deliberately narrower than what the bind routes
+ * need: `registerProjectRoutes` requires only `executeCommand` (see its own
+ * doc), so a caller wired before member_owner/member_git_status existed still
+ * gets a working CRUD surface. The extra methods are therefore checked
+ * per-REQUEST, and a request that needs one the client lacks answers 501
+ * `client-missing-method` naming the method -- a precise, actionable answer,
+ * versus the TypeError-at-construction alternative that would take the whole
+ * /api/projects surface down for every caller.
+ *
+ * @param {object} client
+ * @param {string[]} methods
+ * @returns {string | null}
+ */
+function missingClientMethod(client, methods) {
+    for (const method of methods) {
+        if (typeof client?.[method] !== 'function') return method;
+    }
+    return null;
+}
+
+/**
  * Register the /api/projects CRUD endpoints against a supervisor
  * (../../supervisor/server.mjs's `route()` table).
  *
@@ -153,7 +252,15 @@ export function registerProjectRoutes(supervisor, deps = {}) {
             return;
         }
         try {
-            const project = createProject(db, body);
+            // Strip createdAt (and updatedAt) from the request body before
+            // delegating to createProject(): that store function now accepts
+            // an explicit createdAt so bin/se.mjs's importProject() can
+            // restore a project's ORIGINAL creation time on a fresh-store
+            // import (apra-fleet-vcnl.8), but an HTTP client is untrusted --
+            // it must not be able to spoof a project's creation timestamp
+            // through this route.
+            const { createdAt, updatedAt, ...safeBody } = body;
+            const project = createProject(db, safeBody);
             sendJson(res, 201, project);
         } catch (err) {
             if (err instanceof StoreValidationError) {
@@ -234,4 +341,156 @@ export function registerProjectRoutes(supervisor, deps = {}) {
         }
         sendJson(res, 200, { deleted: true, id: ctx.params.id });
     });
+
+    // == Member binding + overview (apra-fleet-vcnl.1.1) =====================
+    //
+    // The four endpoints over ../projects.mjs. Each one: (1) 501s early when
+    // the injected client lacks a method it needs, (2) delegates the whole
+    // decision to the domain module, and (3) translates a ProjectBindError's
+    // `status`/payload verbatim. No status code is decided twice -- the domain
+    // module owns "what went wrong", this layer owns only "as HTTP".
+    // ------------------------------------------------------------------------
+
+    /**
+     * Run `fn`, mapping a ProjectBindError onto its own status/payload.
+     * Anything else rethrows to handleRequest's 500, which is correct: an
+     * unclassified failure here is a bug, not an operator-actionable answer.
+     */
+    async function withBindErrors(res, fn) {
+        try {
+            await fn();
+        } catch (err) {
+            if (err instanceof ProjectBindError) {
+                sendJson(res, err.status, err.toPayload());
+                return;
+            }
+            throw err;
+        }
+    }
+
+    /** 501s and returns true when `client` lacks any of `methods`. */
+    function guardClient(res, methods) {
+        const method = missingClientMethod(client, methods);
+        if (method === null) return false;
+        sendJson(res, 501, { error: 'client-missing-method', method });
+        return true;
+    }
+
+    // -- POST /api/projects/:id/members : bind one member ---------------------
+    supervisor.route('POST', '/api/projects/:id/members', async (req, res, ctx) => {
+        if (guardClient(res, ['listMembers', 'memberOwner', 'updateMember', 'memberGitStatus'])) return;
+        const body = (await readJsonBody(req)) ?? {};
+        if (typeof body.member !== 'string' || body.member.trim().length === 0) {
+            sendJson(res, 400, { error: 'invalid body', field: 'member', reason: 'must be a non-empty string' });
+            return;
+        }
+        if (body.beadsDir !== undefined && (typeof body.beadsDir !== 'string' || body.beadsDir.trim().length === 0)) {
+            sendJson(res, 400, { error: 'invalid body', field: 'beadsDir', reason: 'must be a non-empty string when given' });
+            return;
+        }
+        await withBindErrors(res, async () => {
+            const row = await bindMember({ db, client }, ctx.params.id, {
+                member: body.member,
+                beadsDir: body.beadsDir,
+            });
+            sendJson(res, 200, row);
+        });
+    });
+
+    // -- DELETE /api/projects/:id/members/:member : unbind one member ---------
+    supervisor.route('DELETE', '/api/projects/:id/members/:member', async (req, res, ctx) => {
+        if (guardClient(res, ['listMembers', 'memberOwner', 'updateMember'])) return;
+        await withBindErrors(res, async () => {
+            const result = await unbindMember({ db, client }, ctx.params.id, ctx.params.member);
+            sendJson(res, 200, result);
+        });
+    });
+
+    // -- POST /api/projects/:id/members/:member/refresh : re-probe one member -
+    supervisor.route('POST', '/api/projects/:id/members/:member/refresh', async (req, res, ctx) => {
+        if (guardClient(res, ['memberGitStatus'])) return;
+        await withBindErrors(res, async () => {
+            const row = await refreshMember({ db, client }, ctx.params.id, ctx.params.member);
+            sendJson(res, 200, row);
+        });
+    });
+
+    // -- GET /api/projects/:id/overview : the W2 read model -------------------
+    // Cache read by default. `?refresh=1` re-probes every bound member FIRST,
+    // sequentially and fault-tolerantly: one member's probe failure is already
+    // recorded as a probe-failed warning on its own row by refreshMember, so
+    // it must not abort the remaining members -- a single unreachable machine
+    // would otherwise make the whole panel unrefreshable.
+    supervisor.route('GET', '/api/projects/:id/overview', async (req, res, ctx) => {
+        if (guardClient(res, ['listMembers'])) return;
+        const wantsRefresh = ctx.url && ctx.url.searchParams.get('refresh') === '1';
+        if (wantsRefresh && guardClient(res, ['memberGitStatus'])) return;
+        await withBindErrors(res, async () => {
+            if (wantsRefresh && getProject(db, ctx.params.id)) {
+                for (const member of listBoundMembers(db, ctx.params.id)) {
+                    try {
+                        await refreshMember({ db, client }, ctx.params.id, member);
+                    } catch (err) {
+                        console.error(`[projects] overview refresh failed for member '${member}' on project '${ctx.params.id}': ${err && err.message ? err.message : err}`);
+                    }
+                }
+            }
+            sendJson(res, 200, await buildOverview({ db, client }, ctx.params.id));
+        });
+    });
+
+    // == Add checkout on a machine (apra-fleet-vcnl.2, DQ-16 / A10) ==========
+    //
+    // Two more endpoints delegating to ../checkout.mjs. Reuses guardClient/
+    // withBindErrors above -- addCheckout throws the SAME ProjectBindError
+    // shape the bind routes do, translated the same way.
+    // ------------------------------------------------------------------------
+
+    // -- GET /api/projects/:id/checkouts/suggest : DQ-16 name suggestion ------
+    supervisor.route('GET', '/api/projects/:id/checkouts/suggest', async (req, res, ctx) => {
+        const project = getProject(db, ctx.params.id);
+        if (!project) {
+            sendJson(res, 404, { error: `no project '${ctx.params.id}'` });
+            return;
+        }
+        const sibling = ctx.url ? ctx.url.searchParams.get('sibling') : null;
+        const origin = ctx.url ? ctx.url.searchParams.get('origin') : null;
+        if (!sibling || !origin) {
+            sendJson(res, 400, { error: 'invalid query', reason: "'sibling' and 'origin' query params are required" });
+            return;
+        }
+        const roleHint = (ctx.url && ctx.url.searchParams.get('roleHint')) || undefined;
+        const name = suggestCheckoutName({
+            projectId: ctx.params.id,
+            machineMember: sibling,
+            originSlug: originSlugFromUrl(origin),
+            roleHint,
+        });
+        sendJson(res, 200, { name });
+    });
+
+    // -- POST /api/projects/:id/checkouts : the five-step A10 flow ------------
+    // 200 {name, steps} when every step is done/skipped, 422 with the same
+    // body when a step failed (the request was understood but the flow could
+    // not complete), 400 on bad input, 404 unknown project (both raised by
+    // addCheckout itself as a ProjectBindError).
+    supervisor.route('POST', '/api/projects/:id/checkouts', async (req, res, ctx) => {
+        const body = (await readJsonBody(req)) ?? {};
+        const methods = ['listMembers', 'memberDetail', 'memberGitStatus', 'executeCommand', 'registerMember', 'memberOwner', 'updateMember'];
+        if (body.provisionVcs) methods.push('provisionVcsAuth');
+        if (body.provisionLlm) methods.push('provisionLlmAuth');
+        if (body.composePermissions) methods.push('composePermissions');
+        if (guardClient(res, methods)) return;
+
+        await withBindErrors(res, async () => {
+            const result = await addCheckout({ db, client }, ctx.params.id, body);
+            const allOk = result.steps.every((s) => s.status === 'done' || s.status === 'skipped');
+            sendJson(res, allOk ? 200 : 422, result);
+        });
+    });
+
+    // The health / git-drawer seam: routes added in ./git.mjs are mounted by
+    // this single call, so that feature needs no edit here and none in
+    // bin/serve.mjs. See ./git.mjs's header.
+    registerGitRoutes(supervisor, { store, client });
 }
