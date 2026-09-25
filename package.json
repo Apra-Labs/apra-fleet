@@ -43,7 +43,8 @@
     "packages/apra-fleet-workflow/src/",
     "packages/apra-fleet-workflow/package.json",
     "packages/apra-fleet-client/src/",
-    "packages/apra-fleet-client/package.json"
+    "packages/apra-fleet-client/package.json",
+    "packages/apra-fleet-shell-ui/dist/"
   ],
   "publishConfig": {
     "access": "public"
