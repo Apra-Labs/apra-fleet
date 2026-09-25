@@ -34,6 +34,7 @@ import {
   OFFLINE_THRESHOLD_MS,
   DEFAULT_HEALTH_PATH,
   MAX_MANIFEST_ARRAY_ENTRIES,
+  FLEET_RESERVATION_PACKAGE,
 } from '../src/services/workflow-packages.js';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -104,6 +105,32 @@ describe('workflow-package registry service: version gate', () => {
       expect(result.message).toMatch(/Unsupported/);
     }
     expect(svc.list()).toEqual([]);
+  });
+});
+
+// apra-fleet-g6ap.8: FLEET_RESERVATION_PACKAGE ("fleet") is the sentinel
+// src/tools/member-owner.ts's heldBy entries use for the built-in
+// reservedBy hold. Before this fix nothing stopped a package from
+// registering with that exact id, which would make its own reported holds
+// indistinguishable BY PACKAGE from the built-in reservation -- register()
+// must reject it outright, and the id must never be persisted.
+describe('workflow-package registry service: reserved id (apra-fleet-g6ap.8)', () => {
+  it('rejects a register call for the reserved id "fleet" with reason reserved-id, and persists nothing', async () => {
+    const filePath = await tmpRegistryPath();
+    const svc = createWorkflowPackageService({ filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [] });
+
+    const result = await svc.register({ id: FLEET_RESERVATION_PACKAGE, baseUrl: 'http://localhost:9001', apraFleetApi: '*' });
+
+    expect(result).toEqual({ ok: false, reason: 'reserved-id', message: expect.stringContaining('reserved') });
+    expect(svc.list()).toEqual([]);
+  });
+
+  it('an UNRELATED id is unaffected by the reserved-id check', async () => {
+    const filePath = await tmpRegistryPath();
+    const svc = createWorkflowPackageService({ filePath, now: () => 1000, getServerVersion: () => 'v1.0.0', getConfigPackages: () => [] });
+
+    expect(await svc.register({ id: 'pkg-not-fleet', baseUrl: 'http://localhost:9001', apraFleetApi: '*' })).toEqual({ ok: true });
+    expect(svc.list().map((p) => p.id)).toEqual(['pkg-not-fleet']);
   });
 });
 
@@ -433,6 +460,27 @@ describe('workflow-package routes: register / list / unregister round trip over 
       JSON.stringify({ id: 'pkg-incompat-http', baseUrl: 'http://localhost:9202', apraFleetApi: '>=999.0.0' }),
     );
     expect(res.status).toBe(409);
+  });
+
+  // apra-fleet-g6ap.8: registering the reserved id "fleet" (the sentinel
+  // member_owner/remove_member use in heldBy entries for the built-in
+  // reservedBy hold) must be a client error (400), not persisted, and never
+  // visible in the list -- otherwise a package's own reported hold would be
+  // indistinguishable BY PACKAGE from the built-in reservation.
+  it('answers 400 for the reserved id "fleet" and never persists it', async () => {
+    const handle = await startServer();
+    const fleetKey = getOrCreateKey();
+    const res = await rawRequest(
+      handle.port, 'POST', '/api/workflow-packages/register', bearerHeader(fleetKey),
+      JSON.stringify({ id: FLEET_RESERVATION_PACKAGE, baseUrl: 'http://localhost:9203', apraFleetApi: '*' }),
+    );
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toContain('reserved');
+
+    const listRes = await rawRequest(handle.port, 'GET', '/api/workflow-packages', bearerHeader(fleetKey));
+    const listed = JSON.parse(listRes.body) as { packages: Array<{ id: string }> };
+    expect(listed.packages.find((p) => p.id === FLEET_RESERVATION_PACKAGE)).toBeUndefined();
   });
 
   it.each([

@@ -377,6 +377,38 @@ export const CONSULT_TIMEOUT_MS = 3000;
  *  member id at consult time. */
 export const HOLDS_ID_PLACEHOLDER = ':id';
 
+/**
+ * Reserved workflow-package id (apra-fleet-g6ap.8). The fleet's own
+ * built-in `reservedBy` hold reports itself in a `member_owner`/
+ * `remove_member` `heldBy` entry's `package` field using this exact
+ * sentinel (src/tools/member-owner.ts imports and re-exports this
+ * constant as FLEET_RESERVATION_PACKAGE so both modules share one
+ * literal). register() below rejects any REGISTERED package trying to
+ * claim this id (reason `reserved-id`, surfaced as HTTP 400 by
+ * src/console/routes/workflow-packages.ts), so a `heldBy` entry naming
+ * this package is unambiguously the built-in reservation, never a
+ * workflow package's own report.
+ *
+ * Before this fix, nothing enforced that: a package registering with id
+ * "fleet" would produce a `heldBy` entry indistinguishable BY PACKAGE from
+ * the built-in reservation -- only the free-form `reason` field told them
+ * apart (`'reservation'` for the sentinel vs. whatever text the package
+ * itself reported), which a consumer keying off `package` alone could
+ * mis-attribute. The impact was cosmetic mis-attribution only (the refusal
+ * itself always happened either way), but the OLD doc comment here claimed
+ * the collision "can never" happen -- untrue, since workflow-package ids
+ * are validated only as non-empty strings at registration (never against
+ * OWNER_PACKAGE_PATTERN, despite what that comment also claimed; that
+ * pattern governs member_owner's own `package` field, a separate
+ * validation path this module never called).
+ *
+ * Config-declared packages (getConfigPackages(), never routed through
+ * register()) are NOT checked here -- an operator hand-editing config to
+ * declare "fleet" is a misconfiguration outside this HTTP-registration
+ * guard's reach, same as every other config-declared validation gap in
+ * this file. */
+export const FLEET_RESERVATION_PACKAGE = 'fleet';
+
 const REGISTRY_VERSION = 1;
 
 /** The only non-default nav scope. `scope` absent means a global nav entry;
@@ -466,7 +498,8 @@ export interface WorkflowPackageView {
 export type RegisterResult =
   | { ok: true }
   | { ok: false; reason: 'incompatible'; message: string }
-  | { ok: false; reason: 'invalid-range'; message: string };
+  | { ok: false; reason: 'invalid-range'; message: string }
+  | { ok: false; reason: 'reserved-id'; message: string };
 
 export type UnregisterResult =
   | { ok: true }
@@ -621,6 +654,16 @@ export function createWorkflowPackageService(deps: WorkflowPackageServiceDeps = 
   }
 
   async function register(input: RegisteredPackageInput): Promise<RegisterResult> {
+    // apra-fleet-g6ap.8: reject before anything else so a reserved id is
+    // never persisted, even transiently, ahead of the version-range check.
+    if (input.id === FLEET_RESERVATION_PACKAGE) {
+      return {
+        ok: false,
+        reason: 'reserved-id',
+        message: `Package id "${FLEET_RESERVATION_PACKAGE}" is reserved for the fleet's own built-in reservedBy hold and cannot be registered.`,
+      };
+    }
+
     const normalizedServerVersion = normalizeServerVersion(getServerVersion());
     let compatible: boolean;
     try {

@@ -4,7 +4,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateOwnerPackage, validateOwnerRef } from '../utils/owner-validation.js';
 import { logLine } from '../utils/log-helpers.js';
 import { writeStatusline } from '../services/statusline.js';
-import { workflowPackageService } from '../services/workflow-packages.js';
+import { FLEET_RESERVATION_PACKAGE, workflowPackageService } from '../services/workflow-packages.js';
 import type { Agent } from '../types.js';
 
 /**
@@ -109,12 +109,15 @@ export function memberHeldRefusal(agent: Agent): string | null {
 }
 
 /** Sentinel `package` value for a heldBy entry produced by the fleet's own
- *  built-in reservedBy hold -- this is never a registered workflow package
- *  id, so it can never collide with one (workflow package ids are operator-
- *  chosen strings validated against OWNER_PACKAGE_PATTERN at registration,
- *  which this constant also satisfies, but registration always comes from a
- *  real external caller, never from this literal). */
-export const FLEET_RESERVATION_PACKAGE = 'fleet';
+ *  built-in reservedBy hold. Re-exported from workflow-packages.ts, which
+ *  owns the canonical definition AND enforces it: POST
+ *  /api/workflow-packages/register rejects (400, reason `reserved-id`) any
+ *  package trying to register with this exact id, so a `heldBy` entry
+ *  naming this package is unambiguously the built-in reservation, never a
+ *  workflow package's own report (apra-fleet-g6ap.8 -- see
+ *  workflow-packages.ts's doc comment on the source constant for the full
+ *  history of why that guarantee did not hold before this fix). */
+export { FLEET_RESERVATION_PACKAGE };
 
 /**
  * Combined member-held check (DQ-22): merges the sync reservedBy check

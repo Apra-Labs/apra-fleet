@@ -84,9 +84,10 @@ export const workflowPackagesRoutes: ConsoleRoute[] = [
         jsonResponse(res, 200, { ok: true });
         return;
       }
-      // A malformed range is a client mistake (400); a well-formed range
-      // that just doesn't match the server version is the documented 409.
-      const status = result.reason === 'invalid-range' ? 400 : 409;
+      // A malformed range or a reserved id are client mistakes (400); a
+      // well-formed range that just doesn't match the server version is the
+      // documented 409.
+      const status = result.reason === 'invalid-range' || result.reason === 'reserved-id' ? 400 : 409;
       jsonResponse(res, status, { error: result.message });
     },
   },

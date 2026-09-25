@@ -309,8 +309,11 @@
 /**
  * @typedef {Object} MemberHeldByEntry
  * @property {string} package - The registered workflow package id reporting the hold, or the
- *   sentinel "fleet" for the fleet's own built-in reservedBy hold (never a real workflow
- *   package).
+ *   sentinel "fleet" for the fleet's own built-in reservedBy hold. "fleet" can never be a real
+ *   workflow package's own id: POST /api/workflow-packages/register rejects (400) any attempt
+ *   to register that exact id (apra-fleet-g6ap.8), so this field alone always disambiguates
+ *   the built-in reservation from a package-reported hold -- the `reason` field is never the
+ *   only signal.
  * @property {string} reason - "reservation" for the reservedBy hold, "holds-unavailable" when
  *   the owning package's holds call errored (fail-closed), or the free-form reason text the
  *   reporting package's holds route supplied.

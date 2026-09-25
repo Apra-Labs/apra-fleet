@@ -490,8 +490,8 @@ call cannot be reached) -- fail CLOSED (`member-held`, reason
 erroring is skipped. `"set"` additionally validates `ref` against the
 requested package's `ownerRefs` when that package is registered and
 declares one -- an unknown ref is `invalid_input`; a package that is not
-registered (or registered without
-`ownerRefs`) keeps format-only validation.
+registered (or registered without `ownerRefs`) keeps format-only
+validation.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -509,7 +509,11 @@ call, or `null` when cleared/absent/failed before writing), `heldBy`
 `null` -- `package` is the registered workflow package id reporting the
 hold or the sentinel `"fleet"` for the built-in `reservedBy` hold; `reason`
 is `"reservation"`, `"holds-unavailable"`, or the reporting package's own
-free-form reason text).
+free-form reason text). `package: "fleet"` always means the built-in
+reservation, never a workflow package's own report: `POST
+/api/workflow-packages/register` rejects (400) any attempt to register
+that exact id (apra-fleet-g6ap.8), so `heldBy` entries are unambiguous by
+`package` alone without also having to check `reason`.
 
 #### `memberGitStatus(options: MemberGitStatusOptions)`
 

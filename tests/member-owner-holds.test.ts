@@ -23,6 +23,12 @@ vi.mock('../src/services/workflow-packages.js', () => ({
     consultHolds: (memberId: string) => mockConsultHolds(memberId),
     checkOwnerRef: (packageId: string, ref: string) => mockCheckOwnerRef(packageId, ref),
   },
+  // apra-fleet-g6ap.8: member-owner.ts now imports this constant (not just
+  // workflowPackageService) from this module -- a mock factory omitting it
+  // makes every named import undefined, not just workflowPackageService's
+  // own methods, which broke test 5 below (heldBy's package became
+  // undefined instead of "fleet").
+  FLEET_RESERVATION_PACKAGE: 'fleet',
 }));
 
 import { memberOwner } from '../src/tools/member-owner.js';

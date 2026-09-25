@@ -58,6 +58,11 @@ vi.mock('../src/services/workflow-packages.js', () => ({
     consultHolds: (...args: [string]) => mockConsultHolds(...args),
     checkOwnerRef: async () => ({ error: 'not stubbed for this test' }),
   },
+  // apra-fleet-g6ap.8: remove-member.ts calls memberHeldCheck() from
+  // member-owner.ts, which imports FLEET_RESERVATION_PACKAGE (not just
+  // workflowPackageService) from this module -- a mock factory omitting it
+  // makes that import undefined instead of "fleet".
+  FLEET_RESERVATION_PACKAGE: 'fleet',
 }));
 
 import { removeMember } from '../src/tools/remove-member.js';
