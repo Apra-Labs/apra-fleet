@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 // FLEET_DIR (src/paths.ts) reads APRA_FLEET_DATA_DIR once at module load
-// time -- same eager-evaluation shape as jwt.ts's KEY_PATH and
-// http-transport.ts's DEFAULT_HOST -- so a fresh tmp dir + dynamic
-// re-import per test is required, not a plain env var set after import.
+// time -- same eager-evaluation shape as http-transport.ts's DEFAULT_HOST
+// (jwt.ts's KEY_PATH used to share this shape too, but apra-fleet-iywi.2.2
+// made it resolve os.homedir() lazily on every call instead) -- so a fresh
+// tmp dir + dynamic re-import per test is required, not a plain env var set
+// after import.
 let tmpDataDir: string;
 let joinMod: typeof import('../src/cli/join.js');
 

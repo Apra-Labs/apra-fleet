@@ -8,6 +8,16 @@ import path from 'node:path';
 const TMP_DIR = path.join(os.tmpdir(), `fleet-statusline-test-${process.pid}`);
 process.env.APRA_FLEET_DATA_DIR = TMP_DIR;
 
+// apra-fleet-iywi.8: FLEET_DIR (src/paths.ts) reads APRA_FLEET_DATA_DIR once at
+// module load time (same eager-evaluation shape as tests/join.test.ts and
+// tests/cloud-sync.test.ts document). tests/setup.ts now imports src/paths.ts
+// itself (to assert the isolation guard) before this file's own module body
+// runs, which would otherwise leave the cached FLEET_DIR pinned to setup.ts's
+// shared per-run dir instead of TMP_DIR above. vi.resetModules() forces a
+// truly fresh re-evaluation against the env var set just above, matching the
+// pattern already used by join.test.ts/cloud-sync.test.ts for the same reason.
+vi.resetModules();
+
 // Import AFTER setting the env var so paths.ts picks it up.
 const { writeStatusline } = await import('../src/services/statusline.js');
 const { addAgent, removeAgent, getAllAgents } = await import('../src/services/registry.js');
