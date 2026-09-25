@@ -71,6 +71,66 @@ dispatch; and having the `/ext` proxy's base-URL resolver skip a
 config-declared package with a scheme error itself, rather than relying on
 the proxy's own guard to catch it.
 
+## [Unreleased] -- Member owner tag, env map and git status tools (sprint goal mostly met -- see carried-forward items)
+
+Sprint goal: give the member registry an `owner {package, ref}` binding, a
+stored `env` name-value map and an `llmAuthExpiresAt` field; expose a
+`member_owner` tool to set/clear the owner tag with a member-held refusal;
+and expose a `member_git_status` tool that reports live git status for a
+member's work folder without assuming that folder is a checkout. All three
+landed and are covered by `npm test` plus a dedicated `apra-fleet-client`
+parity/wrapper suite (root `npm test` does not reach that package). Two
+lower-priority follow-ups are carried forward, not yet fixed: `owner`
+accepted through `register_member`/`update_member` is not yet format-
+validated the way `member_owner`'s own `set` path is, and the
+`MemberOwnerStructured` client typedef has no client-server parity test
+case yet (its sibling `MemberGitStatusResult` case does).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.6414.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.6856 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Registry gains `owner`, `env` and `llmAuthExpiresAt`.** `owner` is a
+  `{package, ref}` tag a consumer package uses for its own bookkeeping (not
+  a project/repo/group field); `env` is a free-form name -> value map,
+  stored and emitted only (not yet read by any dispatch or provider command
+  path); `llmAuthExpiresAt` is an ISO 8601 expiry for a member's LLM auth.
+  `list_members` and `member_detail` (`"json"` format) emit the full field
+  set, including fields that already existed server-side but were not yet
+  surfaced (`modelTiers`, `shell`, `vcsTokenExpiresAt`, `reservedBy`,
+  `unreservable`).
+- **`member_owner` sets and clears the owner tag**, refusing both `set` and
+  `clear` while the member is held (`reservedBy` set), via one exported
+  check reused by `update_member`'s own inline copy of the same rule so
+  `update_member` cannot be used to bypass the held-refusal.
+- **`member_git_status` reports live git status** for a member's work
+  folder through an ordered six-probe sequence (work-tree check, porcelain
+  v2 status, worktree list, origin URL, playbook presence, KB bible commit)
+  run through the same command path every other member-bound tool uses --
+  paths resolved to literals in JavaScript, no shell-level expansion,
+  PowerShell probes base64/utf16le-wrapped. A folder that is not a git work
+  tree returns `{checkout: null}` with no error, since the server never
+  requires a member's work folder to be a checkout.
+- **`packages/apra-fleet-client` kept in lockstep**: wrappers, typedefs and
+  `api-reference.md` rows for both new tools and the extended registry
+  fields (method count 32 -> 34), with its own parity/wrapper test suite
+  green.
+
+See [docs/mcp-tools.md](docs/mcp-tools.md) for the full parameter and
+output reference.
+
+Carried forward (filed as follow-up work, not fixed this sprint):
+- `owner` accepted by `register_member`/`update_member` is checked only for
+  non-empty strings, not the package/ref format `member_owner`'s own `set`
+  path validates.
+- `MemberOwnerStructured` (the client's owner-tool typedef) has no
+  client-server typedef parity test case yet.
+
 ## [Unreleased] -- Console seam and shell UI foundation for `/ui` (sprint goal not yet met -- see carried-forward items)
 
 Sprint goal: serve a React/Vite shell at `/ui` reading a live members table

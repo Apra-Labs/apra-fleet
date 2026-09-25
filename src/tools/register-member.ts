@@ -28,6 +28,7 @@ import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
+import { validateEnvMap } from '../utils/env-map-validation.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -75,6 +76,12 @@ export const registerMemberSchema = z.object({
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
+  owner: z.object({
+    package: z.string().min(1),
+    ref: z.string().min(1),
+  }).optional().describe('Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.'),
+  env: z.record(z.string(), z.string()).optional().describe('Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.'),
+  llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -221,6 +228,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     warnings.push('No model_tiers provided for opencode member -- adapter defaults will be used. Consider setting model_tiers for correct model resolution.');
   }
 
+  // --- env map validation (DQ-23) ---
+  if (input.env !== undefined) {
+    const envResult = validateEnvMap(input.env);
+    if (!envResult.ok) return `❌ ${envResult.error} Member was NOT registered.`;
+  }
+
   // --- Duplicate folder check ---
   if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port)) {
     const scope = isLocal ? 'this machine' : `host ${input.host}:${input.port}`;
@@ -308,6 +321,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     codeIntelProvider: input.code_intel_provider,
     unreservable: input.unreservable ?? false,
     shell: input.shell,
+    owner: input.owner,
+    env: input.env,
+    llmAuthExpiresAt: input.llm_auth_expires_at,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
@@ -646,6 +662,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     result += `  VCS Provider: ${tempAgent.vcsProvider}${vcsProviderAutoDetected ? ' (auto-detected from origin)' : ''}\n`;
   } else if (input.vcs_provider === 'none') {
     result += `  VCS Provider: none (declared explicitly -- this member cannot push or open a PR)\n`;
+  }
+  if (tempAgent.owner) {
+    result += `  Owner:   ${tempAgent.owner.package}@${tempAgent.owner.ref}\n`;
   }
   if (tempAgent.category) {
     result += `  Category: ${tempAgent.category}\n`;

@@ -184,3 +184,60 @@ describe('member_detail surfaces the member\'s registered git access level (apra
     expect(typedefBlock).toMatch(/@property\s+\{[^}]*\}\s+\[gitAccess\]/);
   });
 });
+
+describe('member_detail surfaces modelTiers, vcsTokenExpiresAt, reservedBy, unreservable, owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('reports the full field set when set on the member', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'full-field-member',
+      modelTiers: { cheap: 'haiku', standard: 'sonnet', premium: 'opus' },
+      vcsTokenExpiresAt: '2026-12-01T00:00:00Z',
+      reservedBy: 'sprint-1',
+      unreservable: false,
+      owner: { package: 'fleet-sprint', ref: 'sprint-1' },
+      env: { MY_VAR: 'value' },
+      llmAuthExpiresAt: '2027-01-01T00:00:00Z',
+    });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.modelTiers).toEqual({ cheap: 'haiku', standard: 'sonnet', premium: 'opus' });
+    expect(result.vcsTokenExpiresAt).toBe('2026-12-01T00:00:00Z');
+    expect(result.reservedBy).toBe('sprint-1');
+    expect(result.unreservable).toBe(false);
+    expect(result.owner).toEqual({ package: 'fleet-sprint', ref: 'sprint-1' });
+    expect(result.env).toEqual({ MY_VAR: 'value' });
+    expect(result.llmAuthExpiresAt).toBe('2027-01-01T00:00:00Z');
+  });
+
+  it('reports reservedBy as null (not undefined/string-typed differently) and unreservable as false when unset', async () => {
+    const member = makeTestAgent({ friendlyName: 'bare-field-member' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.reservedBy).toBeNull();
+    expect(typeof result.reservedBy === 'string' || result.reservedBy === null).toBe(true);
+    expect(result.unreservable).toBe(false);
+    expect(result.owner).toBeUndefined();
+    expect(result.env).toBeUndefined();
+  });
+
+  it('adds an owner= chip to compact output only when owner is set', async () => {
+    const owned = makeTestAgent({ friendlyName: 'owned-member', owner: { package: 'fleet-sprint', ref: 'sprint-9' } });
+    addAgent(owned);
+    const ownedCompact = await memberDetail({ member_id: owned.id, format: 'compact' });
+    expect(ownedCompact).toContain('owner=fleet-sprint@sprint-9');
+
+    const bare = makeTestAgent({ friendlyName: 'bare-member' });
+    addAgent(bare);
+    const bareCompact = await memberDetail({ member_id: bare.id, format: 'compact' });
+    expect(bareCompact).not.toContain('owner=');
+  });
+});
