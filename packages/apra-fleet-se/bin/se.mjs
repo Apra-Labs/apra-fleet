@@ -233,6 +233,7 @@ async function handleExport(args) {
             options: {
                 'out': { type: 'string' },
                 'data-dir': { type: 'string' },
+                'with-history': { type: 'boolean' },
                 'help': { type: 'boolean', short: 'h' },
             },
         }));
@@ -251,9 +252,11 @@ Arguments:
   <projectId>           Project ID to export
 
 Options:
-      --out <file>      Output file path (default: stdout)
-      --data-dir <dir>  Service data directory (default: ~/.apra-fleet-se)
-  -h, --help            Show this help message
+      --out <file>        Output file path (default: stdout)
+      --data-dir <dir>    Service data directory (default: ~/.apra-fleet-se)
+      --with-history      Accepted for forward-compat; runs/history tables
+                          do not exist yet, so history is always []
+  -h, --help              Show this help message
 `);
         process.exit(0);
     }
