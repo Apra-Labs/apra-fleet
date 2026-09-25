@@ -5,8 +5,9 @@
  * not handleConsoleRequest directly, so the guard is proved end to end exactly
  * as a browser or CLI caller would see it.
  *
- * Every test in this file runs with HOME pointed at a fresh temp directory
- * (see beforeEach/afterEach below) so the shared fleet key
+ * Every test in this file runs with HOME (and, on Windows, USERPROFILE)
+ * pointed at a fresh temp directory (see beforeEach/afterEach below) so the
+ * shared fleet key
  * (~/.apra-fleet/fleet.key, src/services/jwt.ts) this suite mints and reads
  * is NEVER the real developer's key. Every server started here is closed in
  * afterEach so nothing leaks under the bounded runner (scripts/run-all-tests.mjs).
@@ -60,13 +61,21 @@ function firstSetCookie(headers: http.IncomingHttpHeaders): string {
 // per test, and every server started in a test closed in this file's afterEach.
 // -----------------------------------------------------------------------------
 let realHome: string | undefined;
+let realUserProfile: string | undefined;
 let tempHome: string;
 const handles: HttpTransportHandle[] = [];
 
 beforeEach(async () => {
   realHome = process.env.HOME;
+  realUserProfile = process.env.USERPROFILE;
   tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-auth-home-'));
   process.env.HOME = tempHome;
+  // os.homedir() on win32 resolves from USERPROFILE (falling back to
+  // HOMEDRIVE+HOMEPATH), never HOME -- setting HOME alone is a silent no-op
+  // there and the "isolated" key would actually land under the real
+  // developer/runner USERPROFILE. Set both so the override takes on every
+  // platform this suite runs on.
+  process.env.USERPROFILE = tempHome;
 });
 
 afterEach(async () => {
@@ -74,6 +83,7 @@ afterEach(async () => {
     try { await handle.close(); } catch { /* ignore */ }
   }
   process.env.HOME = realHome;
+  process.env.USERPROFILE = realUserProfile;
   await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
 });
 
