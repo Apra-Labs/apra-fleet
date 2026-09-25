@@ -16,7 +16,9 @@ import {
   AgyProvider,
   convertClaudeAllowToAgyPermissions,
   formatAgyPermissionRules,
+  buildAgyNodeCommand,
 } from '../../src/providers/agy.js';
+import { getStrategy } from '../../src/services/strategy.js';
 import { buildRequiredPerms } from '../../src/cli/install.js';
 import { getProviderInstallConfig } from '../../src/cli/config.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
@@ -42,7 +44,7 @@ afterEach(() => {
   }
 });
 
-describe('AGY Fix 519 - Unit Verification Suite', () => {
+describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
   describe('Finding 4: toAgyFileUri and normalizeAgyUri', () => {
     it('formats POSIX and Windows URIs with 3 slashes', () => {
       expect(toAgyFileUri('/home/user/repo')).toBe('file:///home/user/repo');
@@ -126,6 +128,99 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(fs.existsSync(humanFile)).toBe(true);
       // Kept fleet project must be preserved
       expect(fs.existsSync(path.join(projectsDir, `${keepId}.json`))).toBe(true);
+    });
+
+    it('runs generated purge command through LocalStrategy for both Windows shells and POSIX heredoc under bash', async () => {
+      const home = makeScratch('fleet-strat-home-');
+      const workFolder = makeScratch('fleet-strat-work-');
+      const projectsDir = path.join(home, '.gemini', 'config', 'projects');
+      fs.mkdirSync(projectsDir, { recursive: true });
+
+      const targetUri = toAgyFileUri(workFolder);
+      const keepId = 'fleet-agent-keep';
+
+      if (process.platform === 'win32') {
+        // 1. Windows GitBash member (apra-fleet LocalStrategy)
+        const gbAgent = makeTestAgent({
+          id: 'agent-gb',
+          agentType: 'local',
+          llmProvider: 'agy',
+          workFolder,
+          os: 'windows',
+          shell: 'gitbash',
+        });
+        const gbStrat = getStrategy(gbAgent);
+        const gbCmd = buildAgyPurgeCommand(targetUri, keepId, home, 'windows', 'gitbash');
+        const gbRes = await gbStrat.execCommand(gbCmd);
+        expect(gbRes.code).toBe(0);
+        const gbJson = JSON.parse(gbRes.stdout.trim());
+        expect(gbJson).toEqual({ purged: [], warnings: [] });
+
+        // 2. Windows PowerShell member (apra-fleet LocalStrategy)
+        const psAgent = makeTestAgent({
+          id: 'agent-ps',
+          agentType: 'local',
+          llmProvider: 'agy',
+          workFolder,
+          os: 'windows',
+        });
+        const psStrat = getStrategy(psAgent);
+        const psCmd = buildAgyPurgeCommand(targetUri, keepId, home, 'windows');
+        const psRes = await psStrat.execCommand(psCmd);
+        expect(psRes.code).toBe(0);
+        const psJson = JSON.parse(psRes.stdout.trim());
+        expect(psJson).toEqual({ purged: [], warnings: [] });
+      }
+
+      // 3. POSIX heredoc path under bash (where bash is available)
+      const posixCmd = buildAgyPurgeCommand('file:///home/user/repo', 'keep-id', '/tmp/nonexistent-home', 'linux');
+      try {
+        const bashOut = execSync('bash', { input: posixCmd, encoding: 'utf-8' });
+        const posixJson = JSON.parse(bashOut.trim());
+        expect(posixJson).toEqual({ purged: [], warnings: [] });
+      } catch (e: any) {
+        if (e.code === 'ENOENT') {
+          // bash not available on this environment; skip POSIX execution
+        } else {
+          throw e;
+        }
+      }
+    });
+
+    it('runs generated cleanGlobalAgySettings and checkAgyMemberSkills through LocalStrategy on Windows', async () => {
+      if (process.platform !== 'win32') return;
+
+      const home = makeScratch('fleet-strat-clean-home-');
+      const workFolder = makeScratch('fleet-strat-clean-work-');
+
+      const gbAgent = makeTestAgent({
+        id: 'agent-gb-clean',
+        agentType: 'local',
+        llmProvider: 'agy',
+        workFolder,
+        os: 'windows',
+        shell: 'gitbash',
+      });
+      const gbStrat = getStrategy(gbAgent);
+
+      // cleanGlobalAgySettings through strategy
+      const cleaned = await cleanGlobalAgySettings(
+        (cmd, t) => gbStrat.execCommand(cmd, t),
+        home,
+        'windows',
+        'gitbash',
+      );
+      expect(typeof cleaned).toBe('boolean');
+
+      // checkAgyMemberSkills through strategy
+      const skillsRes = await checkAgyMemberSkills(
+        (cmd, t) => gbStrat.execCommand(cmd, t),
+        home,
+        'windows',
+        'gitbash',
+        true,
+      );
+      expect(skillsRes).toBeNull();
     });
   });
 

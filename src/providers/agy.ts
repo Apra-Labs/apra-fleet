@@ -118,6 +118,27 @@ for (const file of files) {
 console.log(JSON.stringify({ purged, warnings }));`;
 }
 
+/**
+ * Wrap a JavaScript snippet for remote node execution across member operating systems.
+ * On Windows, wraps as PowerShell here-string encoded in base64 (-EncodedCommand)
+ * targeting `node --input-type=commonjs -` so that no outer shell (PowerShell,
+ * cmd.exe, or MSYS2/Git Bash) can re-parse or unescape backslashes, quotes, or
+ * regexes in the script.
+ * On POSIX (Linux/macOS), delivers via verbatim heredoc to `node --input-type=commonjs -`.
+ * Passing `--input-type=commonjs` explicitly prevents Node 22+ from treating stdin as TypeScript.
+ */
+export function buildAgyNodeCommand(
+  jsCode: string,
+  agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+  eofMarker = 'FLEET_NODE_EOF',
+): string {
+  if (agentOs === 'windows') {
+    const psScript = `$code = @'\n${jsCode}\n'@\n$code | node --input-type=commonjs -`;
+    return wrapPowerShellEncoded(psScript);
+  }
+  return `cat << '${eofMarker}' | node --input-type=commonjs -\n${jsCode}\n${eofMarker}`;
+}
+
 export function buildAgyPurgeCommand(
   targetUri: string,
   keepId: string,
@@ -126,13 +147,9 @@ export function buildAgyPurgeCommand(
   shell?: MemberShell,
 ): string {
   const jsCode = buildAgyPurgeScript(targetUri, keepId, memberHomeDir);
-  const usePosix = isPosixShell(agentOs, shell);
-  if (usePosix) {
-    return `cat << 'FLEET_PURGE_EOF' | node -\n${jsCode}\nFLEET_PURGE_EOF`;
-  }
-  const psScript = `$code = @'\n${jsCode}\n'@\n$code | node -`;
-  return wrapPowerShellEncoded(psScript);
+  return buildAgyNodeCommand(jsCode, agentOs, 'FLEET_PURGE_EOF');
 }
+
 
 export async function cleanGlobalAgySettings(
   execCommand: WorkspaceTrustExecFn,
@@ -256,10 +273,7 @@ try {
 }
 `;
 
-  const usePosix = isPosixShell(agentOs, shell);
-  const cmd = usePosix
-    ? `cat << 'FLEET_CLEAN_EOF' | node -\n${jsCode}\nFLEET_CLEAN_EOF`
-    : wrapPowerShellEncoded(`$code = @'\n${jsCode}\n'@\n$code | node -`);
+  const cmd = buildAgyNodeCommand(jsCode, agentOs, 'FLEET_CLEAN_EOF');
 
   const result = await execCommand(cmd, 10000);
   if (result.code === 0 && result.stdout) {
@@ -979,10 +993,7 @@ const pmInstalled = fs.existsSync(path.join(skillsDir, 'pm'));
 const fleetInstalled = fs.existsSync(path.join(skillsDir, 'fleet'));
 console.log(JSON.stringify({ pmInstalled, fleetInstalled, skillsDir }));
 `;
-  const usePosix = isPosixShell(agentOs, shell);
-  const cmd = usePosix
-    ? `cat << 'FLEET_SKILLS_EOF' | node -\n${jsCode}\nFLEET_SKILLS_EOF`
-    : wrapPowerShellEncoded(`$code = @'\n${jsCode}\n'@\n$code | node -`);
+  const cmd = buildAgyNodeCommand(jsCode, agentOs, 'FLEET_SKILLS_EOF');
 
   const result = await execCommand(cmd, 5000);
   if (result.code === 0 && result.stdout) {
