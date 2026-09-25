@@ -1,5 +1,6 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'url';
 
@@ -45,6 +46,17 @@ const skip = HAS_SQLITE ? false : 'node:sqlite is unavailable on this Node runti
 const CHECKOUT_SRC_PATH = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     '../src/projects/checkout.mjs',
+);
+
+/**
+ * The AUTHORITATIVE originSlugFromUrl. member_git_status computes the slug
+ * server-side with this copy; ../src/projects/checkout.mjs only mirrors it so
+ * the clone step's idempotency probe can compare like with like. See section
+ * 11's drift guard.
+ */
+const PROBE_SRC_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../src/services/git-status-probe.ts',
 );
 
 /** @type {Array<{close: () => void}>} */
@@ -733,5 +745,189 @@ describe('10. optional step-5 provisioning idempotency probes', { skip }, () => 
         const byStep = Object.fromEntries(payloadOf(res).steps.map((s) => [s.step, s.status]));
         assert.equal(byStep['provision-llm-auth'], 'done');
         assert.equal(client.calls.provisionLlmAuth.length, 1);
+    });
+});
+
+// =============================================================================
+// 11. originSlugFromUrl: URL shapes, and the git-status-probe.ts drift guard
+// =============================================================================
+//
+// WHY THIS SECTION EXISTS
+// ------------------------
+// ../src/projects/checkout.mjs's originSlugFromUrl (plus its normaliseHostPath
+// and basenameSlug helpers) is a hand-kept copy of the SAME three functions in
+// src/services/git-status-probe.ts. The two packages have no compile-time
+// link, so nothing but a comment stops them drifting -- and the clone step's
+// idempotency probe compares this copy's output against the slug
+// member_git_status computed server-side with the OTHER copy. A silent drift
+// therefore makes addCheckout either re-clone over an existing checkout or
+// refuse a matching one.
+//
+// Two layers here:
+//   a) SLUG_FIXTURES pins the URL shapes the copy must handle, asserted
+//      against the se implementation imported directly at the top of this
+//      file (the branches the flow tests never reach: scp-like host:path, a
+//      scheme URL carrying BOTH userinfo and an explicit port, a bare path, a
+//      Windows drive letter, a trailing .git / trailing slash, mixed case).
+//   b) the drift guard compares the extracted SOURCE TEXT of the three
+//      functions in both files, after stripping TypeScript annotations and
+//      normalising whitespace -- so a change to either copy that the fixture
+//      table happens not to distinguish still fails loudly.
+// =============================================================================
+
+/**
+ * [remote url -> expected slug]. Shared by the se assertions below; the same
+ * shapes are what src/services/git-status-probe.ts's copy must keep producing.
+ */
+const SLUG_FIXTURES = [
+    ['scp-like host:path', 'github.com:acme/shop-api.git', 'github.com/acme/shop-api'],
+    ['scp-like with user@', 'git@github.com:Apra-Labs/apra-fleet.git', 'github.com/apra-labs/apra-fleet'],
+    ['scheme URL with userinfo AND an explicit port', 'ssh://git@github.com:22/Apra-Labs/apra-fleet', 'github.com/apra-labs/apra-fleet'],
+    ['a bare local path', '/srv/git/shop-api', 'shop-api'],
+    // A Windows drive letter is NOT an scp host: the scp branch requires a
+    // host of two or more characters precisely so "C:\repos\x" falls through
+    // to the basename branch instead of becoming host "c" with path "\repos\x".
+    ['a Windows drive letter', 'C:\\repos\\x', 'x'],
+    ['a trailing .git', 'https://github.com/acme/shop-api.git', 'github.com/acme/shop-api'],
+    ['a trailing slash', 'https://github.com/acme/shop-api/', 'github.com/acme/shop-api'],
+    ['a mixed-case host and path', 'HTTPS://GitHub.COM/Acme/Shop-API.git', 'github.com/acme/shop-api'],
+    ['a hostless file:// URL', 'file:///srv/git/shop-api.git', 'shop-api'],
+    ['an empty remote', '', null],
+    ['a whitespace-only remote', '   ', null],
+    ['an absent remote (null)', null, null],
+    ['an absent remote (undefined)', undefined, null],
+];
+
+describe('11a. originSlugFromUrl URL shapes', () => {
+    for (const [label, url, expected] of SLUG_FIXTURES) {
+        test(`${label}: ${JSON.stringify(url)} -> ${JSON.stringify(expected)}`, () => {
+            assert.equal(originSlugFromUrl(url), expected);
+        });
+    }
+});
+
+// -- the drift guard ----------------------------------------------------------
+
+/** The three functions that must stay identical across the two copies. */
+const MIRRORED_FUNCTIONS = ['originSlugFromUrl', 'normaliseHostPath', 'basenameSlug'];
+
+/**
+ * The source text of `function <name>(...) { ... }` in `src`, from the
+ * `function` keyword (or its `export` prefix) through the body's closing
+ * brace.
+ *
+ * Brace matching here is deliberately naive -- it does not track strings,
+ * regex literals or comments. That is safe for exactly these three functions
+ * because every brace inside them is balanced (`{2,}` in a regex quantifier,
+ * `${...}` in a template literal), and a future edit that broke that
+ * assumption would surface as a loud extraction failure below rather than a
+ * silent pass.
+ */
+function extractFunctionSource(src, name) {
+    const signatureRe = new RegExp(`(?:export\\s+)?function\\s+${name}\\s*\\(`);
+    const match = signatureRe.exec(src);
+    if (!match) return null;
+
+    const start = match.index;
+    const parenOpen = src.indexOf('(', start);
+    let depth = 0;
+    let parenClose = -1;
+    for (let i = parenOpen; i < src.length; i++) {
+        if (src[i] === '(') depth += 1;
+        else if (src[i] === ')') {
+            depth -= 1;
+            if (depth === 0) { parenClose = i; break; }
+        }
+    }
+    if (parenClose === -1) return null;
+
+    const braceOpen = src.indexOf('{', parenClose);
+    if (braceOpen === -1) return null;
+    depth = 0;
+    for (let i = braceOpen; i < src.length; i++) {
+        if (src[i] === '{') depth += 1;
+        else if (src[i] === '}') {
+            depth -= 1;
+            if (depth === 0) return src.slice(start, i + 1);
+        }
+    }
+    return null;
+}
+
+/**
+ * Reduce one extracted function to a comparable form: full-line comments
+ * dropped, the signature rewritten without its TypeScript type annotations
+ * (and without an `export` keyword one copy has and the other does not), and
+ * every whitespace run in the body collapsed to a single space so a 2-space
+ * vs 4-space indent is not a difference.
+ *
+ * Collapsing whitespace inside the body would corrupt a string literal that
+ * contained meaningful spaces; none of these three functions has one, and a
+ * future edit that added one would show up as a drift failure to be resolved
+ * here rather than as a silent mismatch.
+ */
+function normaliseImplementation(source) {
+    const withoutComments = source
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n');
+
+    const braceOpen = withoutComments.indexOf('{');
+    const signature = withoutComments.slice(0, braceOpen);
+    const body = withoutComments.slice(braceOpen);
+
+    const name = /function\s+([A-Za-z0-9_$]+)\s*\(/.exec(signature)[1];
+    const params = signature
+        .slice(signature.indexOf('(') + 1, signature.lastIndexOf(')'))
+        .split(',')
+        .map((param) => param.split(':')[0].trim())
+        .filter((param) => param.length > 0);
+
+    return `function ${name}(${params.join(', ')}) ${body.replace(/\s+/g, ' ').trim()}`;
+}
+
+describe('11b. originSlugFromUrl drift guard against src/services/git-status-probe.ts', () => {
+    test('both copies still exist where the guard expects them', () => {
+        assert.ok(
+            fs.existsSync(PROBE_SRC_PATH),
+            `the authoritative copy is missing: expected src/services/git-status-probe.ts at ${PROBE_SRC_PATH}. `
+            + 'If it moved, re-point this guard -- do not delete it: packages/apra-fleet-se/src/projects/checkout.mjs '
+            + 'mirrors that file and has no compile-time link to it.',
+        );
+        assert.ok(fs.existsSync(CHECKOUT_SRC_PATH), `missing ${CHECKOUT_SRC_PATH}`);
+    });
+
+    test('originSlugFromUrl, normaliseHostPath and basenameSlug are byte-identical modulo types and whitespace', () => {
+        const probeSrc = fs.readFileSync(PROBE_SRC_PATH, 'utf8');
+        const checkoutSrc = fs.readFileSync(CHECKOUT_SRC_PATH, 'utf8');
+
+        for (const name of MIRRORED_FUNCTIONS) {
+            const authoritative = extractFunctionSource(probeSrc, name);
+            const mirror = extractFunctionSource(checkoutSrc, name);
+
+            assert.ok(
+                authoritative,
+                `could not extract '${name}' from src/services/git-status-probe.ts (AUTHORITATIVE) -- `
+                + 'the drift guard in packages/apra-fleet-se/test/projects-checkout.test.mjs cannot compare what it '
+                + 'cannot find; fix the extraction or the function name, never delete the guard.',
+            );
+            assert.ok(
+                mirror,
+                `could not extract '${name}' from packages/apra-fleet-se/src/projects/checkout.mjs (the MIRROR) -- `
+                + 'the drift guard cannot compare what it cannot find; fix the extraction or the function name, '
+                + 'never delete the guard.',
+            );
+
+            assert.equal(
+                normaliseImplementation(mirror),
+                normaliseImplementation(authoritative),
+                `originSlugFromUrl DRIFT in '${name}':\n`
+                + '  AUTHORITATIVE: src/services/git-status-probe.ts (member_git_status computes the slug with this copy)\n'
+                + '  MIRROR:        packages/apra-fleet-se/src/projects/checkout.mjs (must be updated to match)\n'
+                + "The clone step's idempotency probe compares the mirror's slug against the authoritative one, so a "
+                + 'drift makes addCheckout re-clone over an existing checkout or refuse a matching one. Copy the '
+                + 'authoritative implementation across (adjusting only the TypeScript annotations and indentation).',
+            );
+        }
     });
 });
