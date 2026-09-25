@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from './test-helpers.js';
-import { loadUserConfig, getModelOverride, getLogPreviewChars, DEFAULT_LOG_PREVIEW_CHARS, _resetCache } from '../src/services/user-config.js';
+import { loadUserConfig, getModelOverride, getLogPreviewChars, getWorkflowPackagesConfig, DEFAULT_LOG_PREVIEW_CHARS, _resetCache } from '../src/services/user-config.js';
 
 const CONFIG_PATH = path.join(FLEET_DIR, 'config.json');
 
@@ -250,5 +250,96 @@ describe('agy provider uses user-config for display name', () => {
     });
     // standard not overridden -- should use hardcoded default
     expect(cmd).toContain('Gemini 3.1 Pro (Low)');
+  });
+});
+
+describe('workflowPackages config key (apra-fleet-iywi.3.1)', () => {
+  beforeEach(() => {
+    _resetCache();
+    if (!fs.existsSync(FLEET_DIR)) fs.mkdirSync(FLEET_DIR, { recursive: true });
+    try { fs.unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+  });
+
+  afterEach(() => {
+    _resetCache();
+    try { fs.unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+  });
+
+  it('is absent (not defaulted) when no config file exists', () => {
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toBeUndefined();
+    expect(getWorkflowPackagesConfig()).toEqual([]);
+  });
+
+  it('is absent (not defaulted) when the config file exists but omits the key', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: 10 } }), 'utf-8');
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toBeUndefined();
+  });
+
+  it('loads well-formed entries', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({
+      workflowPackages: [
+        { id: 'pkg-a', baseUrl: 'http://localhost:9001' },
+        { id: 'pkg-b', baseUrl: 'http://localhost:9002' },
+      ],
+    }), 'utf-8');
+
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toEqual([
+      { id: 'pkg-a', baseUrl: 'http://localhost:9001' },
+      { id: 'pkg-b', baseUrl: 'http://localhost:9002' },
+    ]);
+    expect(getWorkflowPackagesConfig()).toEqual(config.workflowPackages);
+  });
+
+  it('drops a malformed entry (missing baseUrl) rather than throwing, and keeps the well-formed ones', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({
+      workflowPackages: [
+        { id: 'pkg-a', baseUrl: 'http://localhost:9001' },
+        { id: 'pkg-missing-url' },
+        { baseUrl: 'http://localhost:9003' },
+        'not-an-object',
+        42,
+        null,
+      ],
+    }), 'utf-8');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => loadUserConfig()).not.toThrow();
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toEqual([{ id: 'pkg-a', baseUrl: 'http://localhost:9001' }]);
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('malformed workflowPackages entry'));
+    spy.mockRestore();
+  });
+
+  it('drops an entry with an empty-string id or baseUrl', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({
+      workflowPackages: [
+        { id: '', baseUrl: 'http://localhost:9001' },
+        { id: 'pkg-a', baseUrl: '' },
+      ],
+    }), 'utf-8');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toEqual([]);
+    spy.mockRestore();
+  });
+
+  it('treats a non-array workflowPackages as malformed and ignores it (not a crash)', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ workflowPackages: { id: 'not-an-array' } }), 'utf-8');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toBeUndefined();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('workflowPackages must be an array'));
+    spy.mockRestore();
+  });
+
+  it('accepts an explicit empty array as presence (distinct from absence)', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ workflowPackages: [] }), 'utf-8');
+    const config = loadUserConfig();
+    expect(config.workflowPackages).toEqual([]);
   });
 });

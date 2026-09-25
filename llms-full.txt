@@ -182,7 +182,7 @@ flowchart LR
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket. A consumer package (e.g. a fleet-sprint project) can tag a member with its own `owner {package, ref}` binding (`member_owner`) and read live git status for a member's work folder -- branch, dirty files, ahead/behind, worktrees, origin identity -- without assuming the folder is even a checkout (`member_git_status`). A member's stored `env` name-value map is now actually injected at every dispatch site (synchronous exec, prompt launch and its retries, and the long-running task wrapper), merged with the member's own auth credentials and rendered for whichever shell the member is actually registered as speaking -- see [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md). See [docs/mcp-tools.md](docs/mcp-tools.md#1-lifecycle-tools).
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
-- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger (an object holder record with a process id and timestamp, lazily reaped once its holder's process is gone -- see [docs/member-reservation-design.md](docs/member-reservation-design.md)), crash watchdog (including a live "paused" state and base-branch-drift indicator), run history. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (source is the shared `~/.apra-fleet/fleet.key` when present, falling back to a token minted under `<supervisor-data-root>/private/token` otherwise; the source is logged, the token value never is; sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard).
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger (an object holder record with a process id and timestamp, lazily reaped once its holder's process is gone -- see [docs/member-reservation-design.md](docs/member-reservation-design.md)), crash watchdog (including a live "paused" state and base-branch-drift indicator), run history. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (source is the shared `~/.apra-fleet/fleet.key` when present, falling back to a token minted under `<supervisor-data-root>/private/token` otherwise; the source is logged, the token value never is; sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard). It is also gaining a project domain -- binding a member to a console project, adding a new checkout on a machine, a health panel, a per-member git drawer, and a project export/import CLI -- built as domain logic and JSON routes ahead of the console UI that will render it. See [packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md).
 
 ## Knowledge Layer
 
@@ -424,12 +424,22 @@ hardening autonomous sprint execution (the toughest workflow we know of),
 supervisor-orchestrated multi-sprint operation, and the workflow SDK for
 third-party verticals.
 
-A small web console (a `/ui` shell backed by `/api/fleet/*`, starting with a
-members table) is taking shape behind its own seam so it can grow one route
-module at a time; today it serves from a dev checkout only -- packaging it
-into the SEA binary and the npm-distributed package, and adding an auth
-guard ahead of non-loopback binding, are still open. See
-[docs/console-architecture.md](docs/console-architecture.md).
+A small web console (a `/ui` shell backed by `/api/fleet/*`) is taking shape
+behind its own seam so it can grow one route module at a time. It now serves
+Members, Secrets and Health pages with drawer actions and an add-member
+wizard, built on a shared `@apralabs/apra-fleet-ui-kit` primitives package,
+and is guarded end to end: every `/api/*` request and every mutating
+`/ext/*` request requires the fleet key (bearer) or the console cookie,
+third-party workflow packages can be registered and reached through a
+`/ext/<package id>/*` reverse proxy (SSE included) using a per-package
+derived upstream credential rather than the raw fleet key, and
+`compose_permissions` refuses to auto-grant a member curl access to the
+console or supervisor's own control-plane ports. Today it serves from a dev
+checkout only -- packaging it into the SEA binary and the npm-distributed
+package is still open. A known gap: the Members table's owner column and the
+member-detail drawer action need further work before every screen action in
+the design's action table has both a tested route and a tested UI control.
+See [docs/console-architecture.md](docs/console-architecture.md).
 
 ## Documentation
 

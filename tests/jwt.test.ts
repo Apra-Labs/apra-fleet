@@ -12,11 +12,13 @@ const CLAIMS: JwtClaims = {
   work_folder: '/tmp/w',
 };
 
-// jwt.ts computes its key file path (KEY_PATH = homedir + '.apra-fleet/fleet.key')
-// ONCE at module load time, so a plain vi.spyOn(os, 'homedir') after import has no
-// effect -- it would silently read/write the REAL current user's key file. Instead,
-// mock node:os for dynamic re-imports and vi.resetModules() before each test so
-// jwt.ts's KEY_PATH is freshly recomputed against a fresh temp home every time.
+// jwt.ts resolves its key file path (homedir + '.apra-fleet/fleet.key') via
+// os.homedir() lazily on every getOrCreateKey()/sign()/verify() call (fixed
+// by apra-fleet-iywi.2.2 -- it used to freeze the path in a module-load-time
+// constant, which made a plain vi.spyOn(os, 'homedir') set AFTER import a
+// silent no-op that read/wrote the REAL current user's key file). Mocking
+// node:os for a dynamic re-import plus vi.resetModules() before each test
+// still works and keeps this suite's isolation explicit and self-contained.
 let tmpHome: string;
 let jwtMod: typeof import('../src/services/jwt.js');
 

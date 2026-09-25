@@ -92,7 +92,17 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
 
     const listed = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
     expect(listed.results.some((e: any) => e.title === title)).toBe(true);
-  });
+    // apra-fleet-vcnl.6: this case does a real git init/remote plus sqlite
+    // capture/prime/list work. Measured 3009ms in isolation (60% of vitest's
+    // 5000ms default) and timed out at load under a full-suite run (the
+    // default budget leaves ~2s of headroom, which the rest of the suite's
+    // contention eats). 30000ms matches the convention already used for
+    // other git-clone-backed knowledge specs -- see
+    // kb-remote-member-e2e.test.ts's own timeout comment for the same
+    // reasoning and sibling list (register-member.test.ts,
+    // register-member-bootstrap-gate.test.ts,
+    // 2cc-win-bd-invocation-integ.test.ts, eft-41-symlinked-entry.test.ts).
+  }, 30000);
 
   it('B: the same prime from the REAL local clone still stales an entry whose basis file changed', async () => {
     const remoteUrl = `git@github.com:acme/anchor-b-${tok}.git`;
@@ -120,7 +130,9 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
     } as any);
 
     expect(await rawStale(localClone, title)).toBe(1);
-  });
+    // apra-fleet-vcnl.6: same real git-clone-plus-sqlite workload and timeout
+    // rationale as case A above.
+  }, 30000);
 });
 
 describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
@@ -152,7 +164,10 @@ describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
     const dirty = await providers.project.freshnessSweep();
     expect(dirty.staled).toBeGreaterThanOrEqual(1);
     expect(await rawStale(localClone, title)).toBe(1);
-  });
+    // apra-fleet-vcnl.6: same real git-clone-plus-sqlite workload and timeout
+    // rationale as case A above (this case additionally runs two full
+    // freshnessSweep() passes).
+  }, 30000);
 
   it('a sweep whose anchor does not exist on this host makes no verdict at all', async () => {
     const remoteUrl = `git@github.com:acme/anchor-sweep-missing-${tok}.git`;
@@ -173,5 +188,7 @@ describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
     const remote = await getKbProviders(fakeRemotePath, remoteUrl);
     expect(await remote.project.freshnessSweep()).toEqual({ checked: 0, staled: 0, unstaled: 0 });
     expect(await rawStale(localClone, title)).toBe(0);
-  });
+    // apra-fleet-vcnl.6: same real git-clone-plus-sqlite workload and timeout
+    // rationale as case A above.
+  }, 30000);
 });

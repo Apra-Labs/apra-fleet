@@ -5,6 +5,14 @@ import type { LlmProvider } from '../types.js';
 
 export type ModelTier = 'cheap' | 'standard' | 'premium';
 
+/** A statically declared workflow package (apra-fleet-iywi.3 / F13). See
+ *  src/services/workflow-packages.ts for how this merges with
+ *  runtime-registered packages. */
+export interface WorkflowPackageConfigEntry {
+  id: string;
+  baseUrl: string;
+}
+
 export interface UserConfig {
   providers?: Partial<Record<LlmProvider, {
     modelMapping?: Partial<Record<ModelTier, string>>;
@@ -27,6 +35,12 @@ export interface UserConfig {
      *  only attaches the structured warning. */
     mode?: 'enforce' | 'warn';
   };
+  /** Statically declared workflow packages (apra-fleet-iywi.3 / F13). NO
+   *  default -- absent means no config-declared packages, not an empty
+   *  array pinned by this module. These merge with runtime-registered
+   *  packages in src/services/workflow-packages.ts and cannot be removed
+   *  through the unregister route (see that module's OWNERSHIP notes). */
+  workflowPackages?: WorkflowPackageConfigEntry[];
 }
 
 /**
@@ -171,6 +185,25 @@ export function loadUserConfig(): UserConfig {
     result.contextAdmission = parsedCa;
   }
 
+  if (Array.isArray(obj.workflowPackages)) {
+    const validEntries: WorkflowPackageConfigEntry[] = [];
+    for (const entry of obj.workflowPackages) {
+      if (
+        typeof entry === 'object' && entry !== null && !Array.isArray(entry) &&
+        typeof (entry as Record<string, unknown>).id === 'string' && (entry as Record<string, unknown>).id !== '' &&
+        typeof (entry as Record<string, unknown>).baseUrl === 'string' && (entry as Record<string, unknown>).baseUrl !== ''
+      ) {
+        const e = entry as Record<string, unknown>;
+        validEntries.push({ id: e.id as string, baseUrl: e.baseUrl as string });
+      } else {
+        console.error('[fleet] user config: malformed workflowPackages entry, skipping');
+      }
+    }
+    result.workflowPackages = validEntries;
+  } else if (obj.workflowPackages !== undefined) {
+    console.error('[fleet] user config: workflowPackages must be an array, ignoring');
+  }
+
   cached = result;
   return cached;
 }
@@ -183,6 +216,13 @@ export function getModelOverride(provider: LlmProvider, tier: ModelTier): string
 /** Characters of command/prompt text to keep on a fleet-log line (config-driven). */
 export function getLogPreviewChars(): number {
   return loadUserConfig().logging?.previewChars ?? DEFAULT_LOG_PREVIEW_CHARS;
+}
+
+/** Config-declared workflow packages -- [] (not undefined) when absent, for
+ *  callers (src/services/workflow-packages.ts) that always want an array to
+ *  merge against. */
+export function getWorkflowPackagesConfig(): WorkflowPackageConfigEntry[] {
+  return loadUserConfig().workflowPackages ?? [];
 }
 
 /** Reset the cached config -- for testing only. */

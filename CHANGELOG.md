@@ -60,6 +60,129 @@ lower priority than the goal and left open for a future sprint):
   yet guard against the operating system recycling that id onto an
   unrelated process after the original holder exits.
 
+## [Unreleased] -- Project overview domain: bind/unbind, checkout flow, health panel, git drawer and export/import (sprint goal met)
+
+Sprint goal: build the project-overview domain of the fleet-supervisor
+console on top of the existing `supervisor.sqlite` project store -- binding a
+fleet member to a console project (owner tag plus a merged `BEADS_DIR` env
+entry and a cached git probe), the members-grouped-by-checkout-group overview
+model, an "add checkout on a machine" flow, an eight-check health panel, a
+per-member git drawer, and a project export/import CLI. It is domain logic
+and JSON routes only -- the console UI that renders it is later work. All of
+it landed and is verified: every overview row is derivable from the new
+route, all eight documented health checks exist with OK/WARN/FAIL unit
+coverage, export/import round-trips including the project's original
+creation timestamp, the "add checkout" flow is idempotent end to end (a
+re-run reports every step skipped with zero mutating calls, and a dirty or
+foreign-origin checkout is refused and never touched), and the git drawer
+returns every specified field. A previously-interpolated shell injection
+vector in the beads-remote probe was fixed with a reject-then-quote policy
+that branches on the target member's registered shell (POSIX vs
+PowerShell); a client-supplied project creation timestamp is stripped by the
+HTTP create route so it cannot be spoofed. See
+[packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md)
+for the full design and its trade-offs.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $57.3375.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.9611 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 57 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+Carried forward (filed as follow-up work, not fixed this sprint):
+- The new HTTP routes were verified at the unit level only, against mocked
+  store/client collaborators -- never yet exercised over HTTP against a
+  deployed sandbox. Integration testing was hard-stopped in two of five
+  sprint cycles by a missing broad `curl` permission grant, already tracked
+  separately as its own follow-up; the route-level end-to-end verification
+  itself is tracked as its own open backlog item.
+- A static shell-command-injection guard exists for two of the domain's
+  modules (each scans its own source for a raw, unquoted interpolation) but
+  not yet for the HTTP route modules or the export/import CLI -- including
+  the one route module where a real injection defect was found and fixed
+  this sprint, which currently has only behavioral coverage for that fix.
+- The owner-package identifier this domain stamps on a bound member's owner
+  tag was reconciled against the only independently-landed candidate source
+  available at the time; it needs re-verification once a second,
+  independently-landed source for the same identifier exists, since a
+  mismatch would make every already-written owner tag unreadable on the
+  registration side.
+- A small, deliberately out-of-epic-scope test file landed on this sprint's
+  branch ahead of its intended standalone landing route, by design (reverting
+  it first would have dropped a flake fix with no replacement yet on the
+  integration branch); reconciling it back to a single landing route is
+  tracked as its own open follow-up once the standalone route merges.
+
+## [Unreleased] -- Console auth guard, `/ext` workflow-package reverse proxy, and the console/supervisor permissions denylist
+
+Sprint goal: one shared auth guard for the `/ui` console (fleet-key bearer or
+a derived cookie, never the raw key itself, on every `/api/*` and mutating
+`/ext/*` request), a workflow-package registry (register/list/unregister,
+config-declared packages, version-range compatibility check, health
+polling), an `/ext/<package id>/*` reverse proxy with SSE pass-through and a
+per-package derived upstream credential, and a `compose_permissions`
+denylist so a member can never be auto-granted a curl against the console's
+or supervisor's own control-plane ports. All of it landed and is verified
+working; no beads were deferred out of scope at or above the sprint's goal
+priority.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $56.0051.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.8267 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 41 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **A shared local-token helper** lifted into the client package
+  (`packages/apra-fleet-client`'s `./auth/*` subpath export) carries the
+  generic mechanism (token resolution, bearer/cookie check, fail-closed path
+  normalisation) used by both the fleet-sprint supervisor and the console,
+  while each caller keeps its own route policy locally so one caller's
+  guarded-path rules can never leak into another's.
+- **The console auth guard**: every `/api/*` request and every non-`GET`
+  `/ext/*` request requires the fleet-key bearer or the `apra_console_token`
+  cookie set on `GET /ui`. The cookie carries an HMAC of the fleet key, never
+  the raw key, since the raw key also signs member JWTs.
+  `handleConsoleRequest` is now total -- no request reaching it can throw an
+  unhandled rejection that kills the server process.
+- **The workflow-package registry** (`src/services/workflow-packages.ts`):
+  atomic-write JSON storage, a hand-rolled semver-range compatibility check
+  run at registration, health polling with injectable clock/fetch, and a
+  `workflowPackages` config key for statically-declared packages, merged
+  with runtime-registered ones behind one service so callers never need to
+  know which source a package came from.
+- **The `/ext/<package id>/*` reverse proxy** (`src/console/proxy.ts`):
+  streams both directions via `pipe()`, passes `text/event-stream` through
+  unbuffered (uncompressed, headers flushed early, Nagle disabled) so SSE
+  events are not batched, rewrites upstream `Location` headers back under
+  the package's mount, and attaches a per-package derived upstream
+  credential (never the raw fleet key) that is withheld entirely on an
+  unauthenticated `GET` so a cross-origin page cannot ride the console's
+  credential to a third-party package.
+- **`compose_permissions` refuses console and supervisor control-plane
+  grants** by pattern, with a short, explicit, order-sensitive exception
+  list for the specific grants an operational runbook already documents --
+  checked strictly after the catch-all/shell-chaining denial rules so the
+  exception mechanism itself can never resurrect a broader grant.
+- **`baseUrl` scheme validation** for workflow packages runs both at
+  registration (reject before persistence) and again in the proxy's own
+  resolution path (a config-declared package is not gated by the
+  registration route at all).
+
+Carried forward (filed as low-priority backlog, not blocking this sprint's
+acceptance criteria): scoping a proxied upstream `Set-Cookie`'s `Path` to the
+package's own mount so one package cannot set a cookie another package or
+the shell would receive; escaping the reserved cookie name before it is
+interpolated into the `Set-Cookie`-filter regular expression; bounding the
+workflow-package registration route's request body size; broadening direct
+test coverage of the remaining throw regions inside the console's now-total
+dispatch; and having the `/ext` proxy's base-URL resolver skip a
+config-declared package with a scheme error itself, rather than relying on
+the proxy's own guard to catch it.
+
 ## [Unreleased] -- Member owner tag, env map and git status tools (sprint goal mostly met -- see carried-forward items)
 
 Sprint goal: give the member registry an `owner {package, ref}` binding, a
@@ -119,6 +242,66 @@ Carried forward (filed as follow-up work, not fixed this sprint):
   path validates.
 - `MemberOwnerStructured` (the client's owner-tool typedef) has no
   client-server typedef parity test case yet.
+
+## [Unreleased] -- Shell pages: Members, Secrets, Health (sprint goal not met -- blocking defect found in review)
+
+Sprint goal: complete the S1 members table (drawer actions, add-member
+wizard), S2 Secrets and S3 Health screens against `/api/fleet/*`, with every
+action in the design's screen action table backed by a tested route and a
+tested UI control. The 18 `/api/fleet/*` routes, the Secrets and Health
+pages, hash-based shell navigation, and a shared `@apralabs/apra-fleet-ui-kit`
+primitives package all landed and are verified working. Review found the
+epic is not yet done: the Members table renders the `owner` field as a raw
+value, but the field is a structured `{package, ref}` object on the branch
+this sprint merges against, so a real payload crashes the screen with no
+error boundary to contain it (the shipped UI test fixture hardcodes the old
+string shape, so the suite does not catch it); and the `member_detail` route
+has a passing route-level test but no UI control actually calls it, so the
+"route with a test and a UI control with a test" criterion is unmet for that
+action. Both gaps are in this sprint's own package (`packages/apra-fleet-shell-ui/`)
+and carry forward as open work.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.9450.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.2040 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **18 `/api/fleet/*` routes** mapping 1:1 to the client API, each validated
+  against its own tool's zod schema, with a thrown-error -> 400 / tool
+  `isError` -> 422 mapping, and credential responses built from an explicit
+  field whitelist so no secret value leaks through a route response.
+- **The Members table structure (S1/W1)**: background-refreshing table (no
+  flash back to loading on a failed refresh), a row-click drawer with the
+  member action set (provision LLM auth, provision/revoke VCS auth, setup
+  SSH key, compose permissions, update LLM CLI, remove), and an add-member
+  wizard for local and SSH-remote members. The owner column itself does
+  *not* yet render correctly -- see the known gap below.
+- **Secrets (S2)**: list, add via the out-of-band credential URL, update
+  policy/members/expiry, delete, GitHub App setup -- with no secret value
+  ever appearing in a request body or the DOM.
+- **Health (S3)**: fleet status, version, data directory, update-available
+  state, and a workflow-packages list that degrades to the same empty state
+  on both a 404 and a network failure.
+- **Hash-based shell navigation** across the three pages, and a shared
+  `@apralabs/apra-fleet-ui-kit` package (`Table`, `Drawer`, `Form`, `Wizard`,
+  `Page`) so future console pages compose from common primitives.
+- File ownership held: no file under `src/tools/`, `src/types.ts`, or
+  `src/console/server.ts` was touched.
+
+Known gap carried forward (blocks the epic acceptance criterion):
+
+- The Members table's owner column must render the structured
+  `{package, ref}` owner object (not treat it as a plain string), and the
+  shell needs a rendering safety net (an error boundary) so a future
+  shape mismatch degrades to a visible error instead of a blank screen.
+- `member_detail` needs an actual UI control (e.g. in the member drawer)
+  that calls the route, not just route-level test coverage.
+- See `docs/console-architecture.md` for the durable client/server
+  type-drift risk this defect is an instance of.
 
 ## [Unreleased] -- Console seam and shell UI foundation for `/ui` (sprint goal not yet met -- see carried-forward items)
 
