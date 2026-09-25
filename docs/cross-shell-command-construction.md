@@ -55,6 +55,55 @@ success: the caller has no reliable signal that the operation didn't happen.
 Hard-failing before any registration/bookkeeping side effect occurs (e.g.
 before minting a task id) avoids leaving orphaned state behind.
 
+## Injecting a member's env map: shell-selected, not OS-selected, and shell-agnostic at the merge step
+
+A member can carry two independent env sources: a plaintext name/value map
+(set via the member's own env field) and decrypted auth credentials. Both
+need to reach every dispatch site (the synchronous exec path, the
+long-running task wrapper on both POSIX and Windows, and the prompt-launch
+path including its retries) in a form the member's *actual* shell can
+parse. This splits into two layers on purpose:
+
+- **Merging and validation are shell-agnostic.** Resolving the two sources
+  into a single ordered list of `{name, value}` pairs, and revalidating
+  every name against the portable name pattern, happens once, in plain
+  JavaScript, with no shell syntax involved yet. Revalidating at this build
+  step (not only when the value was first stored) matters because a record
+  written by an older or looser build, or hand-edited directly in the
+  registry file, must not become shell injection at dispatch time -- an
+  invalid name throws loudly here rather than being silently dropped.
+  **Auth credentials win any name collision with the plaintext map.**
+  Letting a plaintext entry shadow a stored credential would mean an
+  operator with only update rights on the member's env map could redirect
+  or blank a credential for every future dispatch to that member, without
+  ever touching the credential store itself.
+- **Rendering into shell syntax is selected by the member's registered
+  shell, not by `agent.os`** -- the same `isPosixShell(os, shell)` branch
+  this document's invariant already requires elsewhere. A Windows member
+  registered as git-bash is a POSIX rendering target and must get
+  `export NAME='value' && ...`, not PowerShell's `$env:NAME='value'; ...`;
+  getting this branch wrong hands a POSIX-speaking member syntax it cannot
+  parse. Both forms use single quotes for the value, which are fully
+  literal in both shell families, so a value containing `$`, a backtick, a
+  backslash, or a newline is never expanded by the receiving shell.
+
+**The long-running task wrapper is a deliberate exception to "always
+inject."** The wrapper scripts (`run.sh` on POSIX, `run.ps1` on Windows)
+are written to disk and persist as files on the member, unlike the
+transient prefix prepended to a synchronous command. Because of that, the
+long-running path injects the plaintext env map but never the auth
+credentials -- writing a decrypted credential into a file that outlives the
+single dispatch would leave it at rest on the member indefinitely. The
+synchronous path injects both, since its prefix exists only for the
+lifetime of that one command.
+
+On Windows specifically, the env assignments in `run.ps1` must be written
+*inside* the generated script body, not prepended to the launch command:
+the process is started via WMI (`Invoke-CimMethod Win32_Process.Create`),
+which does not inherit the launching session's environment the way a
+normal child-process spawn would, so anything not set inside the script
+itself never reaches the running process.
+
 ## `wrapPowerShellEncoded`: the standard way to send a PowerShell script
 
 All Windows member-bound PowerShell scripts should be sent through a single
