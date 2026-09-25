@@ -18,6 +18,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { withAutoTag } from '../lazy/mode.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -218,7 +219,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     unattended: (input.unattended === 'false' ? false : input.unattended) ?? false,
     modelTiers: normalizedModelTiers,
     category: input.category,
-    tags: input.tags,
+    tags: withAutoTag(input.tags, isLocal),
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---

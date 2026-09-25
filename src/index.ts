@@ -306,6 +306,8 @@ async function startServer() {
   idleManager.start();
   void cleanupStaleTasks();
   void reapAutoMembers();
+  // Long sessions outlive the startup sweep; keep reaping idle auto workers.
+  setInterval(() => void reapAutoMembers(), 10 * 60_000).unref();
   purgeExpiredCredentials();
   void checkForUpdate();
 

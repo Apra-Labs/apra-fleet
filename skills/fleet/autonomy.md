@@ -22,7 +22,8 @@ fan-out costs tokens, adds coordination overhead, and creates merge conflicts -
 it is strictly worse than not using the fleet at all. A missed fan-out costs only
 wall-clock time.
 
-**Ceiling: 3 concurrent workers.** Go higher only when the user asks.
+**Ceiling: 3 concurrent workers.** Go higher only when the user asks. If
+`local-settings.md` exists next to this file, its limits replace this default.
 
 ## Cost gate: local is free, everything else is not
 

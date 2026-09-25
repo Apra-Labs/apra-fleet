@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeHelperSettings } from './mode.js';
 
 /** Resolved at call time so tests (and LAZYFLEET_DIR) can redirect it. */
 export function lazyDir(): string {
@@ -76,6 +77,11 @@ export function saveConfig(cfg: LazyConfig): void {
   const p = configPath();
   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   if (process.platform !== 'win32') fs.chmodSync(p, 0o600);
+  try {
+    writeHelperSettings(cfg);
+  } catch {
+    // The skill mirror is best-effort; the config file is the source of truth.
+  }
 }
 
 /** Apply a partial update from the UI, validating every field it touches. */

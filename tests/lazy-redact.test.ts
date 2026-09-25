@@ -201,3 +201,26 @@ describe('SseRestorer', () => {
     check(out.replace(/\r\n/g, '\n'));
   });
 });
+
+describe('lazy mode hooks', () => {
+  it('tags local helpers for cleanup only when lazyfleet is installed', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { withAutoTag } = await import('../src/lazy/mode.js');
+    const prev = process.env.LAZYFLEET_DIR;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lazy-mode-'));
+    try {
+      process.env.LAZYFLEET_DIR = dir;
+      expect(withAutoTag(['doer'], true)).toEqual(['doer']);
+      fs.writeFileSync(path.join(dir, 'config.json'), '{}');
+      expect(withAutoTag(['doer'], true)).toEqual(['doer', 'auto']);
+      expect(withAutoTag(undefined, true)).toEqual(['auto']);
+      expect(withAutoTag(['auto'], true)).toEqual(['auto']);
+      expect(withAutoTag(['doer'], false)).toEqual(['doer']);
+    } finally {
+      process.env.LAZYFLEET_DIR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

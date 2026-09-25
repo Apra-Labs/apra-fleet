@@ -12,7 +12,9 @@
 import { execFile } from 'node:child_process';
 import { claudeSettingsPath, clearBaseUrl, currentBaseUrl, setBaseUrl } from './claude-settings.js';
 import { lazyDir, loadConfig, saveConfig, type LazyConfig } from './config.js';
+import { helperSettingsPath, writeHelperSettings } from './mode.js';
 import { installService, restartService, uninstallService } from './service.js';
+import fs from 'node:fs';
 
 const HELP = `lazyfleet - Claude, minus the babysitting
 
@@ -90,6 +92,7 @@ async function install(): Promise<void> {
   console.log('ok');
 
   const cfg = loadConfig();
+  writeHelperSettings(cfg); // the integration step just refreshed the skill folder
   const ours = baseUrl(cfg);
   const existing = currentBaseUrl();
   if (existing && existing !== ours && !cfg.previousBaseUrl) {
@@ -131,6 +134,7 @@ async function uninstall(): Promise<void> {
   clearBaseUrl(baseUrl(cfg), cfg.previousBaseUrl);
   console.log(`  Claude routing restored (${claudeSettingsPath()})`);
   uninstallService();
+  fs.rmSync(helperSettingsPath(), { force: true });
   console.log('  Background helper stopped and removed');
   console.log(`\nYour vault is kept in ${lazyDir()} and the encrypted store. Run \`lazyfleet ui\` after reinstalling to see it.`);
 }

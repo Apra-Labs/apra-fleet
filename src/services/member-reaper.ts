@@ -2,6 +2,7 @@ import type { Agent } from '../types.js';
 import { getAllAgents } from './registry.js';
 import { readMemberStatus } from './statusline.js';
 import { logLine } from '../utils/log-helpers.js';
+import { lazyIdleMinutes } from '../lazy/mode.js';
 
 /**
  * Members created automatically by the orchestrator carry this tag. It is the
@@ -15,7 +16,8 @@ const DEFAULT_TTL_MIN = 120;
 /** TTL in minutes before an idle auto-created member is removed. */
 export function autoMemberTtlMin(env: NodeJS.ProcessEnv = process.env): number {
   const raw = parseInt(env.FLEET_AUTO_MEMBER_TTL_MIN ?? '', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TTL_MIN;
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return lazyIdleMinutes() ?? DEFAULT_TTL_MIN;
 }
 
 export function isAutoMember(agent: Agent): boolean {
