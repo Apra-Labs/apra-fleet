@@ -205,25 +205,71 @@ describe('buildManifest', () => {
         assert.equal(manifest.apraFleetApi, APRA_FLEET_API_RANGE);
     });
 
+    // Minimal reimplementation of src/services/workflow-packages.ts's
+    // satisfiesVersionRange() comparator semantics (deliberately NOT importing
+    // that TS module cross-package): tokens are space-separated and AND-ed,
+    // each token is an optional comparator (^, ~, >=, <=, >, <, =; no
+    // comparator means exact equality) followed by MAJOR.MINOR.PATCH. Caret
+    // and tilde compute the same upper-bound rules as the real matcher. This
+    // mirrors the general syntax (not just caret), so it stays correct across
+    // any AND-ed comparator range the declared APRA_FLEET_API_RANGE takes,
+    // not only a caret shape.
+    function localSatisfiesVersionRange(version, range) {
+        const parse = (raw) => {
+            const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(raw.trim());
+            assert.ok(m, `expected MAJOR.MINOR.PATCH, got "${raw}"`);
+            return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+        };
+        const cmp = (a, b) => (a.major - b.major) || (a.minor - b.minor) || (a.patch - b.patch);
+        const caretUpper = (v) => v.major > 0 ? { major: v.major + 1, minor: 0, patch: 0 }
+            : v.minor > 0 ? { major: 0, minor: v.minor + 1, patch: 0 }
+            : { major: 0, minor: 0, patch: v.patch + 1 };
+        const tildeUpper = (v) => ({ major: v.major, minor: v.minor + 1, patch: 0 });
+        const v = parse(version);
+        const tokens = range.trim().split(/\s+/).filter(Boolean);
+        assert.ok(tokens.length > 0, `expected a non-empty range, got "${range}"`);
+        for (const token of tokens) {
+            const m = /^(\^|~|>=|<=|>|<|=)?(\d+\.\d+\.\d+)$/.exec(token);
+            assert.ok(m, `expected a supported comparator token, got "${token}" (in "${range}")`);
+            const bound = parse(m[2]);
+            const op = m[1];
+            let ok;
+            switch (op) {
+                case '^': ok = cmp(v, bound) >= 0 && cmp(v, caretUpper(bound)) < 0; break;
+                case '~': ok = cmp(v, bound) >= 0 && cmp(v, tildeUpper(bound)) < 0; break;
+                case '>=': ok = cmp(v, bound) >= 0; break;
+                case '<=': ok = cmp(v, bound) <= 0; break;
+                case '>': ok = cmp(v, bound) > 0; break;
+                case '<': ok = cmp(v, bound) < 0; break;
+                case '=':
+                case undefined:
+                    ok = cmp(v, bound) === 0;
+                    break;
+                default:
+                    ok = false;
+            }
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     test('APRA_FLEET_API_RANGE is satisfied by the repo version.json version', async () => {
         const rootVersion = JSON.parse(await fsp.readFile(ROOT_VERSION_JSON, 'utf-8'));
         const version = rootVersion.version;
         assert.match(version, /^\d+\.\d+\.\d+$/, `expected bare semver in version.json, got "${version}"`);
 
-        // Minimal caret-range check mirroring src/services/workflow-packages.ts's
-        // satisfiesVersionRange caret semantics (deliberately NOT importing that
-        // TS module cross-package): "^X.Y.Z" -> [X.Y.Z, next-bump) where the next
-        // bump increments the leftmost nonzero of major/minor/patch.
-        const m = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(APRA_FLEET_API_RANGE);
-        assert.ok(m, `expected a caret range, got "${APRA_FLEET_API_RANGE}"`);
-        const [, rMajor, rMinor, rPatch] = m.map(Number);
-        const [vMajor, vMinor, vPatch] = version.split('.').map(Number);
-        const cmp = (a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
-        const lower = [rMajor, rMinor, rPatch];
-        const upper = rMajor > 0 ? [rMajor + 1, 0, 0] : rMinor > 0 ? [rMajor, rMinor + 1, 0] : [rMajor, rMinor, rPatch + 1];
-        const v = [vMajor, vMinor, vPatch];
-        assert.ok(cmp(v, lower) >= 0 && cmp(v, upper) < 0,
+        assert.ok(localSatisfiesVersionRange(version, APRA_FLEET_API_RANGE),
             `expected repo version ${version} to satisfy ${APRA_FLEET_API_RANGE}`);
+    });
+
+    test('APRA_FLEET_API_RANGE also admits 0.5.0 ahead of the server version bump', () => {
+        // apra-fleet-g6ap.10: the moment version.json goes to 0.5.0, the
+        // supervisor's registration POST must not start getting 409 from
+        // POST /api/workflow-packages/register. Falsifiable: reverting
+        // APRA_FLEET_API_RANGE to '^0.4.0' makes this fail, since a caret
+        // range on 0.4.0 only covers [0.4.0, 0.5.0).
+        assert.ok(localSatisfiesVersionRange('0.5.0', APRA_FLEET_API_RANGE),
+            `expected APRA_FLEET_API_RANGE "${APRA_FLEET_API_RANGE}" to admit the upcoming server version 0.5.0`);
     });
 
     test('buildManifest requires a non-empty baseUrl', () => {

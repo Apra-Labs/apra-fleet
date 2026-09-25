@@ -28,11 +28,16 @@ export const PACKAGE_ID = 'se';
  * apraFleetApi compatibility range this package declares at registration.
  * Must be satisfied (via src/services/workflow-packages.ts's
  * satisfiesVersionRange()) by the CURRENT apra-fleet server version -- the
- * repo's own version.json is "0.4.3" today, which a caret range on 0.4.0
- * covers (>=0.4.0, <0.5.0). Bump this only in lockstep with a verified
+ * repo's own version.json is "0.4.3" today. Widened ahead of the 0.5.0 server
+ * bump (this sprint targets the milestone:v0.5 line) to a two-comparator
+ * AND-ed range so registration does not start 409-ing the moment version.json
+ * moves to 0.5.0: >=0.4.0 <0.6.0 covers both 0.4.3 today and 0.5.x once
+ * released. Written in the syntax satisfiesVersionRange() supports
+ * (space-separated AND-ed comparators) -- no OR ("||") or hyphen range, both
+ * throw in the real matcher. Bump/widen this only in lockstep with a verified
  * compatibility check against whatever the server version becomes.
  */
-export const APRA_FLEET_API_RANGE = '^0.4.0';
+export const APRA_FLEET_API_RANGE = '>=0.4.0 <0.6.0';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
