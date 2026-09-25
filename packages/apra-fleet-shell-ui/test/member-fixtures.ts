@@ -21,7 +21,8 @@ export const MEMBERS_A: { members: FleetMember[] } = {
       reservedBy: "sprint-42",
       owner: { package: "fleet-sprint", ref: "proj-alpha" },
       env: { REGION: "us-east-1" },
-      vcsTokenExpiresAt: "2026-12-31T00:00:00.000Z"
+      vcsTokenExpiresAt: "2026-12-31T00:00:00.000Z",
+      unattended: "dangerous"
     },
     {
       id: "member-2",
@@ -31,7 +32,8 @@ export const MEMBERS_A: { members: FleetMember[] } = {
       llmProvider: "openai",
       llm_auth: "expired",
       tags: null,
-      reservedBy: null
+      reservedBy: null,
+      unattended: false
     }
   ]
 };
@@ -46,7 +48,8 @@ export const MEMBERS_B: { members: FleetMember[] } = {
       llmProvider: "claude",
       llm_auth: "ok",
       tags: null,
-      reservedBy: null
+      reservedBy: null,
+      unattended: "auto"
     }
   ]
 };

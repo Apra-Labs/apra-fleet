@@ -67,13 +67,14 @@ const LLM_PROVIDER_OPTIONS = [
   { value: "opencode", label: "Opencode" }
 ];
 
-/** "" is the baseline/sentinel value, NOT a postable choice: Agent.unattended
- *  (src/types.ts) is not surfaced by list_members or member_detail (neither
- *  emits it -- see initialEditState below), so the drawer cannot know the
- *  member's real current mode and must not silently claim one. Only an
- *  operator picking one of the three real options makes it dirty and
- *  postable -- selecting "false" explicitly now correctly reaches
- *  update-member's "reset to interactive prompts" path. */
+/** "" is the baseline/sentinel value, NOT a postable choice. list_members and
+ *  member_detail now surface Agent.unattended (apra-fleet-i9ag.6.3), so the
+ *  select below normally pre-fills the member's real current mode -- "" only
+ *  remains reachable as a fallback against an older server build whose
+ *  payload predates the field (see initialEditState below). Only an operator
+ *  picking one of the three real options makes it dirty and postable --
+ *  selecting "false" explicitly reaches update-member's "reset to
+ *  interactive prompts" path. */
 const UNATTENDED_OPTIONS = [
   { value: "", label: "(unchanged - not reported by the server)" },
   { value: "false", label: "Interactive (false)" },
@@ -119,13 +120,14 @@ function initialEditState(member: FleetMember | null): EditFormState {
     category: member ? rawString(member.category) : "",
     tagsText: (member?.tags ?? []).join(", "),
     icon: member ? rawString(member.icon) : "",
-    // Agent.unattended (src/types.ts) is not surfaced by list_members or
-    // member_detail (src/tools/list-members.ts / member-detail.ts never emit
-    // it), so the drawer has no way to read the member's actual current
-    // value. "" is the explicit "unchanged - not reported by the server"
-    // sentinel (see UNATTENDED_OPTIONS) -- it is never posted; only an
-    // operator's real pick (including "false", to reset to interactive) is.
-    unattended: "",
+    // Agent.unattended (src/types.ts) is surfaced by list_members/member_detail
+    // as a real false|"auto"|"dangerous" value (apra-fleet-i9ag.6.3) -- pre-fill
+    // the select from it so the form shows the member's actual current mode.
+    // "" (the "unchanged - not reported by the server" sentinel, see
+    // UNATTENDED_OPTIONS) is only reachable when member.unattended is
+    // undefined, i.e. an older server build whose payload predates this field.
+    unattended:
+      member?.unattended === undefined ? "" : member.unattended === false ? "false" : member.unattended,
     llmProvider: member?.llmProvider ?? "",
     host,
     port,
@@ -167,10 +169,13 @@ function buildUpdateBody(member: FleetMember, state: EditFormState): UpdateMembe
     body.icon = trimmedIcon;
     dirty = true;
   }
-  // baseline.unattended is always "" (see initialEditState) -- this only
-  // fires when the operator actually picked one of the three real options,
-  // so state.unattended is never "" here.
-  if (state.unattended !== baseline.unattended) {
+  // baseline.unattended is now usually the member's real reported mode (see
+  // initialEditState), so this only fires when the operator actually changes
+  // the selection away from it -- state.unattended can still be "" here (the
+  // untouched sentinel) only when the server never reported a value, and "" is
+  // never a postable UpdateMemberBody["unattended"] value, so that case can
+  // never make it past this !== check into a dirty body.
+  if (state.unattended !== baseline.unattended && state.unattended !== "") {
     body.unattended = state.unattended as UpdateMemberBody["unattended"];
     dirty = true;
   }

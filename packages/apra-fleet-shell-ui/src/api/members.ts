@@ -29,6 +29,12 @@ export interface FleetMemberFields {
   owner?: MemberOwner | null;
   env?: Record<string, string> | null;
   vcsTokenExpiresAt?: string | null;
+  /** Permission mode for unattended execution (Agent.unattended in src/types.ts).
+   *  Optional here even though list_members/member_detail always emit a concrete
+   *  value (apra-fleet-i9ag.6.3) -- keeps the field readable against an older
+   *  server build that predates it, same as the rest of this interface's
+   *  "server may not emit" fields. */
+  unattended?: false | "auto" | "dangerous";
 }
 
 export interface FleetMember extends FleetMemberFields, Record<string, unknown> {}
@@ -65,7 +71,8 @@ export const memberFieldGuards: { [K in keyof FleetMemberFields]-?: (v: unknown)
   env: optional(
     (v) => typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every(isString)
   ),
-  vcsTokenExpiresAt: optional(isString)
+  vcsTokenExpiresAt: optional(isString),
+  unattended: optional((v) => v === false || v === "auto" || v === "dangerous")
 };
 
 /** Display form of the owner tag: "<package>@<ref>", or "(none)". A
