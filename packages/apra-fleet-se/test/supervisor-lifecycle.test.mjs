@@ -596,4 +596,93 @@ describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
         );
         assert.doesNotMatch(boundButSilent.message, /supervisor never logged its listening line/);
     });
+
+    // apra-fleet-ecjf.5.2: proves describeHealthWaitFailure()'s exited-vs-alive
+    // diagnostic against REAL spawned children and a REAL failed wait on a
+    // deliberately unbound port (same pattern as the test above), rather than
+    // hand-built strings.
+    test('reports the child\'s exited-vs-alive state and exit code/signal', async () => {
+        const port = await getFreePort(); // closed immediately after allocation; nothing listens on it
+
+        async function waitTimeout() {
+            let caught;
+            let succeeded = false;
+            try {
+                await waitFor(async () => {
+                    try {
+                        const res = await httpRequest(port, '/api/health', 'GET', 'irrelevant-token');
+                        return res.status === 200;
+                    } catch {
+                        return false;
+                    }
+                }, { timeoutMs: 300, intervalMs: 50, label: 'unbound port /api/health' });
+                succeeded = true;
+            } catch (err) {
+                caught = err;
+            }
+            assert.equal(succeeded, false, 'expected the wait against an unbound port to time out');
+            assert.ok(caught instanceof Error);
+            return caught;
+        }
+
+        // Case 1: the child is still alive (never exited) when the wait times out.
+        const aliveChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        track(aliveChild.pid);
+        const aliveCaught = await waitTimeout();
+        const aliveMsg = describeHealthWaitFailure(new Error(aliveCaught.message), { stdoutBuf: '', stderrBuf: '', child: aliveChild });
+        assert.match(aliveMsg.message, /child process state: still alive \(not exited\)/);
+        forceKill(aliveChild.pid);
+        await waitDead(aliveChild.pid);
+
+        // Case 2: the child already exited with a specific code before the
+        // diagnostic is built.
+        const exitedChild = spawn(process.execPath, ['-e', 'process.exit(3)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        track(exitedChild.pid);
+        await onExit(exitedChild);
+        const exitedCaught = await waitTimeout();
+        const exitedMsg = describeHealthWaitFailure(new Error(exitedCaught.message), { stdoutBuf: '', stderrBuf: '', child: exitedChild });
+        assert.match(exitedMsg.message, /child process state: exited \(code=3, signal=null\)/);
+
+        // Case 3: no child reference at all -- the diagnostic must say so
+        // rather than silently omitting the state.
+        const noChildCaught = await waitTimeout();
+        const noChildMsg = describeHealthWaitFailure(new Error(noChildCaught.message), { stdoutBuf: '', stderrBuf: '' });
+        assert.match(noChildMsg.message, /child process state: unknown \(no child reference provided\)/);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// health-wait budget resolution (apra-fleet-ecjf.5 / apra-fleet-ecjf.5.2)
+// -----------------------------------------------------------------------------
+describe('supervisor lifecycle -- health-wait budget resolution', () => {
+    // All four cases drive resolveSupervisorHealthBudgetMs() with injected
+    // concurrency/override inputs (opts.concurrency / opts.override) instead
+    // of mutating process.env, so nothing leaks into sibling subtests running
+    // concurrently in the same suite. Each is asserted by numeric value.
+
+    test('no override: concurrency 1 (or absent contention) resolves to the base 15000ms', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 1, override: null }), 15000);
+    });
+
+    test('no override: concurrency > 1 resolves to the scaledTimeout()-derived value (base x 3 = 45000ms)', () => {
+        // Asserted against the real helper's output (not a re-hardcoded
+        // number), matching the same treatment the fix applies at the
+        // real default call site.
+        const expected = scaledTimeout(15000, { concurrency: 8 });
+        assert.equal(expected, 45000, 'sanity: scaled-timeout.mjs\'s documented 3x multiplier');
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 8, override: null }), expected);
+    });
+
+    test('an explicit override resolves verbatim, unscaled, at low concurrency', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 1, override: 9999 }), 9999);
+    });
+
+    // FALSIFICATION CHECK: this case is the one that actually proves the
+    // override-is-verbatim invariant. If resolveSupervisorHealthBudgetMs()'s
+    // early-return guard for a provided override were removed (i.e. the
+    // override got routed through scaledTimeout() like the default does),
+    // this assertion would see 9999 * 3 = 29997 instead of 9999 and go red.
+    test('an explicit override resolves verbatim, unscaled, at high concurrency (falsification: fails if override is routed through scaledTimeout)', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 8, override: 9999 }), 9999);
+    });
 });
