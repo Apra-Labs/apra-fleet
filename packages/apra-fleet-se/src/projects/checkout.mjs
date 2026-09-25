@@ -73,9 +73,36 @@
 // No `$VAR`, `${VAR}`, `~`, or backtick ever survives into a dispatched
 // command string here -- `checkoutDir`/`beadsDir` are absolute paths the
 // caller supplies (rejected with 400 otherwise, see `pathValidationError`),
-// and `quoteArg` is the ONE helper that quotes an argument containing
-// whitespace. See fleet-sprint/shell-command-guard.mjs for the invariant this
-// keeps.
+// and `quoteArg` is the ONE helper every interpolated value goes through.
+// See fleet-sprint/shell-command-guard.mjs for the invariant this keeps.
+//
+// The quoting policy, stated once
+// --------------------------------
+// TWO layers, and both are deliberate (this is hardening, not a fix for a
+// reachable escalation: these routes sit behind the bearer token on
+// 127.0.0.1 and the same caller already holds execute_command).
+//
+//   1. REJECT at the edge. Every caller-supplied value that reaches a
+//      command string -- `checkoutDir`, `beadsDir`, `originUrl` -- is
+//      screened by `shellMetaCharError` and refused with HTTP 400 naming the
+//      field and the offending character. See SHELL_METACHAR_RE for the set.
+//   2. QUOTE unconditionally. `quoteArg` NEVER returns a value verbatim; a
+//      value with no metacharacter at all still comes back quoted, so no
+//      future call site can grow an unquoted path by forgetting the screen.
+//
+// `quoteArg` also branches on the TARGET MEMBER's registered shell rather
+// than assuming POSIX: POSIX gets single quotes with the `'\''` break-out,
+// PowerShell gets single quotes with `''` doubling. The former backslash-
+// escaped double quote was POSIX-specific and mis-escapes on a PowerShell
+// member (docs/cross-shell-command-construction.md). The predicate is
+// `isPosixMemberShell` below, a local mirror of src/utils/agent-helpers.ts's
+// isPosixShell -- this package has no compile-time link to that module, so it
+// is mirrored, not imported, and must not drift from it.
+//
+// ./health.mjs imports `quoteArg`, `isPosixMemberShell` and
+// `shellMetaCharError` from HERE rather than keeping a second copy: the
+// helper exists once. That edge is safe -- this module has no import path
+// back to ./health.mjs.
 // =============================================================================
 
 import { getProject } from './store/projects.mjs';
@@ -193,20 +220,107 @@ export function suggestCheckoutName({ projectId, machineMember, originSlug, role
 // -- shared helpers -------------------------------------------------------
 
 /**
- * Quote `value` for a member-bound command string ONLY when it contains
- * whitespace or a quote character; otherwise returned verbatim. This is the
- * single quoting helper every command string in this module goes through --
- * see the module header on why nothing here ever leans on the member shell's
- * own expansion.
+ * The shell metacharacters a member-bound value may never carry. Everything
+ * here is either shell syntax (`;`, `&`, `|`, redirection, subshells,
+ * command substitution, a newline) or expansion the shell performs on an
+ * UNquoted word (globs, brace expansion, history `!`, `#`, `~`). Rejecting
+ * them at the edge is layer 1 of the policy in the module header; `quoteArg`
+ * quoting unconditionally is layer 2.
+ *
+ * NOT listed, deliberately: whitespace and quote characters. Those are
+ * legitimate in a path (`/home/o'brien/my repo`) and `quoteArg` renders them
+ * safely for either shell, so refusing them would be gratuitous.
+ *
+ * Spelled as a Set of single characters rather than a regex character class
+ * on purpose: a class literal would have to put `$`, `(` and a backtick side
+ * by side, which fleet-sprint/shell-command-guard.mjs's own line scanner
+ * reads as a dispatched `$(` -- a false positive that would then need an
+ * allow directive claiming a deliberate shell expansion this module does not
+ * have. The backtick comes from its code point, matching CROSS_MARK below
+ * and this repo's ASCII-only file convention.
+ */
+const SHELL_METACHARS = new Set([
+    ';', '&', '|', String.fromCharCode(0x60), '$', '(', ')', '<', '>',
+    '*', '?', '[', ']', '{', '}', '!', '#', '~', '\n', '\r',
+]);
+
+/**
+ * The first character of `value` that is a shell metacharacter, or null.
+ *
+ * @param {string} value
+ * @returns {string | null}
+ */
+function firstShellMetaChar(value) {
+    for (const ch of value) {
+        if (SHELL_METACHARS.has(ch)) return ch;
+    }
+    return null;
+}
+
+/**
+ * A human-readable reason when `value` carries a shell metacharacter, else
+ * null. The reason names BOTH the field and the offending character (JSON-
+ * escaped, so a newline reads as `"\n"` rather than wrapping the message).
  *
  * @param {unknown} value
+ * @param {string} field
+ * @returns {string | null}
+ */
+export function shellMetaCharError(value, field) {
+    if (typeof value !== 'string') return null;
+    const offender = firstShellMetaChar(value);
+    if (offender === null) return null;
+    return `'${field}' must not contain the shell metacharacter ${JSON.stringify(offender)} `
+        + '-- resolve or remove it in JavaScript before sending a literal value to a member';
+}
+
+/**
+ * Whether a listMembers record's member speaks a POSIX shell.
+ *
+ * MIRRORS src/utils/agent-helpers.ts's
+ * `isPosixShell(getAgentOS(agent), getAgentShell(agent))` -- any non-Windows
+ * OS, or a Windows member registered as Git-for-Windows bash; a Windows
+ * member with no shell recorded, or pwsh7/powershell5, is PowerShell. The
+ * `os ?? 'linux'` default is getAgentOS's own. This package has NO compile-
+ * time link to that module (a different, MCP-only package boundary -- see
+ * the module header), so the predicate is mirrored rather than imported and
+ * MUST NOT DRIFT from it.
+ *
+ * @param {{ os?: unknown, shell?: unknown } | null | undefined} record
+ * @returns {boolean}
+ */
+export function isPosixMemberShell(record) {
+    const os = record && typeof record.os === 'string' ? record.os : 'linux';
+    const shell = record && typeof record.shell === 'string' ? record.shell : undefined;
+    return os !== 'windows' || shell === 'gitbash';
+}
+
+/**
+ * Quote `value` for a command string bound to `member`. NEVER returns a value
+ * verbatim (layer 2 of the module header's policy), and branches the quoting
+ * style on the target member's registered shell:
+ *
+ *   * POSIX  -- single quotes, with `'` broken out as `'\''`. Nothing inside
+ *     single quotes is expanded, so `$`, a backtick and `;` are all inert.
+ *   * PowerShell -- single quotes, with `'` doubled as `''`. A PowerShell
+ *     single-quoted string is literal too, and the POSIX backslash-escaped
+ *     double quote this helper used to emit mis-escapes there.
+ *
+ * The empty string keeps its existing empty-quoted spelling (`""` on POSIX,
+ * `''` on PowerShell) so an empty argument still reaches the member as one
+ * present-but-empty word.
+ *
+ * @param {unknown} value
+ * @param {{ os?: unknown, shell?: unknown } | null} [member] the TARGET member's listMembers record.
  * @returns {string}
  */
-export function quoteArg(value) {
+export function quoteArg(value, member = null) {
     const str = String(value);
-    if (str.length === 0) return '""';
-    if (!/[\s"']/.test(str)) return str;
-    return `"${str.replace(/"/g, '\\"')}"`;
+    const posix = isPosixMemberShell(member);
+    if (str.length === 0) return posix ? '""' : "''";
+    return posix
+        ? `'${str.split("'").join("'\\''")}'`
+        : `'${str.split("'").join("''")}'`;
 }
 
 /**
@@ -297,12 +411,18 @@ function envStringGet(env, key) {
 
 /**
  * Reject a value that is not an absolute path: empty/non-string, a leading
- * `~`, an embedded `$`, or a path that is neither POSIX-absolute
- * (`/...`), Windows drive-absolute (`C:\...` / `C:/...`), nor a UNC share
+ * `~`, an embedded `$`, any OTHER shell metacharacter (see
+ * `shellMetaCharError`), or a path that is neither POSIX-absolute (`/...`),
+ * Windows drive-absolute (`C:\...` / `C:/...`), nor a UNC share
  * (`\\server\share`). Mirrors src/utils/work-folder-validation.ts's
  * `isFullyQualifiedPath` (a different, MCP-only package boundary -- see the
  * module header) plus the `$`/`~` checks the parent feature's DQ-16 spec adds
  * on top of it for a member-bound path.
+ *
+ * The leading-`~` and embedded-`$` cases keep their own, more specific
+ * messages (they are the two the DQ-16 spec calls out by name) and are
+ * therefore checked BEFORE the general metacharacter screen, which would
+ * otherwise swallow them.
  *
  * @param {unknown} value
  * @param {string} field
@@ -319,6 +439,8 @@ function pathValidationError(value, field) {
     if (trimmed.includes('$')) {
         return `'${field}' must not contain '$' -- resolve any variable in JavaScript before sending a literal path`;
     }
+    const metaError = shellMetaCharError(trimmed, field);
+    if (metaError) return metaError;
     const isAbsolute = trimmed.startsWith('/')
         || /^[A-Za-z]:[\\/]/.test(trimmed)
         || /^\\\\[^\\/]/.test(trimmed);
@@ -326,6 +448,24 @@ function pathValidationError(value, field) {
         return `'${field}' must be an absolute path`;
     }
     return null;
+}
+
+/**
+ * Reject an `originUrl` that is empty or carries a shell metacharacter. It
+ * reaches the member as `git clone <originUrl> ...`, and until this screen
+ * existed NOTHING validated it. No deliberate remote spelling needs any
+ * character in SHELL_METACHAR_RE: the three shapes
+ * `git@host:owner/repo.git`, `https://host/owner/repo.git` and
+ * `ssh://git@host:22/owner/repo` are all made of characters this allows.
+ *
+ * @param {unknown} value
+ * @returns {string | null} A human-readable reason, or null when valid.
+ */
+function originUrlValidationError(value) {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+        return "'originUrl' must be a non-empty string";
+    }
+    return shellMetaCharError(value.trim(), 'originUrl');
 }
 
 /**
@@ -373,8 +513,12 @@ function siblingHostPort(record) {
  * no local changes is a no-op (`skipped`); a dirty checkout, or one pointing
  * at a different origin, is refused (`failed 'checkout-dir-conflict'`) and
  * NEVER touched; no checkout there clones it via `executeCommand`.
+ *
+ * `targetRecord` is the SIBLING's own listMembers record -- the `git clone`
+ * runs on the sibling machine, so its registered os/shell is what `quoteArg`
+ * must quote for.
  */
-async function cloneStep({ client }, { siblingMember, originUrl, checkoutDir, originSlug }) {
+async function cloneStep({ client }, { siblingMember, originUrl, checkoutDir, originSlug, targetRecord }) {
     let res;
     try {
         res = await client.memberGitStatus({ member_name: siblingMember, folder: checkoutDir });
@@ -396,7 +540,7 @@ async function cloneStep({ client }, { siblingMember, originUrl, checkoutDir, or
     }
 
     if (outcome === 'no_checkout') {
-        const command = `git clone ${quoteArg(originUrl)} ${quoteArg(checkoutDir)}`;
+        const command = `git clone ${quoteArg(originUrl, targetRecord)} ${quoteArg(checkoutDir, targetRecord)}`;
         let cloneRes;
         try {
             cloneRes = await client.executeCommand({ member_name: siblingMember, command });
@@ -484,12 +628,18 @@ async function registerStep({ client }, { name, siblingMember, siblingRecord, ch
  * Otherwise probes `sync.remote` on the NEW member; already equal to
  * `project.beads.remote` skips, else the remote is written and `bd bootstrap`
  * is run non-interactively against it.
+ *
+ * `targetRecord` is again the SIBLING's record: the new member is a second
+ * registry entry for the SAME machine, registered above with the sibling's
+ * own `shell`, so the sibling's os/shell is what `quoteArg` must quote for
+ * here too -- and reading it from the sibling avoids a second listMembers
+ * round trip purely to learn a value that cannot differ.
  */
-async function bootstrapStep({ client }, { name, beadsDir, project }) {
+async function bootstrapStep({ client }, { name, beadsDir, project, targetRecord }) {
     const remote = project.beads.remote;
     if (!remote) return stepResult('skipped', 'no beads remote');
 
-    const getCommand = `bd -C ${quoteArg(beadsDir)} config get sync.remote`;
+    const getCommand = `bd -C ${quoteArg(beadsDir, targetRecord)} config get sync.remote`;
     let getRes;
     try {
         getRes = await client.executeCommand({ member_name: name, command: getCommand });
@@ -501,7 +651,7 @@ async function bootstrapStep({ client }, { name, beadsDir, project }) {
         return stepResult('skipped', 'sync.remote already configured');
     }
 
-    const setCommand = `bd -C ${quoteArg(beadsDir)} config set sync.remote ${quoteArg(remote)}`;
+    const setCommand = `bd -C ${quoteArg(beadsDir, targetRecord)} config set sync.remote ${quoteArg(remote, targetRecord)}`;
     let setRes;
     try {
         setRes = await client.executeCommand({ member_name: name, command: setCommand });
@@ -511,7 +661,7 @@ async function bootstrapStep({ client }, { name, beadsDir, project }) {
     const setUnwrapped = unwrapExec(setRes);
     if (!setUnwrapped.ok) return stepResult('failed', setUnwrapped.detail || 'bd config set failed');
 
-    const bootstrapCommand = `bd -C ${quoteArg(beadsDir)} bootstrap --yes`;
+    const bootstrapCommand = `bd -C ${quoteArg(beadsDir, targetRecord)} bootstrap --yes`;
     let bootstrapRes;
     try {
         bootstrapRes = await client.executeCommand({ member_name: name, command: bootstrapCommand });
@@ -676,9 +826,8 @@ export async function addCheckout({ db, client }, projectId, input = {}) {
     if (typeof siblingMember !== 'string' || siblingMember.trim().length === 0) {
         throw new ProjectBindError(400, 'invalid-input', "'siblingMember' must be a non-empty string");
     }
-    if (typeof originUrl !== 'string' || originUrl.trim().length === 0) {
-        throw new ProjectBindError(400, 'invalid-input', "'originUrl' must be a non-empty string");
-    }
+    const originUrlError = originUrlValidationError(originUrl);
+    if (originUrlError) throw new ProjectBindError(400, 'invalid-input', originUrlError);
     const checkoutDirError = pathValidationError(checkoutDir, 'checkoutDir');
     if (checkoutDirError) throw new ProjectBindError(400, 'invalid-input', checkoutDirError);
 
@@ -713,9 +862,14 @@ export async function addCheckout({ db, client }, projectId, input = {}) {
         if (result.status === 'failed') failed = true;
     }
 
-    await runStep('clone', () => cloneStep({ client }, { siblingMember, originUrl, checkoutDir, originSlug }));
+    // Both command-building steps quote for the SIBLING's registered shell:
+    // the clone runs on the sibling, and the new member is a second registry
+    // entry for that same machine (see each step's own note).
+    const targetRecord = siblingRecord;
+
+    await runStep('clone', () => cloneStep({ client }, { siblingMember, originUrl, checkoutDir, originSlug, targetRecord }));
     await runStep('register', () => registerStep({ client }, { name, siblingMember, siblingRecord, checkoutDir, projectId, beadsDir }));
-    await runStep('beads-bootstrap', () => bootstrapStep({ client }, { name, beadsDir, project }));
+    await runStep('beads-bootstrap', () => bootstrapStep({ client }, { name, beadsDir, project, targetRecord }));
     await runStep('bind', () => bindStep({ db, client }, { projectId, name, beadsDir }));
 
     await runStep('provision-vcs-auth', () => (input.provisionVcs

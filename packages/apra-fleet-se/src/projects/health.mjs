@@ -31,6 +31,20 @@
 // never invoked during any of the three modules' own top-level evaluation,
 // only later, once all three have finished loading.
 //
+// Imports `quoteArg` / `isPosixMemberShell` / `shellMetaCharError` from
+// ./checkout.mjs (read-only) instead of keeping a second copy: there is ONE
+// quoting+shell-branch helper and both call sites use it. That edge adds no
+// cycle -- ./checkout.mjs has no import path back to this module.
+//
+// The two command strings below (`bd ... dolt status` on the backlog member,
+// `bd ... config get sync.remote` per bound member) interpolate
+// `project.beads.dir` and the member's own `BEADS_DIR` env entry. Neither is
+// caller-supplied on THIS request, but neither was validated at all before
+// either, so both now go through `shellMetaCharError` BEFORE interpolation:
+// an invalid value turns into that check's own FAIL (naming the problem) and
+// no command is sent to the member. Quoting still happens on top of that --
+// see ./checkout.mjs's module header for the two-layer policy.
+//
 // `buildGroups`, `dirtyCounts`, `bibleIsDirty`, `KB_CANONICAL_PATH`,
 // `parseJsonResult` and `envStringGet` are exported ADDITIONALLY (beyond the
 // eight checks + runHealth this task's acceptance criteria names) so
@@ -42,6 +56,7 @@
 import { getProject } from './store/projects.mjs';
 import { listMemberGit } from './store/member-git.mjs';
 import { ProjectBindError, parseMemberList, BEADS_DIR_ENV } from './projects.mjs';
+import { quoteArg, shellMetaCharError } from './checkout.mjs';
 import { probeBeadsRemote } from './routes/projects.mjs';
 
 /** The knowledge-bank export path member_git.status_json's dirtyFiles names when the bible has local changes. */
@@ -75,14 +90,6 @@ export function envStringGet(env, key) {
     if (!env || typeof env !== 'object' || Array.isArray(env)) return null;
     const value = env[key];
     return typeof value === 'string' ? value : null;
-}
-
-/** Quote `value` for a member-bound command string only when it needs it (see ./checkout.mjs's own copy). */
-function quoteArg(value) {
-    const str = String(value);
-    if (str.length === 0) return '""';
-    if (!/[\s"']/.test(str)) return str;
-    return `"${str.replace(/"/g, '\\"')}"`;
 }
 
 /**
@@ -193,9 +200,21 @@ export function doltDataReachable({ project, probeResult }) {
  * Check 2: backlogCloneStatus. `bd -C <project.beads.dir> dolt status` on the
  * backlog member -> OK on a zero exit, else WARN carrying the output tail.
  *
- * @param {{ project: object, execResult: { ok: boolean, stdout: string, detail: string|null } | null }} input
+ * `configError` is the pre-interpolation verdict on `project.beads.dir` (see
+ * the module header): when it is set, NO command was sent to the member and
+ * this check reports FAIL naming the problem instead.
+ *
+ * @param {{ project: object, execResult: { ok: boolean, stdout: string, detail: string|null } | null, configError?: string|null }} input
  */
-export function backlogCloneStatus({ project, execResult }) {
+export function backlogCloneStatus({ project, execResult, configError = null }) {
+    if (configError) {
+        return {
+            id: 'backlogCloneStatus',
+            level: 'FAIL',
+            scope: 'project',
+            message: `no bd dolt status probe sent to ${project.backlogMember}: ${configError}`,
+        };
+    }
     if (execResult && execResult.ok) {
         return { id: 'backlogCloneStatus', level: 'OK', scope: 'project', message: `bd dolt status clean on ${project.backlogMember}` };
     }
@@ -251,12 +270,24 @@ export function bibleInSync({ group }) {
  * itself failing (including a thrown transport error) -> FAIL; a mismatched
  * remote -> FAIL naming both; matching -> OK.
  *
- * @param {{ member: string, beadsDir: string|null, execResult: {ok:boolean, stdout:string, detail:string|null}|null, expectedRemote: string|null|undefined }} input
+ * `configError` is the pre-interpolation verdict on the member's own
+ * `BEADS_DIR` value (see the module header): when it is set, NO command was
+ * sent to the member and this check reports FAIL naming the problem instead.
+ *
+ * @param {{ member: string, beadsDir: string|null, execResult: {ok:boolean, stdout:string, detail:string|null}|null, expectedRemote: string|null|undefined, configError?: string|null }} input
  */
-export function beadsDirSyncRemote({ member, beadsDir, execResult, expectedRemote }) {
+export function beadsDirSyncRemote({ member, beadsDir, execResult, expectedRemote, configError = null }) {
     if (!expectedRemote) return null;
     if (!beadsDir) {
         return { id: 'beadsDirSyncRemote', level: 'WARN', scope: `member:${member}`, message: `${member} has no BEADS_DIR configured` };
+    }
+    if (configError) {
+        return {
+            id: 'beadsDirSyncRemote',
+            level: 'FAIL',
+            scope: `member:${member}`,
+            message: `${member}: no sync.remote probe sent: ${configError}`,
+        };
     }
     if (!execResult || !execResult.ok) {
         const detail = execResult && execResult.detail ? `: ${execResult.detail}` : '';
@@ -374,9 +405,14 @@ export async function runHealth({ db, client }, projectId) {
     }
     checks.push(doltDataReachable({ project, probeResult }));
 
-    // 2. backlogCloneStatus
-    const cloneExec = await safeExec(client, project.backlogMember, `bd -C ${quoteArg(project.beads.dir)} dolt status`);
-    checks.push(backlogCloneStatus({ project, execResult: cloneExec }));
+    // 2. backlogCloneStatus -- validate the configured beads dir BEFORE it is
+    // interpolated; an unsafe value sends no command at all.
+    const backlogRecord = byName.get(project.backlogMember) ?? null;
+    const beadsDirConfigError = shellMetaCharError(project.beads.dir, 'project.beads.dir');
+    const cloneExec = beadsDirConfigError
+        ? null
+        : await safeExec(client, project.backlogMember, `bd -C ${quoteArg(project.beads.dir, backlogRecord)} dolt status`);
+    checks.push(backlogCloneStatus({ project, execResult: cloneExec, configError: beadsDirConfigError }));
 
     // 3 & 4: per checkout group
     for (const group of groups) {
@@ -389,11 +425,21 @@ export async function runHealth({ db, client }, projectId) {
         const record = byName.get(row.member) ?? null;
         const beadsDir = envStringGet(record && record.env, BEADS_DIR_ENV);
 
+        // Same rule as check 2: the member's own BEADS_DIR is screened BEFORE
+        // it is interpolated, and an unsafe value sends no command at all.
+        const envConfigError = beadsDir ? shellMetaCharError(beadsDir, `${BEADS_DIR_ENV} on ${row.member}`) : null;
+
         if (project.beads.remote) {
-            const execResult = beadsDir
-                ? await safeExec(client, row.member, `bd -C ${quoteArg(beadsDir)} config get sync.remote`)
+            const execResult = beadsDir && !envConfigError
+                ? await safeExec(client, row.member, `bd -C ${quoteArg(beadsDir, record)} config get sync.remote`)
                 : null;
-            const check = beadsDirSyncRemote({ member: row.member, beadsDir, execResult, expectedRemote: project.beads.remote });
+            const check = beadsDirSyncRemote({
+                member: row.member,
+                beadsDir,
+                execResult,
+                expectedRemote: project.beads.remote,
+                configError: envConfigError,
+            });
             if (check) checks.push(check);
         }
 

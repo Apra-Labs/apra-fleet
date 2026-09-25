@@ -378,12 +378,38 @@ function execNonZero(text = 'non-zero exit') {
     return { isError: false, content: [{ type: 'text', text }], structuredContent: { exitCode: 1, stdout: text, stderr: '' } };
 }
 
-/** Splits a member-bound command string into quoted-or-bare tokens (mirrors quoteArg's own quoting). */
+/**
+ * Splits a member-bound command string into UNQUOTED tokens, the way a POSIX
+ * shell would (same copy as projects-checkout.test.mjs's): quoted runs
+ * concatenate with adjacent bare text, and the `'\''` break-out quoteArg
+ * emits for an embedded apostrophe resolves back to one `'`.
+ *
+ * quoteArg now quotes EVERY interpolated value (see checkout.mjs's module
+ * header), so the old `"..."|\S+` regex no longer recovered a path.
+ */
 function tokenize(command) {
-    const re = /"([^"]*)"|(\S+)/g;
     const tokens = [];
-    let m;
-    while ((m = re.exec(command)) !== null) tokens.push(m[1] !== undefined ? m[1] : m[2]);
+    let i = 0;
+    while (i < command.length) {
+        while (i < command.length && /\s/.test(command[i])) i += 1;
+        if (i >= command.length) break;
+        let token = '';
+        while (i < command.length && !/\s/.test(command[i])) {
+            const ch = command[i];
+            if (ch === "'" || ch === '"') {
+                i += 1;
+                while (i < command.length && command[i] !== ch) { token += command[i]; i += 1; }
+                i += 1;
+            } else if (ch === '\\' && command[i + 1] === "'") {
+                token += "'";
+                i += 2;
+            } else {
+                token += ch;
+                i += 1;
+            }
+        }
+        tokens.push(token);
+    }
     return tokens;
 }
 
