@@ -123,21 +123,36 @@ export const FLEET_RESERVATION_PACKAGE = 'fleet';
  * both member_owner (set/clear) and remove_member run the identical check
  * from one place instead of two call sites drifting apart.
  *
- * `owningPackage` names the ONE package whose holds-call ERROR must fail
- * CLOSED (a holds-unavailable heldBy entry) rather than being skipped: the
- * package named in the member's CURRENT owner tag for clear/remove, or the
- * requested package for set. Pass null when there is none (member has no
- * current owner and no package is being requested).
+ * `owningPackages` names EVERY package whose holds-call ERROR must fail
+ * CLOSED (a holds-unavailable heldBy entry) rather than being skipped, not
+ * just skipped-and-logged like a non-owning package's error. `clear` and
+ * `remove_member` pass a single-element list: the package named in the
+ * member's CURRENT owner tag (or none, when the member has no owner). `set`
+ * passes up to two: the CURRENT owner tag's package AND the requested
+ * package.
+ *
+ * apra-fleet-g6ap.7 (product decision): `set` was originally fail-closed
+ * for the requested package only, so a reassignment away from package A
+ * proceeded even if A's own holds call errored -- in tension with this
+ * check's rationale ("a package that cannot vouch for its own member must
+ * not lose it silently"), since a reassignment is exactly how A loses the
+ * member. Resolved as: `set` fails closed for BOTH the member's current
+ * owner package and the requested package, so A cannot silently lose a
+ * member it cannot currently vouch for, just like clear/remove. Pass an
+ * empty array, or entries that are null, when there is no such package
+ * (nulls are filtered out; duplicates collapse to a single fail-closed
+ * check, e.g. re-setting the same package as its own current owner).
  *
  * Never throws: consultHolds() itself never throws, and a failure to reach
  * a non-owning package is logged and skipped rather than surfaced.
  */
 export async function memberHeldCheck(
   agent: Agent,
-  owningPackage: string | null,
+  owningPackages: ReadonlyArray<string | null>,
 ): Promise<{ heldBy: MemberHeldByEntry[]; refusalText: string | null }> {
   const heldBy: MemberHeldByEntry[] = [];
   const refusalParts: string[] = [];
+  const owningSet = new Set(owningPackages.filter((p): p is string => p !== null));
 
   const reservationReason = memberHeldRefusal(agent);
   if (reservationReason) {
@@ -148,7 +163,7 @@ export async function memberHeldCheck(
   const results = await workflowPackageService.consultHolds(agent.id);
   for (const result of results) {
     if (result.error) {
-      if (owningPackage && result.packageId === owningPackage) {
+      if (owningSet.has(result.packageId)) {
         heldBy.push({ package: result.packageId, reason: 'holds-unavailable' });
         refusalParts.push(`Package "${result.packageId}" could not confirm holds for this member (holds-unavailable).`);
       } else {
@@ -226,7 +241,10 @@ export async function memberOwner(input: MemberOwnerInput): Promise<MemberOwnerR
       }
     }
 
-    const { heldBy, refusalText } = await memberHeldCheck(existing, input.package);
+    // apra-fleet-g6ap.7: fail closed for BOTH the member's current owner
+    // package (it must be able to vouch that it is not silently losing this
+    // member to a reassignment) and the requested package.
+    const { heldBy, refusalText } = await memberHeldCheck(existing, [existing.owner?.package ?? null, input.package]);
     if (refusalText) {
       return ownerResult(`[-] Cannot set owner: ${refusalText} Error code: member-held. Owner was NOT changed.`, {
         ...base, outcome: 'member_held', owner: existing.owner ?? null, heldBy,
@@ -248,7 +266,7 @@ export async function memberOwner(input: MemberOwnerInput): Promise<MemberOwnerR
   }
 
   // action === 'clear'
-  const { heldBy, refusalText } = await memberHeldCheck(existing, existing.owner?.package ?? null);
+  const { heldBy, refusalText } = await memberHeldCheck(existing, [existing.owner?.package ?? null]);
   if (refusalText) {
     return ownerResult(`[-] Cannot clear owner: ${refusalText} Error code: member-held. Owner was NOT changed.`, {
       ...base, outcome: 'member_held', owner: existing.owner ?? null, heldBy,

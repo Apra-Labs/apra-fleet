@@ -81,6 +81,24 @@ describe('memberOwner -- workflow-package holds consult and ownerRefs validation
     expect(getAgent(member.id)?.owner).toBeUndefined();
   });
 
+  it('3b. apra-fleet-g6ap.7: set reassigns A -> B while A (current owner) errors -> member_held, owner unchanged', async () => {
+    // The member is currently owned by "pkg-a"; the caller reassigns it to
+    // "pkg-b" via set. pkg-a's own holds call errors (it cannot vouch for
+    // whether it still needs the member) -- this must fail closed exactly
+    // like clear/remove would, not silently let the reassignment through.
+    const member = makeTestAgent({ owner: { package: 'pkg-a', ref: 'old-ref' } });
+    addAgent(member);
+    mockConsultHolds.mockResolvedValueOnce([{ packageId: 'pkg-a', held: false, error: 'timeout contacting package' }]);
+
+    const { structuredContent } = await memberOwner({
+      member_id: member.id, action: 'set', package: 'pkg-b', ref: 'new-ref',
+    });
+
+    expect(structuredContent.outcome).toBe('member_held');
+    expect(structuredContent.heldBy).toEqual([{ package: 'pkg-a', reason: 'holds-unavailable' }]);
+    expect(getAgent(member.id)?.owner).toEqual({ package: 'pkg-a', ref: 'old-ref' });
+  });
+
   it('4. a non-owning package erroring is skipped and the action proceeds', async () => {
     const member = makeTestAgent();
     addAgent(member);

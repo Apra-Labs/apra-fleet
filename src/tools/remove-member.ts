@@ -52,7 +52,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   // out from under a live reservation or an in-progress package assignment
   // by any route other than an explicit force=true.
   if (!input.force) {
-    const { refusalText } = await memberHeldCheck(agent, agent.owner?.package ?? null);
+    const { refusalText } = await memberHeldCheck(agent, [agent.owner?.package ?? null]);
     if (refusalText) {
       return `⛔ Cannot remove member "${agent.friendlyName}": ${refusalText} Error code: member-held. Set force=true to remove anyway.`;
     }

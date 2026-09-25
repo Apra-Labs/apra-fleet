@@ -481,13 +481,16 @@ the human-readable summary, and `structuredContent` is a
 
 Both `"set"` and `"clear"` refuse with error code `member-held` while the
 member is reserved (`reservedBy` set) OR a registered workflow package's
-`holds` route reports the member held (DQ-22). The owning package (the one
-named in the member's current owner tag, or the requested package on
-`"set"`) fails CLOSED (`member-held`, reason `holds-unavailable`) if its
-`holds` call errors; any other package erroring is skipped. `"set"`
-additionally validates `ref` against the requested package's `ownerRefs`
-when that package is registered and declares one -- an unknown ref is
-`invalid_input`; a package that is not registered (or registered without
+`holds` route reports the member held (DQ-22). The owning package(s) --
+the one named in the member's current owner tag, and on `"set"` ALSO the
+requested package (apra-fleet-g6ap.7: a reassignment is how the current
+owner loses the member, so it must not lose it silently if its own `holds`
+call cannot be reached) -- fail CLOSED (`member-held`, reason
+`holds-unavailable`) if their `holds` call errors; any other package
+erroring is skipped. `"set"` additionally validates `ref` against the
+requested package's `ownerRefs` when that package is registered and
+declares one -- an unknown ref is `invalid_input`; a package that is not
+registered (or registered without
 `ownerRefs`) keeps format-only validation.
 
 | Field | Type | Notes |
