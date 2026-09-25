@@ -285,6 +285,14 @@
  * @property {string|null} ownerSprintId - The sprint that held the reservation when the call
  *   arrived, null when the member was unreserved. On "already_reserved_by_other" this is the
  *   blocking owner.
+ * @property {{runId: string, pid: number|null, at: string|null}|null} reservation - The member's
+ *   reservation AFTER this call -- not "after a successful call": on a refusal it is unchanged,
+ *   so this is the blocking holder's object. `pid` is the holder's process id on the fleet
+ *   server's host (null when the reserving caller did not run there, or for a legacy
+ *   string-only reservation, whose `at` is null too). null when unreserved.
+ * @property {boolean} reaped - True when this call cleared a reservation whose recorded pid no
+ *   longer exists on the fleet server's host (lazy dead-holder reaping). A pid-less or legacy
+ *   reservation is never reaped.
  *
  * Mirrors src/tools/member-reservation.ts's MemberReservationStructured field-for-field
  * (apra-fleet-3swo.7.1). The tool still returns the same human-readable summary in

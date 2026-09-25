@@ -465,7 +465,11 @@ prose.
 `"invalid_input"`, `"member_not_found"`, `"failed"`), `ok`, `action`,
 `memberId`, `memberName`, `sprintId`, `ownerSprintId` (the sprint that held
 the reservation when the call arrived, or the blocking owner on
-`"already_reserved_by_other"`).
+`"already_reserved_by_other"`), `reservation` (`{runId, pid, at}` or `null` --
+the reservation AFTER this call, which on a refusal is the unchanged blocking
+holder; `pid`/`at` are `null` for a legacy string-only reservation) and
+`reaped` (true when a reservation whose recorded pid no longer exists on the
+fleet server's host was cleared during this call).
 
 #### `memberOwner(options: MemberOwnerOptions)`
 

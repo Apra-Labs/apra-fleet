@@ -61,6 +61,16 @@ export interface Agent {
    *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
    *  this field only introduces and persists the value. */
   reservedBy?: string | null;
+  /** Structured form of the reservation above (apra-fleet-ecjf.3): who holds
+   *  it (runId, mirrored byte-for-byte by reservedBy), the reserving
+   *  process's pid on THIS host when the caller supplied one (null when the
+   *  caller does not run here), and when it was taken. Written and cleared
+   *  together with reservedBy by member_reservation; a pid-carrying
+   *  reservation whose process is gone is lazily reaped (reapIfDead in
+   *  src/tools/member-reservation.ts). reservedBy stays the string mirror
+   *  every existing reader (dispatch check, supervisor conflict check, hub
+   *  member view) keeps using unchanged. */
+  reservation?: { runId: string; pid: number | null; at: string } | null;
   /** This member fills a role (e.g. fleet-sprint's `orchestrator`) that is
    *  designed to be shared by more than one sprint at once, so it can never
    *  be exclusively reserved: reserve/release/force_release are no-op
@@ -74,8 +84,9 @@ export interface Agent {
   owner?: { package: string; ref: string };
   /** Free-form name -> value map for this member, name-validated (portable
    *  env-name pattern) and size-capped (DQ-23, src/utils/env-map-validation.ts).
-   *  Introduced this sprint as a plain field only -- NOT read by any dispatch
-   *  or provider command path yet (that wiring is DQ-23's S9 follow-up). */
+   *  Exported into the processes execute_command/execute_prompt run on the
+   *  member (including the long_running wrappers) by the shell-selected env
+   *  prefix builder; stored auth credentials win a name collision. */
   env?: Record<string, string>;
   /** Expiry of this member's LLM auth (OAuth session / API key), when known.
    *  ISO 8601. Distinct from vcsTokenExpiresAt (VCS credentials) above. */
