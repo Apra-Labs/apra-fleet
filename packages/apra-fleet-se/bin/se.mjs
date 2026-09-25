@@ -19,19 +19,17 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
-import { existsSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { openStore, defaultStorePath } from '../src/projects/store/db.mjs';
 import {
     createProject,
     getProject,
     updateProject,
-    listProjects,
 } from '../src/projects/store/projects.mjs';
 import { listMemberGit, upsertMemberGit } from '../src/projects/store/member-git.mjs';
 import { createLedger, defaultDataDir } from '../src/supervisor/ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const EXPORT_FORMAT = 'apra-fleet-se/project-export@1';
 
@@ -120,7 +118,7 @@ export function importProject({ db, ledger, data }) {
 
     // Check for live runs BEFORE modifying anything
     const reservations = ledger.list();
-    const liveRuns = reservations.filter((r) => r.exitedAt === null && r.exitedAt === undefined);
+    const liveRuns = reservations.filter((r) => !r.exitedAt);
 
     // Collect all members that would be affected: bound members from member_git + backlog member
     const affectedMembers = new Set();
@@ -226,17 +224,22 @@ async function main() {
  * Handle the 'export' subcommand.
  */
 async function handleExport(args) {
-    const { values, positionals } = parseArgs({
-        args,
-        strict: true,
-        allowPositionals: true,
-        options: {
-            'with-history': { type: 'boolean' },
-            'out': { type: 'string' },
-            'data-dir': { type: 'string' },
-            'help': { type: 'boolean', short: 'h' },
-        },
-    });
+    let values, positionals;
+    try {
+        ({ values, positionals } = parseArgs({
+            args,
+            strict: true,
+            allowPositionals: true,
+            options: {
+                'out': { type: 'string' },
+                'data-dir': { type: 'string' },
+                'help': { type: 'boolean', short: 'h' },
+            },
+        }));
+    } catch (err) {
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+    }
 
     if (values.help) {
         console.log(`
@@ -248,7 +251,6 @@ Arguments:
   <projectId>           Project ID to export
 
 Options:
-      --with-history    Include history (currently empty)
       --out <file>      Output file path (default: stdout)
       --data-dir <dir>  Service data directory (default: ~/.apra-fleet-se)
   -h, --help            Show this help message
@@ -265,7 +267,6 @@ Options:
 
     try {
         const dataDir = values['data-dir'] ? path.resolve(values['data-dir']) : defaultDataDir();
-        const storePath = defaultStorePath({ dataDir });
 
         const store = openStore({ dataDir });
         const ledger = createLedger({ dataDir });
@@ -284,7 +285,10 @@ Options:
                 await fs.writeFile(path.resolve(values.out), json, 'utf-8');
                 console.error(`Exported to ${values.out}`);
             } else {
-                process.stdout.write(json);
+                // Await drain to avoid truncating stdout on pipes
+                await new Promise((resolve) => {
+                    process.stdout.write(json, resolve);
+                });
             }
 
             await ledger.stop();
@@ -309,15 +313,21 @@ Options:
  * Handle the 'import' subcommand.
  */
 async function handleImport(args) {
-    const { values, positionals } = parseArgs({
-        args,
-        strict: true,
-        allowPositionals: true,
-        options: {
-            'data-dir': { type: 'string' },
-            'help': { type: 'boolean', short: 'h' },
-        },
-    });
+    let values, positionals;
+    try {
+        ({ values, positionals } = parseArgs({
+            args,
+            strict: true,
+            allowPositionals: true,
+            options: {
+                'data-dir': { type: 'string' },
+                'help': { type: 'boolean', short: 'h' },
+            },
+        }));
+    } catch (err) {
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+    }
 
     if (values.help) {
         console.log(`
