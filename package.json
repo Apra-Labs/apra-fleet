@@ -57,6 +57,7 @@
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
     "build:ui": "npm run build --workspace=@apralabs/apra-fleet-ui-kit && npm run build --workspace=@apralabs/apra-fleet-shell-ui",
+    "build:ui:checked": "node scripts/build-ui-checked.mjs",
     "contract:generate": "node memory-contract/v1/generate-contract.mjs",
     "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
@@ -64,7 +65,7 @@
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",
-    "build:binary": "npm run build && npm run build:sea && npm run build:sea-config && npm run build:sea-package",
+    "build:binary": "npm run build && npm run build:ui:checked && npm run build:sea && node scripts/gen-sea-config.mjs --require-ui && npm run build:sea-package",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "pretest": "npm run build:contract",
@@ -73,7 +74,7 @@
     "smoke": "tsc && node dist/smoke-test.js",
     "prepare": "node scripts/install-hooks.mjs",
     "sync-agent-docs": "node scripts/sync-agent-docs.mjs",
-    "prepublishOnly": "npm run dist-pm && npm run build"
+    "prepublishOnly": "npm run dist-pm && npm run build && npm run build:ui:checked"
   },
   "keywords": [
     "ai-agent",

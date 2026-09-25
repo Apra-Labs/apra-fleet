@@ -68,7 +68,11 @@ describe('root package.json ships the built shell dist (apra-fleet-v6t7.11)', ()
         );
       }
       files = runNpmPackDryRun();
-    });
+      // Default vitest hookTimeout (10s) is too tight for a real `npm pack
+      // --dry-run` child process (spawns npm.cmd, walks ~1200+ files) when
+      // the full suite is running under contention; 30s observed comfortable
+      // headroom over a ~3s solo run.
+    }, 30000);
 
     it('packs packages/apra-fleet-shell-ui/dist/index.html', () => {
       const paths = files.map((f) => f.path);
