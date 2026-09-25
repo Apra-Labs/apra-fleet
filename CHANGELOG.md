@@ -33,11 +33,12 @@ What shipped and is verified working:
   against its own tool's zod schema, with a thrown-error -> 400 / tool
   `isError` -> 422 mapping, and credential responses built from an explicit
   field whitelist so no secret value leaks through a route response.
-- **The Members table (S1/W1)**: background-refreshing table (no flash back
-  to loading on a failed refresh), a row-click drawer with the member action
-  set (provision LLM auth, provision/revoke VCS auth, setup SSH key, compose
-  permissions, update LLM CLI, remove), and an add-member wizard for local
-  and SSH-remote members.
+- **The Members table structure (S1/W1)**: background-refreshing table (no
+  flash back to loading on a failed refresh), a row-click drawer with the
+  member action set (provision LLM auth, provision/revoke VCS auth, setup
+  SSH key, compose permissions, update LLM CLI, remove), and an add-member
+  wizard for local and SSH-remote members. The owner column itself does
+  *not* yet render correctly -- see the known gap below.
 - **Secrets (S2)**: list, add via the out-of-band credential URL, update
   policy/members/expiry, delete, GitHub App setup -- with no secret value
   ever appearing in a request body or the DOM.
