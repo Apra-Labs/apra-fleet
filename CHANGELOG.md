@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Project overview domain: bind/unbind, checkout flow, health panel, git drawer and export/import (sprint goal met)
+
+Sprint goal: build the project-overview domain of the fleet-supervisor
+console on top of the existing `supervisor.sqlite` project store -- binding a
+fleet member to a console project (owner tag plus a merged `BEADS_DIR` env
+entry and a cached git probe), the members-grouped-by-checkout-group overview
+model, an "add checkout on a machine" flow, an eight-check health panel, a
+per-member git drawer, and a project export/import CLI. It is domain logic
+and JSON routes only -- the console UI that renders it is later work. All of
+it landed and is verified: every overview row is derivable from the new
+route, all eight documented health checks exist with OK/WARN/FAIL unit
+coverage, export/import round-trips including the project's original
+creation timestamp, the "add checkout" flow is idempotent end to end (a
+re-run reports every step skipped with zero mutating calls, and a dirty or
+foreign-origin checkout is refused and never touched), and the git drawer
+returns every specified field. A previously-interpolated shell injection
+vector in the beads-remote probe was fixed with a reject-then-quote policy
+that branches on the target member's registered shell (POSIX vs
+PowerShell); a client-supplied project creation timestamp is stripped by the
+HTTP create route so it cannot be spoofed. See
+[packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md)
+for the full design and its trade-offs.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $57.3375.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.9611 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 57 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+Carried forward (filed as follow-up work, not fixed this sprint):
+- The new HTTP routes were verified at the unit level only, against mocked
+  store/client collaborators -- never yet exercised over HTTP against a
+  deployed sandbox. Integration testing was hard-stopped in two of five
+  sprint cycles by a missing broad `curl` permission grant, already tracked
+  separately as its own follow-up; the route-level end-to-end verification
+  itself is tracked as its own open backlog item.
+- A static shell-command-injection guard exists for two of the domain's
+  modules (each scans its own source for a raw, unquoted interpolation) but
+  not yet for the HTTP route modules or the export/import CLI -- including
+  the one route module where a real injection defect was found and fixed
+  this sprint, which currently has only behavioral coverage for that fix.
+- The owner-package identifier this domain stamps on a bound member's owner
+  tag was reconciled against the only independently-landed candidate source
+  available at the time; it needs re-verification once a second,
+  independently-landed source for the same identifier exists, since a
+  mismatch would make every already-written owner tag unreadable on the
+  registration side.
+- A small, deliberately out-of-epic-scope test file landed on this sprint's
+  branch ahead of its intended standalone landing route, by design (reverting
+  it first would have dropped a flake fix with no replacement yet on the
+  integration branch); reconciling it back to a single landing route is
+  tracked as its own open follow-up once the standalone route merges.
+
 ## [Unreleased] -- Member owner tag, env map and git status tools (sprint goal mostly met -- see carried-forward items)
 
 Sprint goal: give the member registry an `owner {package, ref}` binding, a
