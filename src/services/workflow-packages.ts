@@ -801,11 +801,15 @@ export function createWorkflowPackageService(deps: WorkflowPackageServiceDeps = 
     const targets = list().filter((p) => !p.offline && typeof p.holds === 'string' && p.holds !== '');
     return Promise.all(
       targets.map(async (pkg): Promise<HoldConsultResult> => {
-        // URL-encode the member id into the ':id' placeholder -- an id
-        // containing '/' or '?' would otherwise change the path shape or
-        // inject a query string onto the package's own URL.
-        const holdsPath = (pkg.holds as string).split(HOLDS_ID_PLACEHOLDER).join(encodeURIComponent(memberId));
         try {
+          // URL-encode the member id into the ':id' placeholder -- an id
+          // containing '/' or '?' would otherwise change the path shape or
+          // inject a query string onto the package's own URL. This stays
+          // INSIDE the try: encodeURIComponent throws URIError on a lone
+          // surrogate (JSON.parse('"\\ud800"') yields exactly that), and a
+          // malformed id must degrade to this package's error entry like any
+          // other failure -- consultHolds must never reject.
+          const holdsPath = (pkg.holds as string).split(HOLDS_ID_PLACEHOLDER).join(encodeURIComponent(memberId));
           const res = await fetchFn(`${pkg.baseUrl}${holdsPath}`, upstreamRequestInit(pkg.id));
           if (!res || !res.ok) {
             throw new Error(`non-ok holds response (${res ? res.status : 'no response'})`);

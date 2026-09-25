@@ -918,6 +918,28 @@ describe('workflow-package consultHolds', () => {
     expect(results[0].error).toMatch(/500/);
   });
 
+  it('a member id that cannot be URL-encoded (lone surrogate) degrades to an error entry rather than rejecting', async () => {
+    const calls: RecordedCall[] = [];
+    const svc = await holdsService(await tmpRegistryPath(), () => okResponse(), calls);
+    await svc.register({ id: 'pkg-bad-id', baseUrl: 'http://localhost:9807', apraFleetApi: '*', holds: '/api/holds/:id' });
+
+    // A lone surrogate is reachable straight off a JSON HTTP body: JSON.parse
+    // of a "\udXXX" escape yields exactly this string, and encodeURIComponent
+    // throws URIError on it. consultHolds is contracted never to throw, so
+    // this must come back as this package's error entry.
+    const loneSurrogate = JSON.parse('"\\ud800"') as string;
+
+    const results = await svc.consultHolds(loneSurrogate);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].packageId).toBe('pkg-bad-id');
+    expect(results[0].error).toMatch(/URI malformed/i);
+    // held is false ONLY because nothing is known -- never a verdict.
+    expect(results[0].held).toBe(false);
+    // The package was never contacted, so no half-formed URL escaped.
+    expect(calls).toEqual([]);
+  });
+
   it('a package that declares no holds path is skipped entirely, never reported as "not held"', async () => {
     const calls: RecordedCall[] = [];
     const svc = await holdsService(await tmpRegistryPath(), () => okResponse(), calls);
