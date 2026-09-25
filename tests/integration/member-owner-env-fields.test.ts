@@ -257,29 +257,39 @@ describe('Member owner/env/llmAuthExpiresAt round trip (apra-fleet-4qtu.1.2)', (
     }
   });
 
-  it('(7) the stored env is not read by any dispatch or provider command path this sprint', () => {
-    // Static guard: the carve-out is that Agent.env exists as a plain field
-    // only -- DQ-23's dispatch-injection wiring is a later (S9) sprint. Scan
-    // the actual dispatch entry points and provider command builders for any
-    // reference to it (distinct from Node's own process.env) so a future
-    // accidental wire-up fails this test rather than silently landing.
+  it('(7) the stored env IS injected at the dispatch entry points, and ONLY through the shared builder', () => {
+    // This assertion was inverted in S9 (F14). It previously asserted the
+    // opposite -- that no dispatch path read Agent.env -- because DQ-23
+    // deliberately landed the field as storage-only and named S9 as the
+    // sprint that would wire it into dispatch. That sprint is this one, so
+    // the old guard had been overtaken: keeping it would have pinned the
+    // absence of the feature it was written to wait for.
+    //
+    // What survives is the half of its intent that is still load-bearing:
+    // env injection must go through the ONE shared builder
+    // (src/utils/env-prefix.ts), never be re-implemented per provider. A
+    // provider adapter that read agent.env itself would escape the builder's
+    // shell selection, its name validation and its auth-wins-collision rule
+    // -- exactly the drift the original guard existed to prevent.
     const repoRoot = path.resolve(__dirname, '..', '..');
-    const filesToScan = [
-      path.join(repoRoot, 'src', 'tools', 'execute-prompt.ts'),
-      path.join(repoRoot, 'src', 'tools', 'execute-command.ts'),
-      ...fs.readdirSync(path.join(repoRoot, 'src', 'providers'))
-        .filter((f) => f.endsWith('.ts'))
-        .map((f) => path.join(repoRoot, 'src', 'providers', f)),
-    ];
 
-    const offenders: string[] = [];
-    for (const file of filesToScan) {
-      const src = fs.readFileSync(file, 'utf8');
-      if (/\b(agent|member|tempAgent|existing|updated)\.env\b/.test(src)) {
-        offenders.push(file);
-      }
+    for (const entryPoint of ['execute-prompt.ts', 'execute-command.ts']) {
+      const src = fs.readFileSync(path.join(repoRoot, 'src', 'tools', entryPoint), 'utf8');
+      expect(
+        /buildEnvPrefix|buildEnvAssignments/.test(src),
+        `${entryPoint} must inject the member's env via the shared builder (src/utils/env-prefix.ts)`,
+      ).toBe(true);
     }
 
-    expect(offenders, `Agent.env must not be read by any dispatch/provider path this sprint: ${offenders.join(', ')}`).toEqual([]);
+    const providerDir = path.join(repoRoot, 'src', 'providers');
+    const offenders = fs.readdirSync(providerDir)
+      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => /\b(agent|member|tempAgent|existing|updated)\.env\b/
+        .test(fs.readFileSync(path.join(providerDir, f), 'utf8')));
+
+    expect(
+      offenders,
+      `provider adapters must not read Agent.env directly -- injection belongs to src/utils/env-prefix.ts: ${offenders.join(', ')}`,
+    ).toEqual([]);
   });
 });
