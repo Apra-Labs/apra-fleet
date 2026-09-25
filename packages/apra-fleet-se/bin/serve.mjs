@@ -59,6 +59,9 @@ import {
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 import { buildManifest } from '../src/registration/manifest.mjs';
 import { createRegistration } from '../src/registration/register.mjs';
+import { registerHoldsRoute } from '../src/registration/holds.mjs';
+import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
+import { openStore, NodeSqliteUnavailableError } from '../src/projects/store/db.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -481,6 +484,29 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const selfLogView = createSelfLogView({ logPath: selfLog.logPath });
     registerSelfLogRoutes(supervisor, selfLogView);
 
+    // apra-fleet-g6ap.2.2: GET /api/members/:id/holds and GET /api/owner-refs
+    // -- the two routes the apra-fleet server consults (with the derived 'se'
+    // credential, see supervisor/auth.mjs) before releasing/reassigning a
+    // member or validating an owner ref against this package's projects.
+    // holds only needs the ledger (already constructed above); owner-refs
+    // needs the projects store opened -- catch EXACTLY
+    // NodeSqliteUnavailableError (an old Node runtime) so GET /api/owner-refs
+    // degrades to 503 store-unavailable rather than taking the whole
+    // supervisor down; any other open failure (a corrupt store) still fails
+    // loudly. `projectStore` is closed on shutdown, below.
+    let projectStore = null;
+    try {
+        projectStore = openStore();
+    } catch (err) {
+        if (err instanceof NodeSqliteUnavailableError) {
+            console.warn(`[supervisor] WARNING: ${err.message} GET /api/owner-refs will answer 503 store-unavailable.`);
+        } else {
+            throw err;
+        }
+    }
+    registerHoldsRoute(supervisor, { ledger });
+    registerOwnerRefsRoute(supervisor, { store: projectStore });
+
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
     const onSignal = (sig) => {
@@ -561,6 +587,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // one hook covers both the signal and /api/shutdown stop paths.
     if (registration) {
         await registration.unregister();
+    }
+    // apra-fleet-g6ap.2.2: close the projects store handle opened above,
+    // after the supervisor's own teardown has completed -- same "hook onto
+    // shutdownRequested" reasoning as unregister() above.
+    if (projectStore) {
+        try { projectStore.close(); } catch (err) { console.error('[supervisor] projectStore.close() failed:', err); }
     }
     return { exitCode: 0 };
 }
