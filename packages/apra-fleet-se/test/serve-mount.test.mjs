@@ -4,10 +4,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
+import { isNodeSqliteAvailable, openStore, NodeSqliteUnavailableError } from '../src/projects/store/db.mjs';
 import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
 import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
-import { registerProjectsStoreUnavailableRoutes } from '../bin/serve.mjs';
+import { registerProjectsStoreUnavailableRoutes, openProjectStoreOrDegrade } from '../bin/serve.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { PACKAGE_ID, buildManifest } from '../src/registration/manifest.mjs';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
@@ -126,10 +126,17 @@ describe('serve-mount: /api/projects, /ui, store-unavailable, proxy-hop credenti
         assert.equal(res.statusCode, 401);
     });
 
-    test('GET /ui and GET /ui/projects without a token -> 200 text/html placeholder', { skip: sqliteSkip }, async () => {
-        const store = await freshStore();
+    // apra-fleet-g6ap.12: the /ui placeholder needs no store at all, so this
+    // case must not be gated on sqliteSkip -- on a Node runtime without
+    // node:sqlite this coverage would otherwise be skipped for no reason.
+    // The genuinely store-dependent cases above/below keep their sqliteSkip.
+    test('GET /ui and GET /ui/projects without a token -> 200 text/html placeholder', async () => {
+        // Built directly (no freshStore()/mountServeStyle()) -- this case
+        // exercises only registerUiRoutes(), which needs no projects store at
+        // all, so it must not require node:sqlite to run.
         const token = 'c'.repeat(64);
-        const supervisor = mountServeStyle({ token, store });
+        const supervisor = createSupervisor({ token });
+        registerUiRoutes(supervisor);
 
         const uiRes = mockRes();
         await supervisor.handleRequest(mockReq('GET', '/ui', {}), uiRes);
@@ -205,6 +212,57 @@ describe('serve-mount: /api/projects, /ui, store-unavailable, proxy-hop credenti
         const uiRes = mockRes();
         await supervisor.handleRequest(mockReq('GET', '/ui', {}), uiRes);
         assert.equal(uiRes.statusCode, 200);
+    });
+
+    // apra-fleet-g6ap.12: the case above proves the FALLBACK (registered
+    // directly) answers 503, but never exercises whether bin/serve.mjs's own
+    // try/catch was right to reach for it in the first place. These two
+    // cases drive openProjectStoreOrDegrade() -- the exact discrimination
+    // serveMain() runs, extracted only so a replacement openStoreFn can be
+    // injected -- to pin the "on NodeSqliteUnavailableError ONLY" half of
+    // apra-fleet-g6ap.3.1's criterion: a generic (e.g. corrupt-store) failure
+    // must propagate and take startup down loudly, never quietly degrade to
+    // a friendly 503.
+    test('store-open discrimination: a generic Error propagates -- startup fails loudly, GET /api/projects is never silently given a friendly 503', async () => {
+        const token = 'h'.repeat(64);
+        const supervisor = createSupervisor({ token });
+
+        assert.throws(
+            () => {
+                const { store } = openProjectStoreOrDegrade(() => {
+                    throw new Error('corrupt store: unexpected EOF reading db file');
+                });
+                // Unreachable: openProjectStoreOrDegrade() must have thrown
+                // above for a non-NodeSqliteUnavailableError failure, so this
+                // fallback registration (which would silently turn the
+                // corrupt-store failure into a friendly 503) must never run.
+                registerProjectsStoreUnavailableRoutes(supervisor, store);
+            },
+            /corrupt store: unexpected EOF reading db file/,
+        );
+
+        // No route was ever registered for /api/projects as a result -- 404
+        // (no route), never the store-unavailable fallback's 503.
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects', { headers: { authorization: `Bearer ${token}` } }), res);
+        assert.equal(res.statusCode, 404);
+    });
+
+    test('store-open discrimination: NodeSqliteUnavailableError degrades to 503 store-unavailable (not propagated)', async () => {
+        const supervisor = createSupervisor({ token: 'i'.repeat(64) });
+
+        const { store, error } = openProjectStoreOrDegrade(() => {
+            throw new NodeSqliteUnavailableError('node:sqlite is not available on this Node runtime (v18.0.0)');
+        });
+        assert.equal(store, null);
+        assert.ok(error instanceof NodeSqliteUnavailableError);
+
+        registerProjectsStoreUnavailableRoutes(supervisor, error.message);
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/projects', { headers: { authorization: `Bearer ${'i'.repeat(64)}` } }), res);
+        assert.equal(res.statusCode, 503);
+        assert.equal(payloadOf(res).error, 'store-unavailable');
+        assert.equal(payloadOf(res).detail, error.message);
     });
 
     test('proxy hop: Bearer deriveUpstreamCredential(fleetKey, "se") -> 200 with the project list; derived for another id -> 401', { skip: sqliteSkip }, async () => {

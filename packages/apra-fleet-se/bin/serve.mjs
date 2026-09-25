@@ -157,6 +157,36 @@ export function registerProjectsStoreUnavailableRoutes(supervisor, detail) {
     supervisor.route('DELETE', '/api/projects/:id', projectsUnavailable);
 }
 
+/**
+ * apra-fleet-g6ap.10 (test coverage: apra-fleet-g6ap.12): opens the projects
+ * store, discriminating EXACTLY NodeSqliteUnavailableError (an old Node
+ * runtime -- the caller degrades to registerProjectsStoreUnavailableRoutes()
+ * above) from any other failure (e.g. a corrupt store), which RETHROWS so
+ * supervisor startup fails loudly instead of silently answering a friendly
+ * 503 for a problem that is not "old Node runtime".
+ *
+ * Extracted as its own export -- same rationale as composeBeforeLaunch() and
+ * registerProjectsStoreUnavailableRoutes() above -- purely so tests can
+ * inject a replacement `openStoreFn` and pin the discrimination itself
+ * without needing to force a real NodeSqliteUnavailableError (or a real
+ * corrupt store) out of the actual openStore(). serveMain() below calls this
+ * with no argument (the real openStore) -- the instanceof discrimination is
+ * unchanged from the original inline try/catch it replaces.
+ *
+ * @param {() => any} [openStoreFn] Defaults to the real openStore().
+ * @returns {{ store: any, error: import('../src/projects/store/db.mjs').NodeSqliteUnavailableError|null }}
+ */
+export function openProjectStoreOrDegrade(openStoreFn = openStore) {
+    try {
+        return { store: openStoreFn(), error: null };
+    } catch (err) {
+        if (err instanceof NodeSqliteUnavailableError) {
+            return { store: null, error: err };
+        }
+        throw err;
+    }
+}
+
 export function parseServeArgs(argv) {
     try {
         return parseArgs({
@@ -522,22 +552,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // credential, see supervisor/auth.mjs) before releasing/reassigning a
     // member or validating an owner ref against this package's projects.
     // holds only needs the ledger (already constructed above); owner-refs
-    // needs the projects store opened -- catch EXACTLY
-    // NodeSqliteUnavailableError (an old Node runtime) so GET /api/owner-refs
-    // degrades to 503 store-unavailable rather than taking the whole
-    // supervisor down; any other open failure (a corrupt store) still fails
-    // loudly. `projectStore` is closed on shutdown, below.
-    let projectStore = null;
-    let projectStoreOpenError = null;
-    try {
-        projectStore = openStore();
-    } catch (err) {
-        if (err instanceof NodeSqliteUnavailableError) {
-            projectStoreOpenError = err;
-            console.warn(`[supervisor] WARNING: ${err.message} GET /api/owner-refs and /api/projects* will answer 503 store-unavailable.`);
-        } else {
-            throw err;
-        }
+    // needs the projects store opened -- openProjectStoreOrDegrade() above
+    // catches EXACTLY NodeSqliteUnavailableError (an old Node runtime) so
+    // GET /api/owner-refs degrades to 503 store-unavailable rather than
+    // taking the whole supervisor down; any other open failure (a corrupt
+    // store) still fails loudly (rethrown). `projectStore` is closed on
+    // shutdown, below.
+    const { store: projectStore, error: projectStoreOpenError } = openProjectStoreOrDegrade();
+    if (projectStoreOpenError) {
+        console.warn(`[supervisor] WARNING: ${projectStoreOpenError.message} GET /api/owner-refs and /api/projects* will answer 503 store-unavailable.`);
     }
     registerHoldsRoute(supervisor, { ledger });
     registerOwnerRefsRoute(supervisor, { store: projectStore });
