@@ -1053,6 +1053,9 @@ describe('dashboard -- buildStatePayload', () => {
             base: 'main',
             baseDrift: 0,
             beadsPrefix: 'proj',
+            // apra-fleet-i9ag.4: terminal outcome, null while unknown.
+            verdict: null,
+            prUrl: null,
         }]);
     });
 });
@@ -1092,7 +1095,7 @@ describe('dashboard -- renderIndexPageHtml', () => {
         // Restart is a two-step flow: release first (no separate manual Stop
         // required), THEN relaunch via the same validated launch endpoint.
         assert.ok(html.includes('/force-release'));
-        assert.ok(html.includes("fetch('/api/sprints'"));
+        assert.ok(html.includes("fetch('api/sprints'"));
         assert.ok(html.includes('audit.branch'));
         assert.ok(html.includes('audit.issueRoots'));
     });

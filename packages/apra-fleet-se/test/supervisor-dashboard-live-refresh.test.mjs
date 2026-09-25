@@ -208,7 +208,8 @@ describe('apra-fleet-siqi.1.3: GET /state serves the payload that drives the Spr
             await flushMicrotasks();
 
             assert.equal(fetchCalls.length, 1, 'poll() fetches /state exactly once on load');
-            assert.match(fetchCalls[0], /^\/state\?_t=\d+$/);
+            // apra-fleet-i9ag.4: relative, so it resolves under the console's /ext/se/ mount too.
+            assert.match(fetchCalls[0], /^state\?_t=\d+$/);
             assert.equal(container.children.length, 1, 'the /state payload must produce exactly one Sprint Stack row');
             assert.equal(container.children[0].getAttribute('data-sprint-id'), 'sprint-1');
             // The client-rendered row is byte-identical to renderSprintSection() --
@@ -251,8 +252,8 @@ describe('apra-fleet-siqi.1.3: /events change signal schedules a poll that re-re
             const initialRowHtml = container.children[0].outerHTML;
             assert.ok(initialRowHtml.includes(WATCHDOG_STATUS.RUNNING_HEALTHY));
 
-            assert.ok(capturedSource, 'EventSource(\'/events\') must have been constructed');
-            assert.equal(capturedSource.url, '/events');
+            assert.ok(capturedSource, 'EventSource(\'events\') must have been constructed');
+            assert.equal(capturedSource.url, 'events');
             assert.equal(typeof capturedSource.onmessage, 'function', 'onmessage must be wired to schedule a poll');
 
             // A real server-side state change (e.g. the watchdog reclassified

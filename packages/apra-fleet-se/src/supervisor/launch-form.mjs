@@ -338,7 +338,7 @@ function clientScriptSource() {
     }
 
     if (membersContainer) {
-        fetch('/api/members').then(function (r) { return r.json(); }).then(function (data) {
+        fetch('api/members').then(function (r) { return r.json(); }).then(function (data) {
             var list = (data && Array.isArray(data.members)) ? data.members : [];
             membersContainer.innerHTML = '';
             if (list.length === 0) {
@@ -391,7 +391,7 @@ function clientScriptSource() {
                 resultEl.textContent = result.error;
                 return;
             }
-            fetch('/api/sprints', {
+            fetch('api/sprints', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(result.body),
