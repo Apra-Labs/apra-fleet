@@ -9,6 +9,7 @@ import {
   buildAgyPurgeScript,
   cleanGlobalAgySettings,
   checkAgyGlobalSkillsWarning,
+  checkAgyMemberSkills,
   AGY_ORCHESTRATOR_DENY_RULES,
   AGY_ORCHESTRATOR_DENIED_TOOLS,
   AGY_MEMBER_ALLOWED_TOOLS,
@@ -327,6 +328,43 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(warn).not.toBeNull();
       expect(warn).toContain('Global skill(s) [pm]');
       expect(warn).toContain('visible to AGY members');
+    });
+
+    it('executes checkAgyMemberSkills via execCommand and throws surfaced error when global skills exist without opt-in', async () => {
+      const home = makeScratch('fleet-skills-exec-home-');
+      const pmSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm');
+      fs.mkdirSync(pmSkillDir, { recursive: true });
+
+      const execFn = async (cmd: string) => {
+        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
+        return { code: 0, stdout, stderr: '' };
+      };
+
+      await expect(
+        checkAgyMemberSkills(execFn, home, process.platform === 'win32' ? 'windows' : 'linux', undefined, false)
+      ).rejects.toThrow('[fleet:error] agy: AGY provider has no per-member skill isolation mechanism');
+    });
+
+    it('executes checkAgyMemberSkills via execCommand and succeeds with warning info when opt-in flag is enabled', async () => {
+      const home = makeScratch('fleet-skills-exec-optin-home-');
+      const fleetSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet');
+      fs.mkdirSync(fleetSkillDir, { recursive: true });
+
+      const execFn = async (cmd: string) => {
+        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
+        return { code: 0, stdout, stderr: '' };
+      };
+
+      const result = await checkAgyMemberSkills(
+        execFn,
+        home,
+        process.platform === 'win32' ? 'windows' : 'linux',
+        undefined,
+        true
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.installed).toEqual(['fleet']);
     });
   });
 

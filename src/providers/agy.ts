@@ -699,9 +699,12 @@ export class AgyProvider implements ProviderAdapter {
   ): Promise<void> {
     await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
     await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
-    const warn = checkAgyGlobalSkillsWarning(memberHomeDir);
-    if (warn) {
-      logWarn('agy', warn);
+    const skillsResult = await checkAgyMemberSkills(execCommand, memberHomeDir, agentOs, shell);
+    if (skillsResult) {
+      logWarn(
+        'agy',
+        `[fleet:warn] agy: Global skill(s) [${skillsResult.installed.join(', ')}] are installed in ${skillsResult.skillsDir} (overridden by APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS=1).`
+      );
     }
   }
 
@@ -960,6 +963,48 @@ export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOO
   `mcp(apra-fleet/${tool})`,
   `mcp(apra-fleet-member/${tool})`
 ]);
+
+export async function checkAgyMemberSkills(
+  execCommand: WorkspaceTrustExecFn,
+  memberHomeDir?: string | null,
+  agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+  shell?: MemberShell,
+  allowGlobalSkills = process.env.APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS === '1',
+): Promise<{ installed: string[]; skillsDir: string } | null> {
+  const jsCode = `const fs = require('fs');
+const path = require('path');
+const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
+const skillsDir = path.join(home, '.gemini', 'antigravity-cli', 'skills');
+const pmInstalled = fs.existsSync(path.join(skillsDir, 'pm'));
+const fleetInstalled = fs.existsSync(path.join(skillsDir, 'fleet'));
+console.log(JSON.stringify({ pmInstalled, fleetInstalled, skillsDir }));
+`;
+  const usePosix = isPosixShell(agentOs, shell);
+  const cmd = usePosix
+    ? `cat << 'FLEET_SKILLS_EOF' | node -\n${jsCode}\nFLEET_SKILLS_EOF`
+    : wrapPowerShellEncoded(`$code = @'\n${jsCode}\n'@\n$code | node -`);
+
+  const result = await execCommand(cmd, 5000);
+  if (result.code === 0 && result.stdout) {
+    try {
+      const parsed = JSON.parse(result.stdout.trim());
+      const installed: string[] = [];
+      if (parsed.pmInstalled) installed.push('pm');
+      if (parsed.fleetInstalled) installed.push('fleet');
+      if (installed.length > 0) {
+        const list = installed.join(', ');
+        const errMsg = `[fleet:error] agy: AGY provider has no per-member skill isolation mechanism. Global skill(s) [${list}] are installed in ${parsed.skillsDir}. AGY members cannot be isolated from global skills. Set APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS=1 to override.`;
+        if (!allowGlobalSkills) {
+          throw new Error(errMsg);
+        }
+        return { installed, skillsDir: parsed.skillsDir };
+      }
+    } catch (e: any) {
+      if (e.message?.startsWith('[fleet:error]')) throw e;
+    }
+  }
+  return null;
+}
 
 export function checkAgyGlobalSkillsWarning(homeDir?: string | null): string | null {
   const home = resolveHomeDir(homeDir);
