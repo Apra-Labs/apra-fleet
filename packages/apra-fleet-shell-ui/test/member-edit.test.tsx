@@ -29,7 +29,11 @@ function jsonResponse(status: number, payload: unknown) {
   };
 }
 
-function makeFetchMock(membersPayload: unknown, actionOverrides: Record<string, unknown> = {}) {
+/** membersPayload is a thunk (not a plain value) so a test can swap in an
+ *  updated payload between the initial mount GET and a later re-fetch GET --
+ *  needed to observe that the row actually re-renders from the second fetch,
+ *  not just that a second fetch happened. */
+function makeFetchMock(membersPayload: () => unknown, actionOverrides: Record<string, unknown> = {}) {
   const calls: FetchCall[] = [];
   const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
@@ -38,7 +42,7 @@ function makeFetchMock(membersPayload: unknown, actionOverrides: Record<string, 
     calls.push({ url, method, body });
 
     if (url === "/api/fleet/members" && method === "GET") {
-      return jsonResponse(200, membersPayload);
+      return jsonResponse(200, membersPayload());
     }
     if (url in actionOverrides) {
       return actionOverrides[url];
@@ -96,17 +100,22 @@ function findButton(label: string): HTMLButtonElement {
 }
 
 /** Finds the <input>/<select> associated with a <label> whose text STARTS WITH
- *  `label` (the drawer's labels carry suffixes like "(comma-separated)"). */
-function findFieldByLabel(label: string): HTMLInputElement | HTMLSelectElement {
-  const labelEl = Array.from(container.querySelectorAll("label")).find((l) =>
-    (l.textContent ?? "").trim().startsWith(label)
+ *  `fieldLabel`, scoped to the <section aria-label="sectionLabel"> that holds
+ *  it -- the drawer has a "Tags (comma-separated)" field in BOTH the edit-
+ *  member section and the compose-permissions section, so an unscoped lookup
+ *  would silently grab the wrong one (same fix as member-compose.test.tsx). */
+function findFieldInSection(sectionLabel: string, fieldLabel: string): HTMLInputElement | HTMLSelectElement {
+  const section = container.querySelector(`section[aria-label="${sectionLabel}"]`);
+  if (!section) throw new Error(`section "${sectionLabel}" not found`);
+  const labelEl = Array.from(section.querySelectorAll("label")).find((l) =>
+    (l.textContent ?? "").trim().startsWith(fieldLabel)
   );
-  if (!labelEl) throw new Error(`label starting with "${label}" not found`);
+  if (!labelEl) throw new Error(`label starting with "${fieldLabel}" not found in section "${sectionLabel}"`);
   const forId = labelEl.getAttribute("for");
   const field = forId
-    ? Array.from(container.querySelectorAll("input, select")).find((el) => el.id === forId)
+    ? Array.from(section.querySelectorAll("input, select")).find((el) => el.id === forId)
     : null;
-  if (!field) throw new Error(`field for label "${label}" not found`);
+  if (!field) throw new Error(`field for label "${fieldLabel}" not found in section "${sectionLabel}"`);
   return field as HTMLInputElement | HTMLSelectElement;
 }
 
@@ -127,8 +136,13 @@ async function openDrawerFor(memberName: string) {
 }
 
 describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
-  it("editing only tags sends member_id + tags ONLY, then re-fetches the members list", async () => {
-    const { fn, calls } = makeFetchMock(MEMBERS_LOCAL, {
+  it("editing only tags sends member_id + tags ONLY, then re-fetches the members list and renders the new tags", async () => {
+    // The second GET (triggered by onUpdated's re-fetch) resolves a payload
+    // with the server's new tags -- distinct from the initial mount payload --
+    // so the test can observe the row actually re-rendering from that fetch,
+    // not merely that a second fetch happened.
+    let currentMembers: { members: FleetMember[] } = MEMBERS_LOCAL;
+    const { fn, calls } = makeFetchMock(() => currentMembers, {
       "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
     });
     vi.stubGlobal("fetch", fn);
@@ -136,10 +150,12 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     await renderMembers();
     await openDrawerFor("local-one");
 
-    const tagsInput = findFieldByLabel("Tags") as HTMLInputElement;
+    const tagsInput = findFieldInSection("Edit member", "Tags") as HTMLInputElement;
     await act(async () => {
       setInputValue(tagsInput, "core, extra");
     });
+
+    currentMembers = { members: [{ ...LOCAL_MEMBER, tags: ["core", "extra"] }] };
 
     await act(async () => {
       findButton("Save changes").click();
@@ -156,10 +172,19 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     // initial mount issues one GET, onUpdated's re-fetch issues a second.
     const memberGets = calls.filter((c) => c.url === "/api/fleet/members" && c.method === "GET");
     expect(memberGets).toHaveLength(2);
+
+    // ...AND the row renders the new tag text from that second fetch, not
+    // just the initial payload -- this would fail if load()'s result were
+    // discarded or the Table were mis-keyed.
+    const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      (tr.textContent ?? "").includes("local-one")
+    );
+    expect(row).toBeDefined();
+    expect(row?.textContent ?? "").toContain("core, extra");
   });
 
   it("a rejected submit renders the server's error verbatim and leaves the drawer open", async () => {
-    const { fn } = makeFetchMock(MEMBERS_LOCAL, {
+    const { fn } = makeFetchMock(() => MEMBERS_LOCAL, {
       "/api/fleet/update-member": jsonResponse(400, { error: "stub: friendly_name invalid" })
     });
     vi.stubGlobal("fetch", fn);
@@ -167,7 +192,7 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     await renderMembers();
     await openDrawerFor("local-one");
 
-    const tagsInput = findFieldByLabel("Tags") as HTMLInputElement;
+    const tagsInput = findFieldInSection("Edit member", "Tags") as HTMLInputElement;
     await act(async () => {
       setInputValue(tagsInput, "core, extra");
     });
@@ -183,14 +208,14 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
   });
 
   it("does not render host/port/username inputs for a local-type member", async () => {
-    const { fn } = makeFetchMock(MEMBERS_LOCAL);
+    const { fn } = makeFetchMock(() => MEMBERS_LOCAL);
     vi.stubGlobal("fetch", fn);
 
     await renderMembers();
     await openDrawerFor("local-one");
 
-    expect(() => findFieldByLabel("Host")).toThrow();
-    expect(() => findFieldByLabel("Port")).toThrow();
-    expect(() => findFieldByLabel("Username")).toThrow();
+    expect(() => findFieldInSection("Edit member", "Host")).toThrow();
+    expect(() => findFieldInSection("Edit member", "Port")).toThrow();
+    expect(() => findFieldInSection("Edit member", "Username")).toThrow();
   });
 });
