@@ -78,14 +78,28 @@ const LEVEL_PREFIX: Record<'info' | 'warn' | 'error', string> = {
   error: '[fleet:error]',
 };
 
+/**
+ * Mint the short invocation id that tags every log line of one logical
+ * operation (`[fleet] execute_prompt ... inv=<id>`). Exported (apra-fleet-c98q.3)
+ * so a caller that must record the id BEFORE it can build its LogScope -- e.g.
+ * execute_prompt, which claims the per-member busy lock before it knows the
+ * resolved model its scope's entry line reports -- can mint it up front and
+ * hand the SAME id to the scope. Without that, the owner recorded on the lock
+ * and the owner visible in the logs would be two different strings, which is
+ * precisely what makes a leaked lock untraceable.
+ */
+export function newInvocationId(): string {
+  return Math.random().toString(36).slice(2, 7);
+}
+
 export class LogScope {
   private readonly inv: string;
   private readonly start: number;
   private readonly tag: string;
   private readonly agent?: LogAgent;
 
-  constructor(tag: string, entryMsg: string, agent?: LogAgent) {
-    this.inv   = Math.random().toString(36).slice(2, 7);
+  constructor(tag: string, entryMsg: string, agent?: LogAgent, inv?: string) {
+    this.inv   = inv ?? newInvocationId();
     this.start = Date.now();
     this.tag   = tag;
     this.agent = agent;

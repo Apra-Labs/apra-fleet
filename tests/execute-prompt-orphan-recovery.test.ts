@@ -213,7 +213,7 @@ describe('durable stdout mirror companion change (apra-fleet-6z8.1)', () => {
  * file-read probes. Before this fix, isRemoteProcessAlive/readDurableOutput
  * always dispatched POSIX `kill -0`/`cat` regardless of the member's OS --
  * on a Windows member `kill -0` never emits ALIVE, so a genuinely-live
- * session's lock got wrongly treated as reclaimable (findDeadLockPid in
+ * session's lock got wrongly treated as reclaimable (probeBusyLockPid in
  * execute-prompt.ts). These pin the Windows branch to a valid PowerShell
  * command using the same Get-Process/Get-Content idiom monitor-task.ts
  * already uses, and confirm the POSIX branch stays byte-identical.

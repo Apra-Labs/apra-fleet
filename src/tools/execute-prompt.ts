@@ -26,7 +26,7 @@ import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orpha
 import { hasSecretToken } from '../services/secret-token.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
-import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, logLine, logWarn, maskSecrets, newInvocationId, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -59,6 +59,22 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
+  /**
+   * Present on a 'busy' rejection (apra-fleet-c98q.3): WHO is holding the
+   * member's dispatch lock. A bare "busy" cannot be told apart from a leaked
+   * lock, so a caller could only wait it out -- which is how one wedged member
+   * burned ~50 minutes of busy-waits in apra-fleet-c98q. `invocationId` is the
+   * owning dispatch's log `inv=` tag (null only for a lock claimed before this
+   * metadata existed), `claimAgeMs` how long it has been held, and `pid` the
+   * process behind it -- null meaning NO process was ever spawned for it, the
+   * signature of a leak rather than a peer dispatch.
+   */
+  busyOwner?: {
+    invocationId: string | null;
+    claimedAtMs: number | null;
+    claimAgeMs: number;
+    pid: number | null;
+  };
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
   /** Present on a successful dispatch that fits but lands inside the session's
@@ -311,7 +327,96 @@ export function currentSprintId(): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export const inFlightAgents = new Set<string>();
+/**
+ * What one member's busy lock is being held FOR (apra-fleet-c98q.3). The lock
+ * used to be a bare member id in a Set, which made every leaked lock
+ * indistinguishable from a real in-flight dispatch: an operator (and the
+ * dispatching engine) could see only "busy", never who claimed it, when, or
+ * whether a process was ever spawned behind it.
+ */
+export interface InFlightClaim {
+  /**
+   * The log invocation id of the execute_prompt call holding the lock -- the
+   * same `inv=` tag its log lines carry, so a busy rejection can be traced to
+   * the exact dispatch in the server log.
+   */
+  invocationId: string;
+  /** When the lock was claimed (Date.now()), i.e. just before the preflight await. */
+  claimedAtMs: number;
+  /**
+   * The dispatched process's pid, once onPidCaptured has reported one. ABSENT
+   * means the claim has not reached pid capture yet -- either it is still in
+   * its set-up phase, or it died before spawning anything. The bounded
+   * NO_PID_CLAIM_GRACE_MS window below is what tells those two apart.
+   */
+  pid?: number;
+}
+
+/**
+ * How long a claim may legitimately sit with NO pid captured before the lock is
+ * treated as leaked and reclaimed (apra-fleet-c98q.3).
+ *
+ * Everything that runs between the claim and pid capture is bounded: the
+ * preflight check (up to ~30s on a cache miss), agent-file provisioning (one
+ * SSH round trip), the agent-existence probe (2 x 10s), the leftover-pid kill,
+ * and writePromptFile. 5 minutes is several times that worst case, so a claim
+ * still pid-less past it has not been slow -- it has died without spawning
+ * anything, exactly as apra-fleet-c98q's SSH drop inside writePromptFile did.
+ *
+ * Deliberately generous rather than tight: reclaiming too early risks
+ * double-dispatching onto a member that IS working, while reclaiming late
+ * merely delays recovery. It only ever applies to a claim with no pid at all --
+ * a claim that HAS one is only ever released by a definitive dead-pid reading
+ * (see probeBusyLockPid), never by age.
+ */
+export const NO_PID_CLAIM_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * The per-member busy locks held by this server process.
+ *
+ * Set-compatible on purpose (has/add/delete/clear/size/values/keys over member
+ * ids) so stop_prompt, the tool registry and the existing tests keep working
+ * unchanged, while dispatch-side callers use claim()/get()/recordPid() to read
+ * and write the owner metadata.
+ */
+class InFlightAgentRegistry {
+  private readonly claims = new Map<string, InFlightClaim>();
+
+  get size(): number { return this.claims.size; }
+  has(memberId: string): boolean { return this.claims.has(memberId); }
+  /** The owner record for a held lock, or undefined when the member is idle. */
+  get(memberId: string): InFlightClaim | undefined { return this.claims.get(memberId); }
+  /** Set-compatible: iterates MEMBER IDS, not claim records. */
+  values(): IterableIterator<string> { return this.claims.keys(); }
+  keys(): IterableIterator<string> { return this.claims.keys(); }
+  delete(memberId: string): boolean { return this.claims.delete(memberId); }
+  clear(): void { this.claims.clear(); }
+
+  /** Claim the lock for one dispatch, recording who is holding it and since when. */
+  claim(memberId: string, invocationId: string): InFlightClaim {
+    const claim: InFlightClaim = { invocationId, claimedAtMs: Date.now() };
+    this.claims.set(memberId, claim);
+    return claim;
+  }
+
+  /**
+   * Set-compatible add() for callers that have no invocation id of their own
+   * (tests simulating a busy member). Mints one so the record is never
+   * ownerless; an existing claim is left untouched, matching Set.add().
+   */
+  add(memberId: string): this {
+    if (!this.claims.has(memberId)) this.claim(memberId, newInvocationId());
+    return this;
+  }
+
+  /** Record the pid this claim's dispatch spawned (from onPidCaptured). */
+  recordPid(memberId: string, pid: number): void {
+    const claim = this.claims.get(memberId);
+    if (claim) claim.pid = pid;
+  }
+}
+
+export const inFlightAgents = new InFlightAgentRegistry();
 
 // Member ids whose remote agent files (planner.md, doer.md, _shared/, schemas/, ...)
 // have already been probed/refreshed this server process uptime -- the #336
@@ -395,13 +500,23 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
  * only for the release warning) when the lock should self-heal, or undefined
  * when the member is genuinely busy.
  *
- * Conservative on ambiguity, deliberately: NO captured pid at all (neither an
- * interactive session pid nor a subprocess pid) is treated as still busy, not
- * as evidence of staleness -- a dispatch that has not reached its pid-capture
- * step yet must never be raced by a concurrent "self-heal" attempt. Only a
- * DEFINITIVE dead-pid reading releases the lock.
+ * Conservative on ambiguity, deliberately: only a DEFINITIVE dead-pid reading
+ * releases the lock here -- a dispatch that has not reached its pid-capture
+ * step yet must never be raced by a concurrent "self-heal" attempt.
+ *
+ * apra-fleet-c98q.3: the verdict is now three-way rather than "dead pid or
+ * nothing". 'no_pid' (no pid to probe AT ALL) used to be folded into the same
+ * "stay busy" answer as 'alive', which is what made a claim that died before
+ * spawning anything busy FOREVER. The caller now distinguishes them: 'alive'
+ * still means hands off unconditionally, while 'no_pid' is handed to the
+ * bounded NO_PID_CLAIM_GRACE_MS age check.
  */
-async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<number | undefined> {
+type BusyLockProbe =
+  | { kind: 'dead'; pid: number }
+  | { kind: 'alive'; pid: number }
+  | { kind: 'no_pid' };
+
+async function probeBusyLockPid(agent: Agent, workspaceId: string): Promise<BusyLockProbe> {
   // Interactive sessions are always local (register_member's interactive
   // bootstrap is gated to isLocal members) -- the same local
   // process.kill(pid, 0) probe the eft.28.1 dead-session guard uses further
@@ -411,7 +526,7 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
   const session = sessionRegistry.get(workspaceId, agent.id);
   const interactivePid = session?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
   if (interactivePid !== undefined && !isPidAlive(interactivePid)) {
-    return interactivePid;
+    return { kind: 'dead', pid: interactivePid };
   }
 
   // Subprocess dispatch pid (local strategy or remote-over-SSH/relay). A
@@ -427,10 +542,18 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
     const alive = agent.agentType === 'local'
       ? isPidAlive(subprocessPid)
       : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent), getAgentShell(agent));
-    if (!alive) return subprocessPid;
+    if (!alive) return { kind: 'dead', pid: subprocessPid };
+    return { kind: 'alive', pid: subprocessPid };
   }
 
-  return undefined;
+  // A live interactive pid is just as definitive as a live subprocess one: the
+  // member IS running something, so the lock is never reclaimed by age.
+  if (interactivePid !== undefined) return { kind: 'alive', pid: interactivePid };
+
+  // Nothing to probe at all -- the claim never reached pid capture. Whether
+  // that means "still setting up" or "died before spawning anything" is the
+  // caller's bounded-age question, not this probe's.
+  return { kind: 'no_pid' };
 }
 
 // apra-fleet-eft.28.1: how often the interactive wait re-checks that the
@@ -661,20 +784,63 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (inFlightAgents.has(agent.id)) {
     // apra-fleet-idb: before honoring the busy rejection, verify the locked
     // session actually still has a live backing process -- see
-    // findDeadLockPid's docstring for the full rationale. This is what keeps
+    // probeBusyLockPid's docstring for the full rationale. This is what keeps
     // fleet_status (which decides busy/idle from its own independent live
     // process check) and this dispatch gate from ever disagreeing: a stale
     // lock self-heals here instead of permanently wedging the member.
-    const staleLockPid = await findDeadLockPid(agent, getTokenIssuer().workspaceId());
-    if (staleLockPid !== undefined) {
-      logWarn('busy_lock', `orphaned busy-lock for "${agent.friendlyName}" -- locked pid=${staleLockPid} is confirmed dead; releasing the stale lock and proceeding with this dispatch instead of rejecting it as busy`, agent);
+    const workspaceIdForProbe = getTokenIssuer().workspaceId();
+    const probe = await probeBusyLockPid(agent, workspaceIdForProbe);
+    const owner = inFlightAgents.get(agent.id);
+    const claimAgeMs = owner ? Date.now() - owner.claimedAtMs : 0;
+    // apra-fleet-c98q.3: a claim with NO pid anywhere -- not on its own record
+    // (onPidCaptured never fired) and none probeable -- is reclaimable once it
+    // is older than the whole pre-pid-capture budget. Before this, "no pid"
+    // meant busy forever: the SSH drop inside writePromptFile that wedged
+    // fleet-lin1 never captured a pid, so no self-heal could ever recognise it
+    // and only stop_prompt or a server restart cleared the member.
+    //
+    // Deliberately narrow, so a genuinely-working member is never raced:
+    //   - any live pid (probe 'alive') or any pid recorded on the claim keeps
+    //     today's behaviour exactly -- only a definitive dead-pid reading
+    //     releases it;
+    //   - a member with a registered interactive session is exempt too: its
+    //     dispatch legitimately holds the lock for up to timeout_s with no
+    //     subprocess pid of its own, and that path is already fully guarded
+    //     (its own try/finally always releases), so age tells us nothing there.
+    const hasAnyPid = probe.kind !== 'no_pid' || owner?.pid !== undefined;
+    const interactiveSessionRegistered = !!sessionRegistry.get(workspaceIdForProbe, agent.id)?.server;
+    const reclaimableByAge = !hasAnyPid
+      && !interactiveSessionRegistered
+      && !!owner
+      && claimAgeMs > NO_PID_CLAIM_GRACE_MS;
+
+    if (probe.kind === 'dead') {
+      logWarn('busy_lock', `orphaned busy-lock for "${agent.friendlyName}" -- locked pid=${probe.pid} is confirmed dead (owner inv=${owner?.invocationId ?? 'unknown'}, claimed ${Math.round(claimAgeMs / 1000)}s ago); releasing the stale lock and proceeding with this dispatch instead of rejecting it as busy`, agent);
+      inFlightAgents.delete(agent.id);
+      getStallDetector().remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+    } else if (reclaimableByAge) {
+      logWarn('busy_lock', `leaked busy-lock for "${agent.friendlyName}" -- owner inv=${owner!.invocationId} claimed it ${Math.round(claimAgeMs / 1000)}s ago and never captured a pid (grace ${Math.round(NO_PID_CLAIM_GRACE_MS / 1000)}s), so nothing is running behind it; reclaiming the lock and proceeding with this dispatch`, agent);
       inFlightAgents.delete(agent.id);
       getStallDetector().remove(agent.id);
       writeStatusline(new Map([[agent.id, 'idle']]));
     } else {
+      // Name the owner in the rejection (apra-fleet-c98q.3): "busy" alone is
+      // indistinguishable between a real peer dispatch and a leak, both to an
+      // operator reading the log and to the dispatching engine deciding
+      // whether to wait or to recover.
       return {
-        text: `[FAIL] execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
-        structuredContent: { isError: true, reason: 'busy' },
+        text: `[FAIL] execute_prompt is already running for "${agent.friendlyName}" (owner inv=${owner?.invocationId ?? 'unknown'}, claimed ${Math.round(claimAgeMs / 1000)}s ago, pid=${owner?.pid ?? (probe.kind === 'alive' ? probe.pid : 'none')}). Wait for the current call to finish before sending another.`,
+        structuredContent: {
+          isError: true,
+          reason: 'busy',
+          busyOwner: {
+            invocationId: owner?.invocationId ?? null,
+            claimedAtMs: owner?.claimedAtMs ?? null,
+            claimAgeMs,
+            pid: owner?.pid ?? (probe.kind === 'alive' ? probe.pid : null),
+          },
+        },
       };
     }
   }
@@ -699,7 +865,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // releases it inline any more: the try that opens immediately below covers
   // the whole remaining lifetime of this call, and its finally is the single
   // release site (see the BUSY-LOCK INVARIANT comment above executePrompt).
-  inFlightAgents.add(agent.id);
+  // apra-fleet-c98q.3: mint the invocation id HERE rather than letting the
+  // LogScope below mint its own, so the owner recorded on the lock is the very
+  // same `inv=` tag every log line of this dispatch carries -- a busy rejection
+  // naming inv=abc12 can then be traced straight to that dispatch's log lines.
+  const invocationId = newInvocationId();
+  inFlightAgents.claim(agent.id, invocationId);
 
   // apra-fleet-c98q.1: state the catch/finally of the single guard need, but
   // which is produced part-way through the guarded region. Declared here so
@@ -970,7 +1141,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
     }
 
-    scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
+    scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent, invocationId);
 
     // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
     //  - true   -> best-effort resume of the member's stored last session; a
@@ -1332,6 +1503,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     let capturedPid: number | undefined;
     const onPidCaptured = (pid: number) => {
       capturedPid = pid;
+      // apra-fleet-c98q.3: the lock's owner record learns the pid the moment it
+      // exists. That is what makes a still-pid-less claim meaningful evidence
+      // of a leak (see NO_PID_CLAIM_GRACE_MS) and what lets a busy rejection
+      // report the process actually behind the lock.
+      inFlightAgents.recordPid(agent.id, pid);
       scope.info(`pid=${pid}`);
       if (mintedId) {
         let logPath: string | null = null;
