@@ -53,3 +53,20 @@ export const MEMBERS_B: { members: FleetMember[] } = {
     }
   ]
 };
+
+// `type` here is the REAL agentType value ("local"), unlike MEMBERS_A/MEMBERS_B's
+// placeholder "worker"/"orchestrator" strings -- MemberDrawer's remote-only-fields
+// check is `member.type === "remote"`, so this is the value that actually exercises
+// it. Used by the member edit flow suite (test/member-edit.test.tsx).
+export const LOCAL_MEMBER: FleetMember = {
+  id: "member-local-1",
+  name: "local-one",
+  type: "local",
+  os: "linux",
+  llmProvider: "claude",
+  llm_auth: "ok",
+  tags: ["core"],
+  reservedBy: null
+};
+
+export const MEMBERS_LOCAL: { members: FleetMember[] } = { members: [LOCAL_MEMBER] };

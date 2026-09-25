@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Members } from "../src/pages/Members";
 import { MEMBERS_A } from "./member-fixtures";
+import { findButton, findFieldInSection, makeFetchMock, jsonResponse, openDrawerFor, setInputValue, setSelectValue } from "./harness";
 
 // apra-fleet-i9ag.6.2.2: covers the compose-permissions flow added by
 // apra-fleet-i9ag.6.2.1 (widened composePermissions wrapper + MemberDrawer's
@@ -14,39 +15,6 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
-interface FetchCall {
-  url: string;
-  method: string;
-  body: unknown;
-}
-
-function jsonResponse(status: number, payload: unknown) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => payload
-  };
-}
-
-function makeFetchMock(membersPayload: unknown, actionOverrides: Record<string, unknown> = {}) {
-  const calls: FetchCall[] = [];
-  const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ url, method, body });
-
-    if (url === "/api/fleet/members" && method === "GET") {
-      return jsonResponse(200, membersPayload);
-    }
-    if (url in actionOverrides) {
-      return actionOverrides[url];
-    }
-    return jsonResponse(200, { text: `ok:${url}` });
-  });
-  return { fn, calls };
-}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -71,56 +39,6 @@ async function renderMembers() {
   });
 }
 
-function findButton(label: string): HTMLButtonElement {
-  const button = Array.from(container.querySelectorAll("button")).find(
-    (b) => b.textContent === label
-  );
-  if (!button) throw new Error(`button "${label}" not found`);
-  return button as HTMLButtonElement;
-}
-
-/** Finds the <input>/<select> associated with a <label> whose text STARTS WITH
- *  `fieldLabel`, scoped to the <section aria-label="sectionLabel"> that holds
- *  it -- the drawer has a "Tags (comma-separated)" field in BOTH the edit-
- *  member section and the compose-permissions section, so an unscoped lookup
- *  would silently grab the wrong one. */
-function findFieldInSection(sectionLabel: string, fieldLabel: string): HTMLInputElement | HTMLSelectElement {
-  const section = container.querySelector(`section[aria-label="${sectionLabel}"]`);
-  if (!section) throw new Error(`section "${sectionLabel}" not found`);
-  const labelEl = Array.from(section.querySelectorAll("label")).find((l) =>
-    (l.textContent ?? "").trim().startsWith(fieldLabel)
-  );
-  if (!labelEl) throw new Error(`label starting with "${fieldLabel}" not found in section "${sectionLabel}"`);
-  const forId = labelEl.getAttribute("for");
-  const field = forId
-    ? Array.from(section.querySelectorAll("input, select")).find((el) => el.id === forId)
-    : null;
-  if (!field) throw new Error(`field for label "${fieldLabel}" not found in section "${sectionLabel}"`);
-  return field as HTMLInputElement | HTMLSelectElement;
-}
-
-function setInputValue(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
-  setter.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function setSelectValue(select: HTMLSelectElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
-  setter.call(select, value);
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
-async function openDrawerFor(memberName: string) {
-  const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
-    (tr.textContent ?? "").includes(memberName)
-  );
-  if (!row) throw new Error(`row for "${memberName}" not found`);
-  await act(async () => {
-    (row as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-}
-
 describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
   it("choosing role=reviewer posts member_id + role=reviewer", async () => {
     const { fn, calls } = makeFetchMock(MEMBERS_A, {
@@ -129,14 +47,14 @@ describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
     vi.stubGlobal("fetch", fn);
 
     await renderMembers();
-    await openDrawerFor("alpha");
+    await openDrawerFor(container, "alpha");
 
-    const roleSelect = findFieldInSection("Compose permissions", "Role") as HTMLSelectElement;
+    const roleSelect = findFieldInSection(container, "Compose permissions", "Role") as HTMLSelectElement;
     await act(async () => {
       setSelectValue(roleSelect, "reviewer");
     });
     await act(async () => {
-      findButton("Compose permissions").click();
+      findButton(container, "Compose permissions").click();
     });
 
     const composeCalls = calls.filter((c) => c.url === "/api/fleet/compose-permissions" && c.method === "POST");
@@ -151,10 +69,10 @@ describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
     vi.stubGlobal("fetch", fn);
 
     await renderMembers();
-    await openDrawerFor("alpha");
+    await openDrawerFor(container, "alpha");
 
     await act(async () => {
-      findButton("Compose permissions").click();
+      findButton(container, "Compose permissions").click();
     });
 
     const composeCalls = calls.filter((c) => c.url === "/api/fleet/compose-permissions");
@@ -178,14 +96,14 @@ describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
     vi.stubGlobal("fetch", fn);
 
     await renderMembers();
-    await openDrawerFor("alpha");
+    await openDrawerFor(container, "alpha");
 
-    const tagsInput = findFieldInSection("Compose permissions", "Tags") as HTMLInputElement;
+    const tagsInput = findFieldInSection(container, "Compose permissions", "Tags") as HTMLInputElement;
     await act(async () => {
       setInputValue(tagsInput, "gpu");
     });
     await act(async () => {
-      findButton("Compose permissions").click();
+      findButton(container, "Compose permissions").click();
     });
 
     const status = Array.from(container.querySelectorAll('[role="status"]')).find((el) =>
@@ -201,14 +119,14 @@ describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
     vi.stubGlobal("fetch", fn);
 
     await renderMembers();
-    await openDrawerFor("alpha");
+    await openDrawerFor(container, "alpha");
 
-    const roleSelect = findFieldInSection("Compose permissions", "Role") as HTMLSelectElement;
+    const roleSelect = findFieldInSection(container, "Compose permissions", "Role") as HTMLSelectElement;
     await act(async () => {
       setSelectValue(roleSelect, "doer");
     });
     await act(async () => {
-      findButton("Compose permissions").click();
+      findButton(container, "Compose permissions").click();
     });
 
     const composeCalls = calls.filter((c) => c.url === "/api/fleet/compose-permissions");
