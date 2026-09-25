@@ -57,6 +57,160 @@ low-collision edit compared to interleaving logic in a shared handler body.
 - `src/console/static.ts` -- serves the built shell's static assets and
   index-fallback routing for client-side routes.
 
+## Auth guard and console cookie
+
+Every `/api/*` request and every non-`GET` `/ext/*` request is checked
+against the shared fleet key (`~/.apra-fleet/fleet.key`,
+`src/services/jwt.ts`) before route dispatch -- `handleConsoleRequest`
+(`src/console/server.ts`) runs the check itself, ahead of the route lookup,
+keyed on `API_NAMESPACES`/`isExtPath`, which are derived from
+`ROUTE_MODULES`/`EXT_PREFIX` rather than a hand-maintained path list. A route
+module appended later (per the seam above) is therefore guarded
+automatically with no second list to keep in sync. `/health` and `/mcp` are
+not console paths and never reach this guard; `GET /ui` and `GET /ext/*` stay
+open, and neither ever answers 401 (`/ui` is the shell itself; `GET /ext/*`
+matches a normal reverse-proxy read path). `GET /ext/*` staying open does
+**not** mean it is unconditionally credentialed toward the upstream package,
+though -- see "GET `/ext/*` and the unauthenticated-credential decision"
+below.
+
+`handleConsoleRequest` is also **total**: once it has recognised a request as
+a console path, it never lets a throw escape as an unhandled rejection.
+Everything from the guard check above through the `/ui` branch, the `/ext`
+proxy dispatch and `matchRoutes` is covered by one outer `try`/`catch` (in
+addition to the route-handler's own, pre-existing catch) that answers 500
+(carrying the error message) when headers are not yet sent, or ends the
+response otherwise -- never rethrows. This matters because
+`src/services/http-transport.ts` awaits `handleConsoleRequest` from inside an
+async request listener with nothing else guarding it: before this guarantee,
+a throw anywhere in that region (the recorded incident: a registered
+package's non-`http(s)` `baseUrl` making `http.request` throw synchronously
+inside the `/ext` proxy) surfaced as an unhandled rejection and killed the
+whole MCP server process. The false-return contract for a non-console path
+is unaffected -- that check runs before the `try`, so a path outside the
+console never has anything written to `res`.
+
+A caller authenticates with either the raw fleet key as a bearer token
+(`Authorization: Bearer <fleet.key>`, unchanged for existing CLI/script
+callers) or the `apra_console_token` cookie set on every `GET /ui`. The
+cookie is **not** the raw fleet key -- the fleet key also signs member JWTs
+(`jwt.ts`'s HS256 HMAC secret), so handing it to a browser as a cookie would
+let anything that reads it mint arbitrary member JWTs. The cookie instead
+carries `HMAC-SHA256(fleetKey, CONSOLE_COOKIE_LABEL)`, a value verifiable
+server-side (recompute and compare) but not reversible into the signing key.
+Both credential paths are checked against a path normalised through the same
+`normalizePath()` helper the router uses, so the guard and the dispatcher can
+never disagree about which route a URL names.
+
+## The `/ext` reverse proxy and the per-package upstream credential
+
+`/ext/<package id>/*` is a **proxy mount, not a route table**: no route
+module declares it, and `handleConsoleRequest` dispatches it straight to
+`src/console/proxy.ts` from a single branch, after the guard above. The
+package id is resolved to a `baseUrl` through the registry service
+(`src/services/workflow-packages.ts`), read fresh per request so a package
+registered a moment ago is reachable immediately. An id that is not
+registered answers **404**; a registered package whose upstream is
+unreachable answers **502** with a package-offline body -- "does not exist"
+and "exists but is down" are deliberately distinct answers.
+
+Both directions stream via `pipe()`, so no body is ever held whole in
+memory. `text/event-stream` responses are additionally passed through
+unbuffered: `Accept-Encoding: identity` is sent upstream on every request
+(compression must never be negotiated, because a compressor aggregates bytes
+and destroys the per-event flush, and the content type is unknowable until
+the response headers arrive -- by which point negotiation has already
+happened), headers are flushed before the first event, and Nagle is disabled
+so a short event is not held back. Upstream `Location` headers are rewritten
+back under `/ext/<package id>`; a genuinely external origin is left
+untouched rather than re-mounted, so the console never becomes an open
+redirector.
+
+**The raw fleet key is never forwarded upstream.** It is the HS256 signing
+secret for member JWTs (see above), and workflow packages are third-party by
+design and registered at runtime -- forwarding it would let any of them mint
+member JWTs with an arbitrary `member_id`, `role` and `workspace_id`. What
+is sent instead is a per-package derived credential,
+`HMAC-SHA256(fleetKey, "<label>:<len(id)>:<id>")`, as an `Authorization`
+bearer. It is not reversible into the signing key, and it differs per
+package id, so one package cannot replay its credential against another.
+The length prefix makes the label/id encoding unambiguous, which is what
+actually guarantees that per-package property.
+
+The label is deliberately **different** from `CONSOLE_COOKIE_LABEL`: same
+primitive, same key, separate domain. Were they shared, a package could
+replay the credential the console just handed it back at the console as a
+valid `apra_console_token` cookie. For the same reason, the inbound `Cookie`
+and `Authorization` headers (which carry the console's own credentials) are
+stripped rather than relayed, and an upstream attempting to `Set-Cookie` the
+console's own cookie name is refused -- all packages share the console
+origin, so an unfiltered `Set-Cookie` would let one of them overwrite the
+console credential in the browser.
+
+### GET `/ext/*` and the unauthenticated-credential decision (apra-fleet-iywi.11)
+
+`GET /ext/*` stays unguarded (see "Auth guard and console cookie" above), so
+`handleConsoleRequest` never answers 401 for it. Left unqualified, that has a
+consequence worth naming explicitly: **any page the operator's browser has
+open can issue a plain cross-origin `GET` to this loopback port** -- no
+preflight, and `<img>`/`<script>` tags work too -- and, before this decision,
+that GET reached `src/console/proxy.ts` exactly like a legitimate one, which
+derived and attached the per-package upstream credential regardless of
+whether the caller proved who it was. CORS stops the attacker reading the
+response body, but any state-changing or information-triggering `GET`
+endpoint a package exposes was reachable, credentialed, with the console
+supplying the credential on the attacker's behalf.
+
+**Decision: keep `GET /ext/*` open, but attach the derived upstream
+credential only when the inbound request itself carries a valid console
+credential** (the fleet-key bearer, or the `apra_console_token` cookie).
+`src/console/server.ts`'s `isExtPath` dispatch branch checks this explicitly
+for a `GET` (a non-`GET` request that reaches the branch at all has already
+passed the guard, so it is always treated as authenticated) and passes the
+result to `src/console/proxy.ts` as `ExtProxyOptions.forwardCredential`;
+`handleExtProxyRequest` skips attaching `Authorization` entirely when it is
+`false`. An unauthenticated `GET` still reaches the upstream -- the 404
+(unknown id) / 502 (unreachable or bad-scheme upstream) / 200 (success)
+contract is unchanged -- it simply carries nothing usable as a credential.
+This is enforced in code (the `forwardCredential` branch), not left to
+operator convention or to documentation alone.
+
+Weighed against the two alternatives considered and rejected:
+
+- **(a) Guard `GET /ext/*` like every other console path.** Rejected: it
+  would require the shell to send the console cookie (or bearer) on every
+  package-UI load, which is a same-origin request and would work, but it
+  also flips the answer to "can a script/`<img>` tag on a third-party page
+  even reach `/ext/*` at all" to a flat no for anything without a credential
+  -- a much larger behavioural change than the credential the review was
+  actually worried about, and it stops matching "a normal reverse-proxy's
+  read path" (the reason `GET` was left open in the first place). The
+  chosen option gets the same security outcome (no credentialed request from
+  an unauthenticated caller) without that behavioural change.
+- **(c) Require an `Origin`/`Sec-Fetch-Site` check on the unguarded path.**
+  Rejected: it is enforced by header presence rather than a credential check,
+  so it degrades silently for any client that does not send those headers
+  (plain `curl`/scripted health checks, and some older or non-browser HTTP
+  clients) -- a check that fails open for missing headers is weaker than one
+  that fails closed on a missing credential, and it would duplicate
+  protection the existing bearer/cookie check already provides more
+  reliably.
+
+Both rejected options were judged against the same three questions as the
+chosen one: whether the shell can still load package UI from the browser
+(yes, unaffected under all three -- package-UI loads are same-origin, so the
+console cookie is sent automatically regardless of which option is chosen);
+whether a third-party page can still cause a *credentialed* upstream request
+(no, under the chosen option and (a); under (c), only if the third-party page
+also spoofs `Sec-Fetch-Site`/`Origin`, which a browser prevents but a
+non-browser HTTP client does not); and whether the choice is enforced by code
+rather than convention (yes for the chosen option and (a); weaker for (c), as
+above). No regression to the derived-credential property itself: an
+AUTHORISED GET (or any authenticated non-GET) still receives a credential
+that is not byte-equal to the fleet key and still differs per package id --
+`forwardCredential` only ever removes the header, it never changes how the
+credential the removed header would have carried is derived.
+
 ## Static asset serving: dev disk vs. packaged binary
 
 The shell is a normal Vite build (`packages/apra-fleet-shell-ui`, base path
@@ -142,15 +296,6 @@ route wired but unreachable from the shell.
 
 ## Known constraints (by design, this iteration)
 
-- **No auth guard on the console routes yet.** `handleConsoleRequest` is
-  wired ahead of `/mcp`'s auth-checked path with no bearer/cookie check of
-  its own. This is acceptable only because the server's default bind is
-  loopback-only; the moment non-loopback binding is in play, the console
-  routes (including the full member registry via `/api/fleet/members`)
-  are reachable to anything that can route to the port. A future iteration
-  must add a guard (session cookie or the same bearer scheme `/mcp` uses)
-  before non-loopback binding and the console feature set can coexist
-  safely.
 - **Packaging is dev-checkout-complete, distribution-incomplete.** The
   console seam and static-serving logic support both the disk path and the
   SEA-asset path, but as of this writing neither the SEA manifest generator
@@ -160,6 +305,105 @@ route wired but unreachable from the shell.
   both serve `/ui` requires wiring the shell's `dist/` into each
   distribution channel's asset manifest; the serving code on the receiving
   end is already in place and does not need to change.
+
+## Shared local-token helper: generic mechanism vs. per-caller route policy
+
+The token resolution, bearer/cookie credential check, and fail-closed path
+normaliser used by the console guard live in a shared helper in the client
+package (`packages/apra-fleet-client`'s `./auth/*` subpath export), not in
+`src/console/`. This is a deliberate split: the *mechanism* (resolve
+`~/.apra-fleet/fleet.key` with a `private/token` fallback, compare tokens in
+constant time, parse a cookie by exact name, normalise a path the same way a
+router does) is identical for any local HTTP surface on the machine -- today
+that is both the fleet-sprint supervisor and this console -- so it is lifted
+once and shared. The *route policy* (which paths are guarded, which cookie
+name to use) is deliberately kept local to each caller instead of also being
+centralised. A previously-fixed regression is the reason: a blanket
+guard-by-prefix rule shared across callers once caused an unauthenticated
+`GET /api/health` to be 401'd because a different caller's prefix rule
+matched it too. Sharing the mechanism but not the policy means one caller's
+route table can never leak into another's.
+
+The token itself is never logged or included in a thrown `Error` message, on
+either side of this split.
+
+**Invariant for any path derived from `os.homedir()`/`process.env.HOME` that a
+test needs to isolate:** compute it lazily, inside the function that uses it,
+never as a module-load-time constant. A constant computed once at import time
+freezes whatever `HOME` was set to at first import, so a test that sets
+`process.env.HOME` in a `beforeEach` (after the module has already been
+imported once in that process) silently keeps reading/writing the real
+developer's files instead of the isolated temp one -- with no error, because
+the code path still "works," just against the wrong file. This bit the
+console's own key path once; the fix is to read the environment fresh on
+every call rather than adding test-only indirection.
+
+## Workflow-package registry
+
+A workflow package is a third-party HTTP service the console can reverse-proxy
+to under `/ext/<package id>/*` (see below). The registry
+(`src/services/workflow-packages.ts`) is the single source of truth for which
+package ids exist and what their upstream `baseUrl` is:
+
+- **Storage**: one JSON file in the fleet data directory, written atomically
+  (temp file + rename, never an in-place truncate-and-write) so a crash
+  mid-write can never leave a half-written registry. Every register/list/
+  unregister call re-reads the file fresh rather than trusting an in-memory
+  cache, matching the pattern the main fleet member registry already uses --
+  there is no separate "loaded" state to keep in sync across calls or forget
+  to reset between tests.
+- **Two sources merge into one list**: packages registered at runtime through
+  the HTTP routes, and packages declared statically in user config under the
+  `workflowPackages` key. Both are read from through the same service so the
+  proxy and the health poll never need to know which source a given package
+  id came from.
+- **Compatibility check at registration**: each package declares an
+  `apraFleetApi` version range it requires; registration checks the running
+  server's version against that range and rejects an incompatible package
+  rather than accepting one that will fail at first use. Because this repo
+  has no semver dependency, the range matcher is a narrow, deliberately
+  hand-rolled subset (exact version, single comparator, or caret/tilde range;
+  `*`; space-separated AND; no OR or hyphen ranges) that throws a clear error
+  for any syntax outside that subset -- a range check that fails open on
+  unrecognised syntax would be worse than one that refuses to guess.
+- **baseUrl scheme is validated in two places on purpose**: once at
+  registration (rejecting the package before it is ever persisted) and again
+  in the proxy's own resolution path (refusing to dispatch to a persisted
+  entry whose scheme is bad). The second check exists because a package can
+  reach the registry through the static config path, which is not gated by
+  the registration route at all -- validating only at registration would
+  leave a hole for anything declared directly in config.
+- **Health polling** runs per package (registered or config-declared) with an
+  injectable clock and an injectable fetch, so tests never depend on a real
+  timer; a failing probe is swallowed inside the poll itself and only
+  degrades that one package's health record; it must never throw into a
+  request path. "Not registered" (404) and "registered but unreachable"
+  (502, package-offline body) are kept as distinct answers throughout this
+  service and the proxy, deliberately -- collapsing them would make it
+  impossible for an operator to tell "typo'd package id" from "package
+  crashed" from the response alone.
+
+## compose_permissions denylist for console and supervisor endpoints
+
+`compose_permissions` (the tool that composes a member's auto-granted
+permission profile) hard-refuses any requested grant that targets the
+console's own HTTP surface (`/ui`, `/api`, `/ext` on the console's port) or
+the fleet-supervisor's HTTP API port, regardless of role or tags. The
+supervisor port is denied wholesale (not enumerated endpoint-by-endpoint)
+because its route table keeps growing -- an allowlist-by-enumeration approach
+would need a matching edit on every future supervisor route, and a forgotten
+edit fails open. The rationale is the same shape as the console's own guard:
+these are local control-plane surfaces, and a member should never be able to
+grant itself a shell command that curls its own control plane's credentialed
+endpoints.
+
+The one exception mechanism is a short, explicit allow-list of exact grants
+that a deployment's own documented operational runbook already relies on
+(e.g. a stale-reservation force-release curl) -- checked strictly *after* the
+catch-all and shell-chaining denial rules, specifically so the exception
+mechanism itself can never be used to resurrect a broader grant than the
+runbook actually documents. There is no general carve-out mechanism: an
+exception is an exact string match against a fixed list, not a pattern.
 
 ## Fitting into the layering model
 

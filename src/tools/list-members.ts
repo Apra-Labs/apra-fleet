@@ -119,6 +119,11 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         tags: a.tags ?? null,
         reservedBy: a.reservedBy ?? null,
         unreservable: a.unreservable ?? false,
+        shell: a.shell ?? undefined,
+        modelTiers: a.modelTiers ?? undefined,
+        vcsTokenExpiresAt: a.vcsTokenExpiresAt ?? undefined,
+        owner: a.owner ?? undefined,
+        env: a.env ?? undefined,
       })),
     });
   }
@@ -159,6 +164,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
       }
       if (a.unreservable) {
         t += ` | unreservable`;
+      }
+      if (a.owner) {
+        t += ` | owner=${a.owner.package}@${a.owner.ref}`;
       }
       t += '\n';
     }

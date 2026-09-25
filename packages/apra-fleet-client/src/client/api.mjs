@@ -170,6 +170,9 @@
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.
+ * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
 /**
@@ -204,6 +207,9 @@
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.
+ * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass {} to clear.
+ * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
 /**
@@ -238,6 +244,13 @@
  * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
  * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
  * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
+ * @property {{cheap?: string, standard?: string, premium?: string}} [modelTiers] - Per-member model tier map
+ * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known
+ * @property {string|null} reservedBy - sprintId currently reserving this member for exclusive dispatch, or null when unreserved
+ * @property {boolean} unreservable - True when this member is never exclusively reservable (shared role)
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member
+ * @property {string} [llmAuthExpiresAt] - ISO 8601 expiry of this member's LLM auth, when known
  */
 
 /**
@@ -276,6 +289,71 @@
  * Mirrors src/tools/member-reservation.ts's MemberReservationStructured field-for-field
  * (apra-fleet-3swo.7.1). The tool still returns the same human-readable summary in
  * `content[0].text`; this shape is the machine-readable half of the same response.
+ */
+
+/**
+ * @typedef {Object} MemberOwnerOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"set" | "clear"} action - "set" writes owner {package, ref} (both required,
+ *   format-validated); "clear" removes the owner tag. Both refuse with error code
+ *   member-held while the member is reserved (reservedBy set).
+ * @property {string} [package] - Package/consumer that owns this member (e.g. "fleet-sprint").
+ *   Required for action "set".
+ * @property {string} [ref] - Consumer-side reference this owner binding points at (e.g. a
+ *   sprint/checkout id). Required for action "set".
+ */
+
+/**
+ * @typedef {Object} MemberOwnerStructured
+ * @property {"set" | "cleared" | "invalid_input" | "member_held" | "member_not_found" |
+ *   "failed"} outcome - Machine-readable outcome discriminator. Branch on this field; never
+ *   string-match the human-readable summary text.
+ * @property {boolean} ok - True when the requested operation took effect.
+ * @property {"set" | "clear"} action - The action that was requested.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {{package: string, ref: string}|null} owner - The owner value AFTER this call (null
+ *   when cleared, absent, or the call failed before writing).
+ *
+ * Mirrors src/tools/member-owner.ts's MemberOwnerStructured field-for-field. The tool still
+ * returns the same human-readable summary in `content[0].text`; this shape is the
+ * machine-readable half of the same response.
+ */
+
+/**
+ * @typedef {Object} MemberGitStatusOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} [folder] - Absolute path on the member to inspect. Defaults to the
+ *   member's registered work folder. A folder that is not a git work tree is reported as
+ *   checkout: null, not as an error.
+ */
+
+/**
+ * @typedef {Object} MemberGitStatusResult
+ * @property {"checkout" | "no_checkout" | "member_not_found" | "no_folder" | "failed"} outcome -
+ *   Machine-readable outcome discriminator. Branch on this field; never string-match the
+ *   human-readable summary text.
+ * @property {boolean} ok - True when the probe ran and produced an answer -- including
+ *   "no checkout here", which is a normal answer and not a failure.
+ * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
+ * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
+ * @property {string|null} folder - The folder that was probed, null when none could be resolved.
+ * @property {{path: string, branch: string|null, detached: boolean, head: string|null,
+ *   upstream: string|null, ahead: number|null, behind: number|null, dirty: boolean,
+ *   dirtyFiles: Array<{code: string, path: string}>,
+ *   worktrees: Array<{path: string, head: string|null, branch: string|null, detached: boolean,
+ *   bare: boolean, locked: boolean}>, originUrl: string|null, originSlug: string|null,
+ *   playbooks: string[], bibleCommit: string|null}|null} checkout - Parsed checkout state, or
+ *   null when the folder is not a git work tree.
+ * @property {string|null} error - Failure detail when outcome is member_not_found/no_folder/
+ *   failed, else null.
+ *
+ * Mirrors src/tools/member-git-status.ts's MemberGitStatusFields field-for-field (pinned by
+ * test/client-server-typedef-parity.test.mjs). The tool still returns the same
+ * human-readable summary in `content[0].text`; this shape is the machine-readable half of
+ * the same response.
  */
 
 /**
@@ -447,8 +525,12 @@
  *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
  *   wildcard-matched (not exact-matched) against a normalized form of the
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
- *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
- *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
+ *   `chmod 777`, any catch-all such as `Bash(*)`, any payload containing a
+ *   shell-chaining metacharacter (| ; && backtick $(), the apra-fleet server
+ *   console endpoints (/ui, /api, /ext on its port, default 7523) and the
+ *   fleet-supervisor port (default 8787) -- except the two supervisor grants
+ *   deploy.md documents (the active-sprints gate and the stale-reservation
+ *   force-release), which remain grantable by name -- are rejected outright,
  *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  */
@@ -736,6 +818,44 @@ export class ApraFleet {
      */
     async memberReservation(options) {
         return this.mcpClient.callTool('member_reservation', options);
+    }
+
+    /**
+     * Set or clear the owner {package, ref} tag a package/consumer (e.g. a
+     * fleet-sprint project) uses to bind a member to its own bookkeeping
+     * (src/tools/member-owner.ts).
+     *
+     * Same two-halves result shape as memberReservation: `content[0].text`
+     * is the human-readable summary and `structuredContent` is a
+     * MemberOwnerStructured -- branch on `structuredContent.outcome`.
+     *
+     * @param {MemberOwnerOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberOwnerStructured }>}
+     */
+    async memberOwner(options) {
+        return this.mcpClient.callTool('member_owner', options);
+    }
+
+    /**
+     * Report the git state of a folder on a member -- branch, upstream and
+     * ahead/behind, dirty paths, linked work trees, the origin remote plus
+     * its normalised host/path slug, which target playbook files are present,
+     * and the last commit touching the knowledge-bank export
+     * (src/tools/member-git-status.ts).
+     *
+     * Same two-halves result shape as memberOwner: `content[0].text` is the
+     * human-readable summary and `structuredContent` is a
+     * MemberGitStatusResult -- branch on `structuredContent.outcome`. A
+     * folder that is not a git work tree yields outcome "no_checkout" with
+     * `checkout: null`, which is a normal answer, not an error.
+     *
+     * @param {MemberGitStatusOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: MemberGitStatusResult }>}
+     */
+    async memberGitStatus(options) {
+        return this.mcpClient.callTool('member_git_status', options);
     }
 
     /**

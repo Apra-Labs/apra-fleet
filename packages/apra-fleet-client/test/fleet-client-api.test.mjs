@@ -320,6 +320,44 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('memberOwner', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'abc-123', action: 'set', package: 'fleet-sprint', ref: 'sprint-42' };
+        const result = await fleet.memberOwner(options);
+
+        assert.strictEqual(calledName, 'member_owner');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('memberGitStatus', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'abc-123', folder: '/work/repo' };
+        const result = await fleet.memberGitStatus(options);
+
+        assert.strictEqual(calledName, 'member_git_status');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
     test('shutdownServer', async () => {
         let calledName, calledArgs, calledOpts;
         const mockClient = {
@@ -557,11 +595,13 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
         // vacuously against an (almost) empty set.
         assert.ok(methods.size > 25, `expected many ApraFleet methods, parsed ${methods.size}`);
 
-        // apra-fleet-972p.1.3: pin the exact exported-method count (32 as of
-        // the C1-wrapper catch-up). A future wrapper addition/removal must
-        // update this assertion deliberately, rather than silently passing
-        // the >25 sanity floor above while docs drift out of sync.
-        assert.strictEqual(methods.size, 32, `expected exactly 32 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
+        // apra-fleet-972p.1.3: pin the exact exported-method count (34 as of
+        // apra-fleet-4qtu.3.2's memberGitStatus addition, which followed
+        // apra-fleet-4qtu.2.1's memberOwner). A future wrapper
+        // addition/removal must update this assertion deliberately, rather
+        // than silently passing the >25 sanity floor above while docs drift
+        // out of sync.
+        assert.strictEqual(methods.size, 34, `expected exactly 34 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
 
         // Documented method names are those referenced as `name(...)` inside a
         // backtick code span anywhere in the doc (covers both a method's own
@@ -630,5 +670,40 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
             [],
             `docs/api-reference.md documents ApraFleet method(s) with no corresponding export in api.mjs (stale docs): ${stale.join(', ')}`,
         );
+    });
+});
+
+// apra-fleet-iywi.5.1/5.2: the server-side NEVER_AUTO_GRANT denylist
+// (src/tools/compose-permissions.ts) now refuses grants aimed at the
+// apra-fleet server console (/ui, /api, /ext) and the fleet-supervisor port.
+// The client's ComposePermissionsOptions typedef and the matching
+// docs/api-reference.md entry mirror that denylist's description in prose
+// (they have no compile-time link to the server tool, same as the other
+// typedefs this file checks) -- this pins that both were updated in the same
+// change as the server-side refusal, not left describing a surface the
+// server no longer accepts.
+describe('apra-fleet-client compose_permissions doc/typedef parity (apra-fleet-iywi.5.1/5.2)', () => {
+    test('the ComposePermissionsOptions typedef in api.mjs names the console refusal', () => {
+        const apiSrc = readFileSync(path.join(__dirname, '..', 'src', 'client', 'api.mjs'), 'utf8');
+        const typedefStart = apiSrc.indexOf('@typedef {Object} ComposePermissionsOptions');
+        assert.notStrictEqual(typedefStart, -1, 'ComposePermissionsOptions typedef not found in api.mjs');
+        const typedefEnd = apiSrc.indexOf('*/', typedefStart);
+        const typedefBlock = apiSrc.slice(typedefStart, typedefEnd);
+
+        assert.match(typedefBlock, /console/i, 'ComposePermissionsOptions typedef must mention the console refusal');
+        assert.match(typedefBlock, /8787/, 'ComposePermissionsOptions typedef must mention the fleet-supervisor port');
+    });
+
+    test('docs/api-reference.md composePermissions entry names the console refusal', () => {
+        const docsSrc = readFileSync(path.join(__dirname, '..', 'docs', 'api-reference.md'), 'utf8');
+        const sectionStart = docsSrc.indexOf('#### `composePermissions(');
+        assert.notStrictEqual(sectionStart, -1, 'composePermissions section not found in docs/api-reference.md');
+        const nextSectionOffset = docsSrc.slice(sectionStart + 1).search(/\n#### /);
+        const section = nextSectionOffset === -1
+            ? docsSrc.slice(sectionStart)
+            : docsSrc.slice(sectionStart, sectionStart + 1 + nextSectionOffset);
+
+        assert.match(section, /console/i, 'composePermissions doc section must mention the console refusal');
+        assert.match(section, /8787/, 'composePermissions doc section must mention the fleet-supervisor port');
     });
 });

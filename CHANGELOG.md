@@ -2,6 +2,135 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Console auth guard, `/ext` workflow-package reverse proxy, and the console/supervisor permissions denylist
+
+Sprint goal: one shared auth guard for the `/ui` console (fleet-key bearer or
+a derived cookie, never the raw key itself, on every `/api/*` and mutating
+`/ext/*` request), a workflow-package registry (register/list/unregister,
+config-declared packages, version-range compatibility check, health
+polling), an `/ext/<package id>/*` reverse proxy with SSE pass-through and a
+per-package derived upstream credential, and a `compose_permissions`
+denylist so a member can never be auto-granted a curl against the console's
+or supervisor's own control-plane ports. All of it landed and is verified
+working; no beads were deferred out of scope at or above the sprint's goal
+priority.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $56.0051.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.8267 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 41 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **A shared local-token helper** lifted into the client package
+  (`packages/apra-fleet-client`'s `./auth/*` subpath export) carries the
+  generic mechanism (token resolution, bearer/cookie check, fail-closed path
+  normalisation) used by both the fleet-sprint supervisor and the console,
+  while each caller keeps its own route policy locally so one caller's
+  guarded-path rules can never leak into another's.
+- **The console auth guard**: every `/api/*` request and every non-`GET`
+  `/ext/*` request requires the fleet-key bearer or the `apra_console_token`
+  cookie set on `GET /ui`. The cookie carries an HMAC of the fleet key, never
+  the raw key, since the raw key also signs member JWTs.
+  `handleConsoleRequest` is now total -- no request reaching it can throw an
+  unhandled rejection that kills the server process.
+- **The workflow-package registry** (`src/services/workflow-packages.ts`):
+  atomic-write JSON storage, a hand-rolled semver-range compatibility check
+  run at registration, health polling with injectable clock/fetch, and a
+  `workflowPackages` config key for statically-declared packages, merged
+  with runtime-registered ones behind one service so callers never need to
+  know which source a package came from.
+- **The `/ext/<package id>/*` reverse proxy** (`src/console/proxy.ts`):
+  streams both directions via `pipe()`, passes `text/event-stream` through
+  unbuffered (uncompressed, headers flushed early, Nagle disabled) so SSE
+  events are not batched, rewrites upstream `Location` headers back under
+  the package's mount, and attaches a per-package derived upstream
+  credential (never the raw fleet key) that is withheld entirely on an
+  unauthenticated `GET` so a cross-origin page cannot ride the console's
+  credential to a third-party package.
+- **`compose_permissions` refuses console and supervisor control-plane
+  grants** by pattern, with a short, explicit, order-sensitive exception
+  list for the specific grants an operational runbook already documents --
+  checked strictly after the catch-all/shell-chaining denial rules so the
+  exception mechanism itself can never resurrect a broader grant.
+- **`baseUrl` scheme validation** for workflow packages runs both at
+  registration (reject before persistence) and again in the proxy's own
+  resolution path (a config-declared package is not gated by the
+  registration route at all).
+
+Carried forward (filed as low-priority backlog, not blocking this sprint's
+acceptance criteria): scoping a proxied upstream `Set-Cookie`'s `Path` to the
+package's own mount so one package cannot set a cookie another package or
+the shell would receive; escaping the reserved cookie name before it is
+interpolated into the `Set-Cookie`-filter regular expression; bounding the
+workflow-package registration route's request body size; broadening direct
+test coverage of the remaining throw regions inside the console's now-total
+dispatch; and having the `/ext` proxy's base-URL resolver skip a
+config-declared package with a scheme error itself, rather than relying on
+the proxy's own guard to catch it.
+
+## [Unreleased] -- Member owner tag, env map and git status tools (sprint goal mostly met -- see carried-forward items)
+
+Sprint goal: give the member registry an `owner {package, ref}` binding, a
+stored `env` name-value map and an `llmAuthExpiresAt` field; expose a
+`member_owner` tool to set/clear the owner tag with a member-held refusal;
+and expose a `member_git_status` tool that reports live git status for a
+member's work folder without assuming that folder is a checkout. All three
+landed and are covered by `npm test` plus a dedicated `apra-fleet-client`
+parity/wrapper suite (root `npm test` does not reach that package). Two
+lower-priority follow-ups are carried forward, not yet fixed: `owner`
+accepted through `register_member`/`update_member` is not yet format-
+validated the way `member_owner`'s own `set` path is, and the
+`MemberOwnerStructured` client typedef has no client-server parity test
+case yet (its sibling `MemberGitStatusResult` case does).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.6414.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.6856 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 18 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Registry gains `owner`, `env` and `llmAuthExpiresAt`.** `owner` is a
+  `{package, ref}` tag a consumer package uses for its own bookkeeping (not
+  a project/repo/group field); `env` is a free-form name -> value map,
+  stored and emitted only (not yet read by any dispatch or provider command
+  path); `llmAuthExpiresAt` is an ISO 8601 expiry for a member's LLM auth.
+  `list_members` and `member_detail` (`"json"` format) emit the full field
+  set, including fields that already existed server-side but were not yet
+  surfaced (`modelTiers`, `shell`, `vcsTokenExpiresAt`, `reservedBy`,
+  `unreservable`).
+- **`member_owner` sets and clears the owner tag**, refusing both `set` and
+  `clear` while the member is held (`reservedBy` set), via one exported
+  check reused by `update_member`'s own inline copy of the same rule so
+  `update_member` cannot be used to bypass the held-refusal.
+- **`member_git_status` reports live git status** for a member's work
+  folder through an ordered six-probe sequence (work-tree check, porcelain
+  v2 status, worktree list, origin URL, playbook presence, KB bible commit)
+  run through the same command path every other member-bound tool uses --
+  paths resolved to literals in JavaScript, no shell-level expansion,
+  PowerShell probes base64/utf16le-wrapped. A folder that is not a git work
+  tree returns `{checkout: null}` with no error, since the server never
+  requires a member's work folder to be a checkout.
+- **`packages/apra-fleet-client` kept in lockstep**: wrappers, typedefs and
+  `api-reference.md` rows for both new tools and the extended registry
+  fields (method count 32 -> 34), with its own parity/wrapper test suite
+  green.
+
+See [docs/mcp-tools.md](docs/mcp-tools.md) for the full parameter and
+output reference.
+
+Carried forward (filed as follow-up work, not fixed this sprint):
+- `owner` accepted by `register_member`/`update_member` is checked only for
+  non-empty strings, not the package/ref format `member_owner`'s own `set`
+  path validates.
+- `MemberOwnerStructured` (the client's owner-tool typedef) has no
+  client-server typedef parity test case yet.
+
 ## [Unreleased] -- Shell pages: Members, Secrets, Health (sprint goal not met -- blocking defect found in review)
 
 Sprint goal: complete the S1 members table (drawer actions, add-member
@@ -61,7 +190,6 @@ Known gap carried forward (blocks the epic acceptance criterion):
   that calls the route, not just route-level test coverage.
 - See `docs/console-architecture.md` for the durable client/server
   type-drift risk this defect is an instance of.
-
 
 ## [Unreleased] -- Console seam and shell UI foundation for `/ui` (sprint goal not yet met -- see carried-forward items)
 

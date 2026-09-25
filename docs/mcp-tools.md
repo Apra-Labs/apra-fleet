@@ -26,8 +26,8 @@ this pair as "member identifier" rather than repeating it.
 ## 0. Tool index
 
 **Member lifecycle:** `register_member`, `list_members`, `update_member`,
-`remove_member`, `get_member_model_pricing`, `member_reservation`,
-`dolt_push_mutex`, `child_id_allocator`.
+`remove_member`, `get_member_model_pricing`, `member_reservation`, `member_owner`,
+`member_git_status`, `dolt_push_mutex`, `child_id_allocator`.
 
 **Files:** `send_files`, `receive_files`.
 
@@ -90,6 +90,9 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `code_intel_provider` | `"codebase-memory"` \| `"gitnexus"` \| `"none"` | no | Code-intelligence provider. Defaults to the fleet-wide config |
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell. Ignored for non-Windows members. See [windows-shell-selection.md](windows-shell-selection.md) |
 | `unreservable` | boolean | no | Mark the member as never exclusively reservable so several sprints can share it |
+| `owner` | `{package, ref}` | no | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field -- see `member_owner` below for the dedicated set/clear tool and its format validation |
+| `env` | object (string -> string) | no | Free-form name -> value map stored and emitted on the member record. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path yet -- storage and emission only |
+| `llm_auth_expires_at` | string | no | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known |
 | `cloud_provider` | `"aws"` | no | When set, `cloud_instance_id` and `key_path` are required |
 | `cloud_instance_id` | string | conditional | EC2 instance id matching `i-[0-9a-f]{8,17}` |
 | `cloud_region` | string | no | AWS region, default `us-east-1` |
@@ -200,6 +203,72 @@ Unregisters a fleet member and cleans up its connection.
 **Output:** Confirmation message with member name and ID. Includes warnings if the token could not be cleared (e.g. member was offline).
 
 **Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote member's `authorized_keys` file. Those remain as-is.
+
+### `member_owner`
+
+Sets or clears the `owner` tag on a member -- the binding a package/consumer (e.g. a
+fleet-sprint project) uses for its own bookkeeping. Distinct from `reservedBy`: `owner`
+is a durable label the consumer sets itself, `reservedBy` is the fleet's own exclusive-hold
+state set by `member_reservation`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| member identifier | string | yes | `member_id` or `member_name` |
+| `action` | `"set"` \| `"clear"` | yes | `"set"` writes `owner {package, ref}` (both required, format-validated against `OWNER_PACKAGE_PATTERN`/`OWNER_REF_PATTERN` in `src/utils/owner-validation.ts`). `"clear"` removes the owner tag |
+| `package` | string | for `set` | Package/consumer that owns this member (e.g. `"fleet-sprint"`) |
+| `ref` | string | for `set` | Consumer-side reference this owner binding points at (e.g. a sprint/checkout id) |
+
+**What it does:** Both `set` and `clear` refuse with a `member-held` error when the member
+is currently reserved (`reservedBy` set) -- this is enforced through one exported check
+(`memberHeldRefusal()` in `src/tools/member-owner.ts`) so a later consult from a
+workflow-holds layer can reuse the same rule instead of re-deriving it. `update_member`
+independently duplicates this same held-refusal for its own `owner` field, so `owner`
+cannot be changed as a side effect of `update_member` while the member is held either.
+
+**Output:** `structuredContent.outcome` is one of `set`, `cleared`, `invalid_input`,
+`member_held`, `member_not_found`, `failed` -- branch on this, never on the text. On
+success, `structuredContent.owner` reflects the value after the call (`null` when cleared).
+
+`member_owner` is the validating path for `owner`: its package/ref format checks live in
+`src/utils/owner-validation.ts` (`OWNER_PACKAGE_PATTERN`/`OWNER_REF_PATTERN`), guarding
+against values that would corrupt the `owner=pkg@ref` compact chip `list_members` and
+`member_detail` render.
+
+### `member_git_status`
+
+Reports live git status for a member's work folder, without requiring the caller to know
+whether that folder is even a checkout.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| member identifier | string | yes | `member_id` or `member_name` |
+
+**What it does:** Runs an ordered sequence of six read-only git probes against the
+member's work folder through the same execute path every other member-bound command
+uses (`git -C <folder> ...`, never a `cd`/shell-expansion form -- see
+`src/services/git-status-probe.ts`): work-tree check, `status --porcelain=v2 --branch`,
+`worktree list --porcelain`, `remote get-url origin`, presence of the three documented
+target playbook files (`deploy.md`, `integ-test-playbook.md`,
+`regression-test-playbook.md`), and the last commit touching the KB bible export
+(`.fleet/kb-canonical.json`). The first probe short-circuits the rest: a folder that is
+not a git work tree (including a plain "not a git repository" exit) returns
+`{checkout: null}` with `ok: true` and no error -- the server never requires a member's
+work folder to be a checkout.
+
+**Output:** `structuredContent.checkout` is `null` for a non-git folder, or an object
+carrying branch, detached/HEAD state, upstream ahead/behind counts, the dirty-file list,
+worktrees, the normalised origin slug (`host/path`, e.g.
+`github.com/apra-labs/apra-fleet` -- the same identity regardless of which of the SSH,
+HTTPS or `scp`-style remote spelling is configured), playbook presence, and the bible
+commit. Command construction follows the same cross-shell rules as every other
+member-bound command in this codebase (paths resolved to literals in JavaScript, no
+shell-level `$VAR`/`~`/backtick expansion, PowerShell script bodies base64/utf16le
+wrapped via `wrapPowerShellEncoded`) -- see
+[cross-shell-command-construction.md](cross-shell-command-construction.md).
 
 ### `shutdown_server`
 
@@ -502,4 +571,4 @@ Assembles a multi-section report covering:
 - **System Resources:** CPU load, memory usage, and working folder disk space.
 - **Git:** Current branch in the member's working folder.
 - **Token Usage:** Accumulated lifetime token totals.
-- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), and git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`). `member_detail` is the only MCP surface exposing these, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission).
+- **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`), `modelTiers`, `shell`, `vcsTokenExpiresAt`, `reservedBy`, `unreservable`, `owner` (`{package, ref}` or `null`), and `env` (the stored name -> value map). `member_detail` is the only MCP surface exposing the VCS/repo/access facts, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission). `list_members`'s `"json"` format emits the same full field set for every member, not just one.

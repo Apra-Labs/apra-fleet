@@ -321,7 +321,8 @@ Returns a plain multi-line text summary for `"compact"`, or the structured
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
 `repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
 `llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
-`branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
+`branch?`, `cloud?`, `modelTiers?`, `vcsTokenExpiresAt?`, `reservedBy`,
+`unreservable`, `owner?`, `env?`, `llmAuthExpiresAt?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by
 `test/client-server-typedef-parity.test.mjs`, which parses the real
 `src/tools/*.ts` sources; the typedefs for the other tools are
@@ -385,6 +386,9 @@ Calls `register_member` -- adds a machine to the fleet.
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+| `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
+| `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint. |
+| `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 
 #### `updateMember(options: UpdateMemberOptions)`
@@ -425,6 +429,9 @@ and means "new value for this field". Identifies the target member via
 | `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
+| `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (`reservedBy` set) -- the same refusal `member_owner` applies, so this cannot be used to bypass it. |
+| `env` | `Record<string, string>?` | Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass `{}` to clear. |
+| `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 #### `removeMember(options: RemoveMemberOptions)`
 
@@ -459,6 +466,57 @@ prose.
 `memberId`, `memberName`, `sprintId`, `ownerSprintId` (the sprint that held
 the reservation when the call arrived, or the blocking owner on
 `"already_reserved_by_other"`).
+
+#### `memberOwner(options: MemberOwnerOptions)`
+
+Calls `member_owner` -- sets or clears the owner `{package, ref}` tag a
+package/consumer (e.g. a fleet-sprint project) uses to bind a member to its
+own bookkeeping. The MCP result carries both halves: `content[0].text` is
+the human-readable summary, and `structuredContent` is a
+`MemberOwnerStructured`. Programmatic callers must branch on
+`structuredContent.outcome` rather than string-matching the prose.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. Both refuse with error code `member-held` while the member is reserved (`reservedBy` set). |
+| `package` | `string?` | Package/consumer that owns this member (e.g. "fleet-sprint"). Required for action `"set"`. |
+| `ref` | `string?` | Consumer-side reference this owner binding points at (e.g. a sprint/checkout id). Required for action `"set"`. |
+
+`MemberOwnerStructured` fields: `outcome` (one of `"set"`, `"cleared"`,
+`"invalid_input"`, `"member_held"`, `"member_not_found"`, `"failed"`), `ok`,
+`action`, `memberId`, `memberName`, `owner` (`{package, ref}` after this
+call, or `null` when cleared/absent/failed before writing).
+
+#### `memberGitStatus(options: MemberGitStatusOptions)`
+
+Calls `member_git_status` -- probes a folder on a member with the F2 git
+probe sequence (built for that member's OS and shell) and returns the parsed
+checkout state. The MCP result carries both halves: `content[0].text` is the
+human-readable summary, and `structuredContent` is a `MemberGitStatusResult`.
+Programmatic callers must branch on `structuredContent.outcome` rather than
+string-matching the prose.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `folder` | `string?` | Absolute path on the member to inspect. Defaults to the member's registered work folder. |
+
+`MemberGitStatusResult` fields: `outcome` (one of `"checkout"`,
+`"no_checkout"`, `"member_not_found"`, `"no_folder"`, `"failed"`), `ok`,
+`memberId`, `memberName`, `folder`, `checkout`, `error`.
+
+`checkout` is `null` when the folder is not a git work tree -- a normal
+answer with `ok: true` and `outcome: "no_checkout"`, since the server never
+requires a member to have a checkout. Otherwise it carries `path`, `branch`,
+`detached`, `head`, `upstream`, `ahead`, `behind`, `dirty`, `dirtyFiles`
+(`{code, path}`), `worktrees` (`{path, head, branch, detached, bare,
+locked}`), `originUrl`, `originSlug` (the remote normalised to lowercase
+`host/path`), `playbooks` (which of `deploy.md`, `integ-test-playbook.md`,
+`regression-test-playbook.md` exist in the checkout root) and `bibleCommit`
+(last commit touching `.fleet/kb-canonical.json`).
 
 #### `getMemberModelPricing(options)`
 
@@ -523,9 +581,14 @@ order. Options: `member_id?`, `member_name?`, `role?`
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
 wildcard-matched (not exact-matched) against a normalized form of the
 request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
-`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, and any payload
-containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
--- rejected outright, for every caller.
+`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, any payload
+containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`),
+the apra-fleet server console endpoints (`/ui`, `/api`, `/ext` on its port,
+default 7523) and the fleet-supervisor port (default 8787) -- except the two
+supervisor grants `deploy.md` documents by name (the active-sprints gate
+`Bash(curl * localhost:8787/api/sprints*)` and the stale-reservation
+force-release `Bash(curl * localhost:8787/api/reservations/*)`), which
+remain grantable -- are rejected outright, for every caller.
 
 #### `setupSshKey(options: SetupSshKeyOptions)`
 
@@ -824,3 +887,68 @@ parity), which is consistent with this path being unexercised. The `.`,
 `./client`,
 and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
 the transports can be used standalone without going through this factory.
+
+## `src/auth/local-token.mjs` (subpath: `@apralabs/apra-fleet-client/auth/local-token`)
+
+Shared local-credential helper (apra-fleet-iywi.1.1, C3/DQ-20/s4.4). Lifted
+out of the fleet-sprint supervisor's `src/supervisor/auth.mjs` so any local
+HTTP surface on the machine -- the supervisor and the apra-fleet server
+console today -- can share ONE token-resolution and bearer/cookie credential
+check without sharing route policy. Route policy (which paths are guarded,
+which cookie name to use) is intentionally NOT here: each caller keeps its
+own guard, so one caller's rule can never leak into another's route table
+(see the closed regression apra-fleet-hzb2, where a blanket `/api/` rule in
+the supervisor 401ed an unauthenticated `GET /api/health`).
+
+### `readLocalToken(dataDir, opts?)`
+
+Resolves a caller's local credential: prefers the shared
+`<home>/.apra-fleet/fleet.key` (the same file `src/services/jwt.ts`'s
+`getOrCreateKey()` reads/mints) over a `<dataDir>/private/token` file it
+mints-or-reuses via `loadOrCreateToken()`. Never mints `fleet.key` itself. A
+present-but-malformed `fleet.key` is rejected (never used) and logged as a
+warning; resolution then falls through to the private/token fallback as if
+`fleet.key` were absent.
+
+| Option | Type | Notes |
+|---|---|---|
+| `home` | `string?` | Overrides where the fleet-key lookup is rooted. Defaults to `os.homedir()`. Tests MUST pass a temp dir. |
+| `logger` | `{ warn?: Function }?` | Receives the malformed-key warning. Defaults to `console`. |
+| `createIfMissing` | `boolean?` | Default `true` (mint-or-reuse the private/token fallback). Pass `false` for a read-only probe: no mkdir, no write, no mode healing -- returns `null` if no well-formed token exists at either source. |
+
+Returns `{ token, path, source: 'fleet-key' | 'private-token', aclVerified, created } | null`.
+
+### `loadOrCreateToken(dir)`
+
+Idempotent mint-or-reuse of `<dir>/private/token` (0600 on POSIX; on Windows
+the caller relies on directory ACL inheritance and gets `aclVerified: false`
+back). Returns `{ token, path, created, aclVerified }`.
+
+### `isAuthorized(req, token, opts?)`
+
+Does `req` carry `token`, via `Authorization: Bearer <token>` (case-insensitive
+scheme) or a named cookie? `opts.cookieName` defaults to `'local_token'` --
+callers with an existing cookie name (e.g. the supervisor's `se_token`) must
+pass it explicitly. Token comparison is constant-time.
+
+### `readCookie(header, name)`
+
+Extracts one cookie by exact name from a raw `Cookie` header value, or `null`
+if absent. Matches on the parsed name, never a substring of the raw header.
+
+### `cookieFor(token, opts?)`
+
+Builds a `Set-Cookie` header value for `token` under `opts.cookieName`
+(default `'local_token'`), always `HttpOnly; SameSite=Strict; Path=/`. Callers
+handing out a value derived from a signing secret (rather than the secret
+itself) pass that derived value here -- this function has no opinion on what
+`token` is, only how the cookie is shaped.
+
+### `normalizePath(urlPath)`
+
+Parses a raw request path the same way an HTTP router normally does (parse
+against a dummy origin, take `.pathname`), so a raw `req.url` and a
+pre-parsed `url.pathname` always answer the same. This is the PATH NORMALISER
+ONLY -- it carries no route policy. Returns the normalised pathname, or
+`null` if `urlPath` could not be parsed; every caller in this codebase treats
+`null` as "guarded" (fail closed).

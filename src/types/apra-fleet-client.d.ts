@@ -31,3 +31,23 @@ declare module '@apralabs/apra-fleet-client/server-resolution' {
     deps?: FleetResolutionDeps,
   ): { command: string; args: string[] };
 }
+
+/**
+ * apra-fleet-iywi.2.1: only the surface src/console/server.ts consumes is
+ * declared here -- see
+ * packages/apra-fleet-client/src/auth/local-token.mjs for the source of
+ * truth and packages/apra-fleet-client/docs/api-reference.md for the full
+ * contract (readLocalToken, loadOrCreateToken, readCookie and the token/
+ * private-dir constants are exported there too but unused in src/).
+ */
+declare module '@apralabs/apra-fleet-client/auth/local-token' {
+  export function isAuthorized(
+    req: { headers?: Record<string, unknown> },
+    token: string,
+    opts?: { cookieName?: string },
+  ): boolean;
+
+  export function cookieFor(token: string, opts?: { cookieName?: string }): string;
+
+  export function normalizePath(urlPath: string): string | null;
+}
