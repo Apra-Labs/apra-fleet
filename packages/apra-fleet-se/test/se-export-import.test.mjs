@@ -48,6 +48,35 @@ function openTempStore(dataDir) {
     return store;
 }
 
+/**
+ * Spawn `bin/se.mjs <args>` and resolve with its outcome instead of throwing
+ * on a non-zero exit, so callers can assert on the exit-code contract
+ * directly (0 ok, 1 usage, 2 unknown project/bad file, 3 refused).
+ *
+ * util.promisify(execFile) resolves {stdout, stderr} on exit 0; on a
+ * non-zero exit it REJECTS with an error decorated with the same `.code`
+ * (the child's exit code, not an errno string here) plus `.stdout`/`.stderr`
+ * -- see Node's child_process docs for execFile's promisified form.
+ *
+ * NODE_TEST_CONTEXT is stripped from the child's env: it is set by the
+ * OUTER `node --test` run executing THIS file, and if inherited,
+ * se.mjs's isMainModule() guard treats the child as a reporter-driven
+ * grandchild and silently no-ops instead of actually running the command.
+ */
+async function spawnSe(args) {
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_TEST_CONTEXT;
+    try {
+        const { stdout, stderr } = await execFileAsync(process.execPath, [SE_BIN, ...args], {
+            encoding: 'utf8',
+            env: childEnv,
+        });
+        return { code: 0, stdout, stderr };
+    } catch (err) {
+        return { code: err.code, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
+    }
+}
+
 after(async () => {
     for (const s of openStores) {
         try { s.close(); } catch { /* best-effort */ }
@@ -266,12 +295,13 @@ describe('se-export-import', { skip }, () => {
     });
 
     test('history: the export always carries an empty history array (no run-history table exists yet)', async () => {
-        // bin/se.mjs's --with-history CLI flag was removed as dead code
-        // (fix(bin/se.mjs) commit) because the underlying history table does
-        // not exist in supervisor.sqlite yet -- exportProject() unconditionally
-        // returns `history: []` with a note explaining why. That single
-        // behavior satisfies both halves of this case: the array present in
-        // every export is empty (no run data to omit or include either way).
+        // bin/se.mjs accepts --with-history as a forward-compat no-op: the
+        // underlying history table does not exist in supervisor.sqlite yet,
+        // so exportProject() unconditionally returns `history: []` with a
+        // note explaining why, regardless of whether the flag is passed.
+        // This case exercises the flag-less default path at the function
+        // level; the CLI-level "--with-history" case below exercises the
+        // flag actually being passed through parseArgs.
         const dirA = await tempDataDir();
         const storeA = openTempStore(dirA);
         const ledgerA = createLedger({ dataDir: dirA });
@@ -324,5 +354,82 @@ describe('se-export-import', { skip }, () => {
         assert.equal(parsed.project.id, 'cli-1');
         assert.equal(parsed.project.name, 'CLI One');
         assert.deepEqual(parsed.history, []);
+    });
+
+    test('CLI exit codes: usage error (1) for no args and an unknown flag', async () => {
+        let result = await spawnSe([]);
+        assert.equal(result.code, 1, 'no args must exit 1');
+
+        const dir = await tempDataDir();
+        result = await spawnSe(['export', 'anything', '--bogus-flag', '--data-dir', dir]);
+        assert.equal(result.code, 1, 'an unknown flag must exit 1');
+    });
+
+    test('CLI exit codes: operational error (2) for an unknown project and a wrong-format file', async () => {
+        const dirUnknown = await tempDataDir();
+        let result = await spawnSe(['export', 'no-such-project', '--data-dir', dirUnknown]);
+        assert.equal(result.code, 2, 'export of an unknown project must exit 2');
+
+        const dirBadFormat = await tempDataDir();
+        const badFile = path.join(dirBadFormat, 'bad-export.json');
+        await fsp.writeFile(
+            badFile,
+            JSON.stringify({ format: 'not-the-right-format', project: {} }),
+            'utf-8',
+        );
+        result = await spawnSe(['import', badFile, '--data-dir', dirBadFormat]);
+        assert.equal(result.code, 2, 'import of a wrong-format file must exit 2');
+    });
+
+    test('CLI exit codes: a live ledger reservation makes import refuse with exit code 3', async () => {
+        const dir = await tempDataDir();
+        const store = openTempStore(dir);
+        const ledger = createLedger({ dataDir: dir });
+        await ledger.start();
+
+        createProject(store.db, {
+            id: 'cli-live-1',
+            name: 'CLI Live One',
+            backlogMember: 'member-live',
+            beads: { dir: '/tmp/cli-live-1/.beads' },
+        });
+        const liveExport = exportProject({ db: store.db, ledger, projectId: 'cli-live-1' });
+
+        // A live run (no exitedAt) whose members overlap the exported
+        // project's backlogMember must make the CLI's import subcommand
+        // exit 3, not just throw ERR_LIVE_RUN in-process.
+        await ledger.claim('live-sprint-cli', { members: ['member-live'] });
+        await ledger.stop();
+
+        // Release the in-process handle before the child process opens the
+        // same sqlite/ledger files, so there's exactly one live connection
+        // at a time (same convention as the CLI smoke test above).
+        store.close();
+        openStores.splice(openStores.indexOf(store), 1);
+
+        const exportFile = path.join(dir, 'export.json');
+        await fsp.writeFile(exportFile, JSON.stringify(liveExport), 'utf-8');
+
+        const result = await spawnSe(['import', exportFile, '--data-dir', dir]);
+        assert.equal(result.code, 3, 'import must refuse with exit 3 while the reservation is live');
+    });
+
+    test('CLI: --with-history is an accepted no-op flag; export still carries an empty history array', async () => {
+        const dir = await tempDataDir();
+        const store = openTempStore(dir);
+        createProject(store.db, {
+            id: 'hist-cli-1',
+            name: 'History CLI One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/hist-cli-1/.beads' },
+        });
+        store.close();
+        openStores.splice(openStores.indexOf(store), 1);
+
+        const result = await spawnSe(['export', 'hist-cli-1', '--with-history', '--data-dir', dir]);
+        assert.equal(result.code, 0, '--with-history must not be a usage error');
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.project.id, 'hist-cli-1');
+        assert.deepEqual(parsed.history, [], '--with-history must still emit an empty history array');
     });
 });
