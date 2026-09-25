@@ -3,6 +3,7 @@ import { Members } from "./pages/Members";
 import { Secrets } from "./pages/Secrets";
 import { Health } from "./pages/Health";
 import { Nav, resolveScreen, type Screen } from "./nav/Nav";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 /**
  * Root of the shell SPA. Hash-based navigation across the three screens
@@ -26,9 +27,11 @@ export function App() {
   return (
     <div>
       <Nav active={screen} />
-      {screen === "members" ? <Members /> : null}
-      {screen === "secrets" ? <Secrets /> : null}
-      {screen === "health" ? <Health /> : null}
+      <ErrorBoundary key={screen}>
+        {screen === "members" ? <Members /> : null}
+        {screen === "secrets" ? <Secrets /> : null}
+        {screen === "health" ? <Health /> : null}
+      </ErrorBoundary>
     </div>
   );
 }
