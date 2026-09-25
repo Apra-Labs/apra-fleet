@@ -7,6 +7,7 @@ import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
+import { memberHeldCheck } from './member-owner.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
@@ -27,7 +28,10 @@ const vcsProviders: Record<string, VcsProviderService> = {
 
 export const removeMemberSchema = z.object({
   ...memberIdentifier,
-  force: z.boolean().optional().default(false).describe('Remove even if the member is currently busy'),
+  force: z.boolean().optional().default(false).describe(
+    'Remove even if the member is currently busy, or if it is held (reservedBy set, or a '
+    + 'registered workflow package reports the member held).'
+  ),
 });
 
 export type RemoveMemberInput = z.infer<typeof removeMemberSchema>;
@@ -41,6 +45,17 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   const currentStatus = readMemberStatus(agent.id);
   if (currentStatus === 'busy' && !input.force) {
     return `⛔ Member "${agent.friendlyName}" is currently busy. Wait for the task to complete or set force=true to remove anyway.`;
+  }
+
+  // Held check (DQ-22): the same combined reservedBy + registered-workflow-
+  // package holds consult member_owner runs, so a member cannot be removed
+  // out from under a live reservation or an in-progress package assignment
+  // by any route other than an explicit force=true.
+  if (!input.force) {
+    const { refusalText } = await memberHeldCheck(agent, agent.owner?.package ?? null);
+    if (refusalText) {
+      return `⛔ Cannot remove member "${agent.friendlyName}": ${refusalText} Error code: member-held. Set force=true to remove anyway.`;
+    }
   }
 
   const strategy = getStrategy(agent);

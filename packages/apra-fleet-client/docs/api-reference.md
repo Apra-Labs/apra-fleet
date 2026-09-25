@@ -435,13 +435,16 @@ and means "new value for this field". Identifies the target member via
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet.
+Calls `remove_member` -- removes a member from the fleet. Without `force`,
+refuses (text containing `member-held`) while the member is busy, reserved
+(`reservedBy` set), or a registered workflow package reports it held (DQ-22,
+consulted the same way `memberOwner` does below).
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `force` | `boolean?` | Remove even if the member is currently busy. |
+| `force` | `boolean?` | Remove even if the member is currently busy, reserved (`reservedBy` set), or held by a registered workflow package. |
 
 #### `memberReservation(options: MemberReservationOptions)`
 
@@ -476,18 +479,34 @@ the human-readable summary, and `structuredContent` is a
 `MemberOwnerStructured`. Programmatic callers must branch on
 `structuredContent.outcome` rather than string-matching the prose.
 
+Both `"set"` and `"clear"` refuse with error code `member-held` while the
+member is reserved (`reservedBy` set) OR a registered workflow package's
+`holds` route reports the member held (DQ-22). The owning package (the one
+named in the member's current owner tag, or the requested package on
+`"set"`) fails CLOSED (`member-held`, reason `holds-unavailable`) if its
+`holds` call errors; any other package erroring is skipped. `"set"`
+additionally validates `ref` against the requested package's `ownerRefs`
+when that package is registered and declares one -- an unknown ref is
+`invalid_input`; a package that is not registered (or registered without
+`ownerRefs`) keeps format-only validation.
+
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. Both refuse with error code `member-held` while the member is reserved (`reservedBy` set). |
+| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. |
 | `package` | `string?` | Package/consumer that owns this member (e.g. "fleet-sprint"). Required for action `"set"`. |
 | `ref` | `string?` | Consumer-side reference this owner binding points at (e.g. a sprint/checkout id). Required for action `"set"`. |
 
 `MemberOwnerStructured` fields: `outcome` (one of `"set"`, `"cleared"`,
 `"invalid_input"`, `"member_held"`, `"member_not_found"`, `"failed"`), `ok`,
 `action`, `memberId`, `memberName`, `owner` (`{package, ref}` after this
-call, or `null` when cleared/absent/failed before writing).
+call, or `null` when cleared/absent/failed before writing), `heldBy`
+(`{package, reason}[]`, populated only on outcome `"member_held"`, else
+`null` -- `package` is the registered workflow package id reporting the
+hold or the sentinel `"fleet"` for the built-in `reservedBy` hold; `reason`
+is `"reservation"`, `"holds-unavailable"`, or the reporting package's own
+free-form reason text).
 
 #### `memberGitStatus(options: MemberGitStatusOptions)`
 

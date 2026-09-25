@@ -296,12 +296,24 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {"set" | "clear"} action - "set" writes owner {package, ref} (both required,
- *   format-validated); "clear" removes the owner tag. Both refuse with error code
- *   member-held while the member is reserved (reservedBy set).
+ *   format-validated; when "package" is a registered workflow package declaring ownerRefs,
+ *   "ref" must be a known ref for it); "clear" removes the owner tag. Both refuse with error
+ *   code member-held while the member is reserved (reservedBy set) or while a registered
+ *   workflow package reports the member held.
  * @property {string} [package] - Package/consumer that owns this member (e.g. "fleet-sprint").
  *   Required for action "set".
  * @property {string} [ref] - Consumer-side reference this owner binding points at (e.g. a
  *   sprint/checkout id). Required for action "set".
+ */
+
+/**
+ * @typedef {Object} MemberHeldByEntry
+ * @property {string} package - The registered workflow package id reporting the hold, or the
+ *   sentinel "fleet" for the fleet's own built-in reservedBy hold (never a real workflow
+ *   package).
+ * @property {string} reason - "reservation" for the reservedBy hold, "holds-unavailable" when
+ *   the owning package's holds call errored (fail-closed), or the free-form reason text the
+ *   reporting package's holds route supplied.
  */
 
 /**
@@ -315,6 +327,8 @@
  * @property {string|null} memberName - Friendly name of the resolved member, null when none resolved.
  * @property {{package: string, ref: string}|null} owner - The owner value AFTER this call (null
  *   when cleared, absent, or the call failed before writing).
+ * @property {MemberHeldByEntry[]|null} heldBy - Every holder currently refusing the operation,
+ *   populated only alongside outcome "member_held"; null otherwise.
  *
  * Mirrors src/tools/member-owner.ts's MemberOwnerStructured field-for-field. The tool still
  * returns the same human-readable summary in `content[0].text`; this shape is the
@@ -796,6 +810,11 @@ export class ApraFleet {
 
     /**
      * Remove a member from the fleet.
+     *
+     * Without `force`, refuses (error text containing "member-held") while the member is
+     * busy, reserved (reservedBy set), or a registered workflow package reports it held
+     * (DQ-22, consulted the same way member_owner does). `force: true` bypasses all three.
+     *
      * @param {RemoveMemberOptions} options
      */
     async removeMember(options) {
@@ -824,6 +843,13 @@ export class ApraFleet {
      * Set or clear the owner {package, ref} tag a package/consumer (e.g. a
      * fleet-sprint project) uses to bind a member to its own bookkeeping
      * (src/tools/member-owner.ts).
+     *
+     * Both "set" and "clear" refuse with error code member-held while the
+     * member is reserved (reservedBy set) OR a registered workflow package's
+     * holds route reports the member held (DQ-22); "set" additionally
+     * validates "ref" against the requested package's ownerRefs when that
+     * package is registered and declares one. `structuredContent.heldBy`
+     * lists every holder refusing the operation on a member_held outcome.
      *
      * Same two-halves result shape as memberReservation: `content[0].text`
      * is the human-readable summary and `structuredContent` is a
