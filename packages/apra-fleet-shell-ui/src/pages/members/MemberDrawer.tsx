@@ -67,7 +67,15 @@ const LLM_PROVIDER_OPTIONS = [
   { value: "opencode", label: "Opencode" }
 ];
 
+/** "" is the baseline/sentinel value, NOT a postable choice: Agent.unattended
+ *  (src/types.ts) is not surfaced by list_members or member_detail (neither
+ *  emits it -- see initialEditState below), so the drawer cannot know the
+ *  member's real current mode and must not silently claim one. Only an
+ *  operator picking one of the three real options makes it dirty and
+ *  postable -- selecting "false" explicitly now correctly reaches
+ *  update-member's "reset to interactive prompts" path. */
 const UNATTENDED_OPTIONS = [
+  { value: "", label: "(unchanged - not reported by the server)" },
   { value: "false", label: "Interactive (false)" },
   { value: "auto", label: "Auto-approve safe ops (auto)" },
   { value: "dangerous", label: "Skip all checks (dangerous)" }
@@ -78,7 +86,7 @@ interface EditFormState {
   category: string;
   tagsText: string;
   icon: string;
-  unattended: "false" | "auto" | "dangerous";
+  unattended: "" | "false" | "auto" | "dangerous";
   llmProvider: string;
   host: string;
   port: string;
@@ -111,13 +119,13 @@ function initialEditState(member: FleetMember | null): EditFormState {
     category: member ? rawString(member.category) : "",
     tagsText: (member?.tags ?? []).join(", "),
     icon: member ? rawString(member.icon) : "",
-    // NOTE: Agent.unattended (src/types.ts) is not surfaced by list_members
-    // or member_detail (src/tools/list-members.ts / member-detail.ts never
-    // emit it), so the drawer has no way to read the member's actual current
-    // value -- this defaults to "false" and is only sent if the operator
-    // explicitly picks a different option (a no-op if the true value already
-    // was "false").
-    unattended: "false",
+    // Agent.unattended (src/types.ts) is not surfaced by list_members or
+    // member_detail (src/tools/list-members.ts / member-detail.ts never emit
+    // it), so the drawer has no way to read the member's actual current
+    // value. "" is the explicit "unchanged - not reported by the server"
+    // sentinel (see UNATTENDED_OPTIONS) -- it is never posted; only an
+    // operator's real pick (including "false", to reset to interactive) is.
+    unattended: "",
     llmProvider: member?.llmProvider ?? "",
     host,
     port,
@@ -159,8 +167,11 @@ function buildUpdateBody(member: FleetMember, state: EditFormState): UpdateMembe
     body.icon = trimmedIcon;
     dirty = true;
   }
+  // baseline.unattended is always "" (see initialEditState) -- this only
+  // fires when the operator actually picked one of the three real options,
+  // so state.unattended is never "" here.
   if (state.unattended !== baseline.unattended) {
-    body.unattended = state.unattended;
+    body.unattended = state.unattended as UpdateMemberBody["unattended"];
     dirty = true;
   }
   if (state.llmProvider !== baseline.llmProvider) {
