@@ -163,6 +163,10 @@ execute_command(
 
 **Wrapper behavior:**
 
+- The wrapper script embeds the member's stored `env` name-value map
+  (never auth credentials, since this script persists as a file on the
+  member) -- see
+  [docs/cross-shell-command-construction.md](cross-shell-command-construction.md)
 - Writes PID to `task.pid`, JSON status to `status.json`
 - Background loop touches `~/.fleet-tasks/<task_id>/activity` every 5 minutes while running -- this prevents the idle manager from stopping the instance during active work (F3)
 - On non-zero exit: retries up to `max_retries` times using `restart_command` (F1)

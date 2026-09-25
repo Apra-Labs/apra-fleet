@@ -61,7 +61,7 @@ member that belongs to a different consumer at all. That check runs before
 the lazy-reap step specifically because reaping is a real write to the
 member record: if reaping ran first, an owner-refused call would still
 have a side effect (clearing a dead reservation) despite being refused,
-which would be a surprising to a caller who was told nothing happened.
+which would be surprising to a caller who was told nothing happened.
 
 ## Design implication for callers
 
