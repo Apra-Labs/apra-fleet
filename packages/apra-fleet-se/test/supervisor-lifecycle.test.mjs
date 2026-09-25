@@ -15,6 +15,8 @@ import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -59,10 +61,45 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 // default rather than raised blind; the env override exists for a
 // genuinely slower environment to prove its own number instead of every
 // caller inheriting a bigger guess.
-const SUPERVISOR_HEALTH_TIMEOUT_MS = (() => {
-    const override = Number(process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS);
-    return Number.isFinite(override) && override > 0 ? override : 15000;
-})();
+//
+// apra-fleet-ecjf.5: the 15s default above is standalone-safe but not
+// contention-safe -- both timeouts observed in the integ run happened
+// under a bounded-runner run with sibling suites (and their own spawned
+// subprocesses) contending for the same CPU/IO. resolveSupervisorHealthBudgetMs()
+// runs the DEFAULT (only the default -- never an explicit override) through
+// the package's existing scaledTimeout() helper, the same contention-aware
+// treatment already applied by 14 other test files in this package (see
+// test/helpers/scaled-timeout.mjs). Two invariants:
+//   1. An explicit APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS resolves VERBATIM,
+//      never multiplied -- scaling a hand-set number would defeat the
+//      v6t7.8 rationale that a genuinely slower environment proves its own
+//      number rather than inheriting a bigger guess.
+//   2. This must not depend on APRA_FLEET_TEST_CONCURRENCY being present in
+//      the environment: when it is unset (e.g. a caller that bypasses
+//      scripts/run-tests.mjs), the concurrency used to scale falls back to
+//      TEST_CONCURRENCY from test/helpers/test-concurrency.mjs -- the single
+//      source of truth for this package's concurrency level -- instead of
+//      silently behaving as if concurrency were 1.
+// Exercised directly (not just via the module-load default) by the
+// "health-wait budget resolution" tests below, which drive it with injected
+// concurrency/override inputs so the cases cannot leak into sibling
+// subtests running concurrently in the same suite.
+function resolveSupervisorHealthBudgetMs({ concurrency, override } = {}) {
+    const rawOverride = override !== undefined ? override : process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS;
+    const numOverride = Number(rawOverride);
+    if (rawOverride !== undefined && rawOverride !== null && Number.isFinite(numOverride) && numOverride > 0) {
+        return numOverride;
+    }
+    const resolvedConcurrency = concurrency !== undefined
+        ? concurrency
+        : (() => {
+            const envConcurrency = Number(process.env.APRA_FLEET_TEST_CONCURRENCY);
+            return Number.isFinite(envConcurrency) ? envConcurrency : TEST_CONCURRENCY;
+        })();
+    return scaledTimeout(15000, { concurrency: resolvedConcurrency });
+}
+
+const SUPERVISOR_HEALTH_TIMEOUT_MS = resolveSupervisorHealthBudgetMs();
 
 // -- global PID cleanup: every spawned pid is tracked and force-killed --------
 /** @type {Set<number>} */
@@ -135,20 +172,38 @@ function waitDead(pid, timeoutMs = 8000) {
 const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
 
 /**
+ * Describe whether a spawned child had already exited (vs. was still
+ * running) at the time a health-wait timeout fired, plus its exit
+ * code/signal -- this is what distinguishes "silently starved while still
+ * alive" (a scheduling/contention symptom) from "silently exited early"
+ * (a spawn/crash symptom that empty stderr alone cannot rule out, since
+ * some exits produce no stack trace).
+ */
+function describeChildExitState(child) {
+    if (!child) return 'child process state: unknown (no child reference provided)';
+    const exited = child.exitCode !== null || child.signalCode !== null;
+    if (!exited) return 'child process state: still alive (not exited)';
+    return `child process state: exited (code=${child.exitCode === null ? 'null' : child.exitCode}, signal=${child.signalCode === null ? 'null' : child.signalCode})`;
+}
+
+/**
  * Wrap a supervisor health-wait timeout with a diagnostic that
  * distinguishes "the supervisor process never logged its listening line"
  * from "it bound but /api/health did not answer", using the
- * already-captured serve.mjs stdout, and appends the captured
- * stdout/stderr tail so a CI log is actionable without a re-run.
+ * already-captured serve.mjs stdout, plus whether the spawned child had
+ * already exited (vs. was still alive) and its exit code/signal, and
+ * appends the captured stdout/stderr tail so a CI log is actionable
+ * without a re-run.
  * Exercised directly (see the "health-wait timeout diagnostic" test below)
  * against a real failed wait on a deliberately unbound port, rather than
  * only asserted against hand-built strings.
  */
-function describeHealthWaitFailure(err, { stdoutBuf, stderrBuf }) {
+function describeHealthWaitFailure(err, { stdoutBuf, stderrBuf, child }) {
     const bindState = LISTENING_LOG_RE.test(stdoutBuf)
         ? 'supervisor bound but /api/health did not answer'
         : 'supervisor never logged its listening line';
-    const context = `${bindState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
+    const exitState = describeChildExitState(child);
+    const context = `${bindState}\n${exitState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
     if (err instanceof Error) {
         err.message = `${err.message}\n${context}`;
         return err;
@@ -448,7 +503,7 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
                 }
             }, { timeoutMs: SUPERVISOR_HEALTH_TIMEOUT_MS, label: 'supervisor /api/health' });
         } catch (err) {
-            throw describeHealthWaitFailure(err, { stdoutBuf, stderrBuf });
+            throw describeHealthWaitFailure(err, { stdoutBuf, stderrBuf, child: serve });
         }
 
         // A sprint "completing" on the machine: a real short-lived child that
