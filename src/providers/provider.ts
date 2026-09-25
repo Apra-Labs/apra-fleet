@@ -428,7 +428,7 @@ export interface ProviderAdapter {
     memberHomeDir?: string | null,
     agentOs?: 'linux' | 'macos' | 'windows',
     shell?: MemberShell,
-  ): Promise<void>;
+  ): Promise<string[] | void>;
 
   /** Optional capability flag indicating whether this provider requires Git repository
    *  awareness during permission composition (e.g. AGY uses gitFolder vs folderUri). */

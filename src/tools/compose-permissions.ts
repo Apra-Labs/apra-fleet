@@ -659,8 +659,12 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       allow = [...expanded];
     }
 
+    let deliveryWarnings: string[] = [];
     if (provider.preparePermissionsDelivery) {
-      await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+      const warns = await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+      if (Array.isArray(warns) && warns.length > 0) {
+        deliveryWarnings = warns;
+      }
     }
     const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
     const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
@@ -695,7 +699,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     // trust was never seeded, gets fixed the next time permissions are composed).
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
+    const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${warningsBlock}`;
   }
 
   // Proactive compose mode
@@ -706,8 +711,12 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger)
     : compose(profilesDir, mode, stacks, ledger);
 
+  let deliveryWarnings: string[] = [];
   if (provider.preparePermissionsDelivery) {
-    await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+    const warns = await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+    if (Array.isArray(warns) && warns.length > 0) {
+      deliveryWarnings = warns;
+    }
   }
   const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
   const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
@@ -739,5 +748,6 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';
-  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}`;
+  const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
+  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${warningsBlock}`;
 }

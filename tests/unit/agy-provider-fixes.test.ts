@@ -25,7 +25,9 @@ import { ClaudeProvider } from '../../src/providers/claude.js';
 import { CodexProvider } from '../../src/providers/codex.js';
 import { CopilotProvider } from '../../src/providers/copilot.js';
 import { OpenCodeProvider } from '../../src/providers/opencode.js';
-import { makeTestAgent } from '../test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { addAgent } from '../../src/services/registry.js';
+import { composePermissions } from '../../src/tools/compose-permissions.js';
 import { execSync } from 'node:child_process';
 
 const scratchDirs: string[] = [];
@@ -218,9 +220,10 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
         home,
         'windows',
         'gitbash',
-        true,
       );
-      expect(skillsRes).toBeNull();
+      expect(skillsRes.installed).toEqual([]);
+      expect(skillsRes.probeFailed).toBe(false);
+      expect(skillsRes.warning).toBeUndefined();
     });
   });
 
@@ -425,24 +428,11 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
       expect(warn).toContain('visible to AGY members');
     });
 
-    it('executes checkAgyMemberSkills via execCommand and throws surfaced error when global skills exist without opt-in', async () => {
+    it('executes checkAgyMemberSkills via execCommand and returns warning without throwing when global skills exist', async () => {
       const home = makeScratch('fleet-skills-exec-home-');
       const pmSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm');
-      fs.mkdirSync(pmSkillDir, { recursive: true });
-
-      const execFn = async (cmd: string) => {
-        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
-        return { code: 0, stdout, stderr: '' };
-      };
-
-      await expect(
-        checkAgyMemberSkills(execFn, home, process.platform === 'win32' ? 'windows' : 'linux', undefined, false)
-      ).rejects.toThrow('[fleet:error] agy: AGY provider has no per-member skill isolation mechanism');
-    });
-
-    it('executes checkAgyMemberSkills via execCommand and succeeds with warning info when opt-in flag is enabled', async () => {
-      const home = makeScratch('fleet-skills-exec-optin-home-');
       const fleetSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet');
+      fs.mkdirSync(pmSkillDir, { recursive: true });
       fs.mkdirSync(fleetSkillDir, { recursive: true });
 
       const execFn = async (cmd: string) => {
@@ -450,16 +440,153 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
         return { code: 0, stdout, stderr: '' };
       };
 
-      const result = await checkAgyMemberSkills(
+      const result = await checkAgyMemberSkills(execFn, home, process.platform === 'win32' ? 'windows' : 'linux');
+      expect(result.probeFailed).toBe(false);
+      expect(result.installed).toEqual(['pm', 'fleet']);
+      expect(result.warning).toContain('[fleet:warn] agy: AGY provider has no per-member skill isolation mechanism');
+      expect(result.warning).toContain('Global skill(s) [pm, fleet]');
+    });
+
+    it('executes checkAgyMemberSkills and returns clean result when no global skills exist', async () => {
+      const home = makeScratch('fleet-skills-clean-home-');
+      const execFn = async (cmd: string) => {
+        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
+        return { code: 0, stdout, stderr: '' };
+      };
+
+      const result = await checkAgyMemberSkills(execFn, home, process.platform === 'win32' ? 'windows' : 'linux');
+      expect(result.probeFailed).toBe(false);
+      expect(result.installed).toEqual([]);
+      expect(result.warning).toBeUndefined();
+    });
+
+    it('handles probe failure branches gracefully: nonzero exit code, thrown error, empty output, and unparseable output', async () => {
+      // 1. Nonzero exit code
+      const failExec = vi.fn().mockResolvedValue({ code: 1, stdout: '', stderr: 'command not found: node' });
+      const res1 = await checkAgyMemberSkills(failExec, '/tmp/home', 'linux');
+      expect(res1.probeFailed).toBe(true);
+      expect(res1.warning).toContain('member skills check probe could not run');
+      expect(res1.warning).toContain('command not found: node');
+
+      // 2. Thrown error (e.g. timeout / connection failure)
+      const throwExec = vi.fn().mockRejectedValue(new Error('SSH connection timed out after 5000ms'));
+      const res2 = await checkAgyMemberSkills(throwExec, '/tmp/home', 'linux');
+      expect(res2.probeFailed).toBe(true);
+      expect(res2.warning).toContain('member skills check probe could not run');
+      expect(res2.warning).toContain('SSH connection timed out');
+
+      // 3. Empty stdout
+      const emptyExec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+      const res3 = await checkAgyMemberSkills(emptyExec, '/tmp/home', 'linux');
+      expect(res3.probeFailed).toBe(true);
+      expect(res3.warning).toContain('empty output');
+
+      // 4. Unparseable JSON stdout
+      const badJsonExec = vi.fn().mockResolvedValue({ code: 0, stdout: 'SyntaxError: unexpected token', stderr: '' });
+      const res4 = await checkAgyMemberSkills(badJsonExec, '/tmp/home', 'linux');
+      expect(res4.probeFailed).toBe(true);
+      expect(res4.warning).toContain('unparseable output');
+    });
+
+    it('collects warnings in preparePermissionsDelivery', async () => {
+      const home = makeScratch('fleet-prep-home-');
+      const pmSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm');
+      fs.mkdirSync(pmSkillDir, { recursive: true });
+
+      const agy = new AgyProvider();
+      const agent = makeTestAgent({
+        id: 'agent-prep-warn',
+        agentType: 'local',
+        llmProvider: 'agy',
+        workFolder: makeScratch('fleet-prep-work-'),
+      });
+
+      const execFn = async (cmd: string) => {
+        const stdout = execSync(cmd, { encoding: 'utf-8', shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash' });
+        return { code: 0, stdout, stderr: '' };
+      };
+
+      const warnings = await agy.preparePermissionsDelivery(
+        agent,
         execFn,
         home,
-        process.platform === 'win32' ? 'windows' : 'linux',
-        undefined,
-        true
+        process.platform === 'win32' ? 'windows' : 'linux'
       );
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings[0]).toContain('Global skill(s) [pm]');
+    });
 
-      expect(result).not.toBeNull();
-      expect(result?.installed).toEqual(['fleet']);
+    it('surfaces visible warning in composePermissions result when global skills exist', async () => {
+      const home = makeScratch('fleet-compose-warn-home-');
+      const work = makeScratch('fleet-compose-warn-work-');
+      const pmSkillDir = path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm');
+      fs.mkdirSync(pmSkillDir, { recursive: true });
+
+      const hostOs: 'windows' | 'macos' | 'linux' =
+        process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux';
+      vi.spyOn(os, 'homedir').mockReturnValue(home);
+      backupAndResetRegistry();
+      try {
+
+        const member = makeTestAgent({
+          friendlyName: 'agy-skills-warn',
+          agentType: 'local',
+          llmProvider: 'agy',
+          os: hostOs,
+          workFolder: work,
+        });
+        addAgent(member);
+
+        // Proactive compose mode
+        const resultProactive = await composePermissions({ member_id: member.id, role: 'doer' });
+        expect(resultProactive).toContain('Warnings:');
+        expect(resultProactive).toContain('Global skill(s) [pm]');
+
+        // Reactive grant mode
+        const resultReactive = await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(git:*)'] });
+        expect(resultReactive).toContain('Warnings:');
+        expect(resultReactive).toContain('Global skill(s) [pm]');
+      } finally {
+        restoreRegistry();
+      }
+    });
+
+    it('surfaces visible warning in composePermissions result when skills probe fails', async () => {
+      const home = makeScratch('fleet-compose-probe-fail-home-');
+      const work = makeScratch('fleet-compose-probe-fail-work-');
+
+      const hostOs: 'windows' | 'macos' | 'linux' =
+        process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux';
+      vi.spyOn(os, 'homedir').mockReturnValue(home);
+      backupAndResetRegistry();
+      try {
+        const member = makeTestAgent({
+          friendlyName: 'agy-probe-fail',
+          agentType: 'local',
+          llmProvider: 'agy',
+          os: hostOs,
+          workFolder: work,
+        });
+        addAgent(member);
+
+        const agy = new AgyProvider();
+        vi.spyOn(agy, 'preparePermissionsDelivery').mockResolvedValue([
+          '[fleet:warn] agy: member skills check probe could not run (exit code 127: node not found). Global skill isolation status unverified.'
+        ]);
+        const getProviderModule = await import('../../src/providers/index.js');
+        const origGetProvider = getProviderModule.getProvider;
+        vi.spyOn(getProviderModule, 'getProvider').mockImplementation((p) => {
+          if (p === 'agy') return agy;
+          return origGetProvider(p);
+        });
+
+        const result = await composePermissions({ member_id: member.id, role: 'doer' });
+        expect(result).toContain('Warnings:');
+        expect(result).toContain('member skills check probe could not run');
+        expect(result).toContain('node not found');
+      } finally {
+        restoreRegistry();
+      }
     });
   });
 

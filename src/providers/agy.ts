@@ -710,16 +710,16 @@ export class AgyProvider implements ProviderAdapter {
     memberHomeDir?: string | null,
     agentOs: 'linux' | 'macos' | 'windows' = 'linux',
     shell?: MemberShell,
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const warnings: string[] = [];
     await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
     await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
     const skillsResult = await checkAgyMemberSkills(execCommand, memberHomeDir, agentOs, shell);
-    if (skillsResult) {
-      logWarn(
-        'agy',
-        `[fleet:warn] agy: Global skill(s) [${skillsResult.installed.join(', ')}] are installed in ${skillsResult.skillsDir} (overridden by APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS=1).`
-      );
+    if (skillsResult?.warning) {
+      logWarn('agy', skillsResult.warning);
+      warnings.push(skillsResult.warning);
     }
+    return warnings;
   }
 
   supportsOAuthCopy(): boolean {
@@ -978,13 +978,19 @@ export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOO
   `mcp(apra-fleet-member/${tool})`
 ]);
 
+export interface AgySkillsCheckResult {
+  installed: string[];
+  skillsDir?: string;
+  probeFailed: boolean;
+  warning?: string;
+}
+
 export async function checkAgyMemberSkills(
   execCommand: WorkspaceTrustExecFn,
   memberHomeDir?: string | null,
   agentOs: 'linux' | 'macos' | 'windows' = 'linux',
   shell?: MemberShell,
-  allowGlobalSkills = process.env.APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS === '1',
-): Promise<{ installed: string[]; skillsDir: string } | null> {
+): Promise<AgySkillsCheckResult> {
   const jsCode = `const fs = require('fs');
 const path = require('path');
 const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
@@ -995,26 +1001,72 @@ console.log(JSON.stringify({ pmInstalled, fleetInstalled, skillsDir }));
 `;
   const cmd = buildAgyNodeCommand(jsCode, agentOs, 'FLEET_SKILLS_EOF');
 
-  const result = await execCommand(cmd, 5000);
-  if (result.code === 0 && result.stdout) {
-    try {
-      const parsed = JSON.parse(result.stdout.trim());
-      const installed: string[] = [];
-      if (parsed.pmInstalled) installed.push('pm');
-      if (parsed.fleetInstalled) installed.push('fleet');
-      if (installed.length > 0) {
-        const list = installed.join(', ');
-        const errMsg = `[fleet:error] agy: AGY provider has no per-member skill isolation mechanism. Global skill(s) [${list}] are installed in ${parsed.skillsDir}. AGY members cannot be isolated from global skills. Set APRA_FLEET_ALLOW_GLOBAL_AGY_SKILLS=1 to override.`;
-        if (!allowGlobalSkills) {
-          throw new Error(errMsg);
-        }
-        return { installed, skillsDir: parsed.skillsDir };
-      }
-    } catch (e: any) {
-      if (e.message?.startsWith('[fleet:error]')) throw e;
-    }
+  let result: SSHExecResult;
+  try {
+    result = await execCommand(cmd, 5000);
+  } catch (err: any) {
+    const detail = err?.message || String(err);
+    return {
+      installed: [],
+      probeFailed: true,
+      warning: `[fleet:warn] agy: member skills check probe could not run (${detail}). Global skill isolation status unverified.`,
+    };
   }
-  return null;
+
+  if (result.code !== 0) {
+    const errOutput = (result.stderr || result.stdout || '').trim();
+    const detail = errOutput ? `exit code ${result.code}: ${errOutput}` : `exit code ${result.code}`;
+    return {
+      installed: [],
+      probeFailed: true,
+      warning: `[fleet:warn] agy: member skills check probe could not run (${detail}). Global skill isolation status unverified.`,
+    };
+  }
+
+  const raw = result.stdout ? result.stdout.trim() : '';
+  if (!raw) {
+    return {
+      installed: [],
+      probeFailed: true,
+      warning: `[fleet:warn] agy: member skills check probe could not run (empty output). Global skill isolation status unverified.`,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return {
+        installed: [],
+        probeFailed: true,
+        warning: `[fleet:warn] agy: member skills check probe could not run (non-object JSON output). Global skill isolation status unverified.`,
+      };
+    }
+    const installed: string[] = [];
+    if (parsed.pmInstalled) installed.push('pm');
+    if (parsed.fleetInstalled) installed.push('fleet');
+    const skillsDir = typeof parsed.skillsDir === 'string' ? parsed.skillsDir : undefined;
+    if (installed.length > 0) {
+      const list = installed.join(', ');
+      const loc = skillsDir ? ` in ${skillsDir}` : '';
+      return {
+        installed,
+        skillsDir,
+        probeFailed: false,
+        warning: `[fleet:warn] agy: AGY provider has no per-member skill isolation mechanism. Global skill(s) [${list}] are installed${loc} and will be visible to this member.`,
+      };
+    }
+    return {
+      installed: [],
+      skillsDir,
+      probeFailed: false,
+    };
+  } catch (e: any) {
+    return {
+      installed: [],
+      probeFailed: true,
+      warning: `[fleet:warn] agy: member skills check probe could not run (unparseable output: ${raw}). Global skill isolation status unverified.`,
+    };
+  }
 }
 
 export function checkAgyGlobalSkillsWarning(homeDir?: string | null): string | null {
