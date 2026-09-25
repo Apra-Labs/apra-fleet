@@ -40,6 +40,7 @@ const resolveMemberSrc = readFileSync(path.join(repoRoot, 'src', 'utils', 'resol
 const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-detail.ts'), 'utf8');
 const credentialStoreSetSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'credential-store-set.ts'), 'utf8');
 const memberGitStatusSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-git-status.ts'), 'utf8');
+const memberOwnerSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-owner.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -147,7 +148,15 @@ function updateMemberSchemaFields() {
  * deliberately excluded since it carries no fixed field name to pin.
  */
 function extractInterfaceFields(source, interfaceName) {
-    const block = extractBlock(source, `export interface ${interfaceName} {`, '\n}');
+    // Most interfaces pinned by this test are exported, but apra-fleet-g6ap.6:
+    // MemberOwnerFields (member-owner.ts) is a module-private interface -- it
+    // has no `export` keyword since it is only used internally there (the
+    // exported MemberOwnerStructured extends it). Try the exported marker
+    // first and fall back to the unexported form rather than requiring every
+    // interface pinned here to be exported.
+    const exportedMarker = `export interface ${interfaceName} {`;
+    const marker = source.includes(exportedMarker) ? exportedMarker : `interface ${interfaceName} {`;
+    const block = extractBlock(source, marker, '\n}');
     const fields = new Set();
     const re = /^  ([a-zA-Z_][a-zA-Z0-9_]*)\??\s*:/gm;
     let m;
@@ -265,5 +274,40 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('outcome'), 'sanity: MemberGitStatusResult should declare outcome');
 
         assertFieldParity('MemberGitStatusResult vs MemberGitStatusFields', interfaceFields, typedefFields);
+    });
+
+    // apra-fleet-g6ap.6 (DQ-22 followup to apra-fleet-g6ap.5): pins the
+    // client's MemberOwnerStructured typedef against the server's
+    // MemberOwnerFields interface in member-owner.ts, so the heldBy field
+    // (and any future field) added to one side is caught if not mirrored on
+    // the other. MemberOwnerFields has no zod schema either -- same shape as
+    // MemberGitStatusFields above -- and is module-private (not exported),
+    // which extractInterfaceFields() now falls back to handling.
+    test('MemberOwnerStructured matches the MemberOwnerFields interface field-for-field', () => {
+        const interfaceFields = extractInterfaceFields(memberOwnerSrc, 'MemberOwnerFields');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'MemberOwnerStructured');
+
+        assert.ok(interfaceFields.has('outcome'), 'sanity: MemberOwnerFields should declare outcome');
+        assert.ok(interfaceFields.has('heldBy'), 'sanity: MemberOwnerFields should declare heldBy');
+        assert.ok(typedefFields.has('outcome'), 'sanity: MemberOwnerStructured should declare outcome');
+        assert.ok(typedefFields.has('heldBy'), 'sanity: MemberOwnerStructured should declare heldBy');
+
+        assertFieldParity('MemberOwnerStructured vs MemberOwnerFields', interfaceFields, typedefFields);
+    });
+
+    // Nested-shape counterpart to the subtest above: heldBy entries are
+    // MemberHeldByEntry[] on both sides -- pin that shape too so a field
+    // added only to the entry (not just the outer MemberOwnerFields/
+    // MemberOwnerStructured) is also caught.
+    test('MemberHeldByEntry (client typedef) matches the MemberHeldByEntry interface field-for-field', () => {
+        const interfaceFields = extractInterfaceFields(memberOwnerSrc, 'MemberHeldByEntry');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'MemberHeldByEntry');
+
+        assert.ok(interfaceFields.has('package'), 'sanity: MemberHeldByEntry interface should declare package');
+        assert.ok(interfaceFields.has('reason'), 'sanity: MemberHeldByEntry interface should declare reason');
+        assert.ok(typedefFields.has('package'), 'sanity: MemberHeldByEntry typedef should declare package');
+        assert.ok(typedefFields.has('reason'), 'sanity: MemberHeldByEntry typedef should declare reason');
+
+        assertFieldParity('MemberHeldByEntry typedef vs MemberHeldByEntry interface', interfaceFields, typedefFields);
     });
 });
