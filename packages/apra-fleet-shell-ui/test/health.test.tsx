@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Health } from "../src/pages/Health";
+import type { WorkflowPackageView } from "../src/api/workflow-packages";
 
 // apra-fleet-9h9j.3.3: Health screen (S3, apra-fleet-9h9j.3.1) against a
 // mocked fetch -- version/data dir/update-available/status summary, and the
@@ -19,6 +20,30 @@ const STATUS_FIXTURE = {
   updateAvailable: { latest: "v0.10.0", installed: "v0.9.0" },
   logFile: "/home/fleet/.apra-fleet/data/logs/fleet-4242.log"
 };
+
+/** The registry answers with WorkflowPackageView OBJECTS, not the bare
+ *  strings this suite used to feed -- api/health.ts filtered for string[] and
+ *  therefore showed "no packages" against every real registry. The package
+ *  ids here are fixtures; the shell holds no package-id literal itself. */
+function packageFixture(id: string, over: Partial<WorkflowPackageView> = {}): WorkflowPackageView {
+  return {
+    id,
+    baseUrl: `http://127.0.0.1:7601/${id}`,
+    apraFleetApi: "^0.5.0",
+    configDeclared: false,
+    offline: false,
+    lastCheckedAt: 1_700_000_000_000,
+    name: null,
+    version: null,
+    health: "/api/health",
+    nav: [],
+    panels: [],
+    ownerRefs: null,
+    holds: null,
+    configError: null,
+    ...over
+  };
+}
 
 function jsonResponse(status: number, payload: unknown) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
@@ -105,22 +130,34 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it("lists the packages when the registry returns a populated fixture", async () => {
+  it("lists the registered package ids when the registry returns a populated object fixture", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: unknown) => {
         const url = String(input);
         if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
-        if (url === "/api/workflow-packages") return jsonResponse(200, { packages: ["build", "deploy"] });
+        if (url === "/api/workflow-packages") {
+          return jsonResponse(200, {
+            packages: [
+              packageFixture("build"),
+              packageFixture("deploy", { name: "Deployer", version: "1.2.3" })
+            ]
+          });
+        }
         throw new Error(`unexpected fetch: ${url}`);
       })
     );
 
     await renderHealth();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("build");
-    expect(text).toContain("deploy");
-    expect(text).not.toContain("no workflow packages registered");
+    const items = Array.from(container.querySelectorAll("li")).map((li) => li.textContent ?? "");
+    expect(items).toHaveLength(2);
+    // The id is what the registry keys on, so it is always shown; a declared
+    // manifest name and version decorate it rather than replacing it.
+    expect(items[0]).toBe("build");
+    expect(items[1]).toContain("deploy");
+    expect(items[1]).toContain("Deployer");
+    expect(items[1]).toContain("1.2.3");
+    expect(container.textContent ?? "").not.toContain("no workflow packages registered");
   });
 });
