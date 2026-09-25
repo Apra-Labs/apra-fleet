@@ -524,14 +524,18 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         // one exists -- see auth.mjs).
         const serviceToken = resolveServiceToken(seDataDir).token;
 
-        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        // apra-fleet-ecjf.8: wrapped in trackSpawnError() so a spawn failure
+        // here (a) is captured for describeHealthWaitFailure()'s
+        // never-spawned diagnostic below and (b) does not crash the worker
+        // via an unhandled 'error' event before that diagnostic can run.
+        const serve = trackSpawnError(spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
             // apra-fleet-v6t7.8: piped (not ignored) so a health-wait timeout
             // can carry the "never bound" vs "bound but silent" diagnostic
             // plus the stdout/stderr tail -- see describeHealthWaitFailure().
             stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
-        });
+        }));
         track(serve.pid);
         let stdoutBuf = '';
         let stderrBuf = '';
