@@ -50,9 +50,9 @@
 //               --body "Closes the rotation race described in the issue."
 //
 // Nothing about a sprint is required: no sprint branch, no sprint state file,
-// no in-flight run. `--repo owner/name` and `--remote <url>` are optional; when
-// omitted, both are derived from the `origin` remote of the git checkout this
-// command is run in (override the checkout with `--cwd`).
+// no in-flight run. `--remote <url>` names the repository and is optional; when
+// omitted it is read from the `origin` remote of the git checkout this command
+// is run in (override the checkout with `--cwd`).
 //
 // Exit codes:
 //   0 = PR created, or a PR for this head already existed (idempotent success)
@@ -82,8 +82,7 @@ GitHub App installation token is commonly refused on).
 
 USAGE
   fleet-se-pr --member <name> --base <branch> --head <branch> --title <text>
-              [--body <text>] [--repo <owner/name>] [--remote <url>]
-              [--cwd <dir>] [--quiet]
+              [--body <text>] [--remote <url>] [--cwd <dir>] [--quiet]
 
 REQUIRED
   --member <name>    Registered fleet member that dispatches the REST call.
@@ -93,10 +92,11 @@ REQUIRED
 
 OPTIONAL
   --body <text>      Pull request description. Default: empty.
-  --repo <owner/name>
-                     Repository coordinates. Default: derived from --remote.
-  --remote <url>     Remote URL to derive the repository from. Default: the
-                     'origin' remote of the checkout named by --cwd.
+  --remote <url>     Remote URL naming the repository to open the pull request
+                     on. Default: the 'origin' remote of the checkout named by
+                     --cwd. The URL is the repository selector because it also
+                     names the host, and therefore which VCS provider handles
+                     it; an 'owner/name' pair alone cannot.
   --cwd <dir>        Checkout to read the 'origin' remote from. Default: the
                      current working directory.
   --quiet            Suppress progress logging; print only the result.
@@ -151,7 +151,7 @@ function isMainModule() {
  * Runs in THIS process rather than on the member, because the head branch a
  * caller wants a PR for lives in the checkout they are standing in, which is
  * not necessarily any member's workspace. Best-effort: an unreadable remote
- * yields '' and the caller must then supply --repo explicitly.
+ * yields '' and the caller must then supply --remote explicitly.
  *
  * @param {string} cwd
  * @param {(cmd: string, args: string[], opts: object) => Promise<{stdout: string}>} [runner]
@@ -168,9 +168,29 @@ export async function readOriginRemote(cwd, runner = execFileAsync) {
 
 /**
  * Turn parsed CLI flags into the argument set openSideBranchPullRequest()
- * needs, resolving the repository from --repo, then --remote, then the
- * 'origin' remote of --cwd. Pure apart from the injected remote reader, so
- * the resolution order is unit-testable without a fleet server.
+ * needs. Pure apart from the injected remote reader, so the resolution order
+ * is unit-testable without a fleet server.
+ *
+ * THE REMOTE URL *IS* THE REPOSITORY SELECTOR, and that is deliberate rather
+ * than an omission of a friendlier `--repo owner/name` flag:
+ *
+ *  - It is what picks the PROVIDER. `owner/name` alone does not say which
+ *    host the repository lives on, so it cannot choose between the registered
+ *    VCS providers, and guessing a host here would hardcode one vendor into a
+ *    provider-agnostic path.
+ *  - It is what the downstream call actually consumes. raiseVcsPrForMember()
+ *    derives the repository coordinates from the remote it is given (directly,
+ *    or via the provider's own parseRepoRef hook for a provider whose identity
+ *    is not two-part -- Azure DevOps' org/project/repo, for instance). A
+ *    separate `--repo` string could disagree with the remote and would then be
+ *    silently ignored, which is exactly the "implicit input decides behaviour,
+ *    failure is silent" shape to avoid.
+ *
+ * So: `--remote <url>` names the repository, defaulting to the `origin` remote
+ * of the checkout named by `--cwd`. `repo` below is DERIVED for logging only,
+ * and is left null for a provider whose remote the portable two-part parse
+ * does not recognize -- that is not an error, because the provider layer
+ * parses its own dialect.
  *
  * @param {object} values parsed --flag values
  * @param {{ readRemote?: (cwd: string) => Promise<string> }} [deps]
@@ -190,23 +210,13 @@ export async function resolvePrInputs(values, deps = {}) {
     const cwd = String(values.cwd || process.cwd());
     let remoteUrl = String(values.remote || '').trim();
     if (!remoteUrl) remoteUrl = await readRemote(cwd);
-
-    let repo = String(values.repo || '').trim();
-    if (!repo) {
-        if (!remoteUrl) {
-            return {
-                ok: false,
-                error: 'could not determine the repository: --repo was not given, --remote was not given, '
-                    + `and no 'origin' remote could be read from '${cwd}'. Pass --repo owner/name.`,
-            };
-        }
-        repo = parseOwnerRepoFromRemoteUrl(remoteUrl) || '';
-        if (!repo) {
-            return {
-                ok: false,
-                error: `could not derive owner/repo from remote URL '${remoteUrl}'. Pass --repo owner/name.`,
-            };
-        }
+    if (!remoteUrl) {
+        return {
+            ok: false,
+            error: 'could not determine which repository to open the pull request on: --remote was not given '
+                + `and no 'origin' remote could be read from '${cwd}'. Pass --remote <url> (or run this from a `
+                + 'checkout that has an origin remote, or point --cwd at one).',
+        };
     }
 
     return {
@@ -217,7 +227,9 @@ export async function resolvePrInputs(values, deps = {}) {
             head: String(values.head).trim(),
             title: String(values.title),
             body: values.body === undefined ? '' : String(values.body),
-            repo,
+            // Display only -- see the note above. Never sent as a second,
+            // competing repository input.
+            repo: parseOwnerRepoFromRemoteUrl(remoteUrl),
             remoteUrl,
         },
     };
@@ -332,7 +344,6 @@ export async function main(argv, deps = {}) {
                 head: { type: 'string' },
                 title: { type: 'string' },
                 body: { type: 'string' },
-                repo: { type: 'string' },
                 remote: { type: 'string' },
                 cwd: { type: 'string' },
                 quiet: { type: 'boolean', default: false },
@@ -379,7 +390,11 @@ export async function main(argv, deps = {}) {
 
     const command = deps.command || createCommandDispatcher(fleetApi);
 
-    log(`Opening a pull request on ${resolved.repo}: ${resolved.head} -> ${resolved.base} (member: ${resolved.member}).`);
+    // `repo` is null for a provider whose remote the portable two-part parse
+    // does not recognize (see resolvePrInputs); fall back to the remote URL
+    // itself so the log always names SOMETHING the operator can check.
+    const repoLabel = resolved.repo || resolved.remoteUrl;
+    log(`Opening a pull request on ${repoLabel}: ${resolved.head} -> ${resolved.base} (member: ${resolved.member}).`);
     const result = await openSideBranchPullRequest({
         fleetApi,
         command,
@@ -396,7 +411,7 @@ export async function main(argv, deps = {}) {
         // Loud and explicit: the HTTP status and response body raiseVcsPrForMember
         // captured are surfaced verbatim, and the exit code reports failure. This
         // is never downgraded to an advisory warning.
-        fail(`Error: could not open a pull request for '${resolved.head}' -> '${resolved.base}' on ${resolved.repo}: ${result.error}`);
+        fail(`Error: could not open a pull request for '${resolved.head}' -> '${resolved.base}' on ${repoLabel}: ${result.error}`);
         if (result.authFailure) {
             fail(
                 'This was classified as a credential/permission failure. Note that the REST route used here '
