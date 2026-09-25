@@ -207,6 +207,65 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
+  it("a rename followed by a second edit of a different field re-derives the dirty-diff baseline from the refreshed member, so the second POST carries only the second field (apra-fleet-i9ag.6.4)", async () => {
+    // Members.tsx keys MemberDrawer on `selected?.id`, which never changes
+    // across a same-member save -- so without re-pointing `selected` at the
+    // refreshed row after load(), MemberDrawer.buildUpdateBody would keep
+    // diffing against the PRE-rename member object and re-send friendly_name
+    // on every subsequent save even though the operator never touched it
+    // again. currentMembers is swapped to the server's post-rename payload
+    // before the first save resolves, exactly as the real re-fetch would.
+    let currentMembers: { members: FleetMember[] } = MEMBERS_LOCAL;
+    const { fn, calls } = makeFetchMock(() => currentMembers, {
+      "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await renderMembers();
+    await openDrawerFor("local-one");
+
+    const nameInput = findFieldInSection("Edit member", "Friendly name") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(nameInput, "renamed-one");
+    });
+
+    currentMembers = { members: [{ ...LOCAL_MEMBER, name: "renamed-one" }] };
+
+    await act(async () => {
+      findButton("Save changes").click();
+    });
+
+    const firstUpdateCalls = calls.filter((c) => c.url === "/api/fleet/update-member");
+    expect(firstUpdateCalls).toHaveLength(1);
+    expect(Object.keys(firstUpdateCalls[0].body as Record<string, unknown>).sort()).toEqual([
+      "friendly_name",
+      "member_id"
+    ]);
+
+    // The row/drawer title now reflect the rename -- confirms `selected` was
+    // re-pointed at the refreshed member, not left on the pre-save snapshot.
+    expect(container.querySelector('[role="dialog"] h2')?.textContent ?? "").toContain("renamed-one");
+
+    const tagsInput = findFieldInSection("Edit member", "Tags") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(tagsInput, "core, extra");
+    });
+
+    currentMembers = { members: [{ ...LOCAL_MEMBER, name: "renamed-one", tags: ["core", "extra"] }] };
+
+    await act(async () => {
+      findButton("Save changes").click();
+    });
+
+    const secondUpdateCalls = calls.filter((c) => c.url === "/api/fleet/update-member");
+    expect(secondUpdateCalls).toHaveLength(2);
+    const secondBody = secondUpdateCalls[1].body as Record<string, unknown>;
+    // The bug this guards against: without the fix, friendly_name would still
+    // be dirty (baseline stuck on the pre-rename name) and would reappear here.
+    expect(Object.keys(secondBody).sort()).toEqual(["member_id", "tags"]);
+    expect(secondBody.tags).toEqual(["core", "extra"]);
+  });
+
   it("does not render host/port/username inputs for a local-type member", async () => {
     const { fn } = makeFetchMock(() => MEMBERS_LOCAL);
     vi.stubGlobal("fetch", fn);
