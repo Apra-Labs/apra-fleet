@@ -45,7 +45,13 @@ import { preflightCheck } from '../services/preflight-check.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
+  // 'transport' (apra-fleet-c98q.1) is the SSH/network-flavoured sibling of
+  // 'dispatch_failed': the same single guard produces both, and the offline
+  // regex that already decides the statusline 'offline' marker decides which
+  // one. Callers must treat it exactly like dispatch_failed (no verdict was
+  // ever produced) -- it exists so a connectivity drop is distinguishable from
+  // an in-dispatch fault without parsing the message text.
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'transport' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -341,22 +347,40 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
   }
 }
 
-// All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
-// (a) normal success: result.code === 0 -> finally sets idle and removes agent from inFlight
-// (b) non-zero exit from execCommand: result.code !== 0 -> finally sets idle and removes agent from inFlight
-// (c) exception in try block (auth, network, crash) -> catch records error type; finally sets offline or idle
-// (d) AbortSignal/MCP client cancellation -> abortHandler kills PID, execCommand resolves, finally clears
-// (e) stale session retry -> retried without session ID; finally clears on success or failure
-// (f) server overload retry -> retried after delay; finally clears on success or failure
-// (g) early returns before inFlightAgents.add (busy-rejection, reservation
-//     conflict, no-LLM member): busy state never entered
-// (h) preflight: the lock is claimed just before the preflight await (moved
-//     here from the interactive/subprocess split further below, to close the
-//     busy-check-to-lock-claim race window -- that split no longer calls
-//     .add() itself, it relies on the claim made here). Both the {ok: false}
-//     result path and preflightCheck() itself throwing release the lock
-//     explicitly inline, since both return/rethrow before reaching any
-//     finally block below
+// BUSY-LOCK INVARIANT (apra-fleet-c98q.1). The per-member lock has exactly ONE
+// claim site and exactly ONE release site:
+//   claim   -- inFlightAgents.add(agent.id), immediately before the preflight
+//              await (early enough to close the busy-check-to-claim race).
+//   release -- the finally of the single try that opens on the very next line
+//              after that claim and closes at the end of executePrompt.
+//
+// Everything between the two -- agent-file provisioning, the agent-existence
+// probe, budget admission, the leftover-pid kill, writePromptFile, the
+// interactive branch, the CLI dispatch and all of its retries -- is inside
+// that one try. There is therefore no code path, return OR throw, that can
+// leave the lock held: this is the whole point, after an SSH drop inside
+// writePromptFile escaped executePrompt with the lock still claimed and
+// wedged the member busy until the server was restarted (apra-fleet-c98q).
+//
+// Corollaries, all load-bearing:
+//   - executePrompt NEVER throws once the lock is claimed. Any exception from
+//     the guarded region is converted by the catch into the standard failure
+//     envelope ({isError: true, reason: 'transport' | 'dispatch_failed'}), so
+//     a caller can never be handed a bare exception whose lock state is
+//     unknown.
+//   - No inline inFlightAgents.delete() may be reintroduced between the claim
+//     and that finally. Only two deletes live inside the guarded region and
+//     both are deliberate: the stall detector's onStall handler (which hands
+//     the member to a NEW dispatch, hence the clearedByStall guard the finally
+//     honours) and the interactive branch's own finally (which releases at the
+//     end of its own shorter lifetime; the outer finally's repeat delete is a
+//     harmless no-op).
+//   - The finally runs for early failures too, before promptFilePath/strategy/
+//     scope are assigned, so every step in it is individually guarded and its
+//     prompt-file cleanup can never throw out of the finally.
+//   - Early returns BEFORE the claim (busy rejection, reservation conflict,
+//     no-LLM member, secret-token rejection) never entered busy state at all
+//     and need no release.
 
 /**
  * apra-fleet-idb: liveness probe for a busy-locked member's backing process.
@@ -671,712 +695,718 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // near-simultaneous dispatches to the same member could both pass the busy
   // check (neither had claimed the lock yet), both await preflight, and both
   // proceed to double-dispatch. Every return path from here to the
-  // interactive/subprocess split below (currently only the preflight-failure
-  // return immediately following) must release this lock explicitly, since
-  // it now returns AFTER the lock is claimed instead of before.
+  // interactive/subprocess split below. Since apra-fleet-c98q.1 no return path
+  // releases it inline any more: the try that opens immediately below covers
+  // the whole remaining lifetime of this call, and its finally is the single
+  // release site (see the BUSY-LOCK INVARIANT comment above executePrompt).
   inFlightAgents.add(agent.id);
 
-  // Peek at session state early so the preflight check can skip interactive
-  // members whose dispatch routes through a live MCP push channel, not SSH.
-  const earlyWorkspaceId = getTokenIssuer().workspaceId();
-  const earlySession = sessionRegistry.get(earlyWorkspaceId, agent.id);
-  const isChannelCapable = !!earlySession?.channelCapable;
-
-  // Pre-dispatch readiness check (apra-fleet preflight-check): verify
-  // connectivity and LLM auth BEFORE the expensive prompt dispatch
-  // (writePromptFile + CLI invocation). Catches expired OAuth, missing
-  // credentials, and offline members in <1s instead of burning a full
-  // round trip. Local members and interactive sessions are excluded
-  // (local shares this machine's credentials; interactive sessions have
-  // their own liveness probes). The check is cached for 60s so
-  // back-to-back dispatches do not add latency.
-  if (agent.agentType !== 'local' && !isChannelCapable) {
-    let preflight: Awaited<ReturnType<typeof preflightCheck>>;
-    try {
-      preflight = await preflightCheck(agent);
-    } catch (err) {
-      // preflightCheck's own synchronous prologue (getStrategy/getProvider)
-      // and its internal exec calls are not fully guarded -- if it throws
-      // instead of resolving {ok: false}, the lock claimed above would
-      // otherwise leak forever (no pid captured yet for findDeadLockPid's
-      // stale-lock self-heal to recognize). Release and propagate unchanged
-      // -- this preserves the exact same exception the caller would have
-      // seen before the lock was claimed this early.
-      inFlightAgents.delete(agent.id);
-      throw err;
-    }
-    if (!preflight.ok) {
-      // R2-F5: use preflight-specific reason codes so fleet-sprint can
-      // distinguish pre-dispatch failures from in-dispatch ones and avoid
-      // inappropriate self-heal loops (e.g. re-provisioning auth when the
-      // member is simply offline).
-      const preflightReason: ExecutePromptStructured['reason'] =
-        preflight.code === 'offline' ? 'preflight_offline'
-        : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
-        : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
-        : 'dispatch_failed';
-      // Release the lock claimed above -- this return happens before the
-      // interactive/subprocess split's own add+finally cleanup ever runs.
-      inFlightAgents.delete(agent.id);
-      return {
-        text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
-        structuredContent: {
-          isError: true,
-          reason: preflightReason,
-        },
-      };
-    }
-  }
-
-  // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
-  // section 6): if this member has a live MCP session connected right now,
-  // route via send_message + wait-for-response instead of spawning a
-  // subprocess. Decided tier-2-locally against THIS machine's session
-  // registry only (never caller/hub-side state, per apra-fleet-2xs.8's own
-  // scope note) -- so behavior is unaffected by whether execute_prompt is
-  // invoked directly (Phase 1) or relayed through a future hub. Falls
-  // through to the unchanged subprocess/SSH path below for every member
-  // without a live session (the common case today, and always for members
-  // that never opt into an interactive session).
+  // apra-fleet-c98q.1: state the catch/finally of the single guard need, but
+  // which is produced part-way through the guarded region. Declared here so
+  // the guard can see it; every one of these is therefore possibly UNASSIGNED
+  // when the guard runs (an early failure -- say ensureAgentFilesProvisioned
+  // throwing -- never reaches the assignment), which is exactly why the
+  // finally guards each use instead of assuming a fully set-up dispatch.
   //
-  // Gated by capability, not provider name (apra-fleet-cqa, eft.74 follow-up):
-  // mode (b) -- server-push mid-session prompt injection -- was POC-proven on
-  // Claude via the provider-branded `notifications/claude/channel` capability
-  // (apra-fleet-us9.9's survey, docs/interactive-injection-provider-survey.md),
-  // but the routing decision itself must be provider-agnostic: whatever the
-  // provider, a session is only an interactive-routing candidate if it
-  // actually declared that capability at MCP initialize time (recorded as
-  // SessionState.channelCapable below). Codex is confirmed [FAIL]
-  // today (no equivalent push mechanism) and so never ends up channelCapable in
-  // practice, but that is a fact about what each provider adapter currently
-  // advertises, not a name-based pre-filter here -- any provider that
-  // implements the same MCP channel capability is picked up automatically. A
-  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
-  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
-  // it can receive or act on this push -- routing to it anyway would silently
-  // spend the full timeout_s waiting for a response that can never arrive.
-  // R2-F3: re-query session registry after the preflight await (10-20s) so
-  // interactive routing sees sessions that became channelCapable during that
-  // window, rather than using the stale pre-preflight snapshot.
-  const workspaceId = getTokenIssuer().workspaceId();
-  const rawSession = sessionRegistry.get(workspaceId, agent.id);
-  // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
-  // opt-in handshake, not mere JWT registration. A plain subprocess
-  // connect-back (a Doer that opened an MCP tool-access session with a member
-  // JWT but never declared the `claude/channel` capability) registers a live
-  // `server` here, yet can never receive the `notifications/claude/channel`
-  // push -- routing to it would enqueue a message nothing reads and burn the
-  // full timeout_s on every later dispatch (the eft.74 wedge). Only a
-  // channel-capable session is an interactive-routing candidate; anything else
-  // (including that Doer's live tool session, which must be left untouched)
-  // falls through to the unchanged subprocess path below.
-  let interactiveSession = rawSession?.channelCapable ? rawSession : undefined;
-  // apra-fleet-eft.50.1: resolve the pid to test FRESH on every dispatch
-  // (never cached from a prior attempt) and fall back to the durable
-  // launch-pid anchor when this reused session lost its own pid on a
-  // reconnect. This is what re-arms the dead-session guard on a retry attempt
-  // 2+ exactly as on attempt 1: the specific eft.50 ordering (attempt 1 fails
-  // clean, attempt 2 targets a now-dead reconnected session) used to slip
-  // through here because the reconnected SessionState had pid=undefined, so the
-  // check below was skipped and the caller hung on the dead channel.
-  const interactivePid = interactiveSession?.pid
-    ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
-  if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
-    // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
-    // session whose underlying member claude process has already died. Before
-    // eft.28.1, a dead launch-time process (e.g. it crashed before ever
-    // producing a plan) left a `server` entry in sessionRegistry that looked
-    // reusable -- send_message would happily enqueue to it, but nothing would
-    // ever call respond_to_message, so the caller silently burned the full
-    // timeout_s (observed up to 3600s in apra-fleet-eft.28) with zero
-    // fleet-server log output and no watchdog coverage.
-    //
-    // eft.28.5 changes what happens once the death is detected: instead of
-    // surfacing a terminal dispatch_failed error that forces a manual
-    // register_member, EVICT the dead session and FALL THROUGH to a fresh
-    // non-interactive (subprocess) dispatch below -- i.e. re-dispatch fresh
-    // instead of blocking on waitForInteractiveResponse. The bug in
-    // apra-fleet-eft.28 was precisely that a dead session was reused "rather
-    // than detecting its death and spawning a fresh dispatch"; this does the
-    // spawning. If the fresh subprocess dispatch itself cannot start it
-    // returns its own terminal error, so nothing ever hangs.
-    //
-    // The liveness check now fires for connect-back interactive sessions too:
-    // http-transport carries the launch-time pid forward across re-registration
-    // (eft.28.5), so `pid` is no longer undefined for a member that registered
-    // via register_member and then connected back -- the exact real-fleet
-    // repro that evaded eft.28.1.
-    //
-    // apra-fleet-eft.50.1: eft.28.5's carry-forward still lost the pid when a
-    // reconnect happened AFTER the prior SessionState was already unregistered
-    // (priorPid lookup found nothing), so a retry attempt 2+ reused a
-    // pid=undefined session and hung. `interactivePid` above now back-stops
-    // that with sessionRegistry.lastKnownPid, the durable per-member launch-pid
-    // anchor, so this guard re-arms on EVERY dispatch attempt that reuses an
-    // interactive session, not just the first. It stays undefined only for
-    // sessions that never had a captured PID at all (e.g. tests, or a provider
-    // that never went through register_member's local spawn path); those are
-    // left to the pre-existing interactive behavior, unchanged.
-    const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactivePid}`, agent);
-    sessionRegistry.unregister(workspaceId, agent.id);
-    deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
-    interactiveSession = undefined;
-  }
-  if (interactiveSession?.server) {
-    // Lock already claimed above, before the preflight await -- do not
-    // re-add here (Set.add would be a harmless no-op, but keeping a second
-    // add site invites the lock and its release to drift out of sync).
-    writeStatusline(new Map([[agent.id, 'busy']]));
-    try {
-      return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
-    } finally {
-      inFlightAgents.delete(agent.id);
-      writeStatusline(new Map([[agent.id, 'idle']]));
-    }
-  }
-
-  // Lock already claimed above, before the preflight await.
-
-  await ensureAgentFilesProvisioned(agent);
-  const stallDetector = getStallDetector();
+  // `scope` and `strategy` use definite-assignment (`!`) rather than
+  // `| undefined` deliberately: both are read inside callbacks created in the
+  // guarded region (onStall, onPidCaptured, abortHandler) that only ever run
+  // after the assignment, and widening their type would force a `?.` at every
+  // one of those call sites while saying nothing true about the runtime. The
+  // finally makes no such assumption and truthiness-checks them.
+  let scope!: LogScope;
+  let strategy!: AgentStrategy;
+  let promptFilePath: string | undefined;
+  let durablePath: string | undefined;
+  let abortHandler: (() => void) | undefined;
+  // True once the prompt-file write has been ATTEMPTED (see its call site): the
+  // only condition under which the finally's cleanup has anything to delete.
+  let promptFileWriteAttempted = false;
+  // Set by the stall detector's onStall handler: a stall already cleared this
+  // lock AND a newer dispatch may have re-claimed it, so the finally must not
+  // clobber that newer claim. (The one release site still honours the one
+  // legitimate early release.)
   let clearedByStall = false;
-  // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
-  // also cancel the in-flight strategy.execCommand() promise. Before this, the
-  // client kept waiting out its full deriveTimeoutMs deadline after the
-  // server-side work had already died (the 60.5-min hung dispatch in
-  // apra-fleet-3c9). onStall aborts this controller; its signal is merged into
-  // the signal handed to every execCommand below (see dispatchSignal), so a
-  // confirmed stall settles the pending dispatch immediately and surfaces a
-  // typed 'stalled' error instead of hanging.
-  const stallAbortController = new AbortController();
-  // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
-  // baseline now, not merely an inactivity kill on stdout/stderr -- see the
-  // schema description on `timeout_s` above. A caller that omits timeout_s
-  // gets a 300s baseline (the schema default), a deliberate change from the
-  // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
-  const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
-  stallDetector.add(agent.id, {
-    sessionId: null,
-    logFilePath: null,
-    lastActivityAt: Date.now(),
-    consecutiveIdleCycles: 0,
-    consecutiveReadFailures: 0,
-    memberId: agent.id,
-    memberName: agent.friendlyName,
-    provisional: true,
-    stallReported: false,
-    thresholdMs: stallThresholdMs,
-    onStall: () => {
-      // Stall detector already wrote 'unknown' to the statusline before calling here.
-      // Our job: clear in-process state so the member can accept new calls.
-      // clearedByStall prevents the eventually-resolving finally block from clobbering
-      // a new execute_prompt that may have already claimed the member.
-      inFlightAgents.delete(agent.id);
-      clearedByStall = true;
-      // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
-      // progress of any kind for the whole threshold. Clearing bookkeeping
-      // alone left that wedged process running indefinitely on the member --
-      // burning its LLM session, holding its work folder, and colliding with
-      // whatever dispatch takes the member next. Kill the tracked pid too.
-      // Best-effort and never awaited: onStall is a fire-and-forget callback
-      // from the poll loop, and tryKillPid already swallows its own errors.
-      void tryKillPid(agent, strategy, cmds).catch(() => {});
-      // apra-fleet-3c9.1: killing the remote pid alone left the pending
-      // execCommand promise still awaiting its full deadline. Abort it now so
-      // the dispatch settles promptly and returns a typed 'stalled' error.
-      try { stallAbortController.abort(); } catch { /* best-effort */ }
-    },
-  });
-
-  const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const resolvedWorkFolder = agent.agentType === 'local' ? resolveTilde(agent.workFolder) : agent.workFolder;
-  const promptFilePath = agent.agentType === 'local'
-    ? path.join(resolvedWorkFolder, promptFileName)
-    : `${resolvedWorkFolder}/${promptFileName}`;
-
-  const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
-  const provider = getProvider(agent.llmProvider);
-
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
-
-  const tiers = provider.modelTiers();
-  let resolvedModel = input.model || 'standard';
-  let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
-  if (resolvedModel === 'cheap') {
-    resolvedTier = 'cheap';
-    resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'cheap', provider)
-      : agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
-  } else if (resolvedModel === 'standard') {
-    resolvedTier = 'standard';
-    resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'standard', provider)
-      : agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
-  } else if (resolvedModel === 'premium') {
-    resolvedTier = 'premium';
-    resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'premium', provider)
-      : agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
-  } else {
-    resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
-  }
-
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
-
-  // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
-  //  - true   -> best-effort resume of the member's stored last session; a
-  //              stale/unknown stored session transparently retries fresh.
-  //  - false  -> always a fresh session.
-  //  - string -> EXPLICIT session-id resume: resume exactly this id, preferring
-  //              it over agent.sessionId. The caller asserts the prompt depends
-  //              on that session's context, so an unknown/expired id is a
-  //              TERMINAL session_not_found (handled just below) and NO
-  //              fresh-session fallback is ever applied (see the retry paths).
-  const explicitResumeId = (typeof input.session_id === 'string' && input.session_id.trim().length > 0)
-    ? input.session_id.trim()
-    : (typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined);
-  // Fork semantics (apra-fleet-lmtg.5) mirror resume's SHAPE but BRANCH instead
-  // of continuing in place. `fork` is boolean | string:
-  //  - true   -> best-effort fork of the member's stored last session; a
-  //              stale/unknown stored session logs a warning and falls back to a
-  //              plain FRESH session (analogous to resume=true), never a hard error.
-  //  - string -> EXPLICIT fork of exactly that source id -- an unknown/expired
-  //              source is a TERMINAL session_not_found (like an explicit resume).
-  // The mutual-exclusivity guard above only lets fork through with resume at its
-  // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
-  // request forces resuming off so the dispatch mints a fresh distinct output
-  // session id instead of continuing the stored one in place.
-  // apra-fleet-3swo.42: derived from the SAME normalised forkArg the top-of-
-  // function mutual-exclusivity guard computed forkRequested from (no second,
-  // independently-trimmed copy of the rule). Deliberately NOT gated on
-  // `.length > 0`: an explicit fork string that trims to '' (fork: '' or
-  // fork: '   ') must still be an EXPLICIT id -- just an invalid one -- so it
-  // takes the explicit-id branch below (terminal session_not_found, no LLM
-  // call) instead of being mistaken for the fork===true best-effort path.
-  const explicitForkId = typeof forkArg === 'string' ? forkArg : undefined;
-  // forkRequested is already computed at the top of executePrompt for the
-  // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
-  const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
-  const resumeTargetId = explicitResumeId ?? agent.sessionId;
-  // An explicit-id resume OR an explicit-id fork must never silently degrade to a
-  // fresh session: that is exactly the wrong-context dispatch this feature
-  // forbids. resume=true/false and fork=true keep their transparent recovery.
-  const allowFreshSessionFallback = explicitResumeId === undefined && explicitForkId === undefined;
-  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
-  const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
-  const mintedId = isCallerMinted
-    ? (resuming ? resumeTargetId! : uuid())
-    : (resuming ? resumeTargetId : undefined);
-
-  // Terminal session-not-found gate for explicit-id resumes (apra-fleet-eft.78.1).
-  // Checked BEFORE any spawn (writePromptFile / the LLM invocation): if the
-  // caller named a session the server has never issued for this member -- and it
-  // is not the member's currently-stored session -- there is no context to
-  // resume. Reject with a structured session_not_found and make NO LLM call,
-  // so an orchestrator can rebuild a self-contained prompt and re-dispatch fresh
-  // deliberately, rather than getting a silent blank-session response.
-  if (explicitResumeId !== undefined) {
-    const resumable = provider.supportsResume()
-      && (isKnownSession(agent.id, explicitResumeId) || explicitResumeId === agent.sessionId);
-    if (!resumable) {
-      scope.abort(`explicit resume rejected -- session "${explicitResumeId}" is unknown/expired (no LLM call)`);
-      inFlightAgents.delete(agent.id);
-      stallDetector.remove(agent.id);
-      writeStatusline(new Map([[agent.id, 'idle']]));
-      return {
-        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
-        structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitResumeId },
-      };
-    }
-  }
-
-  // Fork mode resolution (apra-fleet-lmtg.5). Resolved AFTER the resume gate
-  // (the two are mutually exclusive, guarded before member resolution). Fork
-  // requires a fork-capable provider; when active it produces a ForkDescriptor
-  // that buildAgentPromptCommand (fork-prov lane, apra-fleet-lmtg.2) turns into
-  // the provider's own source-seeded, new-session-id fork invocation.
-  let forkActive = false;
-  let forkSourceId: string | undefined;
-  if (forkRequested) {
-    // fork requires provider.supportsFork(): a fork request against a provider
-    // whose CLI cannot fork is surfaced as a clear TERMINAL error, never
-    // silently downgraded to a plain fresh/resume dispatch (the wrong behavior).
-    if (!provider.supportsFork?.()) {
-      scope.abort(`fork rejected -- provider "${provider.name}" does not support fork-mode dispatch (no LLM call)`);
-      inFlightAgents.delete(agent.id);
-      stallDetector.remove(agent.id);
-      writeStatusline(new Map([[agent.id, 'idle']]));
-      return {
-        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- provider "${provider.name}" does not support fork-mode dispatch. No LLM call was made. Re-dispatch without fork (resume=true/false), or use a fork-capable provider.`,
-        structuredContent: { isError: true, reason: 'fork_unsupported' },
-      };
-    }
-    if (explicitForkId !== undefined) {
-      // Terminal source-not-found gate, mirroring the explicit-resume gate: an
-      // unknown/expired source id has no context to branch from, so reject
-      // BEFORE any spawn with a structured session_not_found and NO LLM call.
-      const forkable = isKnownSession(agent.id, explicitForkId) || explicitForkId === agent.sessionId;
-      if (!forkable) {
-        scope.abort(`explicit fork rejected -- source session "${explicitForkId}" is unknown/expired (no LLM call)`);
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
-        return {
-          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- source session "${explicitForkId}" cannot be forked (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (fork=false/resume=false), or fork=true for best-effort branching from the member's stored session.`,
-          structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitForkId },
-        };
-      }
-      forkSourceId = explicitForkId;
-      forkActive = true;
-    } else {
-      // fork === true: best-effort branch from the member's stored last session.
-      // A stale/unknown stored session (or none at all) is NOT a hard error --
-      // log a warning and fall through to a plain FRESH session, mirroring
-      // resume=true's transparent recovery.
-      const stored = agent.sessionId;
-      if (stored && isKnownSession(agent.id, stored)) {
-        forkSourceId = stored;
-        forkActive = true;
-      } else {
-        scope.info(`fork=true: stored session ${stored ? `"${stored}" is stale/unknown` : 'is absent'} -- falling back to a fresh session`);
-        forkActive = false;
-      }
-    }
-  }
-
-  // Mint a fresh distinct output session id for the forked conversation (never
-  // reuse the source id): mintedId is already a freshly minted uuid here because
-  // fork forced resuming off above (see resumeRequested). It IS emitted as an
-  // explicit `--session-id` CLI flag in fork mode (see ForkDescriptor.newSessionId
-  // and provider.forkFlag) -- the CLI honors a caller-supplied session id even
-  // when forking, so we pre-mint and pass it rather than scraping the CLI's own
-  // minted id back out of the response afterward. The same id also drives
-  // recordKnownSession, the stall-detector log path, and the post-dispatch
-  // session bookkeeping below.
-  const forkDescriptor = forkActive && forkSourceId
-    ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
-    : undefined;
-
-  const promptOpts = {
-    folder: resolvedWorkFolder,
-    promptFile: promptFileName,
-    sessionId: mintedId,
-    resuming,
-    unattended: agent.unattended,
-    model: resolvedModel,
-    tier: resolvedTier,
-    maxTurns: input.max_turns,
-    inv: scope.getInv(),
-    agentName: input.agent,
-    fork: forkDescriptor,
-  };
-
-  // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
-  // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
-  // this, every remote member got a HUB-home path (os.homedir()) joined with the
-  // HUB's path convention -- a path that can never exist on the member, which
-  // silently disabled stall detection for Claude and manufactured
-  // false-positive stall kills for AGY/OpenCode.
-  //
-  // This resolution is deliberately SYNCHRONOUS (cached probe result, else the
-  // member's known login username's default home): the dispatch path must not
-  // add a remote round trip, and a wrong guess here can only cost detection
-  // fidelity, never cause a kill. The kill-capable directory poll in
-  // stall-poller.ts uses the probe-backed async resolver instead.
-  const memberPathCtx = getCachedMemberPathContext(agent);
-
-  const activePreSpawnSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
-  let resolvedLogPath: string | null = null;
-  if (activePreSpawnSid) {
-    try {
-      resolvedLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', activePreSpawnSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
-    } catch {
-      resolvedLogPath = null;
-    }
-  }
-  stallDetector.update(agent.id, {
-    sessionId: activePreSpawnSid,
-    logFilePath: resolvedLogPath,
-    provisional: !resolvedLogPath,
-    thresholdMs: stallThresholdMs,
-  });
-
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-
-  // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
-  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
-  // PowerShell Windows member has no such companion tee, so recovery is
-  // skipped for it.
-  //
-  // apra-fleet-7dir.5.4: a Windows member registered as gitbash runs
-  // WindowsGitBashCommands, which INHERITS LinuxCommands.buildAgentPromptCommand
-  // -- so it has already been teeing its stdout to /tmp/.fleet-out-<inv>.json
-  // on every dispatch, with nothing reading it and (because extraPaths was
-  // empty) nothing deleting it. Enabling the mirror for gitbash both turns
-  // recovery on for that member class and makes the file get cleaned up.
-  // This gate and the `unsupported` flag passed to recoverOrphanedDispatch
-  // below are ONE decision: recoverOrphanedDispatch short-circuits on
-  // `unsupported || !durablePath`, so they must always agree -- hence the
-  // single shared predicate.
-  //
-  // LOCAL agents are deliberately excluded from the flip: orphan recovery
-  // exists for a torn-down SSH channel, which a local spawn does not have, and
-  // deletePromptFile's local branch would fs.unlinkSync('/tmp/...') through
-  // Node on Windows (resolving to C:\tmp), not the MSYS /tmp bash teed to.
-  // Non-Windows members (local or remote) keep today's behaviour verbatim.
-  const durableMirrorSupported = getAgentOS(agent) !== 'windows'
-    || (getAgentShell(agent) === 'gitbash' && agent.agentType !== 'local');
-  const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
-  const dispatchStartedAt = Date.now();
-
-  const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
-  // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
-  // strategy.execCommand() is no longer provider-blind. It used to be
-  // `timeout_s` for everyone, which is a false kill for the batch-only
-  // providers (they emit nothing on this channel until the turn ends) and the
-  // only working stall signal for the providers with no pollable transcript.
-  // The per-provider answer lives in ONE named place -- ProviderAdapter
-  // .execTimeoutSource() -- so a newly added provider must state its own
-  // (a compile error if it does not) instead of inheriting a default branch.
-  //
-  // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
-  // EVERY provider (see stallThresholdMs above). This decision governs the
-  // exec-channel timer only; it must not be used to skip that threading.
-  const execTimeoutSource = provider.execTimeoutSource();
-  const timeoutMs = execTimeoutSource === 'inactivity_timeout'
-    ? (input.timeout_s ?? 300) * 1000
-    // 'total_ceiling': mirror max_total_s, which can never bind before the
-    // caller's own hard ceiling does (a rolling inactivity window of
-    // max_total_s starts at dispatch start and only ever resets later).
-    // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
-    // never-binds-first constant rather than silently falling back to
-    // timeout_s (which is exactly the coupling this change removes). It is
-    // deliberately a finite value well inside the int32 range setTimeout
-    // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
-    // on the next tick, inverting this fix into an instant kill.
-    : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
-
-  // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
-  // server-overloaded) re-dispatches with a FRESH session but used to reuse the
-  // SAME full timeoutMs/maxTotalMs as the original attempt -- so a single
-  // dispatch could burn up to ~2x max_total_s server-side (original attempt +
-  // one full-budget retry), well past what the client's deriveTimeoutMs()
-  // (packages/apra-fleet-client/src/client/api.mjs) budgets for the whole
-  // tools/call (max_total_s*1000 + a fixed grace margin). That let the
-  // client's hard timeout fire before the server's own retry-and-report path
-  // ever got a chance, hiding a clean typed server error behind a raw client
-  // transport timeout. Share ONE deadline budget across the original attempt
-  // and any single retry: cap a retry's maxTotalMs (and its inactivity
-  // timeoutMs, so it can't independently outlast the shared ceiling) to
-  // whatever remains of max_total_s since dispatchStartedAt, and skip the
-  // retry entirely once that budget is exhausted -- so total wall-clock time
-  // for this call never exceeds max_total_s, which is exactly what the client
-  // is prepared to wait for. When max_total_s is absent there is no hard
-  // ceiling to share, so retries keep their full timeout_s (unchanged,
-  // pre-existing behavior).
-  function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
-    if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
-    const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
-    return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
-  }
-
-  // Agent file validation -- verify named agent exists before any CLI invocation
-  if (input.agent) {
-    const dirs = provider.agentDirectories(input.agent);
-    let agentFound = false;
-    if (agent.agentType === 'local') {
-      const projPath = path.join(resolvedWorkFolder, dirs.project);
-      const userPath = path.join(os.homedir(), dirs.home);
-      agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
-      if (!agentFound) {
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
-      }
-    } else {
-      // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
-      // already guaranteed present in ~/dirs.home by
-      // ensureAgentFilesProvisioned() above (ln ~576, which ran provisionAgents()
-      // for this exact member earlier in this same call) -- trust that instead
-      // of re-probing the remote here. This also SIDESTEPS the bug this check
-      // used to have: the old code hand-rolled a POSIX-only
-      // `test -f ... || test -f ...` command run via strategy.execCommand(),
-      // which throws a PowerShell parser error (not a POSIX shell) on every
-      // Windows remote -- a nonzero exit that this check misread as "agent not
-      // found" even when the file genuinely existed (apra-fleet P0 bug, fleet-
-      // sprint via a Windows remote member always failed plan-review with
-      // "agent 'plan-reviewer' not found").
-      const canonicalRelPath = `${input.agent}.md`;
-      agentFound = remoteAgentsDir(provider.name) !== null
-        && loadCanonicalAgentSet(provider.name).some((f) => f.relPath === canonicalRelPath);
-
-      if (!agentFound) {
-        // Not part of the canonical PM set (e.g. a project-local custom
-        // agent) -- fall back to a REAL existence probe, built platform-aware
-        // via this repo's own getOsCommands() abstraction (src/os/*.ts,
-        // already used the same way by list-members.ts/member-detail.ts for
-        // credential-file checks) instead of a single hardcoded shell dialect.
-        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
-        const projPath = `${resolvedWorkFolder}/${dirs.project}`;
-        const userPath = `~/${dirs.home}`;
-        const [projResult, userResult] = await Promise.all([
-          strategy.execCommand(cmds.credentialFileCheck(projPath), 10000),
-          strategy.execCommand(cmds.credentialFileCheck(userPath), 10000),
-        ]);
-        agentFound = projResult.stdout.includes('found') || userResult.stdout.includes('found');
-      }
-
-      if (!agentFound) {
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
-      }
-    }
-  }
-
-  // Context-headroom admission control (apra-fleet-eft.81.1): a declared
-  // demand is checked against this session's remaining headroom BEFORE any
-  // CLI is spawned. No declared demand (both fields omitted) means this
-  // block is skipped entirely -- pre-existing behavior is unchanged.
-  const contextDemand = resolveExpectedDemand(input.expected_context_tokens, input.context_size);
-  let contextWarning: ExecutePromptStructured['contextWarning'];
-  if (contextDemand !== undefined) {
-    const admission = checkContextAdmission({
-      provider: provider.name,
-      resolvedModel,
-      sessionId: mintedId,
-      demand: contextDemand,
-    });
-    if (!admission.allowed) {
-      scope.abort(`insufficient context headroom: demand=${admission.detail.demand} headroom=${admission.detail.headroom} window=${admission.detail.window}`);
-      inFlightAgents.delete(agent.id);
-      stallDetector.remove(agent.id);
-      writeStatusline(new Map([[agent.id, 'idle']]));
-      return {
-        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
-        structuredContent: { isError: true, reason: 'insufficient_context_headroom', detail: admission.detail },
-      };
-    }
-    if (admission.warning) {
-      contextWarning = { message: admission.warning, detail: admission.detail };
-    }
-  }
-
-  // Usage/budget admission (apra-fleet-eft.80.2): when a budget is configured
-  // for this member (or its workspace), a hard-threshold crossing rejects the
-  // NEW dispatch BEFORE any LLM is spawned -- never killing an in-flight call.
-  // No configured budget (the common case) means resolveBudgetScope returns
-  // undefined and this block is skipped entirely -- behavior is unchanged.
-  const budgetScope = resolveBudgetScope([agent.id, workspaceId]);
-  if (budgetScope) {
-    const preBudget = await evaluateBudget({ scope: budgetScope, agent, provider });
-    if (preBudget?.exhausted) {
-      scope.abort(`budget exhausted: scope=${budgetScope} spent=${preBudget.block.spent} budget=${preBudget.block.budget} source=${preBudget.block.source}`);
-      inFlightAgents.delete(agent.id);
-      stallDetector.remove(agent.id);
-      writeStatusline(new Map([[agent.id, 'idle']]));
-      return {
-        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
-        structuredContent: { isError: true, reason: 'budget_exhausted', budgetUsage: preBudget.block },
-      };
-    }
-  }
-
-  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
-  await tryKillPid(agent, strategy, cmds);
-
-  // Write the rendered prompt (with substitutions applied) to the prompt file before execution
-  await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
-
-  // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
-  // outlives the SSH channel that reported it, and is the only way to tell a
-  // fabricated "exit 0 / empty" close apart from a real one.
-  let capturedPid: number | undefined;
-  const onPidCaptured = (pid: number) => {
-    capturedPid = pid;
-    scope.info(`pid=${pid}`);
-    if (mintedId) {
-      let logPath: string | null = null;
-      try {
-        logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
-      } catch {
-        logPath = null;
-      }
-      stallDetector.update(agent.id, {
-        sessionId: mintedId,
-        logFilePath: logPath,
-        provisional: !logPath,
-        thresholdMs: stallThresholdMs,
-      });
-    }
-  };
-
-  const abortHandler = () => {
-    scope.abort('cancelled by MCP client');
-    tryKillPid(agent, strategy, cmds).catch(() => {});
-  };
-  extra?.signal?.addEventListener('abort', abortHandler);
-
-  // apra-fleet-3c9.1: the signal handed to execCommand fires on EITHER the MCP
-  // client's cancellation OR a confirmed stall (stallAbortController). Merging
-  // them means a stall aborts the pending dispatch exactly as a client cancel
-  // would, while a live (non-stalled) dispatch -- whose controller is never
-  // aborted -- is left completely untouched.
-  const dispatchSignal = extra?.signal
-    ? AbortSignal.any([extra.signal, stallAbortController.signal])
-    : stallAbortController.signal;
-
-  // Mark agent as busy in statusline
-  writeStatusline(new Map([[agent.id, 'busy']]));
-
+  let stallAbortController: AbortController | undefined;
   let _epExitCode: number | 'error' = 'error';
   let _epError: string | undefined;
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
-  // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
-  // self-heal-and-retry below to exactly one attempt per call, mirroring
-  // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
-  // repeat trust failure after the heal is terminal, never looped.
-  let trustHealAttempted = false;
-  // apra-fleet-hzeb.2: a provider usage/quota limit (e.g. Claude's 429) can
-  // never be cured by a fresh session, so it must short-circuit the
-  // stale-session and server-overloaded retries below rather than burning the
-  // shared retryBudget() waiting out a window that is already known. Checked
-  // immediately after EVERY provider.parseResponse(result) call in the
-  // dispatch path (initial dispatch, stale-session retry, overloaded retry,
-  // orphan recovery, trust-heal retry) -- and regardless of result.code,
-  // since a 0-exit result event whose text carries the limit message must not
-  // be returned as a success response either.
-  const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
-    const signal = provider.detectUsageLimit(r, p);
-    if (!signal) return null;
-    // Accurate finally-block exit logging (scope.fail, not scope.abort) even
-    // when this fires on the very first parse, before the shared
-    // `_epExitCode = result.code` assignment below would otherwise run.
-    _epExitCode = r.code;
-    scope.info(`usage limit detected -- resumes ~${signal.resumeAt} (${signal.resumeAtSource})`);
-    // Session bookkeeping mirrors the max_turns path: record/touch the
-    // session id when present so fleet-sprint can resume the SAME session
-    // after the pause instead of starting a fresh one that has lost context.
-    if (p.sessionId) {
-      recordKnownSession(agent.id, p.sessionId);
-      touchAgent(agent.id, p.sessionId);
-    }
-    return {
-      text: `[FAIL] execute_prompt on "${agent.friendlyName}" hit a provider usage limit (resumes ~${signal.resumeAt}, ${signal.resumeAtSource}): ${signal.message}`,
-      structuredContent: {
-        isError: true,
-        reason: 'usage_limit',
-        usageLimit: signal,
-        ...(p.sessionId ? { sessionId: p.sessionId } : {}),
-        ...(p.usage ? { usage: { input_tokens: p.usage.input_tokens, output_tokens: p.usage.output_tokens, total_tokens: p.usage.input_tokens + p.usage.output_tokens } } : {}),
-      },
-    };
-  };
+
   try {
+
+    // Peek at session state early so the preflight check can skip interactive
+    // members whose dispatch routes through a live MCP push channel, not SSH.
+    const earlyWorkspaceId = getTokenIssuer().workspaceId();
+    const earlySession = sessionRegistry.get(earlyWorkspaceId, agent.id);
+    const isChannelCapable = !!earlySession?.channelCapable;
+
+    // Pre-dispatch readiness check (apra-fleet preflight-check): verify
+    // connectivity and LLM auth BEFORE the expensive prompt dispatch
+    // (writePromptFile + CLI invocation). Catches expired OAuth, missing
+    // credentials, and offline members in <1s instead of burning a full
+    // round trip. Local members and interactive sessions are excluded
+    // (local shares this machine's credentials; interactive sessions have
+    // their own liveness probes). The check is cached for 60s so
+    // back-to-back dispatches do not add latency.
+    if (agent.agentType !== 'local' && !isChannelCapable) {
+      // preflightCheck's own synchronous prologue (getStrategy/getProvider) and
+      // its internal exec calls are not fully guarded, so it can throw instead
+      // of resolving {ok: false}. apra-fleet-c98q.1: that no longer needs (or
+      // gets) a local release-and-rethrow -- the single guard's catch converts
+      // it into the standard failure envelope and its finally releases the
+      // lock, exactly as for every other await in this function.
+      const preflight = await preflightCheck(agent);
+      if (!preflight.ok) {
+        // R2-F5: use preflight-specific reason codes so fleet-sprint can
+        // distinguish pre-dispatch failures from in-dispatch ones and avoid
+        // inappropriate self-heal loops (e.g. re-provisioning auth when the
+        // member is simply offline).
+        const preflightReason: ExecutePromptStructured['reason'] =
+          preflight.code === 'offline' ? 'preflight_offline'
+          : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
+          : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
+          : 'dispatch_failed';
+        return {
+          text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
+          structuredContent: {
+            isError: true,
+            reason: preflightReason,
+          },
+        };
+      }
+    }
+
+    // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
+    // section 6): if this member has a live MCP session connected right now,
+    // route via send_message + wait-for-response instead of spawning a
+    // subprocess. Decided tier-2-locally against THIS machine's session
+    // registry only (never caller/hub-side state, per apra-fleet-2xs.8's own
+    // scope note) -- so behavior is unaffected by whether execute_prompt is
+    // invoked directly (Phase 1) or relayed through a future hub. Falls
+    // through to the unchanged subprocess/SSH path below for every member
+    // without a live session (the common case today, and always for members
+    // that never opt into an interactive session).
+    //
+    // Gated by capability, not provider name (apra-fleet-cqa, eft.74 follow-up):
+    // mode (b) -- server-push mid-session prompt injection -- was POC-proven on
+    // Claude via the provider-branded `notifications/claude/channel` capability
+    // (apra-fleet-us9.9's survey, docs/interactive-injection-provider-survey.md),
+    // but the routing decision itself must be provider-agnostic: whatever the
+    // provider, a session is only an interactive-routing candidate if it
+    // actually declared that capability at MCP initialize time (recorded as
+    // SessionState.channelCapable below). Codex is confirmed [FAIL]
+    // today (no equivalent push mechanism) and so never ends up channelCapable in
+    // practice, but that is a fact about what each provider adapter currently
+    // advertises, not a name-based pre-filter here -- any provider that
+    // implements the same MCP channel capability is picked up automatically. A
+    // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
+    // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+    // it can receive or act on this push -- routing to it anyway would silently
+    // spend the full timeout_s waiting for a response that can never arrive.
+    // R2-F3: re-query session registry after the preflight await (10-20s) so
+    // interactive routing sees sessions that became channelCapable during that
+    // window, rather than using the stale pre-preflight snapshot.
+    const workspaceId = getTokenIssuer().workspaceId();
+    const rawSession = sessionRegistry.get(workspaceId, agent.id);
+    // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
+    // opt-in handshake, not mere JWT registration. A plain subprocess
+    // connect-back (a Doer that opened an MCP tool-access session with a member
+    // JWT but never declared the `claude/channel` capability) registers a live
+    // `server` here, yet can never receive the `notifications/claude/channel`
+    // push -- routing to it would enqueue a message nothing reads and burn the
+    // full timeout_s on every later dispatch (the eft.74 wedge). Only a
+    // channel-capable session is an interactive-routing candidate; anything else
+    // (including that Doer's live tool session, which must be left untouched)
+    // falls through to the unchanged subprocess path below.
+    let interactiveSession = rawSession?.channelCapable ? rawSession : undefined;
+    // apra-fleet-eft.50.1: resolve the pid to test FRESH on every dispatch
+    // (never cached from a prior attempt) and fall back to the durable
+    // launch-pid anchor when this reused session lost its own pid on a
+    // reconnect. This is what re-arms the dead-session guard on a retry attempt
+    // 2+ exactly as on attempt 1: the specific eft.50 ordering (attempt 1 fails
+    // clean, attempt 2 targets a now-dead reconnected session) used to slip
+    // through here because the reconnected SessionState had pid=undefined, so the
+    // check below was skipped and the caller hung on the dead channel.
+    const interactivePid = interactiveSession?.pid
+      ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
+    if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
+      // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
+      // session whose underlying member claude process has already died. Before
+      // eft.28.1, a dead launch-time process (e.g. it crashed before ever
+      // producing a plan) left a `server` entry in sessionRegistry that looked
+      // reusable -- send_message would happily enqueue to it, but nothing would
+      // ever call respond_to_message, so the caller silently burned the full
+      // timeout_s (observed up to 3600s in apra-fleet-eft.28) with zero
+      // fleet-server log output and no watchdog coverage.
+      //
+      // eft.28.5 changes what happens once the death is detected: instead of
+      // surfacing a terminal dispatch_failed error that forces a manual
+      // register_member, EVICT the dead session and FALL THROUGH to a fresh
+      // non-interactive (subprocess) dispatch below -- i.e. re-dispatch fresh
+      // instead of blocking on waitForInteractiveResponse. The bug in
+      // apra-fleet-eft.28 was precisely that a dead session was reused "rather
+      // than detecting its death and spawning a fresh dispatch"; this does the
+      // spawning. If the fresh subprocess dispatch itself cannot start it
+      // returns its own terminal error, so nothing ever hangs.
+      //
+      // The liveness check now fires for connect-back interactive sessions too:
+      // http-transport carries the launch-time pid forward across re-registration
+      // (eft.28.5), so `pid` is no longer undefined for a member that registered
+      // via register_member and then connected back -- the exact real-fleet
+      // repro that evaded eft.28.1.
+      //
+      // apra-fleet-eft.50.1: eft.28.5's carry-forward still lost the pid when a
+      // reconnect happened AFTER the prior SessionState was already unregistered
+      // (priorPid lookup found nothing), so a retry attempt 2+ reused a
+      // pid=undefined session and hung. `interactivePid` above now back-stops
+      // that with sessionRegistry.lastKnownPid, the durable per-member launch-pid
+      // anchor, so this guard re-arms on EVERY dispatch attempt that reuses an
+      // interactive session, not just the first. It stays undefined only for
+      // sessions that never had a captured PID at all (e.g. tests, or a provider
+      // that never went through register_member's local spawn path); those are
+      // left to the pre-existing interactive behavior, unchanged.
+      const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactivePid}`, agent);
+      sessionRegistry.unregister(workspaceId, agent.id);
+      deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
+      interactiveSession = undefined;
+    }
+    if (interactiveSession?.server) {
+      // Lock already claimed above, before the preflight await -- do not
+      // re-add here (Set.add would be a harmless no-op, but keeping a second
+      // add site invites the lock and its release to drift out of sync).
+      writeStatusline(new Map([[agent.id, 'busy']]));
+      try {
+        return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
+      } finally {
+        inFlightAgents.delete(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+      }
+    }
+
+    // Lock already claimed above, before the preflight await.
+
+    await ensureAgentFilesProvisioned(agent);
+    const stallDetector = getStallDetector();
+    // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
+    // also cancel the in-flight strategy.execCommand() promise. Before this, the
+    // client kept waiting out its full deriveTimeoutMs deadline after the
+    // server-side work had already died (the 60.5-min hung dispatch in
+    // apra-fleet-3c9). onStall aborts this controller; its signal is merged into
+    // the signal handed to every execCommand below (see dispatchSignal), so a
+    // confirmed stall settles the pending dispatch immediately and surfaces a
+    // typed 'stalled' error instead of hanging.
+    stallAbortController = new AbortController();
+    // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
+    // baseline now, not merely an inactivity kill on stdout/stderr -- see the
+    // schema description on `timeout_s` above. A caller that omits timeout_s
+    // gets a 300s baseline (the schema default), a deliberate change from the
+    // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
+    const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
+    stallDetector.add(agent.id, {
+      sessionId: null,
+      logFilePath: null,
+      lastActivityAt: Date.now(),
+      consecutiveIdleCycles: 0,
+      consecutiveReadFailures: 0,
+      memberId: agent.id,
+      memberName: agent.friendlyName,
+      provisional: true,
+      stallReported: false,
+      thresholdMs: stallThresholdMs,
+      onStall: () => {
+        // Stall detector already wrote 'unknown' to the statusline before calling here.
+        // Our job: clear in-process state so the member can accept new calls.
+        // clearedByStall prevents the eventually-resolving finally block from clobbering
+        // a new execute_prompt that may have already claimed the member.
+        inFlightAgents.delete(agent.id);
+        clearedByStall = true;
+        // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
+        // progress of any kind for the whole threshold. Clearing bookkeeping
+        // alone left that wedged process running indefinitely on the member --
+        // burning its LLM session, holding its work folder, and colliding with
+        // whatever dispatch takes the member next. Kill the tracked pid too.
+        // Best-effort and never awaited: onStall is a fire-and-forget callback
+        // from the poll loop, and tryKillPid already swallows its own errors.
+        void tryKillPid(agent, strategy, cmds).catch(() => {});
+        // apra-fleet-3c9.1: killing the remote pid alone left the pending
+        // execCommand promise still awaiting its full deadline. Abort it now so
+        // the dispatch settles promptly and returns a typed 'stalled' error.
+        try { stallAbortController?.abort(); } catch { /* best-effort */ }
+      },
+    });
+
+    const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
+    const resolvedWorkFolder = agent.agentType === 'local' ? resolveTilde(agent.workFolder) : agent.workFolder;
+    promptFilePath = agent.agentType === 'local'
+      ? path.join(resolvedWorkFolder, promptFileName)
+      : `${resolvedWorkFolder}/${promptFileName}`;
+
+    strategy = getStrategy(agent);
+    const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+    const provider = getProvider(agent.llmProvider);
+
+    const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+
+    const tiers = provider.modelTiers();
+    let resolvedModel = input.model || 'standard';
+    let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
+    if (resolvedModel === 'cheap') {
+      resolvedTier = 'cheap';
+      resolvedModel = agent.modelTiers
+        ? resolveModelForTier(agent, 'cheap', provider)
+        : agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
+    } else if (resolvedModel === 'standard') {
+      resolvedTier = 'standard';
+      resolvedModel = agent.modelTiers
+        ? resolveModelForTier(agent, 'standard', provider)
+        : agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
+    } else if (resolvedModel === 'premium') {
+      resolvedTier = 'premium';
+      resolvedModel = agent.modelTiers
+        ? resolveModelForTier(agent, 'premium', provider)
+        : agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
+    } else {
+      resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
+    }
+
+    scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
+
+    // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
+    //  - true   -> best-effort resume of the member's stored last session; a
+    //              stale/unknown stored session transparently retries fresh.
+    //  - false  -> always a fresh session.
+    //  - string -> EXPLICIT session-id resume: resume exactly this id, preferring
+    //              it over agent.sessionId. The caller asserts the prompt depends
+    //              on that session's context, so an unknown/expired id is a
+    //              TERMINAL session_not_found (handled just below) and NO
+    //              fresh-session fallback is ever applied (see the retry paths).
+    const explicitResumeId = (typeof input.session_id === 'string' && input.session_id.trim().length > 0)
+      ? input.session_id.trim()
+      : (typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined);
+    // Fork semantics (apra-fleet-lmtg.5) mirror resume's SHAPE but BRANCH instead
+    // of continuing in place. `fork` is boolean | string:
+    //  - true   -> best-effort fork of the member's stored last session; a
+    //              stale/unknown stored session logs a warning and falls back to a
+    //              plain FRESH session (analogous to resume=true), never a hard error.
+    //  - string -> EXPLICIT fork of exactly that source id -- an unknown/expired
+    //              source is a TERMINAL session_not_found (like an explicit resume).
+    // The mutual-exclusivity guard above only lets fork through with resume at its
+    // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
+    // request forces resuming off so the dispatch mints a fresh distinct output
+    // session id instead of continuing the stored one in place.
+    // apra-fleet-3swo.42: derived from the SAME normalised forkArg the top-of-
+    // function mutual-exclusivity guard computed forkRequested from (no second,
+    // independently-trimmed copy of the rule). Deliberately NOT gated on
+    // `.length > 0`: an explicit fork string that trims to '' (fork: '' or
+    // fork: '   ') must still be an EXPLICIT id -- just an invalid one -- so it
+    // takes the explicit-id branch below (terminal session_not_found, no LLM
+    // call) instead of being mistaken for the fork===true best-effort path.
+    const explicitForkId = typeof forkArg === 'string' ? forkArg : undefined;
+    // forkRequested is already computed at the top of executePrompt for the
+    // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
+    const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
+    const resumeTargetId = explicitResumeId ?? agent.sessionId;
+    // An explicit-id resume OR an explicit-id fork must never silently degrade to a
+    // fresh session: that is exactly the wrong-context dispatch this feature
+    // forbids. resume=true/false and fork=true keep their transparent recovery.
+    const allowFreshSessionFallback = explicitResumeId === undefined && explicitForkId === undefined;
+    const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
+    const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
+    const mintedId = isCallerMinted
+      ? (resuming ? resumeTargetId! : uuid())
+      : (resuming ? resumeTargetId : undefined);
+
+    // Terminal session-not-found gate for explicit-id resumes (apra-fleet-eft.78.1).
+    // Checked BEFORE any spawn (writePromptFile / the LLM invocation): if the
+    // caller named a session the server has never issued for this member -- and it
+    // is not the member's currently-stored session -- there is no context to
+    // resume. Reject with a structured session_not_found and make NO LLM call,
+    // so an orchestrator can rebuild a self-contained prompt and re-dispatch fresh
+    // deliberately, rather than getting a silent blank-session response.
+    if (explicitResumeId !== undefined) {
+      const resumable = provider.supportsResume()
+        && (isKnownSession(agent.id, explicitResumeId) || explicitResumeId === agent.sessionId);
+      if (!resumable) {
+        scope.abort(`explicit resume rejected -- session "${explicitResumeId}" is unknown/expired (no LLM call)`);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
+          structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitResumeId },
+        };
+      }
+    }
+
+    // Fork mode resolution (apra-fleet-lmtg.5). Resolved AFTER the resume gate
+    // (the two are mutually exclusive, guarded before member resolution). Fork
+    // requires a fork-capable provider; when active it produces a ForkDescriptor
+    // that buildAgentPromptCommand (fork-prov lane, apra-fleet-lmtg.2) turns into
+    // the provider's own source-seeded, new-session-id fork invocation.
+    let forkActive = false;
+    let forkSourceId: string | undefined;
+    if (forkRequested) {
+      // fork requires provider.supportsFork(): a fork request against a provider
+      // whose CLI cannot fork is surfaced as a clear TERMINAL error, never
+      // silently downgraded to a plain fresh/resume dispatch (the wrong behavior).
+      if (!provider.supportsFork?.()) {
+        scope.abort(`fork rejected -- provider "${provider.name}" does not support fork-mode dispatch (no LLM call)`);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- provider "${provider.name}" does not support fork-mode dispatch. No LLM call was made. Re-dispatch without fork (resume=true/false), or use a fork-capable provider.`,
+          structuredContent: { isError: true, reason: 'fork_unsupported' },
+        };
+      }
+      if (explicitForkId !== undefined) {
+        // Terminal source-not-found gate, mirroring the explicit-resume gate: an
+        // unknown/expired source id has no context to branch from, so reject
+        // BEFORE any spawn with a structured session_not_found and NO LLM call.
+        const forkable = isKnownSession(agent.id, explicitForkId) || explicitForkId === agent.sessionId;
+        if (!forkable) {
+          scope.abort(`explicit fork rejected -- source session "${explicitForkId}" is unknown/expired (no LLM call)`);
+          return {
+            text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- source session "${explicitForkId}" cannot be forked (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (fork=false/resume=false), or fork=true for best-effort branching from the member's stored session.`,
+            structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitForkId },
+          };
+        }
+        forkSourceId = explicitForkId;
+        forkActive = true;
+      } else {
+        // fork === true: best-effort branch from the member's stored last session.
+        // A stale/unknown stored session (or none at all) is NOT a hard error --
+        // log a warning and fall through to a plain FRESH session, mirroring
+        // resume=true's transparent recovery.
+        const stored = agent.sessionId;
+        if (stored && isKnownSession(agent.id, stored)) {
+          forkSourceId = stored;
+          forkActive = true;
+        } else {
+          scope.info(`fork=true: stored session ${stored ? `"${stored}" is stale/unknown` : 'is absent'} -- falling back to a fresh session`);
+          forkActive = false;
+        }
+      }
+    }
+
+    // Mint a fresh distinct output session id for the forked conversation (never
+    // reuse the source id): mintedId is already a freshly minted uuid here because
+    // fork forced resuming off above (see resumeRequested). It IS emitted as an
+    // explicit `--session-id` CLI flag in fork mode (see ForkDescriptor.newSessionId
+    // and provider.forkFlag) -- the CLI honors a caller-supplied session id even
+    // when forking, so we pre-mint and pass it rather than scraping the CLI's own
+    // minted id back out of the response afterward. The same id also drives
+    // recordKnownSession, the stall-detector log path, and the post-dispatch
+    // session bookkeeping below.
+    const forkDescriptor = forkActive && forkSourceId
+      ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
+      : undefined;
+
+    const promptOpts = {
+      folder: resolvedWorkFolder,
+      promptFile: promptFileName,
+      sessionId: mintedId,
+      resuming,
+      unattended: agent.unattended,
+      model: resolvedModel,
+      tier: resolvedTier,
+      maxTurns: input.max_turns,
+      inv: scope.getInv(),
+      agentName: input.agent,
+      fork: forkDescriptor,
+    };
+
+    // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
+    // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
+    // this, every remote member got a HUB-home path (os.homedir()) joined with the
+    // HUB's path convention -- a path that can never exist on the member, which
+    // silently disabled stall detection for Claude and manufactured
+    // false-positive stall kills for AGY/OpenCode.
+    //
+    // This resolution is deliberately SYNCHRONOUS (cached probe result, else the
+    // member's known login username's default home): the dispatch path must not
+    // add a remote round trip, and a wrong guess here can only cost detection
+    // fidelity, never cause a kill. The kill-capable directory poll in
+    // stall-poller.ts uses the probe-backed async resolver instead.
+    const memberPathCtx = getCachedMemberPathContext(agent);
+
+    const activePreSpawnSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+    let resolvedLogPath: string | null = null;
+    if (activePreSpawnSid) {
+      try {
+        resolvedLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', activePreSpawnSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+      } catch {
+        resolvedLogPath = null;
+      }
+    }
+    stallDetector.update(agent.id, {
+      sessionId: activePreSpawnSid,
+      logFilePath: resolvedLogPath,
+      provisional: !resolvedLogPath,
+      thresholdMs: stallThresholdMs,
+    });
+
+    const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+
+    // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
+    // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
+    // PowerShell Windows member has no such companion tee, so recovery is
+    // skipped for it.
+    //
+    // apra-fleet-7dir.5.4: a Windows member registered as gitbash runs
+    // WindowsGitBashCommands, which INHERITS LinuxCommands.buildAgentPromptCommand
+    // -- so it has already been teeing its stdout to /tmp/.fleet-out-<inv>.json
+    // on every dispatch, with nothing reading it and (because extraPaths was
+    // empty) nothing deleting it. Enabling the mirror for gitbash both turns
+    // recovery on for that member class and makes the file get cleaned up.
+    // This gate and the `unsupported` flag passed to recoverOrphanedDispatch
+    // below are ONE decision: recoverOrphanedDispatch short-circuits on
+    // `unsupported || !durablePath`, so they must always agree -- hence the
+    // single shared predicate.
+    //
+    // LOCAL agents are deliberately excluded from the flip: orphan recovery
+    // exists for a torn-down SSH channel, which a local spawn does not have, and
+    // deletePromptFile's local branch would fs.unlinkSync('/tmp/...') through
+    // Node on Windows (resolving to C:\tmp), not the MSYS /tmp bash teed to.
+    // Non-Windows members (local or remote) keep today's behaviour verbatim.
+    const durableMirrorSupported = getAgentOS(agent) !== 'windows'
+      || (getAgentShell(agent) === 'gitbash' && agent.agentType !== 'local');
+    durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
+    const dispatchStartedAt = Date.now();
+
+    const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+    // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
+    // strategy.execCommand() is no longer provider-blind. It used to be
+    // `timeout_s` for everyone, which is a false kill for the batch-only
+    // providers (they emit nothing on this channel until the turn ends) and the
+    // only working stall signal for the providers with no pollable transcript.
+    // The per-provider answer lives in ONE named place -- ProviderAdapter
+    // .execTimeoutSource() -- so a newly added provider must state its own
+    // (a compile error if it does not) instead of inheriting a default branch.
+    //
+    // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
+    // EVERY provider (see stallThresholdMs above). This decision governs the
+    // exec-channel timer only; it must not be used to skip that threading.
+    const execTimeoutSource = provider.execTimeoutSource();
+    const timeoutMs = execTimeoutSource === 'inactivity_timeout'
+      ? (input.timeout_s ?? 300) * 1000
+      // 'total_ceiling': mirror max_total_s, which can never bind before the
+      // caller's own hard ceiling does (a rolling inactivity window of
+      // max_total_s starts at dispatch start and only ever resets later).
+      // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
+      // never-binds-first constant rather than silently falling back to
+      // timeout_s (which is exactly the coupling this change removes). It is
+      // deliberately a finite value well inside the int32 range setTimeout
+      // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
+      // on the next tick, inverting this fix into an instant kill.
+      : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
+
+    // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
+    // server-overloaded) re-dispatches with a FRESH session but used to reuse the
+    // SAME full timeoutMs/maxTotalMs as the original attempt -- so a single
+    // dispatch could burn up to ~2x max_total_s server-side (original attempt +
+    // one full-budget retry), well past what the client's deriveTimeoutMs()
+    // (packages/apra-fleet-client/src/client/api.mjs) budgets for the whole
+    // tools/call (max_total_s*1000 + a fixed grace margin). That let the
+    // client's hard timeout fire before the server's own retry-and-report path
+    // ever got a chance, hiding a clean typed server error behind a raw client
+    // transport timeout. Share ONE deadline budget across the original attempt
+    // and any single retry: cap a retry's maxTotalMs (and its inactivity
+    // timeoutMs, so it can't independently outlast the shared ceiling) to
+    // whatever remains of max_total_s since dispatchStartedAt, and skip the
+    // retry entirely once that budget is exhausted -- so total wall-clock time
+    // for this call never exceeds max_total_s, which is exactly what the client
+    // is prepared to wait for. When max_total_s is absent there is no hard
+    // ceiling to share, so retries keep their full timeout_s (unchanged,
+    // pre-existing behavior).
+    function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
+      if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
+      const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
+      return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
+    }
+
+    // Agent file validation -- verify named agent exists before any CLI invocation
+    if (input.agent) {
+      const dirs = provider.agentDirectories(input.agent);
+      let agentFound = false;
+      if (agent.agentType === 'local') {
+        const projPath = path.join(resolvedWorkFolder, dirs.project);
+        const userPath = path.join(os.homedir(), dirs.home);
+        agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
+        if (!agentFound) {
+          return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
+        }
+      } else {
+        // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
+        // already guaranteed present in ~/dirs.home by
+        // ensureAgentFilesProvisioned() above (ln ~576, which ran provisionAgents()
+        // for this exact member earlier in this same call) -- trust that instead
+        // of re-probing the remote here. This also SIDESTEPS the bug this check
+        // used to have: the old code hand-rolled a POSIX-only
+        // `test -f ... || test -f ...` command run via strategy.execCommand(),
+        // which throws a PowerShell parser error (not a POSIX shell) on every
+        // Windows remote -- a nonzero exit that this check misread as "agent not
+        // found" even when the file genuinely existed (apra-fleet P0 bug, fleet-
+        // sprint via a Windows remote member always failed plan-review with
+        // "agent 'plan-reviewer' not found").
+        const canonicalRelPath = `${input.agent}.md`;
+        agentFound = remoteAgentsDir(provider.name) !== null
+          && loadCanonicalAgentSet(provider.name).some((f) => f.relPath === canonicalRelPath);
+
+        if (!agentFound) {
+          // Not part of the canonical PM set (e.g. a project-local custom
+          // agent) -- fall back to a REAL existence probe, built platform-aware
+          // via this repo's own getOsCommands() abstraction (src/os/*.ts,
+          // already used the same way by list-members.ts/member-detail.ts for
+          // credential-file checks) instead of a single hardcoded shell dialect.
+          const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+          const projPath = `${resolvedWorkFolder}/${dirs.project}`;
+          const userPath = `~/${dirs.home}`;
+          const [projResult, userResult] = await Promise.all([
+            strategy.execCommand(cmds.credentialFileCheck(projPath), 10000),
+            strategy.execCommand(cmds.credentialFileCheck(userPath), 10000),
+          ]);
+          agentFound = projResult.stdout.includes('found') || userResult.stdout.includes('found');
+        }
+
+        if (!agentFound) {
+          return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
+        }
+      }
+    }
+
+    // Context-headroom admission control (apra-fleet-eft.81.1): a declared
+    // demand is checked against this session's remaining headroom BEFORE any
+    // CLI is spawned. No declared demand (both fields omitted) means this
+    // block is skipped entirely -- pre-existing behavior is unchanged.
+    const contextDemand = resolveExpectedDemand(input.expected_context_tokens, input.context_size);
+    let contextWarning: ExecutePromptStructured['contextWarning'];
+    if (contextDemand !== undefined) {
+      const admission = checkContextAdmission({
+        provider: provider.name,
+        resolvedModel,
+        sessionId: mintedId,
+        demand: contextDemand,
+      });
+      if (!admission.allowed) {
+        scope.abort(`insufficient context headroom: demand=${admission.detail.demand} headroom=${admission.detail.headroom} window=${admission.detail.window}`);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
+          structuredContent: { isError: true, reason: 'insufficient_context_headroom', detail: admission.detail },
+        };
+      }
+      if (admission.warning) {
+        contextWarning = { message: admission.warning, detail: admission.detail };
+      }
+    }
+
+    // Usage/budget admission (apra-fleet-eft.80.2): when a budget is configured
+    // for this member (or its workspace), a hard-threshold crossing rejects the
+    // NEW dispatch BEFORE any LLM is spawned -- never killing an in-flight call.
+    // No configured budget (the common case) means resolveBudgetScope returns
+    // undefined and this block is skipped entirely -- behavior is unchanged.
+    const budgetScope = resolveBudgetScope([agent.id, workspaceId]);
+    if (budgetScope) {
+      const preBudget = await evaluateBudget({ scope: budgetScope, agent, provider });
+      if (preBudget?.exhausted) {
+        scope.abort(`budget exhausted: scope=${budgetScope} spent=${preBudget.block.spent} budget=${preBudget.block.budget} source=${preBudget.block.source}`);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
+          structuredContent: { isError: true, reason: 'budget_exhausted', budgetUsage: preBudget.block },
+        };
+      }
+    }
+
+    // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+    await tryKillPid(agent, strategy, cmds);
+
+    // Write the rendered prompt (with substitutions applied) to the prompt file before execution.
+    // apra-fleet-c98q.1: flagged BEFORE the await, not after -- a write that
+    // throws part-way (the SSH drop this bug is about) can still have left a
+    // partial file behind, so the finally must clean up for a failed write
+    // too. Every return path ABOVE this line leaves the flag false and the
+    // finally skips the cleanup entirely: those paths never wrote a prompt
+    // file, and issuing a delete for one would be a pointless remote round
+    // trip on a dispatch that made no LLM call at all.
+    promptFileWriteAttempted = true;
+    await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+
+    // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
+    // outlives the SSH channel that reported it, and is the only way to tell a
+    // fabricated "exit 0 / empty" close apart from a real one.
+    let capturedPid: number | undefined;
+    const onPidCaptured = (pid: number) => {
+      capturedPid = pid;
+      scope.info(`pid=${pid}`);
+      if (mintedId) {
+        let logPath: string | null = null;
+        try {
+          logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+        } catch {
+          logPath = null;
+        }
+        stallDetector.update(agent.id, {
+          sessionId: mintedId,
+          logFilePath: logPath,
+          provisional: !logPath,
+          thresholdMs: stallThresholdMs,
+        });
+      }
+    };
+
+    abortHandler = () => {
+      scope.abort('cancelled by MCP client');
+      tryKillPid(agent, strategy, cmds).catch(() => {});
+    };
+    extra?.signal?.addEventListener('abort', abortHandler);
+
+    // apra-fleet-3c9.1: the signal handed to execCommand fires on EITHER the MCP
+    // client's cancellation OR a confirmed stall (stallAbortController). Merging
+    // them means a stall aborts the pending dispatch exactly as a client cancel
+    // would, while a live (non-stalled) dispatch -- whose controller is never
+    // aborted -- is left completely untouched.
+    const dispatchSignal = extra?.signal
+      ? AbortSignal.any([extra.signal, stallAbortController.signal])
+      : stallAbortController.signal;
+
+    // Mark agent as busy in statusline
+    writeStatusline(new Map([[agent.id, 'busy']]));
+
+    // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
+    // self-heal-and-retry below to exactly one attempt per call, mirroring
+    // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
+    // repeat trust failure after the heal is terminal, never looped.
+    let trustHealAttempted = false;
+    // apra-fleet-hzeb.2: a provider usage/quota limit (e.g. Claude's 429) can
+    // never be cured by a fresh session, so it must short-circuit the
+    // stale-session and server-overloaded retries below rather than burning the
+    // shared retryBudget() waiting out a window that is already known. Checked
+    // immediately after EVERY provider.parseResponse(result) call in the
+    // dispatch path (initial dispatch, stale-session retry, overloaded retry,
+    // orphan recovery, trust-heal retry) -- and regardless of result.code,
+    // since a 0-exit result event whose text carries the limit message must not
+    // be returned as a success response either.
+    const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
+      const signal = provider.detectUsageLimit(r, p);
+      if (!signal) return null;
+      // Accurate finally-block exit logging (scope.fail, not scope.abort) even
+      // when this fires on the very first parse, before the shared
+      // `_epExitCode = result.code` assignment below would otherwise run.
+      _epExitCode = r.code;
+      scope.info(`usage limit detected -- resumes ~${signal.resumeAt} (${signal.resumeAtSource})`);
+      // Session bookkeeping mirrors the max_turns path: record/touch the
+      // session id when present so fleet-sprint can resume the SAME session
+      // after the pause instead of starting a fresh one that has lost context.
+      if (p.sessionId) {
+        recordKnownSession(agent.id, p.sessionId);
+        touchAgent(agent.id, p.sessionId);
+      }
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" hit a provider usage limit (resumes ~${signal.resumeAt}, ${signal.resumeAtSource}): ${signal.message}`,
+        structuredContent: {
+          isError: true,
+          reason: 'usage_limit',
+          usageLimit: signal,
+          ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+          ...(p.usage ? { usage: { input_tokens: p.usage.input_tokens, output_tokens: p.usage.output_tokens, total_tokens: p.usage.input_tokens + p.usage.output_tokens } } : {}),
+        },
+      };
+    };
     let result;
     try {
       result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
@@ -1642,9 +1672,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (isMismatch) {
       scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
       if (!allowFreshSessionFallback && (explicitResumeId !== undefined || explicitForkId !== undefined)) {
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
         clearStoredPid(agent.id);
         if (parsed.sessionId) {
           recordKnownSession(agent.id, parsed.sessionId);
@@ -1801,11 +1828,22 @@ session: ${parsed.sessionId}`;
       },
     };
   } catch (err: any) {
+    // apra-fleet-c98q.1: this catch is now the ONLY exit an exception can take
+    // -- it covers every await from the lock claim onward, not just the CLI
+    // dispatch. Whatever threw (agent-file provisioning, the existence probe,
+    // budget admission, the leftover-pid kill, writePromptFile, preflight, the
+    // interactive dispatch, or a synchronous fault in between), the caller gets
+    // the standard failure envelope and the finally below releases the lock.
+    // Nothing is rethrown: an escaping exception is exactly what wedged a
+    // member busy until the server was restarted.
+    const message: string = (err && typeof err.message === 'string' && err.message) ? err.message : String(err);
     // apra-fleet-3c9.1: a confirmed stall aborted the in-flight execCommand (and
     // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
     // settles here -- well under the client hard timeout -- instead of being
     // mislabeled dispatch_failed or waiting out the full deadline.
-    if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
+    // (`stallAbortController` is only created part-way through the guarded
+    // region, so an earlier failure legitimately finds it unset.)
+    if (stallAbortController?.signal.aborted && !extra?.signal?.aborted) {
       _epError = 'dispatch aborted by confirmed stall';
       return {
         text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.`,
@@ -1813,25 +1851,50 @@ session: ${parsed.sessionId}`;
       };
     }
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
-    _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
-    _epError = err.message;
+    _epOffline = /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(message);
+    _epError = message;
     return {
-      text: `[FAIL] Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
-      structuredContent: { isError: true, reason: 'dispatch_failed' },
+      text: `[FAIL] Failed to execute prompt on "${agent.friendlyName}": ${message}`,
+      // The SAME signal that decides the statusline 'offline' marker decides
+      // the reason code: a connectivity drop is reported as 'transport', any
+      // other in-dispatch fault stays 'dispatch_failed'. Both mean the same
+      // thing to a caller (no verdict was produced); the split just spares it
+      // from regexing the message to tell a dead link from a dead dispatch.
+      structuredContent: { isError: true, reason: _epOffline ? 'transport' : 'dispatch_failed' },
     };
   } finally {
-    extra?.signal?.removeEventListener('abort', abortHandler);
-    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
-    if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
-    else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
-    else scope.ok(`exit=0${_epTok}`);
+    // apra-fleet-c98q.1: THE single release site. It must run correctly at ANY
+    // point of the dispatch's set-up, including before scope/strategy/
+    // promptFilePath exist, so every step below is individually guarded and
+    // none of them may throw -- a throw here would replace the real result and
+    // skip the steps after it.
+    if (abortHandler) extra?.signal?.removeEventListener('abort', abortHandler);
+    if (scope) {
+      const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
+      if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
+      else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
+      else scope.ok(`exit=0${_epTok}`);
+    }
     // Skip if stall detector already cleared state -- a new execute_prompt may have
     // claimed inFlightAgents and set busy again; clobbering it here would be wrong.
     if (!clearedByStall) {
       writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
       inFlightAgents.delete(agent.id);
     }
-    stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+    // Always via the singleton getter rather than the local binding: a failure
+    // before that local exists must still drop any registration this call made.
+    getStallDetector().remove(agent.id);
+    // Only meaningful once a prompt file has actually been written (or a write
+    // attempted) -- an earlier failure never created one. Its own failure is
+    // logged, never thrown: the
+    // lock is already released above, and losing a temp file must not turn a
+    // reportable dispatch failure into an escaping exception.
+    if (promptFileWriteAttempted && strategy && promptFilePath) {
+      try {
+        await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+      } catch (cleanupErr: any) {
+        logWarn('execute_prompt', `prompt-file cleanup failed for "${agent.friendlyName}" (${promptFilePath}): ${cleanupErr?.message ?? cleanupErr}`, agent);
+      }
+    }
   }
 }

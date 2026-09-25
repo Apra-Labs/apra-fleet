@@ -2634,18 +2634,24 @@ describe('executePrompt -- preflight reason code mapping', () => {
     expect(inFlightAgents.has(member.id)).toBe(false);
   });
 
-  it('releases the busy lock even when preflightCheck itself throws instead of resolving {ok: false}', async () => {
+  it('releases the busy lock and returns a dispatch_failed envelope (never a thrown exception) when preflightCheck itself throws instead of resolving {ok: false}', async () => {
     const member = makeTestAgent({ friendlyName: 'preflight-throws-member' });
     addAgent(member);
     mockPreflightCheck.mockRejectedValueOnce(new Error('preflight blew up unexpectedly'));
 
-    await expect(
-      executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 }),
-    ).rejects.toThrow('preflight blew up unexpectedly');
+    // apra-fleet-c98q.1: once the lock is claimed, executePrompt never throws.
+    // It used to rethrow here (after releasing the lock inline), which left the
+    // caller holding a bare exception it could only string-match; now the whole
+    // post-claim lifetime sits inside one guard, so the failure comes back as
+    // the standard structured envelope like every other dispatch failure.
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
 
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('preflight blew up unexpectedly');
     // The lock claimed just before the preflight await must not leak just
     // because preflightCheck rejected instead of resolving a failure result.
     expect(inFlightAgents.has(member.id)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(member.id)).toBe(false);
   });
 });
 

@@ -69,7 +69,14 @@
  * @property {boolean} [isError] - true on any failure path; absent/false on success.
  * @property {string} [reason] - Machine-readable failure/status classification, e.g.
  *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
- *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | ...
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'dispatch_failed' |
+ *   'transport' | ...
+ *   'dispatch_failed' and its SSH/network-flavoured sibling 'transport'
+ *   (apra-fleet-c98q.1) both mean the dispatch never reached a conclusion --
+ *   execute_prompt's single post-lock-claim guard converts ANY exception into one
+ *   of the two, so a caller is never handed a bare exception (nor, therefore, a
+ *   member left wedged busy). Treat them identically except where telling a dead
+ *   link from a dead dispatch matters.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
