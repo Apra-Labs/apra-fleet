@@ -1,0 +1,328 @@
+import { test, describe, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
+import { createProject, getProject } from '../src/projects/store/projects.mjs';
+import { listMemberGit, upsertMemberGit } from '../src/projects/store/member-git.mjs';
+import { createLedger } from '../src/supervisor/ledger.mjs';
+import { exportProject, importProject } from '../bin/se.mjs';
+
+// =============================================================================
+// apra-fleet-vcnl.4.2 -- se-export-import.test.mjs
+//
+// Coverage for bin/se.mjs's exportProject()/importProject() functions plus a
+// CLI smoke test. Every case drives its own temp data dir(s) via fs.mkdtemp
+// (never the real ~/.apra-fleet-se) and closes/cleans up in after().
+//
+// node:sqlite is a Node builtin only from 22.13.0 -- this suite skips cleanly
+// on an older runtime rather than failing with an opaque require error, same
+// convention as projects-store.test.mjs.
+// =============================================================================
+
+const HAS_SQLITE = isNodeSqliteAvailable();
+const skip = HAS_SQLITE ? false : 'node:sqlite is unavailable on this Node runtime';
+
+const execFileAsync = promisify(execFile);
+const SE_BIN = fileURLToPath(new URL('../bin/se.mjs', import.meta.url));
+
+/** @type {string[]} */
+const tmpDirs = [];
+/** @type {Array<{close: () => void}>} */
+const openStores = [];
+
+async function tempDataDir() {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-se-export-'));
+    tmpDirs.push(dir);
+    return dir;
+}
+
+function openTempStore(dataDir) {
+    const store = openStore({ dataDir });
+    openStores.push(store);
+    return store;
+}
+
+after(async () => {
+    for (const s of openStores) {
+        try { s.close(); } catch { /* best-effort */ }
+    }
+    for (const dir of tmpDirs) {
+        await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+});
+
+/** Shallow clone of `obj` with the given keys removed, for "deep-equal modulo X" assertions. */
+function omit(obj, keys) {
+    const out = { ...obj };
+    for (const k of keys) delete out[k];
+    return out;
+}
+
+describe('se-export-import', { skip }, () => {
+    test('round-trip: export from data dir A imports cleanly into empty data dir B', async () => {
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        createProject(storeA.db, {
+            id: 'rt-1',
+            name: 'Round Trip One',
+            backlogMember: 'member-a',
+            beads: { kind: 'clone', dir: '/tmp/rt-1/.beads', remote: 'git@example.com:o/beads.git', prefix: 'rt1' },
+            operator: 'op-a',
+        });
+        upsertMemberGit(storeA.db, {
+            projectId: 'rt-1',
+            member: 'member-a',
+            originSlug: 'example.com/o/r',
+            originUrl: 'git@example.com:o/r.git',
+            checkoutPath: '/home/member-a/r',
+            branch: 'main',
+            dirty: false,
+            probedAt: '2026-01-01T00:00:00.000Z',
+        });
+        upsertMemberGit(storeA.db, {
+            projectId: 'rt-1',
+            member: 'member-b',
+            originSlug: 'example.com/o/r2',
+            branch: 'feature-x',
+            dirty: true,
+            probedAt: '2026-01-01T00:00:01.000Z',
+        });
+
+        const exported = exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'rt-1' });
+        assert.equal(exported.format, 'apra-fleet-se/project-export@1');
+        assert.equal(exported.project.id, 'rt-1');
+        assert.equal(exported.memberGit.length, 2);
+
+        const originalProject = getProject(storeA.db, 'rt-1');
+        const originalMemberGit = listMemberGit(storeA.db, 'rt-1');
+
+        const dirB = await tempDataDir();
+        const storeB = openTempStore(dirB);
+        const ledgerB = createLedger({ dataDir: dirB });
+        await ledgerB.start();
+
+        importProject({ db: storeB.db, ledger: ledgerB, data: exported });
+
+        const importedProject = getProject(storeB.db, 'rt-1');
+        const importedMemberGit = listMemberGit(storeB.db, 'rt-1');
+
+        // `createdAt` is also excluded here: importing into an EMPTY store B
+        // creates a brand-new row (createProject(), not a raw INSERT of the
+        // exported timestamps), so its createdAt legitimately reflects when
+        // it was written into B, not the original creation time in A -- the
+        // same reason `updatedAt` is excluded.
+        assert.deepEqual(
+            omit(importedProject, ['updatedAt', 'createdAt']),
+            omit(originalProject, ['updatedAt', 'createdAt']),
+            'imported project must deep-equal the original modulo updatedAt/createdAt',
+        );
+        assert.deepEqual(
+            importedMemberGit,
+            originalMemberGit,
+            'imported member_git rows must deep-equal the original set (probedAt is caller-supplied, not regenerated)',
+        );
+
+        await ledgerA.stop();
+        await ledgerB.stop();
+    });
+
+    test('import is an upsert: updates fields on a second import, no duplicate member_git rows, third import is a no-op', async () => {
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        createProject(storeA.db, {
+            id: 'upsert-1',
+            name: 'Upsert One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/upsert-1/.beads' },
+        });
+        upsertMemberGit(storeA.db, { projectId: 'upsert-1', member: 'member-a', branch: 'main' });
+        const firstExport = exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'upsert-1' });
+
+        const dirB = await tempDataDir();
+        const storeB = openTempStore(dirB);
+        const ledgerB = createLedger({ dataDir: dirB });
+        await ledgerB.start();
+
+        importProject({ db: storeB.db, ledger: ledgerB, data: firstExport });
+        assert.equal(getProject(storeB.db, 'upsert-1').name, 'Upsert One');
+        assert.equal(listMemberGit(storeB.db, 'upsert-1').length, 1);
+
+        // Change the source project, re-export, and import again: fields
+        // must update in place, member_git rows must not duplicate.
+        upsertMemberGit(storeA.db, { projectId: 'upsert-1', member: 'member-a', branch: 'renamed-branch' });
+        const updatedInDb = { ...getProject(storeA.db, 'upsert-1') };
+        // Simulate a rename by exporting a patched copy of the project payload.
+        const secondExport = {
+            ...firstExport,
+            project: { ...updatedInDb, name: 'Upsert One Renamed' },
+            memberGit: listMemberGit(storeA.db, 'upsert-1'),
+        };
+
+        importProject({ db: storeB.db, ledger: ledgerB, data: secondExport });
+        const afterSecond = getProject(storeB.db, 'upsert-1');
+        assert.equal(afterSecond.name, 'Upsert One Renamed');
+        const memberGitAfterSecond = listMemberGit(storeB.db, 'upsert-1');
+        assert.equal(memberGitAfterSecond.length, 1, 'second import must not duplicate the member_git row');
+        assert.equal(memberGitAfterSecond[0].branch, 'renamed-branch');
+
+        // Importing the SAME (already-applied) export again is a no-op:
+        // fields stay the same, row count stays the same.
+        importProject({ db: storeB.db, ledger: ledgerB, data: secondExport });
+        const afterThird = getProject(storeB.db, 'upsert-1');
+        assert.equal(afterThird.name, 'Upsert One Renamed');
+        assert.equal(listMemberGit(storeB.db, 'upsert-1').length, 1, 'third (repeat) import must not duplicate rows');
+
+        await ledgerA.stop();
+        await ledgerB.stop();
+    });
+
+    test('refusal: a live ledger reservation covering a bound member refuses import; exitedAt lets it proceed', async () => {
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        createProject(storeA.db, {
+            id: 'refuse-1',
+            name: 'Refuse One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/refuse-1/.beads' },
+        });
+        upsertMemberGit(storeA.db, { projectId: 'refuse-1', member: 'member-a', branch: 'main' });
+        const exported = exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'refuse-1' });
+
+        const dirB = await tempDataDir();
+        const storeB = openTempStore(dirB);
+        const ledgerB = createLedger({ dataDir: dirB });
+        await ledgerB.start();
+
+        // A live run in B (no exitedAt) whose members overlap the imported
+        // project's backlogMember must refuse the import outright.
+        await ledgerB.claim('live-sprint-1', { members: ['member-a'] });
+
+        assert.throws(
+            () => importProject({ db: storeB.db, ledger: ledgerB, data: exported }),
+            { code: 'ERR_LIVE_RUN' },
+        );
+        assert.equal(getProject(storeB.db, 'refuse-1'), null, 'B\'s store must be unchanged after a refused import');
+        assert.equal(listMemberGit(storeB.db, 'refuse-1').length, 0, 'B\'s store must be unchanged after a refused import');
+
+        // Marking that same reservation exited lifts the refusal.
+        await ledgerB.recordExit('live-sprint-1', {});
+        const imported = importProject({ db: storeB.db, ledger: ledgerB, data: exported });
+        assert.equal(imported.id, 'refuse-1');
+        assert.equal(getProject(storeB.db, 'refuse-1').id, 'refuse-1');
+
+        await ledgerA.stop();
+        await ledgerB.stop();
+    });
+
+    test('export of an unknown project and import of a wrong-format file both fail without writing anything', async () => {
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        assert.throws(
+            () => exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'no-such-project' }),
+            { code: 'ERR_PROJECT_NOT_FOUND' },
+        );
+
+        const dirB = await tempDataDir();
+        const storeB = openTempStore(dirB);
+        const ledgerB = createLedger({ dataDir: dirB });
+        await ledgerB.start();
+
+        assert.throws(
+            () => importProject({ db: storeB.db, ledger: ledgerB, data: { format: 'not-the-right-format', project: {} } }),
+            { code: 'ERR_BAD_FORMAT' },
+        );
+        assert.equal(getProject(storeB.db, 'no-such-project'), null);
+
+        // A malformed export missing the `project` field is also ERR_BAD_FORMAT.
+        assert.throws(
+            () => importProject({
+                db: storeB.db,
+                ledger: ledgerB,
+                data: { format: 'apra-fleet-se/project-export@1' },
+            }),
+            { code: 'ERR_BAD_FORMAT' },
+        );
+
+        await ledgerA.stop();
+        await ledgerB.stop();
+    });
+
+    test('history: the export always carries an empty history array (no run-history table exists yet)', async () => {
+        // bin/se.mjs's --with-history CLI flag was removed as dead code
+        // (fix(bin/se.mjs) commit) because the underlying history table does
+        // not exist in supervisor.sqlite yet -- exportProject() unconditionally
+        // returns `history: []` with a note explaining why. That single
+        // behavior satisfies both halves of this case: the array present in
+        // every export is empty (no run data to omit or include either way).
+        const dirA = await tempDataDir();
+        const storeA = openTempStore(dirA);
+        const ledgerA = createLedger({ dataDir: dirA });
+        await ledgerA.start();
+
+        createProject(storeA.db, {
+            id: 'hist-1',
+            name: 'History One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/hist-1/.beads' },
+        });
+
+        const exported = exportProject({ db: storeA.db, ledger: ledgerA, projectId: 'hist-1' });
+        assert.deepEqual(exported.history, [], 'default export must carry an empty history array, not run data');
+        assert.equal(typeof exported.note, 'string');
+
+        await ledgerA.stop();
+    });
+
+    test('CLI smoke: spawning bin/se.mjs export <id> --data-dir <dir> prints the export as JSON on stdout', async () => {
+        const dir = await tempDataDir();
+        const store = openTempStore(dir);
+        createProject(store.db, {
+            id: 'cli-1',
+            name: 'CLI One',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/cli-1/.beads' },
+        });
+        // Release the in-process handle before the child process opens the
+        // same sqlite file, so there's exactly one live connection at a time.
+        store.close();
+        openStores.splice(openStores.indexOf(store), 1);
+
+        // NODE_TEST_CONTEXT is set by the OUTER `node --test` run executing
+        // THIS file; if inherited, se.mjs's isMainModule() guard treats the
+        // child as a reporter-driven grandchild and silently no-ops instead
+        // of actually running export -- see bin/se.mjs's isMainModule() and
+        // the same convention in supervisor-dashboard-backlog-no-live-spawn.test.mjs.
+        const childEnv = { ...process.env };
+        delete childEnv.NODE_TEST_CONTEXT;
+
+        const { stdout } = await execFileAsync(
+            process.execPath,
+            [SE_BIN, 'export', 'cli-1', '--data-dir', dir],
+            { encoding: 'utf8', env: childEnv },
+        );
+
+        const parsed = JSON.parse(stdout);
+        assert.equal(parsed.format, 'apra-fleet-se/project-export@1');
+        assert.equal(parsed.project.id, 'cli-1');
+        assert.equal(parsed.project.name, 'CLI One');
+        assert.deepEqual(parsed.history, []);
+    });
+});
