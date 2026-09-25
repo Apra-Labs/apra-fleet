@@ -182,11 +182,16 @@ const AUTH_EXPIRED = [
 // own bead with its own tests, not smuggled in under a no-verdict-change
 // consolidation.
 //
-// The ONE exception, added deliberately and with its own tests: the
-// workflow-file permission refusal below. It is not merely "unknown today" --
-// it is actively MISREAD today (see the block comment on
-// WORKFLOW_PERMISSION_REFUSAL), which is a different situation from the
-// under-matched texts listed above.
+// The exceptions, each added deliberately and with its own tests: the
+// permission-scope refusals below (the workflow-file push refusal, and the
+// GraphQL createPullRequest refusal). Neither is merely "unknown today" --
+// both are actively MISREAD today (see the block comments on
+// WORKFLOW_PERMISSION_REFUSAL and CREATE_PR_GRAPHQL_REFUSAL), which is a
+// different situation from the under-matched texts listed above. Note that
+// the createPullRequest exception is NARROWER than "Resource not accessible
+// by integration": that bare text keeps classifying as 'unknown', exactly as
+// this note says it must, and only a GraphQL-mutation-qualified occurrence of
+// it is claimed.
 
 // ---------------------------------------------------------------------------
 // Workflow-file permission refusal (the permission-scope axis)
@@ -269,12 +274,124 @@ function describeWorkflowPermissionRefusal(raw) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The GraphQL createPullRequest refusal (the OTHER permission-scope axis)
+// ---------------------------------------------------------------------------
+//
+// THE ASYMMETRY, stated once, next to the code that depends on it (the long
+// form lives in ../../docs/vcs-graphql-vs-rest.md, which this comment is the
+// pointer to):
+//
+//   A GitHub App INSTALLATION token that holds pull_requests:write can create
+//   a pull request over REST (POST /repos/{owner}/{repo}/pulls) and is
+//   commonly REFUSED on the equivalent GraphQL mutation (createPullRequest).
+//   The two surfaces do not grant the same thing for the same token.
+//
+// The refusal text GraphQL returns for that case is:
+//
+//   GraphQL: Resource not accessible by integration (createPullRequest)
+//
+// which reads exactly like "this credential lacks the pull_requests
+// permission". It does not. A caller who believes it concludes that opening a
+// pull request is impossible and reports a permission block, when the
+// supported REST route would have succeeded with the very same token. That
+// misreading costs a full review cycle every time a side branch needs landing,
+// which is why this gets a rule rather than a sentence in a review thread.
+//
+// This is ALSO why the `gh`-based PR path was retired from this package: `gh
+// pr create` issues that GraphQL mutation, so it cannot work with a
+// fleet-minted installation token. Everything here raises pull requests via
+// buildGitHubCreatePrCommand() above; `fleet-se-pr` (bin/open-pr.mjs) exposes
+// that same REST route for an arbitrary head/base pair outside a sprint.
+//
+// SCOPE OF THE MATCH (deliberately narrow, and why): the bare string "Resource
+// not accessible by integration" is NOT matched on its own. GitHub returns
+// that identical message for a genuine REST 403 where the token really is
+// missing pull_requests:write, and reclassifying that would replace a true
+// "you lack the permission" with a false "use REST instead". So every pattern
+// below additionally requires a createPullRequest/GraphQL-mutation context:
+// the mutation name, or the `gh pr create` invocation that issues it.
+const CREATE_PR_GRAPHQL_REFUSAL = [
+    /Resource not accessible by integration[\s\S]{0,200}\bcreatePullRequest\b/i,
+    /\bcreatePullRequest\b[\s\S]{0,200}Resource not accessible by integration/i,
+    /\bgh\b[^\n]{0,40}\bpr\b[^\n]{0,40}\bcreate\b[\s\S]{0,400}Resource not accessible by integration/i,
+];
+
+/** The operator referral for a GraphQL createPullRequest refusal: what the
+ *  credential actually is, why the refusal is NOT the missing-permission it
+ *  looks like, and the supported route to use instead.
+ *
+ *  Stateless, for the same reason describeWorkflowPermissionRefusal() is: the
+ *  /g regex below is constructed fresh on every call, never hoisted, so no
+ *  `lastIndex` survives between classifyFailure() calls and the same input
+ *  always describes identically. See this file's PURITY header note.
+ *
+ *  @param {string} raw - the raw failure text the refusal was classified from
+ *  @returns {string} an ASCII operator-facing referral
+ */
+function describeCreatePrGraphQLRefusal(raw) {
+    const text = String(raw == null ? '' : raw);
+    const matched = text.match(/\b(createPullRequest|updatePullRequest|mergePullRequest)\b/g) || [];
+    const mutations = [...new Set(matched)];
+    const which = mutations.length > 0
+        ? `the GraphQL mutation(s) ${mutations.join(', ')}`
+        : 'a GraphQL pull-request mutation';
+    return (
+        `GitHub refused ${which} with "Resource not accessible by integration". This is NOT a missing pull_requests ` +
+        'permission, and it is NOT a stale or mis-minted credential: the credential is a GitHub App INSTALLATION token, and GitHub ' +
+        'commonly refuses installation tokens on pull-request GraphQL MUTATIONS even when the same token holds pull_requests write ' +
+        'over REST. The two surfaces do not grant the same thing for the same token, so re-minting, re-scoping or re-provisioning ' +
+        'the credential cannot change this answer -- no self-heal and no retry is attempted. ' +
+        'REMEDY (this is a supported operation, do not report it as blocked): use the REST route instead -- ' +
+        'POST /repos/{owner}/{repo}/pulls, which is what this package already builds for every pull request it raises. ' +
+        "To open one for an arbitrary head and base branch, run the 'fleet-se-pr' command (bin/open-pr.mjs) and pass --base, --head " +
+        "and --title; run it with --help for the full argument list. Do NOT use 'gh pr create' -- it issues the very mutation that " +
+        'was just refused, which is why that path was retired here. Background: docs/vcs-graphql-vs-rest.md.'
+    );
+}
+
+/** Dispatch a matched permission-scope refusal to the description for ITS
+ *  family, so a second family can be added without either one inheriting the
+ *  other's remedy text.
+ *
+ *  The workflow-file family is tested FIRST and the fallback is its
+ *  description, so every input that described one way before this function
+ *  existed still describes exactly that way: the only inputs that can reach
+ *  the createPullRequest branch are ones that carry a GraphQL pull-request
+ *  mutation context, which no workflow-file refusal does.
+ *
+ *  Pure and stateless -- it only delegates, and both delegates build any /g
+ *  regex in-function.
+ *
+ *  @param {string} raw
+ *  @returns {string}
+ */
+function describePermissionRefusal(raw) {
+    const text = String(raw == null ? '' : raw);
+    if (WORKFLOW_PERMISSION_REFUSAL.some((re) => re.test(text))) {
+        return describeWorkflowPermissionRefusal(text);
+    }
+    if (CREATE_PR_GRAPHQL_REFUSAL.some((re) => re.test(text))) {
+        return describeCreatePrGraphQLRefusal(text);
+    }
+    return describeWorkflowPermissionRefusal(text);
+}
+
+/** Every permission-scope refusal GitHub can produce: "the identity was
+ *  understood and the PRINCIPAL cannot do this, so re-minting cannot help".
+ *  ONE array, used for BOTH `permissionScope.rules` and `rules[AUTH_DENIED]`
+ *  below so the two can never drift apart. */
+const PERMISSION_SCOPE_REFUSAL = Object.freeze([
+    ...WORKFLOW_PERMISSION_REFUSAL,
+    ...CREATE_PR_GRAPHQL_REFUSAL,
+]);
+
 /** The permission-scope axis for GitHub (see ./index.mjs's descriptor
  *  contract). Declared as the SAME array that rules[AUTH_DENIED] carries, so
  *  the two can never drift apart. */
 const permissionScope = Object.freeze({
-    rules: Object.freeze(WORKFLOW_PERMISSION_REFUSAL),
-    describe: describeWorkflowPermissionRefusal,
+    rules: PERMISSION_SCOPE_REFUSAL,
+    describe: describePermissionRefusal,
 });
 
 /** Best-effort GitHub provider code, purely DIAGNOSTIC: never branch on it --
@@ -350,12 +467,14 @@ export const GitHubVCS = Object.freeze({
     extends: 'generic-git',
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
-        // apra-fleet: the workflow-file permission refusal. AUTH_DENIED
-        // because the identity was understood and the PRINCIPAL lacks the
-        // permission -- see WORKFLOW_PERMISSION_REFUSAL above. The same array
-        // is declared under `permissionScope` below, which is what makes it
-        // outrank git's generic DIVERGED tail and skip the auth self-heal.
-        [K.AUTH_DENIED]: WORKFLOW_PERMISSION_REFUSAL,
+        // apra-fleet: the permission-scope refusals -- the workflow-file push
+        // refusal and the GraphQL createPullRequest refusal. AUTH_DENIED
+        // because the identity was understood and the PRINCIPAL cannot do the
+        // thing -- see WORKFLOW_PERMISSION_REFUSAL and
+        // CREATE_PR_GRAPHQL_REFUSAL above. The same array is declared under
+        // `permissionScope` below, which is what makes these outrank git's
+        // generic DIVERGED tail and skip the auth self-heal.
+        [K.AUTH_DENIED]: PERMISSION_SCOPE_REFUSAL,
     }),
     permissionScope,
     extractProviderCode,
