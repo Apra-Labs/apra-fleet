@@ -1383,6 +1383,12 @@ about in-flight sprints. See `docs/project-store.md` in this folder for the
 full schema, the migration-runner invariants, and the DQ-12 (probe-never-
 create) rule the route layer enforces on writes to a project's beads remote.
 
+On top of that store sits the project-overview domain: bind/unbind a member
+to a project, add a new checkout on a machine, the health panel, the git
+drawer, and a project export/import CLI. See `docs/project-overview-domain.md`
+in this folder for that domain's design, its cross-shell command-quoting
+invariant, and the trade-offs behind it.
+
 ## Dashboard
 
 The supervisor serves exactly one index page. It renders, in order: one
