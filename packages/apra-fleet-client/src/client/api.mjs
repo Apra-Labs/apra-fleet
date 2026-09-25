@@ -269,14 +269,26 @@
  *   matches the current holder; "force_release" clears it regardless of owner.
  * @property {string} [sprint_id] - Sprint/session id claiming or releasing the reservation.
  *   Required for "reserve" and "release", ignored for "force_release".
+ * @property {{package: string, ref: string}} [owner_ref] - Owner tag the caller expects this
+ *   member to carry. When supplied and the member IS owner-tagged with a different package or
+ *   ref, "reserve" is refused with outcome "member_other_owner" and nothing is written. An
+ *   untagged member, or a call without owner_ref, is never refused. Ignored by "release" and
+ *   "force_release".
+ * @property {number} [pid] - Process id of the reserving process ON THE FLEET SERVER'S HOST,
+ *   recorded with the reservation so a holder that died is reaped automatically instead of
+ *   wedging the member. Omit when the caller does not run on that host -- a reservation
+ *   without a pid is never reaped.
  */
 
 /**
  * @typedef {Object} MemberReservationStructured
  * @property {"reserved" | "reservation_refreshed" | "released" | "force_released" |
  *   "already_reserved_by_other" | "not_reserved" | "unreservable" | "invalid_input" |
- *   "member_not_found" | "failed"} outcome - Machine-readable outcome discriminator. Branch on
- *   this field; never string-match the human-readable summary text.
+ *   "member_not_found" | "failed" | "member_other_owner"} outcome - Machine-readable outcome
+ *   discriminator. Branch on this field; never string-match the human-readable summary text.
+ *   "member_other_owner" means the call passed an owner_ref and the member carries a different
+ *   owner tag, so nothing was written -- a refusal to touch another package's member at all,
+ *   distinct from "already_reserved_by_other" (a conflict over the current holder).
  * @property {boolean} ok - True when the requested operation took effect (or was already true).
  * @property {"reserve" | "release" | "force_release"} action - The action that was requested.
  * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
@@ -733,6 +745,15 @@ export class ApraFleet {
 
     /**
      * List all fleet members and their current status.
+     *
+     * In "json" format each member carries BOTH reservation views: the
+     * `reservedBy` runId string (unchanged, what every existing reader --
+     * including the fleet-supervisor overlap check -- reads) and the
+     * structured `reservation` ({runId, pid, at} or null; pid/at are null for
+     * a legacy string-only reservation). Listing also reaps holders whose
+     * recorded pid is gone on the fleet server's host, so a member wedged by
+     * a dead sprint frees itself.
+     *
      * @param {ListMembersOptions} [options]
      */
     async listMembers(options = {}) {

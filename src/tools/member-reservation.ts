@@ -25,6 +25,9 @@ export const memberReservationSchema = z.object({
   sprint_id: z.string().min(1).optional().describe(
     'Sprint/session id claiming or releasing the reservation. Required for "reserve" and "release". Ignored for "force_release".'
   ),
+  owner_ref: z.object({ package: z.string().min(1), ref: z.string().min(1) }).optional().describe(
+    'Owner tag the caller expects this member to carry, e.g. {package: "fleet-sprint", ref: "<project>"}. When supplied and the member IS owner-tagged with a different package or ref, "reserve" is refused (outcome member_other_owner) and nothing is written. An untagged member, or a call without owner_ref, is never refused. Ignored by "release" and "force_release".'
+  ),
   pid: z.number().int().positive().optional().describe(
     'Process id of the reserving process ON THE FLEET SERVER\'S HOST. Recorded with the reservation so a reservation whose holder died is reaped automatically instead of wedging the member. Omit when the caller does not run on that host -- a reservation without a pid is never reaped.'
   ),
@@ -60,7 +63,15 @@ export type MemberReservationOutcome =
   /** No member matched member_id/member_name. */
   | 'member_not_found'
   /** The reservation store write failed -- the operation did NOT take effect. */
-  | 'failed';
+  | 'failed'
+  /**
+   * Refused: the caller passed an owner_ref and the member carries a
+   * DIFFERENT owner tag, so it belongs to another package/consumer
+   * (apra-fleet-ecjf.4). Nothing was written -- this is not a conflict over
+   * who currently holds the member, it is a refusal to touch someone else's
+   * member at all.
+   */
+  | 'member_other_owner';
 
 /**
  * Reservation as a READER sees it (apra-fleet-ecjf.3).
@@ -170,6 +181,7 @@ function reservationResult(
     'invalid_input',
     'member_not_found',
     'failed',
+    'member_other_owner',
   ];
   const ok = fields.ok ?? !failedOutcomes.includes(fields.outcome);
   return { text, structuredContent: { ...fields, ok } };
@@ -225,7 +237,29 @@ export async function memberReservation(input: MemberReservationInput): Promise<
         reaped: false,
       });
     }
-    // Lazy reaping runs BEFORE the owner check so a dead holder no longer
+    // Owner-tag refusal (apra-fleet-ecjf.4). Runs after member resolution,
+    // after the unreservable short-circuit and BEFORE both the reaping and
+    // the already_reserved_by_other check, so a member owned by another
+    // package is refused regardless of who currently holds it -- and so the
+    // refusal writes NOTHING at all (reaping is a real store write, so doing
+    // it first would make a "refused" call still mutate the member). The
+    // owner tag itself is only ever READ here; member_owner/register_member/
+    // update_member are the writers.
+    const ownerRef = input.owner_ref;
+    const currentTag = existing.owner;
+    if (ownerRef && currentTag && (currentTag.package !== ownerRef.package || currentTag.ref !== ownerRef.ref)) {
+      return reservationResult(
+        `[-] Member "${existing.friendlyName}" is owned by "${currentTag.package}@${currentTag.ref}", not "${ownerRef.package}@${ownerRef.ref}". Refusing to reserve a member owned by another package.`,
+        {
+          ...base,
+          outcome: 'member_other_owner',
+          ownerSprintId: getReservation(existing)?.runId ?? null,
+          reservation: getReservation(existing),
+          reaped: false,
+        },
+      );
+    }
+    // Lazy reaping runs BEFORE the holder check so a dead holder no longer
     // blocks a fresh reserve. `existing` is reassigned from the reaper's
     // return: the pre-reap object still carries the cleared reservation and
     // would re-block the very claim this unwedges.

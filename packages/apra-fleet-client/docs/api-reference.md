@@ -296,6 +296,13 @@ the unit tests -- calling with no arguments sends an empty object, not
 | `format` | `"compact" \| "json"?` | Output format. |
 | `tags` | `string[]?` | Filter members by tags (AND semantics). |
 
+In `"json"` format each member carries both reservation views: `reservedBy`
+(the runId string, unchanged, what existing readers such as the
+fleet-supervisor overlap check use) and `reservation` (`{runId, pid, at}` or
+`null`; `pid`/`at` are `null` for a legacy string-only reservation). Listing
+also reaps a holder whose recorded pid no longer exists on the fleet server's
+host, so a member wedged by a dead sprint frees itself.
+
 #### `fleetStatus(options: FleetStatusOptions = {})`
 
 Calls `fleet_status` -- status of all fleet members.
@@ -458,11 +465,15 @@ prose.
 | `member_name` | `string?` | Friendly name of the member. |
 | `action` | `"reserve" \| "release" \| "force_release"` | `"reserve"` claims the member for `sprint_id` (fails if already reserved by someone else); `"release"` clears it only if `sprint_id` matches the current holder; `"force_release"` clears it regardless of owner. |
 | `sprint_id` | `string?` | Sprint/session id claiming or releasing the reservation. Required for `"reserve"` and `"release"`, ignored for `"force_release"`. |
+| `owner_ref` | `{package, ref}?` | Owner tag the caller expects the member to carry. When supplied and the member is owner-tagged with a different `package` or `ref`, `"reserve"` is refused with outcome `"member_other_owner"` and nothing is written. An untagged member, or a call without `owner_ref`, is never refused. Ignored by `"release"`/`"force_release"`. |
+| `pid` | `number?` | Process id of the reserving process **on the fleet server's host**, recorded with the reservation so a holder that died is reaped automatically instead of wedging the member. Omit when the caller does not run on that host -- a reservation without a pid is never reaped. |
 
 `MemberReservationStructured` fields: `outcome` (one of `"reserved"`,
 `"reservation_refreshed"`, `"released"`, `"force_released"`,
 `"already_reserved_by_other"`, `"not_reserved"`, `"unreservable"`,
-`"invalid_input"`, `"member_not_found"`, `"failed"`), `ok`, `action`,
+`"invalid_input"`, `"member_not_found"`, `"failed"`, `"member_other_owner"` --
+the member carries a different owner tag than the supplied `owner_ref`, so
+nothing was written), `ok`, `action`,
 `memberId`, `memberName`, `sprintId`, `ownerSprintId` (the sprint that held
 the reservation when the call arrived, or the blocking owner on
 `"already_reserved_by_other"`), `reservation` (`{runId, pid, at}` or `null` --
