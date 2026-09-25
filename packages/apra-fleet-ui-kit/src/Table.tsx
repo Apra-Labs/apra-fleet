@@ -19,6 +19,8 @@ export interface TableProps<Row> {
   rowKey: (row: Row) => string;
   /** Message shown when rows is empty. */
   emptyMessage?: string;
+  /** Optional row-click handler, e.g. to open a detail drawer. */
+  onRowClick?: (row: Row) => void;
 }
 
 /**
@@ -29,7 +31,8 @@ export function Table<Row extends Record<string, unknown>>({
   columns,
   rows,
   rowKey,
-  emptyMessage = "No data"
+  emptyMessage = "No data",
+  onRowClick
 }: TableProps<Row>) {
   return (
     <table
@@ -75,7 +78,11 @@ export function Table<Row extends Record<string, unknown>>({
           </tr>
         ) : (
           rows.map((row) => (
-            <tr key={rowKey(row)}>
+            <tr
+              key={rowKey(row)}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              style={onRowClick ? { cursor: "pointer" } : undefined}
+            >
               {columns.map((column) => (
                 <td
                   key={column.key}
