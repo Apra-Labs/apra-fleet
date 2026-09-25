@@ -42,6 +42,19 @@
 //   * `provisionVcsAuth` / `provisionLlmAuth` -- structured results
 //     (`structuredContent.ok`); `composePermissions` is bare-string like
 //     registerMember. All three are optional (step 5), run only when asked.
+//     `provisionVcsAuth`/`provisionLlmAuth` each have their own idempotency
+//     probe first (a fresh `listMembers` read of the new member's own record:
+//     a non-expired `vcsTokenExpiresAt` for VCS, an already-authenticated
+//     `llm_auth` status for LLM), so a re-run with the same request body
+//     reports them `skipped` too, matching the other four steps
+//     (apra-fleet-vcnl.5). `composePermissions` has NO such probe: neither
+//     `listMembers` nor `memberDetail` (nor anything `composePermissions`
+//     itself returns) exposes any "already composed" signal for a member
+//     today -- unlike the code_intel_provider gap noted below, there is no
+//     field name to read defensively once one exists, since
+//     src/tools/compose-permissions.ts never persists composition state onto
+//     the registry (no `updateAgent` call). This step still issues a real
+//     call on every request until that signal exists.
 //
 // code_intel_provider is NOT actually copyable today
 // ----------------------------------------------------
@@ -535,6 +548,53 @@ async function bindStep({ db, client }, { projectId, name, beadsDir }) {
 }
 
 /**
+ * The new member's OWN `listMembers` record by name -- the idempotency-probe
+ * input for the two optional step-5 actions that have one (see the module
+ * header, apra-fleet-vcnl.5). Returns null when the member is not (yet)
+ * found, so every caller below falls back to actually running its step
+ * rather than misreading absence-of-evidence as already-provisioned.
+ *
+ * @param {{ client: object }} deps
+ * @param {string} name
+ * @returns {Promise<object | null>}
+ */
+async function fetchMemberRecord({ client }, name) {
+    const records = parseMemberList(await client.listMembers({ format: 'json' }));
+    return records.find((r) => r && r.name === name) ?? null;
+}
+
+/**
+ * Whether `record.vcsTokenExpiresAt` (the same field `provisionVcsAuth`
+ * itself sets, read back via `listMembers`) is a timestamp still in the
+ * future -- the clone step's sibling has no equivalent field to fall back
+ * on, so an absent/unparseable value is simply "no evidence of a valid
+ * token" rather than an error.
+ *
+ * @param {{ vcsTokenExpiresAt?: unknown } | null} record
+ * @returns {boolean}
+ */
+function hasNonExpiredVcsToken(record) {
+    const raw = record && typeof record.vcsTokenExpiresAt === 'string' ? record.vcsTokenExpiresAt : null;
+    if (!raw) return false;
+    const expiresAt = Date.parse(raw);
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+/**
+ * Whether `record.llm_auth` (list_members' own live credential-file/env-var
+ * probe -- see src/tools/list-members.ts's `getAuthStatus`) already reports
+ * a working credential. `'none'`, `'offline'`, and `'N/A'` are all "no
+ * evidence of prior provisioning", not a probe failure.
+ *
+ * @param {{ llm_auth?: unknown } | null} record
+ * @returns {boolean}
+ */
+function hasLlmAuthAlready(record) {
+    const status = record && typeof record.llm_auth === 'string' ? record.llm_auth : '';
+    return status === 'api-key' || status === 'oauth' || status === 'api-key (warn: oauth)';
+}
+
+/**
  * One of the three optional step-5 tools. `provisionVcsAuth`/`provisionLlmAuth`
  * carry `structuredContent.ok`; `composePermissions` is bare-string like
  * register_member -- branch on whichever signal the result actually carries.
@@ -555,6 +615,34 @@ async function optionalActionStep(promiseFactory, toolLabel) {
     return textActionFailed(res)
         ? stepResult('failed', `${toolLabel} failed: ${resultText(res) || 'refused'}`)
         : stepResult('done');
+}
+
+/**
+ * Step 5a (optional): VCS auth provisioning, probed first. Skips when the
+ * new member's own `listMembers` record already carries a non-expired
+ * `vcsTokenExpiresAt` (apra-fleet-vcnl.5); otherwise runs `provisionVcsAuth`
+ * as before.
+ */
+async function vcsAuthStep({ client }, { name }) {
+    const record = await fetchMemberRecord({ client }, name);
+    if (hasNonExpiredVcsToken(record)) {
+        return stepResult('skipped', `vcs token already valid until ${record.vcsTokenExpiresAt}`);
+    }
+    return optionalActionStep(() => client.provisionVcsAuth({ member_name: name }), 'provisionVcsAuth');
+}
+
+/**
+ * Step 5b (optional): LLM auth provisioning, probed first. Skips when the
+ * new member's own `listMembers` record already reports a working
+ * credential via `llm_auth` (apra-fleet-vcnl.5); otherwise runs
+ * `provisionLlmAuth` as before.
+ */
+async function llmAuthStep({ client }, { name }) {
+    const record = await fetchMemberRecord({ client }, name);
+    if (hasLlmAuthAlready(record)) {
+        return stepResult('skipped', `llm auth already present (${record.llm_auth})`);
+    }
+    return optionalActionStep(() => client.provisionLlmAuth({ member_name: name }), 'provisionLlmAuth');
 }
 
 /**
@@ -631,11 +719,13 @@ export async function addCheckout({ db, client }, projectId, input = {}) {
     await runStep('bind', () => bindStep({ db, client }, { projectId, name, beadsDir }));
 
     await runStep('provision-vcs-auth', () => (input.provisionVcs
-        ? optionalActionStep(() => client.provisionVcsAuth({ member_name: name }), 'provisionVcsAuth')
+        ? vcsAuthStep({ client }, { name })
         : stepResult('skipped', 'not requested')));
     await runStep('provision-llm-auth', () => (input.provisionLlm
-        ? optionalActionStep(() => client.provisionLlmAuth({ member_name: name }), 'provisionLlmAuth')
+        ? llmAuthStep({ client }, { name })
         : stepResult('skipped', 'not requested')));
+    // No pre-check here: composePermissions has no "already composed" signal
+    // to probe -- see the module header (apra-fleet-vcnl.5).
     await runStep('compose-permissions', () => (input.composePermissions
         ? optionalActionStep(() => client.composePermissions({ member_name: name }), 'composePermissions')
         : stepResult('skipped', 'not requested')));

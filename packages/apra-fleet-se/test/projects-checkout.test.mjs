@@ -613,3 +613,125 @@ describe('9. optional provisioning steps run only when requested', { skip }, () 
         assert.equal(client.calls.composePermissions.length, 1);
     });
 });
+
+// =============================================================================
+// 10. provision-vcs-auth / provision-llm-auth idempotency probes (apra-fleet-vcnl.5)
+// =============================================================================
+describe('10. optional step-5 provisioning idempotency probes', { skip }, () => {
+    test('provisionVcsAuth is skipped when the member already carries a non-expired vcsTokenExpiresAt', async () => {
+        const { client, supervisor } = setup();
+        client.addMember('proj-1-lin4', { type: 'remote' });
+        const futureIso = new Date(Date.now() + 3600_000).toISOString();
+        const checkoutDir = '/home/proj-1-lin4/shop-api';
+        const originUrl = 'https://github.com/acme/shop-api.git';
+        client.addMember('checkout-member-1', {
+            type: 'remote',
+            host: '10.0.0.1:22',
+            folder: checkoutDir,
+            vcsTokenExpiresAt: futureIso,
+            owner: { package: OWNER_PACKAGE, ref: 'proj-1' },
+            env: { [BEADS_DIR_ENV]: '/repo/proj-1/.beads' },
+        });
+        client.clonedAt.set(checkoutDir, { originUrl, originSlug: originSlugFromUrl(originUrl) });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin4',
+            originUrl,
+            checkoutDir,
+            name: 'checkout-member-1',
+            provisionVcs: true,
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const byStep = Object.fromEntries(payloadOf(res).steps.map((s) => [s.step, s.status]));
+        assert.equal(byStep['clone'], 'skipped');
+        assert.equal(byStep['register'], 'skipped');
+        assert.equal(byStep['bind'], 'skipped');
+        assert.equal(byStep['provision-vcs-auth'], 'skipped');
+        assert.equal(client.calls.provisionVcsAuth.length, 0, 'the probe must avoid the mutating provisionVcsAuth call entirely');
+    });
+
+    test('provisionVcsAuth still runs when vcsTokenExpiresAt is in the past', async () => {
+        const { client, supervisor } = setup();
+        client.addMember('proj-1-lin5', { type: 'remote' });
+        const pastIso = new Date(Date.now() - 3600_000).toISOString();
+        const checkoutDir = '/home/proj-1-lin5/shop-api';
+        const originUrl = 'https://github.com/acme/shop-api.git';
+        client.addMember('checkout-member-2', {
+            type: 'remote',
+            host: '10.0.0.1:22',
+            folder: checkoutDir,
+            vcsTokenExpiresAt: pastIso,
+            owner: { package: OWNER_PACKAGE, ref: 'proj-1' },
+            env: { [BEADS_DIR_ENV]: '/repo/proj-1/.beads' },
+        });
+        client.clonedAt.set(checkoutDir, { originUrl, originSlug: originSlugFromUrl(originUrl) });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin5',
+            originUrl,
+            checkoutDir,
+            name: 'checkout-member-2',
+            provisionVcs: true,
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const byStep = Object.fromEntries(payloadOf(res).steps.map((s) => [s.step, s.status]));
+        assert.equal(byStep['provision-vcs-auth'], 'done');
+        assert.equal(client.calls.provisionVcsAuth.length, 1);
+    });
+
+    test('provisionLlmAuth is skipped when the member already reports an authenticated llm_auth status', async () => {
+        const { client, supervisor } = setup();
+        client.addMember('proj-1-lin6', { type: 'remote' });
+        const checkoutDir = '/home/proj-1-lin6/shop-api';
+        const originUrl = 'https://github.com/acme/shop-api.git';
+        client.addMember('checkout-member-3', {
+            type: 'remote',
+            host: '10.0.0.1:22',
+            folder: checkoutDir,
+            llm_auth: 'oauth',
+            owner: { package: OWNER_PACKAGE, ref: 'proj-1' },
+            env: { [BEADS_DIR_ENV]: '/repo/proj-1/.beads' },
+        });
+        client.clonedAt.set(checkoutDir, { originUrl, originSlug: originSlugFromUrl(originUrl) });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin6',
+            originUrl,
+            checkoutDir,
+            name: 'checkout-member-3',
+            provisionLlm: true,
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const byStep = Object.fromEntries(payloadOf(res).steps.map((s) => [s.step, s.status]));
+        assert.equal(byStep['provision-llm-auth'], 'skipped');
+        assert.equal(client.calls.provisionLlmAuth.length, 0, 'the probe must avoid the mutating provisionLlmAuth call entirely');
+    });
+
+    test("provisionLlmAuth still runs when llm_auth is 'none'", async () => {
+        const { client, supervisor } = setup();
+        client.addMember('proj-1-lin7', { type: 'remote' });
+        const checkoutDir = '/home/proj-1-lin7/shop-api';
+        const originUrl = 'https://github.com/acme/shop-api.git';
+        client.addMember('checkout-member-4', {
+            type: 'remote',
+            host: '10.0.0.1:22',
+            folder: checkoutDir,
+            llm_auth: 'none',
+            owner: { package: OWNER_PACKAGE, ref: 'proj-1' },
+            env: { [BEADS_DIR_ENV]: '/repo/proj-1/.beads' },
+        });
+        client.clonedAt.set(checkoutDir, { originUrl, originSlug: originSlugFromUrl(originUrl) });
+
+        const res = await postCheckout(supervisor, 'proj-1', {
+            siblingMember: 'proj-1-lin7',
+            originUrl,
+            checkoutDir,
+            name: 'checkout-member-4',
+            provisionLlm: true,
+        });
+        assert.equal(res.statusCode, 200, JSON.stringify(payloadOf(res)));
+        const byStep = Object.fromEntries(payloadOf(res).steps.map((s) => [s.step, s.status]));
+        assert.equal(byStep['provision-llm-auth'], 'done');
+        assert.equal(client.calls.provisionLlmAuth.length, 1);
+    });
+});
