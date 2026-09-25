@@ -45,6 +45,21 @@ vi.mock('../src/services/known-hosts.js', () => ({
   removeKnownHost: vi.fn(),
 }));
 
+// apra-fleet-g6ap.5.2 (DQ-22): remove_member (without force) consults the
+// same combined reservedBy + registered-workflow-package holds check
+// member_owner runs. Default: no package reports held, so every pre-
+// existing test above keeps exercising the real removal path unmocked.
+const mockConsultHolds = vi.fn<
+  (memberId: string) => Promise<Array<{ packageId: string; held: boolean; reason?: string; error?: string }>>
+>(async () => []);
+vi.mock('../src/services/workflow-packages.js', () => ({
+  workflowPackageService: {
+    list: () => [],
+    consultHolds: (...args: [string]) => mockConsultHolds(...args),
+    checkOwnerRef: async () => ({ error: 'not stubbed for this test' }),
+  },
+}));
+
 import { removeMember } from '../src/tools/remove-member.js';
 
 describe('removeMember - decommissioning', () => {
@@ -55,6 +70,7 @@ describe('removeMember - decommissioning', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockRevokeGithub.mockResolvedValue({ success: true, message: 'github revoked' });
     mockReadMemberStatus.mockReturnValue('idle');
+    mockConsultHolds.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => restoreRegistry());
@@ -181,5 +197,42 @@ describe('removeMember - decommissioning', () => {
     const result = await removeMember({ member_id: member.id });
 
     expect(result).toContain('✅');
+  });
+
+  // apra-fleet-g6ap.5.2 case 8 (DQ-22): without force, remove_member refuses
+  // a held member (reservedBy or a registered package's holds route); with
+  // force=true both are bypassed.
+  describe('member-held refusal (DQ-22)', () => {
+    it('refuses without force when reservedBy is set, text contains member-held', async () => {
+      const member = makeTestAgent({ friendlyName: 'reserved-worker', reservedBy: 'sprint-99' });
+      addAgent(member);
+
+      const result = await removeMember({ member_id: member.id });
+
+      expect(result).toContain('member-held');
+      expect(mockClose).not.toHaveBeenCalled();
+    });
+
+    it('refuses without force when a registered workflow package reports the member held, text names the package', async () => {
+      const member = makeTestAgent({ friendlyName: 'package-held-worker', owner: { package: 'fleet-sprint', ref: 'sprint-1' } });
+      addAgent(member);
+      mockConsultHolds.mockResolvedValueOnce([{ packageId: 'fleet-sprint', held: true, reason: 'in-progress-assignment' }]);
+
+      const result = await removeMember({ member_id: member.id });
+
+      expect(result).toContain('member-held');
+      expect(result).toContain('fleet-sprint');
+      expect(mockClose).not.toHaveBeenCalled();
+    });
+
+    it('removes a held member when force=true, bypassing both checks', async () => {
+      const member = makeTestAgent({ friendlyName: 'force-removed-worker', reservedBy: 'sprint-99', owner: { package: 'fleet-sprint', ref: 'sprint-1' } });
+      addAgent(member);
+      mockConsultHolds.mockResolvedValueOnce([{ packageId: 'fleet-sprint', held: true, reason: 'assignment' }]);
+
+      const result = await removeMember({ member_id: member.id, force: true });
+
+      expect(result).toContain('✅');
+    });
   });
 });
