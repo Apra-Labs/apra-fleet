@@ -11,7 +11,7 @@ import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
+import { buildEnvPrefix } from '../utils/env-prefix.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -898,7 +898,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
 
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  // F14: member.env AND auth env in the member's ACTUAL shell form. Computed
+  // ONCE here and prepended at the main launch below plus all four retry
+  // sites, so every command this tool dispatches carries the same
+  // environment -- a retry must not silently run with less env than the
+  // attempt it is replacing.
+  const envPrefix = buildEnvPrefix(agent, { os: getAgentOS(agent), shell: getAgentShell(agent) });
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
@@ -1102,7 +1107,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     thresholdMs: stallThresholdMs,
   });
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+  const claudeCmd = envPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
   // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
@@ -1410,7 +1415,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+      const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
     let parsed = provider.parseResponse(result);
@@ -1454,7 +1459,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1475,7 +1480,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1609,7 +1614,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-          const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+          const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
           parsed = provider.parseResponse(result);
           if (parsed.usage) _epUsage = parsed.usage;

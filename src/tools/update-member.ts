@@ -76,7 +76,7 @@ export const updateMemberSchema = z.object({
     package: z.string().min(1),
     ref: z.string().min(1),
   }).optional().describe('Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.'),
-  env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Pass {} to clear.'),
+  env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. Pass {} to clear.'),
   llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
 });
 

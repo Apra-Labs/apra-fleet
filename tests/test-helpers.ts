@@ -133,3 +133,36 @@ export function restoreRegistry(): void {
     fs.writeFileSync(REGISTRY_PATH, JSON.stringify({ version: '1.0', agents: [] }, null, 2));
   }
 }
+
+/**
+ * A pid that is guaranteed to be dead (apra-fleet-ecjf.3.2).
+ *
+ * Spawns a short-lived child, awaits its 'close' (not just 'exit', so the
+ * stdio handles are gone too) and then polls isPidAlive() until the OS itself
+ * agrees the process is gone -- on Windows the handle can outlive 'close' by
+ * a few milliseconds, and a pid that still probes alive would silently make
+ * every dead-pid reaping assertion vacuous. Never guesses a pid number.
+ *
+ * Throws (rather than returning a maybe-live pid) if the process is still
+ * reported alive after the bounded wait: that is a real finding about the
+ * platform, not something to paper over.
+ */
+export async function spawnDeadPid(timeoutMs = 5000): Promise<number> {
+  const { spawn } = await import('node:child_process');
+  const { isPidAlive } = await import('../src/utils/pid-helpers.js');
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  const pid = child.pid;
+  if (!pid) throw new Error('spawnDeadPid: child process has no pid');
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', () => resolve());
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (isPidAlive(pid)) {
+    if (Date.now() > deadline) {
+      throw new Error(`spawnDeadPid: pid ${pid} still reported alive ${timeoutMs}ms after close`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return pid;
+}

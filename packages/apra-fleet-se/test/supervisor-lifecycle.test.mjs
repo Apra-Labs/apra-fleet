@@ -15,6 +15,8 @@ import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -59,10 +61,65 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 // default rather than raised blind; the env override exists for a
 // genuinely slower environment to prove its own number instead of every
 // caller inheriting a bigger guess.
-const SUPERVISOR_HEALTH_TIMEOUT_MS = (() => {
-    const override = Number(process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS);
-    return Number.isFinite(override) && override > 0 ? override : 15000;
-})();
+//
+// apra-fleet-ecjf.5: the 15s default above is standalone-safe but not
+// contention-safe -- both timeouts observed in the integ run happened
+// under a bounded-runner run with sibling suites (and their own spawned
+// subprocesses) contending for the same CPU/IO. resolveSupervisorHealthBudgetMs()
+// runs the DEFAULT (only the default -- never an explicit override) through
+// the package's existing scaledTimeout() helper, the same contention-aware
+// treatment already applied by 14 other test files in this package (see
+// test/helpers/scaled-timeout.mjs). Two invariants:
+//   1. An explicit APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS resolves VERBATIM,
+//      never multiplied -- scaling a hand-set number would defeat the
+//      v6t7.8 rationale that a genuinely slower environment proves its own
+//      number rather than inheriting a bigger guess.
+//   2. This must not depend on APRA_FLEET_TEST_CONCURRENCY being present in
+//      the environment: when it is unset (e.g. a caller that bypasses
+//      scripts/run-tests.mjs), the concurrency used to scale falls back to
+//      TEST_CONCURRENCY from test/helpers/test-concurrency.mjs -- the single
+//      source of truth for this package's concurrency level -- instead of
+//      silently behaving as if concurrency were 1.
+// Exercised directly (not just via the module-load default) by the
+// "health-wait budget resolution" tests below, which drive it with injected
+// concurrency/override inputs so the cases cannot leak into sibling
+// subtests running concurrently in the same suite.
+// apra-fleet-ecjf.6: `env` is an injectable parameter (defaulting to the real
+// process.env) rather than a hardcoded process.env reference, so a test can
+// drive the ACTUAL env-var-read code path (same property names, same
+// selection logic) with a synthetic object -- proving the wiring works
+// (including that the var names are spelled correctly) without ever
+// mutating global process.env, which would leak between concurrent
+// subtests in this suite. The real call site below (module-load default)
+// still resolves against the real process.env via the default parameter.
+//
+// Also fixes the concurrency-fallback bug named by apra-fleet-ecjf.6: an
+// empty-string APRA_FLEET_TEST_CONCURRENCY used to parse as Number('') = 0,
+// and Number.isFinite(0) is true, so the fallback to TEST_CONCURRENCY was
+// silently skipped and scaledTimeout() got concurrency 0 (== unscaled
+// base) -- reverting the exact contention-scaling fix this resolver exists
+// for. envConcurrency is now only computed from a defined, non-empty raw
+// value; anything else (undefined, '', unparseable) falls through to
+// TEST_CONCURRENCY.
+function resolveSupervisorHealthBudgetMs({ concurrency, override, env = process.env } = {}) {
+    const rawOverride = override !== undefined ? override : env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS;
+    const numOverride = Number(rawOverride);
+    if (rawOverride !== undefined && rawOverride !== null && Number.isFinite(numOverride) && numOverride > 0) {
+        return numOverride;
+    }
+    const resolvedConcurrency = concurrency !== undefined
+        ? concurrency
+        : (() => {
+            const rawConcurrency = env.APRA_FLEET_TEST_CONCURRENCY;
+            const envConcurrency = rawConcurrency !== undefined && rawConcurrency !== null && rawConcurrency !== ''
+                ? Number(rawConcurrency)
+                : NaN;
+            return Number.isFinite(envConcurrency) ? envConcurrency : TEST_CONCURRENCY;
+        })();
+    return scaledTimeout(15000, { concurrency: resolvedConcurrency });
+}
+
+const SUPERVISOR_HEALTH_TIMEOUT_MS = resolveSupervisorHealthBudgetMs();
 
 // -- global PID cleanup: every spawned pid is tracked and force-killed --------
 /** @type {Set<number>} */
@@ -135,20 +192,65 @@ function waitDead(pid, timeoutMs = 8000) {
 const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
 
 /**
+ * Attach a listener that captures a child's 'error' event (ENOENT, EACCES,
+ * EAGAIN, ...) onto the child object itself, as `child.spawnError`, so a
+ * later describeChildExitState() call can report it. Node emits 'error'
+ * asynchronously and independently of 'exit' -- a child that fails to spawn
+ * at all gets NEITHER an 'exit' event nor a pid, so without this the
+ * diagnostic's `exited` check (both exitCode and signalCode null) falls
+ * through to "still alive", actively misleading in exactly the
+ * starved-vs-never-started scenario this diagnostic exists to disambiguate
+ * (apra-fleet-ecjf.7). Must be attached immediately after spawn(), before
+ * any later describeChildExitState() call, and Node requires an 'error'
+ * listener to exist or an unhandled spawn failure crashes the process.
+ */
+function trackSpawnError(child) {
+    child.spawnError = null;
+    child.on('error', (err) => { child.spawnError = err; });
+    return child;
+}
+
+/**
+ * Describe whether a spawned child had already exited (vs. was still
+ * running) at the time a health-wait timeout fired, plus its exit
+ * code/signal -- this is what distinguishes "silently starved while still
+ * alive" (a scheduling/contention symptom) from "silently exited early"
+ * (a spawn/crash symptom that empty stderr alone cannot rule out, since
+ * some exits produce no stack trace). A child that failed to spawn at all
+ * (see trackSpawnError above) is reported as its own distinct state,
+ * separate from both "still alive" and "exited" -- apra-fleet-ecjf.7.
+ */
+function describeChildExitState(child) {
+    if (!child) return 'child process state: unknown (no child reference provided)';
+    if (child.spawnError) {
+        return `child process state: never spawned (spawn error: ${child.spawnError.message})`;
+    }
+    if (child.pid === undefined) {
+        return 'child process state: never spawned (pid undefined, no spawn error observed yet)';
+    }
+    const exited = child.exitCode !== null || child.signalCode !== null;
+    if (!exited) return 'child process state: still alive (not exited)';
+    return `child process state: exited (code=${child.exitCode === null ? 'null' : child.exitCode}, signal=${child.signalCode === null ? 'null' : child.signalCode})`;
+}
+
+/**
  * Wrap a supervisor health-wait timeout with a diagnostic that
  * distinguishes "the supervisor process never logged its listening line"
  * from "it bound but /api/health did not answer", using the
- * already-captured serve.mjs stdout, and appends the captured
- * stdout/stderr tail so a CI log is actionable without a re-run.
+ * already-captured serve.mjs stdout, plus whether the spawned child had
+ * already exited (vs. was still alive) and its exit code/signal, and
+ * appends the captured stdout/stderr tail so a CI log is actionable
+ * without a re-run.
  * Exercised directly (see the "health-wait timeout diagnostic" test below)
  * against a real failed wait on a deliberately unbound port, rather than
  * only asserted against hand-built strings.
  */
-function describeHealthWaitFailure(err, { stdoutBuf, stderrBuf }) {
+function describeHealthWaitFailure(err, { stdoutBuf, stderrBuf, child }) {
     const bindState = LISTENING_LOG_RE.test(stdoutBuf)
         ? 'supervisor bound but /api/health did not answer'
         : 'supervisor never logged its listening line';
-    const context = `${bindState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
+    const exitState = describeChildExitState(child);
+    const context = `${bindState}\n${exitState}\n--- serve.mjs stdout so far ---\n${stdoutBuf}\n--- serve.mjs stderr so far ---\n${stderrBuf}`;
     if (err instanceof Error) {
         err.message = `${err.message}\n${context}`;
         return err;
@@ -422,14 +524,18 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         // one exists -- see auth.mjs).
         const serviceToken = resolveServiceToken(seDataDir).token;
 
-        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        // apra-fleet-ecjf.8: wrapped in trackSpawnError() so a spawn failure
+        // here (a) is captured for describeHealthWaitFailure()'s
+        // never-spawned diagnostic below and (b) does not crash the worker
+        // via an unhandled 'error' event before that diagnostic can run.
+        const serve = trackSpawnError(spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
             cwd: SE_PKG_ROOT,
             // apra-fleet-v6t7.8: piped (not ignored) so a health-wait timeout
             // can carry the "never bound" vs "bound but silent" diagnostic
             // plus the stdout/stderr tail -- see describeHealthWaitFailure().
             stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
-        });
+        }));
         track(serve.pid);
         let stdoutBuf = '';
         let stderrBuf = '';
@@ -448,7 +554,7 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
                 }
             }, { timeoutMs: SUPERVISOR_HEALTH_TIMEOUT_MS, label: 'supervisor /api/health' });
         } catch (err) {
-            throw describeHealthWaitFailure(err, { stdoutBuf, stderrBuf });
+            throw describeHealthWaitFailure(err, { stdoutBuf, stderrBuf, child: serve });
         }
 
         // A sprint "completing" on the machine: a real short-lived child that
@@ -540,5 +646,152 @@ describe('supervisor lifecycle -- health-wait timeout diagnostic', () => {
             'stdout containing the listening line must be diagnosed as "supervisor bound but /api/health did not answer"',
         );
         assert.doesNotMatch(boundButSilent.message, /supervisor never logged its listening line/);
+    });
+
+    // apra-fleet-ecjf.5.2: proves describeHealthWaitFailure()'s exited-vs-alive
+    // diagnostic against REAL spawned children and a REAL failed wait on a
+    // deliberately unbound port (same pattern as the test above), rather than
+    // hand-built strings.
+    test('reports the child\'s exited-vs-alive state and exit code/signal', async () => {
+        const port = await getFreePort(); // closed immediately after allocation; nothing listens on it
+
+        async function waitTimeout() {
+            let caught;
+            let succeeded = false;
+            try {
+                await waitFor(async () => {
+                    try {
+                        const res = await httpRequest(port, '/api/health', 'GET', 'irrelevant-token');
+                        return res.status === 200;
+                    } catch {
+                        return false;
+                    }
+                }, { timeoutMs: 300, intervalMs: 50, label: 'unbound port /api/health' });
+                succeeded = true;
+            } catch (err) {
+                caught = err;
+            }
+            assert.equal(succeeded, false, 'expected the wait against an unbound port to time out');
+            assert.ok(caught instanceof Error);
+            return caught;
+        }
+
+        // Case 1: the child is still alive (never exited) when the wait times out.
+        const aliveChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        track(aliveChild.pid);
+        const aliveCaught = await waitTimeout();
+        const aliveMsg = describeHealthWaitFailure(new Error(aliveCaught.message), { stdoutBuf: '', stderrBuf: '', child: aliveChild });
+        assert.match(aliveMsg.message, /child process state: still alive \(not exited\)/);
+        forceKill(aliveChild.pid);
+        await waitDead(aliveChild.pid);
+
+        // Case 2: the child already exited with a specific code before the
+        // diagnostic is built.
+        const exitedChild = spawn(process.execPath, ['-e', 'process.exit(3)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        track(exitedChild.pid);
+        await onExit(exitedChild);
+        const exitedCaught = await waitTimeout();
+        const exitedMsg = describeHealthWaitFailure(new Error(exitedCaught.message), { stdoutBuf: '', stderrBuf: '', child: exitedChild });
+        assert.match(exitedMsg.message, /child process state: exited \(code=3, signal=null\)/);
+
+        // Case 3: no child reference at all -- the diagnostic must say so
+        // rather than silently omitting the state.
+        const noChildCaught = await waitTimeout();
+        const noChildMsg = describeHealthWaitFailure(new Error(noChildCaught.message), { stdoutBuf: '', stderrBuf: '' });
+        assert.match(noChildMsg.message, /child process state: unknown \(no child reference provided\)/);
+
+        // Case 4 (apra-fleet-ecjf.7): the child never spawned at all (a real
+        // ENOENT against a genuinely nonexistent executable), so it has
+        // NEITHER a pid NOR an 'exit' event -- before the fix this fell
+        // through describeChildExitState()'s `exited` check straight to
+        // "still alive (not exited)", actively misleading in exactly the
+        // starved-vs-never-started scenario the diagnostic exists to
+        // disambiguate. trackSpawnError() must be attached before spawn()
+        // returns control to this test so the real, asynchronous 'error'
+        // event is never missed.
+        const bogusExecutable = path.join(__dirname, 'this-executable-does-not-exist-ecjf7.exe');
+        const neverSpawnedChild = trackSpawnError(spawn(bogusExecutable, [], { stdio: ['ignore', 'ignore', 'ignore'] }));
+        await waitFor(() => neverSpawnedChild.spawnError !== null, { timeoutMs: 5000, label: 'spawn error event on a nonexistent executable' });
+        assert.equal(neverSpawnedChild.pid, undefined, 'a child that failed to spawn must never have been assigned a pid');
+        const neverSpawnedCaught = await waitTimeout();
+        const neverSpawnedMsg = describeHealthWaitFailure(new Error(neverSpawnedCaught.message), { stdoutBuf: '', stderrBuf: '', child: neverSpawnedChild });
+        assert.match(neverSpawnedMsg.message, /child process state: never spawned \(spawn error: /);
+        assert.doesNotMatch(neverSpawnedMsg.message, /child process state: still alive \(not exited\)/);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// health-wait budget resolution (apra-fleet-ecjf.5 / apra-fleet-ecjf.5.2)
+// -----------------------------------------------------------------------------
+describe('supervisor lifecycle -- health-wait budget resolution', () => {
+    // All four cases drive resolveSupervisorHealthBudgetMs() with injected
+    // concurrency/override inputs (opts.concurrency / opts.override) instead
+    // of mutating process.env, so nothing leaks into sibling subtests running
+    // concurrently in the same suite. Each is asserted by numeric value.
+
+    test('no override: concurrency 1 (or absent contention) resolves to the base 15000ms', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 1, override: null }), 15000);
+    });
+
+    test('no override: concurrency > 1 resolves to the scaledTimeout()-derived value (base x 3 = 45000ms)', () => {
+        // Asserted against the real helper's output (not a re-hardcoded
+        // number), matching the same treatment the fix applies at the
+        // real default call site.
+        const expected = scaledTimeout(15000, { concurrency: 8 });
+        assert.equal(expected, 45000, 'sanity: scaled-timeout.mjs\'s documented 3x multiplier');
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 8, override: null }), expected);
+    });
+
+    test('an explicit override resolves verbatim, unscaled, at low concurrency', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 1, override: 9999 }), 9999);
+    });
+
+    // FALSIFICATION CHECK: this case is the one that actually proves the
+    // override-is-verbatim invariant. If resolveSupervisorHealthBudgetMs()'s
+    // early-return guard for a provided override were removed (i.e. the
+    // override got routed through scaledTimeout() like the default does),
+    // this assertion would see 9999 * 3 = 29997 instead of 9999 and go red.
+    test('an explicit override resolves verbatim, unscaled, at high concurrency (falsification: fails if override is routed through scaledTimeout)', () => {
+        assert.equal(resolveSupervisorHealthBudgetMs({ concurrency: 8, override: 9999 }), 9999);
+    });
+
+    // apra-fleet-ecjf.6: the four cases above drive the resolver exclusively
+    // via injected `override`/`concurrency` arguments, leaving the env-var
+    // READ itself (process.env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS and the
+    // APRA_FLEET_TEST_CONCURRENCY fallback) unexercised -- a misspelled var
+    // name or a regressed `override !== undefined ? override : env...`
+    // selection would stay green through all four. These cases pass a
+    // synthetic `env` object (never mutating global process.env, so nothing
+    // leaks between concurrent subtests) through the SAME property-access
+    // code the real default call site uses via env's default parameter.
+    test('env wiring: APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS from env resolves verbatim when no override arg is given', () => {
+        const result = resolveSupervisorHealthBudgetMs({
+            concurrency: 8,
+            env: { APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS: '4242' },
+        });
+        assert.equal(result, 4242, 'the env-var override must win over concurrency scaling, verbatim');
+    });
+
+    test('env wiring: no env override falls through to the env-derived APRA_FLEET_TEST_CONCURRENCY fallback', () => {
+        const expected = scaledTimeout(15000, { concurrency: 5 });
+        const result = resolveSupervisorHealthBudgetMs({
+            env: { APRA_FLEET_TEST_CONCURRENCY: '5' },
+        });
+        assert.equal(result, expected, 'concurrency read from env must feed scaledTimeout() the same way an injected concurrency does');
+    });
+
+    // FALSIFICATION CHECK (apra-fleet-ecjf.6): proves the empty-string fix.
+    // Number('') is 0 and Number.isFinite(0) is true, so before the fix an
+    // empty-string APRA_FLEET_TEST_CONCURRENCY silently passed the
+    // finiteness guard and made the resolver use concurrency 0 (unscaled
+    // base), reverting the exact contention-scaling behaviour this
+    // resolver exists to provide. If that guard regressed, this would see
+    // 15000 instead of the TEST_CONCURRENCY-scaled value.
+    test('env wiring: an empty-string APRA_FLEET_TEST_CONCURRENCY does not silently disable concurrency scaling', () => {
+        const expected = scaledTimeout(15000, { concurrency: TEST_CONCURRENCY });
+        const result = resolveSupervisorHealthBudgetMs({
+            env: { APRA_FLEET_TEST_CONCURRENCY: '' },
+        });
+        assert.equal(result, expected, 'an empty-string concurrency env var must fall back to TEST_CONCURRENCY, not parse as 0');
     });
 });

@@ -8,6 +8,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { syncCloudCache } from '../services/cloud-sync.js';
+import { getReservation, reapIfDead } from './member-reservation.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -76,6 +77,13 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
     agents = agents.filter(a => filterTags.every(tag => a.tags?.includes(tag)));
   }
 
+  // Lazy reaping (apra-fleet-ecjf.3): a reservation whose recorded pid is
+  // gone is cleared here too, so simply listing the fleet un-wedges it. The
+  // reaper returns the post-write agent and we list THAT -- the pre-reap
+  // object still shows the dead holder, which is exactly the stale reading
+  // an operator would then try to force_release.
+  agents = agents.map(a => reapIfDead(a).agent);
+
   if (agents.length === 0 && format !== 'json') return 'No members registered.';
 
   const authStatusPromises = agents.map(getAuthStatus);
@@ -117,7 +125,11 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         lastUsed: a.lastUsed ?? 'never',
         category: a.category ?? null,
         tags: a.tags ?? null,
-        reservedBy: a.reservedBy ?? null,
+        // reservedBy keeps emitting the plain runId string -- every existing
+        // reader (including the fleet-supervisor conflict check) reads it --
+        // and `reservation` is the new structured form alongside it.
+        reservedBy: getReservation(a)?.runId ?? null,
+        reservation: getReservation(a),
         unreservable: a.unreservable ?? false,
         shell: a.shell ?? undefined,
         modelTiers: a.modelTiers ?? undefined,
@@ -159,8 +171,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
       if (a.tags && a.tags.length > 0) {
         t += ` | tags=[${a.tags.join(', ')}]`;
       }
-      if (a.reservedBy) {
-        t += ` | reserved-by=${a.reservedBy}`;
+      const reservation = getReservation(a);
+      if (reservation) {
+        t += ` | reserved-by=${reservation.runId}`;
       }
       if (a.unreservable) {
         t += ` | unreservable`;

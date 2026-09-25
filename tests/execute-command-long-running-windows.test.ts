@@ -20,6 +20,8 @@ import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegis
 import { addAgent } from '../src/services/registry.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import { getTaskCredentials } from '../src/services/credential-store.js';
+import { generateTaskWrapperWindows } from '../src/services/cloud/task-wrapper.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const { mockExecCommand } = vi.hoisted(() => ({
@@ -556,3 +558,161 @@ describe('grandchild-pins-pipe: a dispatch completes when the process exits, not
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// F14: member.env inside the Windows long_running wrapper
+// ---------------------------------------------------------------------------
+
+describe('windows long_running: member.env inside run.ps1 (F14)', () => {
+  const AUTH_VALUE = 'super-secret-credential';
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  /** Pull the run.ps1 the launcher base64-embeds back out of the CIM command. */
+  function extractRunPs1(launchCmd: string): string {
+    const decoded = decodeIfEncoded(launchCmd);
+    const m = decoded.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/);
+    expect(m, 'launcher did not embed a base64 run.ps1').not.toBeNull();
+    return Buffer.from(m![1], 'base64').toString('utf-8');
+  }
+
+  it('run.ps1 carries member.env as $env: lines and NEVER the auth credential', async () => {
+    const member = makeTestAgent({
+      os: 'windows',
+      env: { FLEET_S9_A: "va'l$x", FLEET_S9_B: 'plain' },
+      encryptedEnvVars: { API_TOKEN: encryptPassword(AUTH_VALUE) },
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'python train.py', long_running: true, timeout_s: 5 });
+
+    const launch = mockExecCommand.mock.calls[0][0] as string;
+    const runPs1 = extractRunPs1(launch);
+
+    expect(runPs1).toContain("$env:FLEET_S9_B='plain'");
+    expect(runPs1).toContain("$env:FLEET_S9_A='va''l$x'");
+    // run.ps1 is written to a FILE on the member and outlives the dispatch,
+    // so a decrypted credential in it would be a plaintext secret on disk.
+    expect(runPs1).not.toContain(AUTH_VALUE);
+    expect(runPs1).not.toContain('API_TOKEN');
+    expect(launch).not.toContain(AUTH_VALUE);
+  });
+
+  it('a gitbash Windows member still gets PowerShell $env: lines -- this site is PowerShell by design', async () => {
+    // The Win32_Process.Create launch has no bash equivalent, so run.ps1 is
+    // always executed by powershell.exe no matter what shell the member is
+    // registered with. Emitting POSIX exports here because the member says
+    // "gitbash" would produce a script PowerShell cannot parse.
+    const member = makeTestAgent({
+      os: 'windows',
+      shell: 'gitbash',
+      env: { FLEET_S9_A: 'one' },
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'python train.py', long_running: true, timeout_s: 5 });
+
+    const runPs1 = extractRunPs1(mockExecCommand.mock.calls[0][0] as string);
+    expect(runPs1).toContain("$env:FLEET_S9_A='one'");
+    expect(runPs1).not.toContain("export FLEET_S9_A=");
+  });
+
+  it('no foreign reference: a member.env name appears only in its own assignment', async () => {
+    const member = makeTestAgent({
+      os: 'windows',
+      env: { FLEET_S9_A: 'one', FLEET_S9_B: '$env:FLEET_S9_A' },
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'python train.py', long_running: true, timeout_s: 5 });
+
+    const runPs1 = extractRunPs1(mockExecCommand.mock.calls[0][0] as string);
+    // Own assignment + the inert literal inside FLEET_S9_B's single-quoted
+    // value (PowerShell never expands inside single quotes).
+    expect(runPs1.match(/\$env:FLEET_S9_A/g)).toHaveLength(2);
+    expect(runPs1).toContain("$env:FLEET_S9_B='$env:FLEET_S9_A'");
+  });
+});
+
+/**
+ * The one case in this file that runs REAL PowerShell rather than asserting
+ * on a mocked dispatch string. Everything above proves the right TEXT is
+ * generated; only executing it proves PowerShell actually parses that text
+ * and the task process actually observes the value LITERALLY -- which is the
+ * whole point of the quoting rule, and the part a string assertion cannot
+ * establish.
+ *
+ * win32-only by necessity (it needs a real powershell.exe). It is written to
+ * RUN, not to be silently skipped, on a Windows doer machine.
+ *
+ * Hermetic: the generated script roots its task dir at $env:USERPROFILE, so
+ * the child is given a USERPROFILE pointing into a temp dir. The real user
+ * profile's .fleet-tasks is measured before and after to prove nothing
+ * escaped into it.
+ */
+describe.skipIf(process.platform !== 'win32')(
+  'windows long_running: REAL powershell run.ps1 observes member.env literally (F14)',
+  () => {
+    it('a value containing a single quote and a $ reaches the task process byte-for-byte', () => {
+      // Single quote (the only character PowerShell single-quote escaping
+      // transforms), a bare $, a $env: reference and a backtick -- every
+      // character class that would expand if the quoting were wrong. The
+      // letter after the backtick is 'q' rather than n/t/r only because the
+      // repo's pre-commit portability guard rejects those sequences in source.
+      const PROBE_VALUE = "it's $HOME `q and $env:PATH -- literal";
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-s9-probe-home-'));
+      const realFleetTasks = path.join(os.homedir(), '.fleet-tasks');
+      const before = fs.existsSync(realFleetTasks) ? fs.readdirSync(realFleetTasks).length : -1;
+
+      try {
+        const outPath = path.join(tmpHome, 'probe.out');
+        const script = generateTaskWrapperWindows({
+          taskId: 'task-s9probe',
+          // Writes the env var the wrapper set into a file, from INSIDE the
+          // task process -- not from the generating test.
+          command: `[IO.File]::WriteAllText('${outPath.replace(/'/g, "''")}', $env:FLEET_S9_PROBE)`,
+          // 0 retries: a failing probe must fail fast, not burn three
+          // Start-Job retry cycles inside the timeout.
+          maxRetries: 0,
+          activityIntervalSec: 3600,
+          env: [{ name: 'FLEET_S9_PROBE', value: PROBE_VALUE }],
+        });
+
+        const runPs1 = path.join(tmpHome, 'run.ps1');
+        fs.writeFileSync(runPs1, script, 'utf-8');
+
+        execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runPs1], {
+          stdio: 'pipe',
+          timeout: 120_000,
+          env: { ...process.env, USERPROFILE: tmpHome },
+        });
+
+        expect(fs.existsSync(outPath), 'the task process never wrote the probe file').toBe(true);
+        expect(fs.readFileSync(outPath, 'utf-8')).toBe(PROBE_VALUE);
+
+        // The task really ran through the wrapper's own bookkeeping, rooted
+        // at the overridden USERPROFILE -- not at the real one.
+        const status = JSON.parse(
+          fs.readFileSync(path.join(tmpHome, '.fleet-tasks', 'task-s9probe', 'status.json'), 'utf-8'),
+        );
+        expect(status.status).toBe('completed');
+        expect(status.exitCode).toBe(0);
+      } finally {
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+      }
+
+      const after = fs.existsSync(realFleetTasks) ? fs.readdirSync(realFleetTasks).length : -1;
+      expect(after, 'the probe leaked a task dir into the real user profile').toBe(before);
+    }, 180_000);
+  },
+);

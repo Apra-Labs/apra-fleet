@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../src/services/cloud/task-wrapper.js';
+import { buildEnvAssignments } from '../src/utils/env-prefix.js';
+import { encryptPassword } from '../src/utils/crypto.js';
+import type { Agent } from '../src/types.js';
 
 const baseConfig = {
   taskId: 'task-abc123',
@@ -377,4 +380,126 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     expect(status.status).toBe('completed');
     expect(status.retries).toBe(0);
   }, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// F14: TaskConfig.env -- member env assignments inside run.sh / run.ps1
+// ---------------------------------------------------------------------------
+
+/**
+ * The long_running path cannot carry env in the launcher prefix: on Windows
+ * the task process is created by the WMI provider host via
+ * Win32_Process.Create, which does not inherit the launching shell's
+ * environment at all. So the assignments have to be emitted INSIDE the
+ * generated script -- and above the retry loop, so the first attempt and
+ * every retry see the same environment.
+ *
+ * They are deliberately member.env ONLY. The script is written to a FILE
+ * that persists under ~/.fleet-tasks/<taskId>/run.{sh,ps1}, so decrypted
+ * auth credentials in it would be plaintext secrets on the member's disk.
+ */
+describe('generateTaskWrapper - member env assignments (F14)', () => {
+  const TRICKY = "va'l$x`tick\\slash \"dq\"";
+
+  it('emits POSIX export lines with single-quote escaping', () => {
+    const script = generateTaskWrapper({
+      ...baseConfig,
+      env: [{ name: 'FLEET_S9_A', value: 'plain' }, { name: 'FLEET_S9_B', value: TRICKY }],
+    });
+    expect(script).toContain("export FLEET_S9_A='plain'");
+    expect(script).toContain(`export FLEET_S9_B='va'\\''l$x\`tick\\slash "dq"'`);
+  });
+
+  it('places the exports ABOVE the retry loop, so retries see the same env', () => {
+    const script = generateTaskWrapper({ ...baseConfig, env: [{ name: 'FLEET_S9_A', value: 'plain' }] });
+    const envAt = script.indexOf("export FLEET_S9_A=");
+    const firstRunAt = script.indexOf('# First run: use MAIN_CMD');
+    const retryLoopAt = script.indexOf('# F1: use restart command on retries');
+    expect(envAt).toBeGreaterThan(-1);
+    expect(envAt).toBeLessThan(firstRunAt);
+    expect(envAt).toBeLessThan(retryLoopAt);
+  });
+
+  it('emits nothing when env is absent or empty (byte-identical to the pre-F14 script)', () => {
+    const base = generateTaskWrapper(baseConfig);
+    expect(generateTaskWrapper({ ...baseConfig, env: [] })).toBe(base);
+    expect(base).not.toContain('export FLEET_');
+  });
+
+  it('carries member.env but NEVER auth env -- the script persists as a file on the member', () => {
+    // buildEnvAssignments with the include set execute-command.ts uses for
+    // this path. The auth credential is present on the member and MUST NOT
+    // reach the generated script.
+    const member = {
+      id: 'm', friendlyName: 'm', host: 'h', username: 'u', encryptedPassword: '',
+      workFolder: '/tmp',
+      env: { FLEET_S9_A: 'member-value' },
+      encryptedEnvVars: { API_TOKEN: encryptPassword('super-secret-credential') },
+    } as unknown as Agent;
+
+    const env = buildEnvAssignments(member, { os: 'linux', include: { auth: false, member: true } });
+    const script = generateTaskWrapper({ ...baseConfig, env });
+    expect(script).toContain("export FLEET_S9_A='member-value'");
+    expect(script).not.toContain('super-secret-credential');
+    expect(script).not.toContain('API_TOKEN');
+  });
+});
+
+describe('generateTaskWrapperWindows - member env assignments (F14)', () => {
+  const TRICKY = "va'l$x`tick\\slash \"dq\"";
+
+  it('emits PowerShell $env: lines with doubled single quotes', () => {
+    const script = generateTaskWrapperWindows({
+      ...baseConfig,
+      env: [{ name: 'FLEET_S9_A', value: 'plain' }, { name: 'FLEET_S9_B', value: TRICKY }],
+    });
+    expect(script).toContain("$env:FLEET_S9_A='plain'");
+    expect(script).toContain(`$env:FLEET_S9_B='va''l$x\`tick\\slash "dq"'`);
+  });
+
+  it('places the assignments ABOVE the retry loop, so retries see the same env', () => {
+    const script = generateTaskWrapperWindows({ ...baseConfig, env: [{ name: 'FLEET_S9_A', value: 'plain' }] });
+    const envAt = script.indexOf("$env:FLEET_S9_A=");
+    const firstRunAt = script.indexOf('Invoke-Expression $MainCmd');
+    const retryLoopAt = script.indexOf('Invoke-Expression $RestartCmd');
+    expect(envAt).toBeGreaterThan(-1);
+    expect(envAt).toBeLessThan(firstRunAt);
+    expect(envAt).toBeLessThan(retryLoopAt);
+  });
+
+  it('emits nothing when env is absent or empty (byte-identical to the pre-F14 script)', () => {
+    const base = generateTaskWrapperWindows(baseConfig);
+    expect(generateTaskWrapperWindows({ ...baseConfig, env: [] })).toBe(base);
+    expect(base).not.toContain('$env:FLEET_');
+  });
+
+  it('carries member.env but NEVER auth env -- the script persists as a file on the member', () => {
+    const member = {
+      id: 'm', friendlyName: 'm', host: 'h', username: 'u', encryptedPassword: '',
+      workFolder: 'C:\\work',
+      env: { FLEET_S9_A: 'member-value' },
+      encryptedEnvVars: { API_TOKEN: encryptPassword('super-secret-credential') },
+    } as unknown as Agent;
+
+    const env = buildEnvAssignments(member, { os: 'windows', include: { auth: false, member: true } });
+    const script = generateTaskWrapperWindows({ ...baseConfig, env });
+    expect(script).toContain("$env:FLEET_S9_A='member-value'");
+    expect(script).not.toContain('super-secret-credential');
+    expect(script).not.toContain('API_TOKEN');
+  });
+
+  it('no foreign $env: reference -- each member.env name appears ONLY in its own assignment', () => {
+    const script = generateTaskWrapperWindows({
+      ...baseConfig,
+      // A value that NAMES another member.env variable must stay inert text.
+      env: [
+        { name: 'FLEET_S9_A', value: 'plain' },
+        { name: 'FLEET_S9_B', value: '$env:FLEET_S9_A' },
+      ],
+    });
+    expect(script.match(/\$env:FLEET_S9_A/g)).toHaveLength(2); // own assignment + the inert literal
+    // The inert literal is inside a PowerShell single-quoted string, which
+    // never expands -- assert the exact line rather than just the count.
+    expect(script).toContain("$env:FLEET_S9_B='$env:FLEET_S9_A'");
+  });
 });

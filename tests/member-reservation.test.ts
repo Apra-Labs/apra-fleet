@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, spawnDeadPid } from './test-helpers.js';
 import { addAgent, getAgent, updateAgent } from '../src/services/registry.js';
-import { memberReservation } from '../src/tools/member-reservation.js';
+import { memberReservation, getReservation, reapIfDead } from '../src/tools/member-reservation.js';
 
 // apra-fleet-p2to.3.3 -- updateAgent is wrapped with vi.fn(actual.updateAgent)
 // so every existing test in this file keeps exercising the REAL registry
@@ -204,5 +204,342 @@ describe('memberReservation', () => {
 
       expect(getAgent(member.id)?.reservedBy).toBe('stale-sprint');
     });
+  });
+});
+
+/**
+ * apra-fleet-ecjf.3: the reservation OBJECT ({runId, pid, at}) that now lives
+ * alongside the reservedBy string mirror, plus lazy dead-pid reaping.
+ *
+ * Every dead pid used here comes from spawnDeadPid() -- a real child process
+ * that was spawned and awaited to exit -- never a guessed pid number, which
+ * could belong to a live unrelated process (making the assertion vacuous) or
+ * be re-used (making it flaky).
+ */
+describe('reservation object, reaping and legacy compat (apra-fleet-ecjf.3)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('reserve with a pid writes {runId,pid,at} and the reservedBy mirror together', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1', pid: process.pid,
+    });
+
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy).toBe('sprint-1');
+    expect(stored.reservation).toEqual({
+      runId: 'sprint-1', pid: process.pid, at: expect.any(String),
+    });
+    expect(Number.isNaN(Date.parse(stored.reservation!.at))).toBe(false);
+    expect(structuredContent.outcome).toBe('reserved');
+    expect(structuredContent.reservation).toEqual(stored.reservation);
+    expect(structuredContent.reaped).toBe(false);
+  });
+
+  it('reserve without a pid records pid null', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+    });
+
+    expect(getAgent(member.id)?.reservation).toEqual({
+      runId: 'sprint-1', pid: null, at: expect.any(String),
+    });
+    expect(structuredContent.reservation).toMatchObject({ runId: 'sprint-1', pid: null });
+  });
+
+  it('a refresh by the same sprint updates pid and at, keeping the runId', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+    const first = getAgent(member.id)!.reservation!;
+    expect(first.pid).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 20));
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1', pid: process.pid,
+    });
+
+    const refreshed = getAgent(member.id)!.reservation!;
+    expect(structuredContent.outcome).toBe('reservation_refreshed');
+    expect(refreshed.runId).toBe('sprint-1');
+    expect(refreshed.pid).toBe(process.pid);
+    expect(Date.parse(refreshed.at)).toBeGreaterThan(Date.parse(first.at));
+    expect(structuredContent.reservation).toEqual(refreshed);
+  });
+
+  it('release clears the object and the mirror together', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1', pid: process.pid });
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'release', sprint_id: 'sprint-1',
+    });
+
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy ?? null).toBeNull();
+    expect(stored.reservation ?? null).toBeNull();
+    expect(structuredContent.outcome).toBe('released');
+    expect(structuredContent.reservation).toBeNull();
+  });
+
+  it('force_release clears the object and the mirror together', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1', pid: process.pid });
+
+    const { structuredContent } = await memberReservation({ member_id: member.id, action: 'force_release' });
+
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy ?? null).toBeNull();
+    expect(stored.reservation ?? null).toBeNull();
+    expect(structuredContent.outcome).toBe('force_released');
+    expect(structuredContent.reservation).toBeNull();
+  });
+
+  it('getReservation reads a legacy string-only member as {runId, pid:null, at:null}', () => {
+    const member = makeTestAgent({ reservedBy: 'legacy-sprint' });
+    expect(getReservation(member)).toEqual({ runId: 'legacy-sprint', pid: null, at: null });
+    expect(getReservation(makeTestAgent())).toBeNull();
+  });
+
+  it('a legacy string-only reservation is never reaped and is still releasable', async () => {
+    const member = makeTestAgent({ reservedBy: 'legacy-sprint' });
+    addAgent(member);
+
+    // Not reaped, even though it carries no pid at all.
+    expect(reapIfDead(getAgent(member.id)!).reaped).toBe(false);
+
+    // It still blocks another sprint...
+    const blocked = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'other-sprint' });
+    expect(blocked.structuredContent.outcome).toBe('already_reserved_by_other');
+    expect(blocked.structuredContent.reaped).toBe(false);
+    expect(blocked.structuredContent.reservation).toEqual({ runId: 'legacy-sprint', pid: null, at: null });
+    expect(getAgent(member.id)?.reservedBy).toBe('legacy-sprint');
+
+    // ...and its own holder can release it.
+    const released = await memberReservation({ member_id: member.id, action: 'release', sprint_id: 'legacy-sprint' });
+    expect(released.structuredContent.outcome).toBe('released');
+    expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
+  });
+
+  it('a dead-pid holder is reaped by the next reserve from another run (outcome reserved, reaped true)', async () => {
+    const deadPid = await spawnDeadPid();
+    const member = makeTestAgent();
+    addAgent(member);
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-dead', pid: deadPid });
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-dead');
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-new', pid: process.pid,
+    });
+
+    expect(structuredContent.outcome).toBe('reserved');
+    expect(structuredContent.reaped).toBe(true);
+    expect(structuredContent.reservation).toMatchObject({ runId: 'sprint-new', pid: process.pid });
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-new');
+  });
+
+  it('reapIfDead clears both fields for a dead holder and returns the post-write agent', async () => {
+    const deadPid = await spawnDeadPid();
+    const member = makeTestAgent();
+    addAgent(member);
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-dead', pid: deadPid });
+
+    const { agent, reaped } = reapIfDead(getAgent(member.id)!);
+
+    expect(reaped).toBe(true);
+    expect(agent.reservedBy ?? null).toBeNull();
+    expect(agent.reservation ?? null).toBeNull();
+    expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
+  });
+
+  it('an alive pid is never reaped -- it keeps blocking a reserve from another run', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-live', pid: process.pid });
+
+    expect(reapIfDead(getAgent(member.id)!).reaped).toBe(false);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-other', pid: process.pid,
+    });
+
+    expect(structuredContent.outcome).toBe('already_reserved_by_other');
+    expect(structuredContent.reaped).toBe(false);
+    expect(structuredContent.ownerSprintId).toBe('sprint-live');
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-live');
+  });
+});
+
+/**
+ * apra-fleet-ecjf.4: owner_ref refusal. A package may pass the owner tag it
+ * expects the member to carry; a member tagged for a DIFFERENT package/ref is
+ * refused outright (outcome member_other_owner) and nothing is written.
+ *
+ * "Nothing is written" is asserted on both reservation fields in every
+ * refusal case, including the one where the member's holder is dead -- the
+ * refusal runs before reaping precisely so a refused call cannot mutate the
+ * member at all. Reverting the refusal branch turns these into reserves and
+ * fails them.
+ */
+describe('owner_ref refusal (apra-fleet-ecjf.4)', () => {
+  const ownerTag = { package: 'fleet-sprint', ref: 'project-a' };
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('refuses a package mismatch with member_other_owner and writes nothing', async () => {
+    const member = makeTestAgent({ owner: ownerTag });
+    addAgent(member);
+
+    const { text, structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+      owner_ref: { package: 'other-package', ref: 'project-a' },
+    });
+
+    expect(structuredContent.outcome).toBe('member_other_owner');
+    expect(structuredContent.ok).toBe(false);
+    expect(text.startsWith('[-]')).toBe(true);
+    expect(text).toContain('fleet-sprint@project-a');
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy ?? null).toBeNull();
+    expect(stored.reservation ?? null).toBeNull();
+    expect(stored.owner).toEqual(ownerTag);
+  });
+
+  it('refuses a ref mismatch with member_other_owner and writes nothing', async () => {
+    const member = makeTestAgent({ owner: ownerTag });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+      owner_ref: { package: 'fleet-sprint', ref: 'project-b' },
+    });
+
+    expect(structuredContent.outcome).toBe('member_other_owner');
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy ?? null).toBeNull();
+    expect(stored.reservation ?? null).toBeNull();
+  });
+
+  it('allows a reserve when owner_ref matches the member owner tag exactly', async () => {
+    const member = makeTestAgent({ owner: ownerTag });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1', owner_ref: { ...ownerTag },
+    });
+
+    expect(structuredContent.outcome).toBe('reserved');
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
+  });
+
+  it('allows a reserve on an untagged member even when owner_ref is supplied', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+      owner_ref: { package: 'fleet-sprint', ref: 'project-a' },
+    });
+
+    expect(structuredContent.outcome).toBe('reserved');
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
+  });
+
+  it('allows a reserve on an owner-tagged member when no owner_ref is supplied (existing callers unchanged)', async () => {
+    const member = makeTestAgent({ owner: ownerTag });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+    });
+
+    expect(structuredContent.outcome).toBe('reserved');
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
+  });
+
+  it('refuses a foreign-owned member BEFORE the already_reserved_by_other check, whoever holds it', async () => {
+    const member = makeTestAgent({ owner: ownerTag, reservedBy: 'sprint-holder' });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+      owner_ref: { package: 'other-package', ref: 'project-a' },
+    });
+
+    expect(structuredContent.outcome).toBe('member_other_owner');
+    expect(structuredContent.ownerSprintId).toBe('sprint-holder');
+    expect(getAgent(member.id)?.reservedBy).toBe('sprint-holder');
+  });
+
+  it('refuses BEFORE reaping, so a refused reserve never even clears a dead holder', async () => {
+    const deadPid = await spawnDeadPid();
+    const member = makeTestAgent({
+      owner: ownerTag,
+      reservedBy: 'sprint-dead',
+      reservation: { runId: 'sprint-dead', pid: deadPid, at: '2026-09-25T00:00:00.000Z' },
+    });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve', sprint_id: 'sprint-1',
+      owner_ref: { package: 'other-package', ref: 'project-a' },
+    });
+
+    expect(structuredContent.outcome).toBe('member_other_owner');
+    expect(structuredContent.reaped).toBe(false);
+    const stored = getAgent(member.id)!;
+    expect(stored.reservedBy).toBe('sprint-dead');
+    expect(stored.reservation).toEqual({ runId: 'sprint-dead', pid: deadPid, at: '2026-09-25T00:00:00.000Z' });
+  });
+
+  it('still refuses a reserve without sprint_id as invalid_input (the sprint_id guard keeps precedence)', async () => {
+    const member = makeTestAgent({ owner: ownerTag });
+    addAgent(member);
+
+    const { structuredContent } = await memberReservation({
+      member_id: member.id, action: 'reserve',
+      owner_ref: { package: 'other-package', ref: 'project-a' },
+    });
+
+    expect(structuredContent.outcome).toBe('invalid_input');
+  });
+
+  it('release and force_release ignore owner_ref entirely', async () => {
+    const member = makeTestAgent({ owner: ownerTag, reservedBy: 'sprint-1' });
+    addAgent(member);
+    const foreign = { package: 'other-package', ref: 'project-a' };
+
+    const released = await memberReservation({
+      member_id: member.id, action: 'release', sprint_id: 'sprint-1', owner_ref: foreign,
+    });
+    expect(released.structuredContent.outcome).toBe('released');
+    expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
+
+    await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-2' });
+    const forced = await memberReservation({
+      member_id: member.id, action: 'force_release', owner_ref: foreign,
+    });
+    expect(forced.structuredContent.outcome).toBe('force_released');
+    expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
   });
 });

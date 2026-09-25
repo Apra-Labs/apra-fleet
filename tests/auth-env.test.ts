@@ -33,17 +33,17 @@ describe('buildAuthEnvPrefix', () => {
     expect(buildAuthEnvPrefix(member, 'windows')).toBe('');
   });
 
-  it('linux: returns export format with double-quoted value', () => {
+  it('linux: returns export format with single-quoted value', () => {
     const member = makeAgent({ GEMINI_API_KEY: 'test-key-123' });
     const prefix = buildAuthEnvPrefix(member, 'linux');
-    expect(prefix).toContain('export GEMINI_API_KEY="test-key-123"');
+    expect(prefix).toContain("export GEMINI_API_KEY='test-key-123'");
     expect(prefix.endsWith(' && ')).toBe(true);
   });
 
   it('macos: returns same export format as linux', () => {
     const member = makeAgent({ GEMINI_API_KEY: 'test-key-456' });
     const prefix = buildAuthEnvPrefix(member, 'macos');
-    expect(prefix).toContain('export GEMINI_API_KEY="test-key-456"');
+    expect(prefix).toContain("export GEMINI_API_KEY='test-key-456'");
     expect(prefix.endsWith(' && ')).toBe(true);
   });
 
@@ -57,8 +57,8 @@ describe('buildAuthEnvPrefix', () => {
   it('linux: multiple env vars joined with &&', () => {
     const member = makeAgent({ GEMINI_API_KEY: 'key1', OPENAI_API_KEY: 'key2' });
     const prefix = buildAuthEnvPrefix(member, 'linux');
-    expect(prefix).toContain('export GEMINI_API_KEY="key1"');
-    expect(prefix).toContain('export OPENAI_API_KEY="key2"');
+    expect(prefix).toContain("export GEMINI_API_KEY='key1'");
+    expect(prefix).toContain("export OPENAI_API_KEY='key2'");
     expect(prefix).toContain(' && ');
     // Should end with ' && ' for prepending to commands
     expect(prefix.endsWith(' && ')).toBe(true);
@@ -73,15 +73,15 @@ describe('buildAuthEnvPrefix', () => {
     expect(prefix.endsWith('; ')).toBe(true);
   });
 
-  it('linux: escapes special characters in values (double-quote escaping)', () => {
+  it('linux: escapes special characters in values (POSIX single-quote escaping)', () => {
     const member = makeAgent({ API_KEY: 'key"with\'quotes$and\\backslash' });
     const prefix = buildAuthEnvPrefix(member, 'linux');
-    // Double-quote escaping: " -> \", $ -> \$, \ -> \\
-    expect(prefix).toContain('export API_KEY="');
-    expect(prefix).not.toContain('key"with'); // raw " should be escaped
-    expect(prefix).toContain('\\"');  // escaped double-quote
-    expect(prefix).toContain('\\$'); // escaped dollar sign
-    expect(prefix).toContain('\\\\'); // escaped backslash
+    // F14 changed the POSIX form from double-quoted to single-quoted. Inside
+    // POSIX single quotes nothing expands, so ", $ and \ need no escaping at
+    // all; only the embedded single quote is broken out as the '\'' sequence.
+    // (The old double-quoted form is gone -- see src/utils/env-prefix.ts.)
+    expect(prefix).toContain(`export API_KEY='key"with'\\''quotes$and\\backslash'`);
+    expect(prefix.endsWith(' && ')).toBe(true);
   });
 
   it('windows: escapes single quotes in values (PowerShell escaping)', () => {

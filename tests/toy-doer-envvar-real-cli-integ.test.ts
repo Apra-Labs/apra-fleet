@@ -196,7 +196,7 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
       // prepends to every command for this member -- proves the real
       // wiring, not just the probe's own escaping.
       const prefix = buildAuthEnvPrefix(updated, getAgentOS(updated));
-      expect(prefix).toContain('export CLAUDE_CODE_OAUTH_TOKEN="');
+      expect(prefix).toContain("export CLAUDE_CODE_OAUTH_TOKEN='");
       expect(prefix).toContain(REAL_TOKEN as string);
 
       const result = checkCleanEnvRealClaudeAuthViaEnvVar(REAL_TOKEN as string, tmpHome);

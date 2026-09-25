@@ -38,6 +38,7 @@ import {
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -353,6 +354,200 @@ describe('execute_prompt durable mirror + orphan-recovery coupling: shell matrix
       expect(rec.cmds.some((c) => /^cat ".*\.fleet-out-/.test(c))).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F14: the env prefix is computed ONCE and carried by the main launch AND all
+// four retry dispatches
+// ---------------------------------------------------------------------------
+
+/**
+ * execute-prompt.ts has five places that hand a provider prompt command to
+ * strategy.execCommand: the main launch, and four independently-gated retry
+ * paths (dispatch exception, stale session, server overloaded, and the
+ * workspace-trust self-heal). They all concatenate the SAME `envPrefix`
+ * computed once near the top of the function.
+ *
+ * That "computed once" shape is exactly what makes a regression cheap: drop
+ * the concatenation at any ONE retry site and that retry silently runs with
+ * a different environment than the attempt it is replacing -- a member.env
+ * variable, or an auth credential, simply missing on the second try. Each
+ * case below drives one specific retry gate and asserts the prefix on EVERY
+ * prompt dispatch the run produced, so no site can regress unnoticed.
+ */
+describe('execute_prompt env prefix: main launch + all four retry sites (F14)', () => {
+  const MEMBER_ENV = { FLEET_S9_A: 'one', FLEET_S9_B: 'two' };
+  const AUTH_VALUE = 'super-secret-credential';
+  const EXPECTED_PREFIX =
+    "export FLEET_S9_A='one' && export FLEET_S9_B='two' && "
+    + "export API_TOKEN='" + AUTH_VALUE + "' && ";
+
+  function envMember(overrides: Partial<Agent> = {}): Agent {
+    return makeTestAgent({
+      friendlyName: `env-prefix-prompt-${Math.random().toString(36).slice(2)}`,
+      os: 'linux',
+      workFolder: '/home/testuser/project',
+      env: MEMBER_ENV,
+      encryptedEnvVars: { API_TOKEN: encryptPassword(AUTH_VALUE) },
+      ...overrides,
+    });
+  }
+
+  /**
+   * A prompt dispatch is identified by the provider command the OS layer
+   * builds, NOT by call index: the run also makes prompt-file write/delete
+   * round trips, and their count varies by scenario. Every call that IS a
+   * prompt dispatch must carry the prefix; the file round trips are
+   * deliberately out of scope (they are not the member's program).
+   */
+  function promptDispatches(): string[] {
+    return mockExecCommand.mock.calls
+      .map((c) => c[0] as string)
+      // '--output-format' is the provider prompt command's own flag. Do NOT
+      // widen this to ' -p ' -- the prompt-file write round trip starts with
+      // `mkdir -p`, which would be swept in and inflate the count.
+      .filter((cmd) => cmd.includes('--output-format'));
+  }
+
+  function expectEveryPromptDispatchPrefixed(expectedCount: number): void {
+    const dispatches = promptDispatches();
+    expect(dispatches.length).toBe(expectedCount);
+    for (const cmd of dispatches) {
+      expect(cmd.startsWith(EXPECTED_PREFIX), `dispatch missing env prefix: ${cmd.slice(0, 160)}`).toBe(true);
+    }
+  }
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    provisionedRemoteAgents.clear();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('site 1/5 -- the main launch carries the prefix', async () => {
+    const member = envMember();
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 's1' }), stderr: '', code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expectEveryPromptDispatchPrefixed(1);
+  });
+
+  it('site 2/5 -- the dispatch-exception retry carries the prefix', async () => {
+    const member = envMember();
+    addAgent(member);
+    let call = 0;
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      // Only the prompt dispatch throws; prompt-file round trips succeed.
+      if (cmd.includes('--output-format')) {
+        call += 1;
+        if (call === 1) throw new Error('inactivity timeout');
+        return { stdout: JSON.stringify({ result: 'ok', session_id: 's2' }), stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    // Original attempt + the fresh-session retry, both prefixed.
+    expectEveryPromptDispatchPrefixed(2);
+  });
+
+  it('site 3/5 -- the stale-session retry carries the prefix', async () => {
+    const member = envMember({ sessionId: 'stale-session-id' });
+    addAgent(member);
+    let call = 0;
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('--output-format')) {
+        call += 1;
+        if (call === 1) return { stdout: '', stderr: 'No conversation found with session ID', code: 1 };
+        return { stdout: JSON.stringify({ result: 'ok', session_id: 's3' }), stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+    expectEveryPromptDispatchPrefixed(2);
+  });
+
+  it('site 4/5 -- the server-overloaded retry carries the prefix', async () => {
+    const member = envMember();
+    addAgent(member);
+    let call = 0;
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('--output-format')) {
+        call += 1;
+        if (call === 1) return { stdout: '', stderr: 'API Error: 529 overloaded_error', code: 1 };
+        return { stdout: JSON.stringify({ result: 'ok', session_id: 's4' }), stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expectEveryPromptDispatchPrefixed(2);
+  }, 30000);
+
+  it('site 5/5 -- the workspace-trust self-heal retry carries the prefix', async () => {
+    const member = envMember();
+    addAgent(member);
+    let call = 0;
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('--output-format')) {
+        call += 1;
+        // exit 0 + empty stdout + a trust-gate stderr tail is the specific
+        // shape that reaches the seedWorkspaceTrust self-heal branch.
+        if (call === 1) {
+          // The exact phrase src/utils/prompt-errors.ts classifies as
+          // workspace_not_trusted -- an approximation would fall through to
+          // plain empty_response and never reach the self-heal retry.
+          return { stdout: '', stderr: 'Error: this workspace has not been trusted', code: 0 };
+        }
+        return { stdout: JSON.stringify({ result: 'ok', session_id: 's5' }), stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expectEveryPromptDispatchPrefixed(2);
+  }, 30000);
+
+  it('a gitbash Windows member gets the POSIX prefix on its prompt dispatch', async () => {
+    const member = envMember({ os: 'windows', shell: 'gitbash', workFolder: 'C:/Users/bella/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 's6' }), stderr: '', code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    const dispatches = promptDispatches();
+    expect(dispatches.length).toBeGreaterThan(0);
+    for (const cmd of dispatches) {
+      expect(cmd.startsWith(EXPECTED_PREFIX)).toBe(true);
+      expect(cmd).not.toContain('$env:FLEET_S9_A=');
+    }
+  });
+
+  it('a PowerShell Windows member gets the PowerShell prefix on its prompt dispatch', async () => {
+    const member = envMember({ os: 'windows', shell: 'pwsh7', workFolder: 'C:/Users/bella/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 's7' }), stderr: '', code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    const psPrefix =
+      "$env:FLEET_S9_A='one'; $env:FLEET_S9_B='two'; $env:API_TOKEN='" + AUTH_VALUE + "'; ";
+    const dispatches = promptDispatches();
+    expect(dispatches.length).toBeGreaterThan(0);
+    for (const cmd of dispatches) {
+      expect(cmd.startsWith(psPrefix)).toBe(true);
+      expect(cmd).not.toContain('export FLEET_S9_A=');
     }
   });
 });
