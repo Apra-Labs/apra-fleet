@@ -548,11 +548,16 @@ export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps
   };
 }
 
-// Mirrors src/utils/auth-env.ts#buildAuthEnvPrefix's POSIX branch (double-
-// quoted export, escaping backslash/dollar/backtick/double-quote/bang) so
-// checkCleanEnvRealClaudeAuthViaEnvVar reproduces the exact inline
-// 'export NAME="<value>" && ...' text that dispatch actually injects into
-// the clean shell, not an approximation of it.
+// Probe-local double-quoted export escaper (backslash/dollar/backtick/
+// double-quote/bang). NOTE (F14): production dispatch now emits the POSIX
+// SINGLE-quoted form -- export NAME='<value>' -- via
+// src/utils/env-prefix.ts#buildEnvPrefix, which buildAuthEnvPrefix
+// delegates to. This probe deliberately keeps the double-quoted shape
+// because its export sits INSIDE an already single-quoted
+// `bash -l -c '...'` wrapper, where a nested ''' sequence cannot be
+// embedded; for an OAuth token (portable characters only) the two forms
+// are byte-identical after shell parsing, so the probe still exercises the
+// same clean-env dispatch semantics.
 function escapeDoubleQuotedForExport(value) {
   return String(value)
     .replace(/\\/g, '\\\\')

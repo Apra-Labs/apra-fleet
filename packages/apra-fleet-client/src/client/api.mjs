@@ -118,6 +118,40 @@
  */
 
 /**
+ * One member entry inside listMembers()'s "json"-format `members` array.
+ * @typedef {Object} ListedMember
+ * @property {string} id - UUID of the member
+ * @property {string} name - Friendly name of the member
+ * @property {string} icon - Emoji icon for this member
+ * @property {"local" | "remote"} type - Member type
+ * @property {string} host - "local", "relay", or "host:port"
+ * @property {string} [username] - SSH username (remote members)
+ * @property {string} os - Detected/registered operating system, or "unknown"
+ * @property {string} folder - Working directory on the target machine
+ * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {string} llm_auth - Resolved LLM auth status
+ * @property {string} [ssh_auth] - SSH auth type, remote members only
+ * @property {string|null} session - Current session id, or null
+ * @property {string} created - ISO 8601 creation timestamp
+ * @property {string} lastUsed - ISO 8601 last-used timestamp, or "never"
+ * @property {string|null} category - Group label, or null
+ * @property {string[]|null} tags - Free-form labels, or null
+ * @property {string|null} reservedBy - sprintId currently reserving this member, or null when unreserved
+ * @property {{runId: string, pid: number|null, at: string|null}|null} reservation - Structured
+ *   reservation view alongside `reservedBy`: pid/at are null for a legacy string-only
+ *   reservation, and the whole field is null when unreserved.
+ * @property {boolean} unreservable - True when this member is never exclusively reservable
+ * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Registered Windows shell
+ * @property {{cheap?: string, standard?: string, premium?: string}} [modelTiers] - Per-member model tier map
+ * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known
+ * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member
+ *
+ * Mirrors the `members` array entries list-members.ts's json format builds field-for-field
+ * (pinned by test/client-server-typedef-parity.test.mjs).
+ */
+
+/**
  * @typedef {Object} FleetStatusOptions
  * @property {"compact" | "json"} [format] - Output format
  */
@@ -171,7 +205,7 @@
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
- * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint.
+ * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision.
  * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
@@ -208,7 +242,7 @@
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.
- * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass {} to clear.
+ * @property {Object<string, string>} [env] - Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision. Pass {} to clear.
  * @property {string} [llm_auth_expires_at] - ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known.
  */
 
@@ -269,14 +303,26 @@
  *   matches the current holder; "force_release" clears it regardless of owner.
  * @property {string} [sprint_id] - Sprint/session id claiming or releasing the reservation.
  *   Required for "reserve" and "release", ignored for "force_release".
+ * @property {{package: string, ref: string}} [owner_ref] - Owner tag the caller expects this
+ *   member to carry. When supplied and the member IS owner-tagged with a different package or
+ *   ref, "reserve" is refused with outcome "member_other_owner" and nothing is written. An
+ *   untagged member, or a call without owner_ref, is never refused. Ignored by "release" and
+ *   "force_release".
+ * @property {number} [pid] - Process id of the reserving process ON THE FLEET SERVER'S HOST,
+ *   recorded with the reservation so a holder that died is reaped automatically instead of
+ *   wedging the member. Omit when the caller does not run on that host -- a reservation
+ *   without a pid is never reaped.
  */
 
 /**
  * @typedef {Object} MemberReservationStructured
  * @property {"reserved" | "reservation_refreshed" | "released" | "force_released" |
  *   "already_reserved_by_other" | "not_reserved" | "unreservable" | "invalid_input" |
- *   "member_not_found" | "failed"} outcome - Machine-readable outcome discriminator. Branch on
- *   this field; never string-match the human-readable summary text.
+ *   "member_not_found" | "failed" | "member_other_owner"} outcome - Machine-readable outcome
+ *   discriminator. Branch on this field; never string-match the human-readable summary text.
+ *   "member_other_owner" means the call passed an owner_ref and the member carries a different
+ *   owner tag, so nothing was written -- a refusal to touch another package's member at all,
+ *   distinct from "already_reserved_by_other" (a conflict over the current holder).
  * @property {boolean} ok - True when the requested operation took effect (or was already true).
  * @property {"reserve" | "release" | "force_release"} action - The action that was requested.
  * @property {string|null} memberId - Registry id of the resolved member, null when none resolved.
@@ -285,6 +331,14 @@
  * @property {string|null} ownerSprintId - The sprint that held the reservation when the call
  *   arrived, null when the member was unreserved. On "already_reserved_by_other" this is the
  *   blocking owner.
+ * @property {{runId: string, pid: number|null, at: string|null}|null} reservation - The member's
+ *   reservation AFTER this call -- not "after a successful call": on a refusal it is unchanged,
+ *   so this is the blocking holder's object. `pid` is the holder's process id on the fleet
+ *   server's host (null when the reserving caller did not run there, or for a legacy
+ *   string-only reservation, whose `at` is null too). null when unreserved.
+ * @property {boolean} reaped - True when this call cleared a reservation whose recorded pid no
+ *   longer exists on the fleet server's host (lazy dead-holder reaping). A pid-less or legacy
+ *   reservation is never reaped.
  *
  * Mirrors src/tools/member-reservation.ts's MemberReservationStructured field-for-field
  * (apra-fleet-3swo.7.1). The tool still returns the same human-readable summary in
@@ -746,7 +800,19 @@ export class ApraFleet {
 
     /**
      * List all fleet members and their current status.
+     *
+     * In "json" format each member carries BOTH reservation views: the
+     * `reservedBy` runId string (unchanged, what every existing reader --
+     * including the fleet-supervisor overlap check -- reads) and the
+     * structured `reservation` ({runId, pid, at} or null; pid/at are null for
+     * a legacy string-only reservation). Listing also reaps holders whose
+     * recorded pid is gone on the fleet server's host, so a member wedged by
+     * a dead sprint frees itself.
+     *
      * @param {ListMembersOptions} [options]
+     * @returns {Promise<string|{server_version: string, total: number, cloud?: Object, members: ListedMember[]}>}
+     *   A compact text summary when format is "compact" (default), or the structured envelope
+     *   (with `members: ListedMember[]`) when format is "json".
      */
     async listMembers(options = {}) {
         return this.mcpClient.callTool('list_members', options);

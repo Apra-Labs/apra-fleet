@@ -4,7 +4,8 @@ import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-h
 import { addAgent } from '../src/services/registry.js';
 import { executeCommand, resolveTilde } from '../src/tools/execute-command.js';
 import type { ExecuteCommandResult } from '../src/tools/execute-command.js';
-import type { SSHExecResult } from '../src/types.js';
+import type { Agent, SSHExecResult } from '../src/types.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import { preflightCheck } from '../src/services/preflight-check.js';
 
 const mockPreflight = vi.mocked(preflightCheck);
@@ -168,5 +169,129 @@ describe('resolveTilde', () => {
 
   it('passes through relative paths unchanged', () => {
     expect(resolveTilde('relative/path')).toBe('relative/path');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F14: member.env injection at the execute_command dispatch sites
+// ---------------------------------------------------------------------------
+
+/**
+ * The sync path prepends buildEnvPrefix(agent, {os, shell}) -- member.env AND
+ * auth env, rendered in the member's ACTUAL shell form. `shell` matters
+ * independently of `os`: a Windows member registered as Git-for-Windows bash
+ * must get POSIX exports, not PowerShell `$env:` assignments its shell would
+ * mis-parse.
+ *
+ * The long_running path is deliberately different: its env goes INSIDE the
+ * generated wrapper script (which persists as a file on the member) and
+ * carries member.env ONLY, never decrypted credentials.
+ */
+describe('execute_command: member.env at the dispatch sites (F14)', () => {
+  const MEMBER_ENV = { FLEET_S9_A: "va'l$x", FLEET_S9_B: 'plain' };
+  const AUTH_VALUE = 'super-secret-credential';
+
+  const POSIX_PREFIX =
+    "export FLEET_S9_A='va'" + String.fromCharCode(92) + "''l$x' && "
+    + "export FLEET_S9_B='plain' && "
+    + "export API_TOKEN='" + AUTH_VALUE + "' && ";
+  const PS_PREFIX =
+    "$env:FLEET_S9_A='va''l$x'; "
+    + "$env:FLEET_S9_B='plain'; "
+    + "$env:API_TOKEN='" + AUTH_VALUE + "'; ";
+
+  function envMember(overrides: Partial<Agent> = {}): Agent {
+    return makeTestAgent({
+      env: MEMBER_ENV,
+      encryptedEnvVars: { API_TOKEN: encryptPassword(AUTH_VALUE) },
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it.each([
+    ['linux', undefined, 'posix'],
+    ['macos', undefined, 'posix'],
+    ['windows', undefined, 'powershell'],
+    ['windows', 'pwsh7', 'powershell'],
+    ['windows', 'powershell5', 'powershell'],
+    // The row this feature exists for: os says Windows, shell says POSIX.
+    ['windows', 'gitbash', 'posix'],
+  ] as Array<[string, string | undefined, 'posix' | 'powershell']>)(
+    'sync dispatch for os=%s shell=%s carries member.env in the %s form',
+    async (agentOs, shell, form) => {
+      const member = envMember({ os: agentOs as Agent['os'], shell: shell as Agent['shell'] });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+      await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
+
+      const dispatched = mockExecCommand.mock.calls[0][0] as string;
+      expect(dispatched.startsWith(form === 'posix' ? POSIX_PREFIX : PS_PREFIX)).toBe(true);
+      // ...and NOT the other shell's form.
+      expect(dispatched).not.toContain(form === 'posix' ? '$env:FLEET_S9_A=' : 'export FLEET_S9_A=');
+    },
+  );
+
+  it('no foreign reference: a member.env name appears ONLY in its own assignment', async () => {
+    const member = envMember({
+      os: 'linux',
+      // A value that NAMES another member.env variable must stay inert text,
+      // not become a live expansion the member shell resolves.
+      env: { FLEET_S9_A: 'one', FLEET_S9_B: '$FLEET_S9_A' },
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
+    const dispatched = mockExecCommand.mock.calls[0][0] as string;
+
+    // Exactly two occurrences of the name: its own assignment, and the inert
+    // literal inside FLEET_S9_B's single-quoted value (where POSIX performs
+    // no expansion at all).
+    expect(dispatched.match(/FLEET_S9_A/g)).toHaveLength(2);
+    expect(dispatched).toContain("export FLEET_S9_B='$FLEET_S9_A'");
+    expect(dispatched).not.toContain('$env:');
+  });
+
+  it('a member with no env and no credentials dispatches with no prefix at all', async () => {
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
+    const dispatched = mockExecCommand.mock.calls[0][0] as string;
+    expect(dispatched).not.toContain('export ');
+    expect(dispatched).not.toContain('$env:');
+  });
+
+  it('long_running POSIX: run.sh carries member.env and NEVER the auth credential', async () => {
+    const member = envMember({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await executeCommand({ member_id: member.id, command: 'python train.py', long_running: true, timeout_s: 5 });
+
+    const launch = mockExecCommand.mock.calls[0][0] as string;
+    const b64 = launch.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/)?.[1];
+    expect(b64, 'launcher did not carry a base64 run.sh').toBeTruthy();
+    const runSh = Buffer.from(b64!, 'base64').toString('utf-8');
+
+    expect(runSh).toContain("export FLEET_S9_B='plain'");
+    expect(runSh).toContain("export FLEET_S9_A='va'" + String.fromCharCode(92) + "''l$x'");
+    // The script persists as a file on the member -- credentials must not be
+    // written into it (the sync path above deliberately DOES carry them).
+    expect(runSh).not.toContain(AUTH_VALUE);
+    expect(runSh).not.toContain('API_TOKEN');
+    // The launcher prefix itself must not leak the credential either.
+    expect(launch).not.toContain(AUTH_VALUE);
   });
 });

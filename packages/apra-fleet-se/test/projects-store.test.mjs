@@ -423,6 +423,43 @@ describe('projects repository', { skip }, () => {
         assert.deepEqual(fetched, created);
     });
 
+    test('createProject accepts an explicit createdAt (apra-fleet-vcnl.8), but updatedAt always gets "now"', () => {
+        const explicitCreatedAt = '2020-01-01T00:00:00.000Z';
+        const before = new Date();
+        const created = createProject(store.db, {
+            id: 'crud-explicit-created-at',
+            name: 'Explicit CreatedAt',
+            backlogMember: 'member-a',
+            beads: { dir: '/tmp/crud-explicit-created-at/.beads' },
+            createdAt: explicitCreatedAt,
+        });
+        assert.equal(created.createdAt, explicitCreatedAt, 'explicit createdAt must be used verbatim');
+        assert.notEqual(created.updatedAt, explicitCreatedAt, 'updatedAt must still be stamped to "now", not the explicit createdAt');
+        assert.ok(
+            new Date(created.updatedAt) >= before,
+            'updatedAt must reflect the moment of this create call',
+        );
+
+        const fetched = getProject(store.db, 'crud-explicit-created-at');
+        assert.equal(fetched.createdAt, explicitCreatedAt);
+    });
+
+    test('createProject rejects an empty-string createdAt with {field: "createdAt"}', () => {
+        assert.throws(
+            () => createProject(store.db, {
+                id: 'crud-bad-created-at',
+                name: 'Bad CreatedAt',
+                backlogMember: 'member-a',
+                beads: { dir: '/tmp/crud-bad-created-at/.beads' },
+                createdAt: '',
+            }),
+            (err) => {
+                assert.equal(err.field, 'createdAt');
+                return true;
+            },
+        );
+    });
+
     test('createProject defaults beads.kind to clone when omitted', () => {
         const created = createProject(store.db, {
             id: 'crud-default-kind',

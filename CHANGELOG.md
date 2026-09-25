@@ -2,6 +2,121 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
+
+Sprint goal: make the member registry's `env` name-value map actually reach
+every dispatched process (previously stored and emitted but never
+injected), and turn the member reservation from a plain holder string into
+an object that can be automatically reaped once its holder's process is
+gone. Both landed and are covered by `npm test` plus the dedicated
+`apra-fleet-client` parity suite (root `npm test` does not reach that
+package -- run it separately).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $27.9782.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2993 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 24 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **A member's `env` map is injected at every dispatch site**, not just
+  stored and emitted: the synchronous exec path, the prompt-launch path
+  (including all of its retries), and both the POSIX and Windows
+  long-running task wrappers. The builder is selected by the member's
+  registered shell, not by its OS -- a Windows member registered as
+  git-bash gets POSIX-shaped assignments, not PowerShell ones -- and merges
+  the plaintext env map with the member's decrypted auth credentials, with
+  auth winning any name collision. The long-running wrappers intentionally
+  carry the plaintext map only, never auth, because those wrapper scripts
+  persist as files on the member. See
+  [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md).
+- **The member reservation is now an object** (`{runId, pid, at}`) instead
+  of a bare holder string, with the old string kept as a same-write mirror
+  so every existing string reader keeps working unchanged. A reservation
+  with a recorded pid is lazily reaped the next time a reserve is
+  attempted if that pid is no longer alive; a legacy or pid-less
+  reservation is never reaped. See
+  [docs/member-reservation-design.md](docs/member-reservation-design.md).
+- **Reserve now supports an owner-tag refusal**: a caller can supply the
+  owner tag it expects the member to carry, and the reserve is refused
+  outright (writing nothing) if the member is tagged for a different
+  package or reference.
+- **`packages/apra-fleet-client` kept in lockstep** with both changes:
+  wrappers, typedefs and `api-reference.md` rows for the new reservation
+  fields and the owner-tag refusal parameter.
+- **The `member.env` map a project bind writes (S8) is now exported into
+  every dispatch**, since S8's project-bind env entries flow through the
+  same registry `env` field this sprint wires into the dispatch path.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all
+lower priority than the goal and left open for a future sprint):
+- The dead-holder reap and a concurrent fresh reserve are not yet
+  mutually exclusive at the storage layer.
+- The env-var-empty-string fallback used by the test concurrency scaler
+  was fixed only at its one call site touched this sprint, not at its
+  root in the shared scaling helper.
+- The `apra-fleet-client` package test suite still is not reached by the
+  root bounded test runner and must be run separately.
+- A reservation's liveness check trusts a bare process id; it does not
+  yet guard against the operating system recycling that id onto an
+  unrelated process after the original holder exits.
+
+## [Unreleased] -- Project overview domain: bind/unbind, checkout flow, health panel, git drawer and export/import (sprint goal met)
+
+Sprint goal: build the project-overview domain of the fleet-supervisor
+console on top of the existing `supervisor.sqlite` project store -- binding a
+fleet member to a console project (owner tag plus a merged `BEADS_DIR` env
+entry and a cached git probe), the members-grouped-by-checkout-group overview
+model, an "add checkout on a machine" flow, an eight-check health panel, a
+per-member git drawer, and a project export/import CLI. It is domain logic
+and JSON routes only -- the console UI that renders it is later work. All of
+it landed and is verified: every overview row is derivable from the new
+route, all eight documented health checks exist with OK/WARN/FAIL unit
+coverage, export/import round-trips including the project's original
+creation timestamp, the "add checkout" flow is idempotent end to end (a
+re-run reports every step skipped with zero mutating calls, and a dirty or
+foreign-origin checkout is refused and never touched), and the git drawer
+returns every specified field. A previously-interpolated shell injection
+vector in the beads-remote probe was fixed with a reject-then-quote policy
+that branches on the target member's registered shell (POSIX vs
+PowerShell); a client-supplied project creation timestamp is stripped by the
+HTTP create route so it cannot be spoofed. See
+[packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md)
+for the full design and its trade-offs.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $57.3375.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.9611 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 57 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+Carried forward (filed as follow-up work, not fixed this sprint):
+- The new HTTP routes were verified at the unit level only, against mocked
+  store/client collaborators -- never yet exercised over HTTP against a
+  deployed sandbox. Integration testing was hard-stopped in two of five
+  sprint cycles by a missing broad `curl` permission grant, already tracked
+  separately as its own follow-up; the route-level end-to-end verification
+  itself is tracked as its own open backlog item.
+- A static shell-command-injection guard exists for two of the domain's
+  modules (each scans its own source for a raw, unquoted interpolation) but
+  not yet for the HTTP route modules or the export/import CLI -- including
+  the one route module where a real injection defect was found and fixed
+  this sprint, which currently has only behavioral coverage for that fix.
+- The owner-package identifier this domain stamps on a bound member's owner
+  tag was reconciled against the only independently-landed candidate source
+  available at the time; it needs re-verification once a second,
+  independently-landed source for the same identifier exists, since a
+  mismatch would make every already-written owner tag unreadable on the
+  registration side.
+- A small, deliberately out-of-epic-scope test file landed on this sprint's
+  branch ahead of its intended standalone landing route, by design (reverting
+  it first would have dropped a flake fix with no replacement yet on the
+  integration branch); reconciling it back to a single landing route is
+  tracked as its own open follow-up once the standalone route merges.
+
 ## [Unreleased] -- Console auth guard, `/ext` workflow-package reverse proxy, and the console/supervisor permissions denylist
 
 Sprint goal: one shared auth guard for the `/ui` console (fleet-key bearer or

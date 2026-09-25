@@ -320,6 +320,91 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    // apra-fleet-ecjf.4: the server's member_reservation schema gained
+    // owner_ref {package, ref} and pid. memberReservation() is a generic
+    // passthrough wrapper, so both must reach the tool untouched -- and the
+    // new member_other_owner outcome must surface on structuredContent for a
+    // caller that branches on it instead of the prose.
+    test('memberReservation forwards owner_ref and pid unchanged', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { content: [{ type: 'text', text: '[OK] reserved' }], structuredContent: { outcome: 'reserved' } };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = {
+            member_id: 'abc-123',
+            action: 'reserve',
+            sprint_id: 'sprint-42',
+            owner_ref: { package: 'fleet-sprint', ref: 'project-a' },
+            pid: 4321,
+        };
+        await fleet.memberReservation(options);
+
+        assert.strictEqual(calledName, 'member_reservation');
+        assert.deepStrictEqual(calledArgs.owner_ref, { package: 'fleet-sprint', ref: 'project-a' });
+        assert.strictEqual(calledArgs.pid, 4321);
+        // Nothing added, nothing dropped: byte-identical to what was passed.
+        assert.deepStrictEqual(calledArgs, options);
+    });
+
+    test('memberReservation surfaces the member_other_owner outcome and the reservation/reaped fields', async () => {
+        const structured = {
+            outcome: 'member_other_owner',
+            ok: false,
+            action: 'reserve',
+            memberId: 'abc-123',
+            memberName: 'worker',
+            sprintId: 'sprint-42',
+            ownerSprintId: null,
+            reservation: null,
+            reaped: false,
+        };
+        const mockClient = {
+            async callTool() {
+                return {
+                    content: [{ type: 'text', text: '[-] Member "worker" is owned by "fleet-sprint@project-a", not "other@project-a".' }],
+                    structuredContent: structured,
+                };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.memberReservation({
+            member_id: 'abc-123',
+            action: 'reserve',
+            sprint_id: 'sprint-42',
+            owner_ref: { package: 'other', ref: 'project-a' },
+        });
+
+        assert.strictEqual(result.structuredContent.outcome, 'member_other_owner');
+        assert.strictEqual(result.structuredContent.ok, false);
+        assert.strictEqual(result.structuredContent.reservation, null);
+        assert.strictEqual(result.structuredContent.reaped, false);
+    });
+
+    test('memberReservation sends neither owner_ref nor pid when the caller omits them', async () => {
+        let calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledArgs = args;
+                return { structuredContent: { outcome: 'reserved' } };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'abc-123', action: 'reserve', sprint_id: 'sprint-42' };
+        await fleet.memberReservation(options);
+
+        assert.ok(!('owner_ref' in calledArgs), 'owner_ref must not be present when omitted');
+        assert.ok(!('pid' in calledArgs), 'pid must not be present when omitted');
+        assert.deepStrictEqual(calledArgs, options);
+    });
+
     test('memberOwner', async () => {
         let calledName, calledArgs;
         const mockClient = {

@@ -8,12 +8,39 @@
  *       stopping the instance during active work.
  */
 
+import { escapeShellArgInner, escapePowerShellArgInner } from '../../utils/shell-escape.js';
+
 export interface TaskConfig {
   taskId: string;
   command: string;
   restartCommand?: string;  // F1: different cmd on retry (checkpoint resume)
   maxRetries: number;
   activityIntervalSec: number;  // F3: background marker touch interval
+  /**
+   * F14: the member's env map, emitted as assignments at the TOP of the
+   * generated script (before the retry loop) so the first attempt and every
+   * retry both see it.
+   *
+   * It has to live inside the script rather than in the launcher prefix
+   * because the detachment mechanism does not pass the launcher's
+   * environment through: on Windows the task process is created by the WMI
+   * provider host via Win32_Process.Create, which does not inherit the
+   * launching shell's environment at all.
+   *
+   * DELIBERATELY member.env ONLY -- callers pass
+   * include {auth: false, member: true}. The generated script is written to
+   * a FILE that persists under ~/.fleet-tasks/<taskId>/run.{sh,ps1} for the
+   * life of the task and beyond, so writing decrypted auth credentials into
+   * it would leave secrets on the member's disk in plaintext. The
+   * synchronous dispatch path, whose prefix is transient and never
+   * persisted, DOES include auth env; that difference is intentional, not
+   * an oversight.
+   *
+   * Values are UNESCAPED here -- each generator escapes for its own script
+   * language (POSIX single quotes in run.sh, PowerShell single quotes in
+   * run.ps1).
+   */
+  env?: Array<{ name: string; value: string }>;
 }
 
 /**
@@ -32,6 +59,12 @@ export function generateTaskWrapper(config: TaskConfig): string {
   const cmdB64 = Buffer.from(config.command).toString('base64');
   const restartB64 = Buffer.from(config.restartCommand ?? config.command).toString('base64');
   const taskDir = `$HOME/.fleet-tasks/${config.taskId}`;
+  // F14: member env, exported before the retry loop so MAIN_CMD and every
+  // RESTART_CMD attempt below both see it. member.env only -- see
+  // TaskConfig.env for why auth env is excluded from this persisted script.
+  const envLines = (config.env ?? []).map(
+    ({ name, value }) => `export ${name}='${escapeShellArgInner(value)}'`,
+  );
 
   // We build the bash script as an array of lines then join, using
   // plain string concatenation for shell $VAR references to avoid
@@ -52,6 +85,7 @@ export function generateTaskWrapper(config: TaskConfig): string {
     'MAIN_CMD=$(printf \'%s\' \'' + cmdB64 + '\' | base64 -d)',
     'RESTART_CMD=$(printf \'%s\' \'' + restartB64 + '\' | base64 -d)',
     '',
+    ...(envLines.length > 0 ? [...envLines, ''] : []),
     '# Write / update status.json',
     'write_status() {',
     '  local status="' + D + '1"',
@@ -145,7 +179,15 @@ export function generateTaskWrapper(config: TaskConfig): string {
 export function generateTaskWrapperWindows(config: TaskConfig): string {
   const cmdB64 = Buffer.from(config.command, 'utf-8').toString('base64');
   const restartB64 = Buffer.from(config.restartCommand ?? config.command, 'utf-8').toString('base64');
-  const taskId = config.taskId.replace(/'/g, "''");
+  const taskId = escapePowerShellArgInner(config.taskId);
+  // F14: member env, set before the retry loop so $MainCmd and every
+  // $RestartCmd attempt below both see it. member.env only -- see
+  // TaskConfig.env. This MUST be inside the script: the task process is
+  // created by the WMI provider host (Win32_Process.Create), which does not
+  // inherit the launcher's environment.
+  const envLines = (config.env ?? []).map(
+    ({ name, value }) => `$env:${name}='${escapePowerShellArgInner(value)}'`,
+  );
 
   const lines: string[] = [
     "$ErrorActionPreference = 'Continue'",
@@ -159,6 +201,7 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     `$MainCmd = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${cmdB64}'))`,
     `$RestartCmd = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${restartB64}'))`,
     '',
+    ...(envLines.length > 0 ? [...envLines, ''] : []),
     'function Write-TaskStatus($status, $exitCode, $retries, $started) {',
     '  $obj = [ordered]@{',
     '    taskId = $TaskId',

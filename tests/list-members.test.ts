@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { listMembers } from '../src/tools/list-members.js';
-import { addAgent } from '../src/services/registry.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, spawnDeadPid } from './test-helpers.js';
 import { syncCloudCache } from '../src/services/cloud-sync.js';
 
 // Mock connection-dependent helpers so tests run offline
@@ -236,5 +236,76 @@ describe('list_members -- owner, env, modelTiers, shell, vcsTokenExpiresAt (apra
 
     const compact = await listMembers({ format: 'compact' });
     expect(compact).toContain('owner=fleet-sprint@sprint-7');
+  });
+});
+
+// apra-fleet-ecjf.3: list_members emits the structured reservation alongside
+// the reservedBy string mirror, and reaps a holder whose recorded pid is gone
+// before rendering -- so simply listing the fleet un-wedges a dead sprint's
+// member instead of showing a stale owner an operator must force_release.
+describe('list_members -- reservation object and dead-pid reaping (apra-fleet-ecjf.3)', () => {
+  it('emits the reservation object per member in json, keeping reservedBy as the runId string', async () => {
+    addAgent(makeTestAgent({
+      id: 'member-held',
+      friendlyName: 'held-worker',
+      reservedBy: 'sprint-live',
+      reservation: { runId: 'sprint-live', pid: process.pid, at: '2026-09-25T00:00:00.000Z' },
+    }));
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-held');
+
+    expect(member.reservedBy).toBe('sprint-live');
+    expect(member.reservation).toEqual({
+      runId: 'sprint-live', pid: process.pid, at: '2026-09-25T00:00:00.000Z',
+    });
+  });
+
+  it('renders a legacy string-only reservation as {runId, pid:null, at:null} and never reaps it', async () => {
+    addAgent(makeTestAgent({ id: 'member-legacy', friendlyName: 'legacy-worker', reservedBy: 'legacy-sprint' }));
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-legacy');
+
+    expect(member.reservedBy).toBe('legacy-sprint');
+    expect(member.reservation).toEqual({ runId: 'legacy-sprint', pid: null, at: null });
+    expect(getAgent('member-legacy')?.reservedBy).toBe('legacy-sprint');
+  });
+
+  it('reaps a reservation whose pid is dead -- both the object and the mirror are cleared in the store', async () => {
+    const deadPid = await spawnDeadPid();
+    addAgent(makeTestAgent({
+      id: 'member-dead',
+      friendlyName: 'dead-worker',
+      reservedBy: 'sprint-dead',
+      reservation: { runId: 'sprint-dead', pid: deadPid, at: '2026-09-25T00:00:00.000Z' },
+    }));
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-dead');
+
+    expect(member.reservedBy).toBeNull();
+    expect(member.reservation).toBeNull();
+    // The reap is a real store write, not just a rendering-time filter.
+    expect(getAgent('member-dead')?.reservedBy ?? null).toBeNull();
+    expect(getAgent('member-dead')?.reservation ?? null).toBeNull();
+
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).not.toContain('reserved-by=');
+  });
+
+  it('never reaps a reservation whose pid is alive', async () => {
+    addAgent(makeTestAgent({
+      id: 'member-alive',
+      friendlyName: 'alive-worker',
+      reservedBy: 'sprint-live',
+      reservation: { runId: 'sprint-live', pid: process.pid, at: '2026-09-25T00:00:00.000Z' },
+    }));
+
+    const compact = await listMembers({ format: 'compact' });
+
+    expect(compact).toContain('reserved-by=sprint-live');
+    expect(getAgent('member-alive')?.reservedBy).toBe('sprint-live');
+    expect(getAgent('member-alive')?.reservation?.pid).toBe(process.pid);
   });
 });

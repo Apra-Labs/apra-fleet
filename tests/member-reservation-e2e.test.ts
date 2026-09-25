@@ -68,7 +68,7 @@ describe('member reservation end-to-end (apra-fleet-eft.10.4)', () => {
     addAgent(member);
 
     // Reserve for sprint-a via the real tool (not a direct registry write).
-    const { text: reserveResult } = await memberReservation({ member_id: memberId, action: 'reserve', sprint_id: 'sprint-a' });
+    const { text: reserveResult } = await memberReservation({ member_id: memberId, action: 'reserve', sprint_id: 'sprint-a', pid: process.pid });
     expect(reserveResult).toContain('reserved for "sprint-a"');
 
     // (1) Cross-sprint dispatch from sprint-b is rejected, naming sprint-a as owner.
@@ -94,6 +94,10 @@ describe('member reservation end-to-end (apra-fleet-eft.10.4)', () => {
     const json = JSON.parse(await listMembers({ format: 'json' }));
     const listed = json.members.find((m: { id: string }) => m.id === memberId);
     expect(listed.reservedBy).toBe('sprint-a');
+    // (3b, apra-fleet-ecjf.3) the structured reservation object round-trips
+    // through the same json alongside the reservedBy string mirror. The pid
+    // recorded here is this live test process, so nothing is reaped.
+    expect(listed.reservation).toEqual({ runId: 'sprint-a', pid: process.pid, at: expect.any(String) });
 
     // (4) force_release clears a wedged reservation regardless of owner...
     const { text: forceReleaseResult } = await memberReservation({ member_id: memberId, action: 'force_release' });
@@ -133,5 +137,6 @@ describe('member reservation end-to-end (apra-fleet-eft.10.4)', () => {
     const json = JSON.parse(await listMembers({ format: 'json' }));
     const listed = json.members.find((m: { id: string }) => m.id === memberId);
     expect(listed.reservedBy).toBeNull();
+    expect(listed.reservation).toBeNull();
   });
 });

@@ -41,6 +41,8 @@ const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member
 const credentialStoreSetSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'credential-store-set.ts'), 'utf8');
 const memberGitStatusSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-git-status.ts'), 'utf8');
 const memberOwnerSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-owner.ts'), 'utf8');
+const memberReservationSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-reservation.ts'), 'utf8');
+const listMembersSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'list-members.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -140,6 +142,25 @@ function updateMemberSchemaFields() {
 }
 
 /**
+ * member_reservation's INPUT schema (apra-fleet-ecjf.4.2). Like
+ * updateMemberSchema it spreads `...memberIdentifier`, so the same resolution
+ * path is reused rather than adding a second one -- extractSpreadNames's
+ * assert.fail on an unhandled spread is what forces that.
+ */
+function memberReservationSchemaFields() {
+    const block = extractBlock(memberReservationSrc, 'export const memberReservationSchema = z.object({', '\n});');
+    const fields = extractTopLevelKeys(block, 2);
+    for (const spreadName of extractSpreadNames(block)) {
+        if (spreadName === 'memberIdentifier') {
+            for (const f of memberIdentifierFields()) fields.add(f);
+        } else {
+            assert.fail(`unhandled spread in memberReservationSchema: ...${spreadName} -- extend this test to resolve it`);
+        }
+    }
+    return fields;
+}
+
+/**
  * Field names declared on a TS `interface Name { field: type; ... }` block
  * (apra-fleet-972p.2.2: `CredentialStoreSetUrlResult` in credential-store-
  * set.ts has no zod schema -- it is a plain result interface, not an input).
@@ -182,6 +203,19 @@ function memberDetailResultFields() {
         fields.add(m[1]);
     }
     return fields;
+}
+
+/** list_members's "json"-format `members` array entries have no zod schema of their own
+ * (list_members has no INPUT schema fields for its result shape either) -- ground truth is
+ * the imperative object literal built by `members: agents.map((a, i) => ({ ... })),` in
+ * list-members.ts. */
+function listMembersMemberFields() {
+    const block = extractBlock(
+        listMembersSrc,
+        'members: agents.map((a, i) => ({',
+        '\n      })),',
+    );
+    return extractTopLevelKeys(block, 8);
 }
 
 function assertFieldParity(label, schemaFields, typedefFields) {
@@ -241,6 +275,45 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    // Pins the client's ListedMember typedef (the "json"-format `members` array entry
+    // shape list_members returns) against the object literal list-members.ts builds --
+    // including `reservation`, the structured view alongside the legacy `reservedBy`
+    // string, so a future field added there can no longer land without the client
+    // declaring it too.
+    test('ListedMember matches the json-format member object list-members.ts builds', () => {
+        const resultFields = listMembersMemberFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'ListedMember');
+
+        assert.ok(resultFields.size > 5, `expected several list-members.ts member fields, parsed ${resultFields.size}`);
+        assert.ok(typedefFields.size > 5, `expected several ListedMember properties, parsed ${typedefFields.size}`);
+
+        assert.ok(resultFields.has('reservation'), 'sanity: list-members.ts member object should assign reservation');
+        assert.ok(typedefFields.has('reservation'), 'sanity: ListedMember should declare reservation');
+
+        assertFieldParity('ListedMember vs list-members.ts member object', resultFields, typedefFields);
+    });
+
+    // apra-fleet-ecjf.4.2 (F12): pins the client's MemberReservationOptions
+    // typedef against member_reservation's INPUT zod schema, so a server-side
+    // option (owner_ref, pid, ...) can no longer land without the client
+    // declaring it -- the drift this whole file exists to catch.
+    test('MemberReservationOptions matches memberReservationSchema field-for-field', () => {
+        const schemaFields = memberReservationSchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'MemberReservationOptions');
+
+        assert.ok(schemaFields.size > 3, `expected several memberReservationSchema fields, parsed ${schemaFields.size}`);
+        assert.ok(typedefFields.size > 3, `expected several MemberReservationOptions properties, parsed ${typedefFields.size}`);
+
+        // owner_ref and pid must be on both sides: dropping either from the
+        // typedef or the schema must fail this test, not pass vacuously.
+        assert.ok(schemaFields.has('owner_ref'), 'sanity: memberReservationSchema should declare owner_ref');
+        assert.ok(schemaFields.has('pid'), 'sanity: memberReservationSchema should declare pid');
+        assert.ok(typedefFields.has('owner_ref'), 'sanity: MemberReservationOptions should declare owner_ref');
+        assert.ok(typedefFields.has('pid'), 'sanity: MemberReservationOptions should declare pid');
+
+        assertFieldParity('MemberReservationOptions vs memberReservationSchema', schemaFields, typedefFields);
     });
 
     // apra-fleet-972p.2.2 (F3): pins the client's CredentialStoreSetResult

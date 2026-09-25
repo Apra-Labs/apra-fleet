@@ -296,6 +296,16 @@ the unit tests -- calling with no arguments sends an empty object, not
 | `format` | `"compact" \| "json"?` | Output format. |
 | `tags` | `string[]?` | Filter members by tags (AND semantics). |
 
+In `"json"` format each member carries both reservation views: `reservedBy`
+(the runId string, unchanged, what existing readers such as the
+fleet-supervisor overlap check use) and `reservation` (`{runId, pid, at}` or
+`null`; `pid`/`at` are `null` for a legacy string-only reservation). Listing
+also reaps a holder whose recorded pid no longer exists on the fleet server's
+host, so a member wedged by a dead sprint frees itself. Each entry's full
+field set is typed as `ListedMember` in `api.mjs`, pinned against the
+`members` object list-members.ts builds by
+`test/client-server-typedef-parity.test.mjs`.
+
 #### `fleetStatus(options: FleetStatusOptions = {})`
 
 Calls `fleet_status` -- status of all fleet members.
@@ -387,7 +397,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
-| `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Not read by any dispatch or provider command path this sprint. |
+| `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. |
 | `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 
@@ -430,7 +440,7 @@ and means "new value for this field". Identifies the target member via
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
 | `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (`reservedBy` set) -- the same refusal `member_owner` applies, so this cannot be used to bypass it. |
-| `env` | `Record<string, string>?` | Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Pass `{}` to clear. |
+| `env` | `Record<string, string>?` | Replace this member's env map. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision. Pass `{}` to clear. |
 | `llm_auth_expires_at` | `string?` | ISO 8601 expiry of this member's LLM auth (OAuth session / API key), when known. |
 
 #### `removeMember(options: RemoveMemberOptions)`
@@ -461,14 +471,22 @@ prose.
 | `member_name` | `string?` | Friendly name of the member. |
 | `action` | `"reserve" \| "release" \| "force_release"` | `"reserve"` claims the member for `sprint_id` (fails if already reserved by someone else); `"release"` clears it only if `sprint_id` matches the current holder; `"force_release"` clears it regardless of owner. |
 | `sprint_id` | `string?` | Sprint/session id claiming or releasing the reservation. Required for `"reserve"` and `"release"`, ignored for `"force_release"`. |
+| `owner_ref` | `{package, ref}?` | Owner tag the caller expects the member to carry. When supplied and the member is owner-tagged with a different `package` or `ref`, `"reserve"` is refused with outcome `"member_other_owner"` and nothing is written. An untagged member, or a call without `owner_ref`, is never refused. Ignored by `"release"`/`"force_release"`. |
+| `pid` | `number?` | Process id of the reserving process **on the fleet server's host**, recorded with the reservation so a holder that died is reaped automatically instead of wedging the member. Omit when the caller does not run on that host -- a reservation without a pid is never reaped. |
 
 `MemberReservationStructured` fields: `outcome` (one of `"reserved"`,
 `"reservation_refreshed"`, `"released"`, `"force_released"`,
 `"already_reserved_by_other"`, `"not_reserved"`, `"unreservable"`,
-`"invalid_input"`, `"member_not_found"`, `"failed"`), `ok`, `action`,
+`"invalid_input"`, `"member_not_found"`, `"failed"`, `"member_other_owner"` --
+the member carries a different owner tag than the supplied `owner_ref`, so
+nothing was written), `ok`, `action`,
 `memberId`, `memberName`, `sprintId`, `ownerSprintId` (the sprint that held
 the reservation when the call arrived, or the blocking owner on
-`"already_reserved_by_other"`).
+`"already_reserved_by_other"`), `reservation` (`{runId, pid, at}` or `null` --
+the reservation AFTER this call, which on a refusal is the unchanged blocking
+holder; `pid`/`at` are `null` for a legacy string-only reservation) and
+`reaped` (true when a reservation whose recorded pid no longer exists on the
+fleet server's host was cleared during this call).
 
 #### `memberOwner(options: MemberOwnerOptions)`
 
