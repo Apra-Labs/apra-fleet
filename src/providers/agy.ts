@@ -144,7 +144,7 @@ export async function cleanGlobalAgySettings(
 const path = require('path');
 const home = ${memberHomeDir ? JSON.stringify(memberHomeDir) : 'process.env.HOME || process.env.USERPROFILE'};
 const agyDir = path.join(home, '.gemini', 'antigravity-cli');
-const markerPath = path.join(agyDir, '.fleet-cleaned-v1');
+const markerPath = path.join(agyDir, '.fleet-cleaned-v2');
 
 if (fs.existsSync(markerPath)) {
   console.log(JSON.stringify({ cleaned: false, reason: 'already_cleaned' }));
@@ -155,7 +155,7 @@ const settingsPath = path.join(agyDir, 'settings.json');
 if (!fs.existsSync(settingsPath)) {
   try {
     fs.mkdirSync(agyDir, { recursive: true });
-    fs.writeFileSync(markerPath, 'v1\\n', 'utf8');
+    fs.writeFileSync(markerPath, 'v2\\n', 'utf8');
   } catch (e) {}
   console.log(JSON.stringify({ cleaned: false, reason: 'not_found' }));
   process.exit(0);
@@ -194,31 +194,40 @@ try {
 
   if (settings.permissions && typeof settings.permissions === 'object') {
     if (Array.isArray(settings.permissions.allow)) {
-      const legacy = new Set([
-        'read_file(*)', 'write_file(*)', 'read_url(*)',
+      const installerDirs = [
+        path.join(agyDir, 'skills', 'pm'),
+        path.join(agyDir, 'skills', 'fleet'),
+        path.join(agyDir, 'skills'),
+        path.join(agyDir, 'agents'),
+      ];
+      const installerSet = new Set(installerDirs.map(p => 'read_file(' + p.replace(/\\\\/g, '/') + ')'));
+      installerSet.add('invoke_subagent(*)');
+      installerSet.add('send_message(*)');
+
+      const legacyStrings = new Set([
         'write_file(docs)', 'write_file(feedback.md)', 'write_file(feedback-*.md)', 'write_file(progress.json)',
-        'command(*)', 'command(git)', 'command(bd)', 'command(which)', 'command(ls)', 'command(cat)',
-        'command(head)', 'command(tail)', 'command(mkdir)', 'command(cp)', 'command(mv)', 'command(rm)',
-        'command(find)', 'command(wc)', 'command(sort)', 'command(diff)', 'command(echo)', 'command(touch)',
-        'command(chmod)', 'command(curl)', 'command(tar)', 'command(unzip)', 'command(grep)', 'command(sed)',
-        'command(awk)', 'command(tee)', 'command(xargs)', 'command(sleep)', 'command(kill)', 'command(pkill)',
-        'command(bash)', 'command(sh)', 'command(gh)', 'command(jq)', 'command(npm)', 'command(npx)',
-        'command(node)', 'command(yarn)', 'command(pnpm)', 'command(tsx)', 'command(python)', 'command(python3)',
-        'command(pip)', 'command(pip3)', 'command(pytest)', 'command(uv)', 'command(poetry)', 'command(ruff)',
-        'command(mypy)', 'command(cargo)', 'command(rustc)', 'command(rustup)', 'command(make)', 'command(cmake)',
-        'command(gcc)', 'command(g++)', 'command(clang)', 'command(ninja)', 'command(dotnet)', 'command(go)',
-        'command(gofmt)', 'command(golangci-lint)', 'command(gradle)', 'command(./gradlew)', 'command(mvn)',
-        'command(java)', 'command(javac)', 'command(terraform)', 'command(terragrunt)', 'command(kubectl)',
-        'command(helm)', 'command(ansible)', 'command(ansible-playbook)', 'command(docker)', 'command(docker-compose)',
-        'command(docker buildx)', 'command(nvidia-smi)', 'command(nvidia-docker)',
-        'mcp(*)', 'mcp(apra-fleet)', 'mcp(apra-fleet/*)',
         'mcp(apra-fleet/kb_session_prime)', 'mcp(apra-fleet/kb_query)', 'mcp(apra-fleet/kb_stats)',
         'mcp(apra-fleet/kb_capture)', 'mcp(apra-fleet/kb_feedback)', 'mcp(apra-fleet/code_context)',
         'mcp(apra-fleet/code_graph)', 'mcp(apra-fleet/code_impact)', 'mcp(apra-fleet/code_query)',
         'mcp(apra-fleet/kb_resolve_contradiction)', 'mcp(apra-fleet/kb_list)', 'mcp(apra-fleet/kb_export)'
       ]);
+
       const initialLen = settings.permissions.allow.length;
-      settings.permissions.allow = settings.permissions.allow.filter(entry => !legacy.has(entry));
+      settings.permissions.allow = settings.permissions.allow.filter(entry => {
+        if (typeof entry === 'string' && installerSet.has(entry)) {
+          return true;
+        }
+        if (entry && typeof entry === 'object' && entry !== null && !Array.isArray(entry)) {
+          const keys = Object.keys(entry);
+          if (keys.length === 2 && keys.includes('action') && keys.includes('target')) {
+            return false;
+          }
+        }
+        if (typeof entry === 'string' && legacyStrings.has(entry)) {
+          return false;
+        }
+        return true;
+      });
       if (settings.permissions.allow.length !== initialLen) {
         modified = true;
       }
@@ -240,7 +249,7 @@ try {
   }
 
   fs.mkdirSync(agyDir, { recursive: true });
-  fs.writeFileSync(markerPath, 'v1\\n', 'utf8');
+  fs.writeFileSync(markerPath, 'v2\\n', 'utf8');
   console.log(JSON.stringify({ cleaned: modified }));
 } catch (e) {
   console.log(JSON.stringify({ cleaned: false, error: String(e) }));

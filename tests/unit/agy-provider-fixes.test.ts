@@ -12,7 +12,11 @@ import {
   AGY_ORCHESTRATOR_DENY_RULES,
   AGY_ORCHESTRATOR_DENIED_TOOLS,
   AgyProvider,
+  convertClaudeAllowToAgyPermissions,
+  formatAgyPermissionRules,
 } from '../../src/providers/agy.js';
+import { buildRequiredPerms } from '../../src/cli/install.js';
+import { getProviderInstallConfig } from '../../src/cli/config.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
 import { CodexProvider } from '../../src/providers/codex.js';
 import { CopilotProvider } from '../../src/providers/copilot.js';
@@ -129,7 +133,12 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       const settingsDir = path.join(home, '.gemini', 'antigravity-cli');
       fs.mkdirSync(settingsDir, { recursive: true });
       const settingsFile = path.join(settingsDir, 'settings.json');
-      const installerPath = path.join(home, '.gemini', 'antigravity-cli', 'skills');
+
+      const installerConfig = getProviderInstallConfig('agy', home);
+      const installerRules = formatAgyPermissionRules(
+        convertClaudeAllowToAgyPermissions(buildRequiredPerms(installerConfig))
+      );
+      const skillsDirPerm = installerRules.find(r => r.includes('skills')) || `read_file(${path.join(home, '.gemini', 'antigravity-cli', 'skills').replace(/\\/g, '/')})`;
 
       fs.writeFileSync(
         settingsFile,
@@ -143,10 +152,13 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
           permissions: {
             allow: [
               'read_file(*)',
-              'write_file(*)',
               'command(git)',
               'command(my-custom-cmd)',
-              `read_file(${installerPath})`,
+              'mcp(apra-fleet/*)',
+              skillsDirPerm,
+              { action: 'read_file', target: '*' },
+              'write_file(docs)',
+              'mcp(apra-fleet/kb_stats)',
             ],
           },
         })
@@ -171,12 +183,15 @@ describe('AGY Fix 519 - Unit Verification Suite', () => {
       expect(after.mcpServers['apra-fleet']).toBeUndefined();
       expect(after.skillOverrides).toEqual({ customSkill: 'off' });
       expect(after.permissions.allow).toEqual([
+        'read_file(*)',
+        'command(git)',
         'command(my-custom-cmd)',
-        `read_file(${installerPath})`,
+        'mcp(apra-fleet/*)',
+        skillsDirPerm,
       ]);
 
-      // Marker file must exist
-      expect(fs.existsSync(path.join(settingsDir, '.fleet-cleaned-v1'))).toBe(true);
+      // Marker file must exist (v2)
+      expect(fs.existsSync(path.join(settingsDir, '.fleet-cleaned-v2'))).toBe(true);
 
       // Idempotent re-run
       const cleanedAgain = await cleanGlobalAgySettings(
