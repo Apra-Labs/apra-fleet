@@ -167,7 +167,11 @@ describe("Compose permissions flow (apra-fleet-i9ag.6.2.2)", () => {
   });
 
   it("renders a NEVER_AUTO_GRANT refusal verbatim even though it arrives as an HTTP 200 {text} envelope", async () => {
-    const refusal = "❌ Cannot auto-grant dangerous permissions: Bash(sudo:*). Escalate to user.";
+    // ASCII only (CLAUDE.md): the real refusal in src/tools/compose-permissions.ts:646
+    // is prefixed with a cross emoji, but `refusal` here is self-referential -- it is
+    // both the mocked response body and the expected substring -- so dropping the
+    // emoji changes nothing about what this test proves.
+    const refusal = "Cannot auto-grant dangerous permissions: Bash(sudo:*). Escalate to user.";
     const { fn } = makeFetchMock(MEMBERS_A, {
       "/api/fleet/compose-permissions": jsonResponse(200, { text: refusal })
     });
