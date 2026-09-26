@@ -2647,5 +2647,32 @@ describe('executePrompt -- preflight reason code mapping', () => {
     // because preflightCheck rejected instead of resolving a failure result.
     expect(inFlightAgents.has(member.id)).toBe(false);
   });
+
+  it('releases the busy lock and stall entry when writePromptFile throws (SSH drop), so the next dispatch is not rejected as busy', async () => {
+    const member = makeTestAgent({ friendlyName: 'prompt-write-throws-member' });
+    addAgent(member);
+    clearStoredPid(member.id);
+    mockPreflightCheck.mockResolvedValue({ ok: true, connectivity: true, authValid: true, latencyMs: 5 });
+    try {
+      // No stored pid, so tryKillPid execs nothing and the first exec is writePromptFile.
+      mockExecCommand.mockRejectedValueOnce(new Error('No response from server'));
+      await expect(
+        executePrompt({ member_id: member.id, prompt: 'task-1', resume: false, timeout_s: 5 }),
+      ).rejects.toThrow('No response from server');
+      expect(inFlightAgents.has(member.id)).toBe(false);
+      expect(getStallDetector().stallCheckList.has(member.id)).toBe(false);
+
+      mockExecCommand
+        .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+        .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok', session_id: 's1' }), stderr: '', code: 0 })
+        .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+      const second = await executePrompt({ member_id: member.id, prompt: 'task-2', resume: false, timeout_s: 5 });
+      expect(second.structuredContent?.reason).not.toBe('busy');
+      expect(inFlightAgents.has(member.id)).toBe(false);
+    } finally {
+      inFlightAgents.delete(member.id);
+      getStallDetector().stallCheckList.delete(member.id);
+    }
+  });
 });
 
