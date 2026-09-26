@@ -5,10 +5,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildBoard, findRun, listRunFiles, runTitle, taskDetail, type Board } from './board.js';
-import { codeChanges, commitDiff, fileDiff } from './code.js';
+import { buildBoard, findRun, listRunFiles, runTitle, taskDetail, type Board, type BeadsTask, type RunFile } from './board.js';
+import { codeChanges, commitDiff, fileDiff, fileLines } from './code.js';
 import { getRecord, loadRegistry, type SprintRecord } from './launcher.js';
 import { designSteps, getDesign } from './designs.js';
+import { liveTasks, taskComments, taskDir } from './tasks.js';
 
 export interface SprintSummary {
   runId: string;
@@ -146,9 +147,71 @@ export function sprintView(runId: string): SprintView | null {
   return { record, board, status: board.status, design: designFor(rec), verdict: verdictOf(board.result) };
 }
 
+/** The run with its task list read live from bd, so board changes show at once. */
+async function withLiveTasks(rec: SprintRecord | undefined, run: RunFile): Promise<{ run: RunFile; tasks?: BeadsTask[] }> {
+  const pending = rec ? liveTasks(rec) : null;
+  if (!pending) return { run };
+  try {
+    const tasks = await pending;
+    if (!tasks.length) return { run };
+    const beads = run.state.extensions?.beads ?? {};
+    const state = {
+      ...run.state,
+      extensions: {
+        ...run.state.extensions,
+        beads: { ...beads, sprintTasks: tasks.filter(t => t.placement !== 'backlog'), backlogTasks: tasks.filter(t => t.placement === 'backlog') },
+      },
+    };
+    return { run: { ...run, state }, tasks };
+  } catch {
+    return { run };
+  }
+}
+
+export interface LiveSprintView extends SprintView {
+  /** Board changes (new task, priority, notes, skip) go through bd here. */
+  canEdit: boolean;
+}
+
+export async function sprintViewLive(runId: string): Promise<LiveSprintView | null> {
+  const rec = getRecord(runId);
+  const run = findRun(runId);
+  const base = sprintView(runId);
+  if (!base) return null;
+  if (!run || !base.board) return { ...base, canEdit: false };
+  const live = await withLiveTasks(rec, run);
+  if (live.run === run) return { ...base, canEdit: false };
+  const board = buildBoard(live.run, { title: rec?.title });
+  board.live = base.board.live;
+  board.status = base.board.status;
+  return { ...base, board, canEdit: !!taskDir(rec) && board.live };
+}
+
 export function sprintTask(runId: string, taskId: string) {
   const run = findRun(runId);
   return run ? taskDetail(run, taskId) : null;
+}
+
+export async function sprintTaskLive(runId: string, taskId: string) {
+  const rec = getRecord(runId);
+  const run = findRun(runId);
+  if (!run) return null;
+  const live = await withLiveTasks(rec, run);
+  const t = taskDetail(live.run, taskId);
+  if (!t) return null;
+  return { ...t, comments: rec ? await taskComments(rec, taskId) : [], canEdit: !!taskDir(rec) && run.live };
+}
+
+/** The tasks a review can link to, and who is building right now. */
+export async function reviewContextFor(runId: string) {
+  const rec = getRecord(runId);
+  if (!rec) throw new Error('Reviews work on sprints started from this page');
+  const run = findRun(runId);
+  const view = sprintView(runId);
+  const tasks = run ? (await withLiveTasks(rec, run)).tasks ?? [...(run.state.extensions?.beads?.sprintTasks ?? []), ...(run.state.extensions?.beads?.backlogTasks ?? [])] : [];
+  const live = !!view && (view.status === 'running' || view.status === 'starting' || view.status === 'pausing' || view.status === 'paused');
+  const building = (run?.state.extensions?.pipeline?.building ?? []).map(b => b.member);
+  return { rec, repo: codeRepo(rec), tasks, live, building };
 }
 
 /** Where to read git from: helper 1's clone has every sprint commit. */
@@ -157,16 +220,22 @@ function codeRepo(rec: SprintRecord): string {
   return fs.existsSync(path.join(h0, '.git')) ? h0 : rec.repo;
 }
 
-export async function sprintCode(runId: string) {
+export async function sprintCode(runId: string, opts: { since?: string } = {}) {
   const rec = getRecord(runId);
   if (!rec) return { available: false, reason: 'Code changes are shown for sprints started from this page', commits: [], files: [], totals: { added: 0, removed: 0, files: 0 } };
-  return codeChanges(codeRepo(rec), rec.branch, rec.base);
+  return codeChanges(codeRepo(rec), rec.branch, rec.base, opts);
 }
 
-export async function sprintFileDiff(runId: string, file: string) {
+export async function sprintFileDiff(runId: string, file: string, opts: { since?: string; context?: number } = {}) {
   const rec = getRecord(runId);
   if (!rec) throw new Error('unknown sprint');
-  return fileDiff(codeRepo(rec), rec.branch, rec.base, file);
+  return fileDiff(codeRepo(rec), rec.branch, rec.base, file, opts);
+}
+
+export async function sprintFileLines(runId: string, file: string, side: 'old' | 'new') {
+  const rec = getRecord(runId);
+  if (!rec) throw new Error('unknown sprint');
+  return fileLines(codeRepo(rec), rec.branch, rec.base, file, side);
 }
 
 export async function sprintCommitDiff(runId: string, sha: string) {

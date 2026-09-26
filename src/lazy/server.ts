@@ -13,7 +13,10 @@ import { renderUi } from './ui-page.js';
 import { Vault } from './vault.js';
 import { getAllAgents } from '../services/registry.js';
 import { isAutoMember } from '../services/member-reaper.js';
-import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
+import { listSprints, reviewContextFor, sprintView, sprintCode, sprintCommitDiff, sprintFileDiff, sprintFileLines, sprintLog, sprintTaskLive, sprintViewLive } from './sprints/index.js';
+import { addThread, deleteComment, deleteThread, editComment, markSeen, replyThread, resolveThread, reviewView, sendThreads } from './sprints/review.js';
+import { commentTask, createTask, reopenTask, skipTask, updateTask } from './sprints/tasks.js';
+import { getRecord } from './sprints/launcher.js';
 import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
 import { checkDesign, deleteDesign, designSteps, designWarnings, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
 import { handleFleet, startScheduler, type FleetDeps } from './api-fleet.js';
@@ -119,6 +122,22 @@ export interface LazyServer {
 
 const RUN_ID = '([A-Za-z0-9._-]{1,128})';
 
+function mustRecord(runId: string) {
+  const rec = getRecord(runId);
+  if (!rec) throw new Error('This works on sprints started from this page');
+  return rec;
+}
+
+/** Board changes only make sense while helpers are still reading the task list. */
+function mustBeLive(runId: string) {
+  const rec = mustRecord(runId);
+  const status = sprintView(runId)?.status;
+  if (!status || !['running', 'starting', 'pausing', 'paused'].includes(status)) {
+    throw new Error('This sprint has finished, so its task list is closed. Comment on its code changes to start a follow-up.');
+  }
+  return rec;
+}
+
 /** Sprint board API. Returns false when the path is not a sprint route. */
 async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse, url: URL, deps: SprintDeps): Promise<boolean> {
   const p = url.pathname;
@@ -159,7 +178,7 @@ async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse
   }
   let m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}$`).exec(p);
   if (m && req.method === 'GET') {
-    const view = sprintView(m[1]);
+    const view = await sprintViewLive(m[1]);
     json(res, view ? 200 : 404, view ?? { error: 'no such sprint' });
     return true;
   }
@@ -170,18 +189,81 @@ async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse
   }
   m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/tasks/([A-Za-z0-9._-]{1,128})$`).exec(p);
   if (m && req.method === 'GET') {
-    const t = sprintTask(m[1], m[2]);
+    const t = await sprintTaskLive(m[1], m[2]);
     json(res, t ? 200 : 404, t ?? { error: 'no such task' });
+    return true;
+  }
+  // Board changes: straight to the sprint's task list through bd.
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/tasks$`).exec(p);
+  if (m && req.method === 'POST') {
+    const rec = mustBeLive(m[1]);
+    json(res, 200, { ok: true, task: await createTask(rec, (await readJson(req)) as Parameters<typeof createTask>[1]) });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/tasks/([A-Za-z0-9._-]{1,128})/(update|comment|skip|reopen)$`).exec(p);
+  if (m && req.method === 'POST') {
+    const rec = mustBeLive(m[1]);
+    const b = (await readJson(req)) as { priority?: number; title?: string; text?: string; reason?: string };
+    if (m[3] === 'update') await updateTask(rec, m[2], { priority: b.priority, title: b.title });
+    else if (m[3] === 'comment') await commentTask(rec, m[2], b.text ?? '');
+    else if (m[3] === 'skip') await skipTask(rec, m[2], b.reason);
+    else await reopenTask(rec, m[2]);
+    json(res, 200, { ok: true });
     return true;
   }
   m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code$`).exec(p);
   if (m && req.method === 'GET') {
-    json(res, 200, await sprintCode(m[1]));
+    json(res, 200, await sprintCode(m[1], { since: url.searchParams.get('since') ?? undefined }));
     return true;
   }
   m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code/file$`).exec(p);
   if (m && req.method === 'GET') {
-    json(res, 200, await sprintFileDiff(m[1], url.searchParams.get('path') ?? ''));
+    const context = url.searchParams.get('context');
+    json(res, 200, await sprintFileDiff(m[1], url.searchParams.get('path') ?? '', { since: url.searchParams.get('since') ?? undefined, context: context ? Number(context) : undefined }));
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code/lines$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, await sprintFileLines(m[1], url.searchParams.get('path') ?? '', url.searchParams.get('side') === 'old' ? 'old' : 'new'));
+    return true;
+  }
+  // Code review: comment threads on the diff, kept on this machine.
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/review$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, await reviewView(await reviewContextFor(m[1])));
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/review/threads$`).exec(p);
+  if (m && req.method === 'POST') {
+    json(res, 200, { ok: true, thread: await addThread(await reviewContextFor(m[1]), (await readJson(req)) as Parameters<typeof addThread>[1]) });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/review/threads/([0-9a-f]{12})/(reply|resolve|reopen|delete|edit|delete-comment)$`).exec(p);
+  if (m && req.method === 'POST') {
+    mustRecord(m[1]);
+    const b = (await readJson(req)) as { body?: string; commentId?: string };
+    const [, runId, id, op] = m;
+    if (op === 'reply') replyThread(runId, id, b.body ?? '');
+    else if (op === 'resolve' || op === 'reopen') resolveThread(runId, id, op === 'resolve');
+    else if (op === 'delete') deleteThread(runId, id);
+    else if (op === 'edit') editComment(runId, id, b.commentId ?? '', b.body ?? '');
+    else deleteComment(runId, id, b.commentId ?? '');
+    json(res, 200, { ok: true });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/review/seen$`).exec(p);
+  if (m && req.method === 'POST') {
+    mustRecord(m[1]);
+    markSeen(m[1], String(((await readJson(req)) as { head?: string }).head ?? ''));
+    json(res, 200, { ok: true });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/review/send$`).exec(p);
+  if (m && req.method === 'POST') {
+    const b = (await readJson(req)) as { ids?: string[] };
+    const ctx = await reviewContextFor(m[1]);
+    const out = await sendThreads({ ...ctx, launch: input => deps.launch(input) }, Array.isArray(b.ids) ? b.ids.map(String) : undefined);
+    json(res, 200, { ok: true, ...out });
     return true;
   }
   m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code/commit/([0-9a-f]{7,40})$`).exec(p);

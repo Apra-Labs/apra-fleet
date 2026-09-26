@@ -4,6 +4,9 @@
  * regexes keep their backslashes; never put a backtick or dollar-brace here.
  */
 
+import { BOARD_CSS, BOARD_JS } from './ui-board.js';
+import { REVIEW_CSS, REVIEW_JS } from './ui-review.js';
+
 export const SPRINTS_CSS = String.raw`
 body.wide header, body.wide main { max-width: 1440px; }
 body.wide .stats { display: none; }
@@ -25,7 +28,8 @@ body.wide .stats { display: none; }
 .bar > i { display: block; height: 100%; background: var(--ok); border-radius: 999px; transition: width .4s; }
 
 .sp-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
-.sp-head h2 { margin: 4px 0 6px; font-size: 20px; letter-spacing: -0.01em; }
+.sp-head h2 { margin: 4px 0 6px; font-size: 20px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.sp-crumbs { display: flex; gap: 6px; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
 .back { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0; font-size: 13px; }
 .back:hover { color: var(--ink); }
 .sp-stats { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; align-items: center; }
@@ -37,7 +41,8 @@ body.wide .stats { display: none; }
 .phase.done { color: var(--ink); }
 .phase.done::before { content: "[OK] "; color: var(--ok); font-weight: 700; font-size: 11px; }
 .phase.current { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
-.subnav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.subnav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
+.subnav button { white-space: nowrap; }
 .subnav button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
 .subnav button[aria-selected="true"] { color: var(--ink); border-color: var(--accent); }
 .subnav .count { background: var(--chip); border-radius: 999px; padding: 0 7px; font-size: 11px; margin-left: 4px; }
@@ -118,14 +123,6 @@ body.wide .stats { display: none; }
 .steps .s.bad { color: var(--bad); }
 .steps .s.ok::before { content: "[OK] "; color: var(--ok); font-weight: 700; font-size: 12px; }
 pre.log { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-family: var(--mono); font-size: 12px; max-height: 70vh; overflow: auto; white-space: pre-wrap; margin: 0; }
-.drawer-bg { position: fixed; inset: 0; background: color-mix(in srgb, #000 35%, transparent); z-index: 20; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); border-left: 1px solid var(--line); z-index: 21; overflow: auto; padding: 18px 20px 40px; }
-.drawer h3 { margin: 6px 0 12px; font-size: 18px; line-height: 1.35; }
-.drawer .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; font-size: 13px; margin-bottom: 14px; }
-.drawer .kv span:nth-child(odd) { color: var(--muted); }
-.drawer .block { white-space: pre-wrap; font-size: 13.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 4px 0 14px; }
-.drawer h4 { margin: 12px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-.close-x { float: right; }
 .form-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-card .wide { grid-column: 1 / -1; }
 .form-card label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
@@ -177,7 +174,7 @@ pre.log { background: var(--panel); border: 1px solid var(--line); border-radius
 .result-panel .notes { white-space: pre-wrap; color: var(--muted); font-size: 13px; margin-top: 6px; max-height: 320px; overflow: auto; }
 .dz-ed [data-off] { opacity: .45; }
 .dz-warn { font-size: 13px; color: var(--warn); }
-`;
+` + BOARD_CSS + REVIEW_CSS;
 
 export const SPRINTS_HTML = String.raw`
   <section id="tab-sprints" hidden>
@@ -188,7 +185,7 @@ export const SPRINTS_HTML = String.raw`
 export const SPRINTS_JS = String.raw`
 (function () {
   var root = document.getElementById('sp-root');
-  var S = { view: 'list', runId: null, sub: 'board', list: [], sprint: null, code: null, diffKey: null, collapsed: {}, timer: null, formOpen: false, designs: null, defaultDesign: 'pipeline', designId: null, draft: null, formDesign: null };
+  var S = { view: 'list', runId: null, sub: 'board', list: [], sprint: null, code: null, shell: null, bf: null, stale: null, collapsed: {}, timer: null, formOpen: false, designs: null, defaultDesign: 'pipeline', designId: null, draft: null, formDesign: null };
 
   function api(path, opts) {
     opts = opts || {};
@@ -267,13 +264,6 @@ export const SPRINTS_JS = String.raw`
     return t;
   }
   function bar(done, total) { var pct = total ? Math.round(done * 100 / total) : 0; return el('div', { cls: 'bar' }, [el('i', { style: 'width:' + pct + '%' })]); }
-  function typeIcon(type) {
-    var t = type === 'bug' ? 'bug' : type === 'feature' || type === 'epic' ? 'feature' : type === 'chore' ? 'chore' : 'task';
-    var glyph = { bug: '!', feature: '*', chore: '~', task: '+' }[t];
-    return el('span', { cls: 'ico ' + (type === 'epic' ? 'epic' : t), title: type }, [glyph]);
-  }
-  function prio(p) { return el('span', { cls: 'prio p' + p, title: 'Priority ' + p }, ['P' + p]); }
-
   // ---- routing -------------------------------------------------------------
   function parseHash() {
     var parts = location.hash.slice(1).split('/');
@@ -291,7 +281,7 @@ export const SPRINTS_JS = String.raw`
     var h = '#sprints' + (runId ? '/' + runId + (sub && sub !== 'board' ? '/' + sub : '') : '');
     history.replaceState(null, '', h);
     parseHash();
-    S.sprint = null; S.code = null; S.diffKey = null;
+    S.sprint = null; S.code = null; S.stale = null;
     refresh(true);
   }
   function goDesigns(id) {
@@ -315,19 +305,18 @@ export const SPRINTS_JS = String.raw`
     if (S.view === 'list') {
       api('sprints').then(function (r) { S.list = r.sprints; render(); }).catch(function (e) { renderError(e); });
     } else {
-      api('sprints/' + encodeURIComponent(S.runId)).then(function (r) {
-        S.sprint = r;
-        if (S.sub === 'code' && (force || !S.code)) loadCode();
+      var runId = S.runId;
+      api('sprints/' + encodeURIComponent(runId)).then(function (r) {
+        if (S.runId !== runId || S.view !== 'sprint') return;
+        S.sprint = r; S.stale = null;
         if (S.sub === 'log') loadLog();
         render();
-      }).catch(function (e) { renderError(e); });
+      }).catch(function (e) {
+        if (S.runId !== runId) return;
+        // Keep what is on screen through a hiccup; say so instead of blanking it.
+        if (S.sprint) { S.stale = e.message; render(); } else renderError(e);
+      });
     }
-  }
-  function loadCode() {
-    api('sprints/' + encodeURIComponent(S.runId) + '/code').then(function (c) {
-      S.code = c; render();
-      if (!S.diffKey && c.available && c.files.length) showDiff('f:' + c.files[0].path, 'code/file?path=' + encodeURIComponent(c.files[0].path));
-    });
   }
   function loadLog() {
     api('sprints/' + encodeURIComponent(S.runId) + '/log?tail=400').then(function (r) { S.log = r.log; if (S.sub === 'log') render(); });
@@ -339,7 +328,7 @@ export const SPRINTS_JS = String.raw`
       // Live seconds tick without refetching.
       document.querySelectorAll('[data-since]').forEach(function (n) { n.textContent = dur(Date.now() - Number(n.getAttribute('data-since'))); });
     }, 1000);
-    setInterval(function () { if (active() && !document.querySelector('.drawer') && !(S.formOpen && S.view === 'list')) refresh(false); }, 3000);
+    setInterval(function () { if (active() && !document.querySelector('.drawer, .iv-bg') && !(S.formOpen && S.view === 'list')) refresh(false); }, 3000);
   }
 
   // ---- render --------------------------------------------------------------
@@ -447,11 +436,24 @@ export const SPRINTS_JS = String.raw`
     return form;
   }
 
+  // The page keeps one frame per sprint: the header is redrawn on every
+  // refresh, while the tab body (board, code review) updates itself in place
+  // so search text, comment drafts, focus and scroll survive.
+  function shell() {
+    if (!S.shell || S.shell.runId !== S.runId || !root.contains(S.shell.el)) {
+      root.textContent = '';
+      var head = el('div'), body = el('div');
+      S.shell = { runId: S.runId, el: el('div', {}, [head, body]), head: head, body: body, sub: null, comp: null };
+      root.appendChild(S.shell.el);
+    }
+    return S.shell;
+  }
   function renderSprint() {
-    root.textContent = '';
+    var sh = shell(), head = sh.head;
+    head.textContent = '';
     var v = S.sprint;
-    root.appendChild(el('button', { cls: 'back', type: 'button', text: '<- All sprints', onclick: function () { go(null); } }));
-    if (!v) { root.appendChild(el('div', { cls: 'empty', text: 'Loading...' })); return; }
+    head.appendChild(el('button', { cls: 'back', type: 'button', text: '<- All sprints', onclick: function () { go(null); } }));
+    if (!v) { head.appendChild(el('div', { cls: 'empty', text: 'Loading...' })); sh.body.textContent = ''; sh.sub = null; sh.comp = null; return; }
     var b = v.board, rec = v.record;
     var title = (b && b.title) || (rec && rec.title) || S.runId;
     var live = v.status === 'running' || v.status === 'starting' || v.status === 'pausing' || v.status === 'paused';
@@ -468,34 +470,45 @@ export const SPRINTS_JS = String.raw`
         stats.appendChild(el('span', {}, [el('b', { text: String(b.helpersNow.length) }), ' working now']));
       }
       stats.appendChild(el('span', {}, [el('b', { text: money(b.cost) }), ' spent']));
-      if (b.startedAt) stats.appendChild(el('span', {}, [el('b', { text: dur((b.endedAt ? Date.parse(b.endedAt) : Date.now()) - Date.parse(b.startedAt)) }), ' elapsed']));
+      if (b.startedAt) stats.appendChild(el('span', {}, [el('b', { 'data-since': b.endedAt ? null : String(Date.parse(b.startedAt)), text: dur((b.endedAt ? Date.parse(b.endedAt) : Date.now()) - Date.parse(b.startedAt)) }), ' elapsed']));
     }
-    if (rec) stats.appendChild(el('span', { cls: 'mono', text: rec.branch }));
-    var actions = el('div', {}, [live && rec ? el('button', { cls: 'act danger', type: 'button', text: 'Stop sprint', onclick: function () {
+    if (rec) stats.appendChild(el('span', { cls: 'mono', title: 'The sprint branch', text: rec.branch }));
+    var actions = el('div', {}, [live && rec ? el('button', { cls: 'act danger', type: 'button', text: 'Stop sprint', onclick: function (e) {
       if (!confirm('Stop this sprint? Work done so far stays on its branch.')) return;
-      api('sprints/' + encodeURIComponent(S.runId) + '/stop', { method: 'POST' }).then(function () { toast('Stopping'); refresh(true); });
+      var btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Stopping...';
+      api('sprints/' + encodeURIComponent(S.runId) + '/stop', { method: 'POST' }).then(function () { toast('Stopping'); refresh(true); }).catch(function (err) { toast(err.message); btn.disabled = false; btn.textContent = 'Stop sprint'; });
     } }) : null]);
-    root.appendChild(el('div', { cls: 'sp-head' }, [el('div', {}, [el('h2', { text: title }), stats]), actions]));
-    if (b) root.appendChild(v.design && v.design.steps && v.design.steps.length ? designBar(v.design, b) : phaseBar(b));
+    var crumbs = el('div', { cls: 'sp-crumbs' }, [el('span', { text: 'Sprints' }), el('span', { text: '/' }), el('span', { text: rec ? base(rec.repo) : 'Sprint' })]);
+    head.appendChild(el('div', { cls: 'sp-head' }, [el('div', { style: 'min-width:0' }, [crumbs, el('h2', { text: title }), stats]), actions]));
+    if (S.stale) head.appendChild(el('div', { cls: 'dz-warn', style: 'margin-bottom: 8px', text: 'Could not refresh (' + S.stale + '); showing the last known state.' }));
+    if (b) head.appendChild(v.design && v.design.steps && v.design.steps.length ? designBar(v.design, b) : phaseBar(b));
 
     if (!b) {
-      root.appendChild(setupSteps(rec));
+      sh.body.textContent = ''; sh.sub = null; sh.comp = null;
+      sh.body.appendChild(setupSteps(rec));
       return;
     }
-    if (b.progress.total) root.appendChild(el('div', { style: 'margin: -6px 0 12px' }, [bar(b.progress.done, b.progress.total)]));
-    if (!live && rec) root.appendChild(resultPanel(v, b, rec));
+    if (b.progress.total) head.appendChild(el('div', { style: 'margin: -6px 0 12px' }, [bar(b.progress.done, b.progress.total)]));
+    if (!live && rec) head.appendChild(resultPanel(v, b, rec));
 
     var tabs = [['board', 'Board', b.cards.length], ['helpers', 'Helpers', b.helpersNow.length], ['code', 'Code changes', S.code && S.code.available ? S.code.totals.files : null], ['log', 'Log', null]];
-    var nav = el('div', { cls: 'subnav' });
+    var nav = el('div', { cls: 'subnav', role: 'tablist' });
     tabs.forEach(function (t) {
-      nav.appendChild(el('button', { type: 'button', 'aria-selected': S.sub === t[0] ? 'true' : 'false', onclick: function () { go(S.runId, t[0]); } }, [t[1], t[2] !== null && t[2] !== undefined ? el('span', { cls: 'count', text: String(t[2]) }) : null]));
+      nav.appendChild(el('button', { type: 'button', role: 'tab', 'aria-selected': S.sub === t[0] ? 'true' : 'false', onclick: function () { if (S.sub !== t[0]) go(S.runId, t[0]); } }, [t[1], t[2] !== null && t[2] !== undefined ? el('span', { cls: 'count', text: String(t[2]) }) : null]));
     });
-    root.appendChild(nav);
-    if (S.sub === 'helpers') return root.appendChild(helpersView(b));
-    if (S.sub === 'code') return root.appendChild(codeView());
-    if (S.sub === 'log') return root.appendChild(el('pre', { cls: 'log', text: S.log || 'No log yet.' }));
-    root.appendChild(boardView(b));
-    if (rec && rec.setup && rec.setup.state !== 'started') root.appendChild(setupSteps(rec));
+    head.appendChild(nav);
+
+    var body = sh.body;
+    if (sh.sub !== S.sub) { body.textContent = ''; sh.sub = S.sub; sh.comp = null; }
+    if (S.sub === 'board' || S.sub === 'code') {
+      if (!sh.comp) { sh.comp = S.sub === 'board' ? boardComp() : reviewComp(S.runId); body.textContent = ''; body.appendChild(sh.comp.el); }
+      sh.comp.update(v);
+      if (S.sub === 'board' && rec && rec.setup && rec.setup.state !== 'started' && !body.querySelector('.steps')) body.appendChild(setupSteps(rec));
+      return;
+    }
+    body.textContent = '';
+    if (S.sub === 'helpers') body.appendChild(helpersView(b));
+    else body.appendChild(el('pre', { cls: 'log', text: S.log || 'No log yet.' }));
   }
 
   // Which design step the engine is on now, from its current phase title.
@@ -551,87 +564,6 @@ export const SPRINTS_JS = String.raw`
     if (rec.setup.state === 'started' && !rec.setup.error) box.appendChild(el('div', { cls: 's', text: 'Waiting for the helpers to report in...' }));
     return box;
   }
-
-  // ---- board ---------------------------------------------------------------
-  function boardView(b) {
-    var wrap = el('div', { cls: 'board' });
-    if (!b.cards.length) {
-      wrap.appendChild(el('div', { cls: 'empty', text: b.live ? 'Helpers are planning - issues appear here as they are created.' : 'This sprint has no issues.' }));
-      return wrap;
-    }
-    var grid = el('div', { cls: 'board-grid' });
-    b.columns.forEach(function (c) {
-      var n = b.cards.filter(function (x) { return x.column === c.key; }).length;
-      grid.appendChild(el('div', { cls: 'col-head' }, [c.title, el('span', { cls: 'n', text: String(n) })]));
-    });
-    b.lanes.forEach(function (lane) {
-      var collapsed = S.collapsed[lane.id || '_'];
-      if (b.lanes.length > 1 || lane.id) {
-        grid.appendChild(el('div', { cls: 'lane', onclick: function () { S.collapsed[lane.id || '_'] = !collapsed; render(); } }, [
-          el('span', { cls: 'caret', text: collapsed ? '>' : 'v' }),
-          lane.id ? typeIcon(lane.type) : null,
-          el('span', { text: lane.title }),
-          lane.id ? el('small', { cls: 'mono', text: lane.id }) : null,
-          el('div', { cls: 'bar lane-bar' }, [el('i', { style: 'width:' + (lane.total ? Math.round(lane.done * 100 / lane.total) : 0) + '%' })]),
-          el('small', { text: lane.done + '/' + lane.total })
-        ]));
-      }
-      if (collapsed) return;
-      b.columns.forEach(function (c) {
-        var cell = el('div', { cls: 'cell' });
-        b.cards.filter(function (x) { return x.lane === lane.id && x.column === c.key; }).forEach(function (card) { cell.appendChild(cardEl(card)); });
-        grid.appendChild(cell);
-      });
-    });
-    wrap.appendChild(grid);
-    return wrap;
-  }
-
-  function cardEl(c) {
-    var live = c.working.length > 0;
-    var who = live ? c.working[0].member : c.lastHelper;
-    var kids = [
-      el('div', { cls: 't', text: c.title }),
-      live ? el('div', { cls: 'working-strip' }, [el('span', { text: helperLabel(c.working[0].member) + ' working' }), el('span', { 'data-since': c.working[0].since, text: dur(Date.now() - c.working[0].since) })]) : null,
-      c.blockedBy.length && c.column === 'blocked' ? el('div', { cls: 'row', text: 'Waiting on ' + c.blockedBy.join(', ') }) : null,
-      c.stage === 'landing' || c.stage === 'fixing' || c.bounces ? el('div', { cls: 'row' }, [
-        c.stage === 'landing' ? el('span', { cls: 'stage landing', text: 'Landing' }) : null,
-        c.stage === 'fixing' ? el('span', { cls: 'stage fixing', text: 'Fixing after a failed landing' }) : null,
-        c.bounces ? el('span', { cls: 'bounce', text: 'sent back ' + c.bounces + 'x' }) : null
-      ]) : null,
-      el('div', { cls: 'row' }, [typeIcon(c.type), el('span', { cls: 'mono', text: c.id }), el('span', { cls: 'grow' }), c.model ? el('span', { cls: 'chip', text: c.model }) : null, prio(c.priority), who ? avatar(who, live) : null])
-    ];
-    return el('div', { cls: 'tcard' + (live ? ' working' : '') + (c.inSprint ? '' : ' backlog'), title: c.inSprint ? '' : 'Below this sprint\'s goal', onclick: function () { openTask(c.id); } }, kids);
-  }
-
-  function openTask(id) {
-    api('sprints/' + encodeURIComponent(S.runId) + '/tasks/' + encodeURIComponent(id)).then(function (t) {
-      closeDrawer();
-      var bg = el('div', { cls: 'drawer-bg', onclick: closeDrawer });
-      var d = el('div', { cls: 'drawer' });
-      d.appendChild(el('button', { cls: 'act close-x', type: 'button', text: 'Close', onclick: closeDrawer }));
-      d.appendChild(el('div', { cls: 'row sp-meta' }, [typeIcon(t.issue_type || 'task'), el('span', { cls: 'mono', text: t.id }), prio(t.priority === undefined ? 2 : t.priority), el('span', { cls: 'pill', text: (t.status || 'open').replace('_', ' ') })]));
-      d.appendChild(el('h3', { text: t.title || t.id }));
-      var kv = el('div', { cls: 'kv' });
-      [['Assignee', t.assignee], ['Model tier', t.metadata && t.metadata.model], ['Started', t.started_at && ago(t.started_at)], ['Closed', t.closed_at && ago(t.closed_at)], ['Close reason', t.close_reason]].forEach(function (p) {
-        if (!p[1]) return; kv.appendChild(el('span', { text: p[0] })); kv.appendChild(el('span', { text: String(p[1]) }));
-      });
-      var deps = (t.dependencies || []).filter(function (x) { return x.issue_id === t.id && x.type !== 'parent-child'; });
-      if (deps.length) { kv.appendChild(el('span', { text: 'Depends on' })); kv.appendChild(el('span', { cls: 'mono', text: deps.map(function (x) { return x.depends_on_id; }).join(', ') })); }
-      d.appendChild(kv);
-      [['Description', t.description], ['Acceptance criteria', t.acceptance_criteria], ['Notes', t.notes]].forEach(function (p) {
-        if (!p[1]) return; d.appendChild(el('h4', { text: p[0] })); d.appendChild(el('div', { cls: 'block', text: p[1] }));
-      });
-      d.appendChild(el('h4', { text: 'Work on this issue' }));
-      if (!t.history.length) d.appendChild(el('div', { cls: 'note', text: 'No finished work yet.' }));
-      t.history.forEach(function (h) {
-        d.appendChild(el('div', { cls: 'row sp-meta', style: 'margin: 6px 0' }, [avatar(h.member), el('span', { text: helperLabel(h.member) + ' - ' + (h.text || h.label) }), el('span', { text: dur(h.duration) }), h.success === false ? el('span', { cls: 'pill failed', text: 'failed' }) : null]));
-      });
-      document.body.appendChild(bg); document.body.appendChild(d);
-    }).catch(function (e) { toast(e.message); });
-  }
-  function closeDrawer() { document.querySelectorAll('.drawer, .drawer-bg').forEach(function (n) { n.remove(); }); }
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDrawer(); });
 
   // ---- helpers -------------------------------------------------------------
   function helpersView(b) {
@@ -691,52 +623,8 @@ export const SPRINTS_JS = String.raw`
     return wrap;
   }
 
-  // ---- code ----------------------------------------------------------------
-  function codeView() {
-    var c = S.code;
-    if (!c) return el('div', { cls: 'empty', text: 'Loading changes...' });
-    if (!c.available) return el('div', { cls: 'empty', text: c.reason || 'No changes yet.' });
-    var side = el('div', { cls: 'side' });
-    side.appendChild(el('div', { cls: 'sp-stats' }, [el('span', {}, [el('b', { text: String(c.totals.files) }), ' files']), el('span', { cls: 'plus', text: '+' + c.totals.added }), el('span', { cls: 'minus', text: '-' + c.totals.removed }), el('span', {}, [el('b', { text: String(c.commits.length) }), ' commits'])]));
-    var files = el('div', { cls: 'list' }, [el('h4', { text: 'Files' })]);
-    c.files.forEach(function (f) {
-      var key = 'f:' + f.path;
-      files.appendChild(el('button', { type: 'button', cls: S.diffKey === key ? 'on' : '', title: f.path, onclick: function () { showDiff(key, 'code/file?path=' + encodeURIComponent(f.path)); } }, [el('span', { cls: 'path', text: f.path }), f.binary ? el('span', { cls: 'chip', text: 'binary' }) : el('span', { cls: 'plus', text: '+' + f.added }), f.binary ? null : el('span', { cls: 'minus', text: '-' + f.removed })]));
-    });
-    if (!c.files.length) files.appendChild(el('div', { cls: 'empty', text: 'No file changes yet.' }));
-    side.appendChild(files);
-    var commits = el('div', { cls: 'list' }, [el('h4', { text: 'Commits' })]);
-    c.commits.forEach(function (m) {
-      var key = 'c:' + m.sha;
-      commits.appendChild(el('button', { type: 'button', cls: S.diffKey === key ? 'on' : '', onclick: function () { showDiff(key, 'code/commit/' + m.sha); } }, [el('span', { cls: 'mono', text: m.sha.slice(0, 7) }), el('span', { style: 'flex:1', text: m.subject }), el('span', { cls: 'sp-meta', text: ago(m.date) })]));
-    });
-    if (!c.commits.length) commits.appendChild(el('div', { cls: 'empty', text: 'No commits yet.' }));
-    side.appendChild(commits);
-    var diff = el('div', { cls: 'diff', id: 'sp-diff' }, [S.diffText ? diffPre(S.diffText) : el('div', { cls: 'ph', text: 'Pick a file or commit to see what changed.' })]);
-    return el('div', { cls: 'code-grid' }, [side, diff]);
-  }
-  function showDiff(key, path) {
-    S.diffKey = key; S.diffText = null; render();
-    api('sprints/' + encodeURIComponent(S.runId) + '/' + path).then(function (r) {
-      if (S.diffKey !== key) return;
-      S.diffText = r.diff + (r.truncated ? '\n... (diff truncated)' : '');
-      render();
-    }).catch(function (e) { toast(e.message); });
-  }
-  function diffPre(text) {
-    var pre = el('pre');
-    text.split('\n').forEach(function (line) {
-      var c = line.charAt(0), cls = 'ln';
-      if (line.indexOf('@@') === 0) cls += ' h';
-      else if (line.indexOf('+++') === 0 || line.indexOf('---') === 0 || line.indexOf('diff ') === 0 || line.indexOf('index ') === 0) cls += ' m';
-      else if (c === '+') cls += ' a';
-      else if (c === '-') cls += ' d';
-      pre.appendChild(el('span', { cls: cls, text: line || ' ' }));
-    });
-    return pre;
-  }
-
-
+`
+  + BOARD_JS + REVIEW_JS + String.raw`
   // ---- sprint designs ------------------------------------------------------
   var PLAN_RUN = [['always', 'Every cycle'], ['when-needed', 'Only for new work'], ['first-cycle', 'First cycle only'], ['off', 'Off: one helper does it all']];
   var BUILD_MODE = [['pipeline', 'All at once'], ['classic', 'Round by round'], ['off', 'Off: no code changes']];

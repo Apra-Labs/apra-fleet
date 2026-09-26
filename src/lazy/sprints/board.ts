@@ -36,6 +36,9 @@ export interface BeadsTask {
   started_at?: string;
   closed_at?: string;
   close_reason?: string;
+  updated_at?: string;
+  labels?: string[];
+  comment_count?: number;
   metadata?: Record<string, unknown>;
   dependencies?: Array<{ issue_id: string; depends_on_id: string; type: string }>;
 }
@@ -118,6 +121,10 @@ export interface Card {
   stage?: 'building' | 'landing' | 'fixing';
   /** Pipeline mode: times it could not land and went back to its doer. */
   bounces: number;
+  updatedAt?: string;
+  labels?: string[];
+  /** Notes on the task in the task list. */
+  comments?: number;
 }
 
 export interface Lane {
@@ -427,6 +434,9 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
       closedAt: t.closed_at,
       ...(stageOfTask.has(t.id) && column !== 'done' ? { stage: stageOfTask.get(t.id) } : {}),
       bounces: bounceCount.get(t.id) ?? 0,
+      ...(t.updated_at ? { updatedAt: t.updated_at } : {}),
+      ...(t.labels?.length ? { labels: t.labels } : {}),
+      ...(t.comment_count ? { comments: t.comment_count } : {}),
     });
   }
   cards.sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id, undefined, { numeric: true }));
@@ -438,7 +448,8 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
     const members = cards.filter(c => c.lane === id);
     lanes.push({
       id,
-      title: id ? t?.title ?? id : 'Other work',
+      // The sprint's own root issue holds loose tasks; its title is already the page title.
+      title: id && !(state.args?.targetIssues ?? []).includes(id) ? t?.title ?? id : 'Other work',
       type: id ? t?.issue_type ?? 'epic' : 'none',
       status: id ? t?.status ?? 'open' : 'open',
       total: members.length,
