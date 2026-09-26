@@ -149,8 +149,9 @@ dropping digits) and filed it as a P1 task for a later sprint.
   of them: on task A it was 36% faster and half the cost of Pipeline, with the
   same test strength and a better review.
 - **On the larger task the parallel build pays off.** Fast pipeline finished in
-  8.1 minutes against Classic's 15.2, and was the only codebase the blind
-  review found no real spec bug in. It cost about a quarter more, mostly in
+  8.1 minutes against Classic's 15.2, and was the only codebase that got
+  every edge case the blind reviewer probed right (its one finding: a group
+  key named `__proto__` is lost). It cost about a quarter more, mostly in
   reviews.
 - **The model floor mattered.** Every design with a floor built on standard;
   the cheap-tier bug that cost Pipeline a whole cycle in the first benchmark
