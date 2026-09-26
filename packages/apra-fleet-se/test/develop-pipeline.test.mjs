@@ -11,8 +11,9 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { buildPlannerPrompt, buildPipelineDoerPrompt, PIPELINE_PLANNING_GUIDANCE } from '../fleet-sprint/prompts.mjs';
 import {
-    runBuildPipelinePhase, selectTasksToStart, taskBranchName, predictedFiles, filesOverlap, MAX_LANDING_BOUNCES, landingNote,
+    runBuildPipelinePhase, selectTasksToStart, taskBranchName, predictedFiles, filesOverlap, MAX_LANDING_BOUNCES, landingNote, laneOf,
 } from '../fleet-sprint/phases/develop-pipeline.mjs';
 
 const SPRINT = 'feat/sprint';
@@ -454,4 +455,29 @@ test('landing note wording', () => {
     const n = landingNote({ landedTask: { id: 't', title: 'T' }, landedFiles: ['a.js'], sprintBranch: 's', member: 'm', memberFiles: ['a.js'], sameCheckout: true });
     assert.equal(n.overlap, true);
     assert.match(n.text, /run "git merge s"/);
+});
+
+test('a planner lane builds in order; different lanes build at once', () => {
+    const t = (id, streak, streakOrder) => ({ id, metadata: { streak, streakOrder } });
+    const ready = [t('a1', 'A', 1), t('a2', 'A', 2), t('b1', 'B', 1), t('solo')];
+    ready[3].metadata = {};
+    const picks = selectTasksToStart({ ready, inFlight: new Map(), givenUp: new Set(), freeMembers: 9, limit: Infinity });
+    assert.deepEqual(picks.map((p) => p.id), ['a1', 'b1', 'solo'], 'a2 waits for a1');
+    const inFlight = new Map([['a1', { files: [], lane: laneOf(t('a1', 'A', 1)) }]]);
+    assert.deepEqual(selectTasksToStart({ ready: [t('a2', 'A', 2)], inFlight, givenUp: new Set(), freeMembers: 9, limit: Infinity }), [], 'a2 still waits while a1 builds');
+    assert.deepEqual(selectTasksToStart({ ready: [t('a2', 'A', 2)], inFlight: new Map(), givenUp: new Set(), freeMembers: 9, limit: Infinity }).map((p) => p.id), ['a2'], 'a2 starts once a1 has landed');
+});
+
+test('the planner gets pipeline guidance only in pipeline mode', () => {
+    const base = { isDeltaCycle: false, targetIssues: ['x'], goal: 'P1/P2', requirementsFile: undefined, requirementsContent: null, feedback: null };
+    assert.ok(buildPlannerPrompt({ ...base, pipeline: true }).startsWith(PIPELINE_PLANNING_GUIDANCE));
+    assert.ok(!buildPlannerPrompt(base).includes('BUILD PIPELINE MODE'));
+    assert.match(PIPELINE_PLANNING_GUIDANCE, /Acceptance test:/);
+    assert.match(PIPELINE_PLANNING_GUIDANCE, /"files"/);
+});
+
+test('an acceptance-test task is told to make the feature work', () => {
+    const p = (title) => buildPipelineDoerPrompt({ task: { id: 'x', title }, taskBranch: 'b--task-x', sprintBranch: 'b', kbKnowledge: [] });
+    assert.match(p('Acceptance test: toggle persists'), /make the feature work/);
+    assert.match(p('Add the toggle'), /You do not need to make a whole feature work/);
 });

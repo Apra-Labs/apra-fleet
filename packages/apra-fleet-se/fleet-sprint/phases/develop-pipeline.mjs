@@ -83,19 +83,39 @@ export function filesOverlap(a, b) {
     return b.some((f) => set.has(f));
 }
 
+/** The planner's lane (`streak`) and position in it (`streakOrder`), if any. */
+export function laneOf(task) {
+    const m = (task && task.metadata) || {};
+    if (m.streak === undefined || m.streak === null || m.streak === '') return null;
+    const order = Number(m.streakOrder);
+    return { lane: String(m.streak), order: Number.isFinite(order) ? order : 0 };
+}
+
 /**
  * Pick the tasks to start now. Pure, so the scheduling rules are testable on
  * their own: respects the concurrency limit, never starts a task already in
- * flight or given up on, and defers a task whose predicted files overlap one
- * in flight (it starts once that one lands).
+ * flight or given up on, defers a task whose predicted files overlap one in
+ * flight (it starts once that one lands), and keeps a planner lane in order
+ * (a task waits while an earlier task in its lane is still ready or building).
  */
 export function selectTasksToStart({ ready, inFlight, givenUp, freeMembers, limit }) {
     const picks = [];
     const busyFiles = [...inFlight.values()].map((f) => f.files);
+    const earlier = [...inFlight.values()].map((f) => f.lane).filter(Boolean);
+    for (const t of ready) {
+        if (givenUp.has(t.id)) continue;
+        const l = laneOf(t);
+        if (l) earlier.push(l);
+    }
+    const waitsForLane = (task) => {
+        const l = laneOf(task);
+        return !!l && earlier.some((e) => e.lane === l.lane && e.order < l.order);
+    };
     let slots = Math.min(freeMembers, limit - inFlight.size);
     for (const task of ready) {
         if (slots <= 0) break;
         if (inFlight.has(task.id) || givenUp.has(task.id)) continue;
+        if (waitsForLane(task)) continue;
         const files = predictedFiles(task);
         if (busyFiles.some((b) => filesOverlap(b, files))) continue;
         picks.push(task);
@@ -411,7 +431,7 @@ export async function runBuildPipelinePhase({
             return;
         }
         log(`Build C${cycle}: '${task.id}' (${task.title}) -> '${member}'.`);
-        const entry = { member, files: predictedFiles(task), promise: null, since: now(), stage: 'building' };
+        const entry = { member, files: predictedFiles(task), lane: laneOf(task), promise: null, since: now(), stage: 'building' };
         inFlight.set(task.id, entry);
         note('started', task.id, member);
         entry.promise = (async () => {

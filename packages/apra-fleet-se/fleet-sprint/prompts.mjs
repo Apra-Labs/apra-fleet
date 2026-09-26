@@ -32,8 +32,36 @@ import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock 
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
+// Build pipeline mode (docs/lazy-parallel-sprints.md): how to plan when every
+// ready task is built at once on its own branch and nothing is reviewed until
+// the end of the cycle.
+export const PIPELINE_PLANNING_GUIDANCE =
+    'BUILD PIPELINE MODE -- this sprint builds every ready task at the same time, each on its own ' +
+    'branch, and merges them one at a time; nothing is reviewed until the whole cycle has landed. ' +
+    'Plan for that, in addition to your normal contract:\n' +
+    '1. Split the work by CODE, finely: each task changes 1-4 files and is done when its code is ' +
+    'written and the unit tests it touches or adds pass. A task does not have to make a whole ' +
+    'feature work on its own.\n' +
+    '2. For EVERY feature, add one task whose title starts with "Acceptance test:" and whose ' +
+    'acceptance criteria state the user-visible behaviour to test end to end, and make it DEPEND ' +
+    'on (be blocked by) every code task of that feature. It is built as soon as they have landed: ' +
+    'its job is to write the end-to-end test AND make the feature pass it, fixing whatever the ' +
+    'separately built pieces got wrong when put together. This is where the feature is made to ' +
+    'work.\n' +
+    '3. Fix the SHAPE of the code in each feature\'s description before any task starts: the names ' +
+    'of new modules and files, the public functions or interfaces and their signatures, and the ' +
+    'data shapes that cross task boundaries -- so tasks built in parallel fit together.\n' +
+    '4. Record the files each task will most likely change as metadata "files" (a JSON array of ' +
+    'repository-relative paths) alongside model/size/streak/streakOrder, for example ' +
+    '--metadata \'{"model": "standard", "size": "S", "streak": "lane-a", "streakOrder": 1, "files": ["src/theme.css"]}\'. ' +
+    'Two tasks whose files overlap are never built at the same time, so keep file sets disjoint ' +
+    'wherever the work allows.\n' +
+    '5. Prefer many short independent lanes over a few long ones: different lanes build at once, ' +
+    'while tasks in one lane build one after another in streakOrder.';
+
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [], pipeline = false }) {
     const lines = [];
+    if (pipeline) lines.push(PIPELINE_PLANNING_GUIDANCE);
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
     // beads whose acceptance criteria are themselves defective, and absent
@@ -380,13 +408,19 @@ export function buildPipelineDoerPrompt({ task, taskBranch, sprintBranch, kbKnow
         acceptance_criteria: task.acceptance_criteria || '',
         notes: task.notes || '',
     };
+    const acceptance = /^\s*acceptance test:/i.test(task.title || '');
+    const goal = acceptance
+        ? 'GOAL FOR THIS TASK: make the feature work. The feature\'s code was built as separate tasks and has ' +
+          'already landed on your branch. Write the end-to-end test described below, run it, and fix whatever ' +
+          'the separately built pieces got wrong together until it passes -- in any file that needs it.'
+        : 'GOAL FOR THIS TASK: the code for this one task is done and the unit tests you touched or added pass. ' +
+          'You do not need to make a whole feature work end to end -- other tasks cover the rest, and the ' +
+          'feature is tested once every task has landed. Keep the change focused on this task.';
     return [
         `Sprint track branch to work on: ${taskBranch}. It is a task branch cut from the sprint branch ${sprintBranch}; ` +
         'work on it only and never switch to or push another branch.',
         `Assigned bead ids (comma-separated): ${task.id}`,
-        'GOAL FOR THIS TASK: the code for this one task is done and the unit tests you touched or added pass. ' +
-        'You do not need to make a whole feature work end to end -- other tasks cover the rest, and the ' +
-        'feature is tested once every task has landed. Keep the change focused on this task.',
+        goal,
         'Before finishing, check your own work the way a reviewer will: it meets every acceptance ' +
         'criterion below, follows the conventions already used in this repository, has no leftover ' +
         'debug code, and the relevant unit tests pass.',

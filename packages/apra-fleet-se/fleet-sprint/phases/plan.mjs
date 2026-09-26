@@ -161,6 +161,8 @@ export async function runPlanPhase({
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
             stalenessNotes: parentNotesStalenessNotes,
+            // Build pipeline mode: plan for parallel builds and an end-of-cycle review.
+            pipeline: validated.pipeline === true,
         });
         // The planner writes no code but MUTATES beads (it creates the task
         // DAG), so its policy is bracketed pushCode:false / pushBeads:true --

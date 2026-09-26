@@ -85,8 +85,11 @@ gates):
 1. **Split by code** (D4), as finely as is useful: each task is 1-4 files and
    finishes with "code done, unit tests pass".
 2. **Write acceptance-test tasks** (D5): one per feature, stating the behaviour
-   in testable terms ("the toggle persists across reloads"). These are expected
-   to fail until the feature's code has landed.
+   in testable terms ("the toggle persists across reloads"), blocked by every
+   code task of that feature. It starts the moment they have landed, and its
+   helper writes the end-to-end test *and* fixes whatever the separately built
+   pieces got wrong together. (Built in parallel with the code instead, it
+   would fail the gate until the code landed and bounce for nothing.)
 3. **Fix the shape of the code first.** Names of new modules, files, public
    interfaces and data shapes go in the plan, so parallel doers do not each
    invent their own. This is the main defence against late review findings when
