@@ -2,6 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
+
+// apra-fleet-y3xp.2: home isolation for EVERY test in this file.
+// runStop/runRestart (when the mocked RUNNING fixture is active) reach
+// src/utils/process-utils.ts's postShutdown(), which dynamically imports
+// the REAL (unmocked) src/services/jwt.ts and calls getOrCreateKey() for
+// its auth header. setupFsSpies() below globally mocks fs.readFileSync to
+// always return SERVER_INFO's JSON (a different shape/length than the
+// 64-char key), which makes getOrCreateKey() treat the real key as
+// missing/invalid; jwt.ts's own fs.writeFileSync is NOT mocked, and
+// os.homedir() was not overridden anywhere in this file, so this used to
+// mint and write a BRAND NEW random key over the operator's real
+// ~/.apra-fleet/fleet.key on every one of those test runs -- verified live
+// (sha256 of the real file changed after an isolated run of this file
+// alone, mtime moving to the exact run second) before this fix, and
+// confirmed unchanged after it. http.request is already mocked
+// (setupHttpSpies()) so no real network call was ever involved; this was
+// purely the getOrCreateKey() write path.
+let restoreHome: (() => Promise<void>) | undefined;
+beforeEach(async () => {
+  restoreHome = (await applyIsolatedHome('cli-verbs-home-')).restore;
+});
+afterEach(async () => {
+  await restoreHome?.();
+});
 
 // ---------------------------------------------------------------------------
 // Hoisted mock refs — local modules only (these are safe; factory mocks for

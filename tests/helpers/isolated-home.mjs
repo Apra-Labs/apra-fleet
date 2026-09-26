@@ -102,7 +102,21 @@ export function assertHomeResolves(expected, homedirFn = os.homedir) {
  * @returns {Promise<IsolatedHome>}
  */
 export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
-  const tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  // Resolve symlinks (e.g. macOS's /var -> /private/var) up front, before
+  // anything derives a path from tempHome. A caller that later spawns a
+  // child process pointed at a path built from this home (e.g. installed-
+  // supervisor.test.mjs's WORKFLOWS_DIR, itself built from os.homedir())
+  // would otherwise hand that child an UNRESOLVED argv path, while Node
+  // resolves import.meta.url through realpath when loading the ES module --
+  // serve.mjs's own isMainModule() compares the two for strict string
+  // equality, so an unresolved tempHome makes it silently return false
+  // there (see mkTmp()'s identical comment in
+  // packages/apra-fleet-se/test/installed-supervisor.test.mjs, the case
+  // this fixes). Resolving here keeps every derived path and the
+  // assertHomeResolves() comparison below on the SAME resolved string, so
+  // the "no realpath in the comparison itself" property this module's
+  // header promises still holds -- there's nothing left to resolve later.
+  const tempHome = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
   const dataDir = fleetDataDirFor(tempHome);
 
   /** @type {Record<string, string | undefined>} */
