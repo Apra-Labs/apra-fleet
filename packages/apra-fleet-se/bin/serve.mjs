@@ -563,7 +563,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // finishes -- so the SAME template serves live and history at the SAME
     // URL. A dedicated /sprints/:id/history link (registered below) reaches
     // the identical rendering regardless of whether the sprint is still live.
-    const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
+    // (apra-fleet-i9ag.3.8) renderHistory is called with the live proxy's own
+    // per-request resolveMountPrefix() result as its second argument
+    // (proxy.mjs's serveHistory()) -- forwarded into renderForSprint() so the
+    // finished-sprint page carries the same mount-aware back-link the rest of
+    // this dashboard's pages do, instead of silently dropping it here.
+    const liveProxy = createLiveProxy({
+        ledger, spawner,
+        renderHistory: (sprintId, mountPrefix) => historyView.renderForSprint(sprintId, mountPrefix),
+    });
     registerLiveRoutes(supervisor, liveProxy);
     registerHistoryViewRoutes(supervisor, historyView);
 

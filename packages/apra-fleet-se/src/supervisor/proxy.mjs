@@ -348,7 +348,7 @@ export function renderReadOnlyHistoryHtml(sprintId, state, mountPrefix) {
  *   ledger?: { get: (sprintId: string) => ({ childPid: number|null }|undefined) },
  *   spawner?: { getLiveEntry: (pid: number) => ({ port: number }|undefined) },
  *   resolvePort?: (sprintId: string) => number|undefined,
- *   renderHistory?: (sprintId: string) => Promise<string|null>|string|null,
+ *   renderHistory?: (sprintId: string, mountPrefix: string) => Promise<string|null>|string|null,
  *   host?: string,
  *   env?: NodeJS.ProcessEnv,
  *   readFile?: (p: string, enc: string) => Promise<string>,
