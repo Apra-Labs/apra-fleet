@@ -258,25 +258,27 @@ export async function realEnsureHelpers(helpers: Array<{ name: string; folder: s
     }
     for (const h of helpers) {
       const existing = members.find(m => m.name === h.name);
-      if (existing && path.resolve(existing.folder) === path.resolve(h.folder)) continue;
-      if (existing) throw new Error(`a helper named ${h.name} already exists for a different folder`);
-      const res = await fleetApi.registerMember({
-        friendly_name: h.name,
-        member_type: 'local',
-        work_folder: h.folder,
-        tags: ['auto', 'lazy-sprint'],
-        unattended: 'auto',
-      });
-      const msg = allText(res);
-      if (res?.isError || /NOT registered|\u274c/.test(msg)) {
-        const why = msg.split('\n').find((l: string) => /NOT registered|\u274c|error/i.test(l)) ?? msg.split('\n')[0];
-        throw new Error(`could not set up ${h.name}: ${why.trim()}`);
+      if (existing && path.resolve(existing.folder) !== path.resolve(h.folder)) throw new Error(`a helper named ${h.name} already exists for a different folder`);
+      if (!existing) {
+        const res = await fleetApi.registerMember({
+          friendly_name: h.name,
+          member_type: 'local',
+          work_folder: h.folder,
+          tags: ['auto', 'lazy-sprint'],
+          unattended: 'auto',
+        });
+        const msg = allText(res);
+        if (res?.isError || /NOT registered|\u274c/.test(msg)) {
+          const why = msg.split('\n').find((l: string) => /NOT registered|\u274c|error/i.test(l)) ?? msg.split('\n')[0];
+          throw new Error(`could not set up ${h.name}: ${why.trim()}`);
+        }
       }
-      try {
-        await fleetApi.composePermissions({ member_name: h.name, tags: ['doer'], project_folder: h.folder });
-      } catch {
-        // Permissions are refined by the engine per role; a default is fine.
-      }
+      // Every time, not only on registration: the permissions live in the
+      // clone, and a clone can be fresh while its helper is already known.
+      // The engine does not grant doers file access itself, so without this
+      // every edit is refused.
+      const perms = await fleetApi.composePermissions({ member_name: h.name, role: 'doer', project_folder: h.folder });
+      if (perms?.isError) throw new Error(`could not give ${h.name} permission to edit files: ${allText(perms).split('\n')[0]}`);
     }
   } finally {
     await transport?.close?.();
@@ -517,9 +519,14 @@ async function installAgentContracts(deps: LauncherDeps, dir: string): Promise<v
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, content.replace(/\r\n/g, '\n'));
   }
+  excludeFromGit(dir, '/.claude/agents/');
+}
+
+/** Hide a path from git in this clone only (.git/info/exclude). */
+function excludeFromGit(dir: string, pattern: string): void {
   const exclude = path.join(dir, '.git', 'info', 'exclude');
   const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf-8') : '';
-  if (!cur.split('\n').includes('/.claude/agents/')) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}/.claude/agents/\n`);
+  if (!cur.split('\n').includes(pattern)) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}${pattern}\n`);
 }
 
 /** Clone, join the shared task database, install the hook, and check the copy is clean. */
@@ -533,6 +540,8 @@ async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, 
   await hideLocalConfig(deps, dir);
   await installInboxHook(deps, rec, dir);
   await installAgentContracts(deps, dir);
+  // The fleet writes each helper's permissions here; keep them out of commits.
+  excludeFromGit(dir, '.claude/settings.local.json');
   await assertClean(deps, dir, `Helper ${i + 1}`);
   return dir;
 }
@@ -644,6 +653,7 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
     await deps.run('bd', ['dolt', 'push'], h0);
     await hideLocalConfig(deps, h0);
     await installAgentContracts(deps, h0);
+    excludeFromGit(h0, '.claude/settings.local.json');
     await assertClean(deps, h0, 'Helper 1');
     step(rec, `Created the sprint issue ${rec.rootIssue}: ${rec.title}`);
 
