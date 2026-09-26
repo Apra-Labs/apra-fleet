@@ -198,6 +198,40 @@ worked out from token prices. With a Claude Pro/Max login, sprints use your
 plan's usage, not credits; the estimate is just a way to cap how much of it one
 sprint may take.
 
+### Sprint designs
+
+A sprint design decides which steps a sprint runs and how. Pick one in the
+**Sprint design** box when you start a sprint, or open **Sprint designs** to
+build your own:
+
+| Design | What it does |
+|---|---|
+| **Pipeline** (default) | Every ready task at once, landings behind your check, one split review per cycle. |
+| **Fast pipeline** | The pipeline without its fixed costs: plans again only for new work, no acceptance-test tasks, builders never on the cheapest model, one reviewer unless the change is big, no docs pass. |
+| **Features only** | Parallel builds gated by your check, no reviews at all. The check is the safety net. |
+| **Classic** | The engine as it ships: plan, build a round, review the round, repeat. |
+| **Solo** | No planning: one helper takes the whole ask, then one final review. The baseline to beat. |
+| **End-to-end tests only** | No product code changes: a helper writes and runs end-to-end tests, a reviewer turns every failure into a task for a later sprint. |
+| **Classic + docs check** | Classic plus a custom check that every README example runs. |
+
+In the designer you choose, step by step: how planning works (every cycle,
+only for new work, first cycle only, or off, and whether the plan is
+reviewed), how tasks are built (all at once, round by round, or not at all,
+and the lowest model builders may use), whether and how work is reviewed,
+whether the project's own deploy/test runbooks run, and whether the final
+review and the docs pass happen. You can add your own steps too:
+
+- **Check**: a reviewer with your rule ("every README example must run").
+  What it finds becomes tasks, or only a report if you prefer.
+- **Work**: a helper does your instructions on the sprint branch ("write
+  end-to-end tests; do not change product code").
+- **Command**: runs something like a linter; a failure becomes a task.
+
+Your designs are saved in `~/.lazyfleet/designs/`. A project can ship designs
+for everyone in `.lazyfleet/designs/`. The designer checks every design with
+the engine before it can be saved, and shows the steps it will run. Details
+and benchmarks: [docs/lazy-sprint-designs.md](docs/lazy-sprint-designs.md).
+
 ## Under the hood
 
 lazyfleet is a thin layer on top of
