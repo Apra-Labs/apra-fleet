@@ -54,6 +54,10 @@ export interface SprintRecord {
   originUrl?: string;
   /** JSON list of builders the engine re-reads, so helpers added mid-sprint start work. */
   poolFile?: string;
+  /** 'pipeline' (default): lazyfleet's parallel build. 'classic': the engine's own round loop, for comparison. */
+  mode?: 'pipeline' | 'classic';
+  maxCycles?: number;
+  dispatchTimeoutS?: number;
 }
 
 export interface LaunchInput {
@@ -67,6 +71,12 @@ export interface LaunchInput {
   base?: string;
   publish?: boolean;
   budget?: number;
+  /** Benchmarks: 'classic' runs the engine's own round loop with a fixed helper count. */
+  mode?: 'pipeline' | 'classic';
+  /** Classic mode only: how many helpers (default 3). */
+  helpers?: number;
+  maxCycles?: number;
+  dispatchTimeoutS?: number;
 }
 
 /** Collaborators, injectable so tests never touch a real fleet or git remote. */
@@ -535,8 +545,14 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
     branch: `feat/${slugify(title, 40)}-${runId.slice(0, 6)}`,
     base,
     goal: v.goal,
-    // The one that lands work, plus one builder; more join as tasks wait.
-    helpers: [helperName(slug, 0), helperName(slug, 1)],
+    // Pipeline: the one that lands work, plus one builder; more join as tasks
+    // wait. Classic: a fixed pool, as the engine's round loop expects.
+    helpers: input.mode === 'classic'
+      ? Array.from({ length: Math.max(1, Math.min(8, Math.round(Number(input.helpers ?? 3)))) }, (_, i) => helperName(slug, i))
+      : [helperName(slug, 0), helperName(slug, 1)],
+    mode: input.mode === 'classic' ? 'classic' : 'pipeline',
+    ...(input.maxCycles ? { maxCycles: Math.round(Number(input.maxCycles)) } : {}),
+    ...(input.dispatchTimeoutS ? { dispatchTimeoutS: Math.round(Number(input.dispatchTimeoutS)) } : {}),
     ...(v.maxHelpers !== undefined ? { maxHelpers: v.maxHelpers } : {}),
     ...(v.gateCommand ? { gateCommand: v.gateCommand } : {}),
     poolFile: path.join(workspace, `pool-${runId}.json`),
@@ -626,19 +642,21 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
       '--run-id', rec.runId,
       '--role-map', JSON.stringify({ orchestrator: [rec.helpers[0]] }),
       '--sync',
-      // Every ready task at once, each on its own branch, landed one at a time.
-      '--pipeline',
-      '--member-pool-file', rec.poolFile!,
-      '--inbox-file', INBOX_FILE,
     ];
-    if (rec.maxHelpers !== undefined) args.push('--max-doers', String(rec.maxHelpers));
-    if (rec.gateCommand) args.push('--gate-command', rec.gateCommand);
+    if (rec.mode !== 'classic') {
+      // Every ready task at once, each on its own branch, landed one at a time.
+      args.push('--pipeline', '--member-pool-file', rec.poolFile!, '--inbox-file', INBOX_FILE);
+      if (rec.maxHelpers !== undefined) args.push('--max-doers', String(rec.maxHelpers));
+      if (rec.gateCommand) args.push('--gate-command', rec.gateCommand);
+    }
+    if (rec.maxCycles) args.push('--max-cycles', String(rec.maxCycles));
+    if (rec.dispatchTimeoutS) args.push('--dispatch-timeout-s', String(rec.dispatchTimeoutS));
     if (rec.budget !== undefined) args.push('--budget', String(rec.budget));
     const { pid } = deps.startEngine(rec, args);
     rec.pid = pid;
     rec.setup.state = 'started';
     step(rec, 'Sprint started - helpers are planning the work');
-    watchSprint(rec.runId, deps);
+    if (rec.mode !== 'classic') watchSprint(rec.runId, deps);
     return rec;
   } catch (e) {
     rec.setup.state = 'failed';
