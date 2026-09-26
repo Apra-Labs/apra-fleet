@@ -301,7 +301,7 @@ export function designWarnings(design: Design): string[] {
   if (reviewOff && finalOff && !design.check && !checks && (design.build?.mode ?? 'pipeline') !== 'off') {
     out.push('Nothing checks this work: no review, no final review and no check command. Fine for throwaway work; risky for anything you will merge.');
   }
-  if ((design.build?.mode ?? 'pipeline') === 'pipeline' && !design.check) out.push('Tip: set "Check after each landing" (for example your test command) so a broken task never lands.');
+  if ((design.build?.mode ?? 'pipeline') === 'pipeline' && !design.check) out.push('Tip: set "Check after each merge" (for example your test command) so a broken task is never merged.');
   return out;
 }
 
@@ -344,9 +344,9 @@ export function designSteps(design: Design): Array<{ step: string; detail: strin
       detail: review === 'off' ? 'off' : build === 'pipeline' ? (design.review?.split === 'auto' ? 'end of cycle, split when big' : design.review?.split === 'never' ? 'end of cycle, one reviewer' : 'end of cycle, split') : 'after every round',
       on: review !== 'off',
     },
-    { step: 'Test', detail: design.test?.run === 'off' ? 'off' : 'when the project has deploy/test runbooks', on: design.test?.run !== 'off' },
+    { step: 'Test', detail: design.test?.run === 'off' ? 'off' : 'only if your project has test instructions', on: design.test?.run !== 'off' },
     ...blocks.filter(b => b.slot === 'finish').map(b => ({ step: b.name, detail: blockDetail(b), on: true })),
-    { step: 'Final review', detail: design.finish?.finalReview === false ? 'off (verdict from task state)' : 'on', on: design.finish?.finalReview !== false },
+    { step: 'Final review', detail: design.finish?.finalReview === false ? 'off (done means no tasks left open)' : 'yes', on: design.finish?.finalReview !== false },
     { step: 'Wrap up', detail: design.finish?.harvest === false ? 'off' : 'docs and changelog', on: design.finish?.harvest !== false },
   ];
   return steps;

@@ -171,7 +171,8 @@ pre.log { background: var(--panel); border: 1px solid var(--line); border-radius
 @media (max-width: 820px) { .dz { grid-template-columns: 1fr; } }
 .result-panel { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .result-panel.bad { border-left-color: var(--warn); }
-.result-panel .try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.result-panel .try { display: flex; gap: 8px; align-items: flex-start; }
+.result-panel .try code { flex: 1; min-width: 0; word-break: break-all; }
 .result-panel .try code { background: var(--chip); border-radius: 6px; padding: 4px 8px; overflow-x: auto; max-width: 100%; }
 .result-panel .notes { white-space: pre-wrap; color: var(--muted); font-size: 13px; margin-top: 6px; max-height: 320px; overflow: auto; }
 .dz-ed [data-off] { opacity: .45; }
@@ -904,7 +905,7 @@ export const SPRINTS_JS = String.raw`
         el('h4', { text: 'Build' }),
         field('How tasks are built', sel(BUILD_MODE, d.build.mode || 'pipeline', set(d.build, 'mode'))),
         need(field('Model for builders', sel(TIERS, d.build.minModel || '', set(d.build, 'minModel'))), 'build'),
-        field('Check after each landing', text(d.check, 'optional, e.g. npm ci && npm test', set(d, 'check'))),
+        field('Check after each merge', text(d.check, 'optional, e.g. npm ci && npm test', set(d, 'check'))),
         need(field('Helpers', num(d.helpers, 2, 64, '3', set(d, 'helpers'))), 'classic'),
         need(check('Add an acceptance-test task per feature', d.build.acceptanceTasks !== false, function (v) { d.build.acceptanceTasks = v; changed(); }), 'pipeline')
       ]),
