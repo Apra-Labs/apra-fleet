@@ -175,6 +175,7 @@ export function createLazyServer(opts: { config?: LazyConfig } = {}): LazyServer
           startedAt,
           config: publicConfig,
           vault: vault.list(),
+          presetNote: new Redactor(vault, config.detection).systemNote(vault.presets()),
           activity: activity.items.slice(0, 100),
           totals: activity.totals,
           helpers: helpersSummary(),
@@ -188,11 +189,16 @@ export function createLazyServer(opts: { config?: LazyConfig } = {}): LazyServer
       }
       if (url.pathname === '/_lazy/api/vault' && req.method === 'POST') {
         const body = await readJson(req);
-        const name = vault.add(String(body.name ?? ''), String(body.value ?? ''));
+        const name = vault.add(String(body.name ?? ''), String(body.value ?? ''), String(body.description ?? ''), body.announce !== false);
         json(res, 200, { ok: true, name });
         return;
       }
       const m = /^\/_lazy\/api\/vault\/([a-zA-Z0-9_-]{1,64})(\/reveal)?$/.exec(url.pathname);
+      if (m && req.method === 'PATCH' && !m[2]) {
+        const body = await readJson(req);
+        json(res, vault.describe(m[1], body) ? 200 : 404, { ok: true });
+        return;
+      }
       if (m && req.method === 'DELETE' && !m[2]) {
         json(res, vault.delete(m[1]) ? 200 : 404, { ok: true });
         return;

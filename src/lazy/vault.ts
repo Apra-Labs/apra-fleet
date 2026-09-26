@@ -19,6 +19,15 @@ export interface SecretMeta {
   firstSeen: string;
   lastSeen: string;
   hits: number;
+  /** What this is for, in the user's words. Shown to Claude when `announce` is on. */
+  description?: string;
+  /** List this secret (name + description, never the value) in Claude's instructions. */
+  announce?: boolean;
+}
+
+export interface Preset {
+  name: string;
+  description: string;
 }
 
 export interface KnownSecret {
@@ -34,6 +43,15 @@ export interface VaultLike {
   remember(kind: string, value: string, origin: Origin): string;
   /** Record that a known secret was hidden again. */
   touch(name: string): void;
+  /** Secrets the user set up ahead and chose to tell Claude about. */
+  presets?(): Preset[];
+}
+
+export const MAX_DESCRIPTION = 200;
+
+/** One line, bounded, so a description cannot reshape the instructions it lands in. */
+export function cleanDescription(raw: unknown): string {
+  return String(raw ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, MAX_DESCRIPTION);
 }
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -96,16 +114,40 @@ export class Vault implements VaultLike {
     return name;
   }
 
-  /** Add a secret by hand (from the UI). */
-  add(name: string, value: string): string {
+  /** Add a secret by hand (from the UI), optionally described for Claude. */
+  add(name: string, value: string, description = '', announce = true): string {
     if (!NAME_RE.test(name)) throw new Error('Name must be 1-64 letters, digits, - or _');
     if (value.length < MIN_SECRET_LENGTH) throw new Error(`Value must be at least ${MIN_SECRET_LENGTH} characters`);
+    const dup = this.entries().find(e => e.value === value && e.name !== name);
+    if (dup) throw new Error(`That value is already stored as "${dup.name}"`);
     credentialSet(name, value, true, 'allow');
     const now = new Date().toISOString();
-    this.metaMap()[name] = { kind: 'manual', origin: 'manual', firstSeen: now, lastSeen: now, hits: 0 };
+    const desc = cleanDescription(description);
+    this.metaMap()[name] = { kind: 'manual', origin: 'manual', firstSeen: now, lastSeen: now, hits: 0, description: desc || undefined, announce: announce && !!desc };
     this.flushNow();
     this.cache = null;
     return name;
+  }
+
+  /** Change the description or whether Claude is told about a secret. */
+  describe(name: string, patch: { description?: unknown; announce?: unknown }): boolean {
+    if (this.valueOf(name) === undefined) return false;
+    const now = new Date().toISOString();
+    const m = (this.metaMap()[name] ??= { kind: 'secret', origin: 'manual', firstSeen: now, lastSeen: now, hits: 0 });
+    if (patch.description !== undefined) m.description = cleanDescription(patch.description) || undefined;
+    if (typeof patch.announce === 'boolean') m.announce = patch.announce;
+    if (!m.description) m.announce = false; // nothing useful to tell Claude
+    this.flushNow();
+    return true;
+  }
+
+  presets(): Preset[] {
+    const meta = this.metaMap();
+    const present = new Set(this.entries().map(e => e.name));
+    return Object.entries(meta)
+      .filter(([name, m]) => m.announce && m.description && present.has(name))
+      .map(([name, m]) => ({ name, description: m.description! }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   delete(name: string): boolean {

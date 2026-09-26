@@ -63,6 +63,15 @@ form.add input { flex: 1 1 180px; }
 .setting input[type=number] { width: 90px; }
 .note { color: var(--muted); font-size: 13px; margin: 10px 2px; }
 .caught { color: var(--accent); } .hidden-ev { color: var(--muted); } .error { color: var(--bad); }
+.presets-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px; }
+.presets-form .wide { grid-column: 1 / -1; }
+.presets-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.presets-form label.inline { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+.presets-form .actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+input.desc { width: 100%; }
+pre.preview { margin: 0; padding: 14px 16px; white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+h2 { font-size: 15px; margin: 22px 2px 8px; }
+@media (max-width: 640px) { .presets-form { grid-template-columns: 1fr; } }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.on { opacity: 1; }
 @media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 10px; } }
@@ -82,6 +91,7 @@ form.add input { flex: 1 1 180px; }
   </div>
   <nav role="tablist">
     <button role="tab" data-tab="vault" aria-selected="true">Vault</button>
+    <button role="tab" data-tab="presets">Presets</button>
     <button role="tab" data-tab="activity">Activity</button>
     <button role="tab" data-tab="helpers">Helpers</button>
     <button role="tab" data-tab="settings">Settings</button>
@@ -91,14 +101,31 @@ form.add input { flex: 1 1 180px; }
     <div class="card">
       <table><thead><tr><th>Name</th><th>Value</th><th class="hide-sm">Caught in</th><th class="hide-sm">Last seen</th><th></th></tr></thead>
       <tbody id="vault-rows"></tbody></table>
-      <form class="add" id="add-form">
-        <input type="text" id="add-name" placeholder="name, e.g. prod_db_password" pattern="[a-zA-Z0-9_-]{1,64}" required>
-        <input type="password" id="add-value" placeholder="value (6+ characters)" minlength="6" required>
-        <button class="act primary" type="submit">Add</button>
-      </form>
     </div>
     <p class="note">Claude only ever sees <code>{{secure.name}}</code>. The real value is put back when a command or file edit runs on this machine.
-    Removing a secret means it stops being hidden - including in older conversations that already used it.</p>
+    Removing a secret means it stops being hidden - including in older conversations that already used it.
+    To set one up ahead of time, use <b>Presets</b>.</p>
+  </section>
+
+  <section id="tab-presets" hidden>
+    <div class="card">
+      <form class="presets-form" id="add-form">
+        <label>Name<input type="text" id="add-name" placeholder="staging_db_password" pattern="[a-zA-Z0-9_-]{1,64}" required></label>
+        <label>Value<input type="password" id="add-value" placeholder="6+ characters" minlength="6" required autocomplete="off"></label>
+        <label class="wide">What is it for?<input type="text" id="add-desc" maxlength="200" placeholder="Postgres password for staging, used by migrations and seed scripts"></label>
+        <label class="inline wide"><input type="checkbox" id="add-announce" checked> Tell Claude about it (name and description only, never the value)</label>
+        <div class="actions"><button class="act primary" type="submit">Save preset</button></div>
+      </form>
+    </div>
+    <h2>Saved presets</h2>
+    <div class="card">
+      <table><thead><tr><th>Name</th><th>Description</th><th class="hide-sm">Tell Claude</th><th></th></tr></thead>
+      <tbody id="preset-rows"></tbody></table>
+    </div>
+    <h2>What Claude is told</h2>
+    <div class="card"><pre class="preview" id="preset-note"></pre></div>
+    <p class="note">With a preset in place you never paste the value: Claude sees the list above and uses the token when a task needs it.
+    Descriptions are sent to the model as written, so keep secrets out of them.</p>
   </section>
 
   <section id="tab-activity" hidden>
@@ -179,6 +206,40 @@ form.add input { flex: 1 1 180px; }
     });
   }
 
+  function renderPresets() {
+    var body = $('preset-rows');
+    $('preset-note').textContent = state.presetNote;
+    // Do not rebuild under the cursor: the page refreshes while someone types.
+    if (document.activeElement && body.contains(document.activeElement)) return;
+    body.textContent = '';
+    var rows = state.vault.filter(function (s) { return s.origin === 'manual' || s.description; });
+    if (!rows.length) { body.appendChild(emptyRow(4, 'No presets yet. Save one above and Claude can use it without you pasting anything.')); }
+    rows.forEach(function (s) {
+      var desc = el('input', { type: 'text', cls: 'desc', maxlength: '200', placeholder: 'Add a description so Claude knows when to use it' });
+      desc.value = s.description || '';
+      desc.addEventListener('change', function () {
+        api('PATCH', 'vault/' + s.name, { description: desc.value }).then(function () { toast('Saved'); load(); });
+      });
+      var tell = el('input', { type: 'checkbox' });
+      tell.checked = !!s.announce;
+      tell.disabled = !s.description;
+      tell.title = s.description ? '' : 'Add a description first';
+      tell.addEventListener('change', function () {
+        api('PATCH', 'vault/' + s.name, { announce: tell.checked }).then(function () { toast(tell.checked ? 'Claude will be told' : 'Hidden from Claude'); load(); });
+      });
+      var del = el('button', { cls: 'act danger', type: 'button', text: 'Remove', onclick: function () {
+        if (!confirm('Remove "' + s.name + '"? It stops being hidden if it appears again.')) return;
+        api('DELETE', 'vault/' + s.name).then(function () { toast('Removed'); load(); });
+      } });
+      body.appendChild(el('tr', {}, [
+        el('td', {}, [el('code', { text: s.name })]),
+        el('td', {}, [desc]),
+        el('td', { cls: 'hide-sm' }, [tell]),
+        el('td', {}, [el('div', { cls: 'row-actions' }, [del])])
+      ]));
+    });
+  }
+
   function renderActivity() {
     var body = $('activity-rows'); body.textContent = '';
     if (!state.activity.length) { body.appendChild(emptyRow(3, 'Quiet so far.')); return; }
@@ -224,20 +285,29 @@ form.add input { flex: 1 1 180px; }
       $('s-hidden').textContent = s.totals.hidden;
       $('s-helpers').textContent = s.helpers.length;
       $('up').textContent = 'running since ' + ago(s.startedAt).replace(' ago', '') + (s.startedAt && ago(s.startedAt) !== 'just now' ? ' ago' : '');
-      renderVault(); renderActivity(); renderHelpers(); renderSettings();
+      renderVault(); renderPresets(); renderActivity(); renderHelpers(); renderSettings();
     }).catch(function () { $('up').textContent = 'not reachable'; });
   }
 
-  document.querySelectorAll('nav button').forEach(function (b) {
-    b.addEventListener('click', function () {
-      document.querySelectorAll('nav button').forEach(function (x) { x.setAttribute('aria-selected', x === b ? 'true' : 'false'); });
-      document.querySelectorAll('main > section').forEach(function (s) { s.hidden = s.id !== 'tab-' + b.dataset.tab; });
+  function showTab(name) {
+    var found = false;
+    document.querySelectorAll('nav button').forEach(function (x) {
+      var on = x.dataset.tab === name;
+      found = found || on;
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
     });
+    if (!found) return;
+    document.querySelectorAll('main > section').forEach(function (s) { s.hidden = s.id !== 'tab-' + name; });
+  }
+  document.querySelectorAll('nav button').forEach(function (b) {
+    b.addEventListener('click', function () { showTab(b.dataset.tab); history.replaceState(null, '', '#' + b.dataset.tab); });
   });
+  // Tabs are linkable: /_lazy/#presets
+  if (location.hash) showTab(location.hash.slice(1));
   $('add-form').addEventListener('submit', function (e) {
     e.preventDefault();
-    api('POST', 'vault', { name: $('add-name').value.trim(), value: $('add-value').value })
-      .then(function () { $('add-name').value = ''; $('add-value').value = ''; toast('Added'); load(); })
+    api('POST', 'vault', { name: $('add-name').value.trim(), value: $('add-value').value, description: $('add-desc').value, announce: $('add-announce').checked })
+      .then(function () { $('add-name').value = ''; $('add-value').value = ''; $('add-desc').value = ''; toast('Preset saved'); load(); })
       .catch(function (err) { toast(err.message); });
   });
   load();

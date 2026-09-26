@@ -11,7 +11,7 @@
  * conversation the model sees stays stable, which also keeps prompt caching.
  */
 import { detectSecrets, type DetectMode, type DetectOptions } from './detect.js';
-import type { Origin, VaultLike } from './vault.js';
+import type { Origin, Preset, VaultLike } from './vault.js';
 
 export const PLACEHOLDER_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
@@ -24,6 +24,10 @@ export const SYSTEM_NOTE =
   "user's machine. Use the token exactly as written wherever the value is needed (commands, files, " +
   'config, code); it is replaced with the real value when the tool runs. Never ask the user to ' +
   'reveal it, and do not try to print, decode or guess it.';
+
+export const PRESETS_HEADER =
+  'The user has saved these secrets for you. Use the token whenever one fits the task, ' +
+  'without asking the user to paste it:';
 
 export interface ScrubEvent {
   name: string;
@@ -137,8 +141,16 @@ export class Redactor {
     else if (Array.isArray(body.system)) out.system = body.system.map((b: any) => this.scrubBlock(b, 'system', events));
 
     const usesPlaceholders = JSON.stringify(out.messages).includes('{{secure.');
-    if (usesPlaceholders) out.system = appendSystemNote(out.system);
+    const presets = this.vault.presets?.() ?? [];
+    if (usesPlaceholders || presets.length > 0) out.system = appendSystemNote(out.system, this.systemNote(presets));
     return { body: out, events, usesPlaceholders };
+  }
+
+  /** The base note, plus the secrets the user set up ahead (names and descriptions only). */
+  systemNote(presets: Preset[]): string {
+    if (presets.length === 0) return SYSTEM_NOTE;
+    const lines = presets.map(p => `- ${placeholder(p.name)}: ${this.scrubText(p.description, null, [])}`);
+    return `${SYSTEM_NOTE}\n\n${PRESETS_HEADER}\n${lines.join('\n')}`;
   }
 
   /** Swap placeholders for real values in raw JSON text (values JSON-escaped). */
@@ -181,12 +193,12 @@ function userTextMode(text: string): DetectMode {
   return text.trimStart().startsWith('<system-reminder>') ? 'tool' : 'user';
 }
 
-function appendSystemNote(system: any): any {
-  if (system === undefined || system === null) return [{ type: 'text', text: SYSTEM_NOTE }];
-  if (typeof system === 'string') return system.includes(SYSTEM_NOTE) ? system : `${system}\n\n${SYSTEM_NOTE}`;
+function appendSystemNote(system: any, note: string): any {
+  if (system === undefined || system === null) return [{ type: 'text', text: note }];
+  if (typeof system === 'string') return system.includes(SYSTEM_NOTE) ? system : `${system}\n\n${note}`;
   if (Array.isArray(system)) {
-    if (system.some((b: any) => b?.text === SYSTEM_NOTE)) return system;
-    return [...system, { type: 'text', text: SYSTEM_NOTE }];
+    if (system.some((b: any) => typeof b?.text === 'string' && b.text.startsWith(SYSTEM_NOTE))) return system;
+    return [...system, { type: 'text', text: note }];
   }
   return system;
 }

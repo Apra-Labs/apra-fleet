@@ -76,7 +76,8 @@ Opens a local page (only reachable from your own machine) with:
 
 | Tab | What you get |
 |---|---|
-| **Vault** | Everything that has been caught, masked. Show, copy the stand-in, add one by hand, remove. |
+| **Vault** | Everything that has been caught, masked. Show, copy the stand-in, remove. |
+| **Presets** | Save credentials ahead of time with a description, like "Postgres password for staging". Claude is told the name and description (never the value), so it uses the right one without you pasting anything. Preview exactly what Claude is told. |
 | **Activity** | A live feed of what was caught and hidden, and where it came from. |
 | **Helpers** | Who is working on what right now. Read-only - Claude runs this. |
 | **Settings** | How aggressive detection is, how many helpers may run at once, when idle ones get cleaned up, and whether Claude should ask before anything remote or paid. |
@@ -115,6 +116,8 @@ cleaning it:
   is put back before Claude Code runs it. This works even when the stand-in
   arrives split across the streamed response.
 - **Fails closed.** If a request cannot be checked, it is refused, not sent.
+- **Presets** are listed in Claude's instructions by name and description only. Keep
+  secrets out of descriptions; they are sent as written.
 - **Stored encrypted** (AES-256-GCM) on disk, readable only by your user.
 
 ### Honest limits
