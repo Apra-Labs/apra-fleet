@@ -333,6 +333,127 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
 });
 
 // ---------------------------------------------------------------------------
+// Windows -- 'fleet-supervisor' unregister must ALSO take down the WHOLE
+// process tree, not only stop().
+//
+// apra-fleet-i9ag.2.7: `schtasks /delete` only removes the scheduled task
+// definition -- it never terminates a wrapper process that is already
+// running. src/cli/uninstall.ts calls unregister() directly (no separate
+// stop() call) for the fleet-supervisor service, on the assumption that
+// unregister() tears the running process down as part of removing its unit --
+// true for systemd/launchd, but previously false on Windows, so the
+// apra-fleet child survived `apra-fleet uninstall` and kept holding the
+// supervisor port.
+// ---------------------------------------------------------------------------
+describe('WindowsServiceManager -- fleet-supervisor unregister terminates the process tree', () => {
+  const SUPERVISOR_WRAPPER = 'apra-fleet-supervisor-service.bat';
+  const WRAPPER_PID = 4242;
+
+  function supervisor() {
+    return new WindowsServiceManager('fleet-supervisor');
+  }
+
+  /** Every execFileSync call as a [command, args] pair, in call order. */
+  function calledCommands(): Array<[string, string[]]> {
+    return vi.mocked(execFileSync).mock.calls.map(c =>
+      [String(c[0]), ((c[1] ?? []) as unknown as string[])],
+    );
+  }
+
+  /** Index of the first execFileSync call matching a predicate, or -1. */
+  function callIndex(pred: (cmd: string, args: string[]) => boolean): number {
+    return calledCommands().findIndex(([cmd, args]) => pred(cmd, args));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+    // Default simulated host: exactly one live wrapper process, and every
+    // command succeeds.
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) =>
+      (cmd === 'powershell' ? `${WRAPPER_PID}\r\n` : '') as any,
+    );
+  });
+
+  it('issues the tree-terminating call BEFORE schtasks /delete', async () => {
+    await supervisor().unregister();
+    const treeKillIdx = callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'));
+    const deleteIdx = callIndex((cmd, args) => cmd === 'schtasks' && args[0] === '/delete');
+    expect(treeKillIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeGreaterThan(treeKillIdx);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)],
+    );
+    expect(execFileSync).toHaveBeenCalledWith(
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+    );
+  });
+
+  it('scopes discovery to this service wrapper only', async () => {
+    await supervisor().unregister();
+    const psCalls = calledCommands().filter(([cmd]) => cmd === 'powershell');
+    expect(psCalls).toHaveLength(1);
+    const script = Buffer.from(
+      psCalls[0][1][psCalls[0][1].indexOf('-EncodedCommand') + 1], 'base64',
+    ).toString('utf16le');
+    expect(script).toContain(SUPERVISOR_WRAPPER);
+  });
+
+  it('tree-kills EVERY matching wrapper pid, not just the first', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) =>
+      (cmd === 'powershell' ? '4242\r\n4243\r\n\r\n' : '') as any,
+    );
+    await supervisor().unregister();
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242']);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243']);
+  });
+
+  it('resolves when nothing is running and the task is not registered', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') return '' as any; // no wrapper process alive
+      if (cmd === 'schtasks') throw new Error('ERROR: The system cannot find the file specified.');
+      return '' as any;
+    });
+    await expect(supervisor().unregister()).resolves.toBeUndefined();
+    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything());
+  });
+
+  it('stays tolerant when discovery itself fails -- still deletes the task', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') throw new Error('powershell is not recognized');
+      return '' as any;
+    });
+    await expect(supervisor().unregister()).resolves.toBeUndefined();
+    expect(execFileSync).toHaveBeenCalledWith(
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+    );
+  });
+
+  it('stays tolerant when the tree-kill itself fails -- still deletes the task', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') return `${WRAPPER_PID}\r\n` as any;
+      if (cmd === 'taskkill') throw new Error('ERROR: Access is denied.');
+      return '' as any;
+    });
+    await expect(supervisor().unregister()).resolves.toBeUndefined();
+    expect(execFileSync).toHaveBeenCalledWith(
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+    );
+  });
+
+  // -- isolation: the MCP server branch is unaffected ---------------------
+  it('ISOLATION: the default mcp-server unregister() does NOT take the tree-kill path', async () => {
+    await new WindowsServiceManager().unregister();
+    expect(execFileSync).not.toHaveBeenCalledWith('powershell', expect.anything());
+    expect(callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'))).toBe(-1);
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f']);
+    expect(fs.unlinkSync).toHaveBeenCalledWith(expect.stringContaining('apra-fleet-service.bat'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Linux
 // ---------------------------------------------------------------------------
 describe('LinuxServiceManager', () => {

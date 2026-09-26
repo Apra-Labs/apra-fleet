@@ -41,6 +41,31 @@ export class WindowsServiceManager implements ServiceManager {
   }
 
   async unregister(): Promise<void> {
+    // `schtasks /delete` only removes the scheduled task definition -- it does
+    // NOT terminate a wrapper process that is already running. The task's own
+    // process is the wrapper cmd.exe, and the apra-fleet child spawned by it
+    // is the one actually holding the service's port, so deleting the task
+    // alone leaves that child as an orphan surviving `apra-fleet uninstall`.
+    //
+    // Services with a server.json graceful-stop handshake (the MCP server)
+    // are excluded here: callers stop those explicitly before unregistering
+    // (see src/cli/uninstall.ts), and running the HTTP handshake as a side
+    // effect of unregister() would be new, unrequested behavior for that
+    // branch. Everything else reuses stop()'s discovery + tree-kill
+    // mechanism, best-effort -- unregister() has always been tolerant of
+    // "not registered" / "nothing running" and must stay that way.
+    if (!this.descriptor.gracefulStopViaServerJson) {
+      try {
+        const pids = this.findWrapperProcessIds();
+        for (const pid of pids) {
+          try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)]); } catch {}
+        }
+      } catch {
+        // Could not even query for live wrapper processes -- tolerate and
+        // still proceed to delete the task, consistent with unregister()'s
+        // existing best-effort contract (unlike stop(), which is loud here).
+      }
+    }
     try {
       execFileSync('schtasks', ['/delete', '/tn', this.taskName, '/f']);
     } catch {

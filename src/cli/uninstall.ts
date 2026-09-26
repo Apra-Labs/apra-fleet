@@ -329,8 +329,10 @@ Options:
   }
   if (!dryRun) {
     try { await svcMgr.unregister(); } catch {}
-    // unregister() stops the supervisor as part of tearing its unit down, so
-    // no separate stop call is needed here.
+    // unregister() tears down the running process as part of removing its
+    // unit on every platform -- systemd `disable --now`, launchd `bootout`,
+    // and (Windows) tree-killing the wrapper's process tree before deleting
+    // the scheduled task -- so no separate stop() call is needed here.
     await unregisterSupervisorService();
   }
 
