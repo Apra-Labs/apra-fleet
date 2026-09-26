@@ -445,13 +445,16 @@ and means "new value for this field". Identifies the target member via
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet.
+Calls `remove_member` -- removes a member from the fleet. Without `force`,
+refuses (text containing `member-held`) while the member is busy, reserved
+(`reservedBy` set), or a registered workflow package reports it held (DQ-22,
+consulted the same way `memberOwner` does below).
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `force` | `boolean?` | Remove even if the member is currently busy. |
+| `force` | `boolean?` | Remove even if the member is currently busy, reserved (`reservedBy` set), or held by a registered workflow package. |
 
 #### `memberReservation(options: MemberReservationOptions)`
 
@@ -494,18 +497,41 @@ the human-readable summary, and `structuredContent` is a
 `MemberOwnerStructured`. Programmatic callers must branch on
 `structuredContent.outcome` rather than string-matching the prose.
 
+Both `"set"` and `"clear"` refuse with error code `member-held` while the
+member is reserved (`reservedBy` set) OR a registered workflow package's
+`holds` route reports the member held (DQ-22). The owning package(s) --
+the one named in the member's current owner tag, and on `"set"` ALSO the
+requested package (apra-fleet-g6ap.7: a reassignment is how the current
+owner loses the member, so it must not lose it silently if its own `holds`
+call cannot be reached) -- fail CLOSED (`member-held`, reason
+`holds-unavailable`) if their `holds` call errors; any other package
+erroring is skipped. `"set"` additionally validates `ref` against the
+requested package's `ownerRefs` when that package is registered and
+declares one -- an unknown ref is `invalid_input`; a package that is not
+registered (or registered without `ownerRefs`) keeps format-only
+validation.
+
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. Both refuse with error code `member-held` while the member is reserved (`reservedBy` set). |
+| `action` | `"set" \| "clear"` | `"set"` writes owner `{package, ref}` (both required, format-validated); `"clear"` removes the owner tag. |
 | `package` | `string?` | Package/consumer that owns this member (e.g. "fleet-sprint"). Required for action `"set"`. |
 | `ref` | `string?` | Consumer-side reference this owner binding points at (e.g. a sprint/checkout id). Required for action `"set"`. |
 
 `MemberOwnerStructured` fields: `outcome` (one of `"set"`, `"cleared"`,
 `"invalid_input"`, `"member_held"`, `"member_not_found"`, `"failed"`), `ok`,
 `action`, `memberId`, `memberName`, `owner` (`{package, ref}` after this
-call, or `null` when cleared/absent/failed before writing).
+call, or `null` when cleared/absent/failed before writing), `heldBy`
+(`{package, reason}[]`, populated only on outcome `"member_held"`, else
+`null` -- `package` is the registered workflow package id reporting the
+hold or the sentinel `"fleet"` for the built-in `reservedBy` hold; `reason`
+is `"reservation"`, `"holds-unavailable"`, or the reporting package's own
+free-form reason text). `package: "fleet"` always means the built-in
+reservation, never a workflow package's own report: `POST
+/api/workflow-packages/register` rejects (400) any attempt to register
+that exact id (apra-fleet-g6ap.8), so `heldBy` entries are unambiguous by
+`package` alone without also having to check `reason`.
 
 #### `memberGitStatus(options: MemberGitStatusOptions)`
 
@@ -970,3 +996,40 @@ pre-parsed `url.pathname` always answer the same. This is the PATH NORMALISER
 ONLY -- it carries no route policy. Returns the normalised pathname, or
 `null` if `urlPath` could not be parsed; every caller in this codebase treats
 `null` as "guarded" (fail closed).
+
+### `UPSTREAM_CREDENTIAL_LABEL`
+
+Fixed label (`'apra-fleet-ext-upstream-v1'`) mixed into every derived
+per-package upstream credential. It MUST stay different from any cookie or
+session label signed with the same fleet key -- equal labels would let a
+workflow package replay its upstream credential as a console credential. That
+domain separation is the whole reason the label is part of the HMAC input.
+Changing this string rotates every registered package's credential.
+
+### `deriveUpstreamCredential(fleetKey, packageId)`
+
+Derives the per-package upstream credential the apra-fleet console attaches
+when it talks to a registered workflow package -- both on the `/ext` reverse-
+proxy hop (`src/console/proxy.ts`) and on the registry health probe
+(`src/services/workflow-packages.ts`), as `Authorization: Bearer <value>`. A
+package's own supervisor derives the same value from the shared fleet key to
+authenticate the caller.
+
+```js
+const credential = deriveUpstreamCredential(fleetKey, 'my-package');
+// -> hex sha256 HMAC, e.g. '4f2b...'
+```
+
+Returns a hex-encoded sha256 HMAC of `` `${UPSTREAM_CREDENTIAL_LABEL}:${packageId.length}:${packageId}` ``
+keyed by `fleetKey`. Two properties matter and are pinned by tests:
+
+- **Not reversible into `fleetKey`** -- the raw fleet key is never handed to a
+  package, only a value derived from it.
+- **Unambiguously bound to one package id** -- the `packageId.length` prefix is
+  what removes id/label ambiguity. Without it, a crafted id could collide with
+  another package's HMAC input and derive that package's credential.
+
+This function lives here (rather than in the console) so both ends of the hop
+share one derivation. `src/console/proxy.ts` re-exports both names unchanged;
+the output is byte-identical to the derivation that shipped there before the
+lift, so no already-registered package's credential changed.

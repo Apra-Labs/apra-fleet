@@ -63,7 +63,9 @@ import {
     isAuthorized as isAuthorizedGeneric,
     readCookie,
     normalizePath,
+    deriveUpstreamCredential,
 } from '@apralabs/apra-fleet-client/auth/local-token';
+import { PACKAGE_ID } from '../registration/manifest.mjs';
 
 export {
     PRIVATE_DIRNAME,
@@ -119,13 +121,28 @@ export function resolveServiceToken(dir, opts = {}) {
  * this supervisor's own cookie name (`TOKEN_COOKIE_NAME`), so callers of this
  * module see the exact same 2-argument signature as before.
  *
+ * apra-fleet-g6ap.2.1: ALSO accepts `Authorization: Bearer
+ * <deriveUpstreamCredential(token, PACKAGE_ID)>` -- the per-package upstream
+ * credential the apra-fleet server (and the console's /ext proxy hop) derives
+ * from the shared fleet key for this package's id ('se'), so requests
+ * arriving through /ext/se/* pass this guard without ever carrying the raw
+ * token. Checked against the bearer header ONLY (never the cookie -- a
+ * browser session must keep using the raw token/cookie path, not this
+ * server-to-server credential). The raw-token check above still runs first
+ * and keeps working unchanged.
+ *
  * @param {{ headers?: Record<string, unknown> }} req incoming request (or any
  *   object with a `headers` bag)
  * @param {string} token the expected service token
  * @returns {boolean}
  */
 export function isAuthorized(req, token) {
-    return isAuthorizedGeneric(req, token, { cookieName: TOKEN_COOKIE_NAME });
+    if (isAuthorizedGeneric(req, token, { cookieName: TOKEN_COOKIE_NAME })) return true;
+    if (typeof token !== 'string' || token.length === 0) return false;
+    const derived = deriveUpstreamCredential(token, PACKAGE_ID);
+    const headers = (req && req.headers) || {};
+    const bearerOnly = { headers: { authorization: headers.authorization ?? headers.Authorization } };
+    return isAuthorizedGeneric(bearerOnly, derived, { cookieName: TOKEN_COOKIE_NAME });
 }
 
 /**

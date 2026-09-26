@@ -50,4 +50,19 @@ declare module '@apralabs/apra-fleet-client/auth/local-token' {
   export function cookieFor(token: string, opts?: { cookieName?: string }): string;
 
   export function normalizePath(urlPath: string): string | null;
+
+  /**
+   * Fixed label HMAC'd with the package id under the fleet key. Re-exported
+   * from src/console/proxy.ts, which remains the documented owner of the
+   * /ext hop's credential policy.
+   */
+  export const UPSTREAM_CREDENTIAL_LABEL: string;
+
+  /**
+   * Per-package upstream credential (hex sha256 HMAC over a length-prefixed
+   * label + package id). Byte-identical to the derivation src/console/proxy.ts
+   * shipped before the helper was lifted here -- pinned by a fixed vector in
+   * packages/apra-fleet-client/test/local-token.test.mjs.
+   */
+  export function deriveUpstreamCredential(fleetKey: string, packageId: string): string;
 }

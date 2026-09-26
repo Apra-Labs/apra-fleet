@@ -76,9 +76,9 @@
  * No value here is ever interpolated into a shell command -- everything is
  * resolved in JavaScript and passed to node:http as structured options.
  */
-import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 import { getOrCreateKey } from '../services/jwt.js';
 import { workflowPackageService } from '../services/workflow-packages.js';
 
@@ -87,23 +87,24 @@ import { workflowPackageService } from '../services/workflow-packages.js';
 export const EXT_PREFIX = '/ext';
 
 /**
- * Fixed label HMAC'd (together with the package id) under the fleet key to
- * derive a package's upstream credential. MUST differ from ../server.ts's
+ * The per-package upstream credential derivation now LIVES IN the shared
+ * client package (packages/apra-fleet-client/src/auth/local-token.mjs) so the
+ * registry health probe (../services/workflow-packages.ts) and a package's own
+ * supervisor can derive the identical value without importing this proxy.
+ *
+ * Both names stay re-exported from here: this module remains the documented
+ * home of the /ext hop's credential policy, and existing importers (including
+ * tests/console-proxy.test.ts) keep working against an unchanged surface. The
+ * derivation itself is byte-identical to what this file shipped before the
+ * lift -- see the fixed-vector test in
+ * packages/apra-fleet-client/test/local-token.test.mjs.
+ *
+ * `UPSTREAM_CREDENTIAL_LABEL` MUST differ from ../server.ts's
  * `CONSOLE_COOKIE_LABEL` -- see the CREDENTIAL FORWARDING note above; making
  * them equal would let any package replay its credential as a console cookie.
- * Changing this string rotates every package's credential.
  */
-export const UPSTREAM_CREDENTIAL_LABEL = 'apra-fleet-ext-upstream-v1';
-
-/**
- * Per-package upstream credential. Keyed digest over a length-prefixed label
- * and package id, so it is (a) not reversible into `fleetKey`, and (b)
- * unambiguously bound to exactly one package id.
- */
-export function deriveUpstreamCredential(fleetKey: string, packageId: string): string {
-  const input = `${UPSTREAM_CREDENTIAL_LABEL}:${packageId.length}:${packageId}`;
-  return crypto.createHmac('sha256', fleetKey).update(input).digest('hex');
-}
+export { UPSTREAM_CREDENTIAL_LABEL } from '@apralabs/apra-fleet-client/auth/local-token';
+export { deriveUpstreamCredential };
 
 /** Hop-by-hop headers (RFC 7230 s6.1): meaningful only on a single
  *  connection, so they are never relayed across a proxy hop. */

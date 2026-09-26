@@ -136,7 +136,7 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
 
     const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
       cwd: repoRoot,
-      env: { ...process.env, APRA_TEST_SUITES_JSON: suites, APRA_TEST_TIMEOUT_MS: '1500' },
+      env: { ...process.env, APRA_TEST_SUITES_JSON: suites, APRA_TEST_TIMEOUT_MS: '6000' },
     });
     if (child.pid) spawnedPids.push(child.pid);
 
@@ -147,17 +147,33 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
 
     // The stub really is alive shortly after spawn -- otherwise a "killed
     // within timeout" result would be indistinguishable from "never
-    // actually ran".
-    await new Promise(resolve => setTimeout(resolve, 500));
-    expect(countMarkerProcesses(marker)).toBeGreaterThan(0);
+    // actually ran". Poll on a wall-clock deadline rather than a fixed sleep
+    // or iteration count: each probe here shells out to a fresh PowerShell
+    // process on Windows, so its cost varies with machine load. The ceiling
+    // stays well under APRA_TEST_TIMEOUT_MS=6000 above so a stub that starts
+    // late is never confused with one the runner already reaped. The
+    // deadline itself starts when this test spawns run-all-tests.mjs, so it
+    // covers runner startup time PLUS stub startup time, not just the stub
+    // -- 4s leaves headroom for both even on a loaded CI runner where each
+    // probe here (a fresh PowerShell process) can itself take hundreds of ms.
+    const stubStartDeadline = Date.now() + 4_000;
+    let stubAlive = countMarkerProcesses(marker) > 0;
+    while (!stubAlive && Date.now() < stubStartDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      stubAlive = countMarkerProcesses(marker) > 0;
+    }
+    if (!stubAlive) {
+      throw new Error('stub suite never started within 4s');
+    }
 
     // Race the runner's own exit against a generous outer deadline (well
-    // past APRA_TEST_TIMEOUT_MS=1500, to leave headroom for process-table
-    // scans/taskkill) -- this must resolve via the runner exiting on its
-    // own, not the outer deadline, or the fix regressed.
+    // past APRA_TEST_TIMEOUT_MS=6000, to leave headroom for process-table
+    // scans/taskkill after the 6000ms kill fires) -- this must resolve via
+    // the runner exiting on its own, not the outer deadline, or the fix
+    // regressed.
     const timedOut = await Promise.race([
       exitPromise.then(() => false),
-      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 6_000)),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(true), 9_000)),
     ]);
 
     if (timedOut) {
@@ -171,7 +187,7 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     // the runner's own taskkill/process-group cleanup must have already
     // reaped the stub.
     expect(countMarkerProcesses(marker)).toBe(0);
-  }, 9_000);
+  }, 20_000);
 
   it('the suite list falls back to the real default suites when APRA_TEST_SUITES_JSON is unset (source inspection)', () => {
     // A behavioural spawn of the real default suites would take minutes;
