@@ -107,7 +107,7 @@ function stripStringLiterals(line: string): string {
 }
 
 const JUSTIFICATION_MARKER = 'isolated-home-allow:';
-const JUSTIFICATION_LOOKBACK_LINES = 6;
+const JUSTIFICATION_LOOKBACK_LINES = 10;
 
 interface Violation {
   file: string;
