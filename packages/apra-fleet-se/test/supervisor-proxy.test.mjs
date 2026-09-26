@@ -158,6 +158,20 @@ describe('proxy -- renderReadOnlyHistoryHtml', () => {
         assert.doesNotThrow(() => renderReadOnlyHistoryHtml('x', null));
         assert.ok(renderReadOnlyHistoryHtml('x', null).includes('unknown'));
     });
+
+    // (apra-fleet-i9ag.3.6) The back-link must resolve against the package's
+    // mount point inside the console's /ext/<id> iframe, not the console
+    // root, and must escape the iframe (target="_top") on both the
+    // no-header (serve-direct) and mount-path-header (embedded) cases.
+    test('back-link is unprefixed and target="_top" with no mount prefix', () => {
+        const html = renderReadOnlyHistoryHtml('sprint-x', { status: 'success' });
+        assert.ok(html.includes('href="/" target="_top"'), html);
+    });
+
+    test('back-link is prefixed with the mount path when a mount prefix is given', () => {
+        const html = renderReadOnlyHistoryHtml('sprint-x', { status: 'success' }, '/ext/se');
+        assert.ok(html.includes('href="/ext/se/" target="_top"'), html);
+    });
 });
 
 describe('proxy -- HTTP passthrough + no port leak', () => {
@@ -355,7 +369,7 @@ describe('proxy -- history fallthrough', () => {
     test('finished sprint (no live port) renders the history view at the same URL', async () => {
         const sup = await startSupervisorWith({
             resolvePort: () => undefined,
-            renderHistory: (id) => renderReadOnlyHistoryHtml(id, { status: 'success' }),
+            renderHistory: (id, mountPrefix) => renderReadOnlyHistoryHtml(id, { status: 'success' }, mountPrefix),
         });
         try {
             const res = await getText(sup.port, '/sprints/gone/live');
@@ -363,6 +377,39 @@ describe('proxy -- history fallthrough', () => {
             assert.ok(res.headers['content-type'].includes('text/html'));
             assert.ok(res.body.includes('data-view="history"'));
             assert.ok(res.body.toLowerCase().includes('read-only'));
+        } finally {
+            await sup.supervisor.stop('test');
+        }
+    });
+
+    // (apra-fleet-i9ag.3.6) The default renderHistory (no injected override)
+    // must thread the per-request mount prefix all the way through
+    // defaultRenderHistory() -> renderReadOnlyHistoryHtml(), both with no
+    // mount-path header (serve-direct) and with one set (embedded in the
+    // console's /ext/<id> iframe).
+    test('history back-link is unprefixed with target="_top" when no mount-path header is set', async () => {
+        const sup = await startSupervisorWith({
+            resolvePort: () => undefined,
+            readFile: async () => JSON.stringify({ status: 'success' }),
+        });
+        try {
+            const res = await getText(sup.port, '/sprints/gone/live');
+            assert.strictEqual(res.status, 200);
+            assert.ok(res.body.includes('href="/" target="_top"'), res.body);
+        } finally {
+            await sup.supervisor.stop('test');
+        }
+    });
+
+    test('history back-link is prefixed when the console mount-path header is set', async () => {
+        const sup = await startSupervisorWith({
+            resolvePort: () => undefined,
+            readFile: async () => JSON.stringify({ status: 'success' }),
+        });
+        try {
+            const res = await getText(sup.port, '/sprints/gone/live', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+            assert.strictEqual(res.status, 200);
+            assert.ok(res.body.includes('href="/ext/se/" target="_top"'), res.body);
         } finally {
             await sup.supervisor.stop('test');
         }
