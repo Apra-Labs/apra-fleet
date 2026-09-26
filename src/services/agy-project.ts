@@ -41,6 +41,7 @@ export function isValidAgyProjectId(id: unknown): id is string {
 
 const PROBE_MARKER = 'FLEET_AGY_PROJECT:';
 const NEW_PROJECT_MARKER = 'FLEET_AGY_NEW_PROJECT:';
+const DELETE_MARKER = 'FLEET_AGY_PROJECT_DELETE:';
 
 /** The prompt of the one model turn `agy --new-project` needs. It asks for no
  *  tool use: the id is read from the new project file and agy's own log, never
@@ -160,6 +161,53 @@ function extractMarkedJson(stdout: string, marker: string): any | undefined {
   }
 }
 
+/**
+ * Member-side script for remove_member's best-effort cleanup: deletes the
+ * member's own `<projectId>.json` plus, if present, the legacy
+ * `fleet-<memberId>.json` from an earlier design (docs/compose-permissions-
+ * design.md section 8.4), from ~/.gemini/config/projects only. A missing
+ * target is not an error (fs.rm's force:true); any other failure (e.g.
+ * permission denied) is reported back per target so the caller can decide
+ * whether it is warning-worthy.
+ */
+export function buildAgyProjectDeleteScript(projectId: string, memberId: string, home?: string | null): string {
+  if (!isValidAgyProjectId(projectId)) throw new AgyProjectError(`invalid agy project id "${String(projectId)}"`);
+  return `const fs = require('fs');
+const path = require('path');
+const home = ${homeExpr(home)};
+const dir = path.join(home, '.gemini', 'config', 'projects');
+const targets = [${JSON.stringify(projectId + '.json')}, ${JSON.stringify('fleet-' + memberId + '.json')}];
+const deleted = [];
+const errors = [];
+for (const name of targets) {
+  const f = path.join(dir, name);
+  try {
+    fs.unlinkSync(f);
+    deleted.push(name);
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') errors.push(name + ': ' + (e && e.message ? e.message : String(e)));
+  }
+}
+console.log(${JSON.stringify(DELETE_MARKER)} + JSON.stringify({ deleted, errors }));`;
+}
+
+export interface AgyProjectDeleteResult {
+  deleted: string[];
+  errors: string[];
+}
+
+export function parseAgyProjectDeleteResult(result: SSHExecResult): AgyProjectDeleteResult {
+  const parsed = extractMarkedJson(result.stdout ?? '', DELETE_MARKER);
+  if (!parsed) {
+    const detail = (result.stderr || result.stdout || '').trim().slice(0, 300);
+    throw new AgyProjectError(`agy project delete produced no result (exit ${result.code})${detail ? `: ${detail}` : ''}`);
+  }
+  return {
+    deleted: Array.isArray(parsed.deleted) ? parsed.deleted.filter((c: unknown): c is string => typeof c === 'string') : [],
+    errors: Array.isArray(parsed.errors) ? parsed.errors.filter((c: unknown): c is string => typeof c === 'string') : [],
+  };
+}
+
 export type AgyProjectState = 'ok' | 'missing' | 'corrupt' | 'id_mismatch';
 
 export function parseAgyProjectProbe(result: SSHExecResult): AgyProjectState {
@@ -238,6 +286,19 @@ function memberOs(agent: Agent): 'linux' | 'macos' | 'windows' {
 export async function probeAgyProject(agent: Agent, projectId: string, exec: AgyExecFn = defaultExec(agent)): Promise<AgyProjectState> {
   const cmd = buildAgyNodeCommand(buildAgyProjectProbeScript(projectId, homeFor(agent)), memberOs(agent), 'FLEET_AGY_PROBE_EOF');
   return parseAgyProjectProbe(await exec(cmd, PROBE_TIMEOUT_MS));
+}
+
+/**
+ * remove_member's best-effort cleanup: deletes the member's own agy project
+ * file (and a legacy fleet-<id>.json, if present) from its machine. Callers
+ * must skip this entirely when another registered member shares the same
+ * agyProjectId, and must treat any thrown AgyProjectError as a warning, not a
+ * reason to abort the removal.
+ */
+export async function removeAgyProject(agent: Agent, exec: AgyExecFn = defaultExec(agent)): Promise<AgyProjectDeleteResult> {
+  if (!agent.agyProjectId) throw new AgyProjectError(`member "${agent.friendlyName}" has no agy project id`);
+  const cmd = buildAgyNodeCommand(buildAgyProjectDeleteScript(agent.agyProjectId, agent.id, homeFor(agent)), memberOs(agent), 'FLEET_AGY_PROJECT_DELETE_EOF');
+  return parseAgyProjectDeleteResult(await exec(cmd, PROBE_TIMEOUT_MS));
 }
 
 // One `agy --new-project` at a time per machine: the new id is identified by

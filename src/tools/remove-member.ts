@@ -11,6 +11,7 @@ import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { getStallDetector } from '../services/stall/index.js';
+import { removeAgyProject } from '../services/agy-project.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -114,6 +115,25 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
       }
     } catch {
       warnings.push('Could not connect to member — auth credentials may still be present');
+    }
+  }
+
+  // Best-effort: delete the member's agy project file (and a legacy
+  // fleet-<id>.json, if present) so its permission grants don't linger on
+  // its machine (docs/compose-permissions-design.md section 8). Skipped
+  // entirely when another registered member still shares the id -- deleting
+  // it would strip that other member's grants too.
+  if (agent.llmProvider === 'agy' && agent.agyProjectId) {
+    const sharedProject = getAllAgents().some(a => a.id !== agent.id && a.agyProjectId === agent.agyProjectId);
+    if (!sharedProject) {
+      try {
+        const result = await removeAgyProject(agent, (cmd, timeoutMs) => strategy.execCommand(cmd, timeoutMs));
+        if (result.errors.length > 0) {
+          warnings.push(`Could not fully remove agy project file for "${agent.friendlyName}": ${result.errors.join('; ')}`);
+        }
+      } catch (err) {
+        warnings.push(`Could not remove agy project file for "${agent.friendlyName}": ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 

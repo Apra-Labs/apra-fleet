@@ -20,10 +20,13 @@ import { getStrategy } from '../src/services/strategy.js';
 import {
   ensureAgyProject,
   provisionAgyProject,
+  removeAgyProject,
   parseAgyNewProjectResult,
   parseAgyProjectProbe,
+  parseAgyProjectDeleteResult,
   buildAgyNewProjectScript,
   buildAgyProjectProbeScript,
+  buildAgyProjectDeleteScript,
   isValidAgyProjectId,
   setAgyCommandForTests,
   AgyProjectError,
@@ -150,6 +153,20 @@ describe('parseAgyProjectProbe', () => {
   });
 });
 
+describe('parseAgyProjectDeleteResult', () => {
+  it('reads deleted/errors and rejects missing output', () => {
+    expect(parseAgyProjectDeleteResult(res(`FLEET_AGY_PROJECT_DELETE:${JSON.stringify({ deleted: ['a.json'], errors: [] })}`)))
+      .toEqual({ deleted: ['a.json'], errors: [] });
+    expect(parseAgyProjectDeleteResult(res(`FLEET_AGY_PROJECT_DELETE:${JSON.stringify({ deleted: [], errors: ['a.json: EPERM'] })}`)))
+      .toEqual({ deleted: [], errors: ['a.json: EPERM'] });
+    expect(() => parseAgyProjectDeleteResult(res('garbage'))).toThrow(/delete produced no result/);
+  });
+
+  it('refuses ids that are not plain uuids before embedding them in a script', () => {
+    expect(() => buildAgyProjectDeleteScript('x"; rm -rf /', 'member-1')).toThrow(AgyProjectError);
+  });
+});
+
 describe('member-side scripts use no shell-variable expansion', () => {
   it('resolves home in node (os.homedir) and spawns agy without a shell', () => {
     const script = buildAgyNewProjectScript({ workFolder: '/home/u/repo', model: 'm' });
@@ -239,6 +256,44 @@ describe('provisionAgyProject -- real script runs', { timeout: 60000 }, () => {
     ]);
     expect(idA).not.toBe(idB);
     expect(listProjects(fakeHome)).toEqual([`${idA}.json`, `${idB}.json`].sort());
+  });
+});
+
+describe('removeAgyProject -- real script runs', { timeout: 60000 }, () => {
+  it('deletes the project file via the member\'s own exec path', async () => {
+    const agent = localAgyAgent();
+    const strategy = getStrategy(agent);
+    setAgyCommandForTests(fakeAgy());
+    const { projectId } = await ensureAgyProject(agent, { exec: (c, t) => strategy.execCommand(c, t) });
+    expect(listProjects(fakeHome)).toEqual([`${projectId}.json`]);
+
+    const result = await removeAgyProject(agent, (c, t) => strategy.execCommand(c, t));
+    expect(result).toEqual({ deleted: [`${projectId}.json`], errors: [] });
+    expect(listProjects(fakeHome)).toEqual([]);
+  });
+
+  it('is fine when the project file is already missing', async () => {
+    const agent = localAgyAgent({ agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
+    const strategy = getStrategy(agent);
+    const result = await removeAgyProject(agent, (c, t) => strategy.execCommand(c, t));
+    expect(result).toEqual({ deleted: [], errors: [] });
+  });
+
+  it('also removes a legacy fleet-<member id>.json when present', async () => {
+    const agent = localAgyAgent({ agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
+    const strategy = getStrategy(agent);
+    fs.mkdirSync(projectsDir(fakeHome), { recursive: true });
+    const legacy = path.join(projectsDir(fakeHome), `fleet-${agent.id}.json`);
+    fs.writeFileSync(legacy, '{}');
+
+    const result = await removeAgyProject(agent, (c, t) => strategy.execCommand(c, t));
+    expect(result.deleted).toContain(`fleet-${agent.id}.json`);
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  it('throws AgyProjectError when the member has no project id', async () => {
+    const agent = localAgyAgent({ agyProjectId: undefined });
+    await expect(removeAgyProject(agent)).rejects.toThrow(/no agy project id/);
   });
 });
 
