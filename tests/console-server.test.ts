@@ -7,7 +7,8 @@
  * nothing here opens a socket back to the server or spawns a client).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type http from 'node:http';
+import http from 'node:http';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,8 @@ import { handleConsoleRequest, isConsolePath } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { addAgent } from '../src/services/registry.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
+import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
+import { listMembers } from '../src/tools/list-members.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 // Offline-safe: mirror tests/list-members.test.ts so no test here depends on
@@ -83,15 +86,36 @@ function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${getOrCreateKey()}` };
 }
 
-// apra-fleet-iywi.2.2 review finding: authHeaders() above calls
-// getOrCreateKey(), which reads/mints ~/.apra-fleet/fleet.key
-// (src/services/jwt.ts). Without a temp HOME this describe block would
-// touch the real developer's key file exactly like tests/console-auth.test.ts
-// was found to do before its own isolation was fixed. jwt.ts now resolves
-// os.homedir() lazily on every call, so setting process.env.HOME here in
-// beforeEach (before authHeaders() is ever invoked) is sufficient isolation.
-let realHome: string | undefined;
+// Home isolation for EVERY test in this file. authHeaders() and every GET
+// /ui (which sets the console cookie) call getOrCreateKey(), which
+// reads/mints <os.homedir()>/.apra-fleet/fleet.key (src/services/jwt.ts,
+// resolved lazily per call). On win32 os.homedir() ignores HOME and reads
+// USERPROFILE (then HOMEDRIVE+HOMEPATH), so a HOME-only override would
+// silently touch the real developer key -- all four are pointed at a temp
+// dir and restored afterwards. APRA_FLEET_DATA_DIR is already isolated per
+// run by tests/setup.ts (FLEET_DIR is an eager module-load constant, so it
+// cannot be re-pointed per test here).
+const HOME_VARS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const;
+let savedHomeVars: Record<string, string | undefined> = {};
 let tempHome: string;
+
+beforeEach(async () => {
+  savedHomeVars = Object.fromEntries(HOME_VARS.map((k) => [k, process.env[k]]));
+  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-server-home-'));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  const parsed = path.parse(tempHome);
+  process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, '');
+  process.env.HOMEPATH = tempHome.slice(process.env.HOMEDRIVE.length);
+});
+
+afterEach(async () => {
+  for (const k of HOME_VARS) {
+    if (savedHomeVars[k] === undefined) delete process.env[k];
+    else process.env[k] = savedHomeVars[k];
+  }
+  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+});
 
 describe('console seam: handleConsoleRequest path ownership', () => {
   it('claims /ui, /ui/*, and /api/fleet/*', async () => {
@@ -144,16 +168,11 @@ describe('console seam: handleConsoleRequest path ownership', () => {
 });
 
 describe('console seam: GET /api/fleet/members', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     backupAndResetRegistry();
-    realHome = process.env.HOME;
-    tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-server-home-'));
-    process.env.HOME = tempHome;
   });
-  afterEach(async () => {
+  afterEach(() => {
     restoreRegistry();
-    process.env.HOME = realHome;
-    await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
   });
 
   it('answers 200 application/json with the list_members json payload, in-process', async () => {
@@ -196,19 +215,8 @@ describe('console seam: GET /api/fleet/members', () => {
 });
 
 describe('console seam: dispatch is total (apra-fleet-iywi.10 / apra-fleet-iywi.13)', () => {
-  let dispatchRealHome: string | undefined;
-  let dispatchTempHome: string;
-
-  beforeEach(async () => {
-    dispatchRealHome = process.env.HOME;
-    dispatchTempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-dispatch-home-'));
-    process.env.HOME = dispatchTempHome;
-  });
-
-  afterEach(async () => {
+  afterEach(() => {
     vi.restoreAllMocks();
-    process.env.HOME = dispatchRealHome;
-    await fsp.rm(dispatchTempHome, { recursive: true, force: true }).catch(() => {});
   });
 
   it('answers 500 -- never an escaping throw -- when a pre-handler path throws, and the same instance keeps serving afterwards', async () => {
@@ -259,5 +267,127 @@ describe('console seam: dispatch is total (apra-fleet-iywi.10 / apra-fleet-iywi.
     expect(out.writes).toBe(0);
     expect(Object.keys(out.setHeaders)).toHaveLength(0);
     expect(out.body).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End to end over a REAL server (createHttpTransport) on an ephemeral port
+// (preferredPort 0 -- never the reserved staging ports). The disk-mode
+// static root is a temp fixture dist, so `npm run build:ui` is not a
+// prerequisite. One test per console-seam assertion:
+//   a. shell          b. asset Content-Type    c. SPA fallback
+//   d. members json with a credential (== in-process list_members) + 401 without
+//   e. non-console paths (/, /health) behave exactly as before
+//   f. /mcp untouched -- proved by tests/http-transport.test.ts, unmodified.
+// ---------------------------------------------------------------------------
+interface WireResponse {
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}
+
+function wireRequest(port: number, method: string, urlPath: string, headers: Record<string, string> = {}): Promise<WireResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path: urlPath, method, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+describe('console seam end to end: real server, fixture shell dist', () => {
+  const SHELL_HTML = '<!doctype html><html><body><div id="root">console-seam-e2e-shell</div></body></html>';
+  let distDir: string;
+  let handle: HttpTransportHandle | null = null;
+
+  beforeEach(async () => {
+    backupAndResetRegistry();
+    distDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-seam-e2e-dist-'));
+    fs.writeFileSync(path.join(distDir, 'index.html'), SHELL_HTML);
+    fs.mkdirSync(path.join(distDir, 'assets'));
+    fs.writeFileSync(path.join(distDir, 'assets', 'app-abc123.js'), 'console.log("app");');
+    fs.writeFileSync(path.join(distDir, 'assets', 'app-abc123.css'), 'body{}');
+    handle = await createHttpTransport({ registerTools: () => {}, preferredPort: 0, shellDistDir: distDir });
+    expect([7601, 8801]).not.toContain(handle.port);
+  });
+
+  afterEach(async () => {
+    if (handle) await handle.close().catch(() => {});
+    handle = null;
+    restoreRegistry();
+    await fsp.rm(distDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('(a) GET /ui returns 200 with the shell index.html', async () => {
+    for (const p of ['/ui', '/ui/']) {
+      const res = await wireRequest(handle!.port, 'GET', p);
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('text/html');
+      expect(res.body).toBe(SHELL_HTML);
+    }
+  });
+
+  it('(b) GET /ui/<asset> returns 200 with the right Content-Type', async () => {
+    const js = await wireRequest(handle!.port, 'GET', '/ui/assets/app-abc123.js');
+    expect(js.status).toBe(200);
+    expect(js.headers['content-type']).toBe('application/javascript');
+    expect(js.body).toBe('console.log("app");');
+    const css = await wireRequest(handle!.port, 'GET', '/ui/assets/app-abc123.css');
+    expect(css.status).toBe(200);
+    expect(css.headers['content-type']).toBe('text/css');
+  });
+
+  it('(c) GET /ui/some/unknown/route falls back to index.html with 200', async () => {
+    const res = await wireRequest(handle!.port, 'GET', '/ui/some/unknown/route');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('text/html');
+    expect(res.body).toBe(SHELL_HTML);
+  });
+
+  it('(d) authenticated GET /api/fleet/members is 200 json matching in-process list_members; unauthenticated is 401', async () => {
+    addAgent(makeTestLocalAgent({ id: 'e2e-member-a', friendlyName: 'e2e-alpha' }));
+    addAgent(makeTestLocalAgent({ id: 'e2e-member-b', friendlyName: 'e2e-beta' }));
+
+    const unauth = await wireRequest(handle!.port, 'GET', '/api/fleet/members');
+    expect(unauth.status).toBe(401);
+    expect(unauth.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(unauth.body)).toEqual({ error: 'unauthorized' });
+
+    const authed = await wireRequest(handle!.port, 'GET', '/api/fleet/members', authHeaders());
+    expect(authed.status).toBe(200);
+    expect(authed.headers['content-type']).toBe('application/json');
+    const inProcess = JSON.parse(await listMembers({ format: 'json' }));
+    const overWire = JSON.parse(authed.body);
+    expect(overWire).toEqual(inProcess);
+    expect(overWire.members.map((m: { id: string }) => m.id).sort()).toEqual(['e2e-member-a', 'e2e-member-b']);
+
+    // The console cookie handed out by GET /ui is the other accepted credential.
+    const ui = await wireRequest(handle!.port, 'GET', '/ui');
+    const raw = ui.headers['set-cookie'];
+    const cookie = (Array.isArray(raw) ? raw[0] : String(raw)).split(';')[0];
+    const viaCookie = await wireRequest(handle!.port, 'GET', '/api/fleet/members', { cookie });
+    expect(viaCookie.status).toBe(200);
+    expect(JSON.parse(viaCookie.body)).toEqual(inProcess);
+  });
+
+  it('(e) non-console paths behave exactly as before: GET / is the bare 404, /health is 200 json', async () => {
+    const root = await wireRequest(handle!.port, 'GET', '/');
+    expect(root.status).toBe(404);
+    expect(root.body).toBe('');
+    expect(root.headers['content-type']).toBeUndefined();
+    expect(root.headers['set-cookie']).toBeUndefined();
+
+    const health = await wireRequest(handle!.port, 'GET', '/health');
+    expect(health.status).toBe(200);
+    expect(health.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(health.body).status).toBe('ok');
+    expect(health.headers['set-cookie']).toBeUndefined();
+
+    const uix = await wireRequest(handle!.port, 'GET', '/uix');
+    expect(uix.status).toBe(404);
+    expect(uix.body).toBe('');
   });
 });
