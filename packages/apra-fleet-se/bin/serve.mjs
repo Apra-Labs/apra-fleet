@@ -687,7 +687,25 @@ export async function serveMain(argv = process.argv.slice(2)) {
     } else if (fleetServerConnection && fleetServerConnection.mode === 'http'
         && typeof fleetServerConnection.url === 'string' && fleetServerConnection.url !== '') {
         const manifest = buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` });
-        registration = createRegistration({ serverUrl: fleetServerConnection.url, token: serviceToken, manifest });
+        // (apra-fleet-i9ag.3.4) The registry's REST surface hangs off the
+        // apra-fleet server's ORIGIN ('<origin>/api/workflow-packages/...',
+        // src/console/routes/workflow-packages.ts), NOT off its MCP endpoint
+        // path. `fleetServerConnection.url` is the MCP endpoint --
+        // 'http://127.0.0.1:<port>/mcp', because src/index.ts writes
+        // createHttpTransport()'s `handle.url` into server.json verbatim and
+        // the client's checkRunningInstance() hands that value straight back.
+        // Passing it through unchanged made createRegistration() POST to
+        // '<origin>/mcp/api/workflow-packages/register', which the real server
+        // answers 404 (not a console path per src/console/server.ts's
+        // isConsolePath, and not '/mcp' either, so http-transport.ts's
+        // fall-through 404s it). register() treats 404 as retryable, so the
+        // supervisor retried with capped backoff FOREVER and never registered
+        // against a real apra-fleet server -- the whole Sprints-in-the-console
+        // hop was dead, loudly logged but never fatal. `consoleOrigin` above
+        // already reduces the same resolved connection to scheme://host:port
+        // for the dashboard's "Console" back-link; reused here so registration
+        // and that link can never disagree about where the server is.
+        registration = createRegistration({ serverUrl: consoleOrigin, token: serviceToken, manifest });
         registration.register().catch((err) => {
             console.error(
                 '[registration] register() failed unexpectedly (it should catch its own errors):',
