@@ -50,24 +50,43 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
   }
 }
 
+/**
+ * Registration label for one service. `enabled` is only reported by the Linux
+ * manager (systemd is-enabled); the other platforms leave it undefined, which
+ * renders as "installed (disabled)" exactly as it did before this became
+ * multi-service.
+ */
+function serviceLabelFor(status: ServiceStatus): string {
+  if (!status.installed) return 'not installed';
+  return status.enabled ? 'installed (enabled)' : 'installed (disabled)';
+}
+
+/** Running/stopped label for a service, used for the supervisor line. */
+function runStateFor(status: ServiceStatus): string {
+  if (!status.installed) return '';
+  return status.running ? ', running' : ', stopped';
+}
+
 export async function runStatus(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
-  let serviceLabel: string;
-  if (!svcStatus.installed) {
-    serviceLabel = 'not installed';
-  } else if (svcStatus.enabled) {
-    serviceLabel = 'installed (enabled)';
-  } else {
-    serviceLabel = 'installed (disabled)';
-  }
+  // The fleet-sprint supervisor is a SEPARATE OS service with its own
+  // unit/plist/task -- reported on its own line so an operator can tell which
+  // of the two is down.
+  const supervisorMgr = await getServiceManager('fleet-supervisor');
+  const supervisorStatus: ServiceStatus = await supervisorMgr.query()
+    .catch(() => ({ installed: false, running: false }));
+
+  const serviceLabel = serviceLabelFor(svcStatus);
+  const supervisorLabel = `${serviceLabelFor(supervisorStatus)}${runStateFor(supervisorStatus)}`;
 
   if (!instance.running) {
     console.log('apra-fleet status');
     console.log(`  State:    stopped`);
-    console.log(`  Service:  ${serviceLabel}`);
+    console.log(`  Service (MCP server):       ${serviceLabel}`);
+    console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
     return;
   }
 
@@ -82,5 +101,6 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (health?.version) console.log(`  Version:  ${health.version}`);
   if (health?.uptime !== undefined) console.log(`  Uptime:   ${formatUptime(health.uptime)}`);
   if (health?.sessions !== undefined) console.log(`  Sessions: ${health.sessions}`);
-  console.log(`  Service:  ${serviceLabel}`);
+  console.log(`  Service (MCP server):       ${serviceLabel}`);
+  console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
 }

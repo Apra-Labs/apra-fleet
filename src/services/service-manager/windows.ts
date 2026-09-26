@@ -1,33 +1,52 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ServiceManager, ServiceStatus } from './types.js';
-import { WINDOWS_TASK_NAME } from './types.js';
+import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
+import { DEFAULT_SERVICE_ID, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { BIN_DIR } from '../../cli/config.js';
 
-const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
-
 export class WindowsServiceManager implements ServiceManager {
-  async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
-    fs.mkdirSync(path.dirname(WRAPPER_PATH), { recursive: true });
+  readonly serviceId: ServiceId;
+  private readonly descriptor: ServiceDescriptor;
+  /** Wrapper .bat this service's scheduled task runs. One per service. */
+  private readonly wrapperPath: string;
+  private readonly taskName: string;
+
+  constructor(serviceId: ServiceId = DEFAULT_SERVICE_ID) {
+    this.serviceId = serviceId;
+    this.descriptor = getServiceDescriptor(serviceId);
+    this.wrapperPath = path.join(BIN_DIR, this.descriptor.windowsWrapperFileName);
+    this.taskName = this.descriptor.windowsTaskName;
+  }
+
+  async register(
+    binaryPath: string, args: string[], logPath: string, options: RegisterOptions = {},
+  ): Promise<void> {
+    fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     const quotedArgs = args.map(a => `"${a}"`).join(' ');
-    const lines = ['@echo off', `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
-    fs.writeFileSync(WRAPPER_PATH, lines.join('\r\n'), 'utf8');
+    const lines = ['@echo off'];
+    // Scheduled tasks inherit no working directory from the operator's shell;
+    // `cd /d` handles a drive change as well as the directory change.
+    if (options.workingDirectory) {
+      lines.push(`cd /d "${options.workingDirectory}"`);
+    }
+    lines.push(`"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`);
+    fs.writeFileSync(this.wrapperPath, lines.join('\r\n'), 'utf8');
     execFileSync('schtasks', [
-      '/create', '/tn', WINDOWS_TASK_NAME,
-      '/tr', WRAPPER_PATH,
+      '/create', '/tn', this.taskName,
+      '/tr', this.wrapperPath,
       '/sc', 'onlogon', '/rl', 'limited', '/f',
     ]);
   }
 
   async unregister(): Promise<void> {
     try {
-      execFileSync('schtasks', ['/delete', '/tn', WINDOWS_TASK_NAME, '/f']);
+      execFileSync('schtasks', ['/delete', '/tn', this.taskName, '/f']);
     } catch {
       // Tolerate task-not-found
     }
-    try { fs.unlinkSync(WRAPPER_PATH); } catch {}
+    try { fs.unlinkSync(this.wrapperPath); } catch {}
   }
 
   async start(): Promise<void> {
@@ -35,22 +54,28 @@ export class WindowsServiceManager implements ServiceManager {
     // schtasks /run returns quickly but on some Windows versions it waits
     // for the launched process -- detaching avoids that.
     const { spawn } = await import('node:child_process');
-    const child = spawn('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], {
+    const child = spawn('schtasks', ['/run', '/tn', this.taskName], {
       detached: true, stdio: 'ignore',
     });
     child.unref();
   }
 
   async stop(): Promise<void> {
-    await gracefulStopByServerJson((pid) => {
-      try { execFileSync('taskkill', ['/F', '/PID', String(pid)]); } catch {}
-    });
+    if (this.descriptor.gracefulStopViaServerJson) {
+      await gracefulStopByServerJson((pid) => {
+        try { execFileSync('taskkill', ['/F', '/PID', String(pid)]); } catch {}
+      });
+      return;
+    }
+    // Services other than the MCP server never write server.json -- end the
+    // scheduled task itself, which terminates the wrapper and its child.
+    try { execFileSync('schtasks', ['/end', '/tn', this.taskName]); } catch {}
   }
 
   async query(): Promise<ServiceStatus> {
     try {
       const out = execFileSync(
-        'schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/fo', 'csv', '/nh'],
+        'schtasks', ['/query', '/tn', this.taskName, '/fo', 'csv', '/nh'],
         { encoding: 'utf8' },
       );
       // CSV line: "TaskName","Next Run Time","Status"
@@ -65,7 +90,7 @@ export class WindowsServiceManager implements ServiceManager {
 
   async isInstalled(): Promise<boolean> {
     try {
-      execFileSync('schtasks', ['/query', '/tn', WINDOWS_TASK_NAME]);
+      execFileSync('schtasks', ['/query', '/tn', this.taskName]);
       return true;
     } catch {
       return false;
