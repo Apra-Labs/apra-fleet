@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Sprints embedded in the console, with mount-aware and cross-linked pages
+
+Sprint goal: make the fleet-supervisor's sprint dashboard reachable from
+inside the console shell rather than only at its own standalone port, and
+give the console, the dashboard, and a running sprint's live viewer working
+links back to each other. Both landed and are verified working.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $35.8734.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5372 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The fleet-supervisor self-registers as a workflow package** on boot
+  (id `se`, an unscoped "Sprints" nav entry so it renders in the console
+  header with no project selected) and unregisters on a clean shutdown. A
+  real registration defect was found and fixed along the way: the register
+  call was previously built from the MCP connection's own URL (pointing at
+  `/mcp`), so it silently 404ed and retried forever; it is now derived from
+  that connection's origin alone, resolved once and shared with every other
+  self-referential link the package renders.
+- **The console's Sprints nav entry now serves the real dashboard**, not a
+  placeholder page -- mounted at the manifest's single declared path so the
+  nav target and the served route can never independently drift.
+- **Every dashboard/history/live-viewer page renders correctly both directly
+  and embedded** under the console's `/ext/se/*` reverse proxy: a per-request
+  mount-path header (stripped from any client-supplied value before the
+  proxy sets its own) tells the page which context it is in, and a hardened,
+  fail-closed sanitizer is what makes it safe to interpolate that value
+  straight into inline `<script>` string literals and `href` attributes.
+- **The dashboard, the console, and a sprint's live viewer cross-link to each
+  other**: the dashboard's "back to console" link resolves the console's
+  origin only from the real registration connection (no hardcoded host or
+  port, nothing rendered if unresolved); the live viewer's back-link and the
+  dashboard's own per-sprint card anchor are derived from one shared,
+  injective anchor-id function, so the two sides can never disagree on the
+  anchor for the same sprint.
+
+Carried forward (filed as follow-up work, not fixed this sprint, lower
+priority than the goal and left open):
+- The dedicated read-only sprint history route (as opposed to the
+  live-view fallthrough) does not yet resolve the mount prefix for its own
+  back-link, so that one page's link is unprefixed when reached through the
+  embedded hop.
+- An end-to-end check that a sprint launched from the embedded launch form
+  actually appears live on the embedded Sprints page is still open.
+- A regression pass run after this sprint's verdict surfaced pre-existing,
+  already-tracked failures unrelated to this sprint's scope (golden-transcript
+  snapshot non-determinism, several mock-sprint suite timeouts, and a smoke
+  test blocked by a known permission-classifier denial before a toy sprint
+  could launch); these are informational carry-over items, not regressions
+  introduced by this sprint, and do not change the verdict above.
+
 ## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
 
 Sprint goal: make the member registry's `env` name-value map actually reach
