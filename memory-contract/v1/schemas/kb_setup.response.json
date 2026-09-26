@@ -63,11 +63,18 @@
             "steps": {
               "type": "array",
               "items": {}
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [
             "success",
-            "steps"
+            "steps",
+            "warnings"
           ],
           "additionalProperties": false
         }

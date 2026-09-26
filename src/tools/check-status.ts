@@ -394,11 +394,14 @@ export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): str
 // the code-intelligence health precedent (KB 4e11460c) -- wrap ALL I/O in
 // try/catch, return null on any failure, never throw, never block status.
 // ---------------------------------------------------------------------------
-export interface KbHealthBible {
-  present: boolean;
-  entries: number;
-  drift: number;
-}
+// my-beads-db-0cd.18: mirrors kb-stats.ts's own bible union verbatim (kb-stats.ts:93)
+// -- over a remote HTTP project provider, bible drift is not computable at all,
+// so there is no `drift` field to default to 0 for. Keeping this a union (not
+// widening `computable`/`reason` onto the first branch) is what makes an
+// unconditional `bible.drift` read a compile error instead of `undefined`.
+export type KbHealthBible =
+  | { present: boolean; entries: number; drift: number }
+  | { computable: false; reason: string };
 
 export interface KbHealth {
   totals: { by_confidence: Record<string, number>; by_type: Record<string, number>; total: number };
@@ -425,6 +428,7 @@ export async function kbHealthSummary(): Promise<KbHealth | null> {
 // wording says so explicitly. Omitted entirely when drift is not positive
 // (nothing anomalous to report).
 function bibleDriftFragment(bible: KbHealthBible): string {
+  if (!('drift' in bible)) return ` | bible: ${bible.reason}`;
   if (bible.drift <= 0) return '';
   return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
 }

@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { Page } from "@apralabs/apra-fleet-ui-kit";
-import { deriveDataDir, fetchFleetStatus, fetchWorkflowPackages, type FleetStatusPayload } from "../api/health";
+import {
+  deriveDataDir,
+  fetchFleetStatus,
+  fetchWorkflowPackages,
+  packageLabel,
+  type FleetStatusPayload,
+  type WorkflowPackageView
+} from "../api/health";
 
 type StatusState =
   | { kind: "loading" }
@@ -10,7 +17,7 @@ type StatusState =
 type PackagesState =
   | { kind: "loading" }
   | { kind: "empty" }
-  | { kind: "loaded"; packages: string[] };
+  | { kind: "loaded"; packages: WorkflowPackageView[] };
 
 /** S3 screen: server version, data dir, update-available notice, the fleet
  *  status summary, and the workflow-packages list -- a 404 or network
@@ -37,9 +44,12 @@ export function Health() {
     }
 
     async function loadPackages() {
-      const list = await fetchWorkflowPackages();
+      // An `error` result (404 / network failure / unreadable body) is the
+      // EXPECTED "registry not present" case and renders the same empty
+      // state as a genuinely empty registry -- never an error state.
+      const { packages: list } = await fetchWorkflowPackages();
       if (cancelled) return;
-      if (list === null || list.length === 0) {
+      if (list.length === 0) {
         setPackages({ kind: "empty" });
       } else {
         setPackages({ kind: "loaded", packages: list });
@@ -83,8 +93,12 @@ export function Health() {
       {packages.kind === "empty" ? <p>no workflow packages registered</p> : null}
       {packages.kind === "loaded" ? (
         <ul>
-          {packages.packages.map((name) => (
-            <li key={name}>{name}</li>
+          {packages.packages.map((view) => (
+            <li key={view.id}>
+              {view.id}
+              {packageLabel(view) === view.id ? null : ` (${packageLabel(view)})`}
+              {view.version ? ` v${view.version}` : null}
+            </li>
           ))}
         </ul>
       ) : null}

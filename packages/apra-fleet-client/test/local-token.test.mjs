@@ -5,6 +5,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import crypto from 'node:crypto';
+
 import {
     readLocalToken,
     isAuthorized,
@@ -12,6 +14,8 @@ import {
     cookieFor,
     normalizePath,
     TOKEN_BYTES,
+    UPSTREAM_CREDENTIAL_LABEL,
+    deriveUpstreamCredential,
 } from '../src/auth/local-token.mjs';
 
 // apra-fleet-iywi.1.2: verifies the shared local-token helper DIRECTLY (never
@@ -165,5 +169,94 @@ describe('normalizePath (fail-closed)', () => {
         const unparseable = 'http://[invalid';
         assert.throws(() => new URL(unparseable, 'http://localhost'));
         assert.equal(normalizePath(unparseable), null);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// deriveUpstreamCredential -- lifted here from src/console/proxy.ts.
+//
+// The point of these cases is BYTE COMPATIBILITY. Every already-registered
+// workflow package holds a credential derived by the pre-lift proxy.ts code;
+// if the lift changed the derivation by even one byte, every one of those
+// credentials would silently stop authenticating. The fixed vector below was
+// computed by running the PRE-LIFT implementation (from the parent commit's
+// src/console/proxy.ts) directly, NOT by calling the function under test --
+// so it is an independent pin, not a self-fulfilling snapshot.
+// -----------------------------------------------------------------------------
+
+const FIXED_VECTOR_KEY = 'a'.repeat(64);
+
+describe('deriveUpstreamCredential', () => {
+    test('matches the fixed vector produced by the previous proxy.ts derivation', () => {
+        // Produced by the pre-lift src/console/proxy.ts implementation.
+        assert.equal(
+            deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-fixed-vector'),
+            '6e681ec649db16e1749acf6b7ed66cbdacaab787aa1a8ad65d46f587f8fa60a8',
+        );
+        assert.equal(
+            deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-other'),
+            '06926cad18b9629721cbfd18e9d37380273ec6b80c31e060a3a4626f2791e3ff',
+        );
+    });
+
+    test('differs per package id under the same fleet key, and per fleet key for the same id', () => {
+        const a = deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-fixed-vector');
+        const b = deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-other');
+        assert.notEqual(a, b);
+
+        // One package must not be able to derive another's credential, and a
+        // different fleet key must not reproduce the same credential.
+        const otherKey = deriveUpstreamCredential('b'.repeat(64), 'pkg-fixed-vector');
+        assert.notEqual(a, otherKey);
+    });
+
+    test('never returns the fleet key itself and is a fixed-width hex sha256 digest', () => {
+        const credential = deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-fixed-vector');
+        assert.match(credential, /^[0-9a-f]{64}$/);
+        assert.notEqual(credential, FIXED_VECTOR_KEY);
+        assert.ok(!credential.includes(FIXED_VECTOR_KEY));
+    });
+
+    test('the length prefix is part of the HMAC input, so ids carrying the separator stay unambiguous', () => {
+        // Pin the EXACT input encoding by recomputing it here independently:
+        // `<label>:<id.length>:<id>`. Dropping the length prefix (the
+        // length-free encoding below) yields a different digest, so this
+        // case fails loudly if the prefix is ever removed -- that is what
+        // makes the prefix testable rather than merely asserted.
+        const id = 'a:b';
+        const withLength = crypto
+            .createHmac('sha256', FIXED_VECTOR_KEY)
+            .update(`${UPSTREAM_CREDENTIAL_LABEL}:${id.length}:${id}`)
+            .digest('hex');
+        const withoutLength = crypto
+            .createHmac('sha256', FIXED_VECTOR_KEY)
+            .update(`${UPSTREAM_CREDENTIAL_LABEL}:${id}`)
+            .digest('hex');
+
+        assert.equal(deriveUpstreamCredential(FIXED_VECTOR_KEY, id), withLength);
+        assert.notEqual(withLength, withoutLength);
+
+        // Ids that embed the ':' separator still map to distinct credentials
+        // -- no id can be crafted to collide with another id's input.
+        assert.notEqual(
+            deriveUpstreamCredential(FIXED_VECTOR_KEY, 'a:b'),
+            deriveUpstreamCredential(FIXED_VECTOR_KEY, 'a'),
+        );
+        assert.equal(
+            deriveUpstreamCredential(FIXED_VECTOR_KEY, 'a'),
+            '6480d9f8b84cff7698805db18a95b1ce66b50558437ecf85c487c9cec8d1d9c9',
+        );
+    });
+
+    test('the label is domain-separating: changing it changes every credential', () => {
+        // The label must stay distinct from any cookie/session label signed
+        // with the same fleet key -- equal labels would let a package replay
+        // its upstream credential as a console credential.
+        assert.equal(UPSTREAM_CREDENTIAL_LABEL, 'apra-fleet-ext-upstream-v1');
+        const underDifferentLabel = crypto
+            .createHmac('sha256', FIXED_VECTOR_KEY)
+            .update(`some-other-label:16:pkg-fixed-vector`)
+            .digest('hex');
+        assert.notEqual(deriveUpstreamCredential(FIXED_VECTOR_KEY, 'pkg-fixed-vector'), underDifferentLabel);
     });
 });
