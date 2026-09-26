@@ -210,7 +210,7 @@ describe('removeMember - agy project cleanup', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    expect(result).toContain('✅');
+    expect(result).toContain('\u2705');
     expect(result).not.toContain('agy project');
     expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(true);
   });
@@ -227,7 +227,7 @@ describe('removeMember - agy project cleanup', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    expect(result).toContain('✅');
+    expect(result).toContain('\u2705');
     expect(result).not.toContain('agy project');
   });
 
@@ -241,8 +241,8 @@ describe('removeMember - agy project cleanup', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    expect(result).toContain('✅');
-    expect(result).toContain('⚠️');
+    expect(result).toContain('\u2705');
+    expect(result).toContain('\u26A0\uFE0F');
     expect(result).toContain('agy project');
   });
 
@@ -254,7 +254,7 @@ describe('removeMember - agy project cleanup', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    expect(result).toContain('✅');
+    expect(result).toContain('\u2705');
     expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(false);
   });
 
@@ -264,7 +264,7 @@ describe('removeMember - agy project cleanup', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    expect(result).toContain('✅');
+    expect(result).toContain('\u2705');
     expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(false);
   });
 });
