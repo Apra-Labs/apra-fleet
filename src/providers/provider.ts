@@ -223,6 +223,32 @@ export interface ParsedResponse {
   /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
    *  dispatch was terminated by a provider usage/quota limit. */
   usageLimit?: UsageLimitSignal;
+  /** Set by a provider parser when the CLI refused one or more tool calls for
+   *  lack of a permission grant (AGY headless mode auto-denies them). */
+  permissionDenial?: PermissionDenial;
+}
+
+/** A tool call the member CLI refused because no grant allowed it. */
+export interface PermissionDenialItem {
+  /** Provider permission action, e.g. 'command', 'read_file', 'mcp'. */
+  action: string;
+  /** The concrete target, when the CLI named it, e.g. 'git status --short --branch'. */
+  target?: string;
+}
+
+/** Structured permission denial surfaced by execute_prompt as
+ *  `reason: 'permission_denied'`. */
+export interface PermissionDenial {
+  /** Unique denied actions, in first-seen order. */
+  actions: string[];
+  denials: PermissionDenialItem[];
+  /** compose_permissions `grant` values that would allow the denied calls
+   *  (empty when there is no canonical mapping for an action). */
+  suggestedGrants: string[];
+  /** One-line remediation for a human or an orchestrator. */
+  hint: string;
+  /** Which of the CLI's signals reported the denial. */
+  signals: Array<'result_json' | 'stderr' | 'transcript'>;
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a

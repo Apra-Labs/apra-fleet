@@ -231,7 +231,7 @@ Runs 7 and 8 differ only in `--project`, so `--project` is what binds the grants
 
 Other facts established:
 - The nested shape `permissionGrants.permissionGrants.{allow,deny,ask}` is what agy reads (runs 5 and 7). The flat shape is not needed.
-- On a denial agy exits 0 with `status: "SUCCESS"`, `response: ""`, `denied_actions: [...]` on stdout, and an "auto-denied" line on stderr. Fleet must read these (separate bead); today it reports `empty_response`.
+- On a denial agy exits 0 with `status: "SUCCESS"`, `response: ""`, `denied_actions: [...]` on stdout, and an "auto-denied" line on stderr. Fleet reports this as `permission_denied` (see 8.7).
 - On Linux (fleet-lin-agy), `git status` is checked as the `unsandboxed` action, not `command` (`permission check failed for unsandboxed "git status ..."`). See 8.5 q3.
 
 ### 8.3 Design
@@ -286,3 +286,32 @@ All runs below used fleet's command line with `--project <id>` against scratch p
 - update_member switching to agy: same, on the resulting member, before the update is written; failure = not updated.
 - compose_permissions and execute_prompt (agy): `ensureAgyProject(agent)` first -- probe, re-provision if needed, persist a new id to the registry.
 - execute_prompt passes the id as `PromptOptions.projectId`; `AgyProvider` renders `--project "<id>"` on both the POSIX and the Windows command paths.
+
+### 8.7 Permission denials
+
+A headless agy run that hits a missing grant exits 0 with `status: "SUCCESS"` and a `denied_actions` list, prints `a tool required the "<action>" permission that headless mode cannot prompt for, so it was auto-denied` on stderr, and records an ERROR transcript step `permission check failed for <action> "<target>": user denied permission ...`. execute_prompt reads any of the three and returns `reason: "permission_denied"` with the denied actions, the concrete targets and a remediation hint, instead of `empty_response`.
+
+`AgyProvider.parseResponse` attaches `permissionDenial` (`detectAgyPermissionDenial` in `src/providers/agy.ts`):
+- a JSON result with a non-empty `denied_actions` is a denial whatever its `status`; a JSON result without it is not, even if older transcript steps show denials;
+- without a JSON result, the stderr auto-denied line or a transcript ERROR step counts;
+- targets come only from transcript steps after the last `USER_INPUT` (the current turn), so a resumed conversation's old denials are ignored.
+
+execute_prompt result (`structuredContent`), recorded run from 8.5 q1:
+
+```json
+{
+  "isError": true,
+  "reason": "permission_denied",
+  "permissionDenied": {
+    "actions": ["command"],
+    "denials": [{ "action": "command", "target": "git status --short --branch" }],
+    "suggestedGrants": ["Bash(git status --short --branch)"],
+    "hint": "agy auto-denied command \"git status --short --branch\" (headless mode cannot prompt for permission). Grant it with compose_permissions grant: [...] and retry. ...",
+    "signals": ["result_json", "stderr", "transcript"]
+  },
+  "sessionId": "48ae7611-290b-4396-90c6-c266d09c9473",
+  "usage": { "input_tokens": 17220, "output_tokens": 68, "total_tokens": 17288 }
+}
+```
+
+A partial reply, if any, is kept in `response`. The suggested grant is the exact command because agy matches command grants exactly (8.5 q1); `Bash(git status --short --branch)` composes to `command(git status --short --branch)`. A command containing shell chaining gets no suggestion (compose_permissions would refuse it). apra-fleet-client exposes the block as the `PermissionDenied` typedef and `permissionDenialOf(result)`; apra-fleet-workflow forwards it on `AgentDispatchError.details.permissionDenied`. Other providers never set it.

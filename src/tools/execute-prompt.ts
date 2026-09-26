@@ -39,14 +39,14 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse, UsageLimitSignal } from '../providers/provider.js';
+import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -70,6 +70,11 @@ export interface ExecutePromptStructured {
    *  detectUsageLimit() signal verbatim, so a caller (notably fleet-sprint) can
    *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
   usageLimit?: UsageLimitSignal;
+  /** Present on a 'permission_denied' failure: the member CLI refused tool
+   *  calls for lack of a grant (actions, concrete targets, the
+   *  compose_permissions grants that would allow them, and a hint). Any
+   *  partial reply is in `response`. */
+  permissionDenied?: PermissionDenial;
   [key: string]: unknown;
 }
 
@@ -1506,6 +1511,28 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     _epExitCode = result.code;
+
+    // The member CLI refused tool calls for lack of a grant (AGY headless mode
+    // auto-denies them and still exits 0 with status SUCCESS). Report that as
+    // a permission failure the caller can heal via compose_permissions, not
+    // as an empty response. Only providers whose parser sets
+    // permissionDenial reach this; any partial reply is kept.
+    if (parsed.permissionDenial) {
+      const denial = parsed.permissionDenial;
+      const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
+        structuredContent: {
+          isError: true,
+          reason: 'permission_denied',
+          permissionDenied: denial,
+          ...(partial ? { response: partial } : {}),
+          ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        },
+      };
+    }
+
     if (result.code !== 0) {
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's

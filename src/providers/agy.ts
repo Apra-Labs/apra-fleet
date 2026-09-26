@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -142,8 +142,10 @@ export class AgyProvider implements ProviderAdapter {
     const permFlag = this.resolvePermissionFlag(unattended);
     if (permFlag) cmd += ` ${permFlag}`;
 
-    // After agy exits, read its transcript from disk (primary output channel --
-    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
+    // After agy exits, also print its transcript from disk. The JSON result
+    // usually arrives on stdout (observed under gitbash on Windows too), but
+    // agy can write to CONOUT$ instead, and the transcript is also where a
+    // permission denial names its concrete target (detectAgyPermissionDenial).
     const transcriptScript = `${SCRIPTS_UNIX}/agy-transcript-reader.js`;
     const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
     const folderArg = `"${escapeDoubleQuoted(folder)}"`;
@@ -199,7 +201,18 @@ export class AgyProvider implements ProviderAdapter {
     return this.workspaceEditPermissionFlag() ?? '';
   }
 
+  /** Parses the run's result and, when agy refused a tool call for lack of a
+   *  grant, attaches the denial (see detectAgyPermissionDenial). A headless
+   *  denial exits 0 with status SUCCESS and an empty response, so without this
+   *  it is indistinguishable from a blank reply. */
   parseResponse(result: SSHExecResult): ParsedResponse {
+    const parsed = this.parseResult(result);
+    const denial = detectAgyPermissionDenial(result);
+    if (denial) parsed.permissionDenial = denial;
+    return parsed;
+  }
+
+  private parseResult(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout;
     let extractedSessionId: string | undefined;
     const sessionMatch = raw.match(/FLEET_SESSION_ID:([^\r\n]+)/);
@@ -547,6 +560,146 @@ export class AgyProvider implements ProviderAdapter {
     // fleet never seeded into trustedWorkspaces, so there is nothing to seed.
     return { seeded: false, detail: 'agy: no workspace trust needed -- grants bind via --project' };
   }
+}
+
+// --- Permission denials -----------------------------------------------------
+//
+// A headless agy run that needs a grant it does not have exits 0 and reports
+// the refusal in three places (docs/compose-permissions-design.md section 8.7):
+//   1. the --output-format json result: "denied_actions":[{"action":"command",...}]
+//      (with "status":"SUCCESS" and usually "response":"");
+//   2. stderr: a tool required the "command" permission that headless mode
+//      cannot prompt for, so it was auto-denied ...;
+//   3. the transcript (printed between FLEET_TRANSCRIPT_START/END by
+//      agy-transcript-reader.js): an ERROR step
+//      permission check failed for command "git status --short --branch": user denied ...
+
+const AGY_STDERR_DENIAL_RE = /a tool required the "([a-z_]+)" permission that headless mode cannot prompt for/g;
+const AGY_TRANSCRIPT_DENIAL_RES = [
+  /permission check failed for ([a-z_]+) "([\s\S]*?)": user denied/,
+  /user denied permission for ([a-z_]+)\(([^)]*)\)/,
+];
+const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
+
+function stripTranscript(text: string): string {
+  return text.replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '');
+}
+
+/** The compose_permissions grant that allows one denied call, if any. agy
+ *  matches a command(...) grant against the exact command line (section 8.5
+ *  q1), so a command denial suggests that exact command. */
+function suggestedGrantFor(item: PermissionDenialItem): string | undefined {
+  const t = item.target?.trim();
+  switch (item.action) {
+    case 'command':
+      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
+    case 'read_file':
+      return t ? `Read(${t})` : 'Read';
+    case 'write_file':
+      return t ? `Write(${t})` : 'Write';
+    case 'mcp': {
+      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
+      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
+    }
+    case 'read_url':
+      return 'WebSearch';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Detects an agy permission denial in a dispatch's output. The JSON result is
+ * authoritative when present: a non-empty denied_actions is a denial whatever
+ * its status, and a result without it is not (older transcript steps are
+ * ignored). Without a JSON result, the stderr auto-denied line or a
+ * transcript ERROR step from the current turn counts. Targets always come
+ * from the current turn's transcript steps.
+ */
+export function detectAgyPermissionDenial(result: SSHExecResult): PermissionDenial | undefined {
+  const stdout = stripAnsi(result.stdout ?? '');
+  const outside = stripTranscript(stdout);
+  const signals: PermissionDenial['signals'] = [];
+
+  // 1. JSON result envelope(s) outside the transcript section.
+  let sawEnvelope = false;
+  const jsonActions: string[] = [];
+  for (const line of outside.split(/\r?\n/)) {
+    const l = line.trim();
+    const start = l.indexOf('{');
+    if (start < 0 || !l.endsWith('}')) continue;
+    let obj: any;
+    try { obj = JSON.parse(l.slice(start)); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    if ('conversation_id' in obj || 'denied_actions' in obj || obj.status === 'SUCCESS' || obj.status === 'ERROR') sawEnvelope = true;
+    if (Array.isArray(obj.denied_actions)) {
+      for (const d of obj.denied_actions) {
+        const action = typeof d === 'string' ? d : (d && typeof d.action === 'string' ? d.action : undefined);
+        if (action) jsonActions.push(action);
+      }
+    }
+  }
+  if (jsonActions.length) signals.push('result_json');
+
+  // 2. stderr (and, defensively, stdout outside the transcript).
+  const stderrActions: string[] = [];
+  for (const text of [result.stderr ?? '', outside]) {
+    for (const m of text.matchAll(AGY_STDERR_DENIAL_RE)) stderrActions.push(m[1]);
+  }
+  if (stderrActions.length) signals.push('stderr');
+
+  // 3. Transcript ERROR steps of the current turn (after the last user input).
+  const transcriptItems: PermissionDenialItem[] = [];
+  const section = /FLEET_TRANSCRIPT_START([\s\S]*?)FLEET_TRANSCRIPT_END/.exec(stdout)?.[1];
+  if (section) {
+    const entries: any[] = [];
+    for (const line of section.split(/\r?\n/)) {
+      const l = line.trim();
+      if (!l.startsWith('{')) continue;
+      try { entries.push(JSON.parse(l)); } catch { /* skip */ }
+    }
+    let from = 0;
+    entries.forEach((e, i) => { if (e && e.type === 'USER_INPUT') from = i + 1; });
+    for (const e of entries.slice(from)) {
+      if (!e || e.status !== 'ERROR' || typeof e.error !== 'string') continue;
+      for (const re of AGY_TRANSCRIPT_DENIAL_RES) {
+        const m = re.exec(e.error);
+        if (m) {
+          transcriptItems.push({ action: m[1], target: m[2] });
+          break;
+        }
+      }
+    }
+  }
+  if (transcriptItems.length) signals.push('transcript');
+
+  const denied = jsonActions.length > 0 || stderrActions.length > 0 || (!sawEnvelope && transcriptItems.length > 0);
+  if (!denied) return undefined;
+
+  const denials: PermissionDenialItem[] = [];
+  const seen = new Set<string>();
+  const add = (item: PermissionDenialItem) => {
+    const key = `${item.action}\u0000${item.target ?? ''}`;
+    if (!seen.has(key)) { seen.add(key); denials.push(item); }
+  };
+  transcriptItems.forEach(add);
+  for (const action of [...jsonActions, ...stderrActions]) {
+    if (!denials.some(d => d.action === action)) add({ action });
+  }
+  const actions = [...new Set(denials.map(d => d.action))];
+  const suggestedGrants = [...new Set(denials.map(suggestedGrantFor).filter((g): g is string => !!g))];
+
+  const what = denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+  let hint = `agy auto-denied ${what} (headless mode cannot prompt for permission).`;
+  if (suggestedGrants.length) {
+    hint += ` Grant it with compose_permissions grant: ${JSON.stringify(suggestedGrants)} and retry.`;
+  } else {
+    hint += ' No compose_permissions grant maps to this action automatically; grant it on the member by hand or escalate.';
+  }
+  if (actions.includes('command')) {
+    hint += ' agy matches a command grant against the exact command line, so Bash(<bin>:*) (command(<bin>)) allows only the bare binary.';
+  }
+  return { actions, denials, suggestedGrants, hint, signals };
 }
 
 export const AGY_MEMBER_ALLOWED_TOOLS = [

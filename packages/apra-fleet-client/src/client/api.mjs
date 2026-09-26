@@ -61,6 +61,24 @@
  */
 
 /**
+ * One tool call the member CLI refused, mirroring src/providers/provider.ts's PermissionDenialItem.
+ * @typedef {Object} PermissionDenialItem
+ * @property {string} action - Provider permission action, e.g. 'command', 'read_file', 'mcp'.
+ * @property {string} [target] - The concrete target when the CLI named it, e.g. 'git status --short --branch'.
+ */
+
+/**
+ * execute_prompt's `permissionDenied` block, mirroring src/providers/provider.ts's PermissionDenial.
+ * @typedef {Object} PermissionDenied
+ * @property {string[]} actions - Unique denied actions, in first-seen order.
+ * @property {PermissionDenialItem[]} denials - Each refused call, with its target when known.
+ * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
+ *   denied calls; empty when no canonical mapping exists.
+ * @property {string} hint - One-line remediation.
+ * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
+ */
+
+/**
  * Result-side shape of execute_prompt's `structuredContent` -- the single place callers
  * should read the outcome of a dispatch rather than re-parsing the display text. This is
  * NOT exhaustive of every `reason` value (see src/tools/execute-prompt.ts's
@@ -69,7 +87,12 @@
  * @property {boolean} [isError] - true on any failure path; absent/false on success.
  * @property {string} [reason] - Machine-readable failure/status classification, e.g.
  *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
- *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | ...
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' | ...
+ * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
+ *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
+ *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
+ *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
+ *   reply is in `response`.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
@@ -543,6 +566,32 @@ export function parseToolJson(result) {
         try { return JSON.parse(item.text); } catch { /* not the payload */ }
     }
     throw new Error('No JSON payload in tool result');
+}
+
+const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+/**
+ * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
+ * result or its `structuredContent`; returns the {@link PermissionDenied} block when
+ * `reason === 'permission_denied'` and the block is well-formed, else null.
+ *
+ * @param {{structuredContent?: ExecutePromptStructured} | ExecutePromptStructured | null | undefined} result
+ * @returns {PermissionDenied | null}
+ */
+export function permissionDenialOf(result) {
+    const sc = result && typeof result === 'object' && 'structuredContent' in result ? result.structuredContent : result;
+    if (!sc || sc.reason !== 'permission_denied') return null;
+    const d = sc.permissionDenied;
+    if (!d || typeof d !== 'object') return null;
+    if (!isStringArray(d.actions) || !isStringArray(d.suggestedGrants) || typeof d.hint !== 'string') return null;
+    if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
+    return {
+        actions: [...d.actions],
+        denials: d.denials.map((x) => (x.target === undefined ? { action: x.action } : { action: x.action, target: x.target })),
+        suggestedGrants: [...d.suggestedGrants],
+        hint: d.hint,
+        signals: isStringArray(d.signals) ? [...d.signals] : [],
+    };
 }
 
 export class ApraFleet {
