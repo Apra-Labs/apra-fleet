@@ -691,7 +691,9 @@
  * @property {string} [repo_path] - Path to the git repository for post-commit hook installation
  *   (default: current directory)
  * @property {"sqlite" | "http"} [provider] - KB provider type (default: sqlite)
- * @property {string} [remote] - Remote KB server URL (required when provider is "http")
+ * @property {string} [remote] - Remote KB server URL, http(s) only (required when provider is
+ *   "http"). Use https for any non-loopback host: plain http sends the token in cleartext
+ *   (kb_setup accepts it but returns a warning).
  * @property {string} [token] - Authentication token for the remote KB server (stored encrypted,
  *   never logged)
  */
@@ -1060,7 +1062,9 @@ export class ApraFleet {
 
     /**
      * Set up KB: install git post-commit hook, write provider config, store remote
-     * credentials encrypted. Run once per repo.
+     * credentials encrypted. Run once per repo. Merges into any existing KB config (keys it
+     * does not own are preserved); the result carries `steps` and `warnings` (e.g. plain-http
+     * remote, dropped token after a remote change, discarded malformed config).
      * @param {KbSetupOptions} [options]
      */
     async kbSetup(options = {}) {

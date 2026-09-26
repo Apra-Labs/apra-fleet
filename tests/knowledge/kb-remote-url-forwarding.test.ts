@@ -1,11 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { z } from 'zod';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KbProviders } from '../../src/services/knowledge/kb-providers.js';
-import type { KBEntry } from '../../src/services/knowledge/types.js';
+import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // apra-fleet-b4g.1.6: apra-fleet-b4g.1.3 wired repo_remote_url through the
 // three hot-path kb tool schemas and forwarded it to getKbProviders as the
@@ -57,9 +58,113 @@ const importTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-import-fwd-'));
 fs.mkdirSync(path.join(importTmpDir, '.fleet'), { recursive: true });
 fs.writeFileSync(path.join(importTmpDir, '.fleet', 'kb-canonical.json'), '[]');
 
+// requireSqliteProject-guarded tools (kb_list, kb_feedback, kb_freshness_sweep,
+// kb_reconcile_prefilter, kb_resolve_contradiction, kb_stats, kb_export,
+// kb_import) narrow providers.project with `instanceof SqliteProvider`, so an
+// object-literal stub throws before the forwarding assertion under test ever
+// runs. CLAUDE.md forbids mocks/stubs for exactly this reason: each of these
+// gets a REAL SqliteProvider, rooted in its own per-case (per ToolCase) temp
+// dir -- never a no-arg `new SqliteProvider()`, which kb-single-accessor.test.ts
+// would otherwise need to police for a call site under tests/.
+function realProjectProvider(prefix: string): SqliteProvider {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // capture()'s basis check (assertCheckableBasis) rejects any cited
+  // source_files entry that does not resolve under repoPath, so any provider
+  // seeded via capture() (feedbackProvider, resolveContradictionProvider)
+  // needs a real file here to cite.
+  fs.writeFileSync(path.join(tmpDir, 'fixture.ts'), '// kb-remote-url-forwarding fixture\n');
+  return new SqliteProvider(path.join(tmpDir, 'kb.sqlite'), tmpDir);
+}
+
+const listProvider = realProjectProvider('kb-list-fwd-');
+const feedbackProvider = realProjectProvider('kb-feedback-fwd-');
+const resolveContradictionProvider = realProjectProvider('kb-resolve-contradiction-fwd-');
+const reconcilePrefilterProvider = realProjectProvider('kb-reconcile-prefilter-fwd-');
+const freshnessSweepProvider = realProjectProvider('kb-freshness-sweep-fwd-');
+const statsProvider = realProjectProvider('kb-stats-fwd-');
+const exportProjectProvider = realProjectProvider('kb-export-project-fwd-');
+const importProjectProvider = realProjectProvider('kb-import-project-fwd-');
+
+const REAL_PROVIDERS = [
+  listProvider,
+  feedbackProvider,
+  resolveContradictionProvider,
+  reconcilePrefilterProvider,
+  freshnessSweepProvider,
+  statsProvider,
+  exportProjectProvider,
+  importProjectProvider,
+];
+
+function seedEntry(overrides: Partial<KBEntryInput> & { symbols: string[] }): KBEntryInput {
+  return {
+    type: 'knowledge',
+    title: 'seed title',
+    summary: 'seed summary',
+    content: 'seed content',
+    source_files: ['fixture.ts'],
+    tags: [],
+    content_hash: '',
+    content_hash_type: 'sha256',
+    flagged_for_review: false,
+    author: 'doer',
+    source: 'session',
+    confidence: 'INFERRED',
+    ...overrides,
+  };
+}
+
+// kb_resolve_contradiction refuses (throws) unless winnerId/loserId form a
+// GENUINE linked contradiction pair, and refuses again if either side is
+// already superseded (sqlite-provider.ts resolveContradiction). Case 2 and
+// case 3 below both invoke the real handler against the SAME ids, and a
+// successful resolution supersedes the loser -- so the pair must be torn down
+// and recaptured before every case, not just once in beforeAll.
+//
+// capture()'s preferredId is honored ONLY on the pure 'add' path
+// (sqlite-provider.ts capture(), comment at line ~910-915) -- AUDN's
+// update/flagged branches always mint a fresh randomUUID, so an AUDN-triggered
+// contradiction pair (as in kb-reconcile.test.ts) cannot land on caller-chosen
+// ids 'w1'/'l1'. Both entries are therefore captured on distinct, non-matching
+// content/symbols so AUDN finds no candidates and each keeps its preferredId,
+// then contradiction_of is set directly (the same raw-SQL fixture technique
+// kb-reconcile.test.ts uses to simulate post-capture state, e.g. its
+// stale-member and superseded-member liveness tests).
+async function reseedResolveContradictionPair(): Promise<void> {
+  const db = (resolveContradictionProvider as unknown as { getDb(): { prepare(sql: string): { run(...args: unknown[]): unknown } } }).getDb();
+  db.prepare('DELETE FROM entries WHERE id IN (?, ?)').run('w1', 'l1');
+  await resolveContradictionProvider.capture(seedEntry({
+    title: 'resolveContradictionFwdWinner entry',
+    summary: 'winner side of a resolve_contradiction forwarding fixture',
+    content: 'resolveContradictionFwdWinner content.',
+    symbols: ['resolveContradictionFwdWinner'],
+  }), { preferredId: 'w1' });
+  await resolveContradictionProvider.capture(seedEntry({
+    title: 'resolveContradictionFwdLoser entry',
+    summary: 'loser side of a resolve_contradiction forwarding fixture',
+    content: 'resolveContradictionFwdLoser content.',
+    symbols: ['resolveContradictionFwdLoser'],
+  }), { preferredId: 'l1' });
+  db.prepare("UPDATE entries SET contradiction_of = 'w1', flagged_for_review = 1 WHERE id = 'l1'").run();
+}
+
+beforeAll(async () => {
+  for (const provider of REAL_PROVIDERS) {
+    await provider.init();
+  }
+  // kb_feedback's minimalInput targets id 'id1'; feedback() only requires the
+  // entry to exist (it re-applies cleanly on repeat calls), so a one-time seed
+  // covers every case in that tool's describe block.
+  await feedbackProvider.capture(seedEntry({ title: 'feedback fixture entry', symbols: ['feedbackFwdSym'] }), { preferredId: 'id1' });
+});
+
 afterAll(() => {
   fs.rmSync(exportTmpDir, { recursive: true, force: true });
   fs.rmSync(importTmpDir, { recursive: true, force: true });
+  for (const provider of REAL_PROVIDERS) {
+    provider.close();
+    if (provider.repoPath) fs.rmSync(provider.repoPath, { recursive: true, force: true });
+  }
 });
 
 function entry(id: string): KBEntry {
@@ -107,6 +212,10 @@ interface ToolCase {
   minimalInput: Record<string, unknown>;
   // Stub returned by the mocked getKbProviders for this tool's call path.
   providersStub: () => KbProviders;
+  // Optional per-test reset hook, awaited in beforeEach before providersStub()
+  // is read. Only kb_resolve_contradiction needs this (see
+  // reseedResolveContradictionPair above); every other entry leaves it unset.
+  resetFixture?: () => Promise<void>;
 }
 
 const TOOLS: ToolCase[] = [
@@ -152,7 +261,7 @@ const TOOLS: ToolCase[] = [
     call: input => kbList(input as Parameters<typeof kbList>[0]),
     minimalInput: {},
     providersStub: () => ({
-      project: { list: vi.fn().mockResolvedValue([]) } as any,
+      project: listProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
@@ -174,10 +283,11 @@ const TOOLS: ToolCase[] = [
     call: input => kbResolveContradiction(input as Parameters<typeof kbResolveContradiction>[0]),
     minimalInput: { winnerId: 'w1', loserId: 'l1', evidence: 'e' },
     providersStub: () => ({
-      project: { resolveContradiction: vi.fn().mockResolvedValue({}) } as any,
+      project: resolveContradictionProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
+    resetFixture: reseedResolveContradictionPair,
   },
   {
     name: 'kb_reconcile_prefilter',
@@ -185,7 +295,7 @@ const TOOLS: ToolCase[] = [
     call: input => kbReconcilePrefilter(input as Parameters<typeof kbReconcilePrefilter>[0]),
     minimalInput: {},
     providersStub: () => ({
-      project: { reconcilePrefilter: vi.fn().mockResolvedValue({}) } as any,
+      project: reconcilePrefilterProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
@@ -208,7 +318,7 @@ const TOOLS: ToolCase[] = [
     call: input => kbFreshnessSweep(input as Parameters<typeof kbFreshnessSweep>[0]),
     minimalInput: {},
     providersStub: () => ({
-      project: { freshnessSweep: vi.fn().mockResolvedValue({ checked: 0, staled: 0, unstaled: 0 }) } as any,
+      project: freshnessSweepProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
@@ -219,7 +329,7 @@ const TOOLS: ToolCase[] = [
     call: input => kbFeedback(input as Parameters<typeof kbFeedback>[0]),
     minimalInput: { id: 'id1', reason: 'wrong in practice' },
     providersStub: () => ({
-      project: { feedback: vi.fn().mockResolvedValue({ id: 'id1', stale: 0, flagged_for_review: 0, confidence: 'INFERRED' }) } as any,
+      project: feedbackProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
@@ -253,10 +363,7 @@ const TOOLS: ToolCase[] = [
     call: input => kbStats(input as Parameters<typeof kbStats>[0]),
     minimalInput: {},
     providersStub: () => ({
-      project: {
-        stats: vi.fn().mockResolvedValue({ total: 0 }),
-        list: vi.fn().mockResolvedValue([]),
-      } as any,
+      project: statsProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
@@ -269,7 +376,7 @@ const TOOLS: ToolCase[] = [
     // not a git repo so the auto-commit path never shells out to git.
     minimalInput: { repo_path: exportTmpDir },
     providersStub: () => ({
-      project: { list: vi.fn().mockResolvedValue([]) } as any,
+      project: exportProjectProvider,
       global: { list: vi.fn().mockResolvedValue([]) } as any,
       projectSlug: 'slug',
     }),
@@ -283,15 +390,16 @@ const TOOLS: ToolCase[] = [
     // the trailing freshnessSweep() call, are exercised.
     minimalInput: { repo_path: importTmpDir },
     providersStub: () => ({
-      project: { freshnessSweep: vi.fn().mockResolvedValue({ checked: 0, staled: 0, unstaled: 0 }) } as any,
+      project: importProjectProvider,
       global: {} as any,
       projectSlug: 'slug',
     }),
   },
 ];
 
-describe.each(TOOLS)('$name repo_remote_url wiring', ({ schema, call, minimalInput, providersStub }) => {
-  beforeEach(() => {
+describe.each(TOOLS)('$name repo_remote_url wiring', ({ schema, call, minimalInput, providersStub, resetFixture }) => {
+  beforeEach(async () => {
+    await resetFixture?.();
     mockGetKbProviders.mockReset();
     mockGetKbProviders.mockResolvedValue(providersStub());
   });
