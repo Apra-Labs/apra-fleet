@@ -1,4 +1,4 @@
-<!-- llm-context: Best practice for using Claude Code cloud sessions (claude.ai/code, ephemeral containers) as apra-fleet development workers: the three-phase session loop (bootstrap the released fleet, run a small sprint with it, prove the candidate in a sandbox with acceptance evidence), the session contract, environment prerequisites, pilot findings, and the direction this points: ephemeral "environments" as a first-class fleet resource that any provider can supply. Read before dispatching or running a cloud dev session, or before designing environment-provider work. -->
+<!-- llm-context: Best practice for using Claude Code cloud sessions (claude.ai/code, ephemeral containers) as apra-fleet development workers: the three-phase session loop (bootstrap the fleet built from the current branch head, run a small sprint with it, prove the candidate in a sandbox with acceptance evidence), the session contract, environment prerequisites, pilot findings, and the direction this points: ephemeral "environments" as a first-class fleet resource that any provider can supply. Read before dispatching or running a cloud dev session, or before designing environment-provider work. -->
 <!-- keywords: claude code on the web, cloud session, ephemeral environment, sandbox deploy, acceptance evidence, bootstrap, self-hosting, environment provider, bead outbox -->
 <!-- see-also: deploy.md (## Deploy, ## Sandbox Deploy), integ-test-playbook.md, docs/design-regression-sandbox-lifecycle.md, docs/cloud-compute.md, docs/hub-spoke-master-plan.md, docs/generic-engine-boundary.md -->
 
@@ -12,12 +12,15 @@ the pilot.
 
 A cloud session is a throwaway Linux container with a fresh clone, a Claude
 Code agent, outbound network through a policy proxy, and push rights to one
-branch. The session should not just edit code. It should **use the released
-apra-fleet to build the next apra-fleet, then prove the result**. This works
-like bootstrapping a compiler:
+branch. The session should not just edit code. It should **use the fleet
+built from the current branch head to build its own next commit, then prove
+the result**. This works like bootstrapping a compiler:
 
-- **stage0**: the current released fleet, deployed into the container, is the
-  toolchain (fleet MCP tools, KB, supervisor, fleet-sprint engine).
+- **stage0**: the fleet built from the HEAD of the branch the session works
+  on, deployed into the container, is the toolchain (fleet MCP tools, KB,
+  supervisor, fleet-sprint engine). Not a release: dogfooding means the
+  newest code is the code doing the work, so a regression in the tooling
+  shows up in the very next session instead of waiting for a release.
 - **stage1**: the candidate that stage0 produces during a small sprint.
 - **proof**: stage1 runs side by side with stage0 in a sandbox deploy, and
   acceptance tests produce evidence that the feature works. The evidence goes
@@ -32,8 +35,8 @@ under the "fix the product, not the environment" rule in CLAUDE.md.
 ```
 +-------------------+     +----------------------+     +--------------------------+
 | Phase 0 BOOTSTRAP | --> | Phase 1 SMALL SPRINT | --> | Phase 2 PROVE (EVIDENCE) |
-| stage0 = released |     | stage0 builds stage1 |     | stage1 in sandbox next   |
-| fleet, baselined  |     | (doer/reviewer loop) |     | to stage0; acceptance    |
+| stage0 = branch   |     | stage0 builds stage1 |     | stage1 in sandbox next   |
+| HEAD, baselined   |     | (doer/reviewer loop) |     | to stage0; acceptance    |
 +-------------------+     +----------------------+     +--------------------------+
                                                                   |
                                      PR + evidence + bead outbox <-+
@@ -41,8 +44,12 @@ under the "fix the product, not the environment" rule in CLAUDE.md.
 
 ### Phase 0: bootstrap stage0 (every session starts here)
 
-1. **Pin the base.** Check out the integration branch head (or the last
-   release tag) that stage0 is built from. Record its commit.
+1. **Pin the base.** Check out the HEAD of the branch the session works on
+   (for a fresh session, the integration branch head it forks from). stage0
+   is built from exactly this commit; record it. Never a release tag: a
+   stage0 older than the code being changed hides tooling regressions.
+   If stage0 itself fails to build, deploy or smoke, that is the session's
+   first finding: stop and report it, because HEAD is broken for everyone.
 2. **Build and deploy stage0 with `## Deploy`** (untested in the pilot).
    Inside a cloud container this is safe: the container *is* the machine, it
    has no shared singleton and no foreign sprints, and it is discarded at
@@ -238,8 +245,9 @@ overnight; PR event subscriptions can drive the fix-until-green loop.
 
 ### Closing the self-hosting loop
 
-When a stage1 passes acceptance and merges, it becomes the next release and
-therefore the next sessions' stage0. The product that runs the sprints is
+When a stage1 passes acceptance and merges, it becomes the new branch HEAD
+and therefore the very next session's stage0, with no release step in
+between. The product that runs the sprints is
 continuously the product the sprints just proved. Humans review evidence and
 make the decisions that are really theirs, not the mechanics.
 
