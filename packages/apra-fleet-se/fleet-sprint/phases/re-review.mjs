@@ -71,6 +71,7 @@
 // =============================================================================
 
 import { applyGuardedReopens } from '../beads-transitions.mjs';
+import { sliceFocus, crossCuttingFocus, mergeVerdicts } from '../review-slices.mjs';
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
@@ -118,6 +119,13 @@ export async function runReReviewPhase({
     createChildBeadWithAllocatedId,
     trackRejectedNewTaskForResurfacing,
     clearResubmittedNewTask,
+    // Build pipeline mode (docs/lazy-parallel-sprints.md section 9): an
+    // optional planner of review slices, { slices, members } or null. When it
+    // yields two or more slices, one reviewer per slice plus one cross-area
+    // reviewer run at the same time and their verdicts are merged. Any slice
+    // failing falls back to the single review below, so a broken slice can
+    // never skip the review.
+    planReviewSlices = null,
 }) {
     phase(`Re-Review C${cycle}`);
     log(
@@ -141,7 +149,31 @@ export async function runReReviewPhase({
     // beadIds so the reviewer has something concrete to ground its
     // verdict in; acceptanceCriteriaJson still carries the full scope
     // for context.
-    const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
+    const acceptanceCriteriaJson = JSON.stringify(reReviewScope);
+    let reReviewVerdict = null;
+    const plan = planReviewSlices ? await planReviewSlices() : null;
+    if (plan && plan.slices.length >= 2) {
+        const n = plan.slices.length;
+        log(`Re-Review C${cycle}: ${n} reviewers in parallel, one per area, plus one looking across areas.`);
+        const jobs = plan.slices.map((slice, i) => dispatchReview({
+            beadIds: targetIssues, acceptanceCriteriaJson, member: plan.members[i],
+            focus: sliceFocus(slice, i, n), label: `Reviewer (slice ${i + 1}/${n})`,
+        }));
+        if (plan.members.length > n) {
+            jobs.push(dispatchReview({
+                beadIds: targetIssues, acceptanceCriteriaJson, member: plan.members[n],
+                focus: crossCuttingFocus(plan.slices), label: 'Reviewer (across areas)',
+            }));
+        }
+        const settled = await Promise.allSettled(jobs);
+        const failed = settled.filter((r) => r.status === 'rejected');
+        if (failed.length === 0) {
+            reReviewVerdict = mergeVerdicts(settled.map((r) => r.value));
+        } else {
+            log(`Re-Review C${cycle}: ${failed.length} of ${jobs.length} parallel reviewer(s) failed (${failed[0].reason && failed[0].reason.message}) -- falling back to one full review.`);
+        }
+    }
+    if (!reReviewVerdict) reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson });
     lastReviewVerdict = reReviewVerdict.verdict;
     reviewedThisCycle = true;
 

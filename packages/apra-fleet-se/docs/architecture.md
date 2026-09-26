@@ -574,7 +574,13 @@ the round loop runs exactly as before.
   to its doer, which merges the latest sprint branch into its task branch and
   fixes it; after three bounces the task is given back for the next cycle.
 - **Review.** No per-round review runs. Cycle Evaluation's existing Re-Review
-  runs once every task has landed, after Deploy/Integ Test.
+  runs once every task has landed, after Deploy/Integ Test. With three or more
+  members it runs in parallel (`review-slices.mjs`): the cycle's changed files
+  are grouped by area into balanced slices, one reviewer per slice plus one
+  looking across areas, each on its own member in a fresh session. The verdict
+  is APPROVED only if every reviewer approves; reopens and new tasks are
+  merged. If any slice fails to dispatch, one ordinary full review runs
+  instead.
 
 This relaxes "Serialized writers are load-bearing"
 (`docs/fleet-sprint-phase-routing-design.md`) only for doers: the sprint

@@ -147,6 +147,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // Build pipeline mode (docs/lazy-parallel-sprints.md): replaces the
 // Develop/Review round loop when validated.pipeline is set.
 import { runBuildPipelinePhase } from './phases/develop-pipeline.mjs';
+import { planReviewSlicesFor } from './review-slices.mjs';
 // apra-fleet-3swo.6.5: the next two phase() boundaries -- the per-round Review
 // and the per-cycle Deploy. Review still runs inside the Develop/Review round
 // loop (so it too takes `devRounds` already incremented) and hands back the
@@ -1442,6 +1443,24 @@ async function runSprintCycle(context) {
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
         codeWriteKey: branchCodeWriteKey(taskBranch),
     });
+    // Build pipeline mode: members a launcher added mid-sprint (JSON array of
+    // names in validated.pipelineMemberPool). A missing or unreadable file
+    // just means no extra members yet.
+    const readPipelineMemberPool = async () => {
+        if (!validated.pipelineMemberPool) return [];
+        try {
+            const names = JSON.parse(await fs.readFile(validated.pipelineMemberPool, 'utf-8'));
+            return Array.isArray(names) ? names.filter((n) => typeof n === 'string') : [];
+        } catch {
+            return [];
+        }
+    };
+    // Build pipeline mode's end-of-cycle review: slice the cycle's changed
+    // files across every available member (see review-slices.mjs).
+    const planReviewSlices = async () => planReviewSlicesFor({
+        command, validated, orchestratorMember,
+        members: [...new Set([...getMembersForRole(ROLE_REVIEWER), ...(await readPipelineMemberPool())])],
+    });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
     const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
@@ -1734,8 +1753,14 @@ async function runSprintCycle(context) {
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
-    async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
+    // `member`/`focus`/`label` (build pipeline mode's sliced end-of-cycle
+    // review): run this review on a specific member, narrowed by `focus`, in
+    // a FRESH session -- parallel slices must never resume one another's
+    // round session. Omitted, the review is exactly the shared one it always was.
+    async function dispatchReview({ beadIds, acceptanceCriteriaJson, member, focus, label }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        // Pipeline slices pin this one review to `member` instead of the pool head.
+        const reviewerHead = member || reviewerPool[0];
         // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
@@ -1743,7 +1768,7 @@ async function runSprintCycle(context) {
         // kb_promote had never once fired. Scoped to the reviewer's OWN work
         // folder (same source kbWork.apply uses to route the writes), and
         // best-effort: a cold KB must not fail the review.
-        const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
+        const reviewerRepoPath = kbPriming.folderOf(reviewerHead);
         const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
@@ -1754,7 +1779,7 @@ async function runSprintCycle(context) {
         const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
-            : kbPriming.knowledgeOf(reviewerPool[0]);
+            : kbPriming.knowledgeOf(reviewerHead);
         // A full-cycle review can genuinely exhaust the fleet's default turn
         // budget, and a fresh retry deterministically hits the same wall. Make
         // the budget explicit and, on max_turns exhaustion, RESUME the same
@@ -1793,7 +1818,7 @@ async function runSprintCycle(context) {
                 goal: validated.goal,
                 kbCandidates,
                 kbKnowledge: reviewerKnowledge,
-            }),
+            }) + (focus ? `\n\n${focus}` : ''),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
             resumePrompt:
@@ -1807,11 +1832,11 @@ async function runSprintCycle(context) {
                     : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
                 + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
-            roleLabel: 'Reviewer',
+            roleLabel: label || 'Reviewer',
             resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
-            bindings: { 'reviewerPool[0]': reviewerPool[0] },
+            bindings: { 'reviewerPool[0]': reviewerHead },
             // Within THIS cycle's develop-review loop, resume the reviewer's own
             // prior-round session by explicit session id so a re-review of the
             // next round's fixes keeps the diff/context it already built. False
@@ -1820,8 +1845,8 @@ async function runSprintCycle(context) {
             // 'clear-round-session' degrade step. The max_turns-exhaustion
             // resume overrides this to `resume: true`, which is an in-dispatch
             // continuation, not a cross-round one.
-            resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
-            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
+            resumeArg: member ? false : roundSessions.resumeArgFor('reviewer', cycle),
+            onSessionId: (id, meta) => { if (!member) roundSessions.record('reviewer', cycle, id, meta); },
             onResultRejected: (reason) => new ReviewerContractViolationError(
                 `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
                 `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
@@ -2541,17 +2566,7 @@ async function runSprintCycle(context) {
                 kbPriming, kbWork, kbQueryTerms, normalizeTierToken,
                 doerPool,
                 publishState,
-                // Members a launcher added mid-sprint (JSON array of names).
-                // A missing or unreadable file just means no extra members yet.
-                readMemberPool: async () => {
-                    if (!validated.pipelineMemberPool) return [];
-                    try {
-                        const names = JSON.parse(await fs.readFile(validated.pipelineMemberPool, 'utf-8'));
-                        return Array.isArray(names) ? names.filter((n) => typeof n === 'string') : [];
-                    } catch {
-                        return [];
-                    }
-                },
+                readMemberPool: readPipelineMemberPool,
                 listReady: async () => (await readyLeafBeads())
                     .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                     .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
@@ -2988,6 +3003,8 @@ async function runSprintCycle(context) {
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+                // Build pipeline mode: review the cycle in parallel slices.
+                planReviewSlices: validated.pipeline ? planReviewSlices : null,
             }));
         }
 
