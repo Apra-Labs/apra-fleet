@@ -21,7 +21,12 @@
  * path list, so a route module appended later is covered automatically --
  * see `requiresConsoleGuard` below. `/health` and `/mcp` are not console
  * paths at all and never reach this file. `/ui` (the shell) stays open and
- * additionally sets the console cookie on every GET. GET `/ext/*` also stays
+ * additionally sets the console cookie on every GET -- but ONLY when the
+ * caller's socket remote address is loopback (`isLoopbackRemoteAddress`,
+ * apra-fleet-v6t7.15). When the server binds a non-loopback host
+ * (APRA_FLEET_HOST), an off-machine caller still gets the shell but never
+ * the cookie, so it cannot turn a plain GET /ui into an authenticated
+ * /api/* session; it must present the fleet-key bearer. GET `/ext/*` also stays
  * open (401-free), but as of apra-fleet-iywi.11 an unauthenticated GET is
  * proxied WITHOUT the derived per-package upstream credential -- see the
  * `isExtPath` dispatch branch below and docs/console-architecture.md for the
@@ -47,6 +52,7 @@
  * tree that reads the built shell.
  */
 import crypto from 'node:crypto';
+import net from 'node:net';
 import type http from 'node:http';
 import { isAuthorized as checkCredential, cookieFor, normalizePath } from '@apralabs/apra-fleet-client/auth/local-token';
 import { getOrCreateKey } from '../services/jwt.js';
@@ -301,6 +307,39 @@ function isConsoleAuthorized(req: http.IncomingMessage, fleetKey: string, cookie
   return checkCredential(cookieOnly, cookieToken, { cookieName: CONSOLE_COOKIE_NAME });
 }
 
+/** IPv6 loopback (::1, in any textual spelling) -- BlockList normalises the
+ *  address, so '0:0:0:0:0:0:0:1' matches too. */
+const IPV6_LOOPBACK = new net.BlockList();
+IPV6_LOOPBACK.addAddress('::1', 'ipv6');
+
+/**
+ * Is `remoteAddress` a loopback peer (127.0.0.0/8, ::1, or an IPv4-mapped
+ * ::ffff:127.x)? apra-fleet-v6t7.15: gates console-cookie issuance on GET
+ * /ui so an off-machine caller (possible once APRA_FLEET_HOST binds a
+ * non-loopback host) can never obtain the cookie just by asking for the
+ * shell. FAIL CLOSED: an absent, empty or unparseable address is treated as
+ * non-loopback. Only the socket's own peer address is consulted -- never a
+ * client-supplied header such as X-Forwarded-For.
+ */
+export function isLoopbackRemoteAddress(remoteAddress: string | undefined | null): boolean {
+  if (typeof remoteAddress !== 'string') return false;
+  let addr = remoteAddress.trim().toLowerCase();
+  if (addr.length === 0) return false;
+  if (addr.startsWith('::ffff:')) {
+    const mapped = addr.slice('::ffff:'.length);
+    if (net.isIPv4(mapped)) addr = mapped;
+  }
+  if (net.isIPv4(addr)) return addr.split('.')[0] === '127';
+  if (net.isIPv6(addr)) {
+    try {
+      return IPV6_LOOPBACK.check(addr, 'ipv6');
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 /** Byte-identical to the server's existing catch-all 404 (no content-type,
  *  empty body), so a console path with nothing behind it looks exactly like
  *  any other unmatched route. */
@@ -377,9 +416,13 @@ export async function handleConsoleRequest(
         // from the fleet key (never the raw key -- see the SECURITY
         // CONSTRAINT note at the top of this file), set on every GET so the
         // shell works from any client-side route, not just the literal
-        // "/ui" entry path.
-        const fleetKey = getOrCreateKey();
-        res.setHeader('Set-Cookie', cookieFor(deriveConsoleCookieToken(fleetKey), { cookieName: CONSOLE_COOKIE_NAME }));
+        // "/ui" entry path. apra-fleet-v6t7.15: only for a loopback peer --
+        // a non-loopback (or undeterminable) caller is served the shell
+        // without the cookie, so it cannot mint itself an /api/* session.
+        if (isLoopbackRemoteAddress(req.socket?.remoteAddress)) {
+          const fleetKey = getOrCreateKey();
+          res.setHeader('Set-Cookie', cookieFor(deriveConsoleCookieToken(fleetKey), { cookieName: CONSOLE_COOKIE_NAME }));
+        }
         const serveStatic = context.serveStatic ?? staticHandlerDefault;
         try {
           const served = await serveStatic(pathname, res, {

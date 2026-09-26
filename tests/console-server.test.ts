@@ -12,11 +12,11 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { handleConsoleRequest, isConsolePath } from '../src/console/server.js';
+import { handleConsoleRequest, isConsolePath, isLoopbackRemoteAddress } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { addAgent } from '../src/services/registry.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
-import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
+import { createHttpTransport, nonLoopbackBindWarning, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { listMembers } from '../src/tools/list-members.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
@@ -389,5 +389,129 @@ describe('console seam end to end: real server, fixture shell dist', () => {
     const uix = await wireRequest(handle!.port, 'GET', '/uix');
     expect(uix.status).toBe(404);
     expect(uix.body).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Console cookie is issued only to loopback peers. With a non-loopback bind
+// (APRA_FLEET_HOST), an off-machine caller must never be able to obtain the
+// console cookie just by requesting /ui -- it is served the shell but no
+// Set-Cookie, and /api/* stays 401 for it without a bearer. An
+// undeterminable remote address fails closed (treated as non-loopback).
+// ---------------------------------------------------------------------------
+describe('console cookie: issued to loopback callers only', () => {
+  /** A request whose socket reports `remoteAddress`. `socket: 'none'` builds
+   *  a request with no socket at all (undeterminable peer). */
+  function fakeReqFrom(remote: string | undefined | 'none', url: string, headers?: Record<string, string>): http.IncomingMessage {
+    const base: Record<string, unknown> = { url, method: 'GET', headers: headers ?? {} };
+    if (remote !== 'none') base.socket = { remoteAddress: remote };
+    return base as unknown as http.IncomingMessage;
+  }
+
+  const serveShell = (_p: string, res: http.ServerResponse): boolean => {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<html>shell</html>');
+    return true;
+  };
+
+  async function getUi(remote: string | undefined | 'none'): Promise<FakeRes> {
+    const out = fakeRes();
+    expect(await handleConsoleRequest(fakeReqFrom(remote, '/ui/'), out.res, { serveStatic: serveShell })).toBe(true);
+    return out;
+  }
+
+  function consoleCookieOf(out: FakeRes): string | undefined {
+    const raw = out.setHeaders['Set-Cookie'];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return value?.startsWith('apra_console_token=') ? value.split(';')[0] : undefined;
+  }
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+  });
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  for (const remote of ['127.0.0.1', '127.8.9.10', '::1', '::ffff:127.0.0.1', '0:0:0:0:0:0:0:1']) {
+    it(`a loopback caller (${remote}) gets the shell AND the console cookie, and the cookie authenticates /api/fleet/members`, async () => {
+      const out = await getUi(remote);
+      expect(out.status).toBe(200);
+      expect(out.body).toContain('shell');
+      const cookie = consoleCookieOf(out);
+      expect(cookie).toBeDefined();
+
+      const api = fakeRes();
+      await handleConsoleRequest(fakeReqFrom(remote, '/api/fleet/members', { cookie: cookie! }), api.res, {});
+      expect(api.status).toBe(200);
+    });
+  }
+
+  for (const remote of ['192.0.2.10', '::ffff:192.0.2.10', '2001:db8::10', '10.0.0.5', '128.0.0.1']) {
+    it(`a non-loopback caller (${remote}) gets the shell but NO console cookie, and /api/fleet/members stays 401 without a bearer`, async () => {
+      const out = await getUi(remote);
+      expect(out.status).toBe(200);
+      expect(out.body).toContain('shell');
+      expect(out.setHeaders['Set-Cookie']).toBeUndefined();
+
+      const api = fakeRes();
+      await handleConsoleRequest(fakeReqFrom(remote, '/api/fleet/members'), api.res, {});
+      expect(api.status).toBe(401);
+      expect(JSON.parse(api.body)).toEqual({ error: 'unauthorized' });
+
+      // The bearer path is unaffected by the peer address.
+      const withBearer = fakeRes();
+      await handleConsoleRequest(fakeReqFrom(remote, '/api/fleet/members', authHeaders()), withBearer.res, {});
+      expect(withBearer.status).toBe(200);
+    });
+  }
+
+  for (const [label, remote] of [['no socket at all', 'none'], ['socket with undefined remoteAddress', undefined], ['empty remoteAddress', ''], ['unparseable remoteAddress', 'not-an-ip']] as const) {
+    it(`fails closed: ${label} -> shell served, no console cookie`, async () => {
+      const out = await getUi(remote);
+      expect(out.status).toBe(200);
+      expect(out.setHeaders['Set-Cookie']).toBeUndefined();
+    });
+  }
+
+  it('isLoopbackRemoteAddress classifies addresses directly (fail closed)', () => {
+    for (const a of ['127.0.0.1', '127.255.255.254', '::1', '::FFFF:127.0.0.1', '0:0:0:0:0:0:0:1']) expect(isLoopbackRemoteAddress(a)).toBe(true);
+    for (const a of ['192.0.2.10', '0.0.0.0', '::', '::ffff:10.0.0.1', '2001:db8::1', '128.0.0.1', '', 'localhost', 'garbage', undefined, null]) {
+      expect(isLoopbackRemoteAddress(a as string | undefined | null)).toBe(false);
+    }
+  });
+});
+
+describe('non-loopback bind warning names the console surface', () => {
+  it('nonLoopbackBindWarning states the console behaviour', () => {
+    const msg = nonLoopbackBindWarning('0.0.0.0');
+    expect(msg).toContain('binding to 0.0.0.0 (not loopback-only)');
+    expect(msg).toContain('/ui');
+    expect(msg).toContain('console cookie is issued only to loopback callers');
+    expect(msg).toContain('fleet-key bearer');
+    expect(msg).toContain('APRA_FLEET_HOST=127.0.0.1');
+  });
+
+  it('createHttpTransport actually logs that warning when APRA_FLEET_HOST binds beyond loopback', async () => {
+    const savedHost = process.env.APRA_FLEET_HOST;
+    process.env.APRA_FLEET_HOST = '0.0.0.0';
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    let fresh: HttpTransportHandle | null = null;
+    try {
+      // src/paths.ts reads APRA_FLEET_HOST once at module load, so re-import.
+      vi.resetModules();
+      const mod = await import('../src/services/http-transport.js');
+      fresh = await mod.createHttpTransport({ registerTools: () => {}, preferredPort: 0 });
+    } finally {
+      spy.mockRestore();
+      if (fresh) await fresh.close().catch(() => {});
+      if (savedHost === undefined) delete process.env.APRA_FLEET_HOST;
+      else process.env.APRA_FLEET_HOST = savedHost;
+      vi.resetModules();
+    }
+    const warning = lines.find((l) => l.includes('not loopback-only'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('console cookie is issued only to loopback callers');
   });
 });

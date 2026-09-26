@@ -130,6 +130,20 @@ function extractBearer(req: http.IncomingMessage): string | null {
   return auth.slice(7);
 }
 
+/**
+ * The startup warning logged when the server binds beyond loopback
+ * (APRA_FLEET_HOST). Exported so a test can pin its wording. It names every
+ * surface the non-loopback bind exposes, including the console
+ * (apra-fleet-v6t7.15): /ui is served to any host, but the console cookie is
+ * issued only to loopback callers, so an off-machine caller must present the
+ * fleet-key bearer to reach /api/* or a mutating /ext/* request.
+ */
+export function nonLoopbackBindWarning(bindHost: string): string {
+  return `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. `
+    + 'The console is reachable too: /ui (the shell) is served to any caller, but the console cookie is issued only to loopback callers, so an off-machine caller gets no console session and must present the fleet-key bearer for /api/* and non-GET /ext/* requests. '
+    + 'Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.';
+}
+
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort, shellDistDir } = options;
   const sessions = new Map<string, Session>();
@@ -436,7 +450,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   const targetPort = preferredPort ?? DEFAULT_PORT;
   const bindHost = DEFAULT_HOST;
   if (bindHost !== '127.0.0.1') {
-    logLine('session', `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.`);
+    logLine('session', nonLoopbackBindWarning(bindHost));
   }
   let port: number;
   try {

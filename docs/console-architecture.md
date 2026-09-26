@@ -92,7 +92,20 @@ console never has anything written to `res`.
 
 A caller authenticates with either the raw fleet key as a bearer token
 (`Authorization: Bearer <fleet.key>`, unchanged for existing CLI/script
-callers) or the `apra_console_token` cookie set on every `GET /ui`. The
+callers) or the `apra_console_token` cookie set on every `GET /ui` from a
+**loopback** caller. The cookie is issued only when the request's socket
+peer address (`req.socket.remoteAddress`, never a client-supplied header such
+as `X-Forwarded-For`) is loopback -- `127.0.0.0/8`, `::1`, or an IPv4-mapped
+`::ffff:127.x` (`isLoopbackRemoteAddress` in `src/console/server.ts`). This
+matters only when the server binds a non-loopback host (the explicit
+`APRA_FLEET_HOST` opt-in): an off-machine caller is still served the shell,
+but gets no cookie, so it cannot turn a plain `GET /ui` into an authenticated
+`/api/*` session and must present the fleet-key bearer instead. The check
+fails closed -- an absent, empty or unparseable peer address is treated as
+non-loopback. With the default loopback bind every caller is loopback, so
+behaviour there is unchanged. The non-loopback startup warning
+(`nonLoopbackBindWarning` in `src/services/http-transport.ts`) names this
+console behaviour alongside the other surfaces the bind exposes. The
 cookie is **not** the raw fleet key -- the fleet key also signs member JWTs
 (`jwt.ts`'s HS256 HMAC secret), so handing it to a browser as a cookie would
 let anything that reads it mint arbitrary member JWTs. The cookie instead
