@@ -102,6 +102,10 @@ Commit the docs/ changes with a descriptive message.
 ## Step 4 -- Update README.md and CHANGELOG.md
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
+- Before prepending the new entry, re-read the carried-forward backlog list of every
+  existing CHANGELOG entry still marked unreleased. For any listed item that has since
+  been closed, correct that entry to state the closed behaviour in place of the stale
+  open item -- do not delete the paragraph, so the record stays readable.
 - Prepend a new entry to `CHANGELOG.md` (create it if it does not exist) summarising
   what was implemented, the sprint goal, and any items carried forward
 - Your task context includes a `costAnalysis` block. Insert it verbatim into the CHANGELOG

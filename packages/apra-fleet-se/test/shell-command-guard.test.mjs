@@ -43,6 +43,7 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+const MEMBER_STRAY_SWEEP_PATH = path.join(__dirname, '../fleet-sprint/member-stray-sweep.mjs');
 
 /** Writes `src` to a throwaway file under os.tmpdir(); returns { file, dir, cleanup }. */
 function withFixture(name, src) {
@@ -63,6 +64,27 @@ test('shell guard reports zero violations for runner.js on current HEAD (baselin
         [],
         'runner.js must build no member-bound command string that relies on shell-level expansion; ' +
         'resolve paths in JavaScript (probeCommandFor / isPosixShell) instead'
+    );
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-i4ku.8: member-stray-sweep.mjs's buildKillCommand() emits a
+// member-bound `$?` (POSIX exit status) and is registered in GUARDED_MODULES,
+// yet the guard reported zero violations before this bead -- BARE_VAR_RE
+// requires a letter/underscore right after `$`, so every POSIX special
+// parameter ($? $! $$ $# $@ $* $0-$9) passed unflagged. This pins the fix: the
+// module is scanned clean now ONLY because the real `$?` site carries a
+// documented shell-guard-allow annotation (see the next test for proof the
+// annotation is load-bearing, not decorative).
+// -----------------------------------------------------------------------------
+
+test('shell guard reports zero violations for member-stray-sweep.mjs on current HEAD (baseline, apra-fleet-i4ku.8)', () => {
+    const { violations } = checkShellCommandPath(MEMBER_STRAY_SWEEP_PATH);
+    assert.deepEqual(
+        violations.map(formatShellCommandViolation),
+        [],
+        'member-stray-sweep.mjs must build no member-bound command string with an unannotated shell-level ' +
+        'expansion; its one deliberate $? use (buildKillCommand) must carry a documented shell-guard-allow'
     );
 });
 
@@ -268,6 +290,75 @@ test('backtick semantics: only an escaped backtick is flagged, an unescaped one 
     const control = findShellCommandViolations("await command('echo $HOME', { member_name: m });");
     assert.equal(control.length, 1, JSON.stringify(control));
     assert.match(control[0].reason, /bare shell variable expansion/);
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-i4ku.8: POSIX shell special parameters ($? $! $$ $# $@ $* and
+// $0-$9) -- BARE_VAR_RE's blind spot, closed by SPECIAL_PARAM_RE.
+// -----------------------------------------------------------------------------
+
+test('rule: an unannotated "$?" in a member-bound command string is reported (the exact gap this bead closes)', () => {
+    // Mirrors member-stray-sweep.mjs's buildKillCommand() shape verbatim
+    // (minus the shell-guard-allow annotation this test proves is load-
+    // bearing): "$?" right after a `kill` dispatch, with no suppressing
+    // comment anywhere near it.
+    const src = 'await command(`kill -9 ${pid} 2>&1; echo "SWEEP-KILL-STATUS ${pid} $?"`, { member_name: m });';
+    const violations = findShellCommandViolations(src);
+    assert.equal(violations.length, 1, JSON.stringify(violations));
+    assert.match(violations[0].reason, /POSIX shell special parameter "\$\?"/);
+});
+
+test('rule: every POSIX special parameter ($? $! $$ $# $@ $* and a lone digit $1-$9) is individually flagged', () => {
+    for (const [construct, snippet] of [
+        ['$?', 'echo "exit=$?"'],
+        ['$!', 'echo "bgpid=$!"'],
+        ['$$', 'echo "mypid=$$ done"'],
+        ['$#', 'echo "argc=$# done"'],
+        ['$@', 'echo "args=$@ done"'],
+        ['$*', 'echo "args=$* done"'],
+        ['$1', 'echo "first=$1 done"'],
+    ]) {
+        const violations = findShellCommandViolations(`await command('${snippet}', { member_name: m });`);
+        assert.equal(violations.length, 1, `${construct}: ${JSON.stringify(violations)}`);
+        assert.match(violations[0].reason, /POSIX shell special parameter/, `${construct} must be flagged`);
+        assert.ok(violations[0].reason.includes(`"${construct}"`), `${construct}: reason must quote the offending construct, got: ${violations[0].reason}`);
+    }
+});
+
+test('rule: "$0" (positional param zero) is flagged the same as $1-$9', () => {
+    const violations = findShellCommandViolations("await command('echo $0', { member_name: m });");
+    assert.equal(violations.length, 1, JSON.stringify(violations));
+    assert.match(violations[0].reason, /POSIX shell special parameter "\$0"/);
+});
+
+test('false-positive guard: a dollar-amount literal ($5.00, $1234, multi-digit) is never mistaken for a positional parameter', () => {
+    // A genuine POSIX positional parameter is always exactly ONE digit; a
+    // digit immediately followed by another digit or "." is a currency
+    // literal in a report/PR-body string (sprint-report.mjs is full of
+    // these), never dispatched to a shell at all.
+    assert.deepEqual(findShellCommandViolations("const s = 'Budget ceiling: $5.00.';"), []);
+    assert.deepEqual(findShellCommandViolations("const s = 'Remaining: $1234 today.';"), []);
+    assert.deepEqual(findShellCommandViolations("const s = 'Spend: $0.0000 tracked.';"), []);
+});
+
+test('false-positive guard: "$" immediately followed by "${...}" JS interpolation ("$${expr}") is never flagged as a literal "$$"', () => {
+    // The exact shape this package's own cost-report / kill-status strings
+    // use: a literal "$" (currency sign, or this guard's own message prefix)
+    // immediately followed by a JS template interpolation -- never a shell
+    // "$$" (process id).
+    assert.deepEqual(findShellCommandViolations('const s = `Budget ceiling: $${total.toFixed(4)}.`;'), []);
+});
+
+test('rule: a genuine "$$" (shell pid, not followed by "{") IS flagged', () => {
+    const violations = findShellCommandViolations("await command('echo $$ is my pid', { member_name: m });");
+    assert.equal(violations.length, 1, JSON.stringify(violations));
+    assert.match(violations[0].reason, /POSIX shell special parameter "\$\$"/);
+});
+
+test('carve-out: an annotated "$?" (mirroring buildKillCommand\'s real shell-guard-allow) is suppressed', () => {
+    const src = 'await command(`kill -9 ${pid} 2>&1; echo "STATUS ${pid} $?"`, { member_name: m }); ' +
+        '// shell-guard-allow: $? is the invoking POSIX shell\'s own exit status for the kill immediately above.';
+    assert.deepEqual(findShellCommandViolations(src), []);
 });
 
 test('findLineViolations reports a column for each construct on the line', () => {

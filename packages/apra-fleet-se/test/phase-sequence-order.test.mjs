@@ -79,8 +79,20 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
  * scenario stages none. Its absence is part of the recorded pre-slice
  * behaviour, not an oversight -- a slice that somehow made it start running
  * would be exactly the kind of change this pin exists to catch.
+ *
+ * 'Member Prep' (apra-fleet-9be4.3) is a DELIBERATE, PROVEN exception to this
+ * file's own "never update the expectation" rule: it is not a move-only
+ * runSprintCycle slice reordering something that already ran, it is a
+ * genuinely NEW pre-dispatch phase (phases/member-prep.mjs) added ahead of
+ * Ensure Sprint Branch, in the same pre-dispatch window the preflight
+ * beads-health gate already occupies. Confirmed via git-stash bisection
+ * against the pre-apra-fleet-9be4.3 tree: reverting only
+ * fleet-sprint/phases/member-prep.mjs and its runner.js call site restores
+ * the sequence below with 'Member Prep' removed and nothing else changed --
+ * proving this is a pure addition, not a reorder.
  */
 const EXPECTED_PHASE_SEQUENCE = [
+    'Member Prep',
     'Ensure Sprint Branch',
     'Plan C1 R1',
     'Plan C1 R2',

@@ -478,6 +478,22 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                     }
                     throw new Error(`f34.3 mcp adapter: unexpected child_id_allocator action '${args.action}'`);
                 }
+                // Member Prep (fleet-sprint/phases/member-prep.mjs) runs ahead of the
+                // mutex/allocator calls above and, once args.callTool is wired (as it is
+                // here), calls the real ApraFleet client's list_members/provision_llm_auth
+                // over it (sprint-state.mjs's sprintScopedFleetApi). Answer both with the
+                // real tool's local-member contract so the gate resolves 'local' as local
+                // (member-prep.mjs's memberLocality()/checkMemberAuth() ~186-240) without
+                // ever reaching the throw below.
+                if (name === 'list_members') {
+                    return envelope({ members: [{ name: 'local', id: 'local', type: 'local' }] });
+                }
+                if (name === 'provision_llm_auth') {
+                    return {
+                        content: [{ type: 'text', text: '[SKIP] local members use this machine credentials directly.' }],
+                        structuredContent: { ok: true, reason: 'skipped_local_member' },
+                    };
+                }
                 throw new Error(`f34.3 mcp adapter: unexpected tool '${name}'`);
             }
 

@@ -18,6 +18,33 @@ import { formatStalenessBlock } from './parent-notes-staleness.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock } from './runner.js';
 
 /**
+ * Deterministic hard cap on the code-reviewer findings text threaded into a
+ * scoped in-cycle replan planner prompt (apra-fleet-i4ku): the findings come
+ * from a reviewer's free-text verdict.notes, which is not size-bounded at
+ * its source, so a named constant -- not prompt-only guidance the model can
+ * ignore -- caps the prompt. Mirrors the PR_DESCRIPTION_MAX_LENGTH pattern in
+ * vcs-module.mjs: a single exported constant, deterministic truncation to
+ * exactly its first N characters, plus a visible marker (boundReplanFindings
+ * below) so a truncation is never silent.
+ * @type {number}
+ */
+export const REPLAN_FINDINGS_MAX_LENGTH = 4000;
+
+/**
+ * Bounds `text` to REPLAN_FINDINGS_MAX_LENGTH characters, appending a
+ * visible truncation marker naming the original length and the cap when
+ * truncation occurs. Returns `text` unchanged when already within the cap.
+ * @param {string} text
+ * @returns {string}
+ */
+function boundReplanFindings(text) {
+    if (text.length <= REPLAN_FINDINGS_MAX_LENGTH) return text;
+    const originalLength = text.length;
+    return `${text.slice(0, REPLAN_FINDINGS_MAX_LENGTH)}\n\n` +
+        `[TRUNCATED: original length ${originalLength} characters, cap ${REPLAN_FINDINGS_MAX_LENGTH} characters]`;
+}
+
+/**
  * @param {{
  *   isDeltaCycle: boolean,
  *   targetIssues: string[],
@@ -26,13 +53,14 @@ import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock 
  *   requirementsContent: string|null,
  *   feedback: string|null,
  *   replanScope?: string[]|null,
+ *   replanFindings?: string|null,
  *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  *   verifyExcluded?: string[],
  *   stalenessNotes?: string[],
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, replanFindings = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
     const lines = [];
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
@@ -40,19 +68,36 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     // from every ordinary full-plan/re-plan dispatch. It narrows the planner to
     // amending just those beads' criteria/decomposition.
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
+    // The findings that TRIGGERED this scoped replan (the code reviewer's
+    // verdict.notes for the flagged bead(s), threaded via replan.mjs from
+    // perBeadFeedback). Distinct from `feedback` below, which carries
+    // plan-reviewer verdicts from a PRIOR planning round -- these are
+    // code-reviewer findings from the develop/review loop, so they get their
+    // own heading and source label rather than reusing that block. Absent
+    // (typeof !== 'string', or blank after trim) in the genuinely
+    // findings-free case: no instruction to read them, and no empty block.
+    const hasReplanFindings = hasReplanScope && typeof replanFindings === 'string' && replanFindings.trim().length > 0;
     if (hasReplanScope) {
         lines.push(
             'SCOPED IN-CYCLE REPLAN -- this is a NARROW, targeted re-planning pass, not a full ' +
             'sprint plan. A reviewer flagged the following already-created bead(s) as having ' +
             'DEFECTIVE ACCEPTANCE CRITERIA that cannot be satisfied by re-development as written: ' +
             `${replanScope.join(', ')}. Re-scope ONLY these bead(s): read each one\'s current ` +
-            'description and the reviewer feedback below, then correct its acceptance criteria in ' +
+            'description' + (hasReplanFindings ? ' and the code reviewer findings below' : '') +
+            ', then correct its acceptance criteria in ' +
             'place (via `bd update`), or -- if it is genuinely too large -- decompose it into ' +
             'task-type children with clear acceptance criteria and model metadata. Do NOT touch, ' +
             'reword, re-decompose, close, or create any bead OUTSIDE this flagged set, and do NOT ' +
             'add scope beyond the original sprint goal. Keep the goalposts fixed: you are fixing a ' +
             'defect in these specific beads, not re-planning the sprint.'
         );
+        if (hasReplanFindings) {
+            lines.push(
+                'Findings from the code reviewer that reopened the flagged bead(s) above and ' +
+                'triggered this scoped re-plan -- address every point raised:'
+            );
+            lines.push(wrapUntrustedBlock('code-reviewer.findings', boundReplanFindings(replanFindings)));
+        }
     }
 
     if (isDeltaCycle) {

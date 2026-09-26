@@ -25,6 +25,7 @@ import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
+import { loadSweepConfig } from '../src/supervisor/sweep-config.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
@@ -81,6 +82,11 @@ Environment:
                                     this path, so an isolated supervisor
                                     instance never kills another instance's
                                     server. Unset = machine-wide (default).
+  FLEET_SE_SWEEP_CONFIG             Member Prep stray-sweep config (inline JSON
+                                    or a path) forwarded to every sprint as
+                                    --sweep-config. Unset = read the sprint
+                                    repo's own .fleet/sweep-config.json; absent
+                                    too = the sweep stays dormant.
 `.trim();
 
 /**
@@ -249,8 +255,19 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // history event -- the ledger already has it (recorded at claim() time,
     // see createSprintController's launch()), but history's own copy stays
     // discoverable even after the reservation is eventually released.
+    // apra-fleet-i4ku.10: the target repo's own stray-sweep config (fleet-start
+    // markers + production ports), read from <repoRoot>/.fleet/sweep-config.json
+    // or an explicit FLEET_SE_SWEEP_CONFIG. Loaded ONCE here, at startup, so a
+    // malformed config fails the supervisor loudly at boot rather than silently
+    // disarming the sweep of every sprint it later launches. The data is owned
+    // by the target, never by this engine (see sweep-config.mjs's module doc and
+    // docs/generic-engine-boundary.md). undefined -> --sweep-config is omitted
+    // and the sweep stays dormant exactly as before.
+    const sweepConfig = loadSweepConfig({ repoRoot, env: process.env, logger: console });
+
     const spawner = createSpawner({
         serviceUrl: `http://localhost:${port}`,
+        sweepConfig,
         // Sprint children run from the project root (the folder holding the
         // discovered .beads, not whatever subfolder the operator started in)
         // and carry the resolved identity so the engine can verify every

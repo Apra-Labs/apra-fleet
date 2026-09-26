@@ -9,14 +9,17 @@ import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveSweepConfig,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
     attachViewerErrorHandler,
     resolveExpectBeads,
     probeBeadsIdentityOnMember,
+    USAGE_TEXT,
 } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/runner.js';
+import { fileURLToPath } from 'node:url';
 
 // Tests for apra-fleet-unw2.16 (N14): CLI robustness fixes (a)-(e).
 //
@@ -214,6 +217,217 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
         await assert.rejects(
             () => resolveRoleMap('{"Doer":["m1"],"doer":["m2"]}'),
             /--role-map key "doer" normalizes to "doer", which collides/
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.7: --sweep-config reaches the runner's validated args --
+// the target-owned config surface for the Member Prep stray-process sweep.
+// Mirrors the --role-map coverage above, since resolveSweepConfig() follows
+// the identical inline-JSON / @file pattern.
+// ---------------------------------------------------------------------------
+
+describe('parseCliArgs + resolveSweepConfig + buildRunnerArgs -> runner.js validateArgs', () => {
+    test('parseCliArgs accepts --sweep-config', () => {
+        const { values } = parseCliArgs([
+            ...BASE_ARGV,
+            '--sweep-config', '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}]}',
+        ]);
+        assert.strictEqual(values['sweep-config'], '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}]}');
+    });
+
+    test('inline JSON --sweep-config reaches validateArgs correctly', async () => {
+        const sweepConfig = await resolveSweepConfig(
+            '{"markers":[{"kind":"sandbox","token":"/opt/fleetwork/","evidence":"path"}],"productionPorts":[8787]}'
+        );
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'],
+            members: ['m1'],
+            branch: 'auto-sprint/x',
+            baseBranch: 'main',
+            goal: 'P1/P2',
+            maxCycles: 5,
+            sweepMarkers: sweepConfig.markers,
+            sweepProductionPorts: sweepConfig.productionPorts,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.sweepMarkers, [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }]);
+        assert.deepStrictEqual(validated.sweepProductionPorts, [8787]);
+    });
+
+    test('@file --sweep-config indirection reaches validateArgs correctly', async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-se-sweepconfig-'));
+        const filePath = path.join(dir, 'sweep-config.json');
+        await fs.writeFile(filePath, JSON.stringify({
+            markers: [{ kind: 'dispatch', token: 'claude --fleet-run-id', evidence: 'flag' }],
+            productionPorts: [8080, 8787],
+        }), 'utf-8');
+        try {
+            const sweepConfig = await resolveSweepConfig(`@${filePath}`);
+            const args = buildRunnerArgs({
+                targetIssues: ['bd-1'], members: ['m1'], branch: 'auto-sprint/x', baseBranch: 'main',
+                goal: 'P1', maxCycles: 2,
+                sweepMarkers: sweepConfig.markers, sweepProductionPorts: sweepConfig.productionPorts,
+            });
+            const validated = validateArgs(args);
+            assert.deepStrictEqual(validated.sweepMarkers, [{ kind: 'dispatch', token: 'claude --fleet-run-id', evidence: 'flag' }]);
+            assert.deepStrictEqual(validated.sweepProductionPorts, [8080, 8787]);
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('resolveSweepConfig is undefined when --sweep-config is not passed, and the Member Prep call site falls back to skip', async () => {
+        const sweepConfig = await resolveSweepConfig(undefined);
+        assert.strictEqual(sweepConfig, undefined);
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m1'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, sweepMarkers: sweepConfig?.markers, sweepProductionPorts: sweepConfig?.productionPorts,
+        });
+        assert.strictEqual('sweep_markers' in args, false);
+        assert.strictEqual('sweep_production_ports' in args, false);
+        const validated = validateArgs(args); // must not throw
+        assert.strictEqual(validated.sweepMarkers, undefined);
+        assert.strictEqual(validated.sweepProductionPorts, undefined);
+    });
+
+    test('rejects malformed inline JSON with a clear error', async () => {
+        await assert.rejects(() => resolveSweepConfig('{not valid json'), /must be valid JSON/);
+    });
+
+    test('rejects a sweep-config that is not an object', async () => {
+        await assert.rejects(() => resolveSweepConfig('["markers"]'), /must be an object/);
+    });
+
+    test('rejects a markers entry missing kind/token/evidence, or with an unknown evidence class', async () => {
+        await assert.rejects(() => resolveSweepConfig('{"markers":[{"token":"x","evidence":"path"}]}'), /markers\[0\]/);
+        await assert.rejects(() => resolveSweepConfig('{"markers":[{"kind":"x","token":"y","evidence":"bogus"}]}'), /markers\[0\]/);
+    });
+
+    test('rejects an out-of-range productionPorts entry', async () => {
+        await assert.rejects(() => resolveSweepConfig('{"productionPorts":[99999]}'), /productionPorts\[0\]/);
+    });
+
+    test('@file indirection surfaces a clear error when the file is missing', async () => {
+        await assert.rejects(() => resolveSweepConfig('@/path/does/not/exist.json'), /could not read --sweep-config file/);
+    });
+
+    // apra-fleet-i4ku.22: the top-level key set is now strict -- a typo such
+    // as "productionPort" (missing the trailing "s") used to be silently
+    // discarded, yielding productionPorts: [] with no error and quietly
+    // dropping a target's production-port protection.
+    test('rejects an unknown top-level key with the CLI-style error, naming the offending key', async () => {
+        await assert.rejects(
+            () => resolveSweepConfig('{"productionPort":[8787]}'),
+            /Error: --sweep-config unknown key\(s\) "productionPort"/,
+        );
+    });
+
+    test('accepts underscore-prefixed comment keys and drops them from the resolved config', async () => {
+        const sweepConfig = await resolveSweepConfig(JSON.stringify({
+            _readme: 'this file is a comment carrier',
+            _readme_supervisor: 'another comment',
+            markers: [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }],
+            productionPorts: [8787],
+        }));
+        assert.deepStrictEqual(Object.keys(sweepConfig).sort(), ['markers', 'productionPorts']);
+        assert.deepStrictEqual(sweepConfig.markers, [{ kind: 'sandbox', token: '/opt/fleetwork/', evidence: 'path' }]);
+        assert.deepStrictEqual(sweepConfig.productionPorts, [8787]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i4ku.20: the --sweep-config help entry was once garbled by a
+// splice that inserted the liveness sentences mid-sentence and left a
+// dangling fragment at a different indent. These tests pin the entry's
+// coherence directly against the rendered USAGE_TEXT (not a re-typed copy),
+// and pin that the CLI reference doc mentions livenessProbe in the same row.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts one flag's help entry from USAGE_TEXT: its own line plus every
+ * following line that is a CONTINUATION (indented well past the two-space/
+ * six-space column where a new flag entry starts), stopping at the next flag
+ * entry, a blank line, or EOF.
+ * @param {string} usageText
+ * @param {RegExp} flagLineRe - matches the flag's own (first) line
+ * @returns {{ ownLine: string, continuationLines: string[] } | null}
+ */
+function extractHelpEntry(usageText, flagLineRe) {
+    const lines = usageText.split('\n');
+    const startIdx = lines.findIndex((l) => flagLineRe.test(l));
+    if (startIdx === -1) return null;
+
+    const continuationLines = [];
+    for (let i = startIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().length === 0) break;
+        const indent = line.length - line.trimStart().length;
+        // A new flag entry starts at column 2 ('-x, --flag') or column 6
+        // ('    --flag'); a continuation of the current entry is indented
+        // well past that (aligned under the entry's description column).
+        if (indent <= 6) break;
+        continuationLines.push(line);
+    }
+    return { ownLine: lines[startIdx], continuationLines };
+}
+
+describe('--sweep-config help entry stays coherent (no re-splice regression)', () => {
+    test('the rendered help entry mentions markers, productionPorts and livenessProbe', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        const wholeEntry = [entry.ownLine, ...entry.continuationLines].join(' ');
+        assert.match(wholeEntry, /markers/);
+        assert.match(wholeEntry, /productionPorts/);
+        assert.match(wholeEntry, /livenessProbe/);
+    });
+
+    test('the entry has no orphan fragment: every continuation line shares the same indent', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        assert.ok(entry.continuationLines.length > 1, 'expected a multi-line entry to have something to check');
+
+        const indents = entry.continuationLines.map((l) => l.length - l.trimStart().length);
+        const distinctIndents = new Set(indents);
+        assert.strictEqual(
+            distinctIndents.size, 1,
+            `expected every continuation line of --sweep-config to share one indent, got indents ${JSON.stringify(indents)} ` +
+            `for lines ${JSON.stringify(entry.continuationLines)}`,
+        );
+    });
+
+    test('the rendered help entry has no dangling low-level fragment ("configuring the Member Prep..." at the old indent)', () => {
+        const entry = extractHelpEntry(USAGE_TEXT, /--sweep-config/);
+        assert.ok(entry, 'USAGE_TEXT has no --sweep-config entry to inspect');
+        // Pins the exact pre-fix regression shape: a continuation line
+        // sitting at column 32 while the rest of the entry sits at column 35.
+        const shallowFragment = entry.continuationLines.find((l) => (l.length - l.trimStart().length) === 32);
+        assert.strictEqual(shallowFragment, undefined, `found a stray shallow-indent continuation line: ${JSON.stringify(shallowFragment)}`);
+    });
+
+    test('docs/cli-reference.md mentions livenessProbe within its --sweep-config row', async () => {
+        const docPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'cli-reference.md');
+        const content = await fs.readFile(docPath, 'utf-8');
+        const lines = content.split('\n');
+        const sweepConfigRow = lines.find((l) => l.includes('--sweep-config'));
+        assert.ok(sweepConfigRow, 'docs/cli-reference.md has no --sweep-config row to inspect');
+        assert.match(sweepConfigRow, /livenessProbe/, 'the --sweep-config row must document livenessProbe');
+    });
+
+    test('docs/cli-reference.md mentions the tcp-alive-no-http (non-HTTP listener) outcome within its --sweep-config row', async () => {
+        const docPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'cli-reference.md');
+        const content = await fs.readFile(docPath, 'utf-8');
+        const lines = content.split('\n');
+        const sweepConfigRow = lines.find((l) => l.includes('--sweep-config'));
+        assert.ok(sweepConfigRow, 'docs/cli-reference.md has no --sweep-config row to inspect');
+        assert.match(
+            sweepConfigRow, /never speaks HTTP back/,
+            'the --sweep-config row must document the tcp-alive-no-http (non-HTTP listener) outcome',
+        );
+        assert.match(
+            sweepConfigRow, /spares that candidate rather than confirming it dead/,
+            'the row must state the outcome is a spare, not a confirmed-dead verdict',
         );
     });
 });

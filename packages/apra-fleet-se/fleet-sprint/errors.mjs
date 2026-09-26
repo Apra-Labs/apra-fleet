@@ -922,3 +922,90 @@ export class BeadsIdentityError extends WorkflowError {
         if (mismatches) this.mismatches = mismatches;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Member prep (apra-fleet-9be4.3) -- LLM auth cannot be provisioned
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by the Member Prep phase (phases/member-prep.mjs) BEFORE the
+ * sprint's first role dispatch when a member's LLM auth is missing and
+ * cannot be provisioned. This is the FAIL LOUD path the phase exists for --
+ * an advisory warning that never blocks is explicitly not acceptable here
+ * (see that module's header), so this error is never caught/degraded inside
+ * Member Prep itself.
+ *
+ * Covers every "cannot help this member" outcome the phase distinguishes:
+ * a `provision_llm_auth` call that failed outright, AND the
+ * `skipped_local_member` no-op (a local member shares the operator's own
+ * host session; only an interactive `/login` on that machine can fix it, so
+ * `ok:true`/`skipped_local_member` is deliberately NOT read as successful
+ * provisioning -- see vcs-auth.mjs's createLlmAuthSelfHealCallback, whose
+ * same rule this mirrors for the up-front check).
+ *
+ * @property {string} member - the member whose auth is unprovisionable
+ * @property {string} credential - which credential is missing (e.g. 'LLM auth')
+ */
+export class LlmAuthUnprovisionableError extends WorkflowError {
+    /**
+     * @param {string} member
+     * @param {string} credential
+     * @param {string} detail - the provision_llm_auth outcome text/reason this was raised from
+     * @param {{ cause?: unknown }} [opts]
+     */
+    constructor(member, credential, detail, opts = {}) {
+        super(
+            `Member Prep: LLM auth cannot be provisioned for member '${member}' (missing credential: ${credential}) -- ` +
+            `${detail} Aborting before the first dispatch rather than warning.`,
+            { code: 'LLM_AUTH_UNPROVISIONABLE', details: { member, credential, detail }, cause: opts.cause },
+        );
+        this.member = member;
+        this.credential = credential;
+        this.detail = detail;
+    }
+}
+
+/**
+ * Thrown by the Member Prep phase (phases/member-prep.mjs) BEFORE the
+ * sprint's first role dispatch when a member could not be REACHED at all.
+ *
+ * Deliberately NOT LlmAuthUnprovisionableError (apra-fleet-i4ku.13). The
+ * member registry reports `llm_auth: 'offline'` for a remote member whose
+ * connection test failed (src/tools/list-members.ts's getAuthStatus()
+ * returns 'offline' the moment `strategy.testConnection()` fails or
+ * throws, BEFORE it ever looks for an OAuth credential file or an API-key
+ * env var -- so 'offline' carries no information about the member's
+ * credentials whatsoever). Treating that status like any other non-OK
+ * status sent the phase into `provision_llm_auth`, which of course also
+ * failed against a machine that is down, and aborted with a message
+ * telling the operator a credential was MISSING. That points at the wrong
+ * thing entirely: the credential may be perfectly fine and the host is
+ * simply switched off, asleep, or unroutable.
+ *
+ * Just as fail-loud as the credential error -- it still aborts the phase,
+ * and therefore the sprint, before the first dispatch. Only the diagnosis
+ * differs: this one points the operator at the MACHINE, and says nothing
+ * about credentials because nothing about them is known.
+ *
+ * @property {string} member - the member that could not be reached
+ * @property {string} status - the registry status this was raised from (e.g. 'offline')
+ */
+export class MemberUnreachableError extends WorkflowError {
+    /**
+     * @param {string} member
+     * @param {string} status - the llm_auth/connectivity status the registry reported
+     * @param {{ cause?: unknown }} [opts]
+     */
+    constructor(member, status = 'offline', opts = {}) {
+        super(
+            `Member Prep: member '${member}' could not be reached (the member registry reports connectivity `
+            + `status '${status}', which means its connection test failed). This is NOT a credential problem -- `
+            + 'nothing is known about this member\'s LLM auth, because the machine never answered. Check that '
+            + 'the host is powered on, routable and accepting connections, then relaunch. Aborting before the '
+            + 'first dispatch rather than warning.',
+            { code: 'MEMBER_UNREACHABLE', details: { member, status }, cause: opts.cause },
+        );
+        this.member = member;
+        this.status = status;
+    }
+}

@@ -136,6 +136,7 @@ import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 // unchanged -- Ensure Sprint Branch still runs where it ran, Plan still runs
 // at the top of every cycle.
 import { runEnsureSprintBranchPhase } from './phases/ensure-sprint-branch.mjs';
+import { runMemberPrepPhase, memberPrepExecLabel } from './phases/member-prep.mjs';
 import { runPlanPhase } from './phases/plan.mjs';
 // apra-fleet-3swo.6.7: the next two phase() boundaries, sliced the same way
 // -- the in-cycle scoped Replan and one Develop round. Both live INSIDE the
@@ -1906,6 +1907,71 @@ async function runSprintCycle(context) {
     const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) });
 
+    // Member Prep (apra-fleet-9be4.3): once per sprint member, before the
+    // first role dispatch -- auth, stray-process sweep, G-pull (reported;
+    // the real fetch/checkout is Ensure Sprint Branch immediately below) and
+    // D-pull. Runs over the SAME branchEnsureMembers set Ensure Sprint Branch
+    // uses, so "every member this sprint will dispatch to" never drifts
+    // between the two steps. `execCommand` adapts the sweep's injected seam
+    // onto this file's own per-member `command()` dispatcher (failSoft, so a
+    // probe failure surfaces as the sweep's own StrayProbeError rather than
+    // an unrelated non-zero-exit throw).
+    //
+    // `sweepMarkers`/`sweepProductionPorts` (apra-fleet-i4ku.7) come straight
+    // from `validated.sweepMarkers`/`validated.sweepProductionPorts` -- this
+    // generic engine still hardcodes no target-repo paths, flags or ports of
+    // its own (member-stray-sweep.mjs's own header); those now flow in from
+    // the TARGET-OWNED `--sweep-config <json|@file>` CLI flag
+    // (bin/cli.mjs's resolveSweepConfig() -> sprint-args.mjs's
+    // sweep_markers/sweep_production_ports), so a target that wants real
+    // stray-process cleanup supplies its own markers/ports there instead of
+    // this engine inventing any. Considered and rejected: having the ENGINE
+    // itself contribute markers for the process trees it starts (role
+    // dispatch, test-runner subprocesses) -- role dispatch happens through
+    // the fleet MCP server's own `agent()`/`execute_prompt` call, not a
+    // locally-spawned child process this engine could tag with an inspectable
+    // command-line token, and a test-runner's subprocesses are target-authored
+    // commands this engine does not construct, so there is no reliable,
+    // target-repo-agnostic marker to add on the engine's own behalf.
+    // Defaulted to `[]` (via `|| []`) rather than relying on
+    // runMemberPrepPhase's own default, so a `validated.sweepMarkers` of
+    // `undefined` (the --sweep-config flag omitted) is explicit at this call
+    // site. With no configured markers, phases/member-prep.mjs's
+    // runSweepStep() reports the sweep step SKIPPED and dispatches no probe
+    // at all (apra-fleet-9be4.3 review blocker 2 -- a probe run with no
+    // markers can never identify a fleet-started process, so running it
+    // anyway would print a false "clean, N scanned" result).
+    await runMemberPrepPhase({
+        members: branchEnsureMembers,
+        fleetApi: sprintState.fleetApi,
+        // `kind` (apra-fleet-i4ku.12) is the dispatch INTENT member-stray-
+        // sweep.mjs now tags each of its two dispatches with. This adapter
+        // previously hardcoded the probe label and reused it for BOTH, so
+        // every kill was recorded in the sprint log and ledger as a probe --
+        // destroying exactly the accountability the sweep's own
+        // formatStrayKillLog() provides. The label now follows the intent,
+        // via the shared memberPrepExecLabel() so this adapter and its
+        // verification cannot drift. Labelling only: `cmd` is passed through
+        // untouched, so the commands executed on the member are unchanged.
+        // `kind` is undefined for any caller that does not set it, and
+        // memberPrepExecLabel() defaults that to the probe wording.
+        execCommand: ({ member: member_name, command: cmd, kind }) => command(cmd, {
+            member_name, silent: true, failSoft: true, label: memberPrepExecLabel(member_name, kind),
+        }),
+        syncBeadsBefore: gitSync.syncBeadsBefore,
+        log, group, phase, endGroup,
+        sweepMarkers: validated.sweepMarkers || [],
+        sweepProductionPorts: validated.sweepProductionPorts || [],
+        // apra-fleet-i4ku.17: the liveness predicate's option, forwarded
+        // WITHOUT a `|| default` of its own -- unlike the two lines above.
+        // That is deliberate: `undefined` here is meaningful ("the target
+        // said nothing"), and phases/member-prep.mjs's runSweepStep() is the
+        // single place that turns silence into ARMED. Defaulting it at this
+        // call site too would put the same decision in two files, where one
+        // could later be changed without the other.
+        sweepLivenessProbe: validated.sweepLivenessProbe,
+    });
+
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
     // =======================
@@ -2560,7 +2626,7 @@ async function runSprintCycle(context) {
                     orchestratorMember,
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
-                    devRounds, eligibleReplan, replanIds, replannedThisCycle,
+                    devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
                 });
                 continue;
             }

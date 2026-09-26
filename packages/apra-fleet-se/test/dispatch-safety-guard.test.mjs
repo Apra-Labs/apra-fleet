@@ -416,7 +416,16 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // unguarded: beads-children.mjs is registered in GUARDED_MODULES, so the
 // aggregate checkModules(guardedModulePaths()) test below scans it, and it
 // gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 4;
+// 4 -> 5 (apra-fleet-9be4.3): the new Member Prep phase call site adds ONE
+// command() call in runner.js -- the `execCommand` adapter runMemberPrepPhase
+// is handed for its stray-process sweep probe/kill dispatches, which wraps
+// this file's own `command(cmd, { member_name, silent: true, failSoft: true,
+// label })` (the same shape every other read-only per-member probe in this
+// file uses). phases/member-prep.mjs itself issues no command() of its own
+// (its sweep dispatch runs behind that injected seam; its D-pull runs
+// through gitSync.syncBeadsBefore()), so the new site lands here, not there
+// -- verified compliant (member_name is passed).
+const EXPECTED_COMMAND_COUNT = 5;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

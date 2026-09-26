@@ -195,13 +195,14 @@ export async function allocateFreePort(opts = {}) {
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
- *   extraArgs?: string[],
+ *   sweepConfig?: object|string, extraArgs?: string[],
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads,
+        sweepConfig, extraArgs } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -249,6 +250,23 @@ export function buildSprintArgv(opts = {}) {
     // database this supervisor reads. Omitted when the caller has none (a
     // direct/test spawner) -- the engine then skips the verification.
     if (expectBeads !== undefined) args.push('--expect-beads', expectBeads);
+    // apra-fleet-i4ku.10: the TARGET-OWNED stray-sweep config (fleet-start
+    // markers + production ports) this supervisor loaded for its sprint repo,
+    // serialized exactly like --role-map above so cli.mjs's
+    // resolveSweepConfig() can shape-check it on the way in. Without this
+    // passthrough the flag was reachable only from a direct CLI launch, so
+    // every supervisor-launched sprint reported "sweep skipped: no
+    // fleet-start markers configured" and the sweep never acted.
+    //
+    // The ENGINE owns none of this data -- it is read from the target repo's
+    // own .fleet/sweep-config.json (src/supervisor/sweep-config.mjs) -- so an
+    // object here is whatever that target declared, never anything this
+    // codebase hardcodes about itself (docs/generic-engine-boundary.md).
+    // Omitted entirely when the caller has none, leaving direct CLI launches
+    // and every existing caller byte-for-byte unchanged.
+    if (sweepConfig !== undefined) {
+        args.push('--sweep-config', typeof sweepConfig === 'string' ? sweepConfig : JSON.stringify(sweepConfig));
+    }
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }
@@ -270,6 +288,7 @@ export function buildSprintArgv(opts = {}) {
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
  *   expectBeads?: string|(() => string|undefined),
+ *   sweepConfig?: object|string|(() => object|string|undefined),
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
  *   dataDir?: string,
@@ -320,6 +339,15 @@ export function createSpawner(deps = {}) {
     // later by GET /api/health?refresh=1. undefined -> the flag is omitted.
     const expectBeadsDep = deps.expectBeads;
     const resolveExpectBeads = () => (typeof expectBeadsDep === 'function' ? expectBeadsDep() : expectBeadsDep);
+    // apra-fleet-i4ku.10: the target repo's stray-sweep config, forwarded to
+    // every spawned child as --sweep-config (see buildSprintArgv above).
+    // Threaded exactly like expectBeads: optional, may be a function so it is
+    // read at each spawn rather than captured at startup, and a per-call
+    // opts.sweepConfig wins over this instance default. undefined -> the flag
+    // is omitted and the child's Member Prep sweep stays dormant exactly as
+    // it did before this existed.
+    const sweepConfigDep = deps.sweepConfig;
+    const resolveSweepConfigDep = () => (typeof sweepConfigDep === 'function' ? sweepConfigDep() : sweepConfigDep);
     // apra-fleet-k7b.3: optional same-instance child-exit notification (see
     // the 'exit' listener below) and its injectable clock (test determinism,
     // matching ledger.mjs/history.mjs's own `now` seam convention).
@@ -362,6 +390,7 @@ export function createSpawner(deps = {}) {
             viewerPort: port,
             serviceUrl: opts.serviceUrl ?? serviceUrl,
             expectBeads: opts.expectBeads ?? resolveExpectBeads(),
+            sweepConfig: opts.sweepConfig ?? resolveSweepConfigDep(),
         })];
 
         // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController

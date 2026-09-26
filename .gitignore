@@ -32,6 +32,12 @@ CLAUDE.md
 # beads runtime gate lock (created next to .beads/ by bd); never commit
 .beads.gate.lock
 
+# Beads gate hook lock file, written at repo root (named after the local
+# Dolt database, which can differ per clone -- see CLAUDE.md). Without this
+# entry every clean-tree gate (reviewer, session-close, sprint phases) sees
+# a dirty tree it did not cause.
+*.gate.lock
+
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
 

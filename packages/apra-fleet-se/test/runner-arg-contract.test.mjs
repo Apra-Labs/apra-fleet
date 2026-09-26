@@ -104,6 +104,44 @@ describe('validateArgs', () => {
     });
 
     // -------------------------------------------------------------------
+    // apra-fleet-i4ku.7: sweep_markers / sweep_production_ports -- the
+    // target-owned config surface for the Member Prep stray-process sweep.
+    // -------------------------------------------------------------------
+
+    test('sweep_markers/sweep_production_ports are undefined when not passed (Member Prep call site falls back to [])', () => {
+        const result = validateArgs(VALID_ARGS);
+        assert.strictEqual(result.sweepMarkers, undefined);
+        assert.strictEqual(result.sweepProductionPorts, undefined);
+    });
+
+    test('accepts a well-formed sweep_markers/sweep_production_ports pair', () => {
+        const result = validateArgs({
+            ...VALID_ARGS,
+            sweep_markers: [{ kind: 'sandbox', token: '/opt/fleetwork/sandbox-', evidence: 'path' }],
+            sweep_production_ports: [8787, 8080],
+        });
+        assert.deepStrictEqual(result.sweepMarkers, [{ kind: 'sandbox', token: '/opt/fleetwork/sandbox-', evidence: 'path' }]);
+        assert.deepStrictEqual(result.sweepProductionPorts, [8787, 8080]);
+    });
+
+    test('rejects sweep_markers that is not an array', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_markers: { kind: 'x' } }), /Invalid sweep_markers: must be an array/);
+    });
+
+    test('rejects a sweep_markers entry missing kind/token, or with an unknown evidence class', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_markers: [{ token: 'x', evidence: 'path' }] }), /Invalid sweep_markers\[0\]\.kind/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_markers: [{ kind: 'x', evidence: 'path' }] }), /Invalid sweep_markers\[0\]\.token/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_markers: [{ kind: 'x', token: 'y', evidence: 'bogus' }] }), /Invalid sweep_markers\[0\]\.evidence/);
+    });
+
+    test('rejects sweep_production_ports that is not an array, or that contains an out-of-range/non-integer port', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_production_ports: 8787 }), /Invalid sweep_production_ports: must be an array/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_production_ports: [0] }), /Invalid sweep_production_ports\[0\]/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_production_ports: [70000] }), /Invalid sweep_production_ports\[0\]/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, sweep_production_ports: [8787.5] }), /Invalid sweep_production_ports\[0\]/);
+    });
+
+    // -------------------------------------------------------------------
     // Stabilization Issue 32: dispatch_timeout_s -- the per-dispatch time
     // budget (timeout_s == max_total_s at every site; integ ceiling 2x).
     // -------------------------------------------------------------------

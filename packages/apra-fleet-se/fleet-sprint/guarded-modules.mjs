@@ -215,6 +215,18 @@ export const GUARDED_MODULES = [
     // one site the guard exists for.
     'phases/harvest.mjs',
     'phases/publish-pr.mjs',
+    // apra-fleet-9be4.3: Member Prep, the sprint-start once-per-member step
+    // (auth, stray-process sweep, G-pull, D-pull). It carries no direct
+    // command()/agent() call site of its own -- the sweep runs behind the
+    // caller-injected execCommand seam member-stray-sweep.mjs already
+    // defines, and the D-pull step calls straight through
+    // gitSync.syncBeadsBefore() (git-sync.mjs), never a raw command() of its
+    // own -- but it is registered anyway, like member-stray-sweep.mjs above,
+    // because runner.js's wiring passes it a real fleetApi
+    // (provision_llm_auth, list_members) and a real execCommand seam that
+    // together build and dispatch member-bound commands, which is exactly the
+    // surface these guards exist to keep watching as the phase evolves.
+    'phases/member-prep.mjs',
     // apra-fleet-3swo.6.3: the git-topology layer sliced out of runner.js --
     // the pre-sprint multi-member topology precondition (checkMemberTopology),
     // the ONE git-failure classifier (classifyGitFailure) and the fail-closed
@@ -376,6 +388,17 @@ export const GUARDED_MODULES = [
     // exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The remote-only stray fleet-process sweep (member-stray-sweep.mjs). It
+    // issues no command()/agent() call of its own -- execution is behind an
+    // injected seam its caller supplies -- so it scans clean under
+    // dispatch-safety-guard, and it is registered rather than exempted
+    // deliberately: it BUILDS member-bound command strings, which is exactly
+    // the surface the shell-command invariant exists for. Its win32 branch
+    // carries PowerShell pipeline/local variables inside its own
+    // -EncodedCommand payload; those are suppressed one line at a time with
+    // documented `shell-guard-allow` directives rather than by exempting the
+    // whole module, so any NEW expansion added to it is still reported.
+    'member-stray-sweep.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',

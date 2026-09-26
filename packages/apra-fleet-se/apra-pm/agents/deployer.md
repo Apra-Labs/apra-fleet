@@ -88,17 +88,27 @@ team PR, and `.claude/settings.local.json` must be provisioned via the
 across all supported providers), never hand-edited. Do NOT proceed past
 Step 0a while any permission is missing.
 
-## Step 0b -- Knowledge Bank (required -- do this BEFORE any deploy.md operation)
+## Step 0b -- Knowledge Bank (do this BEFORE any deploy.md operation)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
-   and `hint_modules` naming the deploy targets in `deploy.md`. Trust CONFIRMED entries
-   fully. Use INFERRED entries as hints, not facts.
-3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out to
-   be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook" or
-   "learning". A deploy gotcha you had to discover is exactly what the next deploy needs.
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the deploy targets in `deploy.md`.
+Treat it as your PRIMARY source -- reading it needs no tool call. On most dispatched
+environments the fleet MCP server (mcp__apra-fleet__*) is disabled for this role, so
+the tool calls below are a BONUS path, not a requirement: attempt them
+opportunistically and fall back to the pre-fetched block (or no KB context at all) if
+ToolSearch surfaces nothing.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+1. If you want a live lookup beyond the pre-fetched block, run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
+   and `hint_modules` naming the deploy targets in `deploy.md`.
+2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
+   as hints, not facts.
+3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out
+   to be wrong or incomplete, call `mcp__apra-fleet__kb_capture` if it is reachable --
+   it usually is not on a dispatched environment, in which case simply note the deploy
+   gotcha in your own report instead. A deploy gotcha you had to discover is exactly
+   what the next deploy needs.
 
 ## deploy.md operations
 
