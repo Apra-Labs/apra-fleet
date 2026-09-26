@@ -14,9 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type http from 'node:http';
 import { Readable } from 'node:stream';
-import fsp from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // --- tool module mocks -----------------------------------------------------
 // importOriginal is spread back in on purpose: the routes import each tool's
@@ -442,23 +440,16 @@ export const ROUTE_CASES: RouteCase[] = [
 // reads HOME there) at a fresh temp dir per test so getOrCreateKey() here is
 // never the real developer's key.
 // -----------------------------------------------------------------------------
-let realHome: string | undefined;
-let realUserProfile: string | undefined;
-let tempHome: string;
+let restoreHome: (() => Promise<void>) | undefined;
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  realHome = process.env.HOME;
-  realUserProfile = process.env.USERPROFILE;
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-routes-fleet-home-'));
-  process.env.HOME = tempHome;
-  process.env.USERPROFILE = tempHome;
+  const home = await applyIsolatedHome('console-routes-fleet-home-');
+  restoreHome = home.restore;
 });
 
 afterEach(async () => {
-  process.env.HOME = realHome;
-  process.env.USERPROFILE = realUserProfile;
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await restoreHome?.();
 });
 
 // ---------------------------------------------------------------------------

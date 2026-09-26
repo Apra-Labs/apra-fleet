@@ -38,9 +38,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
-import fsp from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
@@ -48,6 +45,7 @@ import { FLEET_DIR } from '../src/paths.js';
 import { deriveUpstreamCredential } from '../src/console/proxy.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
   // no tools registered -- this suite never opens an /mcp session
@@ -98,8 +96,8 @@ function deferred<T = void>(): Deferred<T> {
 // -----------------------------------------------------------------------------
 // Lifecycle: fresh HOME per test; every server and socket tracked and torn down.
 // -----------------------------------------------------------------------------
-let realHome: string | undefined;
 let tempHome: string;
+let restoreHome: (() => Promise<void>) | undefined;
 const handles: HttpTransportHandle[] = [];
 const upstreams: http.Server[] = [];
 const sockets: net.Socket[] = [];
@@ -125,9 +123,9 @@ beforeEach(async () => {
     );
   }
 
-  realHome = process.env.HOME;
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-proxy-home-'));
-  process.env.HOME = tempHome;
+  const home = await applyIsolatedHome('console-proxy-home-');
+  tempHome = home.tempHome;
+  restoreHome = home.restore;
 });
 
 afterEach(async () => {
@@ -143,8 +141,7 @@ afterEach(async () => {
   for (const id of registeredIds.splice(0)) {
     await workflowPackageService.unregister(id).catch(() => undefined);
   }
-  process.env.HOME = realHome;
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await restoreHome?.();
 });
 
 /** Start the real console/MCP server on an OS-assigned port. */

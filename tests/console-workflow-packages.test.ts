@@ -34,6 +34,7 @@ import {
   OFFLINE_THRESHOLD_MS,
 } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
   // no tools registered -- this suite never opens an /mcp session
@@ -336,8 +337,7 @@ function bearerHeader(token: string): Record<string, string> {
 const REGISTRY_FILE = path.join(FLEET_DIR, 'workflow-packages.json');
 const CONFIG_FILE = path.join(FLEET_DIR, 'config.json');
 
-let realHome: string | undefined;
-let tempHome: string;
+let restoreHome: (() => Promise<void>) | undefined;
 let registryBackup: string | null;
 let configBackup: string | null;
 const handles: HttpTransportHandle[] = [];
@@ -369,9 +369,7 @@ beforeEach(async () => {
     );
   }
 
-  realHome = process.env.HOME;
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-workflow-packages-home-'));
-  process.env.HOME = tempHome;
+  restoreHome = (await applyIsolatedHome('console-workflow-packages-home-')).restore;
 
   if (!fs.existsSync(FLEET_DIR)) fs.mkdirSync(FLEET_DIR, { recursive: true });
   registryBackup = backupFile(REGISTRY_FILE);
@@ -388,8 +386,7 @@ afterEach(async () => {
   restoreFile(REGISTRY_FILE, registryBackup);
   restoreFile(CONFIG_FILE, configBackup);
   resetUserConfigCache();
-  process.env.HOME = realHome;
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await restoreHome?.();
 });
 
 async function startServer(): Promise<HttpTransportHandle> {

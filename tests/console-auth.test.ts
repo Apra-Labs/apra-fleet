@@ -15,13 +15,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { __registerTestRouteModule, type ConsoleRoute } from '../src/console/server.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
   // no tools registered -- this suite never opens an /mcp session
@@ -61,30 +61,25 @@ function firstSetCookie(headers: http.IncomingHttpHeaders): string {
 // per test, and every server started in a test closed in this file's afterEach.
 // -----------------------------------------------------------------------------
 let realHome: string | undefined;
-let realUserProfile: string | undefined;
 let tempHome: string;
+let restoreHome: (() => Promise<void>) | undefined;
 const handles: HttpTransportHandle[] = [];
 
 beforeEach(async () => {
+  // Captured BEFORE applying the isolated home, purely so the
+  // anti-vacuity test below can compare against wherever the real
+  // developer/runner key would have lived.
   realHome = process.env.HOME;
-  realUserProfile = process.env.USERPROFILE;
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-auth-home-'));
-  process.env.HOME = tempHome;
-  // os.homedir() on win32 resolves from USERPROFILE (falling back to
-  // HOMEDRIVE+HOMEPATH), never HOME -- setting HOME alone is a silent no-op
-  // there and the "isolated" key would actually land under the real
-  // developer/runner USERPROFILE. Set both so the override takes on every
-  // platform this suite runs on.
-  process.env.USERPROFILE = tempHome;
+  const home = await applyIsolatedHome('console-auth-home-');
+  tempHome = home.tempHome;
+  restoreHome = home.restore;
 });
 
 afterEach(async () => {
   for (const handle of handles.splice(0)) {
     try { await handle.close(); } catch { /* ignore */ }
   }
-  process.env.HOME = realHome;
-  process.env.USERPROFILE = realUserProfile;
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await restoreHome?.();
 });
 
 async function startServer(): Promise<HttpTransportHandle> {

@@ -16,6 +16,7 @@ import { sessionRegistry } from '../src/services/session-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { reportStatus, reportStatusSchema } from '../src/tools/report-status.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -35,6 +36,18 @@ function makeTransport(port: number): StreamableHTTPClientTransport {
 const handles: HttpTransportHandle[] = [];
 const clients: Client[] = [];
 
+// Home isolation for EVERY test in this file. Section (g)'s
+// "accepts requests bearing the local admin key" test calls getOrCreateKey()
+// directly, which reads/mints <os.homedir()>/.apra-fleet/fleet.key
+// (src/services/jwt.ts) -- this had NO override at all before, so it read
+// and rewrote the real developer's fleet.key on every run. Same fix as
+// tests/console-server.test.ts.
+let restoreHome: (() => Promise<void>) | undefined;
+
+beforeEach(async () => {
+  restoreHome = (await applyIsolatedHome('http-transport-home-')).restore;
+});
+
 afterEach(async () => {
   for (const client of clients.splice(0)) {
     try { await client.close(); } catch { /* ignore */ }
@@ -43,6 +56,7 @@ afterEach(async () => {
   for (const handle of handles.splice(0)) {
     try { await handle.close(); } catch { /* ignore */ }
   }
+  await restoreHome?.();
 });
 
 // ---------------------------------------------------------------------------

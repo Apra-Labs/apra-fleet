@@ -20,6 +20,7 @@ import {
   defaultSeaGetAsset,
 } from '../src/console/static.js';
 import type http from 'node:http';
+import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 const INDEX_HTML = '<html><body>shell</body></html>';
 const APP_JS = 'console.log("hi");';
@@ -265,11 +266,8 @@ describe('console static: production defaults (no injection)', () => {
         encoding: 'utf8',
         timeout: 30000,
         env: {
-          ...process.env,
+          ...buildIsolatedHomeEnv(tempHome, process.env),
           STATIC_MODULE_URL: staticModuleUrl,
-          HOME: tempHome,
-          USERPROFILE: tempHome,
-          APRA_FLEET_DATA_DIR: path.join(tempHome, 'data'),
         },
       },
     );

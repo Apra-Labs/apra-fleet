@@ -28,6 +28,7 @@ import {
   fixtureToRegex,
 } from './helpers/regression-command-surface.js';
 import { hasNodeSqlite } from './helpers/node-sqlite-capability.js';
+import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INDEX = path.resolve(__dirname, '..', 'dist', 'index.js');
@@ -70,12 +71,7 @@ describe('command-surface regression: --version and run --transport stdio (apra-
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [DIST_INDEX, 'run', '--transport', 'stdio'],
-      env: {
-        ...process.env,
-        HOME: tmp,
-        USERPROFILE: tmp,
-        APRA_FLEET_DATA_DIR: path.join(tmp, 'data'),
-      },
+      env: buildIsolatedHomeEnv(tmp, process.env),
       stderr: 'pipe',
     });
 

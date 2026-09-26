@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -147,7 +148,6 @@ describe('SEA binary smoke: GET /ui and GET /api/fleet/members (apra-fleet-v6t7.
 
   it.skipIf(!binaryExists)('serves the shell at GET /ui, and gates GET /api/fleet/members on the fleet key', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sea-binary-smoke-'));
-    const dataDir = path.join(tmpHome, 'data');
     let child: ChildProcess | undefined;
 
     try {
@@ -157,10 +157,7 @@ describe('SEA binary smoke: GET /ui and GET /api/fleet/members (apra-fleet-v6t7.
 
       child = spawn(binaryPath, ['run'], {
         env: {
-          ...process.env,
-          HOME: tmpHome,
-          USERPROFILE: tmpHome,
-          APRA_FLEET_DATA_DIR: dataDir,
+          ...buildIsolatedHomeEnv(tmpHome, process.env),
           APRA_FLEET_PORT: String(port),
           APRA_FLEET_HOST: '127.0.0.1',
         },

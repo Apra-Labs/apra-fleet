@@ -24,10 +24,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isNpmAvailable, packAndInstall, type PackInstallResult } from './helpers/pack-install-undici.js';
+import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -87,7 +87,6 @@ describe('npm-installed apra-fleet serves GET /ui (apra-fleet-i9ag.1.2)', () => 
 
       const isolatedHome = path.join(scratchDir, 'isolated-home');
       fs.mkdirSync(isolatedHome, { recursive: true });
-      const dataDir = path.join(isolatedHome, 'data');
 
       let child: ChildProcess | undefined;
       try {
@@ -98,12 +97,7 @@ describe('npm-installed apra-fleet serves GET /ui (apra-fleet-i9ag.1.2)', () => 
         child = spawn(process.execPath, [installedIndexJs, 'run'], {
           cwd: path.join(scratchDir, 'consumer'),
           env: {
-            ...process.env,
-            HOME: isolatedHome,
-            USERPROFILE: isolatedHome,
-            HOMEDRIVE: isolatedHome.slice(0, 2), // win32 os.homedir() fallback (drive letter, e.g. "C:")
-            HOMEPATH: isolatedHome.slice(2),
-            APRA_FLEET_DATA_DIR: dataDir,
+            ...buildIsolatedHomeEnv(isolatedHome, process.env),
             APRA_FLEET_PORT: String(port),
             APRA_FLEET_HOST: '127.0.0.1',
           },

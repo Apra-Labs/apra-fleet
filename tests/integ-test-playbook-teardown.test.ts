@@ -85,7 +85,12 @@ describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
       ].join(' && '),
       {
         shell: BASH_SHELL,
-        env: { ...process.env, HOME: outerHome },
+        // isolated-home-allow: this test exercises bash tilde ($HOME)
+        // expansion itself (integ-test-playbook.md's Teardown block), not
+        // Node's os.homedir() resolution -- HOME is the variable under test,
+        // so it is set directly rather than through the shared helper.
+        // USERPROFILE is still set to the same sandbox value alongside it.
+        env: { ...process.env, HOME: outerHome, USERPROFILE: outerHome },
       },
     );
 
@@ -112,7 +117,10 @@ describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
       ].join(' && '),
       {
         shell: BASH_SHELL,
-        env: { ...process.env, HOME: outerHome },
+        // isolated-home-allow: see the corrected-teardown test above -- this
+        // test exercises bash tilde ($HOME) expansion itself, not
+        // os.homedir() resolution. USERPROFILE is still set alongside HOME.
+        env: { ...process.env, HOME: outerHome, USERPROFILE: outerHome },
       },
     );
 

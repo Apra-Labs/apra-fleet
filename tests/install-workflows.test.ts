@@ -538,13 +538,18 @@ describe('buildDevManifest workflow-subsystem asset resolution (regression for a
 
     const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
     const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
-    const osReal = await vi.importActual<typeof import('node:os')>('node:os');
+    // This test's `vi.doUnmock('node:os')` + `vi.resetModules()` above only
+    // takes effect for modules loaded AFTER this point, so the shared
+    // isolated-home helper is loaded here via importActual (not a static
+    // top-level import) -- a static import at file scope would have been
+    // cached against this file's own vi.mock('node:os', ...) above, giving
+    // the helper a mocked os.tmpdir()/os.homedir() with no tmpdir() at all.
+    const { applyIsolatedHome: applyIsolatedHomeReal } = await vi.importActual<
+      typeof import('./helpers/isolated-home.mjs')
+    >('./helpers/isolated-home.mjs');
 
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    const tmpHome = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'apra-fleet-eft86-2-home-'));
-    process.env.HOME = tmpHome;
-    process.env.USERPROFILE = tmpHome;
+    const home = await applyIsolatedHomeReal('apra-fleet-eft86-2-home-');
+    const tmpHome = home.tempHome;
 
     try {
       // Re-import fresh (module-cache-cleared) copies so config.js's
@@ -584,11 +589,7 @@ describe('buildDevManifest workflow-subsystem asset resolution (regression for a
       const entry = workflowReal.resolveWorkflowEntry(deps, 'fleet-sprint');
       expect(fsReal.existsSync(entry)).toBe(true);
     } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      else delete process.env.HOME;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      else delete process.env.USERPROFILE;
-      fsReal.rmSync(tmpHome, { recursive: true, force: true });
+      await home.restore();
     }
   }, 20000);
 });

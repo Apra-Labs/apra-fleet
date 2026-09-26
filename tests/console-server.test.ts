@@ -19,6 +19,7 @@ import { workflowPackageService } from '../src/services/workflow-packages.js';
 import { createHttpTransport, nonLoopbackBindWarning, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { listMembers } from '../src/tools/list-members.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // Offline-safe: mirror tests/list-members.test.ts so no test here depends on
 // a reachable member or a cloud workspace.
@@ -91,30 +92,22 @@ function authHeaders(): Record<string, string> {
 // reads/mints <os.homedir()>/.apra-fleet/fleet.key (src/services/jwt.ts,
 // resolved lazily per call). On win32 os.homedir() ignores HOME and reads
 // USERPROFILE (then HOMEDRIVE+HOMEPATH), so a HOME-only override would
-// silently touch the real developer key -- all four are pointed at a temp
-// dir and restored afterwards. APRA_FLEET_DATA_DIR is already isolated per
-// run by tests/setup.ts (FLEET_DIR is an eager module-load constant, so it
-// cannot be re-pointed per test here).
-const HOME_VARS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const;
-let savedHomeVars: Record<string, string | undefined> = {};
-let tempHome: string;
+// silently touch the real developer key -- applyIsolatedHome() below points
+// all of HOME/USERPROFILE/HOMEDRIVE+HOMEPATH at one temp dir and restores
+// them afterwards. APRA_FLEET_DATA_DIR is already isolated per run by
+// tests/setup.ts (FLEET_DIR is an eager module-load constant, so it cannot
+// be re-pointed per test here); this helper's own APRA_FLEET_DATA_DIR
+// override during the test body is harmless since nothing in this file
+// re-reads process.env.APRA_FLEET_DATA_DIR after import time.
+let restoreHome: (() => Promise<void>) | undefined;
 
 beforeEach(async () => {
-  savedHomeVars = Object.fromEntries(HOME_VARS.map((k) => [k, process.env[k]]));
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-server-home-'));
-  process.env.HOME = tempHome;
-  process.env.USERPROFILE = tempHome;
-  const parsed = path.parse(tempHome);
-  process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, '');
-  process.env.HOMEPATH = tempHome.slice(process.env.HOMEDRIVE.length);
+  const home = await applyIsolatedHome('console-server-home-');
+  restoreHome = home.restore;
 });
 
 afterEach(async () => {
-  for (const k of HOME_VARS) {
-    if (savedHomeVars[k] === undefined) delete process.env[k];
-    else process.env[k] = savedHomeVars[k];
-  }
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await restoreHome?.();
 });
 
 describe('console seam: handleConsoleRequest path ownership', () => {

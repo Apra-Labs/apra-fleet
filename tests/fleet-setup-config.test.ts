@@ -17,6 +17,7 @@ import {
   geminiProjectName,
   collectTranscriptScript,
 } from '../.github/e2e/fleet-setup.mjs';
+import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
 
@@ -274,7 +275,7 @@ describe('fleet-setup.mjs deterministic session-log collection', () => {
 
         const stdout = execFileSync('node', ['-e', evalArg, arg1, arg2], {
           cwd,
-          env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+          env: buildIsolatedHomeEnv(fakeHome, process.env),
           encoding: 'utf8',
         });
 
