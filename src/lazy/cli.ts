@@ -116,6 +116,7 @@ async function install(): Promise<void> {
 
   process.stdout.write('  [2/3] Starting the background helper ... ');
   const service = installService();
+  fs.writeFileSync(path.join(lazyDir(), 'service.json'), JSON.stringify({ autostart: service.autostart, note: service.note ?? null }) + '\n');
   if (!(await healthy(cfg, 15_000))) {
     console.log('failed');
     console.error(`\nThe background helper did not start. Claude was NOT changed and still works as before.`);

@@ -222,7 +222,9 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
 
   // ---- first-run welcome --------------------------------------------------
   if (p === '/welcome' && m === 'GET') {
-    send(res, 200, { done: welcomeDone(), github: await githubStatus(deps.vault), ghCli: await ghCliReady(), pageUrl: `http://${req.headers.host}/_lazy/` });
+    let service: { autostart?: boolean; note?: string | null } = {};
+    try { service = JSON.parse(fs.readFileSync(path.join(lazyDir(), 'service.json'), 'utf-8')); } catch { /* not installed through the CLI */ }
+    send(res, 200, { done: welcomeDone(), github: await githubStatus(deps.vault), ghCli: await ghCliReady(), pageUrl: `http://${req.headers.host}/_lazy/`, autostart: service.autostart !== false, serviceNote: service.note ?? null });
     return true;
   }
   if (p === '/welcome/done' && m === 'POST') {

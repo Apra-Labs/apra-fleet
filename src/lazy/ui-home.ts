@@ -397,7 +397,7 @@ export const HOME_JS = String.raw`
     } })]));
     browserOpt.appendChild(device);
     return el('div', { cls: 'hx' }, [
-      el('div', { cls: 'hx-top' }, [el('div', {}, [el('h2', { text: 'Connect GitHub' }), el('div', { cls: 'hx-sub', text: 'See your issues here and turn any of them into a sprint. The sign-in is kept in the vault, so Claude never sees it.' })])]),
+      el('div', { cls: 'hx-top' }, [el('div', {}, [el('h2', { text: 'Connect GitHub' }), el('div', { cls: 'hx-sub', text: 'See your issues here and turn any of them into a sprint. The sign-in is stored encrypted on this machine and is never shown to Claude.' })])]),
       el('div', { cls: 'gh-card' }, [
         browserOpt,
         el('div', { cls: 'gh-opt' }, [el('b', { text: 'Use the GitHub CLI login' }), el('p', { text: 'If you already ran gh auth login on this machine, lazyfleet can use that. Nothing is copied.' }), el('button', { cls: 'act', type: 'button', text: 'Use gh login', onclick: function () {
@@ -695,7 +695,7 @@ export const HOME_JS = String.raw`
       ]));
     } else if (W.step === 1) {
       box.appendChild(el('h2', { text: 'Connect GitHub' }));
-      box.appendChild(el('p', { text: 'Optional. It lets lazyfleet show your issues and turn them into sprints. The sign-in is kept in the vault, so Claude never sees it.' }));
+      box.appendChild(el('p', { text: 'Optional. It lets lazyfleet show your issues and turn them into sprints. The sign-in is stored encrypted on this machine and is never shown to Claude.' }));
       var next = function () { W.step = 2; welcome(); };
       if (d.github.signedIn) {
         box.appendChild(el('div', { cls: 'opt best' }, [el('b', { text: 'Connected as ' + d.github.login }), el('p', { text: 'Your issues are on the Issues tab.' })]));
@@ -714,6 +714,7 @@ export const HOME_JS = String.raw`
             api('github/token', { method: 'POST', body: { token: tok.value.trim() } }).then(function (r) { toast('Connected as ' + r.login); d.github.signedIn = true; d.github.login = r.login; next(); }).catch(function (err) { toast(err.message); });
           } })])
         ]));
+        if (!d.ghCli) box.appendChild(el('p', { style: 'font-size:13px', text: 'Use the GitHub CLI? Run gh auth login in a terminal, then open this step again: lazyfleet will offer to use it.' }));
         if (d.github.clientIdSet) box.appendChild(el('div', {}, [el('button', { cls: 'linkish', type: 'button', text: 'Or sign in with GitHub in the browser ->', onclick: function () { closeWelcome(false); goTab('issues'); } })]));
       }
       box.appendChild(el('div', { cls: 'foot' }, [
@@ -722,7 +723,7 @@ export const HOME_JS = String.raw`
       ]));
     } else {
       box.appendChild(el('h2', { text: 'You are set' }));
-      box.appendChild(el('p', { text: 'lazyfleet keeps running in the background and starts again when you log in. Three ways back to this page:' }));
+      box.appendChild(el('p', { text: d.autostart ? 'lazyfleet keeps running in the background and starts again when you log in. Three ways back to this page:' : 'lazyfleet is running now. This machine cannot start it on its own after a reboot, so run lazyfleet on when you log in. Three ways back to this page:' }));
       var url = d.pageUrl;
       box.appendChild(el('div', { cls: 'how' }, [
         el('span', { cls: 'n', text: '1' }), el('div', {}, [el('b', { text: 'Bookmark it' }), el('div', {}, [el('code', { text: url }), ' ', el('button', { cls: 'linkish', type: 'button', text: 'Copy', onclick: function () { navigator.clipboard.writeText(url).then(function () { toast('Copied'); }); } })])]),
