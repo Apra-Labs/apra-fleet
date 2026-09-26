@@ -4,10 +4,11 @@ import { spawn, spawnSync } from 'node:child_process';
 
 // apra-fleet-oomh.14 -- regression guard for the single-entry-point invariant
 // the sibling impl task (apra-fleet-oomh.9, streak ci-test-entrypoint) relies
-// on: root `npm test` (scripts/run-all-tests.mjs) must enumerate ALL THREE
-// suites (a vitest run, the @apralabs/apra-fleet-se workspace, and the
-// packages/apra-fleet-se/apra-pm prefix path) and must not short-circuit the
-// remaining suites when an earlier one fails.
+// on: root `npm test` (scripts/run-all-tests.mjs) must enumerate ALL FIVE
+// suites (a vitest run, the @apralabs/apra-fleet-client,
+// @apralabs/apra-fleet-workflow and @apralabs/apra-fleet-se workspaces, and
+// the packages/apra-fleet-se/apra-pm prefix path) and must not short-circuit
+// the remaining suites when an earlier one fails.
 //
 // TECHNIQUE (per the bead's gotcha -- do not execute the script for real):
 // this test dynamically imports scripts/run-all-tests.mjs itself, with
@@ -101,14 +102,16 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
     vi.restoreAllMocks();
   });
 
-  it('enumerates exactly the vitest, apra-fleet-se, and apra-pm suites with their real argv', async () => {
+  it('enumerates exactly the vitest, apra-fleet-client, apra-fleet-workflow, apra-fleet-se, and apra-pm suites with their real argv', async () => {
     vi.mocked(spawn).mockImplementation(() => createMockChildProcess(0));
 
     await runScript();
 
     const byName = extractSuiteRuns(logSpy);
-    expect(byName.size).toBe(3);
+    expect(byName.size).toBe(5);
     expect(byName.get('vitest')).toEqual([npmCmd, 'exec', '--', 'vitest', 'run']);
+    expect(byName.get('apra-fleet-client')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-client']);
+    expect(byName.get('apra-fleet-workflow')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-workflow']);
     expect(byName.get('apra-fleet-se')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-se']);
     expect(byName.get('apra-pm')).toEqual([npmCmd, 'test', '--prefix', 'packages/apra-fleet-se/apra-pm']);
   });
@@ -116,13 +119,12 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
   it('keeps running the remaining suites after an earlier one fails, and exits non-zero overall', async () => {
     vi.mocked(spawn)
       .mockImplementationOnce(() => createMockChildProcess(1))
-      .mockImplementationOnce(() => createMockChildProcess(0))
-      .mockImplementationOnce(() => createMockChildProcess(0));
+      .mockImplementation(() => createMockChildProcess(0));
 
     const { exitSpy } = await runScript();
 
-    // All three suites still ran -- the first failure did not skip the rest.
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(3);
+    // All five suites still ran -- the first failure did not skip the rest.
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(5);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
@@ -131,7 +133,7 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
 
     const { exitSpy } = await runScript();
 
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(3);
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(5);
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
