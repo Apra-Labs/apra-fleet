@@ -10,7 +10,8 @@
  *     else (never the work folder, never default-cli-project.json or another
  *     project's file, never the global settings.json);
  *   - the id/name/projectResources agy wrote are kept, only the nested
- *     permissionGrants.permissionGrants.{allow,deny} is replaced;
+ *     permissionGrants.permissionGrants.{allow,deny} is written (replaced by a
+ *     proactive compose, unioned by a reactive grant);
  *   - allow entries are AGY `action(target)` STRINGS in AGY's vocabulary;
  *   - a member without a project gets one first (upgrade path).
  *
@@ -162,6 +163,52 @@ describe('composePermissions -- AGY project-bound delivery', { timeout: 60000 },
     expect(result).not.toContain('Failed');
     expect(JSON.parse(fs.readFileSync(projectFile(PID), 'utf-8')).permissionGrants.permissionGrants.allow).toContain('command(docker)');
     expectOthersUntouched(others);
+  });
+
+  it('a grant MERGES into the composed allow list: after = before + granted, nothing lost', async () => {
+    const workFolder = makeScratch('fleet-agy-work-');
+    seedProjects(workFolder);
+    const member = addAgyMember(workFolder, { agyProjectId: PID });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
+    const read = () => JSON.parse(fs.readFileSync(projectFile(PID), 'utf-8')).permissionGrants.permissionGrants;
+    const before = read();
+    expect(before.allow.length).toBeGreaterThan(10);
+
+    const result = await composePermissions({ member_id: member.id, role: 'reviewer', grant: ['Bash(docker:*)'] });
+    expect(result).not.toContain('Failed');
+    const after = read();
+    const granted = HOST_OS === 'windows'
+      ? ['command(docker)', 'command(regex:docker .*)', 'command(docker-compose)', 'command(regex:docker-compose .*)', 'command(docker buildx)', 'command(regex:docker buildx .*)']
+      : ['command(docker)', 'command(docker-compose)', 'command(docker buildx)'];
+    expect(after.allow).toEqual([...before.allow, ...granted]);
+    expect(after.deny).toEqual(before.deny);
+    expect(Object.keys(after)).not.toContain('ask');
+  });
+
+  it('a proactive compose still REPLACES the allow list (it is the authoritative full set)', async () => {
+    const workFolder = makeScratch('fleet-agy-work-');
+    seedProjects(workFolder);
+    const member = addAgyMember(workFolder, { agyProjectId: PID });
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
+    const allow = JSON.parse(fs.readFileSync(projectFile(PID), 'utf-8')).permissionGrants.permissionGrants.allow as string[];
+    expect(allow).not.toContain('write_file(*)');
+  });
+
+  it('drops an inexpressible path glob and names it in the compose_permissions result; writes no ask list', async () => {
+    const workFolder = makeScratch('fleet-agy-work-');
+    seedProjects(workFolder);
+    const member = addAgyMember(workFolder, { agyProjectId: PID });
+    const result = await composePermissions({ member_id: member.id, role: 'reviewer' });
+    expect(result).toContain('Warnings:');
+    expect(result).toContain('agy: dropped "Write(feedback-*.md)"');
+    expect(result).toContain('agy: dropped "Edit(feedback-*.md)"');
+    const grants = JSON.parse(fs.readFileSync(projectFile(PID), 'utf-8')).permissionGrants.permissionGrants;
+    expect(Object.keys(grants).sort()).toEqual(['allow', 'deny']);
+    const paths = (grants.allow as string[]).filter(r => /^(read_file|write_file)\(/.test(r));
+    for (const rule of paths) {
+      if (rule.includes('*')) expect(['read_file(*)', 'write_file(*)']).toContain(rule);
+    }
   });
 
   it('upgrade path: a member registered without a project gets one, stored in the registry, then its grants', async () => {

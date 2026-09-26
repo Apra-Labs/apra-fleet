@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -205,9 +205,9 @@ export class AgyProvider implements ProviderAdapter {
    *  grant, attaches the denial (see detectAgyPermissionDenial). A headless
    *  denial exits 0 with status SUCCESS and an empty response, so without this
    *  it is indistinguishable from a blank reply. */
-  parseResponse(result: SSHExecResult): ParsedResponse {
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse {
     const parsed = this.parseResult(result);
-    const denial = detectAgyPermissionDenial(result);
+    const denial = detectAgyPermissionDenial(result, ctx?.agentOs);
     if (denial) parsed.permissionDenial = denial;
     return parsed;
   }
@@ -431,9 +431,14 @@ export class AgyProvider implements ProviderAdapter {
     _role: 'doer' | 'reviewer',
     allow: string[] = [],
     agent?: Agent,
+    opts: ComposePermissionOptions = {},
   ): Array<Record<string, unknown> | string> {
     this.permissionConfigPaths(agent);
-    const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
+    const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow, {
+      os: agent?.os,
+      homeDir: opts.memberHomeDir,
+      warnings: opts.warnings,
+    }));
     return [{
       permissionGrants: {
         permissionGrants: {
@@ -585,9 +590,29 @@ function stripTranscript(text: string): string {
   return text.replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '');
 }
 
-/** The compose_permissions grant that allows one denied call, if any. agy
- *  matches a command(...) grant against the exact command line (section 8.5
- *  q1), so a command denial suggests that exact command. */
+const SHELL_SEQUENCE_RE = /[|;`]|&&/;
+const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
+
+/** The compose_permissions grants that allow one denied call, primary first.
+ *  POSIX: agy matches a command(...) grant against the exact command line
+ *  (section 8.5 q1), so a command denial suggests that exact command. Windows:
+ *  the prefix grant Bash(<first word>:*) composes to command(regex:<word> .*),
+ *  which matches the full raw line, including a $(...) argument (section 8.9),
+ *  so it comes first and the exact command follows as the narrow option. */
+function suggestedGrantsFor(item: PermissionDenialItem, agentOs?: ParseResponseContext['agentOs']): string[] {
+  const t = item.target?.trim();
+  if (item.action === 'command' && agentOs === 'windows') {
+    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
+    const first = t.split(/\s+/)[0];
+    const out: string[] = [];
+    if (PLAIN_COMMAND_WORD_RE.test(first)) out.push(`Bash(${first}:*)`);
+    if (!SHELL_CHAIN_RE.test(t) && t !== first) out.push(`Bash(${t})`);
+    return out;
+  }
+  const one = suggestedGrantFor(item);
+  return one ? [one] : [];
+}
+
 function suggestedGrantFor(item: PermissionDenialItem): string | undefined {
   const t = item.target?.trim();
   switch (item.action) {
@@ -616,7 +641,7 @@ function suggestedGrantFor(item: PermissionDenialItem): string | undefined {
  * transcript ERROR step from the current turn counts. Targets always come
  * from the current turn's transcript steps.
  */
-export function detectAgyPermissionDenial(result: SSHExecResult): PermissionDenial | undefined {
+export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: ParseResponseContext['agentOs']): PermissionDenial | undefined {
   const stdout = stripAnsi(result.stdout ?? '');
   const outside = stripTranscript(stdout);
   const signals: PermissionDenial['signals'] = [];
@@ -687,17 +712,23 @@ export function detectAgyPermissionDenial(result: SSHExecResult): PermissionDeni
     if (!denials.some(d => d.action === action)) add({ action });
   }
   const actions = [...new Set(denials.map(d => d.action))];
-  const suggestedGrants = [...new Set(denials.map(suggestedGrantFor).filter((g): g is string => !!g))];
+  const perDenial = denials.map(d => suggestedGrantsFor(d, agentOs));
+  const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
+  const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
+  const suggestedGrants = [...primary, ...narrow];
 
   const what = denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
   let hint = `agy auto-denied ${what} (headless mode cannot prompt for permission).`;
   if (suggestedGrants.length) {
-    hint += ` Grant it with compose_permissions grant: ${JSON.stringify(suggestedGrants)} and retry.`;
+    hint += ` Grant it with compose_permissions grant: ${JSON.stringify(primary)} and retry.`;
+    if (narrow.length) hint += ` Narrower alternative (this exact command line only): ${JSON.stringify(narrow)}.`;
   } else {
     hint += ' No compose_permissions grant maps to this action automatically; grant it on the member by hand or escalate.';
   }
   if (actions.includes('command')) {
-    hint += ' agy matches a command grant against the exact command line, so Bash(<bin>:*) (command(<bin>)) allows only the bare binary.';
+    hint += agentOs === 'windows'
+      ? ' On Windows, Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*), which allows <bin> with any arguments.'
+      : ' agy matches a command grant against the exact command line, so Bash(<bin>:*) (command(<bin>)) allows only the bare binary.';
   }
   return { actions, denials, suggestedGrants, hint, signals };
 }
@@ -877,17 +908,61 @@ export function formatAgyPermissionRules(rules: AgyPermissionRule[]): string[] {
 const PATH_SCOPED_READ_RE = /^(?:Read|Glob|Grep)\((.+)\)$/;
 const PATH_SCOPED_WRITE_RE = /^(?:Write|Edit)\((.+)\)$/;
 
-/** Reduces a Claude path pattern to the directory PREFIX form AGY's
- *  read_file/write_file targets use: trailing '/**', '/*' and a bare '*' tail
- *  are dropped, since AGY already matches by prefix. */
-function agyPathTarget(item: string): string {
-  const inner = item.slice(item.indexOf('(') + 1, -1).trim();
-  const stripped = inner.replace(/\/\*{1,2}$/, '').replace(/\*+$/, '');
-  const trimmed = stripped.replace(/\/+$/, '');
-  return trimmed || '*';
+/** Options for convertClaudeAllowToAgyPermissions. All optional: without them
+ *  the conversion is the POSIX one and a `~` path cannot be resolved. */
+export interface AgyConvertOptions {
+  /** The member's OS. 'windows' selects the regex command rules (see
+   *  agyCommandRules); any other value keeps the literal-prefix rules. */
+  os?: 'linux' | 'macos' | 'windows';
+  /** The member's home directory, resolved in JavaScript by the caller
+   *  (getMemberHomeDir), used to expand a leading `~` in path grants. */
+  homeDir?: string | null;
+  /** Receives one line per grant that could not be expressed and was dropped. */
+  warnings?: string[];
 }
 
-export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {
+/** Escapes regex metacharacters so a literal command prefix can sit inside an
+ *  agy `regex:` target. Spaces are kept. */
+export function escapeAgyRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The agy `command` targets for one Claude command prefix. On Windows agy
+ *  needs a character-for-character match for any command line PowerShell or
+ *  cmd cannot split into words, so `command(git)` allows only a bare `git`;
+ *  its manual says to use `command(regex:git .*)` for a command and its
+ *  subcommands, and a regex target is matched against the full raw line
+ *  (docs/compose-permissions-design.md section 8.9). A prefix grant therefore
+ *  becomes the bare command plus a regex for any arguments. POSIX members keep
+ *  the literal prefix. A command deny rule for a Windows member must be built
+ *  here too, so it matches full command lines. */
+export function agyCommandRules(cmd: string, os?: AgyConvertOptions['os']): string[] {
+  if (cmd === '*') return ['*'];
+  if (os !== 'windows') return [cmd];
+  return [cmd, `regex:${escapeAgyRegex(cmd)} .*`];
+}
+
+/** Reduces a Claude path pattern to the plain path agy's read_file/write_file
+ *  targets take (agy has no globs and grants a directory recursively): a
+ *  leading `~` becomes the member's home directory, a trailing `/**` or `/*`
+ *  becomes the directory itself, and a bare `*`/`**` is the global wildcard.
+ *  A glob anywhere else cannot be expressed: no target is returned and the
+ *  caller drops the grant with a warning. */
+function agyPathTarget(item: string, opts: AgyConvertOptions): { target?: string; reason?: string } {
+  let inner = item.slice(item.indexOf('(') + 1, -1).trim();
+  if (inner === '*' || inner === '**') return { target: '*' };
+  if (inner === '~' || inner.startsWith('~/') || inner.startsWith('~\\')) {
+    if (!opts.homeDir) return { reason: 'the member home directory is unknown, so ~ cannot be resolved' };
+    const home = opts.homeDir.replace(/\\/g, '/').replace(/\/+$/, '');
+    inner = inner === '~' ? home : `${home}/${inner.slice(2).replace(/\\/g, '/')}`;
+  }
+  const stripped = inner.replace(/[\\/]\*{1,2}$/, '');
+  if (/[*?]/.test(stripped)) return { reason: 'agy path targets cannot hold a glob' };
+  const trimmed = stripped.replace(/[\\/]+$/, '');
+  return { target: trimmed || '*' };
+}
+
+export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyConvertOptions = {}): AgyPermissionRule[] {
   const rules: AgyPermissionRule[] = [];
   const added = new Set<string>();
 
@@ -897,6 +972,16 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
       added.add(key);
       rules.push({ action, target });
     }
+  };
+  const addPathRule = (action: 'read_file' | 'write_file', item: string) => {
+    const { target, reason } = agyPathTarget(item, opts);
+    if (target !== undefined) {
+      addRule(action, target);
+      return;
+    }
+    const line = `agy: dropped "${item}" -- ${reason}; grant a directory or an exact path instead.`;
+    console.warn(`[fleet:warn] ${line}`);
+    if (opts.warnings && !opts.warnings.includes(line)) opts.warnings.push(line);
   };
 
   for (const item of allow) {
@@ -909,19 +994,24 @@ export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissi
       // targets are path PREFIXES (`read_file(/Users/alice/notes)`), so the
       // trailing glob is stripped; a bare `Read`/`Write` (no argument) is
       // unrestricted in Claude and keeps mapping to '*' above.
-      addRule('read_file', agyPathTarget(item));
+      addPathRule('read_file', item);
     } else if (PATH_SCOPED_WRITE_RE.test(item)) {
-      addRule('write_file', agyPathTarget(item));
+      addPathRule('write_file', item);
     } else if (item === 'Agent') {
       addRule('invoke_subagent', '*');
       addRule('send_message', '*');
     } else if (item.startsWith('Bash(')) {
-      const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
-      if (match && match[1]) {
-        const cmdName = match[1].trim();
-        addRule('command', cmdName === '*' ? '*' : cmdName);
+      const inner = opts.os === 'windows' && item.endsWith(')') ? item.slice(5, -1).trim() : '';
+      if (inner && !inner.includes('*')) {
+        // Windows exact grant (no wildcard): that command line only, no widening.
+        addRule('command', inner);
       } else {
-        addRule('command', '*');
+        const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
+        if (match && match[1]) {
+          for (const t of agyCommandRules(match[1].trim(), opts.os)) addRule('command', t);
+        } else {
+          addRule('command', '*');
+        }
       }
     } else if (item === 'Bash') {
       addRule('command', '*');

@@ -272,7 +272,7 @@ All runs below used fleet's command line with `--project <id>` against scratch p
    | `command(git)` | `git status` | denied |
    | `command(git)` | `git` | allowed (`"response":"usage: git [-v \| --version] ...`) |
 
-   The transcript shows the exact string checked: `"CommandLine":"\"git status --short --branch\""` and `permission check failed for command "git status --short --branch": user denied permission to run command`. agy's own agent prompt text says approvals are "generalized by prefix-matching the binary and subcommand", but that did not apply to allow-list grants in these runs. Consequence: the `Bash(git:*) -> command(git)` mapping in `convertClaudeAllowToAgyPermissions` does not let an AGY member run `git status ...`. Changing that mapping (e.g. to `command(*)` plus deny rules, or enumerated exact commands) is a policy decision not made here.
+   The transcript shows the exact string checked: `"CommandLine":"\"git status --short --branch\""` and `permission check failed for command "git status --short --branch": user denied permission to run command`. agy's own agent prompt text says approvals are "generalized by prefix-matching the binary and subcommand", but that did not apply to allow-list grants in these runs. Consequence: the `Bash(git:*) -> command(git)` mapping in `convertClaudeAllowToAgyPermissions` does not let an AGY member run `git status ...`. For Windows members this is fixed with `regex:` rules (8.9); the Linux/macOS mapping is unchanged pending the `unsandboxed` investigation (q3).
 2. **Does `projectResources` matter with `--project`? No, not for grants.** With `projectResources` deleted from the project file and `allow: ["read_file(*)","command(git status --short --branch)"]`, `--project <id> --add-dir <wf>` ran the command (`"response":"## fix/agy-prompt-body-toolsearch...origin/fix/agy-prompt-body-toolsearch [ahead 41, behind 45]\n?? .gemini/\n"`). The workspace comes from `--add-dir`. fleet keeps whatever agy wrote and does not probe git.
 3. **Linux `unsandboxed(...)`: not verified.** This session was limited to the Windows member; fleet-lin-agy was not touched. The `unsandboxed` action is already accepted by `formatAgyPermissionRules`, but nothing maps a Claude grant to it yet. Needs a Linux run.
 4. **`--new-project` cost and flags.** It does not need `--dangerously-skip-permissions`: `agy --add-dir <wf> --model gemini-3.8-flash-low --output-format stream-json --new-project -p "Reply with only the word OK. Do not use any tools."` exited 0 in ~2.4 s with `"response":"OK\n"`, one model turn (`input_tokens 17211, output_tokens 1`), and created `1afd6dbb-....json` containing only `id`, `name`, `projectResources` (no `permissionGrants`). Asking the model for the id does not work: with "What is your Antigravity Project ID?" the model tried `Get-ChildItem ...` (auto-denied) and returned `"response":""`, while `d05acf31-....json` was created anyway. agy's log (`--log-file`) states the id authoritatively: `project: created project "apra-fleet-agy" (id=1afd6dbb-498f-4918-a9d9-6da64b75a204) at C:\Users\akhil\.gemini\config\projects\1afd6dbb-...` and `Conversation using project ID: 1afd6dbb-...`. An empty prompt avoids the model turn but is an error path: `agy --new-project -p ""` exited 1 with `"error":"Error: empty prompt. Usage: agy --print \"your prompt here\""` yet still created `4d632fa7-....json`; fleet does not rely on that. `--project <name>` with a name that does not exist (`fleet-probe-name-q4`) created nothing and ran under `default-cli-project` (log: `project: dynamically resolved and registered default project (id=default-cli-project)`).
@@ -314,7 +314,7 @@ execute_prompt result (`structuredContent`), recorded run from 8.5 q1:
 }
 ```
 
-A partial reply, if any, is kept in `response`. The suggested grant is the exact command because agy matches command grants exactly (8.5 q1); `Bash(git status --short --branch)` composes to `command(git status --short --branch)`. A command containing shell chaining gets no suggestion (compose_permissions would refuse it). apra-fleet-client exposes the block as the `PermissionDenied` typedef and `permissionDenialOf(result)`; apra-fleet-workflow forwards it on `AgentDispatchError.details.permissionDenied`. Other providers never set it.
+A partial reply, if any, is kept in `response`. On Windows members the prefix grant `Bash(<first word>:*)` is suggested first and the exact command second (8.9). On Linux/macOS the suggested grant is the exact command because agy matches command grants exactly (8.5 q1); `Bash(git status --short --branch)` composes to `command(git status --short --branch)`. A command containing shell chaining gets no suggestion (compose_permissions would refuse it). apra-fleet-client exposes the block as the `PermissionDenied` typedef and `permissionDenialOf(result)`; apra-fleet-workflow forwards it on `AgentDispatchError.details.permissionDenied`. Other providers never set it.
 
 ### 8.8 Live check of the implementation (fleet-agy-local, before redeploy)
 
@@ -324,3 +324,40 @@ Run directly from the branch build (no fleet server), through Git Bash as a gitb
 3. The suggested grant composed with `AgyProvider.composePermissionConfig` and deep-merged into the project file (id/name/projectResources kept; allow `["read_file(*)","command(git status --short --branch)"]`, 90 deny rules), same dispatch: `"## fix/agy-prompt-body-toolsearch...origin/fix/agy-prompt-body-toolsearch [ahead 41, behind 45]\n?? .fleet-smoke-task.md\n?? .gemini/"`, no denial.
 
 Both scratch projects were deleted afterwards; `default-cli-project.json` and `e6d3551b-...json` were unchanged (sha256).
+
+### 8.9 Windows command rules, path targets and grant merging
+
+**Status:** implemented; live-verified 2026-09-26 on Windows (agy 1.2.11) with fleet's command line and `--project` bound to a scratch `--new-project` project, deleted afterwards (`default-cli-project.json` and `e6d3551b-...json` byte-identical by sha256).
+
+Windows agy still uses its older permission engine. agy's manual (Windows section, and "CLI cross-platform command matching"): commands that PowerShell/cmd cannot cleanly split into words need a character-for-character match, so `command(git)` allows only a bare `git`; "To match a command and its subcommands on Windows, use the regex: prefix (for example, command(regex:git .*) to allow any git command)". A `regex:` rule is matched against the full raw command line.
+
+Conversion (`convertClaudeAllowToAgyPermissions(allow, { os, homeDir, warnings })`, called by `AgyProvider.composePermissionConfig` with `agent.os` and the member home resolved in JavaScript):
+
+| Claude grant | Windows member | Linux/macOS member (unchanged) |
+|---|---|---|
+| `Bash(git:*)`, `Bash(git *)`, `Bash(git*)` | `command(git)`, `command(regex:git .*)` | `command(git)` |
+| `Bash(npm run:*)` | `command(npm run)`, `command(regex:npm run .*)` | `command(npm run)` |
+| `Bash(a.b:*)` | `command(a.b)`, `command(regex:a\.b .*)` (metacharacters escaped) | `command(a.b)` |
+| `Bash(npm test)` (no wildcard) | `command(npm test)` only | `command(npm test)` |
+| `Bash`, `Bash(*)` | `command(*)` | `command(*)` |
+
+Fleet writes no command deny rules today (the deny list is MCP only). A future command deny rule for a Windows member must be built with `agyCommandRules` so it uses the same regex form. No `ask` list is ever written: headless agy treats Ask as deny.
+
+Path grants (all OSes; agy has no globs and does not document `~`): a leading `~` resolves to the member's home directory (in JavaScript, never shell expansion; on Windows written with forward slashes, e.g. `C:/Users/u/x`); a trailing `/**` or `/*` becomes the directory; a bare `*`/`**` is the global wildcard; any other glob (e.g. the reviewer profile's `Write(feedback-*.md)`) cannot be expressed, so the rule is dropped and compose_permissions prints a `Warnings:` line naming it. That drop is the only change to Linux/macOS output; `tests/agy-windows-permissions.test.ts` pins the rest byte-for-byte against the pre-change output.
+
+Reactive `grant` for agy **merges**: the granted rules are unioned into the existing `permissionGrants.permissionGrants.{allow,deny}` of `<agyProjectId>.json` (`deepMergeUnion`). Before, `deliverConfigFile`'s deep merge overwrote the arrays, so a grant replaced the whole composed allow list with just the granted rules (seen live on build 3e5f82dd, and reproduced by the new unit test against the old code path). A proactive compose still replaces the list (it is the full authoritative set).
+
+Permission-denial hint (execute_prompt `permission_denied`) on Windows members: `suggestedGrants` lists `Bash(<first word>:*)` first and the exact command second; a `$(...)` command gets only the prefix grant (the regex matches the full line); a `|`/`;`/`&&`/backtick chain gets none. Linux/macOS hints are unchanged.
+
+Live evidence (Windows, scratch git repo as the work folder, reviewer rules composed by this code):
+
+| rules | command / action | result |
+|---|---|---|
+| Windows form (`command(git)` + `command(regex:git .*)`) | `git status --short --branch` | allowed (`"response":"## master\n?? a.txt\n"`, conv 9ab981e3) |
+| same | `git log -1 --format=%h $(git rev-parse HEAD)` | allowed (`"response":"7a00dba\n"`, conv 872bf605) |
+| POSIX form (`command(git)` only), same project | `git status --short --branch` | denied (`"denied_actions":[{"action":"command",...}]`, conv 055ac4b0) |
+| after grant `["Bash(docker:*)","Write(~/fleet-fgi9-probe/**)"]` | allow list | 42 -> 45 entries, none lost; added `command(docker)`, `command(regex:docker .*)`, `write_file(C:/Users/akhil/fleet-fgi9-probe)` |
+| same | write `C:\Users\akhil\fleet-fgi9-probe\out.txt` | allowed, file written (conv f6f8b0b2) |
+| same | write into an ungranted sibling folder | denied (`denied_actions: write_file`, conv 35eb1267) |
+
+Earlier owner run on fleet-agy-local (agy 1.2.11): `command(git)` denied `git status --short --branch`; `command(regex:git .*)` allowed it and `git log -1 --format=%h $(git rev-parse HEAD)` (conversation 2e29c80e).

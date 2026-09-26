@@ -340,7 +340,7 @@ describe('AgyProvider -- dispatch always binds --project', () => {
   });
 
   it('composePermissionConfig emits only the nested permissionGrants block', () => {
-    const agent = localAgyAgent({ agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
+    const agent = localAgyAgent({ agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', os: 'linux' });
     const [cfg] = agy.composePermissionConfig('reviewer', ['Read', 'Bash(git:*)'], agent) as Array<Record<string, any>>;
     expect(Object.keys(cfg)).toEqual(['permissionGrants']);
     expect(Object.keys(cfg.permissionGrants)).toEqual(['permissionGrants']);

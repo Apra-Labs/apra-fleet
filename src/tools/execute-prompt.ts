@@ -1376,6 +1376,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // orphan recovery, trust-heal retry) -- and regardless of result.code,
   // since a 0-exit result event whose text carries the limit message must not
   // be returned as a success response either.
+  // The member's OS reaches the parser (agy's permission-denial hint differs on Windows).
+  const parseCtx = { agentOs: agent.os };
   const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
     const signal = provider.detectUsageLimit(r, p);
     if (!signal) return null;
@@ -1439,7 +1441,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
-    let parsed = provider.parseResponse(result);
+    let parsed = provider.parseResponse(result, parseCtx);
     if (parsed.usage) _epUsage = parsed.usage;
     {
       const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1482,7 +1484,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1503,7 +1505,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1624,7 +1626,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
         const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
-        const recoveredParsed = provider.parseResponse(recoveredResult);
+        const recoveredParsed = provider.parseResponse(recoveredResult, parseCtx);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
@@ -1659,7 +1661,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-          parsed = provider.parseResponse(result);
+          parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
           if (usageLimitResult) return usageLimitResult;

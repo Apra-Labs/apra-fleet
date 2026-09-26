@@ -243,12 +243,29 @@ export interface PermissionDenial {
   actions: string[];
   denials: PermissionDenialItem[];
   /** compose_permissions `grant` values that would allow the denied calls
-   *  (empty when there is no canonical mapping for an action). */
+   *  (empty when there is no canonical mapping for an action). The primary
+   *  suggestion comes first; a narrower alternative may follow it. */
   suggestedGrants: string[];
   /** One-line remediation for a human or an orchestrator. */
   hint: string;
   /** Which of the CLI's signals reported the denial. */
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
+}
+
+/** Context parseResponse may use; providers that do not need it ignore it. */
+export interface ParseResponseContext {
+  /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */
+  agentOs?: 'linux' | 'macos' | 'windows';
+}
+
+/** Extra inputs to composePermissionConfig; providers that do not need them
+ *  ignore them. */
+export interface ComposePermissionOptions {
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir). */
+  memberHomeDir?: string | null;
+  /** Receives lines for grants that could not be expressed and were dropped;
+   *  compose_permissions shows them in its result. */
+  warnings?: string[];
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -358,7 +375,7 @@ export interface ProviderAdapter {
   resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
 
   // Response parsing
-  parseResponse(result: SSHExecResult): ParsedResponse;
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse;
 
   /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
    *  usage/quota limit (as opposed to a transient overload). Returns a
@@ -475,6 +492,7 @@ export interface ProviderAdapter {
     role: 'doer' | 'reviewer',
     allow?: string[],
     agent?: import('../types.js').Agent,
+    opts?: ComposePermissionOptions,
   ): Array<Record<string, unknown> | string>;
 
   // Auth capabilities

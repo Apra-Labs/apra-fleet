@@ -73,7 +73,8 @@
  * @property {string[]} actions - Unique denied actions, in first-seen order.
  * @property {PermissionDenialItem[]} denials - Each refused call, with its target when known.
  * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
- *   denied calls; empty when no canonical mapping exists.
+ *   denied calls, primary first (on a Windows agy member a `Bash(<cmd>:*)` prefix grant, then the
+ *   exact command as the narrow alternative); empty when no canonical mapping exists.
  * @property {string} hint - One-line remediation.
  * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
  */

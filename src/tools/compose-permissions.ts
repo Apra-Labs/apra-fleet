@@ -361,6 +361,29 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
   return result;
 }
 
+/** deepMerge, except that an array present on both sides becomes the union of
+ *  the two (existing entries first, then new ones not already present). Used
+ *  for agy's reactive grant, which must add rules to the project file's allow
+ *  list without discarding the ones compose_permissions wrote before. */
+export function deepMergeUnion(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    const current = result[key];
+    if (isPlainObject(value) && isPlainObject(current)) {
+      result[key] = deepMergeUnion(current, value);
+    } else if (Array.isArray(value) && Array.isArray(current)) {
+      const merged = [...current];
+      for (const v of value) {
+        if (!merged.some(m => stableStringify(m) === stableStringify(v))) merged.push(v);
+      }
+      result[key] = merged;
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /** Raised by deliverConfigFile when a config write does not verifiably land on
  *  the member (nonzero mkdir/write exit, or a read-back that does not match the
  *  intended content). Carries the target path so the caller can surface exactly
@@ -467,6 +490,7 @@ async function deliverConfigFile(
   content: Record<string, unknown> | string,
   shell?: MemberShell,
   homeDir?: string | null,
+  opts: { unionArrays?: boolean } = {},
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
   const posix = isPosixShell(isWindows, shell);
@@ -500,7 +524,7 @@ async function deliverConfigFile(
     } catch {
       // file missing, empty, or not JSON -- start from an empty object
     }
-    mergedContent = deepMerge(existing, content);
+    mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMerge(existing, content);
   }
 
   const contentStr = typeof mergedContent === 'string'
@@ -654,11 +678,18 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
         deliveryWarnings = warns;
       }
     }
-    const configs = provider.composePermissionConfig(mode, allow, agent);
+    const composeWarnings: string[] = [];
+    const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+    deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
     const paths = provider.permissionConfigPaths(agent);
+    // A grant ADDS to what the member already has. Claude's allow list was
+    // merged above; agy's rules are unioned into the project file's existing
+    // allow/deny arrays instead of replacing them (a plain deepMerge would
+    // overwrite the arrays with just the granted rules).
+    const unionArrays = provider.name === 'agy';
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir, { unionArrays });
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -705,7 +736,9 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       deliveryWarnings = warns;
     }
   }
-  const configs = provider.composePermissionConfig(mode, allow, agent);
+  const composeWarnings: string[] = [];
+  const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+  deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
   const paths = provider.permissionConfigPaths(agent);
 
   try {
