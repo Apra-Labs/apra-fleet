@@ -15,7 +15,7 @@
 // module is registered in guarded-modules.mjs, so every guard scans it.
 // =============================================================================
 
-import { dispatchRole } from '../dispatch-role.mjs';
+import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { applyReviewTransitions } from './re-review.mjs';
 import { buildWorkBlockPrompt, buildCheckBlockFocus } from '../prompts.mjs';
 import { blocksFor } from '../recipe.mjs';
@@ -48,6 +48,7 @@ export async function runRecipeBlocks({
     validated, targetIssues, orchestratorMember, doerPool, reviewer,
     gitSync, dispatchReview, bdListScoped, updateDashboard,
     transitions,
+    dispatchDoer = (ctx, opts) => dispatchRole(ctx, 'doer', opts),
 }) {
     const blocks = blocksFor(recipe, slot);
     let pendingRejectedNewTasks = transitions.pendingRejectedNewTasks;
@@ -90,13 +91,33 @@ export async function runRecipeBlocks({
             await command(`git checkout ${validated.branch}`, {
                 member_name: member, silent: true, failSoft: true, label: `Block: ${block.name} -- '${validated.branch}' on '${member}'`,
             });
-            const outcome = await gitSync.withGitSync(member, true, () => dispatchRole(dispatchCtx, 'doer', {
-                prompt: buildWorkBlockPrompt({ block, branch: validated.branch }),
-                label: `Block: ${block.name}`,
-                bindings: { doerMember: member, doerModel: block.model },
+            const prompt = buildWorkBlockPrompt({ block, branch: validated.branch });
+            const outcome = await gitSync.withGitSync(member, true, () => dispatchDoer(dispatchCtx, {
+                roleLabel: `Block: ${block.name}`,
+                prompt: null,
+                resumePrompt: null,
+                bindings: ({ resumeAttempt }) => ({
+                    doerMember: member,
+                    maxTurns: TURN_BASES.BASE_DOER_MAX_TURNS * (2 ** Math.max(resumeAttempt, 1)),
+                }),
+                // A design block works on no task: nothing to claim, nothing to close.
+                claimBeads: async () => {},
+                verifyStreakClosed: async () => [],
+                prepare: async ({ dispatch }) => (dispatch.kind === 'max-turns-resume'
+                    ? {
+                        prompt: `Continue exactly where you left off from this same session -- do not restart. Finish the "${block.name}" work on ${validated.branch} and stop at the VERIFY checkpoint.`,
+                        label: `Block: ${block.name} (resume)`,
+                    }
+                    : { prompt, label: `Block: ${block.name}`, bindings: { doerMember: member, doerModel: block.model } }),
             }));
             const value = outcome && outcome.value;
-            log(`Block "${block.name}"${where}: ${value && value.status ? value.status : 'done'}${value && value.notes ? ' -- ' + String(value.notes).slice(0, 300) : ''}`);
+            if (!outcome || outcome.error || !value || value.status === 'BLOCKED') {
+                // A step the design asked for did not happen: stop, loudly,
+                // rather than carry on as if it had.
+                const why = outcome && outcome.error ? outcome.error.message : value ? `the helper reported ${value.status}: ${String(value.notes || '').slice(0, 300)}` : 'no result';
+                throw new Error(`Sprint design block "${block.name}" failed: ${why}`);
+            }
+            log(`Block "${block.name}"${where}: ${value.status}${value.notes ? ' -- ' + String(value.notes).slice(0, 300) : ''}`);
         }
         await updateDashboard();
     }

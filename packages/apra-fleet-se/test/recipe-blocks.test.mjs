@@ -120,3 +120,35 @@ test('command failure tasks always pass the new-task validator', () => {
     }
     assert.ok(outputTail('y'.repeat(9000)).length <= 3003);
 });
+
+test('a work block runs a doer on the sprint branch with nothing to claim', async () => {
+    const { calls, deps } = harness();
+    const seen = [];
+    const recipe = normalizeRecipe({ build: { mode: 'off' }, plan: { run: 'off' }, blocks: [{ kind: 'work', name: 'E2E', instructions: 'Write end-to-end tests.' }] });
+    await runRecipeBlocks({ ...deps, slot: 'after-build', recipe, dispatchDoer: async (ctx, opts) => {
+        seen.push(opts);
+        await opts.claimBeads();
+        assert.deepEqual(await opts.verifyStreakClosed('preDispatch'), []);
+        const first = await opts.prepare({ dispatch: { kind: 'first' } });
+        assert.match(first.prompt, /Write end-to-end tests\./);
+        assert.equal(first.bindings.doerModel, 'standard');
+        return { value: { status: 'VERIFY', closedIds: [], notes: 'added test/e2e.test.js' } };
+    } });
+    assert.equal(seen.length, 1);
+    assert.ok(calls.commands.some((c) => c.cmd === 'git checkout feat/x' && c.member === 'h1'));
+    assert.deepEqual(calls.syncs, [{ member: 'h1', pushCode: true }], 'code-write bracket');
+    assert.ok(calls.logs.some((m) => /Block "E2E" C1: VERIFY -- added test\/e2e\.test\.js/.test(m)));
+});
+
+test('a work block that fails stops the sprint with a clear error', async () => {
+    const { deps } = harness();
+    const recipe = normalizeRecipe({ blocks: [{ kind: 'work', name: 'Docs', instructions: 'Update the docs.' }] });
+    await assert.rejects(
+        runRecipeBlocks({ ...deps, slot: 'after-build', recipe, dispatchDoer: async () => ({ error: new Error('boom') }) }),
+        /Sprint design block "Docs" failed: boom/,
+    );
+    await assert.rejects(
+        runRecipeBlocks({ ...deps, slot: 'after-build', recipe, dispatchDoer: async () => ({ value: { status: 'BLOCKED', notes: 'Write blocked' } }) }),
+        /Sprint design block "Docs" failed: the helper reported BLOCKED: Write blocked/,
+    );
+});
