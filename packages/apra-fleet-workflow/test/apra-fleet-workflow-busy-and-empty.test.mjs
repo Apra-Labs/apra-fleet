@@ -158,3 +158,136 @@ describe('agent() empty-response detection', () => {
         assert.strictEqual(out, 'plain mock answer');
     });
 });
+
+describe('agent() top-level isError (server-side throw marshalled by the MCP SDK)', () => {
+    // apra-fleet-c98q.6 regression: when execute_prompt throws server-side
+    // (e.g. an SSH channel drop inside writePromptFile, before any
+    // structuredContent envelope exists), the MCP SDK marshals the
+    // exception into a plain CallToolResult with a TOP-LEVEL `isError: true`
+    // and NO structuredContent -- whose only text is the raw exception
+    // message. This must be classified as a dispatch failure, exactly like
+    // the structured-isError branch above, and must never be handed to the
+    // schema/JSON extractor (which would misreport it as an "LLM returned
+    // invalid JSON" failure and burn a schema-repair attempt re-asking a
+    // member whose lock may already be wedged).
+    //
+    // The literal wording of the stubbed text ("No response from server") is
+    // test input only, not the assertion mechanism -- these tests check the
+    // dispatch-failure CLASSIFICATION (isError -> AgentDispatchError with a
+    // generic transport/dispatch_failed reason, zero repair attempts),
+    // never a string match on that text.
+
+    function topLevelIsErrorResult() {
+        return {
+            isError: true,
+            content: [{ type: 'text', text: 'No response from server' }],
+            // Deliberately no structuredContent -- this is exactly the shape
+            // the MCP SDK produces for a server-side throw.
+        };
+    }
+
+    test('no output schema: rejects with AgentDispatchError, generic reason, zero repair attempts', async () => {
+        let calls = 0;
+        const wf = new FleetWorkflow({
+            async executePrompt() {
+                calls++;
+                return topLevelIsErrorResult();
+            },
+        });
+
+        const starts = [];
+        const ends = [];
+        wf.on('activity:start', (meta) => starts.push(meta));
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        await assert.rejects(
+            () => wf.agent('do the thing', { member_name: MEMBER }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                // Never mistaken for a JSON-parse/schema failure: only the
+                // two generic dispatch-failure reasons are acceptable here.
+                assert.ok(
+                    err.details.reason === 'transport' || err.details.reason === 'dispatch_failed',
+                    `expected reason 'transport' or 'dispatch_failed', got ${err.details.reason}`
+                );
+                return true;
+            }
+        );
+
+        // Exactly one dispatch attempt -- the schema-repair loop never ran
+        // (there is no schema here, but the assertion below also covers the
+        // "never charged a repair attempt" requirement generically).
+        assert.strictEqual(calls, 1, `expected exactly 1 dispatch, got ${calls}`);
+
+        // The activity record for the failed attempt is success:false with
+        // the error text preserved, and repairAttempt stayed at 0 (no
+        // schema-repair round was ever started).
+        assert.strictEqual(starts.length, 1, 'expected exactly one activity:start (no repair attempts)');
+        assert.strictEqual(starts[0].repairAttempt, 0);
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end (no repair attempts)');
+        assert.strictEqual(ends[0].success, false);
+        assert.ok(ends[0].error, 'expected the activity:end record to preserve the error text');
+    });
+
+    test('with an output schema: still a dispatch failure, still zero repair attempts', async () => {
+        let calls = 0;
+        const wf = new FleetWorkflow({
+            async executePrompt() {
+                calls++;
+                return topLevelIsErrorResult();
+            },
+        });
+
+        const starts = [];
+        wf.on('activity:start', (meta) => starts.push(meta));
+
+        await assert.rejects(
+            () => wf.agent('review the plan', { member_name: MEMBER, schema: { type: 'object' } }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                assert.ok(
+                    err.details.reason === 'transport' || err.details.reason === 'dispatch_failed',
+                    `expected reason 'transport' or 'dispatch_failed', got ${err.details.reason}`
+                );
+                return true;
+            }
+        );
+
+        // A schema is present (maxRepairs would be 2), yet the dispatch
+        // failure must short-circuit the repair loop entirely: exactly one
+        // dispatch, exactly one activity:start at repairAttempt 0.
+        assert.strictEqual(calls, 1, `expected exactly 1 dispatch (no schema-repair rounds), got ${calls}`);
+        assert.strictEqual(starts.length, 1, 'expected exactly one activity:start (no repair attempts)');
+        assert.strictEqual(starts[0].repairAttempt, 0);
+    });
+
+    test('control: a normal successful result with structuredContent still parses and succeeds', async () => {
+        const wf = new FleetWorkflow({
+            async executePrompt() {
+                return {
+                    content: [{ text: '{"ok":true}' }],
+                    structuredContent: { ok: true },
+                };
+            },
+        });
+
+        const out = await wf.agent('do the thing', { member_name: MEMBER, schema: { type: 'object' } });
+        assert.deepStrictEqual(out, { ok: true });
+    });
+
+    test('control: an existing structuredContent.isError busy result still classifies as busy', async () => {
+        let calls = 0;
+        const wf = new FleetWorkflow({
+            async executePrompt() {
+                calls++;
+                return busyResult();
+            },
+        });
+
+        await assert.rejects(
+            () => wf.agent('do the thing', { member_name: MEMBER, busyWaitMs: 0 }),
+            (err) => err instanceof AgentDispatchError && err.details.reason === 'busy'
+        );
+        assert.strictEqual(calls, 1);
+    });
+});
