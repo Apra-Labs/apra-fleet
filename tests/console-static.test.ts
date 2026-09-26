@@ -9,12 +9,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   resolveUiAsset,
   serveUiAsset,
   uiContentType,
   isSafeUiRelPath,
   UI_ASSET_PREFIX,
+  defaultSeaGetAsset,
 } from '../src/console/static.js';
 import type http from 'node:http';
 
@@ -205,5 +208,103 @@ describe('console static: MIME map', () => {
     expect(uiContentType('logo.png')).toBe('image/png');
     expect(uiContentType('font.woff2')).toBe('font/woff2');
     expect(uiContentType('unknown.bin')).toBe('application/octet-stream');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production defaults, NOT injected: resolveDefaultShellDistDir() and
+// defaultSeaGetAsset(). Every test above injects shellDistDir/getAsset, so
+// without this block the branches the npm-installed tree and the SEA binary
+// depend on would never execute.
+//
+// Why a child process: vitest injects CJS-style module-scope shims
+// (__dirname, and a require-less ESM scope) into every transformed module,
+// so an in-process call to resolveDefaultShellDistDir() takes the
+// `typeof __dirname !== 'undefined'` (CJS/SEA bundle) branch and never the
+// ESM branch the tsc/npm layout uses. The child runs the REAL
+// src/console/static.ts as a genuine ES module (type stripping, module
+// input type -- plain `node -e` would be CJS eval, which defines
+// __dirname/require as globals and silently selects the wrong branch). The
+// src layout (src/console/static.ts) mirrors the tsc output layout
+// (dist/console/static.js): both are two directories below the repo root,
+// which is exactly what the ESM branch walks up.
+// ---------------------------------------------------------------------------
+describe('console static: production defaults (no injection)', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const staticModuleUrl = pathToFileURL(path.join(repoRoot, 'src', 'console', 'static.ts')).href;
+  const CHILD_SCRIPT = [
+    'const m = await import(process.env.STATIC_MODULE_URL);',
+    'let seaThrew = null; let sea;',
+    'try { sea = m.defaultSeaGetAsset(); } catch (e) { seaThrew = String(e); }',
+    'process.stdout.write(JSON.stringify({',
+    '  dirnameType: typeof __dirname,',
+    '  requireType: typeof require,',
+    '  shellDistDir: m.resolveDefaultShellDistDir(),',
+    '  seaIsNull: sea === null,',
+    '  seaThrew,',
+    '}));',
+  ].join('\n');
+
+  let tempHome: string;
+  beforeEach(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'console-static-defaults-home-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  function runEsmChild(): { dirnameType: string; requireType: string; shellDistDir: string; seaIsNull: boolean; seaThrew: string | null } {
+    // The child only imports static.ts (fs/path/url -- no fleet state), but
+    // it is still pointed at a throwaway home/data dir so nothing it could
+    // ever touch lands under the real user home.
+    const out = execFileSync(
+      process.execPath,
+      ['--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', CHILD_SCRIPT],
+      {
+        cwd: tempHome,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: {
+          ...process.env,
+          STATIC_MODULE_URL: staticModuleUrl,
+          HOME: tempHome,
+          USERPROFILE: tempHome,
+          APRA_FLEET_DATA_DIR: path.join(tempHome, 'data'),
+        },
+      },
+    );
+    return JSON.parse(out);
+  }
+
+  function norm(p: string): string {
+    const resolved = path.resolve(p);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  }
+
+  it('resolveDefaultShellDistDir() under the ESM layout is <repoRoot>/packages/apra-fleet-shell-ui/dist', () => {
+    const result = runEsmChild();
+    // Non-vacuity guard: the child really is a genuine ES module scope, so
+    // the ESM branch (not the CJS/SEA-bundle branch) is what ran.
+    expect(result.dirnameType).toBe('undefined');
+    expect(result.requireType).toBe('undefined');
+    expect(path.isAbsolute(result.shellDistDir)).toBe(true);
+    expect(norm(result.shellDistDir)).toBe(norm(path.join(repoRoot, 'packages', 'apra-fleet-shell-ui', 'dist')));
+  });
+
+  it('defaultSeaGetAsset() outside a SEA binary returns null for a ui/ key and never throws (ESM scope)', () => {
+    const result = runEsmChild();
+    expect(result.requireType).toBe('undefined');
+    expect(result.seaThrew).toBeNull();
+    expect(result.seaIsNull).toBe(true);
+  });
+
+  it('defaultSeaGetAsset() in-process is also null, and the real default resolver serves nothing for a ui/ key', () => {
+    let reader: ReturnType<typeof defaultSeaGetAsset> | undefined;
+    expect(() => { reader = defaultSeaGetAsset(); }).not.toThrow();
+    expect(reader).toBeNull();
+    // With getAsset left undefined, resolveUiAsset falls back to the real
+    // defaultSeaGetAsset(); pointed at an empty disk root, there is nothing
+    // to serve at all.
+    expect(resolveUiAsset('/ui/', { shellDistDir: tempHome })).toBeNull();
   });
 });
