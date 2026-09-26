@@ -383,6 +383,71 @@ package ids exist and what their upstream `baseUrl` is:
   impossible for an operator to tell "typo'd package id" from "package
   crashed" from the response alone.
 
+## The fleet-supervisor as a self-registering workflow package
+
+The fleet-supervisor (the always-on sprint-launching process described in
+`packages/apra-fleet-se/docs/architecture.md`) is the first real, non-test
+workflow package the registry above serves: it registers itself as package id
+`se` on boot (manifest built from its own `baseUrl`, health path, and a `nav`
+entry labelled "Sprints") and unregisters on a clean shutdown. Its `nav` entry
+is deliberately unscoped (no `scope: 'project'`), because the Sprint Stack has
+no project-context dependency the way the KB/Code panels do -- the shell's
+nav-visibility rule drops `scope: 'project'` entries until a project is known,
+so an unscoped entry is what lets "Sprints" render in the header immediately,
+before any project is selected.
+
+A defect this closed along the way is worth naming because the failure mode
+is generic to any self-registering client: registration was originally built
+from the MCP connection's own URL (which points at `/mcp`), so the register
+POST landed on `<origin>/mcp/api/workflow-packages/register` -- a path that
+404s -- and the client silently retried forever with the whole registration
+hop permanently dead. The fix is to derive the target purely from the
+connection URL's *origin* (`new URL(...).origin`), resolved once per process
+and reused for both the registration call and any self-referential link the
+package renders back to the console (e.g. a dashboard's "back to console"
+link) -- a single resolved origin cannot let those two consumers disagree
+about what the console's address is, where two independent derivations could
+drift.
+
+### The mount-path header: how an embedded package learns its own mount point
+
+A workflow package's pages are served two ways -- directly, at the package's
+own origin, and embedded, reverse-proxied under `/ext/<id>/*`. A page that
+emits an absolute app-path (e.g. `/state`, `/api/health`) resolves correctly
+against the package's own root in the direct case, but resolves against the
+*console's* root when embedded, silently 404ing every such link or fetch. The
+proxy closes this gap by setting a request header
+(`x-apra-fleet-mount-path`, exported as `MOUNT_PATH_HEADER` from
+`src/console/proxy.ts`) on every hop, carrying the exact `/ext/<id>` mount
+path it computed for that request -- so a package that reads this header knows,
+per request, which of the two rendering contexts it is in and can prefix its
+own app-paths accordingly.
+
+This header is added to `DROPPED_REQUEST_HEADERS` (stripped from the inbound
+request before the proxy's own header-copy loop runs), so a browser can never
+supply its own value and spoof a different mount point than the one the
+proxy actually resolved. A workflow package MUST still treat the header's
+value as untrusted network input on its own side, not merely trust the
+strip-on-inbound protection -- the same package binary may also be reachable
+directly (not only through this proxy) by anything that can talk to its port,
+and blindly interpolating an attacker-controlled string into every href/fetch
+target on a rendered page is an open-redirect / script-injection primitive.
+The consuming package's own sanitizer must independently fail closed to "no
+prefix" (equivalent to the direct-serve case) on anything that is not an
+obviously safe, single-rooted, dot-segment-free path -- see
+`packages/apra-fleet-se/docs/architecture.md`'s mount-prefix section for one
+concrete, hardened implementation of that contract and why its allowlist is
+narrower than what a URL path technically permits.
+
+Because `x-apra-fleet-mount-path` is a wire contract between two independently
+deployable pieces of software (the console server, and any workflow package
+that might not even live in this repository), the constant name is
+intentionally duplicated on each side rather than shared via import -- a
+workflow package must not depend on the console's TypeScript internals, since
+it has to keep working against whatever console version happens to be
+deployed. The string itself, asserted identically in tests on both sides, IS
+the contract, in the same sense an HTTP status code is.
+
 ## compose_permissions denylist for console and supervisor endpoints
 
 `compose_permissions` (the tool that composes a member's auto-granted
