@@ -77,6 +77,20 @@
  *   of the two, so a caller is never handed a bare exception (nor, therefore, a
  *   member left wedged busy). Treat them identically except where telling a dead
  *   link from a dead dispatch matters.
+ * @property {Object} [busyOwner] - Present when `reason === 'busy'` (apra-fleet-c98q.3):
+ *   the owner metadata of the dispatch holding the member's lock. Read these fields
+ *   instead of parsing the [FAIL] text. A null pid on an old claim (claimAgeMs > grace
+ *   period) is the signature of a leaked lock where no process was ever spawned, rather
+ *   than a live peer dispatch.
+ * @property {string|null} [busyOwner.invocationId] - The owning dispatch's log `inv=`
+ *   tag, or null if the claim predates the metadata system. Use to trace the rejection
+ *   to the exact dispatch's log lines.
+ * @property {number|null} [busyOwner.claimedAtMs] - When the lock was claimed
+ *   (milliseconds since epoch), or null if the claim predates this field.
+ * @property {number} [busyOwner.claimAgeMs] - How long the lock has been held
+ *   (in milliseconds).
+ * @property {number|null} [busyOwner.pid] - The process id of the dispatch holding
+ *   the lock, or null if no process was ever spawned. A null pid is a leak signature.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
