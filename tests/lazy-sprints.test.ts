@@ -377,7 +377,7 @@ describe('sprint API', () => {
     const h = await headers();
     const base = `http://127.0.0.1:${port}/_lazy/api/designs`;
     const list = await (await fetch(base, { headers: h })).json();
-    expect(list.default).toBe('pipeline');
+    expect(list.default).toBe('fast-pipeline');
     const solo = list.designs.find((d: any) => d.id === 'solo');
     expect(solo.steps.find((s: any) => s.step === 'Plan')).toMatchObject({ on: false });
     const bad = await (await fetch(`${base}/check`, { method: 'POST', headers: h, body: JSON.stringify({ name: 'X', build: { mode: 'off' } }) })).json();

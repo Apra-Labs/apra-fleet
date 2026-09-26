@@ -206,8 +206,8 @@ build your own:
 
 | Design | What it does |
 |---|---|
-| **Pipeline** (default) | Every ready task at once, landings behind your check, one split review per cycle. |
-| **Fast pipeline** | The pipeline without its fixed costs: plans again only for new work, no acceptance-test tasks, builders never on the cheapest model, one reviewer unless the change is big, no docs pass. |
+| **Fast pipeline** (default) | Every ready task at once, landings behind your check, without the pipeline's fixed costs: plans again only for new work, no acceptance-test tasks, builders never on the cheapest model, one reviewer unless the change is big, no docs pass. |
+| **Pipeline** | Every ready task at once, landings behind your check, one split review per cycle. |
 | **Features only** | Parallel builds gated by your check, no reviews at all. The check is the safety net. |
 | **Classic** | The engine as it ships: plan, build a round, review the round, repeat. |
 | **Solo** | No planning: one helper takes the whole ask, then one final review. The baseline to beat. |

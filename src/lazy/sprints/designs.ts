@@ -46,7 +46,9 @@ export interface Design {
   finish?: { finalReview?: boolean; harvest?: boolean };
 }
 
-export const DEFAULT_DESIGN = 'pipeline';
+// Chosen by the design benchmarks (docs/lazy-sprint-designs.md): as correct as
+// the others, fastest on the larger task, and half the cost of Pipeline.
+export const DEFAULT_DESIGN = 'fast-pipeline';
 
 export const BUILT_IN_DESIGNS: Design[] = [
   {
