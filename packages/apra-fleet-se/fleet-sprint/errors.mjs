@@ -922,3 +922,59 @@ export class BeadsIdentityError extends WorkflowError {
         if (mismatches) this.mismatches = mismatches;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Runbook permissions (a role's runbook declares a permission the engine
+// cannot provision onto the member about to run it)
+// ---------------------------------------------------------------------------
+
+export const RUNBOOK_PERMISSIONS_FAILURE_REASONS = Object.freeze({
+    /**
+     * compose_permissions did not grant a declared entry: it refused it (e.g.
+     * its never-auto-grant denylist), errored, threw, or could not persist
+     * it. One reason on purpose -- telling a refusal from an error apart
+     * would mean reading the tool's human-readable message; `entries` names
+     * exactly the entries that fail when granted on their own.
+     */
+    GRANT_FAILED: 'GRANT_FAILED',
+    /** The runbook could not be read off the member at all. */
+    READ_FAILED: 'READ_FAILED',
+});
+
+/**
+ * Thrown by the runbook-permissions provisioner (member-provisioning.mjs)
+ * BEFORE a deployer / integ-test-runner / regression-test-runner dispatch
+ * when the Permissions entries that role's own runbook declares cannot be
+ * provisioned onto the member. The dispatched agent's own permission check
+ * would otherwise stop mid-sprint on exactly this gap and burn the cycle;
+ * failing here, before dispatch, names the runbook and the entry instead.
+ *
+ * @property {string} reason - one of RUNBOOK_PERMISSIONS_FAILURE_REASONS
+ * @property {string} runbook - the runbook file whose Permissions section was being provisioned
+ * @property {string} member - the member it was being provisioned onto
+ * @property {string[]} entries - the declared entries that could not be granted
+ */
+export class RunbookPermissionsError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, runbook: string, member: string, entries?: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, runbook, member, entries = [], details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(RUNBOOK_PERMISSIONS_FAILURE_REASONS, String(reason))) {
+            throw new TypeError(
+                `RunbookPermissionsError requires a reason from RUNBOOK_PERMISSIONS_FAILURE_REASONS ` +
+                `(${Object.keys(RUNBOOK_PERMISSIONS_FAILURE_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'RUNBOOK_PERMISSIONS',
+            details: { reason, runbook, member, entries, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.runbook = runbook;
+        this.member = member;
+        this.entries = entries;
+    }
+}

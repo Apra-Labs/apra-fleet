@@ -99,7 +99,7 @@ export async function runRegressionTestPhase({
 }) {
     phase(`Regression Test C${finalCycleLabel}`);
     await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
-    await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
+    await ensureDeployPermissions(getMemberForRole('regression-test-runner'), 'regression-test-runner');
     // The real functional suite alone spends roughly one turn per liveness
     // poll for the better part of an hour, and this single dispatch carries
     // both it and the sandbox smoke sprint -- hence the large turn budget

@@ -9,11 +9,12 @@
 //      `unattended: 'auto'` registration before it is dispatched as deployer/
 //      integ-test-runner/regression-test-runner, cached per member for the
 //      lifetime of the returned function.
-//   3. createDeployPermissionsProvisioner -- best-effort self-heal that reads
-//      deploy.md's own `## Permissions` section off the first target member
-//      it provisions and proactively grants every listed prefix via
-//      compose_permissions, so a runbook permissions change does not have to
-//      wait for a dispatch to fail before anyone notices.
+//   3. createDeployPermissionsProvisioner -- before a deployer/integ-test-
+//      runner/regression-test-runner dispatch, reads THAT role's own runbook
+//      `## Permissions` section (RUNBOOK_BY_ROLE) off the target member and
+//      grants every declared entry via compose_permissions, failing loudly
+//      (RunbookPermissionsError) when an entry cannot be granted, so a
+//      runbook/permission mismatch never waits for a dispatch to stop on it.
 //   4. stageCommandBodyMemberSide -- stages free-text content to a fresh,
 //      member-LOCAL temp file via a shell-agnostic `node -e` one-liner (base64
 //      argv, no `$`-expansion/backticks/template literals), so a `bd
@@ -34,8 +35,8 @@
 // GUARD REGISTRATION: this module is registered in ./guarded-modules.mjs as
 // part of this extraction (see that file's STANDING RULE). It carries the two
 // member_name-bearing command() call sites this extraction took out of
-// runner.js: createDeployPermissionsProvisioner's `node -e ...` read of
-// deploy.md's Permissions section, and stageCommandBodyMemberSide's `node -e
+// runner.js: createDeployPermissionsProvisioner's `node -e ...` read of the
+// role's runbook Permissions section, and stageCommandBodyMemberSide's `node -e
 // ...` member-side temp-file write. Both already avoid shell-level variable
 // expansion (base64-encoded argv, no `$`/backtick/template-literal
 // interpolation), which is exactly the invariant shell-command-guard.mjs
@@ -43,6 +44,7 @@
 
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
+import { RunbookPermissionsError, RUNBOOK_PERMISSIONS_FAILURE_REASONS } from './errors.mjs';
 
 /**
  * Guards every "resume" re-dispatch below against spawning a second
@@ -132,82 +134,201 @@ export function createUnattendedAutoProvisioner(opts = {}) {
 }
 
 /**
- * Best-effort, self-heals the "Missing permission" class of deploy/integ/
- * regression-test failure BEFORE it happens: reads deploy.md's own
- * `## Permissions` section -- the exact list the deployer/integ-test-runner/
- * regression-test-runner agent prompts already cross-check at their own
- * Step 0a/0 -- and proactively grants every listed prefix to the target
- * member via compose_permissions. Without this, a runbook permissions
- * change (e.g. the `apra-fleet start` -> `apra-fleet run` swap, #395) only
- * gets noticed when a dispatch fails, and only gets fixed once an operator
- * greps deploy.md by hand and runs compose_permissions manually -- exactly
- * the failure mode this closes the loop on.
+ * The runbook each runbook-driven role reads its own `## Permissions` section
+ * from, and cross-checks at its own Step 0/0a before running anything. A
+ * closed map: the provisioner below refuses any other role rather than
+ * guessing a filename.
+ */
+export const RUNBOOK_BY_ROLE = Object.freeze({
+    'deployer': 'deploy.md',
+    'integ-test-runner': 'integ-test-playbook.md',
+    'regression-test-runner': 'regression-test-playbook.md',
+});
+
+const PERMISSION_TOKEN_RE = /^[A-Za-z_][A-Za-z0-9_-]*\(.*\)$/;
+
+/**
+ * Parses the permission entries a runbook's `## Permissions` section
+ * declares. One entry per TOP-LEVEL bullet (a line starting `- `; indented
+ * continuation lines are prose): the first backticked token on that bullet
+ * that is permission-shaped (`Tool(...)`). Runbooks name a family in two
+ * shapes and both resolve to the same entry:
+ *   - `Bash(npm ci)`                          -> Bash(npm ci)
+ *   - `npm test ...` (e.g. `Bash(npm test*)`) -> Bash(npm test*)
+ * A bullet with no permission-shaped token is skipped (never granted as a
+ * garbage string). Returns [] when there is no Permissions section.
  *
- * Reads deploy.md via `command()` against the FIRST target member it is asked
- * to provision (that member is about to be dispatched as deployer/
- * integ-test-runner/regression-test-runner, so its own checkout is the source
- * of truth for what it is about to run) and caches the parsed prefix list for
- * the lifetime of the returned function -- one read per sprint run, since
- * deploy.md does not change mid-run on a healthy pipeline. Also caches per
- * TARGET member, like createUnattendedAutoProvisioner above, so repeat cycles
- * don't re-grant. Deliberately does NOT read via a separate orchestrator
- * member: the orchestrator role may be shared/unreservable across concurrent
- * sprints and carries no git checkout of its own to read from.
+ * @param {string} text - the runbook's full markdown
+ * @returns {string[]}
+ */
+export function parseRunbookPermissions(text) {
+    const section = String(text ?? '').split(/^## Permissions\b.*$/m)[1]?.split(/^## /m)[0] ?? '';
+    const entries = new Set();
+    for (const line of section.split(/\r?\n/)) {
+        if (!/^-\s/.test(line)) continue;
+        const token = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1].trim()).find(t => PERMISSION_TOKEN_RE.test(t));
+        if (token) entries.add(token);
+    }
+    return [...entries];
+}
+
+// Member-side reader: prints the named file's content when it exists, nothing
+// when it does not. The file name arrives base64-encoded as argv[1] -- the
+// first arg after the `-e` script -- so the member-bound command string holds
+// no `$`-expansion, backticks, template literals or `%`-vars, and is inert
+// syntax under POSIX shells, PowerShell and cmd.exe alike.
+const READ_FILE_SCRIPT =
+    "const fs=require('fs');const f=Buffer.from(process.argv[1],'base64').toString('utf8');" +
+    "if(fs.existsSync(f))process.stdout.write(fs.readFileSync(f,'utf8'))";
+
+// compose_permissions' success glyph (U+2705), built from its code point so
+// this file stays ASCII.
+const COMPOSE_SUCCESS_MARK = String.fromCodePoint(0x2705);
+
+/** Strips a leading non-ASCII status glyph so a surfaced message stays ASCII. */
+function asciiDetail(text) {
+    return String(text ?? '').replace(/^[^\x00-\x7F]+\s*/, '').trim() || '(no detail)';
+}
+
+/**
+ * Provisions, BEFORE each deployer / integ-test-runner / regression-test-runner
+ * dispatch, the Permissions entries declared by THAT role's own runbook (see
+ * RUNBOOK_BY_ROLE) -- the exact list the dispatched agent cross-checks at its
+ * own Step 0/0a -- via compose_permissions' grant mode on the target member.
+ * Without this, a runbook permission the member lacks only surfaces when the
+ * dispatched agent stops at its permission check mid-sprint, losing the cycle.
  *
- * Failure at any step (probe fails, deploy.md missing/unparseable,
- * compose_permissions unreachable, a listed prefix hitting the
- * NEVER_AUTO_GRANT denylist) is logged and swallowed. This is pure
- * best-effort acceleration -- the deployer's own Step 0a check remains the
- * authoritative, fail-closed backstop regardless of whether this succeeds.
+ * Reads the runbook via `command()` against the FIRST target member it is
+ * asked to provision for that runbook (that member is about to run it, so
+ * its checkout is the source of truth) and caches the parsed entries per
+ * runbook for the lifetime of the returned function. Grants are cached per
+ * (member, runbook): in a small sprint one member plays several of these
+ * roles and must receive each runbook's entries, but repeat cycles do not
+ * re-grant. Deliberately does NOT read via a separate orchestrator member:
+ * the orchestrator role may be shared across concurrent sprints and carries
+ * no git checkout of its own to read from.
+ *
+ * A runbook that is absent, or has no Permissions section / no
+ * permission-shaped entries, is a no-op. Every other failure is LOUD: a
+ * RunbookPermissionsError naming the runbook and the entries is thrown
+ * before dispatch when
+ *   - compose_permissions refuses an entry (its never-auto-grant denylist),
+ *   - compose_permissions errors, throws, or reports anything but success,
+ *   - the runbook read itself fails.
+ * When a grant batch fails, each entry is re-granted on its own so the error
+ * names exactly the entries that cannot be granted. Success is judged from
+ * each call's status (throw / isError / the tool's leading success glyph),
+ * never by inspecting its message prose.
+ * Nothing here widens what compose_permissions will grant; a denylisted
+ * entry stays denied and is reported, never worked around.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
- * @returns {(member: string) => Promise<void>}
+ * @returns {(member: string, role: string) => Promise<void>}
  */
 export function createDeployPermissionsProvisioner(opts = {}) {
     const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
-    /** @type {Set<string>} members already granted deploy.md's permissions this run. */
+    /** @type {Set<string>} `${member}\0${runbook}` pairs already granted this run. */
     const provisioned = new Set();
-    /** @type {string[] | null | undefined} undefined = not yet attempted. */
-    let cachedPrefixes;
+    /** @type {Map<string, string[]>} runbook -> parsed entries ([] = nothing to grant). */
+    const cachedEntries = new Map();
+    /** @type {Map<string, string[]>} member -> every entry successfully granted to it this run. */
+    const grantedByMember = new Map();
 
-    async function loadRequiredPrefixes(targetMember) {
-        if (cachedPrefixes !== undefined) return cachedPrefixes;
-        try {
-            const res = await command(
-                `node -e "const fs=require('fs'); if(fs.existsSync('deploy.md')) process.stdout.write(fs.readFileSync('deploy.md','utf8'))"`,
-                { member_name: targetMember, silent: true, label: `Read deploy.md permissions`, failSoft: true },
-            );
-            if (!res.ok || !res.output) {
-                cachedPrefixes = null;
-            } else {
-                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
-                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
-                cachedPrefixes = prefixes.length ? prefixes : null;
-            }
-        } catch (err) {
-            log(`[deploy-permissions] could not read deploy.md's Permissions section (continuing without auto-provisioning): ${err.message}`);
-            cachedPrefixes = null;
-        }
-        return cachedPrefixes;
-    }
-
-    return async function ensureDeployPermissions(member) {
-        if (!member || provisioned.has(member)) return;
-        const prefixes = await loadRequiredPrefixes(member);
-        if (!prefixes) return;
+    /**
+     * One compose_permissions grant. Success is judged from the call's STATUS
+     * only -- a throw, `isError`, or a result not led by the tool's success
+     * glyph is a failure -- never by reading its message. The text travels
+     * along solely to quote in a surfaced error.
+     * @returns {Promise<{ ok: boolean, text: string }>}
+     */
+    async function tryGrant(member, grant, grantReason) {
         try {
             const result = await fleetApi.composePermissions({
                 member_name: member,
                 role: 'doer',
-                grant: prefixes,
-                grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
+                grant,
+                grant_reason: grantReason,
             });
-            provisioned.add(member);
-            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+            const text = resultText(result);
+            return { ok: !result?.isError && text.trimStart().startsWith(COMPOSE_SUCCESS_MARK), text };
         } catch (err) {
-            log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
+            return { ok: false, text: err?.message ?? String(err) };
         }
+    }
+
+    async function loadRunbookEntries(runbook, targetMember) {
+        if (cachedEntries.has(runbook)) return cachedEntries.get(runbook);
+        const b64 = Buffer.from(runbook, 'utf-8').toString('base64');
+        let res;
+        try {
+            res = await command(
+                `node -e "${READ_FILE_SCRIPT}" "${b64}"`,
+                { member_name: targetMember, silent: true, label: `Read ${runbook} permissions`, failSoft: true },
+            );
+        } catch (err) {
+            res = { ok: false, output: err?.message ?? String(err) };
+        }
+        if (!res || !res.ok) {
+            throw new RunbookPermissionsError(
+                `Could not read ${runbook} on member '${targetMember}' to provision its Permissions section before dispatch: ` +
+                `${asciiDetail(res?.output)}`,
+                { reason: RUNBOOK_PERMISSIONS_FAILURE_REASONS.READ_FAILED, runbook, member: targetMember },
+            );
+        }
+        const entries = parseRunbookPermissions(res.output ?? '');
+        cachedEntries.set(runbook, entries);
+        return entries;
+    }
+
+    return async function ensureRunbookPermissions(member, role) {
+        const runbook = RUNBOOK_BY_ROLE[role];
+        if (!runbook) {
+            throw new TypeError(
+                `ensureRunbookPermissions: role must be one of ${Object.keys(RUNBOOK_BY_ROLE).join(', ')}; got ${JSON.stringify(role)}`,
+            );
+        }
+        if (!member) return;
+        const key = `${member}\u0000${runbook}`;
+        if (provisioned.has(key)) return;
+        const entries = await loadRunbookEntries(runbook, member);
+        if (!entries.length) {
+            provisioned.add(key);
+            return;
+        }
+
+        // Every grant carries the union of everything already granted to this
+        // member this run: for some providers compose_permissions' grant mode
+        // REPLACES the member's allow list with the call's grants rather than
+        // merging, so a member playing deployer then integ-test-runner would
+        // otherwise lose deploy.md's entries to the integ grant. Harmless
+        // where the tool merges (it dedupes).
+        const prior = grantedByMember.get(member) ?? [];
+        const withPrior = (list) => [...new Set([...prior, ...list])];
+        const grantReason = `${runbook}'s declared Permissions section, auto-provisioned before the ${role} dispatch`;
+        const batch = await tryGrant(member, withPrior(entries), grantReason);
+        if (!batch.ok) {
+            // compose_permissions refuses a grant batch as a whole when any
+            // one entry is refused, so re-grant each entry on its own to name
+            // exactly the entries that cannot be granted -- decided from each
+            // call's success status alone, never by reading its message.
+            const failures = [];
+            for (const entry of entries) {
+                const single = await tryGrant(member, withPrior([entry]), grantReason);
+                if (!single.ok) failures.push({ entry, text: single.text });
+            }
+            const named = failures.length ? failures.map(f => f.entry) : entries;
+            const detail = failures.length ? failures[0].text : batch.text;
+            throw new RunbookPermissionsError(
+                `${runbook} declares Permissions entr${named.length === 1 ? 'y' : 'ies'} that could not be granted to member ` +
+                `'${member}' before the ${role} dispatch: ${named.join(', ')} -- compose_permissions said: ${asciiDetail(detail)}. ` +
+                `Fix the runbook's Permissions section or grant these entries explicitly, then rerun.`,
+                { reason: RUNBOOK_PERMISSIONS_FAILURE_REASONS.GRANT_FAILED, runbook, member, entries: named },
+            );
+        }
+        provisioned.add(key);
+        grantedByMember.set(member, withPrior(entries));
+        log(`[runbook-permissions] granted ${entries.length} ${runbook} Permissions entr${entries.length === 1 ? 'y' : 'ies'} on '${member}' before the ${role} dispatch.`);
     };
 }
 

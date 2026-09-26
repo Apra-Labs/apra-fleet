@@ -1392,10 +1392,12 @@ async function runSprintCycle(context) {
         expected: validated.expectBeads ?? null,
     });
 
-    // Self-heals deploy.md's declared Permissions onto the deployer /
-    // integ-test-runner / regression-test-runner member before each of
-    // those dispatches -- see createDeployPermissionsProvisioner's doc
-    // comment. Same three-way precedence shape as ensureUnattendedAuto
+    // Provisions each runbook-driven role's OWN runbook Permissions section
+    // (deploy.md / integ-test-playbook.md / regression-test-playbook.md)
+    // onto the deployer / integ-test-runner / regression-test-runner member
+    // before each of those dispatches, throwing RunbookPermissionsError when
+    // an entry cannot be granted -- see createDeployPermissionsProvisioner's
+    // doc comment. Called as ensureDeployPermissions(member, role). Same three-way precedence shape as ensureUnattendedAuto
     // above: an explicitly-injected `context.ensureDeployPermissions` (for
     // tests), else the real compose_permissions-backed provisioner built
     // from `args.callTool`, else a no-op when neither is available.
