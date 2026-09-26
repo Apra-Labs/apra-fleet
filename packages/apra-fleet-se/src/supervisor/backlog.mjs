@@ -43,6 +43,9 @@ import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { sendJson } from './server.mjs';
 import { execBdAsync } from './lib/exec-bd.mjs';
+// (apra-fleet-i9ag.3.2) Mount-aware app-paths for the Backlog tab's own client
+// fetch -- see backlogPanelClientScript() below and mount-prefix.mjs.
+import { mountHref } from './mount-prefix.mjs';
 
 /**
  * Extract a bead's parent id from a raw `bd list --json` row. The parent-child
@@ -597,9 +600,17 @@ function injectRowCheckboxes(tableHtml) {
  * nothing to lazy-fetch), and re-fetches `GET /api/backlog/tasks` -- a real
  * network round trip that narrows the row SET server-side (apra-fleet-7xk's
  * "not just UI" requirement) -- whenever a filter control changes.
+ *
+ * (apra-fleet-i9ag.3.2) That fetch target is an absolute app-path on a page
+ * that may be served inside the console's /ext/<id> iframe, where it would
+ * otherwise resolve against the console root and 404 (silently freezing the
+ * Backlog tab's filters on their last-known-good table). Built through
+ * mountHref() against the request's resolved mount prefix, same as every other
+ * app-path the index page emits (dashboard.mjs).
+ * @param {string} [mountPrefix]
  * @returns {string}
  */
-function backlogPanelClientScript() {
+function backlogPanelClientScript(mountPrefix) {
     return `
 (function () {
     var container = document.getElementById('backlog-table');
@@ -700,7 +711,7 @@ function backlogPanelClientScript() {
             var v = currentFilters[k];
             if (v) params.set(k, v);
         });
-        fetch('/api/backlog/tasks?' + params.toString())
+        fetch('${mountHref(mountPrefix, '/api/backlog/tasks')}?' + params.toString())
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 lastTasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
@@ -756,9 +767,12 @@ function backlogPanelClientScript() {
  * (which also calls it) is unaffected.
  * @param {object[]} tasks
  * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
+ * @param {string} [mountPrefix] - (apra-fleet-i9ag.3.2) the request's resolved
+ *   mount prefix, forwarded to backlogPanelClientScript()'s fetch target.
+ *   Absent -> the unchanged root-relative path.
  * @returns {string}
  */
-export function renderBacklogPanelHtml(tasks, filterOptions) {
+export function renderBacklogPanelHtml(tasks, filterOptions, mountPrefix) {
     const opts = filterOptions || { type: [], status: [], priority: [], model: [] };
     const rawTable = renderBeadsHtml([], tasks, new Set());
     const headerRow = buildFilterHeaderRowHtml(opts, {});
@@ -785,7 +799,7 @@ export function renderBacklogPanelHtml(tasks, filterOptions) {
         '</div>' +
         '<div id="backlog-table">' + tableHtml + '</div>' +
         '<script>window.__backlogTasks = ' + tasksJson + '; window.__backlogFilterOptions = ' + filterOptionsJson + ';</script>' +
-        '<script>' + backlogPanelClientScript() + '</script>'
+        '<script>' + backlogPanelClientScript(mountPrefix) + '</script>'
     );
 }
 

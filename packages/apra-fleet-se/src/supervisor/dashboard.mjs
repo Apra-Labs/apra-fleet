@@ -71,6 +71,14 @@ import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs'
 // excludes below-goal beads the identical way the per-sprint viewer's does.
 import { goalPriorityMax } from '../../fleet-sprint/runner.js';
 import { toBeadsSummary } from './beads-identity.mjs';
+// (apra-fleet-i9ag.3.2) Mount-aware app-paths: every absolute path this page
+// emits -- header links, per-card live/log anchors, the client scripts' fetch()
+// targets and the EventSource URL -- goes through mountHref() against the
+// per-request prefix resolveMountPrefix() derives from the console proxy's
+// mount-path header, so the SAME renderers serve the page correctly both
+// directly (prefix '', paths unchanged) and inside the console's /ext/<id>
+// iframe. See mount-prefix.mjs for the fail-closed validation rules.
+import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -198,10 +206,18 @@ function renderSprintProgressHtml(progress) {
 
 /**
  * Renders one running sprint's section.
+ *
+ * (apra-fleet-i9ag.3.2) `mountPrefix` is threaded in EXPLICITLY (never read
+ * off module or global state) because this exact function is also shipped to
+ * the browser via `.toString()` inside sprintStackLiveScript() and re-renders
+ * rows there from GET /state -- a live-refreshed row must carry the same
+ * mount-aware links the server-rendered one did, and the client has no way to
+ * re-derive the prefix from the request. Omitted/'' -> paths exactly as before.
  * @param {SprintView} view
+ * @param {string} [mountPrefix] - mount-prefix.mjs's resolved prefix (e.g. '/ext/se'), or '' to serve direct
  * @returns {string}
  */
-export function renderSprintSection(view) {
+export function renderSprintSection(view, mountPrefix) {
     const sprintId = escapeHtml(view.sprintId);
     const branch = view.branch ? escapeHtml(view.branch) : 'unknown';
     const base = view.base ? escapeHtml(view.base) : '';
@@ -215,12 +231,12 @@ export function renderSprintSection(view) {
         : '<span style="color:#71717a; font-style: italic;">no members recorded</span>';
     // Supervisor-relative path ONLY -- never a bare child port (Plan Part 2.3:
     // bare child-port links leak port allocation and break across hosts).
-    const liveHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/live';
+    const liveHref = mountHref(mountPrefix, '/sprints/' + encodeURIComponent(view.sprintId) + '/live');
     // apra-fleet-ou7.2: the raw stdout/stderr log link -- present for EVERY
     // row this stack renders, including a CRASHED sprint (the live SSE
     // viewer above is gone/unresponsive for that status; the raw log is the
     // one remaining way to see what the child actually printed).
-    const logHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/log';
+    const logHref = mountHref(mountPrefix, '/sprints/' + encodeURIComponent(view.sprintId) + '/log');
 
     // (apra-fleet-p2to.3.1) Pause/Resume is only meaningful for a sprint the
     // watchdog currently sees as a LIVE pid (running-healthy/running-
@@ -260,7 +276,7 @@ export function renderSprintSection(view) {
         // apra-fleet-3i3.1: kills the still-live child AND releases the
         // member+scope reservation in one action (POST /api/reservations/
         // :sprintId/force-release, extended -- see reconcile.mjs). A plain
-        // button (not a form submit) wired up by SPRINT_STOP_SCRIPT below via
+        // button (not a form submit) wired up by sprintStopScript() below via
         // event delegation on data-sprint-id, matching the Launch Sprint
         // form's formatLaunchError() inline-feedback convention.
         '<button type="button" class="btn btn-secondary btn-stop-sprint" data-sprint-id="' + sprintId + '" ' +
@@ -269,7 +285,7 @@ export function renderSprintSection(view) {
         // apra-fleet-3i3.3: releases the SAME reservation (via the SAME
         // force-release route Stop uses) then re-launches the SAME sprint via
         // POST /api/sprints, without a separate manual Stop first -- see
-        // SPRINT_RESTART_SCRIPT below and reconcile.mjs's forceRelease(),
+        // sprintRestartScript() below and reconcile.mjs's forceRelease(),
         // which now echoes back branch/base/goal/members/issueRoots for
         // exactly this purpose.
         '<button type="button" class="btn btn-secondary btn-restart-sprint" data-sprint-id="' + sprintId + '" ' +
@@ -314,14 +330,17 @@ export function renderSprintSection(view) {
  * empty/undefined input -- the page must render correctly with zero running
  * sprints (acceptance criterion).
  * @param {SprintView[]} [views]
+ * @param {string} [mountPrefix] - (apra-fleet-i9ag.3.2) forwarded verbatim to renderSprintSection()
  * @returns {string}
  */
-export function renderSprintStackHtml(views) {
+export function renderSprintStackHtml(views, mountPrefix) {
     const list = Array.isArray(views) ? views : [];
     if (list.length === 0) {
         return '<p style="color:#71717a; font-style: italic;">No sprints are currently running.</p>';
     }
-    return list.map(renderSprintSection).join('\n');
+    // NOT `list.map(renderSprintSection)`: Array#map passes (value, index,
+    // array), which would hand the row index in as `mountPrefix`.
+    return list.map((view) => renderSprintSection(view, mountPrefix)).join('\n');
 }
 
 // apra-fleet supervisor-viewer-parity: the SAME CSS custom-property names and
@@ -373,7 +392,7 @@ const DASHBOARD_CSS = `
 // (apra-fleet-siqi.2.1) How old a tab's last fetch must be, in ms, before
 // activating that tab triggers a fresh one -- rather than just showing
 // whatever markup the last full-page load (or last poll/filter fetch)
-// already produced. Deliberately shorter than SPRINT_STACK_LIVE_SCRIPT's own
+// already produced. Deliberately shorter than sprintStackLiveScript()'s own
 // HEARTBEAT_INTERVAL_MS (7000, above) so a tab switch shortly after that
 // heartbeat's own poll does not double-fetch, but idling on one tab for even
 // a few seconds before switching still gets a genuinely fresh fetch on
@@ -389,7 +408,7 @@ const DASHBOARD_TAB_SCRIPT = `
         document.getElementById('tab-' + id).classList.add('active');
         // apra-fleet-siqi.2.1: activating a tab triggers a fresh fetch of
         // THAT tab's own data through the SAME fetch/poll plumbing each tab
-        // already uses elsewhere (SPRINT_STACK_LIVE_SCRIPT's schedulePoll()/
+        // already uses elsewhere (sprintStackLiveScript()'s schedulePoll()/
         // poll() for Sprints, backlogPanelClientScript()'s applyFilters() for
         // Backlog) -- never a separate one-off fetch call -- but only when
         // the last such fetch is stale (see TAB_ACTIVATION_STALE_MS above);
@@ -429,7 +448,7 @@ export function formatStopError(status, errJson) {
  * to inline into a `<script>` tag (same `.toString()`-embedding pattern as
  * launch-form.mjs's clientScriptSource(), so the exact code under test is the
  * exact code shipped to the browser). Event-delegated on `document` -- as of
- * apra-fleet-siqi.1.2, SPRINT_STACK_LIVE_SCRIPT below DOES periodically
+ * apra-fleet-siqi.1.2, sprintStackLiveScript() below DOES periodically
  * rebuild each `<section data-sprint-id>` row (a fresh /state poll may
  * replace this exact button element), but delegation on `document` still
  * catches every click regardless of which concrete button element it landed
@@ -442,8 +461,17 @@ export function formatStopError(status, errJson) {
  * in a `.catch()` so a network failure can never surface as an unhandled
  * browser rejection). On success the whole `<section>` is removed from the
  * DOM so the stopped sprint no longer visually claims to still be running.
+ *
+ * (apra-fleet-i9ag.3.2) Built per render rather than once at module load: the
+ * route target is interpolated through mountHref() against THIS request's
+ * resolved mount prefix, so the same script works served direct and inside the
+ * console's /ext/<id> iframe. Interpolating the prefix into a single-quoted JS
+ * literal is safe because mount-prefix.mjs's allowlist rejects any value
+ * containing a quote, backslash or angle bracket (fail-closed to '').
+ * @param {string} [mountPrefix]
+ * @returns {string}
  */
-const SPRINT_STOP_SCRIPT = `
+const sprintStopScript = (mountPrefix) => `
     ${formatStopError.toString()}
     document.addEventListener('click', function (ev) {
         var btn = ev.target.closest('.btn-stop-sprint');
@@ -460,7 +488,7 @@ const SPRINT_STOP_SCRIPT = `
         btn.disabled = true;
         if (restartBtn) restartBtn.disabled = true;
         if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Stopping...'; }
-        fetch('/api/reservations/' + encodeURIComponent(sprintId) + '/force-release', {
+        fetch('${mountHref(mountPrefix, '/api/reservations/')}' + encodeURIComponent(sprintId) + '/force-release', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ reason: 'stopped via Sprint Stack Stop button' }),
@@ -488,7 +516,7 @@ const SPRINT_STOP_SCRIPT = `
 /**
  * The Sprint Stack's per-row Restart button behavior, as a source string
  * ready to inline into a `<script>` tag (same embedding pattern as
- * SPRINT_STOP_SCRIPT above). A click on any `.btn-restart-sprint` button:
+ * sprintStopScript() above). A click on any `.btn-restart-sprint` button:
  *
  *   1. Confirms with the operator (destructive-ish: discards the old
  *      sprint's history, same framing as Stop).
@@ -521,8 +549,14 @@ const SPRINT_STOP_SCRIPT = `
  * sprint's live-view link; both buttons are left disabled instead, since the
  * old reservation is gone either way and a further click on either would only
  * ever 404.
+ *
+ * (apra-fleet-i9ag.3.2) Built per render, same as sprintStopScript() above --
+ * all three of its app-paths (force-release, POST /api/sprints, and the new
+ * sprint's live-view link) are interpolated through mountHref().
+ * @param {string} [mountPrefix]
+ * @returns {string}
  */
-const SPRINT_RESTART_SCRIPT = `
+const sprintRestartScript = (mountPrefix) => `
     ${formatStopError.toString()}
     ${formatLaunchError.toString()}
     document.addEventListener('click', function (ev) {
@@ -537,7 +571,7 @@ const SPRINT_RESTART_SCRIPT = `
         btn.disabled = true;
         if (stopBtn) stopBtn.disabled = true;
         if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Releasing old reservation...'; }
-        fetch('/api/reservations/' + encodeURIComponent(sprintId) + '/force-release', {
+        fetch('${mountHref(mountPrefix, '/api/reservations/')}' + encodeURIComponent(sprintId) + '/force-release', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ reason: 'restarted via Sprint Stack Restart button' }),
@@ -585,7 +619,7 @@ const SPRINT_RESTART_SCRIPT = `
             if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Relaunching...'; }
             var body = { issue: issue, members: members, branch: branch, base: base };
             if (goal) body.goal = goal;
-            fetch('/api/sprints', {
+            fetch('${mountHref(mountPrefix, '/api/sprints')}', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(body),
@@ -599,7 +633,7 @@ const SPRINT_RESTART_SCRIPT = `
                         resultEl.style.color = '#22c55e';
                         resultEl.textContent = 'Restarted as sprint ' + r2.json.sprintId + '. ';
                         var link = document.createElement('a');
-                        link.href = '/sprints/' + encodeURIComponent(r2.json.sprintId) + '/live';
+                        link.href = '${mountHref(mountPrefix, '/sprints/')}' + encodeURIComponent(r2.json.sprintId) + '/live';
                         link.target = '_blank';
                         link.rel = 'noopener';
                         link.textContent = 'Open live view';
@@ -626,7 +660,7 @@ const SPRINT_RESTART_SCRIPT = `
 /**
  * (apra-fleet-p2to.3.1) The Sprint Stack's per-row Pause/Resume button
  * behavior, as a source string ready to inline into a `<script>` tag (same
- * `.toString()`-embedding pattern as SPRINT_STOP_SCRIPT/SPRINT_RESTART_SCRIPT
+ * `.toString()`-embedding pattern as sprintStopScript()/sprintRestartScript()
  * above). Event-delegated on `document`, same discipline as those two: a
  * click on `.btn-pause-sprint` POSTs `/sprints/:id/live/pause`, a click on
  * `.btn-resume-sprint` POSTs `/sprints/:id/live/resume` -- BOTH via the
@@ -639,14 +673,20 @@ const SPRINT_RESTART_SCRIPT = `
  * is shown -- the row's own Pause/Resume button + status badge only reflect
  * the ACTUAL new state once the watchdog's own `/state`-based pause probe
  * (watchdog.mjs) has observed it. Pre-apra-fleet-siqi.1.2 that meant "on the
- * next full page load"; as of siqi.1.2, SPRINT_STACK_LIVE_SCRIPT's own
+ * next full page load"; as of siqi.1.2, sprintStackLiveScript()'s own
  * periodic /state poll rebuilds this row too, so the correct button/badge
  * typically appears within a poll cycle with no manual reload needed -- this
  * script itself still does not attempt to predict or race that outcome, it
  * only reports the request as submitted. Every promise chain ends in a
  * `.catch()`, matching the other two scripts' discipline.
+ *
+ * (apra-fleet-i9ag.3.2) Built per render, same as the two scripts above -- its
+ * `/sprints/:id/live/(pause|resume)` target is interpolated through
+ * mountHref().
+ * @param {string} [mountPrefix]
+ * @returns {string}
  */
-const SPRINT_PAUSE_SCRIPT = `
+const sprintPauseScript = (mountPrefix) => `
     ${formatStopError.toString()}
     function requestPauseResume(btn, action) {
         var sprintId = btn.getAttribute('data-sprint-id');
@@ -654,7 +694,7 @@ const SPRINT_PAUSE_SCRIPT = `
         var resultEl = document.querySelector('.pause-result[data-sprint-id="' + sprintId + '"]');
         btn.disabled = true;
         if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested...'; }
-        fetch('/sprints/' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST' })
+        fetch('${mountHref(mountPrefix, '/sprints/')}' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST' })
             .then(function (res) {
                 return res.json().catch(function () { return {}; }).then(function (json) {
                     return { status: res.status, json: json };
@@ -717,14 +757,24 @@ const SPRINT_PAUSE_SCRIPT = `
  * by `data-sprint-id`: an existing `<section>` is replaced in place (its
  * Stop/Restart/Pause buttons come back correctly wired since those three
  * scripts delegate their click handling on `document`, not on the button
- * elements themselves -- see SPRINT_STOP_SCRIPT's doc comment), a newly
+ * elements themselves -- see sprintStopScript()'s doc comment), a newly
  * appeared sprintId is appended, and a row whose sprintId is no longer in
  * the payload (finished/force-released/restarted-away since the last poll)
  * is removed -- falling back to the SAME empty-state message
  * `renderSprintStackHtml()` renders server-side when the list goes to zero.
  */
-const SPRINT_STACK_LIVE_SCRIPT = `
+const sprintStackLiveScript = (mountPrefix) => `
     ${escapeHtml.toString()}
+    // (apra-fleet-i9ag.3.2) The resolved mount prefix + the SAME mountHref()
+    // helper the server render uses, shipped verbatim so renderSprintSection()
+    // below (embedded via .toString()) builds a live-refreshed row's live/log
+    // links exactly as the server-rendered row did. Declared AFTER escapeHtml
+    // deliberately: supervisor-dashboard-live-refresh.test.mjs extracts this
+    // script from its first embedded helper (the escapeHtml declaration) to
+    // the closing script tag, so anything emitted before that helper would be
+    // invisible to -- and therefore undefined in -- that harness.
+    var MOUNT_PREFIX = '${mountPrefix || ''}';
+    ${mountHref.toString()}
     ${memberChip.toString()}
     ${baseDriftIndicator.toString()}
     var WATCHDOG_STATUS = ${JSON.stringify(WATCHDOG_STATUS)};
@@ -752,7 +802,7 @@ const SPRINT_STACK_LIVE_SCRIPT = `
         list.forEach(function (view) {
             seenIds[view.sprintId] = true;
             var existing = existingSections[view.sprintId];
-            var html = renderSprintSection(view);
+            var html = renderSprintSection(view, MOUNT_PREFIX);
             if (existing) {
                 existing.outerHTML = html;
             } else {
@@ -789,7 +839,7 @@ const SPRINT_STACK_LIVE_SCRIPT = `
     async function poll() {
         lastPollAt = Date.now();
         try {
-            var res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+            var res = await fetch('${mountHref(mountPrefix, '/state')}?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
             renderSprintStackFromState(data.sprints);
         } catch (e) {
@@ -816,7 +866,7 @@ const SPRINT_STACK_LIVE_SCRIPT = `
     }
 
     if (typeof EventSource !== 'undefined') {
-        var source = new EventSource('/events');
+        var source = new EventSource('${mountHref(mountPrefix, '/events')}');
         // Every /events message is the same generic 'go poll /state' signal
         // (apra-fleet-siqi.1.1) -- never inspected, just a trigger.
         source.onmessage = function () { schedulePoll(); };
@@ -905,13 +955,24 @@ export function renderBeadsHeaderHtml(beads, warning) {
  *   `consoleOrigin`: (apra-fleet-i9ag.5.1) the console's own origin, rendered
  *   as a "Console" header link via renderConsoleLinkHtml() above -- omitted
  *   entirely when not a non-empty string.
+ *   `mountPrefix`: (apra-fleet-i9ag.3.2) the mount path this request arrived
+ *   under, already validated by mount-prefix.mjs (resolveMountPrefix(), called
+ *   in registerDashboardRoutes() below). Every absolute app-path this page
+ *   emits -- the Supervisor-log link, each sprint card's live/log anchors, and
+ *   all four client scripts' fetch()/EventSource targets -- is built through
+ *   mountHref() against it. Absent/'' (the serve-direct case, and every
+ *   pre-existing caller) leaves every one of those paths exactly as it was.
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
+    // Normalised ONCE here so every renderer/script below can interpolate it
+    // unconditionally: a non-string (or absent) opts.mountPrefix is the
+    // serve-direct case, never the literal string 'undefined' in an href.
+    const mountPrefix = (opts && typeof opts.mountPrefix === 'string') ? opts.mountPrefix : '';
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
         : '<p style="color:var(--text-muted); font-style: italic;">No unclaimed work in the backlog.</p>';
-    const launchFormSection = typeof launchFormHtml === 'string' ? launchFormHtml : renderLaunchFormHtml();
+    const launchFormSection = typeof launchFormHtml === 'string' ? launchFormHtml : renderLaunchFormHtml(mountPrefix);
     const runningCount = Array.isArray(views) ? views.length : 0;
     return (
         '<!DOCTYPE html>\n' +
@@ -927,7 +988,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<h1>Fleet-Sprint Supervisor</h1>' +
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
         renderConsoleLinkHtml(opts && opts.consoleOrigin) +
-        '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
+        '<a href="' + mountHref(mountPrefix, '/supervisor/log') + '" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
         '<div class="main-content"><div class="content-area">' +
@@ -937,7 +998,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '</div>\n' +
         '<div id="tab-sprints" class="tab-content active panel">' +
         '<div class="panel-header">Sprint Stack</div>' +
-        '<div id="sprint-stack" class="panel-body">\n' + renderSprintStackHtml(views) + '\n</div>' +
+        '<div id="sprint-stack" class="panel-body">\n' + renderSprintStackHtml(views, mountPrefix) + '\n</div>' +
         '</div>\n' +
         // Backlog is its own tab (this file's tab restructuring) -- still
         // ALWAYS rendered after the sprint stack in raw document order (the
@@ -955,15 +1016,15 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '</div>\n' +
         '</div></div>\n' +
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
-        '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
-        '<script>' + SPRINT_RESTART_SCRIPT + '</script>\n' +
-        '<script>' + SPRINT_PAUSE_SCRIPT + '</script>\n' +
+        '<script>' + sprintStopScript(mountPrefix) + '</script>\n' +
+        '<script>' + sprintRestartScript(mountPrefix) + '</script>\n' +
+        '<script>' + sprintPauseScript(mountPrefix) + '</script>\n' +
         // (apra-fleet-siqi.1.2) Live-refresh loop -- registered LAST so the
         // Stop/Restart/Pause scripts' own `document`-level delegated click
-        // listeners (which SPRINT_STACK_LIVE_SCRIPT's poll-driven rebuilds
+        // listeners (which sprintStackLiveScript()'s poll-driven rebuilds
         // rely on) are already wired before this script's first poll() can
         // possibly replace any row.
-        '<script>' + SPRINT_STACK_LIVE_SCRIPT + '</script>\n' +
+        '<script>' + sprintStackLiveScript(mountPrefix) + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -1064,7 +1125,7 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
  *   buildSprintViews(): Promise<SprintView[]>,
- *   renderIndexPage(): Promise<string>,
+ *   renderIndexPage(renderOpts?: { mountPrefix?: string }): Promise<string>,
  *   onChange(listener: () => void): () => void,
  * }}
  */
@@ -1297,7 +1358,16 @@ export function createDashboard(deps = {}) {
             changeEmitter.on('change', listener);
             return () => changeEmitter.off('change', listener);
         },
-        async renderIndexPage() {
+        /**
+         * @param {{ mountPrefix?: string }} [renderOpts] - (apra-fleet-i9ag.3.2)
+         *   the request's resolved mount prefix (registerDashboardRoutes()
+         *   below passes resolveMountPrefix(req)). Per-CALL, never per-seam:
+         *   the same supervisor process serves direct and console-embedded
+         *   requests concurrently, so this can never be cached on the closure.
+         *   Absent -> serve-direct paths, unchanged.
+         */
+        async renderIndexPage(renderOpts = {}) {
+            const mountPrefix = (renderOpts && typeof renderOpts.mountPrefix === 'string') ? renderOpts.mountPrefix : '';
             // Render the sprint stack and the Backlog tab content concurrently
             // with the page shell; a Backlog render failure is isolated so it
             // can never take the whole page down (renderIndexPageHtml falls
@@ -1314,7 +1384,7 @@ export function createDashboard(deps = {}) {
             if (backlog && typeof backlog.buildBacklogTasks === 'function') {
                 try {
                     const { tasks, filterOptions } = await backlog.buildBacklogTasks();
-                    backlogHtml = renderBacklogPanelHtml(tasks, filterOptions);
+                    backlogHtml = renderBacklogPanelHtml(tasks, filterOptions, mountPrefix);
                 } catch (err) {
                     logError('[dashboard] backlog render failed:', err);
                 }
@@ -1335,7 +1405,7 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin });
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix });
         },
     };
 }
@@ -1348,7 +1418,13 @@ export function createDashboard(deps = {}) {
  */
 export function registerDashboardRoutes(supervisor, dashboard) {
     supervisor.route('GET', '/', async (req, res) => {
-        const html = await dashboard.renderIndexPage();
+        // (apra-fleet-i9ag.3.2) The console's /ext/<id> proxy stamps this
+        // request's mount path on it (mount-prefix.mjs's MOUNT_PATH_HEADER);
+        // resolveMountPrefix() validates it and falls back to '' (serve-direct,
+        // byte-for-byte the pre-i9ag.3.2 page) for an absent or hostile value.
+        // Resolved PER REQUEST: one supervisor process answers both direct and
+        // embedded hits, and nothing about the mount is process-wide state.
+        const html = await dashboard.renderIndexPage({ mountPrefix: resolveMountPrefix(req) });
         const body = Buffer.from(html, 'utf-8');
         const headers = {
             'content-type': 'text/html; charset=utf-8',

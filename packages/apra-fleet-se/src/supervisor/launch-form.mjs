@@ -42,6 +42,12 @@
 
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { ROLES } from '../../fleet-sprint/contracts.mjs';
+// (apra-fleet-i9ag.3.2) This form's two fetch() targets (GET /api/members on
+// load, POST /api/sprints on submit) are absolute app-paths: served inside the
+// console's /ext/<id> iframe they would resolve against the CONSOLE root and
+// 404, so a launch from the embedded form could not work at all. Both are built
+// through mountHref() against the mount prefix dashboard.mjs threads in.
+import { mountHref } from './mount-prefix.mjs';
 
 /**
  * The goal selector offers EXACTLY these three values (acceptance criterion).
@@ -210,9 +216,17 @@ export function formatLaunchError(status, errJson) {
  *     its `data-bead-id` attribute);
  *   - submit -> buildLaunchRequestBody() -> POST /api/sprints -> render the
  *     201 success or the formatLaunchError() message.
+ *
+ * (apra-fleet-i9ag.3.2) `mountPrefix` is resolved server-side (one validated
+ * value per request -- mount-prefix.mjs) and interpolated into the two fetch
+ * targets below through mountHref(). Safe to interpolate into a single-quoted
+ * JS literal because that module's allowlist fails any value containing a
+ * quote, backslash or angle bracket closed to ''. With no prefix both targets
+ * are the exact strings they always were.
+ * @param {string} [mountPrefix]
  * @returns {string}
  */
-function clientScriptSource() {
+function clientScriptSource(mountPrefix) {
     const roleOptionsJson = JSON.stringify(FORM_ROLE_OPTIONS);
     const goalOptionsJson = JSON.stringify(GOAL_OPTIONS);
     return `
@@ -338,7 +352,7 @@ function clientScriptSource() {
     }
 
     if (membersContainer) {
-        fetch('/api/members').then(function (r) { return r.json(); }).then(function (data) {
+        fetch('${mountHref(mountPrefix, '/api/members')}').then(function (r) { return r.json(); }).then(function (data) {
             var list = (data && Array.isArray(data.members)) ? data.members : [];
             membersContainer.innerHTML = '';
             if (list.length === 0) {
@@ -391,7 +405,7 @@ function clientScriptSource() {
                 resultEl.textContent = result.error;
                 return;
             }
-            fetch('/api/sprints', {
+            fetch('${mountHref(mountPrefix, '/api/sprints')}', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(result.body),
@@ -429,9 +443,13 @@ function clientScriptSource() {
  * goal selector (exactly GOAL_OPTIONS), branch/base-branch inputs, a submit
  * button, and a result/error line. Pure and dependency-free -- attaches to
  * dashboard.mjs's index page after the Backlog-last tree.
+ * @param {string} [mountPrefix] - (apra-fleet-i9ag.3.2) the request's resolved
+ *   mount prefix, forwarded to clientScriptSource() so this form's own fetch
+ *   targets survive being served under the console's /ext/<id> mount. Absent
+ *   -> unchanged, root-relative targets.
  * @returns {string}
  */
-export function renderLaunchFormHtml() {
+export function renderLaunchFormHtml(mountPrefix) {
     const goalOptionsHtml = GOAL_OPTIONS
         .map((g) => '<option value="' + escapeHtml(g) + '">' + escapeHtml(g) + '</option>')
         .join('');
@@ -451,6 +469,6 @@ export function renderLaunchFormHtml() {
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +
-        '<script>' + clientScriptSource() + '</script>'
+        '<script>' + clientScriptSource(mountPrefix) + '</script>'
     );
 }

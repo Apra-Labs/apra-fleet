@@ -1200,3 +1200,239 @@ describe('dashboard -- renderIndexPageHtml', () => {
         });
     });
 });
+
+// =============================================================================
+// apra-fleet-i9ag.3.2 -- rendering against the console's forwarded mount prefix
+// =============================================================================
+//
+// The console's /ext/<id> proxy (apra-fleet-i9ag.3.1) stamps every hop with the
+// package's mount path; the dashboard renders every absolute app-path it emits
+// through mount-prefix.mjs's mountHref() against it. Two invariants are covered
+// here, and they are the acceptance criteria:
+//
+//   1. NO PREFIX MUST NOT REGRESS. The direct-open case (no header, hostile
+//      header, header-less caller) must emit exactly the app-paths it always
+//      did -- asserted below against an explicit golden list rather than a
+//      "contains" spot-check, so a path that silently gains or loses a prefix
+//      fails here. (The rendered document is byte-identical to the pre-i9ag.3.2
+//      one except inside the live-refresh <script>, which now also ships
+//      mountHref() and a prefix-aware renderSprintSection() -- unavoidable,
+//      since that function re-renders rows client-side and must build the same
+//      mount-aware links the server did. No EMITTED APP-PATH changes.)
+//   2. WITH A PREFIX, NOTHING STAYS ROOTED. Every anchor href, every fetch()
+//      target and the EventSource URL is prefixed exactly once -- swept
+//      generically, so an app-path added later that forgets the prefix fails
+//      this test instead of silently 404ing inside the console iframe.
+import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
+
+/**
+ * Every absolute app-path the rendered page emits, in document order: the
+ * target of an `href="..."` attribute, a `fetch('...')` call, a
+ * `new EventSource('...')` construction, or a `link.href = '...'` assignment.
+ * Only literals rooted at '/' are collected -- the embedded
+ * renderSprintSection() source's own `href="' + liveHref + '"` is a
+ * concatenation, not a literal path, and is covered by that function's direct
+ * tests below.
+ */
+function emittedAppPaths(html) {
+    const sweep = /(?:href="|fetch\('|new EventSource\('|link\.href = ')(\/[A-Za-z0-9._~/%-]*)/g;
+    return Array.from(html.matchAll(sweep)).map((m) => m[1]);
+}
+
+/** A single running-sprint view, enough to render one full sprint card. */
+function mountPrefixFixtureViews() {
+    return [{
+        sprintId: 'sprint-1',
+        branch: 'feat/x',
+        goal: 'P1',
+        status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+        issueRoots: ['bd-1'],
+        beadCount: 2,
+        progress: { closed: 1, required: 2, fraction: 0.5 },
+        members: [{ name: 'alpha', role: 'doer' }],
+        base: 'main',
+        baseDrift: 0,
+        beadsPrefix: 'bd',
+    }];
+}
+
+describe('apra-fleet-i9ag.3.2: dashboard renders against the forwarded mount prefix', () => {
+    // The app-paths a one-running-sprint page emits with NO mount prefix, in
+    // document order. Written out literally (not derived) so this list IS the
+    // no-regress contract for the direct-open case.
+    const DIRECT_APP_PATHS = [
+        '/supervisor/log',      // header link
+        '/sprints/sprint-1/live',
+        '/sprints/sprint-1/log',
+        '/api/members',         // Launch form: member checklist load
+        '/api/sprints',         // Launch form: submit
+        '/api/reservations/',   // Stop script
+        '/api/reservations/',   // Restart script, step 1
+        '/api/sprints',         // Restart script, step 2
+        '/sprints/',            // Restart script's new-sprint live-view link
+        '/sprints/',            // Pause/Resume script
+        '/state',               // live-refresh poll
+        '/events',              // live-refresh EventSource
+    ];
+
+    test('no mount prefix: every emitted app-path is exactly what it was before this feature', () => {
+        const html = renderIndexPageHtml(mountPrefixFixtureViews());
+        assert.deepEqual(emittedAppPaths(html), DIRECT_APP_PATHS);
+        assert.ok(!html.includes('/ext/'), 'a header-less render must never invent a mount prefix');
+        assert.ok(!html.includes("var MOUNT_PREFIX = '/"), 'the client prefix must be empty when serving direct');
+    });
+
+    test("an explicitly empty prefix renders byte-identically to omitting it (one serve-direct behaviour, not two)", () => {
+        const views = mountPrefixFixtureViews();
+        assert.equal(
+            renderIndexPageHtml(views, undefined, undefined, { mountPrefix: '' }),
+            renderIndexPageHtml(views),
+        );
+    });
+
+    test("a non-string prefix is the serve-direct case, never the literal string 'undefined' in an href", () => {
+        const views = mountPrefixFixtureViews();
+        for (const bogus of [undefined, null, 42, {}, ['/ext/se']]) {
+            const html = renderIndexPageHtml(views, undefined, undefined, { mountPrefix: bogus });
+            assert.deepEqual(emittedAppPaths(html), DIRECT_APP_PATHS, `prefix ${JSON.stringify(bogus)}`);
+            assert.ok(!html.includes('undefined/'), html.slice(0, 200));
+        }
+    });
+
+    test('with a mount prefix: EVERY emitted app-path is prefixed exactly once, none left rooted at /', () => {
+        const html = renderIndexPageHtml(mountPrefixFixtureViews(), undefined, undefined, { mountPrefix: '/ext/se' });
+        const paths = emittedAppPaths(html);
+        assert.deepEqual(paths, DIRECT_APP_PATHS.map((p) => '/ext/se' + p));
+        for (const path of paths) {
+            assert.ok(path.startsWith('/ext/se/'), `left rooted at '/': ${path}`);
+            assert.equal(path.indexOf('/ext/se', 1), -1, `prefixed more than once: ${path}`);
+        }
+    });
+
+    test('with a mount prefix: the live-refresh script can rebuild a row with the SAME prefix client-side', () => {
+        const html = renderIndexPageHtml(mountPrefixFixtureViews(), undefined, undefined, { mountPrefix: '/ext/se' });
+        // The client re-renders rows from GET /state via the embedded
+        // renderSprintSection() -- it needs both the prefix value and the
+        // helper, or a live-refreshed row would silently revert to root-
+        // relative links a few seconds after load (the nastiest possible
+        // version of this bug: the page works, then quietly stops working).
+        assert.ok(html.includes("var MOUNT_PREFIX = '/ext/se';"), 'resolved prefix must be shipped to the client');
+        assert.ok(html.includes('function mountHref(mountPrefix, appPath)'), 'mountHref() must be shipped to the client');
+        assert.ok(html.includes('renderSprintSection(view, MOUNT_PREFIX)'), 'the client row rebuild must pass the prefix');
+    });
+
+    test('renderSprintSection(): live/log links are mount-aware, and unchanged without a prefix', () => {
+        const [view] = mountPrefixFixtureViews();
+        const direct = renderSprintSection(view);
+        assert.ok(direct.includes('href="/sprints/sprint-1/live"'), direct);
+        assert.ok(direct.includes('href="/sprints/sprint-1/log"'), direct);
+        assert.equal(renderSprintSection(view, ''), direct);
+
+        const mounted = renderSprintSection(view, '/ext/se');
+        assert.ok(mounted.includes('href="/ext/se/sprints/sprint-1/live"'), mounted);
+        assert.ok(mounted.includes('href="/ext/se/sprints/sprint-1/log"'), mounted);
+        assert.ok(!mounted.includes('href="/sprints/'), 'no link may stay rooted at the console root');
+    });
+
+    test('renderSprintStackHtml(): the prefix reaches EVERY row, not just the first', () => {
+        // Guards the Array#map(renderSprintSection) shape specifically: map
+        // passes (value, index, array), which would hand row 1's index in as
+        // the mount prefix and render 'href="1/sprints/..."'.
+        const views = ['sprint-1', 'sprint-2', 'sprint-3'].map((sprintId) => ({
+            ...mountPrefixFixtureViews()[0], sprintId,
+        }));
+        const html = renderSprintStackHtml(views, '/ext/se');
+        for (const sprintId of ['sprint-1', 'sprint-2', 'sprint-3']) {
+            assert.ok(html.includes(`href="/ext/se/sprints/${sprintId}/live"`), `row ${sprintId}: ${html}`);
+        }
+        assert.ok(!html.includes('href="/sprints/'), html);
+        assert.ok(!/href="\d/.test(html), 'a row index must never be rendered as the mount prefix');
+    });
+
+    describe('GET / resolves the prefix from the request header, per request', () => {
+        /** GET / against a real supervisor, with arbitrary request headers. */
+        function getIndex(supervisor, headers) {
+            return new Promise((resolve, reject) => {
+                const req = { method: 'GET', url: '/', headers: headers ?? {}, on() {} };
+                const chunks = [];
+                const res = {
+                    statusCode: null,
+                    writeHead(status) { this.statusCode = status; },
+                    write(chunk) { chunks.push(chunk); },
+                    end(chunk) {
+                        if (chunk) chunks.push(chunk);
+                        resolve({ statusCode: this.statusCode, body: Buffer.concat(chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(c)))).toString('utf-8') });
+                    },
+                };
+                Promise.resolve(supervisor.handleRequest(req, res)).catch(reject);
+            });
+        }
+
+        /** A supervisor with GET / registered, one running sprint, and a Backlog tab. */
+        function mountedSupervisor() {
+            const supervisor = createSupervisor({ port: 0 });
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 'sprint-1', issueRoots: ['bd-1'], members: ['alpha'], base: 'main' }]),
+                watchdog: fakeWatchdog({ 'sprint-1': WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                listAllBeads: async () => [],
+                expandScope: async (roots) => new Set(roots),
+                driftCheck: async () => null,
+                // The Backlog tab's own filter re-fetch is an app-path on this
+                // same page, so it is part of the invariant.
+                backlog: { buildBacklogTasks: async () => ({ tasks: [], filterOptions: { type: [], status: [], priority: [], model: [] } }) },
+                logger: { error() {}, log() {} },
+            });
+            registerDashboardRoutes(supervisor, dashboard);
+            return supervisor;
+        }
+
+        test('the forwarded header prefixes every app-path on the served page, Backlog and Launch form included', async () => {
+            const res = await getIndex(mountedSupervisor(), { [MOUNT_PATH_HEADER]: '/ext/se' });
+            assert.equal(res.statusCode, 200);
+            const paths = emittedAppPaths(res.body);
+            assert.ok(paths.length > 0);
+            for (const path of paths) {
+                assert.ok(path.startsWith('/ext/se/'), `left rooted at '/': ${path}`);
+                assert.equal(path.indexOf('/ext/se', 1), -1, `prefixed more than once: ${path}`);
+            }
+            // The two collaborator-rendered sections' own fetch targets (they
+            // live in launch-form.mjs and backlog.mjs, not dashboard.mjs) must
+            // be threaded too, or the embedded form cannot launch and the
+            // Backlog filters freeze.
+            assert.ok(res.body.includes("fetch('/ext/se/api/members'"), 'launch form members fetch');
+            assert.ok(res.body.includes("fetch('/ext/se/api/sprints'"), 'launch form submit fetch');
+            assert.ok(res.body.includes("fetch('/ext/se/api/backlog/tasks?'"), 'backlog filter fetch');
+        });
+
+        test('no header: the page is served exactly as it is directly (no prefix anywhere)', async () => {
+            const res = await getIndex(mountedSupervisor(), {});
+            assert.equal(res.statusCode, 200);
+            for (const path of emittedAppPaths(res.body)) {
+                assert.ok(!path.startsWith('/ext'), `invented a mount prefix: ${path}`);
+            }
+            assert.ok(res.body.includes("fetch('/api/members'"));
+            assert.ok(res.body.includes("fetch('/api/backlog/tasks?'"));
+        });
+
+        test('a hostile header value renders the page byte-identically to having no header at all', async () => {
+            // mount-prefix.mjs fails closed; this asserts the WHOLE page (not
+            // just the resolved value) is unaffected, which is what makes an
+            // injection attempt through this header a no-op rather than a
+            // partially-escaped survivor somewhere in the document.
+            const baseline = await getIndex(mountedSupervisor(), {});
+            for (const hostile of ['..', '../x', '//evil.example', 'http://evil.example', '', "/ext/se'+alert(1)+'", '/ext/se" onload="x']) {
+                const res = await getIndex(mountedSupervisor(), { [MOUNT_PATH_HEADER]: hostile });
+                assert.equal(res.body, baseline.body, `hostile header '${hostile}' changed the rendered page`);
+            }
+        });
+
+        test('two requests to the SAME supervisor resolve independently (mount state is never cached)', async () => {
+            const supervisor = mountedSupervisor();
+            const mounted = await getIndex(supervisor, { [MOUNT_PATH_HEADER]: '/ext/se' });
+            const direct = await getIndex(supervisor, {});
+            assert.ok(mounted.body.includes('href="/ext/se/supervisor/log"'));
+            assert.ok(direct.body.includes('href="/supervisor/log"'));
+            assert.ok(!direct.body.includes('/ext/se'), 'a direct hit must not inherit an earlier embedded hit\'s prefix');
+        });
+    });
+});
