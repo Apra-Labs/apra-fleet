@@ -38,8 +38,11 @@ cd lazyfleet && npm install && npm run build && npm link
 lazyfleet
 ```
 
-That last command sets everything up and tells you when it is done. Restart any
-open Claude Code sessions. That's it - go lie down.
+That last command sets everything up, leaves lazyfleet running in the
+background (it starts again whenever you log in), and opens a one-minute
+welcome in your browser: connect GitHub if you like, and learn the three ways
+back to the dashboard. Every step is optional. Restart any open Claude Code
+sessions. That's it - go lie down.
 
 ```
 Setting up lazyfleet...
@@ -47,9 +50,15 @@ Setting up lazyfleet...
   [1/3] Connecting to Claude Code ........ ok
   [2/3] Starting the background helper ... ok
   [3/3] Routing Claude through it ........ ok
+
+Welcome to lazyfleet. It is running now, starts again when you log in, and
+Claude Code goes through it. ...
+  Your dashboard:  http://127.0.0.1:7777/_lazy/
 ```
 
-Works with a Claude Pro/Max subscription or an API key. Needs Node 22+.
+Works with a Claude Pro/Max subscription or an API key. Needs Node 22+. On a
+machine without a user service manager (some containers, WSL without
+systemd) it still starts, and tells you to run `lazyfleet on` after a reboot.
 
 ## What it looks like
 
@@ -66,17 +75,21 @@ machine runs it with the real token. The token also gets hidden in everything
 that follows: command output, files Claude reads, and earlier messages as the
 conversation is re-sent.
 
-## The settings page
+## The dashboard
 
 ```bash
 lazyfleet ui
 ```
 
-Opens a local page (only reachable from your own machine) with:
+Opens a local page (only reachable from your own machine; bookmark it, the
+sign-in lasts a year) with:
 
 | Tab | What you get |
 |---|---|
-| **Sprints** | Describe a job in a sentence and start a sprint. A board shows every issue it creates, which helper is on which one right now, and the code it changed. See below. |
+| **Home** | Say what should get done, pick the project folder, and start a sprint. lazyfleet suggests a sprint design and says why. Plus what is running, what is coming up, this week's results and usage, and the designs it has learned. |
+| **Sprints** | Every sprint, with a board of the issues it creates, which helper is on which one right now, the code it changed, and when it finishes, what it produced and how to try it. See below. |
+| **Issues** | Your GitHub issues (sign in with the GitHub CLI's login, a token, or in the browser). Sprint any issue with one click, or schedule issues like it. Issues from people outside the repo are marked, and ask before they run. |
+| **Schedules** | Sprints that start themselves: a job you describe, or the oldest open issue with your labels, at a time or every few hours, within limits (sprints and usage per day, a time window, only when the folder has no uncommitted changes). Every start and skip is logged with its reason, and the result is commented on the issue. |
 | **Vault** | Everything that has been caught, masked. Show, copy the stand-in, remove. |
 | **Presets** | Save credentials ahead of time with a description, like "Postgres password for staging". Claude is told the name and description (never the value), so it uses the right one without you pasting anything. Preview exactly what Claude is told. |
 | **Activity** | A live feed of what was caught and hidden, and where it came from. |
@@ -89,8 +102,10 @@ You will rarely need these.
 
 | Command | Does |
 |---|---|
-| `lazyfleet ui` | Open the vault and settings page |
-| `lazyfleet status` | Is it running, and is Claude going through it |
+| `lazyfleet ui` | Open the dashboard |
+| `lazyfleet status` | Is it running, is Claude going through it, GitHub, sprints, the next schedule |
+| `lazyfleet sprint "<job>"` | Hand a job to helpers in this project; prints the design it picked and why (`--dry-run` to only ask) |
+| `lazyfleet sprints` / `lazyfleet schedules` | What is running, finished and coming up |
 | `lazyfleet off` | Bypass it for a while (secrets are **not** hidden while off) |
 | `lazyfleet on` | Switch back on |
 | `lazyfleet uninstall` | Undo every change it made. Your vault is kept. |
