@@ -41,7 +41,13 @@ export class LinuxServiceManager implements ServiceManager {
       '',
       '[Service]',
       'Type=simple',
-      `ExecStart=${binaryPath} ${args.join(' ')}`,
+      // The executable is quoted because it now lives under the operator's home
+      // directory (<BIN_DIR>/apra-fleet), and systemd splits ExecStart on
+      // whitespace -- an unquoted path containing a space would silently produce
+      // a broken unit. systemd honours double quotes here. macos.ts passes a
+      // ProgramArguments array and windows.ts quotes inside the wrapper .bat, so
+      // only this systemd line needs it.
+      `ExecStart="${binaryPath}" ${args.join(' ')}`,
       ...(options.workingDirectory ? [`WorkingDirectory=${options.workingDirectory}`] : []),
       `Restart=${this.descriptor.restartOnFailure ? 'on-failure' : 'no'}`,
       `StandardOutput=append:${logPath}`,

@@ -1725,15 +1725,34 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
     // The supervisor lives inside the installed fleet-sprint workflow tree, so
     // it can only be registered when that tree was just installed.
+    //
+    // Unlike the MCP server step above, a supervisor registration failure is
+    // FATAL. An install that reports success while the always-on supervisor was
+    // silently skipped is a false success: nothing restarts it after a reboot
+    // and the operator has no way to notice until a sprint silently stops
+    // running. The one legitimate non-registration -- `--workflows none`, where
+    // the supervisor was never installed to begin with -- is reported explicitly
+    // and leaves the install successful.
     if (installWorkflows) {
       supervisorServiceAttempted = true;
-      const result = await registerSupervisorService();
+      const result = await registerSupervisorService(binaryPath);
       supervisorServiceRegistered = result.registered;
       if (result.registered) {
         console.log('    [OK] fleet-supervisor service registered and started');
       } else {
-        console.warn(`    Supervisor service registration skipped: ${result.reason}`);
+        console.error(
+          `\nError: the fleet-supervisor service could not be registered: ${result.reason}\n` +
+            `       The always-on fleet-sprint supervisor would not survive a reboot, so this\n` +
+            `       install is incomplete. Resolve the reason above and re-run 'apra-fleet install'\n` +
+            `       (or install with --workflows none if you do not want the supervisor at all).`,
+        );
+        process.exit(1);
       }
+    } else {
+      console.log(
+        '    fleet-supervisor service NOT registered: installed with --workflows none, so the ' +
+          'workflow assets that contain the supervisor are absent.',
+      );
     }
   }
 

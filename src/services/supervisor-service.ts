@@ -4,77 +4,105 @@
  * registered independently of the apra-fleet MCP server's own service so it
  * survives reboots on its own.
  *
- * Canonical entry point: packages/apra-fleet-se/bin/serve.mjs in a source
- * checkout. The installer's workflow step (src/cli/workflow-assets.ts's
- * extractWorkflowSubsystemAssets) stages the whole packages/apra-fleet-se tree
- * under the 'fleet-sprint' built-in workflow name, so the INSTALLED location is
- * <FLEET_BASE>/workflows/fleet-sprint/bin/serve.mjs.
+ * WHAT THE UNIT RUNS: the installed apra-fleet binary's own `supervisor`
+ * subcommand -- `<BIN_DIR>/apra-fleet supervisor`, ONE argument, no `node` and
+ * no serve.mjs path anywhere in the unit. src/cli/supervisor.ts's runSupervisor()
+ * resolves and boots the installed serve.mjs on the binary's embedded runtime.
+ *
+ * Why it is no longer `node <installed>/bin/serve.mjs`: that shape needed a real
+ * `node` on PATH at install time, resolved by a node-resolution helper this
+ * module used to own. Under the released SEA binary process.execPath IS the
+ * apra-fleet binary rather than node, so that helper fell through to a PATH
+ * lookup and returned null on a clean Windows machine -- which is precisely why
+ * the supervisor was never registered there. Pointing the unit at the binary's
+ * own subcommand removes the external-runtime dependency outright.
+ *
+ * The installed tree is still probed before registering: the binary's subcommand
+ * needs <FLEET_BASE>/workflows/fleet-sprint/bin/serve.mjs to exist, so a unit
+ * pointing at an absent tree is still a failure, not a success.
+ *
+ * EVERY not-registered outcome here is a LOUD install failure at the call site
+ * (src/cli/install.ts) -- a registered-looking install whose supervisor unit was
+ * silently skipped is the exact bug this replaces. The one legitimate skip,
+ * `install --workflows none`, is decided by the caller and never reaches this
+ * function.
  */
 import fs from 'node:fs';
-import path from 'node:path';
-import { execSync } from 'node:child_process';
-import { WORKFLOWS_DIR } from '../cli/config.js';
-import { SUPERVISOR_LOG_FILE_PATH } from '../paths.js';
+import { SUPERVISOR_LOG_FILE_PATH, isNonDefaultInstance } from '../paths.js';
+import { SUPERVISOR_SERVE_SCRIPT, SUPERVISOR_WORKING_DIR } from '../cli/supervisor.js';
 import { getServiceManager } from './service-manager/index.js';
 
-/** Installed fleet-sprint workflow directory -- the supervisor's WorkingDirectory. */
-export const SUPERVISOR_WORKING_DIR = path.join(WORKFLOWS_DIR, 'fleet-sprint');
-
-/** Installed path of the supervisor entry point. */
-export const SUPERVISOR_SERVE_SCRIPT = path.join(SUPERVISOR_WORKING_DIR, 'bin', 'serve.mjs');
-
 /**
- * Absolute path of a real `node` executable, or null when none can be found.
- *
- * systemd units, launchd plists and Windows scheduled tasks do NOT source the
- * operator's shell rc files, so a bare `node` in ExecStart fails outright when
- * node only exists on PATH via nvm/fnm/volta. The path must therefore be
- * resolved HERE, at install time (where the installer still has the operator's
- * PATH), and baked into the unit -- the same pattern install.ts already uses
- * for the MCP server's binaryPath. Never hardcode a version-specific nvm path.
- *
- * Order: the running interpreter when we are running under node (dev / npm
- * global install -- this is by definition the operator's active nvm node),
- * otherwise a PATH lookup.
+ * Platforms getServiceManager() has a REAL service manager for. Anything else
+ * gets NoopServiceManager, whose register()/start() resolve without doing
+ * anything -- a silent success that would report a supervisor which does not
+ * exist, so it is rejected up front instead.
  */
-export function resolveNodeExecutable(): string | null {
-  const execPath = process.execPath;
-  // Under SEA, execPath is the apra-fleet binary, not node -- the name check
-  // is what distinguishes the two without importing install.ts's isSea().
-  if (execPath && /^node(\.exe)?$/i.test(path.basename(execPath))) {
-    return execPath;
-  }
-  try {
-    const lookup = process.platform === 'win32' ? 'where node' : 'command -v node';
-    const out = execSync(lookup, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const first = String(out).split(/\r?\n/).map(s => s.trim()).find(Boolean);
-    if (first) return first;
-  } catch { /* node not on PATH */ }
-  return null;
-}
+const SERVICE_CAPABLE_PLATFORMS: ReadonlySet<string> = new Set(['win32', 'linux', 'darwin']);
+
+/** The single argument the registered unit passes to the apra-fleet binary. */
+export const SUPERVISOR_SUBCOMMAND = 'supervisor';
 
 export interface SupervisorRegistrationResult {
   registered: boolean;
-  /** Human-readable reason when registered === false. */
+  /** Human-readable reason when registered === false. Always set in that case. */
   reason?: string;
 }
 
 /**
- * Register (and start) the fleet-supervisor service. Non-fatal by contract:
- * every failure path returns a reason instead of throwing, mirroring the MCP
- * server's own "Service registration skipped: ..." behavior in install.ts.
+ * Register (and start) the fleet-supervisor service as
+ * `<binaryPath> supervisor`.
+ *
+ * @param binaryPath absolute path of the INSTALLED apra-fleet binary
+ *   (install.ts's binaryPath: <BIN_DIR>/apra-fleet or apra-fleet.exe).
+ * @returns registered: true, or registered: false plus the reason the caller
+ *   must surface as a loud, non-zero install failure.
  */
-export async function registerSupervisorService(): Promise<SupervisorRegistrationResult> {
+export async function registerSupervisorService(
+  binaryPath: string,
+): Promise<SupervisorRegistrationResult> {
+  if (!SERVICE_CAPABLE_PLATFORMS.has(process.platform)) {
+    return {
+      registered: false,
+      reason:
+        `OS service management is not supported on platform '${process.platform}' ` +
+        `(supported: linux, darwin, win32), so the supervisor cannot be registered to survive a reboot`,
+    };
+  }
+
+  // A machine-global unit records no APRA_FLEET_DATA_DIR / APRA_FLEET_PORT, so it
+  // would boot the supervisor against the DEFAULT instance while this operator
+  // installed an overridden one -- a unit that silently serves the wrong data.
+  if (isNonDefaultInstance()) {
+    return {
+      registered: false,
+      reason:
+        'this install overrides APRA_FLEET_DATA_DIR or APRA_FLEET_PORT, but the fleet-supervisor ' +
+        'service is machine-global and would run against the DEFAULT instance. Install without ' +
+        'those overrides to register the supervisor, or run it in the foreground with ' +
+        "'apra-fleet supervisor'",
+    };
+  }
+
+  if (!binaryPath) {
+    return {
+      registered: false,
+      reason:
+        'the installed apra-fleet binary path is empty, so the service unit would have no ' +
+        'executable to run',
+    };
+  }
+
   if (!fs.existsSync(SUPERVISOR_SERVE_SCRIPT)) {
-    return { registered: false, reason: `supervisor entry point not found at ${SUPERVISOR_SERVE_SCRIPT}` };
+    return {
+      registered: false,
+      reason: `supervisor entry point not found at ${SUPERVISOR_SERVE_SCRIPT} (bin/serve.mjs is missing from the installed fleet-sprint tree)`,
+    };
   }
-  const nodePath = resolveNodeExecutable();
-  if (!nodePath) {
-    return { registered: false, reason: 'no node executable found on PATH (the supervisor service needs an absolute node path)' };
-  }
+
   const mgr = await getServiceManager('fleet-supervisor');
   try {
-    await mgr.register(nodePath, [SUPERVISOR_SERVE_SCRIPT], SUPERVISOR_LOG_FILE_PATH, {
+    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND], SUPERVISOR_LOG_FILE_PATH, {
       workingDirectory: SUPERVISOR_WORKING_DIR,
     });
   } catch (err) {
@@ -83,7 +111,9 @@ export async function registerSupervisorService(): Promise<SupervisorRegistratio
   try {
     await mgr.start();
   } catch (err) {
-    // Leave no half-registered unit behind, same as the MCP server step.
+    // Leave no half-registered unit behind: a unit that exists but was never
+    // started is the worst of both worlds, since `status` would report it
+    // installed while nothing is serving.
     try { await mgr.unregister(); } catch {}
     return { registered: false, reason: (err as Error).message };
   }

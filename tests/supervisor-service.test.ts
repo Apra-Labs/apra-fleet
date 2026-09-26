@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Hoisted, SERVICE-ID-AWARE service manager mock.
@@ -40,12 +39,15 @@ vi.mock('../src/services/singleton.js', () => ({
 vi.mock('node:child_process');
 
 import {
-  SUPERVISOR_SERVE_SCRIPT,
-  SUPERVISOR_WORKING_DIR,
+  SUPERVISOR_SUBCOMMAND,
   registerSupervisorService,
-  resolveNodeExecutable,
   unregisterSupervisorService,
 } from '../src/services/supervisor-service.js';
+// Canonical home of the installed-tree constants (one definition, not two).
+import {
+  SUPERVISOR_SERVE_SCRIPT,
+  SUPERVISOR_WORKING_DIR,
+} from '../src/cli/supervisor.js';
 import { SUPERVISOR_LOG_FILE_PATH } from '../src/paths.js';
 import { WORKFLOWS_DIR } from '../src/cli/config.js';
 import { runStart } from '../src/cli/start.js';
@@ -77,96 +79,85 @@ describe('supervisor installed layout', () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveNodeExecutable
-// ---------------------------------------------------------------------------
-describe('resolveNodeExecutable', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it('uses the running interpreter when we are running under node (dev/npm mode)', () => {
-    // The vitest process IS node, so execPath is the operator's active (nvm) node.
-    expect(resolveNodeExecutable()).toBe(process.execPath);
-    expect(execSync).not.toHaveBeenCalled();
-  });
-
-  it('falls back to a PATH lookup when execPath is not node (SEA binary)', () => {
-    const seaPath = process.platform === 'win32' ? 'C:\\bin\\apra-fleet.exe' : '/home/dev/.apra-fleet/bin/apra-fleet';
-    vi.spyOn(process, 'execPath', 'get').mockReturnValue(seaPath);
-    vi.mocked(execSync).mockReturnValue('/home/dev/.nvm/versions/node/v22.16.0/bin/node\n' as any);
-    expect(resolveNodeExecutable()).toBe('/home/dev/.nvm/versions/node/v22.16.0/bin/node');
-    expect(execSync).toHaveBeenCalledWith(
-      process.platform === 'win32' ? 'where node' : 'command -v node',
-      expect.anything(),
-    );
-  });
-
-  it('returns null when node is nowhere on PATH', () => {
-    vi.spyOn(process, 'execPath', 'get').mockReturnValue('/opt/apra-fleet');
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('not found'); });
-    expect(resolveNodeExecutable()).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // registerSupervisorService
 // ---------------------------------------------------------------------------
 describe('registerSupervisorService', () => {
+  const BINARY = '/home/dev/.apra-fleet/bin/apra-fleet';
+  const savedDataDir = process.env.APRA_FLEET_DATA_DIR;
+
   beforeEach(() => {
     vi.clearAllMocks();
     resetMgrMocks();
+    // A machine-global unit is refused for an overridden instance, and
+    // tests/setup.ts always sets APRA_FLEET_DATA_DIR -- so the happy path is
+    // unreachable unless that override is cleared here.
+    delete process.env.APRA_FLEET_DATA_DIR;
     vi.spyOn(fs, 'existsSync').mockReturnValue(true);
   });
-  afterEach(() => { vi.restoreAllMocks(); });
 
-  it('registers the supervisor with an absolute node path, serve.mjs, its own log and WorkingDirectory', async () => {
-    const result = await registerSupervisorService();
+  afterEach(() => {
+    if (savedDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
+    else process.env.APRA_FLEET_DATA_DIR = savedDataDir;
+    vi.restoreAllMocks();
+  });
+
+  it('registers the apra-fleet binary supervisor subcommand, its own log and WorkingDirectory', async () => {
+    const result = await registerSupervisorService(BINARY);
     expect(result).toEqual({ registered: true });
     expect(mockGetSvcMgr).toHaveBeenCalledWith('fleet-supervisor');
     expect(supervisorMgr.register).toHaveBeenCalledWith(
-      process.execPath,
-      [SUPERVISOR_SERVE_SCRIPT],
+      BINARY,
+      [SUPERVISOR_SUBCOMMAND],
       SUPERVISOR_LOG_FILE_PATH,
       { workingDirectory: SUPERVISOR_WORKING_DIR },
     );
+    expect(SUPERVISOR_SUBCOMMAND).toBe('supervisor');
     expect(supervisorMgr.start).toHaveBeenCalled();
     // The MCP server's own service must not be touched.
     expect(mcpMgr.register).not.toHaveBeenCalled();
     expect(mcpMgr.start).not.toHaveBeenCalled();
   });
 
+  it('puts no node path and no serve.mjs path in the registered command', async () => {
+    await registerSupervisorService(BINARY);
+    const [execArg, argsArg] = supervisorMgr.register.mock.calls[0];
+    expect(String(execArg)).toBe(BINARY);
+    expect(argsArg).toEqual(['supervisor']);
+    expect(JSON.stringify([execArg, argsArg])).not.toContain('serve.mjs');
+  });
+
   it('uses a log file distinct from the MCP server log', async () => {
-    await registerSupervisorService();
+    await registerSupervisorService(BINARY);
     const logArg = String(supervisorMgr.register.mock.calls[0][2]);
     expect(logArg).toContain('fleet-supervisor.log');
     expect(logArg).not.toMatch(/[\\/]fleet\.log$/);
   });
 
-  it('skips (non-fatal) when serve.mjs is not installed', async () => {
+  it('reports a reason when the installed serve.mjs is missing', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
-    const result = await registerSupervisorService();
+    const result = await registerSupervisorService(BINARY);
     expect(result.registered).toBe(false);
     expect(result.reason).toContain('serve.mjs');
     expect(supervisorMgr.register).not.toHaveBeenCalled();
   });
 
-  it('skips (non-fatal) when no node executable can be resolved', async () => {
-    vi.spyOn(process, 'execPath', 'get').mockReturnValue('/opt/apra-fleet');
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('not found'); });
-    const result = await registerSupervisorService();
+  it('refuses to bake a machine-global unit for an overridden instance', async () => {
+    process.env.APRA_FLEET_DATA_DIR = '/tmp/sandboxed';
+    const result = await registerSupervisorService(BINARY);
     expect(result.registered).toBe(false);
-    expect(result.reason).toContain('node executable');
+    expect(result.reason).toContain('APRA_FLEET_DATA_DIR');
     expect(supervisorMgr.register).not.toHaveBeenCalled();
   });
 
   it('reports the reason instead of throwing when register fails', async () => {
     supervisorMgr.register.mockRejectedValueOnce(new Error('systemd user mode is not available'));
-    const result = await registerSupervisorService();
+    const result = await registerSupervisorService(BINARY);
     expect(result).toEqual({ registered: false, reason: 'systemd user mode is not available' });
   });
 
   it('rolls the registration back when start fails, leaving no half-registered unit', async () => {
     supervisorMgr.start.mockRejectedValueOnce(new Error('Failed to start fleet-supervisor.service'));
-    const result = await registerSupervisorService();
+    const result = await registerSupervisorService(BINARY);
     expect(result.registered).toBe(false);
     expect(supervisorMgr.unregister).toHaveBeenCalled();
   });

@@ -186,7 +186,9 @@ describe('LinuxServiceManager', () => {
       );
       const [, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
       expect(content).toContain('Type=simple');
-      expect(content).toContain('ExecStart=/usr/local/bin/apra-fleet --transport http');
+      // The executable is quoted so a home-directory path containing a space
+      // cannot silently produce a broken unit.
+      expect(content).toContain('ExecStart="/usr/local/bin/apra-fleet" --transport http');
       expect(content).toContain('Restart=on-failure');
       expect(content).toContain('WantedBy=default.target');
     });
@@ -283,16 +285,19 @@ describe('LinuxServiceManager', () => {
 // ---------------------------------------------------------------------------
 // Linux -- 'fleet-supervisor' service (the second registered service).
 //
-// The reference unit was created and verified by hand on a real Linux dev box:
-//   ExecStart=<abs node> <installed>/workflows/fleet-sprint/bin/serve.mjs
+// The reference unit shape:
+//   ExecStart="<installed apra-fleet binary>" supervisor
 //   WorkingDirectory=<installed>/workflows/fleet-sprint
 //   Restart=no
-// These tests pin exactly that shape, plus the independence of the two units.
+// These tests pin this manager's generic executable+args rendering (quoted
+// executable, unquoted args) plus the independence of the two units. That the
+// SUPERVISOR is the caller passing the binary and the single 'supervisor'
+// argument is pinned in tests/supervisor-service.test.ts.
 // ---------------------------------------------------------------------------
 describe('LinuxServiceManager -- fleet-supervisor service', () => {
   const savedXdg = process.env.XDG_RUNTIME_DIR;
-  const NODE = '/home/dev/.nvm/versions/node/v22.16.0/bin/node';
-  const SERVE = '/home/dev/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs';
+  const NODE = '/home/dev/.apra-fleet/bin/apra-fleet';
+  const SERVE = 'supervisor';
   const WORKDIR = '/home/dev/.apra-fleet/workflows/fleet-sprint';
   const LOG = '/home/dev/.apra-fleet/data/fleet-supervisor.log';
 
@@ -330,11 +335,11 @@ describe('LinuxServiceManager -- fleet-supervisor service', () => {
     expect(normalized).not.toContain('apra-fleet.service');
   });
 
-  it('writes ExecStart with the resolved absolute node path, WorkingDirectory and Restart=no', async () => {
+  it('writes ExecStart with the quoted executable, WorkingDirectory and Restart=no', async () => {
     await supervisor().register(NODE, [SERVE], LOG, { workingDirectory: WORKDIR });
     const [, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
     expect(content).toContain('Description=Apra Fleet Sprint Supervisor');
-    expect(content).toContain(`ExecStart=${NODE} ${SERVE}`);
+    expect(content).toContain(`ExecStart="${NODE}" ${SERVE}`);
     expect(content).toContain(`WorkingDirectory=${WORKDIR}`);
     expect(content).toContain('Restart=no');
     expect(content).not.toContain('Restart=on-failure');
