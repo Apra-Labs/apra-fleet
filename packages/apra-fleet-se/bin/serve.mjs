@@ -29,7 +29,7 @@ import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
-import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
+import { createHistoryView, registerHistoryViewRoutes, createFinishedRunsIndex } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
@@ -421,7 +421,10 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
     // via dashboard.mjs's renderIndexPageHtml default; see the import comment
     // above for why no separate launch-form seam is constructed here).
-    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity });
+    // apra-fleet-i9ag.4: finished-sprints list (old runs this supervisor has
+    // a sprint-history.json event for), newest first, with verdict/PR.
+    const finishedRuns = createFinishedRunsIndex({ history });
+    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity, finishedRuns });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a

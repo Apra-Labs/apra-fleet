@@ -198,8 +198,8 @@ describe('launch-form -- renderLaunchFormHtml', () => {
         const html = renderLaunchFormHtml();
         assert.ok(html.includes('<script>'));
         assert.ok(html.includes("data-bead-id"));
-        assert.ok(html.includes("fetch('/api/sprints'"));
-        assert.ok(html.includes("fetch('/api/members')"));
+        assert.ok(html.includes("fetch('api/sprints'"));
+        assert.ok(html.includes("fetch('api/members')"));
         assert.ok(html.includes('buildLaunchRequestBody'));
         assert.ok(html.includes('formatLaunchError'));
     });

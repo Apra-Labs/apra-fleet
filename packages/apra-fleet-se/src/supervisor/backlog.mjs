@@ -700,7 +700,7 @@ function backlogPanelClientScript() {
             var v = currentFilters[k];
             if (v) params.set(k, v);
         });
-        fetch('/api/backlog/tasks?' + params.toString())
+        fetch('api/backlog/tasks?' + params.toString())
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 lastTasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
