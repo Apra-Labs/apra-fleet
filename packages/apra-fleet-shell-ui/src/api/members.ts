@@ -29,6 +29,12 @@ export interface FleetMemberFields {
   owner?: MemberOwner | null;
   env?: Record<string, string> | null;
   vcsTokenExpiresAt?: string | null;
+  /** Permission mode for unattended execution (Agent.unattended in src/types.ts).
+   *  Optional here even though list_members/member_detail always emit a concrete
+   *  value (apra-fleet-i9ag.6.3) -- keeps the field readable against an older
+   *  server build that predates it, same as the rest of this interface's
+   *  "server may not emit" fields. */
+  unattended?: false | "auto" | "dangerous";
 }
 
 export interface FleetMember extends FleetMemberFields, Record<string, unknown> {}
@@ -65,7 +71,8 @@ export const memberFieldGuards: { [K in keyof FleetMemberFields]-?: (v: unknown)
   env: optional(
     (v) => typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every(isString)
   ),
-  vcsTokenExpiresAt: optional(isString)
+  vcsTokenExpiresAt: optional(isString),
+  unattended: optional((v) => v === false || v === "auto" || v === "dangerous")
 };
 
 /** Display form of the owner tag: "<package>@<ref>", or "(none)". A
@@ -157,8 +164,24 @@ export function setupSshKey(memberId: string): Promise<MemberActionResult> {
   return postJson("/api/fleet/setup-ssh-key", { member_id: memberId });
 }
 
-export function composePermissions(memberId: string): Promise<MemberActionResult> {
-  return postJson("/api/fleet/compose-permissions", { member_id: memberId });
+/** Widened per apra-fleet-i9ag.6.2.1: composePermissionsSchema (src/tools/
+ *  compose-permissions.ts) has NO .refine() -- role and tags are both plain
+ *  .optional(), so the "at least one of role or tags" rule must be enforced
+ *  CLIENT-SIDE (the caller-facing guard lives in MemberDrawer, not here).
+ *  Every field is optional and should be OMITTED from the body when empty --
+ *  callers must not pass "" or [] for an unset field. */
+export interface ComposePermissionsBody {
+  role?: "doer" | "reviewer";
+  tags?: string[];
+  grant?: string[];
+  grant_reason?: string;
+}
+
+export function composePermissions(
+  memberId: string,
+  body: ComposePermissionsBody = {}
+): Promise<MemberActionResult> {
+  return postJson("/api/fleet/compose-permissions", { member_id: memberId, ...body });
 }
 
 export function updateLlmCli(memberId: string): Promise<MemberActionResult> {
@@ -167,6 +190,29 @@ export function updateLlmCli(memberId: string): Promise<MemberActionResult> {
 
 export function removeMember(memberId: string): Promise<MemberActionResult> {
   return postJson("/api/fleet/remove-member", { member_id: memberId });
+}
+
+/** The deliberately-scoped subset of updateMemberSchema (src/tools/update-member.ts)
+ *  the drawer's edit form exposes (apra-fleet-i9ag.6.1). password, rotate_password,
+ *  key_path, cloud_* and model_* are excluded -- see the parent feature for why.
+ *  Every field is optional and MUST be omitted (not sent as "" or []) unless the
+ *  operator actually changed it: a non-empty `tags` REPLACES the existing tag
+ *  list and an empty `tags` array CLEARS it, so sending an untouched tags value
+ *  back would silently rewrite it on every save. */
+export interface UpdateMemberBody {
+  friendly_name?: string;
+  category?: string;
+  tags?: string[];
+  icon?: string;
+  unattended?: "false" | "auto" | "dangerous";
+  llm_provider?: "claude" | "codex" | "copilot" | "agy" | "opencode";
+  host?: string;
+  port?: number;
+  username?: string;
+}
+
+export function updateMember(memberId: string, body: UpdateMemberBody): Promise<MemberActionResult> {
+  return postJson("/api/fleet/update-member", { member_id: memberId, ...body });
 }
 
 // ---------------------------------------------------------------------------

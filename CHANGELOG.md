@@ -87,6 +87,55 @@ open for a future sprint):
   project it supervises (a pre-existing, separately tracked gap -- see
   `docs/project-model.md`).
 
+## [Unreleased] -- Member edit and compose-permissions inputs in the console drawer
+
+Sprint goal: give the console's member drawer an in-place edit form for the
+fields `update_member` accepts, and real inputs (role, tags, grant list,
+grant reason) for compose-permissions instead of a bare button that could
+only fail against the server's schema. Both submit only the fields the
+operator actually changed, never the whole record, to avoid clobbering
+concurrent server-side changes.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.3672.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2424 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 9 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Member edit form in the drawer**: friendly name, category, tags, icon,
+  unattended mode, LLM provider, and (for remote members) host/port/
+  username, posted to `update_member` as a dirty-field-only body. A
+  successful save refreshes the members list; a server validation error
+  renders verbatim in the form.
+- **Compose-permissions inputs in the drawer**: role (doer/reviewer), tags,
+  grant list, and grant reason, posted to `compose_permissions`. The
+  server schema has no "at least one of role or tags" validation, so that
+  rule is enforced client-side before any request is issued; a
+  `NEVER_AUTO_GRANT` refusal (which the server answers as an HTTP 200 text
+  body, not a thrown error) is rendered verbatim.
+- **Member `unattended` mode is now readable, not just writable**:
+  `list_members` and `member_detail` both emit the member's current
+  permission mode for unattended execution, closing the gap where the
+  console could set it but never show what it currently was. The
+  `apra-fleet-client` typedefs were updated in the same change to stay in
+  sync with the server payload shape.
+- **Shared shell-ui test harness**: the three Members-screen test suites
+  now share one harness module, including a section-scoped field lookup
+  that resolves an ambiguous duplicate label (e.g. "Tags" appearing in both
+  the edit form and the compose-permissions form) to the correct section.
+
+Carried forward: the drawer's re-sync-after-save fix has a known defect --
+because the edit form's baseline snapshot is taken once at mount but the
+drawer can still receive a newer member object from a background refresh
+while the form itself stays frozen, an operator's untouched fields can read
+as dirty against the moved baseline and get resubmitted, spuriously
+reverting a concurrent change made by someone else while the drawer was
+open. This is being reopened rather than shipped as-is. See
+[docs/console-architecture.md](docs/console-architecture.md) for the
+dirty-diff design and the invariant this defect violates.
 ## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
 
 Sprint goal: make the member registry's `env` name-value map actually reach
