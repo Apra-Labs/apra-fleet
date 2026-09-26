@@ -13,6 +13,13 @@ import { renderUi } from './ui-page.js';
 import { Vault } from './vault.js';
 import { getAllAgents } from '../services/registry.js';
 import { isAutoMember } from '../services/member-reaper.js';
+import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
+import { launchSprint, stopSprint, type LaunchInput } from './sprints/launcher.js';
+
+export interface SprintDeps {
+  launch: (input: LaunchInput) => Promise<{ runId: string }>;
+  stop: (runId: string) => Promise<boolean>;
+}
 
 export interface ActivityItem {
   at: string;
@@ -108,7 +115,62 @@ export interface LazyServer {
   config: () => LazyConfig;
 }
 
-export function createLazyServer(opts: { config?: LazyConfig } = {}): LazyServer {
+const RUN_ID = '([A-Za-z0-9._-]{1,128})';
+
+/** Sprint board API. Returns false when the path is not a sprint route. */
+async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse, url: URL, deps: SprintDeps): Promise<boolean> {
+  const p = url.pathname;
+  if (p === '/_lazy/api/sprints' && req.method === 'GET') {
+    json(res, 200, { sprints: listSprints() });
+    return true;
+  }
+  if (p === '/_lazy/api/sprints' && req.method === 'POST') {
+    const rec = await deps.launch((await readJson(req)) as LaunchInput);
+    json(res, 200, { ok: true, runId: rec.runId });
+    return true;
+  }
+  let m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}$`).exec(p);
+  if (m && req.method === 'GET') {
+    const view = sprintView(m[1]);
+    json(res, view ? 200 : 404, view ?? { error: 'no such sprint' });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/stop$`).exec(p);
+  if (m && req.method === 'POST') {
+    json(res, 200, { ok: await deps.stop(m[1]) });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/tasks/([A-Za-z0-9._-]{1,128})$`).exec(p);
+  if (m && req.method === 'GET') {
+    const t = sprintTask(m[1], m[2]);
+    json(res, t ? 200 : 404, t ?? { error: 'no such task' });
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, await sprintCode(m[1]));
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code/file$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, await sprintFileDiff(m[1], url.searchParams.get('path') ?? ''));
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/code/commit/([0-9a-f]{7,40})$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, await sprintCommitDiff(m[1], m[2]));
+    return true;
+  }
+  m = new RegExp(`^/_lazy/api/sprints/${RUN_ID}/log$`).exec(p);
+  if (m && req.method === 'GET') {
+    json(res, 200, { log: sprintLog(m[1], Number(url.searchParams.get('tail') ?? 200)) });
+    return true;
+  }
+  return false;
+}
+
+export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<SprintDeps> } = {}): LazyServer {
+  const sprintDeps: SprintDeps = { launch: launchSprint, stop: stopSprint, ...opts.sprints };
   let config = opts.config ?? loadConfig();
   const vault = new Vault();
   const activity = new Activity();
@@ -208,6 +270,7 @@ export function createLazyServer(opts: { config?: LazyConfig } = {}): LazyServer
         json(res, value === undefined ? 404 : 200, { value });
         return;
       }
+      if (await handleSprints(req, res, url, sprintDeps)) return;
       json(res, 404, { error: 'not found' });
     } catch (e) {
       json(res, 400, { error: (e as Error).message });

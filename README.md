@@ -73,6 +73,7 @@ Opens a local page (only reachable from your own machine) with:
 
 | Tab | What you get |
 |---|---|
+| **Sprints** | Describe a job in a sentence and start a sprint. A board shows every issue it creates, which helper is on which one right now, and the code it changed. See below. |
 | **Vault** | Everything that has been caught, masked. Show, copy the stand-in, remove. |
 | **Presets** | Save credentials ahead of time with a description, like "Postgres password for staging". Claude is told the name and description (never the value), so it uses the right one without you pasting anything. Preview exactly what Claude is told. |
 | **Activity** | A live feed of what was caught and hidden, and where it came from. |
@@ -144,6 +145,42 @@ Helpers on your machine need no permission and cost nothing extra. Anything that
 would run on another machine or cost money is still asked about first, in plain
 terms ("this would start billing at about $X/hour - go ahead?"), unless you turn
 that off in Settings. Helpers that are left idle get cleaned up automatically.
+
+## Sprints: hand over a whole job
+
+Open `lazyfleet ui` -> **Sprints** -> **New sprint**, then say what you want in a
+sentence or two, pick the project folder, and choose how many helpers work in
+parallel. That's the whole setup.
+
+What happens next:
+
+1. **Planning.** A helper breaks the job into issues (features, tasks, bugs),
+   with acceptance criteria and dependencies. They appear on the board as they
+   are created.
+2. **Parallel work.** Helpers pick up issues that are ready and work them at the
+   same time, each in its own private copy of your project. Reviews happen as
+   work lands; anything that needs another pass goes back on the board.
+3. **Testing and wrap-up.** If your project describes how to deploy and test it,
+   that runs too. The finished work lands as a branch in your project, or as a
+   pull request if you ticked that box.
+
+The sprint page has four views:
+
+| View | What you see |
+|---|---|
+| **Board** | JIRA-style columns (To Do, Blocked, In Progress, Done) with a swimlane per feature. Cards show type, priority, model tier and the helper on them, with a live timer while someone is working. Click a card for its description, acceptance criteria and history. |
+| **Helpers** | One row per helper: what it is doing right now in plain words, plus a timeline of everything it has done, so you can see the work happening in parallel. |
+| **Code changes** | Every commit and changed file on the sprint branch, with a diff viewer. |
+| **Log** | The raw engine log, for when something needs a closer look. |
+
+Your own checkout is never edited while a sprint runs. Helpers work in copies
+under `~/.lazyfleet/helpers/`, share one task list through a local folder, and
+nothing leaves your machine unless you ask for a pull request. Sprints started
+elsewhere (from the command line or another dashboard) show up on the board
+too; code changes are shown for the ones started here.
+
+Set a spending limit on the form if you want a hard ceiling; the sprint stops
+before any step that would go over it.
 
 ## Under the hood
 

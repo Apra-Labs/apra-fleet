@@ -3,6 +3,8 @@
  * Self-contained (no external requests) so it works offline and the CSP
  * can stay tight. Every dynamic value goes through textContent.
  */
+import { SPRINTS_CSS, SPRINTS_HTML, SPRINTS_JS } from './ui-sprints.js';
+
 export function renderUi(): string {
   return PAGE;
 }
@@ -75,6 +77,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.on { opacity: 1; }
 @media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 10px; } }
+${SPRINTS_CSS}
 </style>
 </head>
 <body>
@@ -90,6 +93,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
     <div class="stat"><b id="s-helpers">-</b><small>helpers right now</small></div>
   </div>
   <nav role="tablist">
+    <button role="tab" data-tab="sprints">Sprints</button>
     <button role="tab" data-tab="vault" aria-selected="true">Vault</button>
     <button role="tab" data-tab="presets">Presets</button>
     <button role="tab" data-tab="activity">Activity</button>
@@ -147,6 +151,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
     </div>
     <p class="note">Anything you paste as <code>secret: VALUE</code> is always caught, whatever these say. Changes apply immediately.</p>
   </section>
+${SPRINTS_HTML}
 </main>
 <div class="toast" id="toast"></div>
 <script>
@@ -298,12 +303,13 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
     });
     if (!found) return;
     document.querySelectorAll('main > section').forEach(function (s) { s.hidden = s.id !== 'tab-' + name; });
+    window.dispatchEvent(new CustomEvent('lazy:tab', { detail: name }));
   }
   document.querySelectorAll('nav button').forEach(function (b) {
     b.addEventListener('click', function () { showTab(b.dataset.tab); history.replaceState(null, '', '#' + b.dataset.tab); });
   });
   // Tabs are linkable: /_lazy/#presets
-  if (location.hash) showTab(location.hash.slice(1));
+  if (location.hash) showTab(location.hash.slice(1).split('/')[0]);
   $('add-form').addEventListener('submit', function (e) {
     e.preventDefault();
     api('POST', 'vault', { name: $('add-name').value.trim(), value: $('add-value').value, description: $('add-desc').value, announce: $('add-announce').checked })
@@ -314,6 +320,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
   setInterval(load, 4000);
 })();
 </script>
+<script>${SPRINTS_JS}</script>
 </body>
 </html>
 `;
