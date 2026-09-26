@@ -1,6 +1,6 @@
 # Architecture & Specification: `compose_permissions` & AGY Provider Correction
 
-**Document Status:** Approved Design -- PARTLY SUPERSEDED. Sections 4.1-4.4, 5.1 (file naming and resource form) and 7 assume AGY picks a project by matching the workspace folder. Live tests disproved that; see section 8 for the verified mechanism (explicit `--project <id>`), which replaces them.  
+**Document Status:** Approved Design, corrected by live verification (section 8). AGY binds a member to its own project with `--project <id>`; the folder-matching design (old sections 4.1-4.4 and 7) was removed.  
 **Target Component:** `apra-fleet` MCP Server (`src/tools/compose-permissions.ts`, `src/providers/agy.ts`)  
 **Reference Baseline:** Claude Code Provider (`src/providers/claude.ts`)  
 
@@ -20,11 +20,10 @@ The current implementation of the **AGY (Antigravity CLI) Provider** in `src/pro
 3. This creates **cross-member security leakage** (e.g. a restricted `reviewer` inherits a `doer`'s broad shell execution grants), destroys project isolation, and contaminates the host machine's interactive user settings.
 
 ### 1.2 The Solution
-Antigravity natively implements project-scoped permissions via its project registry at `~/.gemini/config/projects/<project-id>.json`. This document:
+Antigravity implements project-scoped permissions via its project registry at `~/.gemini/config/projects/<project-id>.json`, but a headless run uses a project only when it is named with `--project <id>` (section 8). Each AGY member therefore owns one project, created with `agy --new-project` and recorded as `Agent.agyProjectId`; compose_permissions writes that member's grants into its project file and every dispatch passes `--project <agyProjectId>`. This document:
 - Details the general `compose_permissions` architecture.
-- Critiques the current global implementation.
-- Analyzes key corner cases (duplicate project files, permission unioning, deterministic naming).
-- Outlines a robust, un-conflicted **"Claim & Purge"** specification to fix the AGY provider without tracking extra detached UUIDs.
+- Critiques the old global implementation.
+- Records the live-verified binding mechanism and the answers to its open questions (section 8).
 
 ---
 
@@ -135,164 +134,37 @@ The author realized that writing to `<workFolder>/.gemini/...` did not work, and
 
 ---
 
-## 4. Deep-Dive Corner Cases & Critical Nuances
+## 4. Deep-Dive Corner Cases (removed)
 
-### 4.1 What Happens When a Folder is Found in Multiple Project JSON Files?
-
-A crucial question arises: **If two or more `.json` files in `~/.gemini/config/projects/` contain the same `folderUri`, does AGY union their permissions, or is it an error?**
-
-#### 1. AGY Does NOT Union Permissions
-In Antigravity's architecture, each conversation and CLI execution session is bound to **exactly one Project ID**:
-```
-project: switching to conversation belonging to project ID: <id>
-ReloadPermissions: project <id>
-```
-Permissions are evaluated strictly within the active project's `PermissionGrantStore`. There is **no cross-project unioning**.
-
-#### 2. It Does NOT Throw an Error (Silent Discard)
-AGY will not crash or throw an error when multiple project files share the same `folderUri`. We observed this directly in live production environments, where identical workspace roots existed across multiple UUID files (e.g., one created as a plain `folderUri` and another with `gitFolder`).
-
-#### 3. How AGY Resolves the Conflict (The Danger)
-When `resolveProject` or `chooseMainProject` searches for a project matching a workspace directory:
-- It iterates through the loaded projects.
-- When duplicates match the same `folderUri`, it picks **only one** (typically sorting by most recent `ModTime` / `updated_at`, or taking the first match in directory traversal order).
-- **The Silent Failure:** If Apra-Fleet writes permissions to `project-A.json`, but AGY's internal resolver picks `project-B.json`, **none of the composed permissions will take effect**. The member will execute with an empty or stale grant list and fail on tool execution.
-
-> [!CAUTION]
-> Duplicate project files referencing the same `folderUri` represent a dangerous race condition. To guarantee deterministic permission enforcement, any duplicate or spurious project files for that directory **must be actively purged**.
-
----
-
-### 4.2 Deterministic Naming: Eliminating "Extra UUID" Overhead
-
-Rather than generating a random UUID and having to track or remember it:
-1. Every fleet member already has an immutable, unique identifier (`agent.id`, e.g., `agent-1727145600000-xxxx` or a UUID).
-2. AGY's project ID validator (`IsValidProjectID`) accepts alphanumeric slug strings with hyphens (e.g. `default-cli-project.json`).
-3. We can name the project file deterministically based on the member identity:
-   ```
-   ~/.gemini/config/projects/fleet-${agent.id}.json
-   ```
-4. **Benefits of Deterministic Naming:**
-   - **$O(1)$ Resolution:** `permissionConfigPaths(agent)` computes the exact file path instantly without scanning the filesystem on every turn or dispatch.
-   - **Zero State Tracking:** No secondary mapping database or metadata cache is needed to connect a member to its AGY project file.
-   - **Immediate Cleanliness:** Inspecting `~/.gemini/config/projects/` immediately identifies which file belongs to which fleet agent.
-
----
-
-### 4.3 The "Claim & Purge" Provisioning Protocol
-
-To solve both duplicate project file conflicts and avoid repetitive scanning:
-
-```mermaid
-flowchart TD
-    Start[Provision Member / Compose Permissions] --> ComputePath["Compute Deterministic Path:\n~/.gemini/config/projects/fleet-${agent.id}.json"]
-    ComputePath --> ScanDupes["Scan ~/.gemini/config/projects/*.json for folderUri"]
-    
-    ScanDupes --> FoundDupes{Are there other files with same folderUri?}
-    FoundDupes -->|Yes| Purge["Delete Spurious Duplicate Files (rm -f)"]
-    FoundDupes -->|No| CheckTarget{Does fleet-${agent.id}.json exist?}
-    
-    Purge --> CheckTarget
-    CheckTarget -->|No| CreateSkeleton["Write Skeleton fleet-${agent.id}.json with folderUri / gitFolder"]
-    CheckTarget -->|Yes| ApplyGrants["Deep-Merge Composed permissionGrants into fleet-${agent.id}.json"]
-    CreateSkeleton --> ApplyGrants
-    ApplyGrants --> Verify["Read-Back Verification & seedWorkspaceTrust()"]
-    Verify --> Done[Execution Ready]
-```
-
-1. **Step 1: Compute Deterministic Target:**
-   Target is `~/.gemini/config/projects/fleet-${agent.id}.json`.
-2. **Step 2: Sweep & Purge Conflicting Project Files:**
-   Query `~/.gemini/config/projects/*.json` for any file matching `file://${normalizedWorkFolder}` where `id != fleet-${agent.id}`. If any exist, delete them over the strategy transport.
-3. **Step 3: Write / Update the Authoritative Project File:**
-   Write the project configuration with proper `gitFolder` wrapping and `permissionGrants`.
-4. **Step 4: Seed Workspace Trust:**
-   Ensure `workFolder` is in `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`.
-
----
-
-### 4.4 Git vs. Non-Git Workspaces: Protobuf oneof Safety & Worktree Support
-
-A critical question is whether a single project configuration file can safely define both `gitFolder` and `folderUri` nodes simultaneously to hedge against uncertainty.
-
-#### 1. Inside the Same Resource Object: Strictly Prohibited by Protobuf Schema
-In Antigravity's underlying protobuf definition (`exa.project_pb.Resource`):
-```protobuf
-message Resource {
-  oneof type {
-    string folder_uri = 1;
-    Google3 google3 = 2;
-    GitFolder git_folder = 3;
-  }
-}
-```
-Because `type` is a Protobuf **`oneof`**, setting both `folderUri` and `gitFolder` in the same JSON object is a fatal schema violation. When Go's `protojson.Unmarshal` parses the file, it rejects it with:
-```text
-cannot set multiple fields in oneof "type": "folder_uri" and "git_folder"
-```
-This causes AGY to mark the file as corrupted (`ReloadPermissions: project <id> corrupted or unreadable`) and silently discard all permissions. Therefore, **co-locating both keys inside a single resource object is strictly forbidden**.
-
-#### 2. As Multiple Elements in the resources Array: Redundant Roots Hazard
-While having two array elements in `resources` (`[{gitFolder: ...}, {folderUri: ...}]`) is valid protobuf syntax, in AGY `resources` defines the set of top-level workspace roots. Having two entries for the identical directory path leads AGY to treat the project as a multi-root workspace with duplicate roots, risking double-indexing and redundant file watchers.
-
-#### 3. Why 'test -d .git' Fails on Git Worktrees
-In Apra-Fleet, members frequently execute within **Git Worktrees** (e.g. parallel sprint sandboxes). In a Git worktree, `.git` is **a regular text file** containing a `gitdir:` reference, NOT a directory! A naive shell test like `test -d "${workFolder}/.git"` evaluates to false, erroneously classifying an active Git worktree as a non-git folder.
-
-#### 4. The Robust Solution: VCS Probing and In-Place Morphing
-To achieve 100% safety across all workspace types (standard clones, worktrees, monorepo subfolders, and plain folders):
-
-1. **Accurate Git Probing:** Use Git's native plumbing command:
-   ```bash
-   git -C "${workFolder}" rev-parse --is-inside-work-tree 2>/dev/null
-   ```
-   If this exits 0 and prints `true`, the folder is guaranteed to be a Git workspace (even in worktrees and monorepos). Otherwise, it is a plain folder.
-2. **Deterministic Single Resource:**
-   - If Git: Write `resources: [{ gitFolder: { folderUri: "file://${workFolder}", allowWrite: true } }]`.
-   - If Non-Git: Write `resources: [{ folderUri: "file://${workFolder}" }]`.
-3. **In-Place Morphing via Pre-Dispatch Rule:**
-   Because Apra-Fleet enforces that `compose_permissions` is called before **EVERY** dispatch, if a plain folder is later initialized with `git init` during a task, the subsequent `compose_permissions` run automatically detects the new Git state and updates `resources[0]` in-place inside `fleet-${agent.id}.json` without altering the project ID or losing permission grants.
+The original sections 4.1-4.4 (duplicate project files for one folder, deterministic `fleet-<agent.id>.json` naming, the "Claim & Purge" protocol, and `gitFolder` vs `folderUri` morphing with git probing) all assumed AGY selects a project by matching the work folder against `projectResources`. Section 8 shows it does not: a headless run uses only the project named by `--project`, else `default-cli-project`. Those sections and the code built on them were removed; see section 8.4 for the list.
 
 ---
 
 ## 5. Target Design & Implementation Specification
 
 ### 5.1 Project Schema Definition
-The generated project file at `~/.gemini/config/projects/fleet-${agent.id}.json` conforms to:
+
+The member's project file is the one `agy --new-project` created, `~/.gemini/config/projects/<agyProjectId>.json`. agy writes `id`, `name` (work folder basename) and `projectResources`; fleet adds only the nested grants (shape verified by run 7 in section 8.2):
 
 ```json
 {
-  "id": "fleet-agent-1727145600000-abcd",
-  "name": "/home/akhil/git/my-repo",
-  "projectResources": {
-    "resources": [
-      {
-        "gitFolder": {
-          "folderUri": "file:///home/akhil/git/my-repo",
-          "allowWrite": true
-        }
-      }
-    ]
-  },
+  "id": "1afd6dbb-498f-4918-a9d9-6da64b75a204",
+  "name": "apra-fleet-agy",
+  "projectResources": { "resources": [ { "folderUri": "file://C:/akhil/git/apra-fleet-agy" } ] },
   "permissionGrants": {
     "permissionGrants": {
-      "allow": [
-        "read_file(*)",
-        "write_file(*)",
-        "command(git)",
-        "command(npm)",
-        "command(npm test)",
-        "mcp(apra-fleet/kb_query)"
-      ],
-      "deny": [],
-      "ask": []
+      "allow": [ "read_file(*)", "command(git)", "mcp(apra-fleet/kb_query)" ],
+      "deny": [ "mcp(apra-fleet/remove_member)", "mcp(apra-fleet-member/remove_member)" ]
     }
   }
 }
 ```
 
+`deny` carries the explicit rules for orchestrator-only fleet MCP tools (`AGY_ORCHESTRATOR_DENY_RULES`), which are now enforced per member because the file is actually bound.
+
 ### 5.2 Mapping Rules for Reviewer vs Doer
 
-Under this corrected architecture, AGY achieves genuine role isolation:
+Each member has its own project, so a reviewer and a doer on the same machine get different grants:
 
 #### A. Doer Role
 - `read_file(*)`
@@ -306,223 +178,30 @@ Under this corrected architecture, AGY achieves genuine role isolation:
 - Read-only inspection commands: `command(git)`, `command(diff)`, `command(cat)`, `command(grep)`
 - Test execution only: `command(npm test)` (NO general `npm install`, `touch`, `rm`, or `chmod`)
 
+Caveat (section 8.5 q1): agy matches a `command(...)` allow rule against the whole command line, so `command(git)` allows only a bare `git`. The profiles' `Bash(<bin>:*)` grants therefore do not yet give AGY members the prefix-scoped command access they give Claude members.
+
 ---
 
 ## 6. Implementation Architecture
 
-### Step 1: Update `ProviderAdapter` Interface (`src/providers/provider.ts`)
-Allow `permissionConfigPaths` and `composePermissionConfig` to accept the target agent and Git status, and add the optional `preparePermissionsDelivery` hook:
-
-```typescript
-export interface ProviderAdapter {
-  /** Optional hook called during compose_permissions before config delivery to clean up
-   *  or migrate provider-specific configuration artifacts (e.g. AGY claim & purge of
-   *  conflicting project UUID files). */
-  preparePermissionsDelivery?(agent: Agent, execCommand: WorkspaceTrustExecFn, memberHomeDir?: string | null): Promise<void>;
-
-  // Permission configuration
-  /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
-   *  Parallel to the array returned by composePermissionConfig(). */
-  permissionConfigPaths(agent?: Agent): string[];
-
-  /** Returns provider-native permission config for the given role.
-   *  Each element corresponds to the path at the same index in permissionConfigPaths().
-   *  JSON providers return Record<string, unknown>; TOML providers return a string. */
-  composePermissionConfig(
-    role: 'doer' | 'reviewer',
-    allow?: string[],
-    agent?: Agent,
-    isGit?: boolean,
-  ): Array<Record<string, unknown> | string>;
-}
-```
-
-### Step 2: Implement Project Configuration & Claim & Purge in `src/providers/agy.ts`
-
-```typescript
-  permissionConfigPaths(agent?: Agent): string[] {
-    if (!agent || !agent.id) {
-      throw new Error('AGY provider requires a valid Agent with an id to compose permission config');
-    }
-    return [`~/.gemini/config/projects/fleet-${agent.id}.json`];
-  }
-
-  composePermissionConfig(
-    _role: 'doer' | 'reviewer',
-    allow: string[] = [],
-    agent?: Agent,
-    isGit = true,
-  ): Array<Record<string, unknown> | string> {
-    if (!agent || !agent.id || !agent.workFolder) {
-      throw new Error('AGY provider requires a valid Agent with workFolder to compose permission config');
-    }
-    const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow));
-    const workFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-    const id = `fleet-${agent.id}`;
-    const uri = toAgyFileUri(agent.workFolder);
-
-    const resource = isGit
-      ? { gitFolder: { folderUri: uri, allowWrite: true } }
-      : { folderUri: uri };
-
-    return [{
-      id,
-      name: workFolder,
-      projectResources: {
-        resources: [resource],
-      },
-      permissionGrants: {
-        permissionGrants: {
-          allow: agyAllow,
-          deny: [],
-          ask: [],
-        },
-      },
-    }];
-  }
-
-  async purgeConflictingProjects(
-    agent: Agent,
-    execCommand: WorkspaceTrustExecFn,
-    memberHomeDir?: string | null,
-    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
-    shell?: MemberShell,
-  ): Promise<string[]> {
-    if (!agent || !agent.workFolder) {
-      throw new Error('AGY provider requires a valid Agent with workFolder to purge conflicting projects');
-    }
-    const targetUri = toAgyFileUri(agent.workFolder);
-    const keepId = `fleet-${agent.id}`;
-    const cmd = buildAgyPurgeCommand(targetUri, keepId, memberHomeDir, agentOs, shell);
-    const result = await execCommand(cmd, 10000);
-    if (result.code !== 0) {
-      throw new Error(`agy: purgeConflictingProjects failed with exit code ${result.code}: ${result.stderr || result.stdout}`);
-    }
-    if (result.stdout) {
-      try {
-        const parsed = JSON.parse(result.stdout.trim());
-        if (parsed && typeof parsed === 'object') {
-          const purged = Array.isArray(parsed.purged) ? parsed.purged : [];
-          const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
-          if (warnings.length > 0) {
-            logWarn(
-              'agy',
-              `Non-fleet project config file(s) [${warnings.join(', ')}] also target "${agent.workFolder}". Fleet project fleet-${agent.id}.json will take precedence.`
-            );
-          }
-          if (purged.length > 0) {
-            logWarn(
-              'agy',
-              `Purged (renamed to .bak) ${purged.length} conflicting project config(s) for ${agent.workFolder}: ${purged.join(', ')}`
-            );
-          }
-          return purged;
-        }
-      } catch (e) {
-        logWarn('agy', `Failed to parse purgeConflictingProjects stdout: ${result.stdout}`);
-      }
-    }
-    return [];
-  }
-
-  async preparePermissionsDelivery(
-    agent: Agent,
-    execCommand: WorkspaceTrustExecFn,
-    memberHomeDir?: string | null,
-    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
-    shell?: MemberShell,
-  ): Promise<void> {
-    await this.purgeConflictingProjects(agent, execCommand, memberHomeDir, agentOs, shell);
-    await cleanGlobalAgySettings(execCommand, memberHomeDir, agentOs, shell);
-  }
-```
-
-### Step 3: Implement Real `ensureWorkspaceTrusted` in `src/providers/agy.ts`
-
-Seeds `workFolder` into `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`:
-
-```typescript
-  async ensureWorkspaceTrusted(
-    workFolder: string,
-    execCommand: WorkspaceTrustExecFn,
-    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
-    shell?: MemberShell,
-    _transport?: WorkspaceTrustTransport,
-  ): Promise<EnsureWorkspaceTrustedResult> {
-    const normFolder = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-    const usePosix = isPosixShell(agentOs, shell);
-    const isWindows = !usePosix;
-    const homeFile = isWindows
-      ? '$env:USERPROFILE\\.gemini\\antigravity-cli\\settings.json'
-      : '$HOME/.gemini/antigravity-cli/settings.json';
-    const settingsDir = isWindows
-      ? '$env:USERPROFILE\\.gemini\\antigravity-cli'
-      : '$HOME/.gemini/antigravity-cli';
-
-    const readCmd = isWindows
-      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
-      : `cat "${homeFile}" 2>/dev/null || true`;
-
-    const readResult = await execCommand(readCmd, 5000);
-    let settings: Record<string, unknown> = {};
-    try {
-      const parsed = JSON.parse(readResult.stdout.trim());
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        settings = parsed;
-      }
-    } catch {
-      // missing or invalid JSON
-    }
-
-    const trusted = Array.isArray(settings.trustedWorkspaces)
-      ? (settings.trustedWorkspaces as string[])
-      : [];
-
-    if (trusted.includes(normFolder)) {
-      return { seeded: false, detail: `agy: workspace "${normFolder}" already in trustedWorkspaces` };
-    }
-
-    const updatedTrusted = [...trusted, normFolder];
-    settings.trustedWorkspaces = updatedTrusted;
-    const contentStr = JSON.stringify(settings, null, 2);
-
-    const mkdirCmd = isWindows
-      ? `if (-not (Test-Path "${settingsDir}")) { New-Item -ItemType Directory -Force "${settingsDir}" }`
-      : `mkdir -p "${settingsDir}"`;
-    await execCommand(mkdirCmd, 5000);
-
-    const writeCmd = isWindows
-      ? `[System.IO.File]::WriteAllText("${homeFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
-      : `cat > "${homeFile}" << 'FLEET_AGY_SETTINGS_EOF'\n${contentStr}\nFLEET_AGY_SETTINGS_EOF`;
-
-    const writeResult = await execCommand(writeCmd, 5000);
-    if (writeResult.code !== 0) {
-      throw new Error(`agy: failed to write trustedWorkspaces to settings.json (exit ${writeResult.code})`);
-    }
-
-    return { seeded: true, detail: `agy: added "${normFolder}" to trustedWorkspaces in settings.json` };
-  }
-```
+- `src/services/agy-project.ts` -- `ensureAgyProject(agent)`: probes `<agyProjectId>.json` on the member (exists, parses, `id` matches) and, when the member has no id or the probe fails, runs `agy --new-project` via `provisionAgyProject` and stores the new id (`Agent.agyProjectId`, registry). Both member-side steps are node scripts delivered with `buildAgyNodeCommand` (encoded PowerShell on Windows, verbatim heredoc on POSIX); the home directory is resolved in JS (`os.homedir()`), never by a shell variable.
+- `AgyProvider.permissionConfigPaths(agent)` -> `['~/.gemini/config/projects/<agyProjectId>.json']`; throws without an id.
+- `AgyProvider.composePermissionConfig` -> `[{ permissionGrants: { permissionGrants: { allow, deny } } }]` only; `deliverConfigFile` deep-merges it into the file agy wrote, so `id`/`name`/`projectResources` are kept and only `allow`/`deny` are replaced.
+- `AgyProvider.projectFlag(id)` -> `--project "<id>"`, used by `buildPromptCommand` (POSIX/gitbash) and by `WindowsCommands.buildAgentPromptCommand` through the optional `ProviderAdapter.projectFlag` hook. It throws for a missing/invalid id. Providers without the hook are unchanged.
+- `AgyProvider.preparePermissionsDelivery` only runs the global-skills check (warning surfaced in the compose result).
+- `AgyProvider.ensureWorkspaceTrusted` is a no-op (section 8.5 q6).
 
 ---
 
-## 7. Migration & Verification Strategy
+## 7. Migration & Verification Strategy (removed)
 
-1. **Global Clean-up:**
-   When the new implementation lands, a one-time cleanup removes stale `command(...)` and `write_file(...)` entries from global `~/.gemini/antigravity-cli/settings.json` left behind by legacy runs.
-2. **Integration Verification:**
-   - Provision an AGY member with role `reviewer`.
-   - Verify that `~/.gemini/config/projects/fleet-${agent.id}.json` is created with path-scoped writes and read-only shell commands.
-   - Verify that any duplicate/stale project files for that directory were purged.
-   - Verify that `~/.gemini/antigravity-cli/settings.json` remains clean and free of member-specific allow-rules.
-   - Run a sprint dispatch and confirm that `git` or write attempts outside of `docs/**` are blocked.
-   - Provision a second AGY member on the same machine with role `doer` on a different repository. Confirm that each member operates within its own `fleet-${agent.id}.json` file without cross-talk.
+The old plan (global settings clean-up, purge verification, per-member files as isolation without `--project`) was built on the folder-matching assumption. Migration is now the upgrade path in 8.3 item 2, and verification is the live acceptance in 8.3/8.5.
 
 ---
 
 ## 8. Live-Verified Correction: Explicit Project Binding (`--new-project` / `--project`)
 
-**Status:** verified live on 2026-09-26 (Windows, agy 1.2.11, fleet-agy-local, deployed build v0.4.3_3e5f82). Supersedes sections 4.1-4.4, the naming and resource parts of 5.1, and section 7.
+**Status:** verified live on 2026-09-26 (Windows, agy 1.2.11, fleet-agy-local, deployed build v0.4.3_3e5f82); open questions answered live the same day (8.5). Replaces the removed sections 4.1-4.4 and 7.
 
 ### 8.1 Finding
 
@@ -530,7 +209,7 @@ A headless `agy -p ... --add-dir <workFolder>` run does **not** pick a project b
 
 The project is bound explicitly:
 
-1. `agy --new-project -p "<prompt>" --output-format json` creates a new project `~/.gemini/config/projects/<uuid>.json` and runs the prompt in it. `agy --help`: `--new-project  Create a new project for this session`. The owner's run printed `Your **Antigravity Project ID** is: e6d3551b-02a1-455d-8578-2f9424b4d71e` and created `e6d3551b-02a1-455d-8578-2f9424b4d71e.json`.
+1. `agy --new-project -p "<prompt>" --output-format json` creates a new project `~/.gemini/config/projects/<uuid>.json` and runs the prompt in it. `agy --help`: `--new-project  Create a new project for this session`.
 2. Every later run passes `--project <uuid>`. `agy --help`: `--project  Project ID or project name for the current CLI session`. Only then are that file's `permissionGrants` enforced.
 
 ### 8.2 Evidence
@@ -553,38 +232,57 @@ Runs 7 and 8 differ only in `--project`, so `--project` is what binds the grants
 Other facts established:
 - The nested shape `permissionGrants.permissionGrants.{allow,deny,ask}` is what agy reads (runs 5 and 7). The flat shape is not needed.
 - On a denial agy exits 0 with `status: "SUCCESS"`, `response: ""`, `denied_actions: [...]` on stdout, and an "auto-denied" line on stderr. Fleet must read these (separate bead); today it reports `empty_response`.
-- On Linux (fleet-lin-agy), `git status` is checked as the `unsandboxed` action, not `command` (`permission check failed for unsandboxed "git status ..."`). Grants for Linux members therefore probably need `unsandboxed(...)` rules. Not yet verified.
+- On Linux (fleet-lin-agy), `git status` is checked as the `unsandboxed` action, not `command` (`permission check failed for unsandboxed "git status ..."`). See 8.5 q3.
 
 ### 8.3 Design
 
-1. **Create the project when a member becomes an agy member**: on register_member with llm_provider agy, and on update_member switching to agy. Run `agy --new-project -p "<fixed prompt asking for the project id>" --output-format json` on the member, in its work folder. Take the id from the new `<uuid>.json` that appeared in `~/.gemini/config/projects/` (list before and after; exactly one new file), and cross-check it against the id in the response text. Fail registration loudly if that is not exactly one id.
-2. **Store it on the member** in registry.json, e.g. `agyProjectId` (the owner's name for it is ANTIGRAVITY_PROJECT_ID; use the registry's camelCase convention). Existing agy members without it are provisioned on the next compose_permissions or execute_prompt (upgrade path), never silently skipped.
-3. **compose_permissions writes only `<agyProjectId>.json`**, in the schema verified by run 7:
-   ```json
-   {
-     "id": "<agyProjectId>",
-     "name": "<work folder basename>",
-     "projectResources": { "resources": [ { "folderUri": "<work folder URI>" } ] },
-     "permissionGrants": { "permissionGrants": { "allow": [ ... ], "deny": [ ... ] } }
-   }
-   ```
-   It keeps `id`, `name` and `projectResources` as agy wrote them and replaces only `permissionGrants`. It never touches other project files or `default-cli-project.json`.
-4. **Every agy dispatch passes `--project <agyProjectId>`** (execute_prompt, and any other place fleet runs agy for a member). A missing id is a hard error, not a silent fallback to `default-cli-project`.
+1. **Create the project when a member becomes an agy member**: on register_member with llm_provider agy, and on update_member switching to agy. fleet runs `agy --add-dir <wf> --model <cheap> --output-format json --log-file <tmp> --new-project -p "Reply with only the word OK. Do not use any tools."` on the member, in its work folder, spawned from a node script (no shell). The id is the single new `<uuid>.json` in `~/.gemini/config/projects/` (listed before and after), cross-checked against agy's own log line `project: created project "<name>" (id=<uuid>)`. The model's reply is not used: the model does not know the id (8.5 q4). Anything other than exactly one new file whose id agy logged fails the call: register_member reports `Member was NOT registered.`, update_member `Member was NOT updated.`. One provisioning runs at a time per machine so the directory diff cannot see another member's project.
+2. **Store it on the member** in registry.json as `agyProjectId` (owner's name ANTIGRAVITY_PROJECT_ID). member_detail and list_members (json) show it for agy members. Upgrade path: an agy member without it (registered before this change) is provisioned on its next compose_permissions or execute_prompt, never silently skipped.
+3. **compose_permissions writes only `<agyProjectId>.json`** (schema in 5.1), keeping `id`, `name` and `projectResources` as agy wrote them and replacing only `permissionGrants.permissionGrants.{allow,deny}`. It never touches other project files or `default-cli-project.json`.
+4. **Every agy dispatch passes `--project <agyProjectId>`**. Before each compose_permissions and execute_prompt fleet probes the file; a missing, unparseable or mismatched file is re-provisioned (a new project and id), because agy itself silently falls back to `default-cli-project` in those cases (8.5 q5). A member whose project cannot be provisioned gets a hard error (`execute_prompt` reason `dispatch_failed`, no LLM call), never a run without `--project`.
 
-### 8.4 What this makes obsolete
+### 8.4 Removed
 
-These exist only because of the disproved folder-matching assumption. They should be removed (tracked by a bead):
-- deterministic `fleet-<agent.id>.json` naming (4.2);
-- "Claim & Purge" (`purgeConflictingProjects`, `buildAgyPurgeScript` / `buildAgyPurgeCommand`, `.bak` renames): it touched files that agy never used for our runs, including the user's own projects;
-- the `gitFolder` vs `folderUri` morphing and git probing (4.4, `requiresGitAwareness`, `detectIsGit`), unless open question 2 shows `projectResources` matters;
-- URI normalization used only for matching (`toAgyFileUri` comparisons in purge);
-- the design's assumption in 7 that per-member files give cross-member isolation without `--project`.
+These existed only because of the disproved folder-matching assumption and were deleted with their tests:
+- deterministic `fleet-<agent.id>.json` naming and the `permissionConfigPaths` built on it;
+- "Claim & Purge" (`purgeConflictingProjects`, `buildAgyPurgeScript` / `buildAgyPurgeCommand`, `.bak` renames, the purge step of `preparePermissionsDelivery`): it touched files agy never used for our runs, including the user's own projects;
+- `gitFolder` vs `folderUri` morphing and git probing (`requiresGitAwareness`, `detectIsGit`, the `isGit` parameter of `composePermissionConfig`), because `projectResources` does not matter under `--project` (8.5 q2);
+- URI normalization used only for matching (`toAgyFileUri`, `normalizeAgyUri`);
+- `cleanGlobalAgySettings` (one-time scrub of `~/.gemini/antigravity-cli/settings.json`) and the real agy `ensureWorkspaceTrusted` (8.5 q6);
+- sections 4.1-4.4 and 7 of this document, including the claim that per-member files give cross-member isolation without `--project`.
 
-### 8.5 Open questions (verify live before relying on them)
+### 8.5 Open questions -- answered (live, Windows, agy 1.2.11, work folder `C:\akhil\git\apra-fleet-agy`)
 
-1. Grammar: does `command(git)` match `git status --short --branch`? Only `command(*)` has been proven with `--project`.
-2. Does `projectResources` matter once `--project` is given (workspace scope, write access), or is `--add-dir` enough? Run 7 used `file://C:/...` (two slashes) and still worked.
-3. Linux: the `unsandboxed(...)` action. Does a `command(...)` grant cover it, or do Linux grants need `unsandboxed(...)`?
-4. Does `--new-project` need `--dangerously-skip-permissions`, and can the creating call avoid a model turn? Can `--project <name>` create or select by name?
-5. What does agy do if the `<id>.json` file is deleted or corrupt while the id is still passed? Fleet should detect it and re-provision.
-6. Do workspace trust (`trustedWorkspaces`) and the global-settings clean-up still matter under this model?
+All runs below used fleet's command line with `--project <id>` against scratch projects created with `--new-project` for the test and deleted afterwards; `default-cli-project.json` and the owner's `e6d3551b-...json` were checked byte-identical (sha256) after the session.
+
+1. **Does `command(git)` match `git status --short --branch`? No.** A `command(...)` allow rule is matched against the whole command line; only `command(*)` is a wildcard. Prompt "Run exactly this shell command and reply with its raw output only: `<cmd>`":
+
+   | allow rule (with `read_file(*)`) | command run | result |
+   |---|---|---|
+   | `command(git)` | `git status --short --branch` | denied (`"denied_actions":[{"action":"command","display_name":"RunCommand"}]`) |
+   | `command(git *)` | same | denied |
+   | `command(git:*)` | same | denied |
+   | `command(git status)` | same | denied |
+   | `command(git status *)` | same | denied |
+   | `command(git status*)` | same | denied |
+   | `command(git status --short)` | same | denied |
+   | `command(git status --short --branch)` | same | allowed (`"response":"## fix/agy-prompt-body-toolsearch...`) |
+   | `command(*)` | same | allowed |
+   | `command(git status)` | `git status` | allowed (`"response":"On branch fix/agy-prompt-body-toolsearch...`) |
+   | `command(git)` | `git status` | denied |
+   | `command(git)` | `git` | allowed (`"response":"usage: git [-v \| --version] ...`) |
+
+   The transcript shows the exact string checked: `"CommandLine":"\"git status --short --branch\""` and `permission check failed for command "git status --short --branch": user denied permission to run command`. agy's own agent prompt text says approvals are "generalized by prefix-matching the binary and subcommand", but that did not apply to allow-list grants in these runs. Consequence: the `Bash(git:*) -> command(git)` mapping in `convertClaudeAllowToAgyPermissions` does not let an AGY member run `git status ...`. Changing that mapping (e.g. to `command(*)` plus deny rules, or enumerated exact commands) is a policy decision not made here.
+2. **Does `projectResources` matter with `--project`? No, not for grants.** With `projectResources` deleted from the project file and `allow: ["read_file(*)","command(git status --short --branch)"]`, `--project <id> --add-dir <wf>` ran the command (`"response":"## fix/agy-prompt-body-toolsearch...origin/fix/agy-prompt-body-toolsearch [ahead 41, behind 45]\n?? .gemini/\n"`). The workspace comes from `--add-dir`. fleet keeps whatever agy wrote and does not probe git.
+3. **Linux `unsandboxed(...)`: not verified.** This session was limited to the Windows member; fleet-lin-agy was not touched. The `unsandboxed` action is already accepted by `formatAgyPermissionRules`, but nothing maps a Claude grant to it yet. Needs a Linux run.
+4. **`--new-project` cost and flags.** It does not need `--dangerously-skip-permissions`: `agy --add-dir <wf> --model gemini-3.8-flash-low --output-format stream-json --new-project -p "Reply with only the word OK. Do not use any tools."` exited 0 in ~2.4 s with `"response":"OK\n"`, one model turn (`input_tokens 17211, output_tokens 1`), and created `1afd6dbb-....json` containing only `id`, `name`, `projectResources` (no `permissionGrants`). Asking the model for the id does not work: with "What is your Antigravity Project ID?" the model tried `Get-ChildItem ...` (auto-denied) and returned `"response":""`, while `d05acf31-....json` was created anyway. agy's log (`--log-file`) states the id authoritatively: `project: created project "apra-fleet-agy" (id=1afd6dbb-498f-4918-a9d9-6da64b75a204) at C:\Users\akhil\.gemini\config\projects\1afd6dbb-...` and `Conversation using project ID: 1afd6dbb-...`. An empty prompt avoids the model turn but is an error path: `agy --new-project -p ""` exited 1 with `"error":"Error: empty prompt. Usage: agy --print \"your prompt here\""` yet still created `4d632fa7-....json`; fleet does not rely on that. `--project <name>` with a name that does not exist (`fleet-probe-name-q4`) created nothing and ran under `default-cli-project` (log: `project: dynamically resolved and registered default project (id=default-cli-project)`).
+5. **Missing or corrupt `<id>.json` with `--project <id>`: silent fallback to default-cli-project, exit 0.** Missing file: `"status":"SUCCESS","response":"OK\n"`, log `Backend project ID updated dynamically to: default-cli-project`. Corrupt file (`not json{`): log `failed to resolve project: read project d05acf31-...: unmarshal project ...: proto: syntax error`, then the same fallback, exit 0. agy never reports it to the caller, so fleet probes the file before each compose/dispatch and re-provisions.
+6. **Workspace trust and the global-settings clean-up: not needed.** In a freshly created folder fleet never seeded (`...\Temp\fleet-trust-probe-11441`), a `--new-project` project with `allow: ["command(git --version)"]` and `--project` ran `git --version` (`"response":"git version 2.55.0.windows.5\n"`), so `trustedWorkspaces` seeding is not required for grants; agy's `ensureWorkspaceTrusted` is a no-op again, as on main. `cleanGlobalAgySettings` scrubbed entries that only unreleased builds wrote to the global `settings.json` (commits `c0637418`/`ffeb868d` are in no release tag; released v0.4.2 wrote only `<workFolder>/.gemini/antigravity-cli/settings.json`), and its `.fleet-cleaned-v2` marker is absent on fleet-agy-local, so it was removed. A dogfood machine that ran those unreleased builds may still carry fleet-written entries in its global `settings.json`; check it by hand.
+
+### 8.6 Registry field and flow
+
+`Agent.agyProjectId` (string, agy members only):
+- register_member (agy, reachable member): `ensureAgyProject(tempAgent, { persist: false })` after the work folder exists and before the member is persisted, so the id is saved with the member; failure = not registered.
+- update_member switching to agy: same, on the resulting member, before the update is written; failure = not updated.
+- compose_permissions and execute_prompt (agy): `ensureAgyProject(agent)` first -- probe, re-provision if needed, persist a new id to the registry.
+- execute_prompt passes the id as `PromptOptions.projectId`; `AgyProvider` renders `--project "<id>"` on both the POSIX and the Windows command paths.

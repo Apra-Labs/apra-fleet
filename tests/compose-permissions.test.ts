@@ -70,6 +70,17 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     if (cmd === 'printf \'%s\' "$HOME"') {
       return { stdout: '/home/testuser', stderr: '', code: 0 };
     }
+    // AGY project probe (src/services/agy-project.ts): answers from the same
+    // fake filesystem, keyed by the id embedded in the probe script.
+    if (cmd.includes('FLEET_AGY_PROBE_EOF')) {
+      const id = /const id = "([^"]+)";/.exec(cmd)?.[1];
+      const body = id ? files.get(`"/home/testuser/.gemini/config/projects/${id}.json"`) : undefined;
+      let state = 'missing';
+      if (body !== undefined) {
+        try { state = JSON.parse(body).id === id ? 'ok' : 'id_mismatch'; } catch { state = 'corrupt'; }
+      }
+      return { stdout: 'FLEET_AGY_PROJECT:' + JSON.stringify({ state }), stderr: '', code: 0 };
+    }
     // mkdir, detectStacks (ls), workspace-trust writes/reads, everything else
     return { stdout: '', stderr: '', code: 0 };
   };
@@ -373,39 +384,51 @@ describe('composePermissions -- Claude proactive', () => {
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- AGY proactive', () => {
-  it('delivers AGY-syntax permission strings to the member HOME, not the work folder', async () => {
-    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
+  const AGY_PID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+  const AGY_FILE = `/home/testuser/.gemini/config/projects/${AGY_PID}.json`;
+  // What agy --new-project writes (live-verified shape, docs/compose-permissions-design.md section 8).
+  const AGY_CREATED = JSON.stringify({
+    id: AGY_PID,
+    name: 'project',
+    projectResources: { resources: [{ folderUri: 'file:///home/testuser/project' }] },
+  }, null, 2);
+
+  it('delivers AGY-syntax permission strings into the member\'s own project file only', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux', agyProjectId: AGY_PID });
     addAgent(member);
-    installFsMock();
+    installFsMock({ [`"${AGY_FILE}"`]: AGY_CREATED });
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('agy-doer');
-    expect(result).toContain('agy');
+    expect(result).toContain(`.gemini/config/projects/${AGY_PID}.json`);
 
-    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
-
-    // AGY reads permissions from the per-project config file under ~/.gemini/config/projects/fleet-<id>.json
-    const projectWrite = writes.find(cmd => cmd.includes(`.gemini/config/projects/fleet-${member.id}.json`))!;
-    expect(projectWrite).toBeDefined();
-    expect(projectWrite).toContain(`/home/testuser/.gemini/config/projects/fleet-${member.id}.json`);
+    const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
+    expect(writes).toHaveLength(1);
+    const projectWrite = writes[0];
+    expect(projectWrite).toContain(`cat > "${AGY_FILE}"`);
     expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
+    expect(writes.some(cmd => cmd.includes('default-cli-project'))).toBe(false);
 
-    // ...and as AGY's `action(target)` STRINGS, not {action,target} objects,
-    // which AGY's settings parser silently ignores.
-    expect(projectWrite).toContain('"read_file(*)"');
-    expect(projectWrite).toContain('"write_file(*)"');
-    expect(projectWrite).toContain('"command(git)"');
+    const written = JSON.parse(/<< 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/.exec(projectWrite)![1]);
+    // agy's own id/name/projectResources are kept; only the nested grants change.
+    expect(written.id).toBe(AGY_PID);
+    expect(written.name).toBe('project');
+    expect(written.projectResources).toEqual({ resources: [{ folderUri: 'file:///home/testuser/project' }] });
+    expect(written.permissionGrants.permissionGrants.allow).toContain('read_file(*)');
+    expect(written.permissionGrants.permissionGrants.allow).toContain('write_file(*)');
+    expect(written.permissionGrants.permissionGrants.allow).toContain('command(git)');
+    expect(written.permissionGrants.permissionGrants.deny).toContain('mcp(apra-fleet/remove_member)');
     expect(projectWrite).not.toContain('"action"');
+    expect(projectWrite).not.toContain('gitFolder');
   });
 
   it('fails closed when the member home cannot be resolved, rather than writing the config somewhere AGY never reads', async () => {
-    const member = makeTestAgent({ friendlyName: 'agy-nohome', llmProvider: 'agy', os: 'linux' });
+    const member = makeTestAgent({ friendlyName: 'agy-nohome', llmProvider: 'agy', os: 'linux', agyProjectId: AGY_PID });
     addAgent(member);
     // Everything succeeds EXCEPT the home probe -- the one input a home-anchored
     // config path cannot be guessed without.
-    const fsHandler = makeFsHandler();
+    const fsHandler = makeFsHandler({ [`"${AGY_FILE}"`]: AGY_CREATED });
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('$HOME')) return { stdout: '', stderr: 'no shell', code: 1 };
       return fsHandler(cmd);
@@ -415,7 +438,19 @@ describe('composePermissions -- AGY proactive', () => {
 
     expect(result).toContain('Failed to persist');
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
-    expect(writes.some(cmd => cmd.includes(`.gemini/config/projects/fleet-${member.id}.json`))).toBe(false);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('writes nothing when the member has no project and one cannot be created', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-noproj', llmProvider: 'agy', os: 'linux' });
+    addAgent(member);
+    installFsMock();
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('[FAIL] Failed to provision the agy project');
+    const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
+    expect(writes).toHaveLength(0);
   });
 });
 
@@ -1160,9 +1195,9 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
   });
 
   it('is a no-op for non-Claude providers (e.g. AGY) -- never touches the trust delivery channel', async () => {
-    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
+    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
     addAgent(member);
-    installFsMock();
+    installFsMock({ '"/home/testuser/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json"': JSON.stringify({ id: '1afd6dbb-498f-4918-a9d9-6da64b75a204' }) });
 
     const spy = vi.spyOn(AgyProvider.prototype, 'ensureWorkspaceTrusted');
 

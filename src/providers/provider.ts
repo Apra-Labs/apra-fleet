@@ -144,6 +144,9 @@ export interface PromptOptions {
   maxTurns?: number;
   inv?: string;
   agentName?: string;
+  /** Provider project the run is bound to (AGY: `--project <id>`, from
+   *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
+  projectId?: string;
 }
 
 /**
@@ -380,6 +383,12 @@ export interface ProviderAdapter {
    *    Escaping cannot be done here: this method does not know the member's shell,
    *    and escapeDoubleQuoted would mangle the backslashes in a Windows path. */
   workspaceDirFlag?(escapedFolder: string): string | null;
+  /** Builds the CLI flag that binds the run to the member's provider project
+   *  (AGY: `--project <id>`), whose permission grants are the member's own.
+   *  Optional -- omit it for providers with no project binding. An
+   *  implementation must throw for a missing id rather than return '', so a
+   *  dispatch can never silently run under a shared default project. */
+  projectFlag?(projectId?: string): string;
   /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
    *  ON THE MEMBER'S MACHINE.
    *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this
@@ -419,9 +428,8 @@ export interface ProviderAdapter {
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
-  /** Optional hook called during compose_permissions before config delivery to clean up
-   *  or migrate provider-specific configuration artifacts (e.g. AGY claim & purge of
-   *  conflicting project UUID files). */
+  /** Optional hook called during compose_permissions before config delivery; returns
+   *  warnings to surface in the tool result (e.g. AGY's global-skills check). */
   preparePermissionsDelivery?(
     agent: import('../types.js').Agent,
     execCommand: WorkspaceTrustExecFn,
@@ -429,10 +437,6 @@ export interface ProviderAdapter {
     agentOs?: 'linux' | 'macos' | 'windows',
     shell?: MemberShell,
   ): Promise<string[] | void>;
-
-  /** Optional capability flag indicating whether this provider requires Git repository
-   *  awareness during permission composition (e.g. AGY uses gitFolder vs folderUri). */
-  readonly requiresGitAwareness?: boolean;
 
   // Permission configuration
   /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
@@ -445,7 +449,6 @@ export interface ProviderAdapter {
     role: 'doer' | 'reviewer',
     allow?: string[],
     agent?: import('../types.js').Agent,
-    isGit?: boolean,
   ): Array<Record<string, unknown> | string>;
 
   // Auth capabilities

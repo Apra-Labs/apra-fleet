@@ -165,6 +165,9 @@ export class WindowsCommands implements OsCommands {
     // headless mode. Providers without the hook are unchanged.
     const wsFlag = provider.workspaceDirFlag?.(escapedFolder);
     if (wsFlag) argList = `${wsFlag} ${argList}`;
+    // Providers with a project binding (AGY: --project <id>) get it on every
+    // dispatch; projectFlag throws for a missing id. Others are unchanged.
+    if (provider.projectFlag) argList = `${provider.projectFlag(opts.projectId)} ${argList}`;
     if (nameFlag && !nameFlag.startsWith('@')) {
       argList = `${nameFlag} ${argList}`;
     }

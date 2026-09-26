@@ -42,6 +42,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 import type { ParsedResponse, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -837,6 +838,25 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Lock already claimed above, before the preflight await.
 
+  // AGY: every dispatch is bound to the member's own agy project with
+  // --project; without it agy silently runs under the machine-wide
+  // default-cli-project. A member without a verified project (registered
+  // before project binding, or whose project file is gone/corrupt) gets one
+  // here. Failure is terminal -- never a dispatch without --project.
+  let agyProjectId: string | undefined;
+  if (agent.llmProvider === 'agy') {
+    try {
+      agyProjectId = (await ensureAgyProject(agent)).projectId;
+    } catch (e: any) {
+      inFlightAgents.delete(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- the member's agy project could not be provisioned: ${e?.message ?? String(e)}. No LLM call was made.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
+  }
+
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
@@ -1070,6 +1090,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     inv: scope.getInv(),
     agentName: input.agent,
     fork: forkDescriptor,
+    projectId: agyProjectId,
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under

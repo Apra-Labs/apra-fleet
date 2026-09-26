@@ -15,6 +15,18 @@ import { addAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
+
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
   readMemberStatus: vi.fn(() => 'idle'),

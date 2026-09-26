@@ -169,6 +169,10 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     cli.auth = 'none';
   }
   result.llmProvider = agent.llmProvider ?? 'claude';
+  if (agent.llmProvider === 'agy') {
+    // The member's own agy project (--project <id>); null until provisioned.
+    result.agyProjectId = agent.agyProjectId ?? null;
+  }
   result.llm_cli = cli;
   if (agent.llmProvider === 'none') {
     result.tokenUsage = 'compute only';

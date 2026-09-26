@@ -13,8 +13,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
-import { wrapPowerShellEncoded } from '../os/windows.js';
-import { escapeWindowsArg } from '../os/os-commands.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
@@ -269,33 +268,6 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   return [...found];
 }
 
-/**
- * Detects whether the member's workFolder is inside a git repository or worktree.
- * Uses `git rev-parse --is-inside-work-tree` which handles regular repos, git worktrees,
- * submodules, and monorepos uniformly. Falls back to filesystem probe for local agents if git CLI is absent.
- */
-export async function detectIsGit(agent: Agent, agentShell?: MemberShell): Promise<boolean> {
-  const strategy = getStrategy(agent);
-  const checkDir = agent.workFolder.replace(/\\/g, '/');
-  const usePosix = isPosixShell(agent.os ?? 'linux', agentShell);
-  const cmd = usePosix
-    ? `git -C "${checkDir}" rev-parse --is-inside-work-tree 2>/dev/null`
-    : wrapPowerShellEncoded(`$ErrorActionPreference = 'SilentlyContinue'; & git -C "${escapeWindowsArg(agent.workFolder)}" rev-parse --is-inside-work-tree 2>$null`);
-
-  const result = await strategy.execCommand(cmd, 5000);
-  if (result.code === 0 && result.stdout.trim() === 'true') {
-    return true;
-  }
-  if (agent.agentType === 'local') {
-    try {
-      return fs.existsSync(path.join(agent.workFolder, '.git'));
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 function compose(profilesDir: string, role: string, stacks: string[], ledger: Ledger): string[] {
   const baseName = role === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
@@ -457,8 +429,8 @@ function resolveRemotePath(
   homeDir?: string | null,
 ): string {
   // A "~/"-prefixed config path is HOME-anchored on the MEMBER, not relative to
-  // its work folder. AGY needs this: its project configs live under
-  // ~/.gemini/config/projects/fleet-<agent.id>.json, rather than under the work folder
+  // its work folder. AGY needs this: the member's project file lives at
+  // ~/.gemini/config/projects/<agyProjectId>.json, not under the work folder
   // (see AgyProvider.permissionConfigPaths).
   // `homeDir` is resolved in JavaScript by the caller via getMemberHomeDir --
   // never emitted as a literal "~/" or "$HOME" for the member's shell to
@@ -608,6 +580,22 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
   }
 
+  // AGY: grants live in the member's own agy project file, which only exists
+  // once the member has a verified project id. Provision it here when missing
+  // (upgrade path for members registered before project binding) or when the
+  // file is gone/corrupt -- never write grants anywhere else.
+  let agyNote = '';
+  if (provider.name === 'agy') {
+    try {
+      const ensured = await ensureAgyProject(agent);
+      if (ensured.provisioned) {
+        agyNote = `\n  AGY project: ${ensured.projectId} (created: ${ensured.provisioned.replace(/_/g, ' ')})`;
+      }
+    } catch (e: any) {
+      return `[FAIL] Failed to provision the agy project for "${agent.friendlyName}": ${e?.message ?? String(e)}. No permissions were written.`;
+    }
+  }
+
   // The member's registered shell decides POSIX vs PowerShell command strings
   // for every config write below (apra-fleet-7dir.1.3).
   const agentShell = getAgentShell(agent);
@@ -666,8 +654,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
         deliveryWarnings = warns;
       }
     }
-    const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
-    const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
+    const configs = provider.composePermissionConfig(mode, allow, agent);
     const paths = provider.permissionConfigPaths(agent);
     try {
       for (let i = 0; i < paths.length; i++) {
@@ -700,7 +687,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
     const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${warningsBlock}`;
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${warningsBlock}`;
   }
 
   // Proactive compose mode
@@ -718,8 +705,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       deliveryWarnings = warns;
     }
   }
-  const isGit = provider.requiresGitAwareness ? await detectIsGit(agent, agentShell) : undefined;
-  const configs = provider.composePermissionConfig(mode, allow, agent, isGit);
+  const configs = provider.composePermissionConfig(mode, allow, agent);
   const paths = provider.permissionConfigPaths(agent);
 
   try {
@@ -749,5 +735,5 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';
   const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${warningsBlock}`;
+  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${warningsBlock}`;
 }

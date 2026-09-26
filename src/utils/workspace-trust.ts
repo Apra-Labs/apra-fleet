@@ -97,7 +97,16 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
   try {
     const provider = getProvider(agent.llmProvider);
     const strat = strategy ?? getStrategy(agent);
-    const memberHomeDir = provider.permissionConfigPaths(agent).some(isHomeAnchored)
+    // AGY's config path needs the member's project id, which a member may not
+    // have yet (it is provisioned by compose_permissions/execute_prompt); agy
+    // seeds no trust anyway, so treat "no path yet" as not home-anchored.
+    let configPaths: string[];
+    try {
+      configPaths = provider.permissionConfigPaths(agent);
+    } catch {
+      configPaths = [];
+    }
+    const memberHomeDir = configPaths.some(isHomeAnchored)
       ? await getMemberHomeDir(agent)
       : null;
     const result = await provider.ensureWorkspaceTrusted(

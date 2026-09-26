@@ -41,10 +41,11 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/workspace',
         promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
         model: 'Gemini 3.5 Flash',
         unattended: 'dangerous',
       });
-      expect(cmd).toContain('agy --add-dir "/home/user/workspace" --model');
+      expect(cmd).toContain('agy --add-dir "/home/user/workspace" --project "1afd6dbb-498f-4918-a9d9-6da64b75a204" --model');
       expect(cmd).toContain('--output-format json');
       expect(cmd).toContain('--dangerously-skip-permissions');
       expect(cmd).toContain('Your task is described in /home/user/workspace/.fleet-task.md');
@@ -54,6 +55,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/workspace',
         promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
         sessionId: 'sess-agy-12345',
         resuming: true,
       });
@@ -80,6 +82,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         const cmd = provider.buildPromptCommand({
           folder: '/home/user/project',
           promptFile: '.fleet-task.md',
+          projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
           tier,
         });
         expect(cmd).toContain(`--model "${provider.modelForTier(tier)}"`);
@@ -157,19 +160,16 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         friendlyName: 'agy-doer',
         llmProvider: 'agy',
         workFolder: '/home/user/my-project',
+        agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       } as any;
-      expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-123.json']);
+      expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
       expect(() => provider.permissionConfigPaths()).toThrow();
 
       const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken'], mockAgent);
       expect(configs).toHaveLength(1);
       const cfg = configs[0] as Record<string, any>;
-      expect(cfg.id).toBe('fleet-agent-123');
-      expect(cfg.name).toBe('/home/user/my-project');
-      expect(cfg.projectResources.resources).toEqual([
-        { gitFolder: { folderUri: 'file:///home/user/my-project', allowWrite: true } },
-      ]);
-      expect(cfg.permissionGrants).toBeDefined();
+      // Only the grants block: agy's own id/name/projectResources are kept on disk.
+      expect(Object.keys(cfg)).toEqual(['permissionGrants']);
       // Strings in AGY's own `action(target)` syntax -- NOT {action,target}
       // objects, which AGY's settings parser silently ignores.
       const allowList = cfg.permissionGrants.permissionGrants.allow;
@@ -230,6 +230,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/my repo',
         promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       });
       expect(cmd).toContain('--add-dir "/home/user/my repo"');
       // The cd is retained so relative paths the agent builds still resolve.

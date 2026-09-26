@@ -41,6 +41,18 @@ vi.mock('../src/services/workspace-trust.js', () => ({
 
 import { executePrompt, provisionedRemoteAgents, type ExecutePromptInput } from '../src/tools/execute-prompt.js';
 
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
+
 // apra-fleet-25yl.2.1's "CORRECTION to part 2": the exec-level ROLLING
 // (inactivity) deadline handed to strategy.execCommand() follows a
 // PER-PROVIDER matrix (ProviderAdapter.execTimeoutSource()), not a blanket

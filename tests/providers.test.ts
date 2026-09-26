@@ -961,8 +961,8 @@ describe('AgyProvider', () => {
   });
 
   it('builds prompt command with defaults and --output-format json', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
-    expect(cmd).toContain('agy --add-dir "/home/user/project" --model');
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
+    expect(cmd).toContain('agy --add-dir "/home/user/project" --project "1afd6dbb-498f-4918-a9d9-6da64b75a204" --model');
     expect(cmd).toContain('--output-format json');
     expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
@@ -970,18 +970,18 @@ describe('AgyProvider', () => {
   });
 
   it('builds prompt command with resume flag', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', sessionId: 'sess-abc', resuming: true });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', sessionId: 'sess-abc', resuming: true });
     expect(cmd).toContain('--conversation "sess-abc"');
     expect(cmd).toContain('--output-format json');
   });
 
   it('builds prompt command with unattended=dangerous', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'dangerous' });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'dangerous' });
     expect(cmd).toContain('--dangerously-skip-permissions');
   });
 
   it('builds prompt command with unattended=auto (baseline accept-edits, not a full bypass)', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'auto' });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'auto' });
     expect(cmd).toContain('--mode accept-edits');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
     expect(p.permissionModeAutoFlag()).toBe('--mode accept-edits');
@@ -1042,24 +1042,21 @@ describe('AgyProvider', () => {
     expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-high');
   });
 
-  it('permissionConfigPaths is HOME-anchored per-project config for AGY', () => {
-    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work' } as any;
-    expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/fleet-agent-456.json']);
+  it("permissionConfigPaths is the member's own HOME-anchored agy project file", () => {
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
+    expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
     expect(() => p.permissionConfigPaths()).toThrow();
+    expect(() => p.permissionConfigPaths({ id: 'agent-456', workFolder: '/tmp/work' } as any)).toThrow();
   });
 
-  it('composePermissionConfig produces AGY native project config and permission rule STRINGS', () => {
+  it('composePermissionConfig produces only the nested grants block, as permission rule STRINGS', () => {
     const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
-    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work' } as any;
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
     const configs = p.composePermissionConfig('doer', claudeAllow, mockAgent);
     expect(configs).toHaveLength(1);
     const cfg = configs[0] as Record<string, any>;
-    expect(cfg.id).toBe('fleet-agent-456');
-    expect(cfg.name).toBe('/tmp/work');
-    expect(cfg.projectResources.resources).toEqual([
-      { gitFolder: { folderUri: 'file:///tmp/work', allowWrite: true } },
-    ]);
-    expect(cfg.permissionGrants).toBeDefined();
+    // id/name/projectResources are agy's own (kept by deliverConfigFile's merge).
+    expect(Object.keys(cfg)).toEqual(['permissionGrants']);
     // `Agent` maps to invoke_subagent/send_message, which are AGY tool names,
     // not permission actions -- they are dropped rather than written as entries
     // AGY's settings parser rejects.

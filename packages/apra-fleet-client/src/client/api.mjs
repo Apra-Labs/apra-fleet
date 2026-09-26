@@ -228,6 +228,9 @@
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project
+ *   (~/.gemini/config/projects/<id>.json), passed as `--project <id>` on every dispatch; null until
+ *   provisioned (compose_permissions/execute_prompt provision it on first use)
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
