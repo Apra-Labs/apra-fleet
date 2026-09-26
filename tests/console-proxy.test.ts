@@ -45,7 +45,7 @@ import path from 'node:path';
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { FLEET_DIR } from '../src/paths.js';
-import { deriveUpstreamCredential } from '../src/console/proxy.js';
+import { deriveUpstreamCredential, MOUNT_PATH_HEADER } from '../src/console/proxy.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -671,6 +671,66 @@ describe('/ext proxy: derived upstream credential', () => {
       'content-type': 'application/json',
     });
     expect(replay.status).toBe(401);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Mount-path header (apra-fleet-i9ag.3.1) -- tells the package where it is
+// mounted so its own absolute app-paths can be rewritten to survive the
+// /ext/<id> hop.
+// -----------------------------------------------------------------------------
+
+describe('/ext proxy: mount-path header', () => {
+  it('sends the mount-path header equal to /ext/<id> on a proxied GET', async () => {
+    let seen: string | undefined;
+    const upstream = await startUpstream((req, res) => {
+      seen = req.headers[MOUNT_PATH_HEADER] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    });
+    const id = uniqueId('pkg-mountpath');
+    await registerPackage(id, upstream.baseUrl);
+    const console_ = await startConsole();
+
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/some/path`);
+    expect(res.status).toBe(200);
+    expect(seen).toBe(`/ext/${id}`);
+  });
+
+  it('never lets a client-supplied mount-path header reach the upstream -- the proxy value always wins', async () => {
+    let seen: string | undefined;
+    const upstream = await startUpstream((req, res) => {
+      seen = req.headers[MOUNT_PATH_HEADER] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    });
+    const id = uniqueId('pkg-mountpath-spoof');
+    await registerPackage(id, upstream.baseUrl);
+    const console_ = await startConsole();
+
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/some/path`, {
+      [MOUNT_PATH_HEADER]: '/ext/some-other-package',
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toBe(`/ext/${id}`);
+    expect(seen).not.toBe('/ext/some-other-package');
+  });
+
+  it('sends the mount-path header on an authenticated non-GET request too', async () => {
+    let seen: string | undefined;
+    const upstream = await startUpstream((req, res) => {
+      seen = req.headers[MOUNT_PATH_HEADER] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    });
+    const id = uniqueId('pkg-mountpath-post');
+    await registerPackage(id, upstream.baseUrl);
+    const console_ = await startConsole();
+    const fleetKey = getOrCreateKey();
+
+    const res = await rawRequest(console_.port, 'POST', `/ext/${id}/write`, bearer(fleetKey));
+    expect(res.status).toBe(200);
+    expect(seen).toBe(`/ext/${id}`);
   });
 });
 
