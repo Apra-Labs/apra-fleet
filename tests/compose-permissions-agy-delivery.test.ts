@@ -177,9 +177,7 @@ describe('composePermissions -- AGY project-bound delivery', { timeout: 60000 },
     const result = await composePermissions({ member_id: member.id, role: 'reviewer', grant: ['Bash(docker:*)'] });
     expect(result).not.toContain('Failed');
     const after = read();
-    const granted = HOST_OS === 'windows'
-      ? ['command(docker)', 'command(regex:docker .*)', 'command(docker-compose)', 'command(regex:docker-compose .*)', 'command(docker buildx)', 'command(regex:docker buildx .*)']
-      : ['command(docker)', 'command(docker-compose)', 'command(docker buildx)'];
+    const granted = ['command(docker)', 'command(regex:docker .*)', 'command(docker-compose)', 'command(regex:docker-compose .*)', 'command(docker buildx)', 'command(regex:docker buildx .*)'];
     expect(after.allow).toEqual([...before.allow, ...granted]);
     expect(after.deny).toEqual(before.deny);
     expect(Object.keys(after)).not.toContain('ask');

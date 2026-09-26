@@ -578,6 +578,8 @@ export class AgyProvider implements ProviderAdapter {
 //   3. the transcript (printed between FLEET_TRANSCRIPT_START/END by
 //      agy-transcript-reader.js): an ERROR step
 //      permission check failed for command "git status --short --branch": user denied ...
+//      (Linux/macOS name a shell command "unsandboxed" there: permission check
+//      failed for unsandboxed "whoami": user denied ...).
 
 const AGY_STDERR_DENIAL_RE = /a tool required the "([a-z_]+)" permission that headless mode cannot prompt for/g;
 const AGY_TRANSCRIPT_DENIAL_RES = [
@@ -594,14 +596,15 @@ const SHELL_SEQUENCE_RE = /[|;`]|&&/;
 const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
 
 /** The compose_permissions grants that allow one denied call, primary first.
- *  POSIX: agy matches a command(...) grant against the exact command line
- *  (section 8.5 q1), so a command denial suggests that exact command. Windows:
- *  the prefix grant Bash(<first word>:*) composes to command(regex:<word> .*),
- *  which matches the full raw line, including a $(...) argument (section 8.9),
- *  so it comes first and the exact command follows as the narrow option. */
-function suggestedGrantsFor(item: PermissionDenialItem, agentOs?: ParseResponseContext['agentOs']): string[] {
+ *  The prefix grant Bash(<first word>:*) composes to command(<word>) plus
+ *  command(regex:<word> .*) on every OS, and the regex matches the full raw
+ *  line, including a $(...) argument (section 8.9), so it comes first and the
+ *  exact command follows as the narrow option. Linux/macOS agy reports a shell
+ *  command it refuses as `unsandboxed "<command line>"` (the JSON result says
+ *  `command`), so both actions are handled alike. */
+function suggestedGrantsFor(item: PermissionDenialItem): string[] {
   const t = item.target?.trim();
-  if (item.action === 'command' && agentOs === 'windows') {
+  if (item.action === 'command' || item.action === 'unsandboxed') {
     if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
     const first = t.split(/\s+/)[0];
     const out: string[] = [];
@@ -712,7 +715,7 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
     if (!denials.some(d => d.action === action)) add({ action });
   }
   const actions = [...new Set(denials.map(d => d.action))];
-  const perDenial = denials.map(d => suggestedGrantsFor(d, agentOs));
+  const perDenial = denials.map(d => suggestedGrantsFor(d));
   const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
   const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
   const suggestedGrants = [...primary, ...narrow];
@@ -725,10 +728,10 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
   } else {
     hint += ' No compose_permissions grant maps to this action automatically; grant it on the member by hand or escalate.';
   }
-  if (actions.includes('command')) {
+  if (actions.includes('command') || actions.includes('unsandboxed')) {
     hint += agentOs === 'windows'
       ? ' On Windows, Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*), which allows <bin> with any arguments.'
-      : ' agy matches a command grant against the exact command line, so Bash(<bin>:*) (command(<bin>)) allows only the bare binary.';
+      : ' Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*): command(<bin>) matches <bin> and its arguments by word prefix, and a command line with $(...), backticks, brace expansion or redirections needs the regex rule, which matches the full line.';
   }
   return { actions, denials, suggestedGrants, hint, signals };
 }
@@ -909,10 +912,10 @@ const PATH_SCOPED_READ_RE = /^(?:Read|Glob|Grep)\((.+)\)$/;
 const PATH_SCOPED_WRITE_RE = /^(?:Write|Edit)\((.+)\)$/;
 
 /** Options for convertClaudeAllowToAgyPermissions. All optional: without them
- *  the conversion is the POSIX one and a `~` path cannot be resolved. */
+ *  a `~` path cannot be resolved. */
 export interface AgyConvertOptions {
-  /** The member's OS. 'windows' selects the regex command rules (see
-   *  agyCommandRules); any other value keeps the literal-prefix rules. */
+  /** The member's OS. Command rules are the same on every OS (see
+   *  agyCommandRules); kept for callers and future OS-specific mappings. */
   os?: 'linux' | 'macos' | 'windows';
   /** The member's home directory, resolved in JavaScript by the caller
    *  (getMemberHomeDir), used to expand a leading `~` in path grants. */
@@ -927,18 +930,16 @@ export function escapeAgyRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** The agy `command` targets for one Claude command prefix. On Windows agy
- *  needs a character-for-character match for any command line PowerShell or
- *  cmd cannot split into words, so `command(git)` allows only a bare `git`;
- *  its manual says to use `command(regex:git .*)` for a command and its
- *  subcommands, and a regex target is matched against the full raw line
- *  (docs/compose-permissions-design.md section 8.9). A prefix grant therefore
- *  becomes the bare command plus a regex for any arguments. POSIX members keep
- *  the literal prefix. A command deny rule for a Windows member must be built
- *  here too, so it matches full command lines. */
-export function agyCommandRules(cmd: string, os?: AgyConvertOptions['os']): string[] {
+/** The agy `command` targets for one Claude command prefix, on every OS. agy
+ *  prefix-matches `command(git)` word by word only for a command line it can
+ *  split into words: on Windows that excludes most lines (PowerShell/cmd), and
+ *  on Linux/macOS a line with command substitution, backticks, brace expansion
+ *  or fd redirections disables prefix matching. A `regex:` target is matched
+ *  against the full raw line (docs/compose-permissions-design.md section 8.9),
+ *  so a prefix grant becomes the bare command plus a regex for any arguments.
+ *  A command deny rule must be built here too, so it matches full lines. */
+export function agyCommandRules(cmd: string): string[] {
   if (cmd === '*') return ['*'];
-  if (os !== 'windows') return [cmd];
   return [cmd, `regex:${escapeAgyRegex(cmd)} .*`];
 }
 
@@ -1001,14 +1002,14 @@ export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyCon
       addRule('invoke_subagent', '*');
       addRule('send_message', '*');
     } else if (item.startsWith('Bash(')) {
-      const inner = opts.os === 'windows' && item.endsWith(')') ? item.slice(5, -1).trim() : '';
+      const inner = item.endsWith(')') ? item.slice(5, -1).trim() : '';
       if (inner && !inner.includes('*')) {
-        // Windows exact grant (no wildcard): that command line only, no widening.
+        // Exact grant (no wildcard): that command line only, no widening.
         addRule('command', inner);
       } else {
         const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
         if (match && match[1]) {
-          for (const t of agyCommandRules(match[1].trim(), opts.os)) addRule('command', t);
+          for (const t of agyCommandRules(match[1].trim())) addRule('command', t);
         } else {
           addRule('command', '*');
         }

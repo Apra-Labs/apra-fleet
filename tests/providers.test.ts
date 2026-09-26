@@ -1064,8 +1064,11 @@ describe('AgyProvider', () => {
       'read_file(*)',
       'write_file(*)',
       'command(git)',
+      'command(regex:git .*)',
       'command(npm)',
+      'command(regex:npm .*)',
       'command(bd)',
+      'command(regex:bd .*)',
     ]);
   });
 });

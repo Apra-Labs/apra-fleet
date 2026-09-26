@@ -2,11 +2,13 @@
  * Claude -> agy permission conversion per member OS
  * (docs/compose-permissions-design.md section 8.9).
  *
- * Windows agy needs a character-for-character match for command lines
- * PowerShell/cmd cannot split into words, so a prefix grant maps to the bare
- * command plus `command(regex:<cmd> .*)`. Linux/macOS command rules are
- * unchanged: tests/fixtures/agy-compose-posix-before.json is the full composed
- * doer/reviewer config captured from the code BEFORE this change.
+ * A prefix grant maps to the bare command plus `command(regex:<cmd> .*)` on
+ * every OS: Windows agy needs a full-line match for command lines PowerShell/cmd
+ * cannot split into words, and Linux/macOS agy drops prefix matching for a line
+ * with $(...), backticks, brace expansion or redirections.
+ * tests/fixtures/agy-compose-posix.json is the full composed doer/reviewer
+ * config: the Linux/macOS output captured before the regex rules, with each
+ * prefix rule's regex pair added (the only intended change there).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -79,13 +81,13 @@ describe('Windows command grants', () => {
   });
 });
 
-describe('Linux/macOS output is byte-identical to before (command, mcp, deny)', () => {
-  const before = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'agy-compose-posix-before.json'), 'utf-8'));
+describe('Linux/macOS/Windows output matches the snapshot (command, mcp, deny)', () => {
+  const before = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'agy-compose-posix.json'), 'utf-8'));
   // The one intended change on every OS: a path glob agy cannot express is
   // dropped (it was written verbatim before and matched nothing).
   const dropped = new Set(['write_file(feedback-*.md)']);
 
-  for (const os of ['linux', 'macos'] as const) {
+  for (const os of ['linux', 'macos', 'windows'] as const) {
     for (const role of ['doer', 'reviewer'] as const) {
       it(`${os} ${role}`, () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -143,20 +145,34 @@ describe('path grants (all OSes)', () => {
   });
 });
 
-describe('Windows doer/reviewer composed output', () => {
-  it('every Bash prefix grant becomes the bare command plus its regex; POSIX keeps the bare command', () => {
+describe('doer/reviewer composed output on every OS', () => {
+  it('every Bash prefix grant becomes the bare command plus its regex, the same on Windows, Linux and macOS', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     for (const role of ['doer', 'reviewer'] as const) {
       const win = compose('windows', role).permissionGrants.permissionGrants.allow as string[];
       const lin = compose('linux', role).permissionGrants.permissionGrants.allow as string[];
-      const expected = lin.flatMap(r => {
-        const m = /^command\((.+)\)$/.exec(r);
-        if (!m || m[1] === '*') return [r];
-        return [r, `command(regex:${m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} .*)`];
-      });
-      expect(win).toEqual(expected);
-      expect(win).toContain('command(regex:git .*)');
+      const mac = compose('macos', role).permissionGrants.permissionGrants.allow as string[];
+      expect(lin).toEqual(win);
+      expect(mac).toEqual(win);
+      const commands = lin.filter(r => r.startsWith('command(') && r !== 'command(*)');
+      const bare = commands.filter(r => !r.startsWith('command(regex:'));
+      for (const r of bare) {
+        const cmd = /^command\((.+)\)$/.exec(r)![1];
+        expect(lin[lin.indexOf(r) + 1]).toBe(`command(regex:${cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} .*)`);
+      }
+      expect(commands.length).toBe(bare.length * 2);
+      expect(lin).toContain('command(regex:git .*)');
     }
+  });
+
+  it('Linux/macOS: prefix grants get the regex pair, exact grants stay exact', () => {
+    for (const os of ['linux', 'macos'] as const) {
+      expect(conv(['Bash(git:*)'], { os })).toEqual(['command(git)', 'command(regex:git .*)']);
+      expect(conv(['Bash(npm run:*)'], { os })).toEqual(['command(npm run)', 'command(regex:npm run .*)']);
+      expect(conv(['Bash(npm test)'], { os })).toEqual(['command(npm test)']);
+      expect(conv(['Bash(*)', 'Bash'], { os })).toEqual(['command(*)']);
+    }
+    expect(conv(['Bash(git:*)'])).toEqual(['command(git)', 'command(regex:git .*)']);
   });
 });
 
@@ -185,18 +201,72 @@ describe('permission-denial hint by member OS', () => {
     expect(detectAgyPermissionDenial(denial('git status && rm x'), 'windows')!.suggestedGrants).toEqual([]);
   });
 
-  it('POSIX and unknown OS: unchanged (exact command only)', () => {
+  it('Windows: the hint text is unchanged', () => {
+    const d = detectAgyPermissionDenial(denial('git status --short --branch'), 'windows')!;
+    expect(d.hint).toBe('agy auto-denied command "git status --short --branch" (headless mode cannot prompt for permission).'
+      + ' Grant it with compose_permissions grant: ["Bash(git:*)"] and retry.'
+      + ' Narrower alternative (this exact command line only): ["Bash(git status --short --branch)"].'
+      + ' On Windows, Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*), which allows <bin> with any arguments.');
+  });
+
+  it('Linux/macOS and unknown OS: the prefix grant first, the exact command second; no bare-binary claim', () => {
     for (const os of ['linux', 'macos', undefined] as const) {
       const d = detectAgyPermissionDenial(denial('git status --short --branch'), os)!;
-      expect(d.suggestedGrants).toEqual(['Bash(git status --short --branch)']);
-      expect(d.hint).toContain('allows only the bare binary');
-      expect(d.hint).not.toContain('Narrower alternative');
+      expect(d.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
+      expect(d.hint).toContain('compose_permissions grant: ["Bash(git:*)"]');
+      expect(d.hint).toContain('Narrower alternative (this exact command line only): ["Bash(git status --short --branch)"]');
+      expect(d.hint).toContain('needs the regex rule');
+      expect(d.hint).not.toContain('bare binary');
+      expect(d.hint).not.toContain('On Windows');
     }
   });
 
   it('parseResponse passes the OS through', () => {
-    expect(agy.parseResponse(denial('git status'), { agentOs: 'windows' }).permissionDenial!.suggestedGrants)
-      .toEqual(['Bash(git:*)', 'Bash(git status)']);
-    expect(agy.parseResponse(denial('git status')).permissionDenial!.suggestedGrants).toEqual(['Bash(git status)']);
+    const win = agy.parseResponse(denial('git status'), { agentOs: 'windows' }).permissionDenial!;
+    const lin = agy.parseResponse(denial('git status'), { agentOs: 'linux' }).permissionDenial!;
+    expect(win.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status)']);
+    expect(lin.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status)']);
+    expect(win.hint).toContain('On Windows');
+    expect(lin.hint).not.toContain('On Windows');
+  });
+});
+
+describe('Linux/macOS unsandboxed denial (recorded shape, agy 1.2.11 on Linux)', () => {
+  // The JSON result names the action "command"; the transcript names it
+  // "unsandboxed" with the full command line as the target.
+  const unsandboxed = (target: string) => ({
+    stdout: '{"conversation_id":"5a68e432-764d-404e-9ee2-4f3b46e54671","status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"RunCommand"}]}\n'
+      + 'FLEET_TRANSCRIPT_START\n{"step_index":0,"type":"USER_INPUT","status":"DONE"}\n'
+      + JSON.stringify({ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'ERROR', error: `permission check failed for unsandboxed "${target}": user denied permission to run command:\n${target}\nDo not attempt to circumvent this denial by rephrasing the command.` })
+      + '\nFLEET_TRANSCRIPT_END',
+    stderr: 'a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.',
+    code: 0,
+  });
+
+  it('whoami: suggests Bash(whoami:*) with an OS-correct hint; structured fields keep their shape', () => {
+    const d = detectAgyPermissionDenial(unsandboxed('whoami'), 'linux')!;
+    expect(d.actions).toEqual(['unsandboxed', 'command']);
+    expect(d.denials).toEqual([{ action: 'unsandboxed', target: 'whoami' }, { action: 'command' }]);
+    expect(d.suggestedGrants).toEqual(['Bash(whoami:*)']);
+    expect(d.signals).toEqual(['result_json', 'stderr', 'transcript']);
+    expect(d.hint).toContain('compose_permissions grant: ["Bash(whoami:*)"]');
+    expect(d.hint).not.toContain('No compose_permissions grant maps');
+    expect(d.hint).not.toContain('bare binary');
+    expect(d.hint).toContain('Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*)');
+  });
+
+  it('a command with arguments: the prefix grant first, the exact command as the narrow alternative', () => {
+    const d = detectAgyPermissionDenial(unsandboxed('git status --short --branch'), 'linux')!;
+    expect(d.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
+  });
+
+  it('command substitution: the prefix grant only', () => {
+    const d = detectAgyPermissionDenial(unsandboxed('git log -1 --format=%h $(git rev-parse HEAD)'), 'linux')!;
+    expect(d.suggestedGrants).toEqual(['Bash(git:*)']);
+    expect(d.hint).not.toContain('Narrower alternative');
+  });
+
+  it('a chained command: no suggestion', () => {
+    expect(detectAgyPermissionDenial(unsandboxed('git status && rm x'), 'macos')!.suggestedGrants).toEqual([]);
   });
 });

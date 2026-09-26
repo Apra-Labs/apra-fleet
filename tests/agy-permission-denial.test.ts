@@ -38,10 +38,11 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
     expect(d).toBeDefined();
     expect(d.actions).toEqual(['command']);
     expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
-    expect(d.suggestedGrants).toEqual(['Bash(git status --short --branch)']);
+    expect(d.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(d.signals).toEqual(['result_json', 'stderr', 'transcript']);
     expect(d.hint).toContain('command "git status --short --branch"');
-    expect(d.hint).toContain('compose_permissions grant: ["Bash(git status --short --branch)"]');
+    expect(d.hint).toContain('compose_permissions grant: ["Bash(git:*)"]');
+    expect(d.hint).toContain('Narrower alternative (this exact command line only): ["Bash(git status --short --branch)"]');
   });
 
   it('JSON result alone (status SUCCESS, empty response, denied_actions) is a denial', () => {
@@ -144,7 +145,7 @@ describe('execute_prompt -- permission_denied', () => {
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.actions).toEqual(['command']);
     expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
-    expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual(['Bash(git status --short --branch)']);
+    expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(result.structuredContent.sessionId).toBe(CONV);
     expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, total_tokens: 17288 });
     expect(result.text).toContain('permission denied');

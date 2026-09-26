@@ -344,7 +344,7 @@ describe('AgyProvider -- dispatch always binds --project', () => {
     const [cfg] = agy.composePermissionConfig('reviewer', ['Read', 'Bash(git:*)'], agent) as Array<Record<string, any>>;
     expect(Object.keys(cfg)).toEqual(['permissionGrants']);
     expect(Object.keys(cfg.permissionGrants)).toEqual(['permissionGrants']);
-    expect(cfg.permissionGrants.permissionGrants.allow).toEqual(['read_file(*)', 'command(git)']);
+    expect(cfg.permissionGrants.permissionGrants.allow).toEqual(['read_file(*)', 'command(git)', 'command(regex:git .*)']);
     expect(cfg.permissionGrants.permissionGrants.deny).toContain('mcp(apra-fleet/remove_member)');
   });
 
