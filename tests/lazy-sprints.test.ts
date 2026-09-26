@@ -245,7 +245,7 @@ describe('launcher', () => {
     const settings = JSON.parse(fs.readFileSync(path.join(done.workspace, 'h1', '.claude', 'settings.json'), 'utf-8'));
     expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(`node "${path.join(done.workspace, 'inbox-hook.cjs')}"`);
     const exclude = fs.readFileSync(path.join(done.workspace, 'h1', '.git', 'info', 'exclude'), 'utf-8').split('\n');
-    expect(exclude).toEqual(expect.arrayContaining(['.beads/', '.lazyfleet/', '.claude/settings.json', '/.claude/agents/', '.claude/settings.local.json']));
+    expect(exclude).toEqual(expect.arrayContaining(['.beads/', '.lazyfleet/', '.claude/settings.json', '/.claude/agents/', '.claude/settings.local.json', '/permissions.json', '/.fleet-task.md']));
     // Every clone carries the role contracts that match this engine, not whatever ~/.claude/agents holds.
     for (const h of ['h0', 'h1']) {
       const agents = path.join(done.workspace, h, '.claude', 'agents');

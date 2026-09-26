@@ -522,6 +522,14 @@ async function installAgentContracts(deps: LauncherDeps, dir: string): Promise<v
   excludeFromGit(dir, '/.claude/agents/');
 }
 
+/**
+ * Files the fleet itself writes into a helper's folder: its permissions, the
+ * permissions ledger, and the staged prompt. Keep them out of commits.
+ */
+function hideFleetFiles(dir: string): void {
+  for (const p of ['.claude/settings.local.json', '/permissions.json', '/.fleet-task.md']) excludeFromGit(dir, p);
+}
+
 /** Hide a path from git in this clone only (.git/info/exclude). */
 function excludeFromGit(dir: string, pattern: string): void {
   const exclude = path.join(dir, '.git', 'info', 'exclude');
@@ -540,8 +548,7 @@ async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, 
   await hideLocalConfig(deps, dir);
   await installInboxHook(deps, rec, dir);
   await installAgentContracts(deps, dir);
-  // The fleet writes each helper's permissions here; keep them out of commits.
-  excludeFromGit(dir, '.claude/settings.local.json');
+  hideFleetFiles(dir);
   await assertClean(deps, dir, `Helper ${i + 1}`);
   return dir;
 }
@@ -653,7 +660,7 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
     await deps.run('bd', ['dolt', 'push'], h0);
     await hideLocalConfig(deps, h0);
     await installAgentContracts(deps, h0);
-    excludeFromGit(h0, '.claude/settings.local.json');
+    hideFleetFiles(h0);
     await assertClean(deps, h0, 'Helper 1');
     step(rec, `Created the sprint issue ${rec.rootIssue}: ${rec.title}`);
 
