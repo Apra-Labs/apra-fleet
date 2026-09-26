@@ -11,6 +11,7 @@ import {
     formatStopError,
     computeBaseDrift,
     buildStatePayload,
+    renderConsoleLinkHtml,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -52,6 +53,27 @@ describe('dashboard -- statusBadge', () => {
         assert.doesNotThrow(() => statusBadge(undefined));
         assert.ok(statusBadge(undefined).includes('unknown'));
     });
+});
+
+describe('dashboard -- renderConsoleLinkHtml (apra-fleet-i9ag.5.1)', () => {
+    test('a configured origin renders exactly one link to <origin>/ui, target="_top"', () => {
+        const html = renderConsoleLinkHtml('http://127.0.0.1:7500');
+        assert.equal((html.match(/<a /g) || []).length, 1, `expected exactly one link, got: ${html}`);
+        assert.ok(html.includes('href="http://127.0.0.1:7500/ui"'), html);
+        assert.ok(html.includes('target="_top"'), 'must use target="_top" to leave the console iframe');
+        assert.ok(html.includes('rel="noopener"'));
+    });
+
+    test('the origin is HTML-escaped', () => {
+        const html = renderConsoleLinkHtml('http://example.com/"><script>alert(1)</script>');
+        assert.ok(!html.includes('<script>'), html);
+    });
+
+    for (const bad of [null, undefined, '', 42, {}]) {
+        test(`no origin (${JSON.stringify(bad)}) renders nothing -- no placeholder/dead href`, () => {
+            assert.equal(renderConsoleLinkHtml(bad), '');
+        });
+    }
 });
 
 describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
@@ -650,6 +672,45 @@ describe('dashboard -- createDashboard', () => {
         assert.ok(html.includes('No sprints are currently running'));
     });
 
+    describe('apra-fleet-i9ag.5.1: deps.consoleOrigin reaches the rendered page', () => {
+        test('a configured deps.consoleOrigin renders the Console header link', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: fakeWatchdog({}),
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+                consoleOrigin: 'http://127.0.0.1:7500',
+            });
+            const html = await dashboard.renderIndexPage();
+            assert.ok(html.includes('href="http://127.0.0.1:7500/ui"'), html);
+        });
+
+        test('no deps.consoleOrigin -- no header link, no placeholder/dead href', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: fakeWatchdog({}),
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+            });
+            const html = await dashboard.renderIndexPage();
+            assert.ok(!html.includes('/ui"'), html);
+        });
+
+        for (const bad of ['', 42, {}]) {
+            test(`a non-string deps.consoleOrigin (${JSON.stringify(bad)}) is treated as absent`, async () => {
+                const dashboard = createDashboard({
+                    ledger: fakeLedger([]),
+                    watchdog: fakeWatchdog({}),
+                    listAllBeads: async () => [],
+                    driftCheck: async () => null,
+                    consoleOrigin: bad,
+                });
+                const html = await dashboard.renderIndexPage();
+                assert.ok(!html.includes('/ui"'), html);
+            });
+        }
+    });
+
     // apra-fleet-p2to.3.1: base-drift wiring on the view-builder. `base`
     // lives directly on the ledger entry (no getSprintMeta indirection, per
     // the impl's doc comment); `baseDrift` comes from the injectable
@@ -1112,5 +1173,30 @@ describe('dashboard -- renderIndexPageHtml', () => {
         const pauseScriptEnd = html.indexOf('</script>', pauseScriptStart);
         const pauseScript = html.slice(pauseScriptStart, pauseScriptEnd);
         assert.ok(!pauseScript.includes('force-release'), 'the cooperative pause/resume script must never reference the kill+force-release route');
+    });
+
+    describe('apra-fleet-i9ag.5.1: header "Console" back-link', () => {
+        test('opts.consoleOrigin renders exactly one header link to <origin>/ui, and the origin appears nowhere else', () => {
+            const html = renderIndexPageHtml([], undefined, undefined, { consoleOrigin: 'http://127.0.0.1:7500' });
+            const href = 'href="http://127.0.0.1:7500/ui"';
+            const firstIdx = html.indexOf(href);
+            assert.ok(firstIdx !== -1, html);
+            assert.equal(html.indexOf(href, firstIdx + 1), -1, 'expected exactly one occurrence of the link href');
+            // The origin itself must not leak anywhere else in the document
+            // (e.g. embedded a second time in a script or another attribute).
+            const occurrences = html.split('127.0.0.1:7500').length - 1;
+            assert.equal(occurrences, 1, `expected the origin to appear exactly once, got ${occurrences}`);
+        });
+
+        test('no opts.consoleOrigin -- no link, no placeholder/dead href', () => {
+            const html = renderIndexPageHtml([], undefined, undefined, {});
+            assert.ok(!html.includes('/ui"'), html);
+        });
+
+        test('opts omitted entirely -- still renders with no console link (backward compatible)', () => {
+            assert.doesNotThrow(() => renderIndexPageHtml([]));
+            const html = renderIndexPageHtml([]);
+            assert.ok(!html.includes('/ui"'), html);
+        });
     });
 });

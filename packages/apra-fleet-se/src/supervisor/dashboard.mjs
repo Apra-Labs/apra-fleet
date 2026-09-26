@@ -834,6 +834,30 @@ const SPRINT_STACK_LIVE_SCRIPT = `
 `;
 
 /**
+ * (apra-fleet-i9ag.5.1) The header's "back to console" link: `<origin>/ui`,
+ * `target="_top"` -- deliberately, since the dashboard is normally displayed
+ * inside the console's `/ext/se/...` iframe (apra-fleet-i9ag.3) and this link
+ * intentionally leaves that iframe rather than navigating inside it -- and
+ * `rel="noopener"`, matching every other outbound link this module renders
+ * (Supervisor log, Open live view, Raw log).
+ *
+ * `origin` is the ONLY source of the host/port in this link -- this function
+ * never hardcodes one. It is resolved exactly once in bin/serve.mjs from the
+ * SAME apra-fleet server connection workflow-package registration itself uses
+ * (resolveFleetServerConnection()), so the link can never drift from where
+ * this supervisor actually registered. Renders nothing (not a placeholder or
+ * dead href) when `origin` is not a non-empty string -- bin/serve.mjs passes
+ * nothing on its registration-skipped path (no fleet.key, or no apra-fleet
+ * HTTP server URL configured), and a dead link is worse than no link.
+ * @param {string|null|undefined} origin
+ * @returns {string}
+ */
+export function renderConsoleLinkHtml(origin) {
+    if (typeof origin !== 'string' || origin.length === 0) return '';
+    return '<a href="' + escapeHtml(origin) + '/ui" target="_top" rel="noopener" style="font-size: 12px;">Console</a>';
+}
+
+/**
  * The single "which .beads is this supervisor running against" line shown
  * above the Sprint Stack: "Beads: <dir> | prefix <p> | <syncRemote>", every
  * field HTML-escaped, styled like the Supervisor-log link line in the header.
@@ -873,11 +897,14 @@ export function renderBeadsHeaderHtml(beads, warning) {
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
- * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null }} [opts]
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null, consoleOrigin?: string|null }} [opts]
  *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
  *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
  *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
  *   amber warning line in its place).
+ *   `consoleOrigin`: (apra-fleet-i9ag.5.1) the console's own origin, rendered
+ *   as a "Console" header link via renderConsoleLinkHtml() above -- omitted
+ *   entirely when not a non-empty string.
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
@@ -899,6 +926,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<div class="header">' +
         '<h1>Fleet-Sprint Supervisor</h1>' +
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
+        renderConsoleLinkHtml(opts && opts.consoleOrigin) +
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
@@ -1029,6 +1057,7 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   logger?: { log?: Function, error?: Function },
  *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
  *   beadsIdentity?: { get: () => object|null, getWarning?: () => string|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line (or its warning form)
+ *   consoleOrigin?: string|null, // (apra-fleet-i9ag.5.1) the console's own origin (e.g. 'http://127.0.0.1:7500'), resolved by bin/serve.mjs; drives the header's "Console" back-link (renderConsoleLinkHtml() above). Absent/non-string -> no link.
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -1054,6 +1083,12 @@ export function createDashboard(deps = {}) {
     // createBeadsIdentityState(); bin/serve.mjs wires the real one) -- read
     // on every renderIndexPage() for the header line. Absent -> no line.
     const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
+    // (apra-fleet-i9ag.5.1) The console's own origin -- see renderConsoleLinkHtml()
+    // above and this module's @param doc for `consoleOrigin` for the full
+    // "why this must never be hardcoded" rationale. Validated here to a
+    // non-empty string or null, once, so renderIndexPage() below can pass it
+    // straight through without re-validating.
+    const consoleOrigin = typeof deps.consoleOrigin === 'string' && deps.consoleOrigin.length > 0 ? deps.consoleOrigin : null;
     // apra-fleet-c4s.1: `deps.expandScope`, when injected, is called verbatim
     // (the pre-existing test seam -- see the module doc comment above). When
     // absent (production default, bin/serve.mjs), buildSprintViews() below
@@ -1300,7 +1335,7 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning });
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin });
         },
     };
 }
