@@ -1151,33 +1151,40 @@ either can be stopped, restarted or removed without touching the other:
 | Service | What runs | Linux | macOS | Windows |
 |---|---|---|---|---|
 | MCP server | `~/.apra-fleet/bin/apra-fleet --transport http` | `apra-fleet.service` | `com.apra-fleet.server` | `ApraFleet` |
-| Fleet supervisor | `<node> ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs` | `fleet-supervisor.service` | `com.apra-fleet.supervisor` | `ApraFleetSupervisor` |
+| Fleet supervisor | `~/.apra-fleet/bin/apra-fleet supervisor` | `fleet-supervisor.service` | `com.apra-fleet.supervisor` | `ApraFleetSupervisor` |
 
 Notes:
 
-- The supervisor is the always-on fleet-sprint dashboard/API process. It is
-  registered only when the workflow assets that contain it were installed
-  (skipped by `--workflows none`), logs to
-  `~/.apra-fleet/data/fleet-supervisor.log`, and is `Restart=no` (started at
-  boot/login; an exit is treated as intentional). **Known gap:** its working
-  directory is currently the engine's own installed path
-  (`~/.apra-fleet/workflows/fleet-sprint`), not the project it supervises --
-  since that is the directory `bd` resolves the project's beads DB from
+- The supervisor is the always-on fleet-sprint dashboard/API process. The
+  registered unit runs the installed binary's own `supervisor` subcommand --
+  one argument, no separate `node` executable and no `serve.mjs` path in the
+  unit itself. That subcommand then resolves and boots the installed
+  `serve.mjs` on the binary's own embedded Node runtime. It is registered only
+  when the workflow assets that contain it were installed (skipped by
+  `--workflows none`), logs to `~/.apra-fleet/data/fleet-supervisor.log`, and
+  is `Restart=no` (started at boot/login; an exit is treated as intentional).
+  **Known gap:** its working directory is currently the engine's own installed
+  path (`~/.apra-fleet/workflows/fleet-sprint`), not the project it supervises
+  -- since that is the directory `bd` resolves the project's beads DB from
   (`BEADS_DIR`, else a `.beads` walk-up), this means it does not yet reach a
   real project's beads DB out of the box. The real fix (a folder-selection
   setting persisted to `supervisor.config.json`, plus graceful degradation
   when no beads DB is found) is tracked separately; see
   [`packages/apra-fleet-se/docs/project-model.md`](../packages/apra-fleet-se/docs/project-model.md)
   for the full supervisor/member/beads schema and gap tracking.
-- Service units do not source shell rc files, so a bare `node` would not
-  resolve under nvm/fnm/volta. The installer resolves an **absolute** node path
-  at install time and bakes it into the unit -- the same way it passes an
-  already-resolved binary path for the MCP server.
+- Pointing the unit at the binary's own subcommand removes the external node
+  dependency entirely: service units do not source shell rc files, so a bare
+  `node` would not resolve under nvm/fnm/volta, and under the released binary
+  `process.execPath` is the apra-fleet binary rather than `node` anyway.
 - `apra-fleet start`, `stop` and `uninstall` cover both services;
   `apra-fleet status` reports them on separate, labelled lines
   (`Service (MCP server):` / `Service (fleet supervisor):`).
-- Supervisor registration is non-fatal: if `serve.mjs` or `node` cannot be
-  found, install warns and continues.
+- Supervisor registration failure during install is fatal: install aborts with
+  a non-zero exit and an explanatory error. The one case that cleanly skips
+  registration without failing is `install --workflows none`, since the
+  workflow assets that contain the supervisor were never installed; install
+  prints an explicit "NOT registered ... --workflows none" message and still
+  succeeds.
 
 ### Two sprint entry points -- do not confuse them
 
