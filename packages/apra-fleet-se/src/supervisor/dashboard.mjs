@@ -79,6 +79,10 @@ import { toBeadsSummary } from './beads-identity.mjs';
 // directly (prefix '', paths unchanged) and inside the console's /ext/<id>
 // iframe. See mount-prefix.mjs for the fail-closed validation rules.
 import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
+// (apra-fleet-i9ag.5.2) The SAME anchor-id derivation proxy.mjs's live-view
+// back-link targets -- see sprint-anchor.mjs's doc comment for why this is
+// the one shared source instead of two independent id schemes.
+import { sprintCardAnchorId } from './sprint-anchor.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -219,6 +223,11 @@ function renderSprintProgressHtml(progress) {
  */
 export function renderSprintSection(view, mountPrefix) {
     const sprintId = escapeHtml(view.sprintId);
+    // (apra-fleet-i9ag.5.2) Stable, escaped anchor id for this card -- the
+    // live-view proxy's injected back-link (proxy.mjs) targets this same id
+    // via sprintCardAnchorId(), so the two can never drift apart. Already
+    // safe as an HTML id / URL fragment; no further escaping needed.
+    const anchorId = sprintCardAnchorId(view.sprintId);
     const branch = view.branch ? escapeHtml(view.branch) : 'unknown';
     const base = view.base ? escapeHtml(view.base) : '';
     const goal = view.goal ? escapeHtml(view.goal) : 'unknown';
@@ -266,7 +275,7 @@ export function renderSprintSection(view, mountPrefix) {
     }
 
     return (
-        '<section data-sprint-id="' + sprintId + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
+        '<section id="' + anchorId + '" data-sprint-id="' + sprintId + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
         'border-radius: 6px; padding: 12px 14px; margin-bottom: 12px;">' +
         '<div style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">' +
         '<strong style="font-size: 14px;">' + sprintId + '</strong>' +
@@ -782,6 +791,14 @@ const sprintStackLiveScript = (mountPrefix) => `
     ${statusBadge.toString()}
     ${renderProgressBarHtml.toString()}
     ${renderSprintProgressHtml.toString()}
+    // (apra-fleet-i9ag.5.2) renderSprintSection() below now calls
+    // sprintCardAnchorId() to stamp the card's anchor id -- embedded here,
+    // BEFORE renderSprintSection() itself, for the exact same reason every
+    // other renderSprintSection() dependency above is: this whole block is
+    // shipped to the browser as inline script text via .toString(), never
+    // imported, so anything it references must be declared in this same
+    // script first.
+    ${sprintCardAnchorId.toString()}
     ${renderSprintSection.toString()}
 
     // Re-renders #sprint-stack's rows from a GET /state 'sprints' array,

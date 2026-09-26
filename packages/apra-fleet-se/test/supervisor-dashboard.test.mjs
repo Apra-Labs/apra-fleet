@@ -15,6 +15,7 @@ import {
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { sprintCardAnchorId } from '../src/supervisor/sprint-anchor.mjs';
 // apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
 // built via this helper (raw rows routed through the real normalizeBead()),
 // so a fixture can never assert on a field the production listAllBeads path
@@ -221,6 +222,35 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         });
         assert.ok(!html.includes('NaN'));
         assert.ok(html.toLowerCase().includes('progress unavailable'));
+    });
+
+    // (apra-fleet-i9ag.5.2) Every card carries a stable, escaped anchor id
+    // (sprint-anchor.mjs's sprintCardAnchorId()) so the live-view proxy's
+    // injected back-link (proxy.mjs) can target it.
+    test('apra-fleet-i9ag.5.2: renders a stable, escaped anchor id derived from the sprint id', () => {
+        const view = {
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        };
+        const html = renderSprintSection(view);
+        const anchorId = sprintCardAnchorId('sprint-1');
+        assert.ok(html.includes('id="' + anchorId + '"'), html);
+        // Stable across renders: calling it again for the same input yields
+        // the exact same anchor id.
+        assert.equal(sprintCardAnchorId('sprint-1'), anchorId);
+
+        // A sprint id containing URL-significant characters must still yield
+        // an id safe for both an HTML `id` attribute and a URL `#fragment`.
+        const weirdView = { ...view, sprintId: 'a/b?c&d e' };
+        const weirdHtml = renderSprintSection(weirdView);
+        const weirdAnchorId = sprintCardAnchorId('a/b?c&d e');
+        assert.ok(/^[A-Za-z0-9_-]+$/.test(weirdAnchorId), weirdAnchorId);
+        assert.ok(weirdHtml.includes('id="' + weirdAnchorId + '"'), weirdHtml);
     });
 
     test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {

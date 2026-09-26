@@ -8,8 +8,12 @@ import {
     rewriteChildHtml,
     livePrefixFor,
     renderReadOnlyHistoryHtml,
+    renderLiveViewBackLinkHtml,
+    injectLiveViewBackLink,
 } from '../src/supervisor/proxy.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { sprintCardAnchorId } from '../src/supervisor/sprint-anchor.mjs';
+import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
 
 // apra-fleet-eft.6.4 -- /sprints/:id/live reverse proxy. Serves the child
 // viewer's HTML + SSE through the SUPERVISOR port (no bare child port leaks),
@@ -17,9 +21,9 @@ import { createSupervisor } from '../src/supervisor/server.mjs';
 // falls through to a read-only historical view once a sprint finishes.
 
 /** GET a supervisor path, resolving the full body once the response ends. */
-function getText(port, path) {
+function getText(port, path, { headers } = {}) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });
@@ -100,6 +104,37 @@ describe('proxy -- rewriteChildHtml', () => {
         assert.ok(out.includes("'" + prefix + "/resume'"), out);
         assert.ok(!out.includes("'/pause'"), 'must not leave a bare /pause path');
         assert.ok(!out.includes("'/resume'"), 'must not leave a bare /resume path');
+    });
+});
+
+describe('proxy -- renderLiveViewBackLinkHtml / injectLiveViewBackLink', () => {
+    test('back-link targets the dashboard card anchor for the same sprint id, unprefixed with no mount prefix', () => {
+        const html = renderLiveViewBackLinkHtml('', 'sprint-1');
+        assert.ok(html.includes('href="/#' + sprintCardAnchorId('sprint-1') + '"'), html);
+        assert.ok(html.includes('target="_top"'), 'expected target="_top" so the click leaves the iframe');
+    });
+
+    test('back-link is prefixed when a mount prefix is given', () => {
+        const html = renderLiveViewBackLinkHtml('/ext/se', 'sprint-1');
+        assert.ok(html.includes('href="/ext/se/#' + sprintCardAnchorId('sprint-1') + '"'), html);
+    });
+
+    test('anchor id is escaped for a sprint id with URL-significant characters', () => {
+        const id = sprintCardAnchorId('a/b?c&d');
+        // Only a conservative allowlist survives unescaped -- safe both as an
+        // HTML id and as a URL fragment with no further percent-encoding.
+        assert.ok(/^[A-Za-z0-9_-]+$/.test(id), id);
+        const html = renderLiveViewBackLinkHtml('', 'a/b?c&d');
+        assert.ok(html.includes('href="/#' + id + '"'), html);
+    });
+
+    test('injects immediately after the opening <body> tag, regardless of its attributes', () => {
+        const html = injectLiveViewBackLink('<html><body data-view="live"><p>content</p></body></html>', '<p>BACK</p>');
+        assert.ok(html.startsWith('<html><body data-view="live"><p>BACK</p><p>content</p></body></html>'), html);
+    });
+
+    test('is a no-op on non-string input', () => {
+        assert.strictEqual(injectLiveViewBackLink(undefined, '<p>BACK</p>'), undefined);
     });
 });
 
@@ -191,6 +226,25 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
         assert.ok(res.body.includes("'" + prefix + "/events'"), res.body);
         // The child's actual port must appear nowhere in the served HTML.
         assert.ok(!res.body.includes(String(childPort)), 'child port leaked into HTML');
+    });
+
+    // (apra-fleet-i9ag.5.2) The live-proxied HTML must carry exactly one
+    // back-link to the dashboard's card anchor for THIS sprint id, and the
+    // pre-existing endpoint rewrites (proved by the test above) must stay
+    // intact alongside it.
+    test('GET /sprints/:id/live back-link points at the dashboard card anchor, unprefixed with no mount-prefix header', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live');
+        assert.strictEqual(res.status, 200);
+        const anchorHref = '/#' + sprintCardAnchorId('s1');
+        const occurrences = res.body.split('href="' + anchorHref + '"').length - 1;
+        assert.strictEqual(occurrences, 1, `expected exactly one back-link, got:\n${res.body}`);
+        assert.ok(res.body.includes('target="_top"'));
+    });
+
+    test('GET /sprints/:id/live back-link is prefixed when the console mount-path header is set', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="/ext/se/#' + sprintCardAnchorId('s1') + '"'), res.body);
     });
 
     test('GET /sprints/:id/live/state proxies through to the child', async () => {
