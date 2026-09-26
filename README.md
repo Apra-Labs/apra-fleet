@@ -157,9 +157,12 @@ What happens next:
 1. **Planning.** A helper breaks the job into issues (features, tasks, bugs),
    with acceptance criteria and dependencies. They appear on the board as they
    are created.
-2. **Parallel work.** Helpers pick up issues that are ready and work them at the
-   same time, each in its own private copy of your project. Reviews happen as
-   work lands; anything that needs another pass goes back on the board.
+2. **Building.** Helpers pick up issues that are ready, each in its own private
+   copy of your project. Today the sprint engine lets **one helper build at a
+   time** (they take turns); a fully parallel mode is being designed in
+   [docs/lazy-parallel-sprints.md](docs/lazy-parallel-sprints.md). A review
+   runs after each round; anything that needs another pass goes back on the
+   board.
 3. **Testing and wrap-up.** If your project describes how to deploy and test it,
    that runs too. The finished work lands as a branch in your project, or as a
    pull request if you ticked that box.
@@ -169,7 +172,7 @@ The sprint page has four views:
 | View | What you see |
 |---|---|
 | **Board** | JIRA-style columns (To Do, Blocked, In Progress, Done) with a swimlane per feature. Cards show type, priority, model tier and the helper on them, with a live timer while someone is working. Click a card for its description, acceptance criteria and history. |
-| **Helpers** | One row per helper: what it is doing right now in plain words, plus a timeline of everything it has done, so you can see the work happening in parallel. |
+| **Helpers** | One row per helper: what it is doing right now in plain words, plus a timeline of everything it has done, so you can see who worked on what and when. |
 | **Code changes** | Every commit and changed file on the sprint branch, with a diff viewer. |
 | **Log** | The raw engine log, for when something needs a closer look. |
 
@@ -179,8 +182,11 @@ nothing leaves your machine unless you ask for a pull request. Sprints started
 elsewhere (from the command line or another dashboard) show up on the board
 too; code changes are shown for the ones started here.
 
-Set a spending limit on the form if you want a hard ceiling; the sprint stops
-before any step that would go over it.
+Set a usage limit on the form if you want a hard ceiling; the sprint stops
+before any step that would go over it. The limit is an *estimate* in dollars
+worked out from token prices. With a Claude Pro/Max login, sprints use your
+plan's usage, not credits; the estimate is just a way to cap how much of it one
+sprint may take.
 
 ## Under the hood
 

@@ -320,7 +320,7 @@ export const SPRINTS_JS = String.raw`
       el('label', {}, ['Start from branch', base]),
       el('label', {}, ['Helpers working in parallel', helpers]),
       el('label', {}, ['How far to go', goal]),
-      el('label', {}, ['Spending limit (USD)', budget]),
+      el('label', { title: 'An estimate from token prices. With a Claude subscription this is plan usage, not money.' }, ['Usage limit (estimated $)', budget]),
       el('label', { cls: 'inline' }, [publish, 'Open a pull request when done (otherwise the work lands as a branch in your project)']),
       el('div', { cls: 'actions' }, [btn])
     ]);
