@@ -242,6 +242,37 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
         assert.ok(!res.body.includes(String(childPort)), 'child port leaked into HTML');
     });
 
+    // (apra-fleet-i9ag.3.7) With no mount-path header the rewritten child
+    // endpoints must stay byte-identical to the pre-mount-awareness behaviour
+    // (plain livePrefixFor(), no console mount point ahead of it) -- this is
+    // the direct-on-port case, never touched by resolveMountPrefix().
+    test('GET /sprints/:id/live with no mount-path header: child endpoints rewritten under the plain live prefix, byte-identical to serve-direct', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live');
+        assert.strictEqual(res.status, 200);
+        const prefix = livePrefixFor('s1');
+        for (const needle of ["'" + prefix + "/events'", "'" + prefix + "/state?", "'" + prefix + "/stop'"]) {
+            assert.ok(res.body.includes(needle), `expected "${needle}" in:\n${res.body}`);
+        }
+        assert.ok(!res.body.includes('/ext/'), 'no mount prefix must appear with no mount-path header');
+    });
+
+    // (apra-fleet-i9ag.3.7) With the console's mount-path header set, every
+    // rewritten child endpoint (EventSource('/events'), fetch('/state?...'),
+    // fetch('/stop')) must resolve under the PACKAGE'S mount point, not the
+    // console root, so the embedded viewer's polling and controls are alive
+    // inside the /ext/<id> iframe -- and each must be prefixed EXACTLY ONCE
+    // (never doubled).
+    test('GET /sprints/:id/live with the console mount-path header set: every rewritten child endpoint is prefixed exactly once', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+        assert.strictEqual(res.status, 200);
+        const prefix = '/ext/se' + livePrefixFor('s1');
+        for (const needle of ["'" + prefix + "/events'", "'" + prefix + "/state?", "'" + prefix + "/stop'"]) {
+            const occurrences = res.body.split(needle).length - 1;
+            assert.strictEqual(occurrences, 1, `expected exactly one "${needle}" in:\n${res.body}`);
+        }
+        assert.ok(!res.body.includes('/ext/se/ext/se'), 'mount prefix must never be applied twice');
+    });
+
     // (apra-fleet-i9ag.5.2) The live-proxied HTML must carry exactly one
     // back-link to the dashboard's card anchor for THIS sprint id, and the
     // pre-existing endpoint rewrites (proved by the test above) must stay

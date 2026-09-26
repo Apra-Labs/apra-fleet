@@ -436,9 +436,16 @@ export function createLiveProxy(deps = {}) {
             await serveHistory(sprintId, res, mountPrefix);
             return;
         }
+        // (apra-fleet-i9ag.3.7) The rewritten child endpoints must resolve
+        // under the SAME origin the browser is actually viewing: direct-on-
+        // port, that is livePrefixFor(sprintId) unchanged; embedded through
+        // the console's /ext/<id> iframe, that is this package's own mount
+        // point ahead of it (mountHref(), same as the back-link above and the
+        // dashboard's own links) so 'fetch(\"/state\")' etc. re-enter the
+        // console's /ext hop instead of the console root.
         proxyHtml({
             host, port, req, res,
-            prefix: livePrefixFor(sprintId),
+            prefix: mountHref(mountPrefix, livePrefixFor(sprintId)),
             sprintId,
             mountPrefix,
             logError,
