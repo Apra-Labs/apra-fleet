@@ -4,6 +4,7 @@
  * can stay tight. Every dynamic value goes through textContent.
  */
 import { SPRINTS_CSS, SPRINTS_HTML, SPRINTS_JS } from './ui-sprints.js';
+import { HOME_CSS, HOME_HTML, HOME_JS } from './ui-home.js';
 
 export function renderUi(): string {
   return PAGE;
@@ -78,6 +79,8 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
 .toast.on { opacity: 1; }
 @media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 10px; } }
 ${SPRINTS_CSS}
+${HOME_CSS}
+nav .nav-gap { flex: 1; min-width: 12px; }
 </style>
 </head>
 <body>
@@ -93,15 +96,19 @@ ${SPRINTS_CSS}
     <div class="stat"><b id="s-helpers">-</b><small>helpers right now</small></div>
   </div>
   <nav role="tablist">
+    <button role="tab" data-tab="home" aria-selected="true">Home</button>
     <button role="tab" data-tab="sprints">Sprints</button>
-    <button role="tab" data-tab="vault" aria-selected="true">Vault</button>
+    <button role="tab" data-tab="issues">Issues</button>
+    <button role="tab" data-tab="schedules">Schedules</button>
+    <span class="nav-gap" aria-hidden="true"></span>
+    <button role="tab" data-tab="vault">Vault</button>
     <button role="tab" data-tab="presets">Presets</button>
     <button role="tab" data-tab="activity">Activity</button>
     <button role="tab" data-tab="helpers">Helpers</button>
     <button role="tab" data-tab="settings">Settings</button>
   </nav>
 
-  <section id="tab-vault">
+  <section id="tab-vault" hidden>
     <div class="card">
       <table><thead><tr><th>Name</th><th>Value</th><th class="hide-sm">Caught in</th><th class="hide-sm">Last seen</th><th></th></tr></thead>
       <tbody id="vault-rows"></tbody></table>
@@ -152,6 +159,7 @@ ${SPRINTS_CSS}
     <p class="note">Anything you paste as <code>secret: VALUE</code> is always caught, whatever these say. Changes apply immediately.</p>
   </section>
 ${SPRINTS_HTML}
+${HOME_HTML}
 </main>
 <div class="toast" id="toast"></div>
 <script>
@@ -303,13 +311,17 @@ ${SPRINTS_HTML}
     });
     if (!found) return;
     document.querySelectorAll('main > section').forEach(function (s) { s.hidden = s.id !== 'tab-' + name; });
+    // The dashboard pages use the full width and hide the vault counters.
+    document.body.classList.toggle('wide', ['home', 'sprints', 'issues', 'schedules'].indexOf(name) !== -1);
     window.dispatchEvent(new CustomEvent('lazy:tab', { detail: name }));
   }
+  window.lazyShowTab = showTab;
+  window.addEventListener('hashchange', function () { showTab((location.hash.slice(1) || 'home').split('/')[0]); });
   document.querySelectorAll('nav button').forEach(function (b) {
     b.addEventListener('click', function () { showTab(b.dataset.tab); history.replaceState(null, '', '#' + b.dataset.tab); });
   });
   // Tabs are linkable: /_lazy/#presets
-  if (location.hash) showTab(location.hash.slice(1).split('/')[0]);
+  showTab(location.hash ? location.hash.slice(1).split('/')[0] : 'home');
   $('add-form').addEventListener('submit', function (e) {
     e.preventDefault();
     api('POST', 'vault', { name: $('add-name').value.trim(), value: $('add-value').value, description: $('add-desc').value, announce: $('add-announce').checked })
@@ -321,6 +333,7 @@ ${SPRINTS_HTML}
 })();
 </script>
 <script>${SPRINTS_JS}</script>
+<script>${HOME_JS}</script>
 </body>
 </html>
 `;

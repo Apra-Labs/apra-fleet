@@ -137,7 +137,7 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
   if (p === '/home' && m === 'GET') {
     const sprints = listSprints();
     const week = sprints.filter(x => !x.live && x.startedAt && now.getTime() - Date.parse(x.startedAt) < 7 * 86400000);
-    const passed = week.filter(x => x.verdict === 'PASS').length;
+    const passed = week.filter(x => x.verdict === 'PASS' || x.verdict === 'DONE').length;
     const schedules = sched.loadSchedules().map(s => scheduleView(s, now)).filter(s => s.nextAt).sort((a, b) => a.nextAt!.localeCompare(b.nextAt!));
     const autos = listDesigns().filter(d => d.auto);
     const hist = outcomes();
@@ -151,6 +151,8 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
         week: { sprints: week.length, passed, cost: week.reduce((a, x) => a + (x.cost || 0), 0) },
         learned: { designs: autos.map(d => ({ id: d.id, name: d.name, description: d.description, evidence: d.auto!.evidence, runs: d.auto!.runs, updatedAt: d.auto!.updatedAt })), finished: hist.length, stats: statsFor(hist) },
         schedulesTotal: sched.loadSchedules().length,
+        // Folders to offer in the project box: recent sprints first, then linked GitHub repos.
+        folders: [...new Set([...loadRegistry().slice().reverse().map(r => r.repo), ...Object.values(gh.loadGithubSettings().projects ?? {})])].slice(0, 12),
       });
     }
     return true;

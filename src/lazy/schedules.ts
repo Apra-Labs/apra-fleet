@@ -355,7 +355,11 @@ export async function fire(s: Schedule, deps: TickDeps, { force = false } = {}):
 
 /** The comment left on an issue when its sprint finishes. */
 export function resultComment(x: SprintSummaryLike): string {
-  const verdict = x.verdict === 'PASS' ? 'passed its final review' : x.verdict ? `finished with verdict ${x.verdict}` : `ended (${x.status})`;
+  const verdict = x.verdict === 'PASS' ? 'passed its final review'
+    : x.verdict === 'DONE' ? 'finished with every task done'
+    : x.verdict === 'OPEN' ? 'finished with tasks still open (see the board for what it found)'
+    : x.verdict === 'FAIL' ? 'finished, but its final review found problems'
+    : `ended (${x.status})`;
   return [
     `lazyfleet sprint "${x.title}" ${verdict}.`,
     '',

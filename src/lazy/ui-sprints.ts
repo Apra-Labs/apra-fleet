@@ -238,7 +238,9 @@ export const SPRINTS_JS = String.raw`
     return el('span', { cls: 'pill ' + status }, [live ? el('span', { cls: 'pulse' }) : null, labels[status] || status]);
   }
   function verdictPill(v) {
-    return el('span', { cls: 'pill ' + (v === 'PASS' ? 'verdict-pass' : 'verdict-fail'), title: 'The final review verdict' }, [v === 'PASS' ? 'Passed review' : 'Review: ' + v]);
+    var text = { PASS: 'Passed review', FAIL: 'Review found problems', DONE: 'All tasks done', OPEN: 'Open tasks left' }[v] || 'Review: ' + v;
+    var tip = { PASS: 'The final reviewer passed the work', FAIL: 'The final reviewer found problems; see the board', DONE: 'This design has no final review; every task was closed', OPEN: 'This design has no final review; some tasks are still open (for a test-only design, these are the problems it found)' }[v];
+    return el('span', { cls: 'pill ' + (v === 'PASS' || v === 'DONE' ? 'verdict-pass' : 'verdict-fail'), title: tip || '' }, [text]);
   }
   function track(steps, nowStep) {
     var t = el('div', { cls: 'track' });
@@ -329,7 +331,6 @@ export const SPRINTS_JS = String.raw`
   function renderError(e) { root.textContent = ''; root.appendChild(el('div', { cls: 'empty' }, ['Could not load sprints: ' + e.message])); }
 
   function render() {
-    document.body.classList.toggle('wide', active());
     if (S.view === 'list') return renderList();
     if (S.view === 'designs') return renderDesigns();
     return renderSprint();
@@ -874,7 +875,6 @@ export const SPRINTS_JS = String.raw`
   }
 
   window.addEventListener('lazy:tab', function (e) {
-    document.body.classList.toggle('wide', e.detail === 'sprints');
     if (e.detail === 'sprints') { if (!parseHash()) { S.view = 'list'; S.runId = null; } refresh(true); }
   });
   if (parseHash()) setTimeout(function () { refresh(true); }, 0);

@@ -8,6 +8,8 @@
  *   lazyfleet off | on   temporarily bypass / re-enable secret hiding
  *   lazyfleet uninstall  undo everything install did
  *   lazyfleet serve      run the background process in the foreground
+ *   lazyfleet sprint "<job>"   hand a job to helpers from the terminal
+ *   lazyfleet sprints | schedules   what is running, finished and coming up
  */
 import { execFile } from 'node:child_process';
 import { claudeSettingsPath, clearBaseUrl, currentBaseUrl, setBaseUrl } from './claude-settings.js';
@@ -26,6 +28,12 @@ Usage:
   lazyfleet on           Route Claude traffic through lazyfleet again
   lazyfleet uninstall    Remove lazyfleet and undo every change it made
   lazyfleet serve        Run the background process in this terminal
+
+  lazyfleet sprint "<job>" [--design <id>] [--folder <dir>] [--dry-run]
+                         Hand a job to helpers in this project (or --folder).
+                         Without --design, lazyfleet picks one and says why.
+  lazyfleet sprints      Running and recent sprints
+  lazyfleet schedules    Schedules and when each runs next
 `;
 
 function baseUrl(cfg: LazyConfig): string {
@@ -197,7 +205,78 @@ async function serve(): Promise<void> {
   process.on('SIGINT', stop);
 }
 
-const commands: Record<string, () => Promise<void>> = { install, uninstall, status, on, off, ui, serve };
+/** Call the running background process's page API, signed in with the UI token. */
+async function pageApi(cfg: LazyConfig, path: string, body?: unknown): Promise<any> {
+  if (!(await healthy(cfg))) {
+    console.error('lazyfleet is not running. Start it with `lazyfleet on`.');
+    process.exit(1);
+  }
+  const r = await fetch(`${baseUrl(cfg)}/_lazy/api/${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { cookie: `lazy_t=${encodeURIComponent(cfg.uiToken)}`, 'x-lazy': '1', 'content-type': 'application/json', host: `127.0.0.1:${cfg.port}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+function flag(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+async function sprint(): Promise<void> {
+  const args = process.argv.slice(3);
+  const valued = new Set(['--design', '--folder']);
+  const words = args.filter((a, i) => !a.startsWith('--') && !valued.has(args[i - 1] ?? ''));
+  const ask = words.join(' ').trim();
+  if (ask.length < 8) {
+    console.error('Say what should get done, in quotes: lazyfleet sprint "Add a CSV export to the reports page, with tests"');
+    process.exit(1);
+  }
+  const cfg = loadConfig();
+  let folder = flag(args, '--folder');
+  if (!folder) {
+    folder = await new Promise<string>(resolve => execFile('git', ['rev-parse', '--show-toplevel'], (err, out) => resolve(err ? '' : String(out).trim())));
+    if (!folder) {
+      console.error('Run this inside a git project, or pass --folder <dir>.');
+      process.exit(1);
+    }
+  }
+  let design = flag(args, '--design');
+  if (!design) {
+    const r = await pageApi(cfg, 'advisor/recommend', { ask, repo: folder });
+    design = r.designId;
+    console.log(`Design: ${r.designName}`);
+    for (const reason of r.reasons) console.log(`  - ${reason}`);
+  }
+  if (args.includes('--dry-run')) return;
+  const r = await pageApi(cfg, 'sprints', { repo: folder, ask, design });
+  console.log(`Started. Watch it: ${baseUrl(cfg)}/_lazy/?t=${cfg.uiToken}#sprints/${r.runId}`);
+}
+
+async function sprints(): Promise<void> {
+  const { sprints: list } = await pageApi(loadConfig(), 'sprints');
+  if (!list.length) { console.log('No sprints yet. Start one: lazyfleet sprint "..."'); return; }
+  for (const x of list.slice(0, 15)) {
+    const state = x.live ? `${x.status}, ${x.progress.done}/${x.progress.total} done` : `${x.status}${x.verdict ? `, ${x.verdict}` : ''}`;
+    console.log(`${x.title.slice(0, 60).padEnd(60)}  ${state}${x.design ? `  [${x.design}]` : ''}`);
+  }
+}
+
+async function schedules(): Promise<void> {
+  const { schedules: list } = await pageApi(loadConfig(), 'schedules');
+  if (!list.length) { console.log('No schedules. Create one on the Schedules page: lazyfleet ui'); return; }
+  for (const s of list) {
+    const next = !s.enabled ? 'off' : s.nextAt ? `next ${new Date(s.nextAt).toLocaleString()}` : '';
+    console.log(`${s.name.padEnd(30)}  ${s.whenText}  (${next})`);
+    const last = s.log[0];
+    if (last) console.log(`  last: ${last.text}`);
+  }
+}
+
+const commands: Record<string, () => Promise<void>> = { install, uninstall, status, on, off, ui, serve, sprint, sprints, schedules };
 
 const cmd = process.argv[2] ?? 'install';
 if (cmd === '--help' || cmd === '-h' || cmd === 'help') {

@@ -97,6 +97,13 @@ describe('fleet skill: autonomy policy', () => {
     expect(autonomy).toMatch(/independently checkable/i);
   });
 
+  it('offers bigger jobs as a sprint, only on a yes', () => {
+    const part = autonomy.slice(autonomy.indexOf('## Bigger jobs'), autonomy.indexOf('## Lifecycle'));
+    expect(part).toMatch(/lazyfleet sprint "/);
+    expect(part).toMatch(/only on a yes/i);
+    expect(part).toMatch(/Schedules page/);
+  });
+
   it('biases toward inline work', () => {
     expect(autonomy).toMatch(/bias toward inline/i);
   });

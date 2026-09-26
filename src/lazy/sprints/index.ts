@@ -43,8 +43,12 @@ function engineGone(rec: SprintRecord): boolean {
 }
 
 function verdictOf(result: unknown): string | undefined {
-  const v = result && typeof result === 'object' ? (result as { verdict?: unknown }).verdict : undefined;
-  return typeof v === 'string' ? v : undefined;
+  const r = result && typeof result === 'object' ? (result as { verdict?: unknown; notes?: unknown }) : undefined;
+  const v = r?.verdict;
+  if (typeof v !== 'string') return undefined;
+  // Designs without a final review decide from task state: say that, not "review failed".
+  if (typeof r?.notes === 'string' && /final review is turned off/i.test(r.notes)) return v === 'PASS' ? 'DONE' : 'OPEN';
+  return v;
 }
 
 /** The steps of the design a sprint follows, when it was started from this page. */

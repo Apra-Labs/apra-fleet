@@ -40,6 +40,27 @@ Local members inherit LLM auth and git credentials from this machine, so there i
 nothing to provision and nothing to bill. See `fast-local.md` for the four-step
 setup. This is why local fan-out needs no permission and remote fan-out does.
 
+## Bigger jobs: hand them to a sprint
+
+When lazyfleet is installed (`~/.lazyfleet/config.json` exists), a job that is a
+whole feature, a batch of issues, or something the user wants done while they are
+away is better as a sprint than as workers you run yourself: helpers plan it, build
+it in private copies of the project, review it, and the user can watch it on a
+board. Offer it in plain words, and start it only on a yes, because it uses the
+user's plan for several minutes:
+
+- "This is a good fit for a sprint: helpers plan, build and review it in private
+  copies while you keep working. Want me to start one?" Then run
+  `lazyfleet sprint "<the job, in the user's words>"` from the project folder. It
+  picks a sprint design and prints why; pass `--design <id>` only if the user
+  asked for one. Give the user the board link it prints.
+- If the user says "every night", "each morning", "whenever an issue is labeled",
+  point them to the Schedules page (`lazyfleet ui`) rather than starting sprints
+  in a loop yourself.
+
+Keep doing small and medium work inline or with workers as above; a sprint for a
+five-minute change is waste.
+
 ## Lifecycle of an auto-created worker
 
 1. **Isolate.** `git worktree add` a directory per worker so their edits cannot
