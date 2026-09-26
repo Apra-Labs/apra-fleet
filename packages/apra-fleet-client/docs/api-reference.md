@@ -764,13 +764,16 @@ server version.
 
 Calls `kb_setup` -- sets up KB: installs the git post-commit hook, writes
 the provider config, and stores remote credentials encrypted. Run once per
-repo; `options` defaults to `{}` if omitted entirely.
+repo; `options` defaults to `{}` if omitted entirely. Merges into any existing
+KB config (keys it does not own are preserved). The result carries `steps` and
+`warnings` (e.g. plain-http remote to a non-loopback host, stored token dropped
+after a remote change, malformed existing config discarded).
 
 | Field | Type | Notes |
 |---|---|---|
 | `repo_path` | `string?` | Path to the git repository for post-commit hook installation (default: current directory). |
 | `provider` | `"sqlite" \| "http"?` | KB provider type (default: `"sqlite"`). |
-| `remote` | `string?` | Remote KB server URL (required when `provider` is `"http"`). |
+| `remote` | `string?` | Remote KB server URL, http(s) only (required when `provider` is `"http"`). Use https for any non-loopback host: plain http sends the token in cleartext (accepted, with a warning). |
 | `token` | `string?` | Authentication token for the remote KB server (stored encrypted, never logged). |
 
 #### `shutdownServer(opts = {})`
