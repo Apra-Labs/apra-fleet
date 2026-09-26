@@ -23,6 +23,13 @@
  * PURITY: non-global regexes only -- see the note in ./generic-git.mjs.
  *
  * ASCII only.
+ *
+ * GENERIC-BOUNDARY-EXCEPTION: this file IS the GitHub provider's own
+ * implementation module (fleet-sprint/vcs-providers/github.mjs) -- it names
+ * 'github'/'GitHub' throughout in its own API host, headers, registration
+ * string and error text. That is provider-local self-description, not a
+ * leak: no sprint agent reads this file's source. Dated 2026-09-21 (the
+ * fleet-bridge PR that added the generic-boundary provider-branding check).
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';

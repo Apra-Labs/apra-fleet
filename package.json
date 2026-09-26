@@ -16,7 +16,8 @@
     "packages/apra-fleet-client",
     "packages/apra-fleet-workflow",
     "packages/apra-fleet-se",
-    "packages/fleet-api-contract"
+    "packages/fleet-api-contract",
+    "packages/apra-fleet-bridge"
   ],
   "main": "dist/index.js",
   "bin": {

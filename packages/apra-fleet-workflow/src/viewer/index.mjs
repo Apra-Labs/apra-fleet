@@ -20,6 +20,17 @@ import { buildRunTitle } from './run-title.mjs';
 // terminate the embedding <script> tag early.
 const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     const isHistory = !!opts.history;
+    // fleet-bridge Part D2: which data source the emitted client script
+    // talks to. 'http' (default) is today's fetch()/EventSource() wiring --
+    // every one of its call sites below is byte-identical to what used to be
+    // inline before this seam existed. 'blob' is the blob-hosted read-only
+    // SPA (a state.json snapshot + a change-signal socket, both located at
+    // runtime from the page's own URL fragment -- see blobProvider in the
+    // client script below, and Part D2's Access Model in
+    // fleet-bridge-implementation-plan.md): it has no backend to call, so it
+    // never renders the Pause/Stop controls.
+    const providerKind = opts.dataProvider === 'blob' ? 'blob' : 'http';
+    const hasControl = !isHistory && providerKind === 'http';
     const frozenStateLiteral = isHistory
         ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
         : 'null';
@@ -219,11 +230,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
       ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
-      ${isHistory ? '' : '<button class="btn btn-pause" id="btn-pause" onclick="pauseWorkflow()">Pause</button>'}
-      ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
+      ${hasControl ? '<button class="btn btn-pause" id="btn-pause" onclick="pauseWorkflow()">Pause</button>' : ''}
+      ${hasControl ? '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>' : ''}
     </div>
   </div>
-  ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
+  ${hasControl ? `<div class="modal-overlay" id="stop-modal-overlay">
     <div class="modal-box">
       <p>Are you sure you want to forcibly stop the workflow?</p>
       <div class="modal-actions">
@@ -232,7 +243,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       </div>
     </div>
   </div>
-  <div class="toast" id="stop-toast">Stop signal sent.</div>`}
+  <div class="toast" id="stop-toast">Stop signal sent.</div>` : ''}
   <div class="main-content">
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
@@ -326,6 +337,158 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // went through dedupeStrings(): with no \`{ $ref }\` markers present it's a
     // no-op pass-through.
     ${resolveStringRefs.toString()}
+
+    ${isHistory ? `
+    // fleet-bridge Part D2: a finished (History) run has no live workflow to
+    // subscribe to or control, so only a minimal read-only dataProvider is
+    // emitted here -- just enough for the activity 'more...' and
+    // bead-description lazy-load click handlers below (apra-fleet-eft.6.5
+    // note: these already reach out over the network on a History view even
+    // though the poll/SSE loop is gated off -- a pre-existing gap D1's
+    // per-item blob materialization fixes, unchanged by this seam). No
+    // EventSource/WebSocket/PROVIDER_KIND machinery is emitted in History
+    // mode: it must never open any live connection.
+    const dataProvider = {
+        getActivityOutput: async function (activityId) {
+            const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            return res.json();
+        },
+        getExtensionDetail: async function (extId, itemId) {
+            const res = await fetch('/extensions/' + encodeURIComponent(extId) + '/detail/' + encodeURIComponent(itemId));
+            if (!res.ok) return null;
+            return res.json();
+        }
+    };
+    if (typeof window !== 'undefined') { window.dataProvider = dataProvider; }
+    ` : `
+    // fleet-bridge Part D2: the data-provider seam. Both implementations are
+    // always defined (never conditionally emitted) so the eight app-path
+    // literals the supervisor's live proxy rewrites (proxy.mjs's
+    // rewriteChildHtml) stay present in the served HTML regardless of which
+    // provider PROVIDER_KIND below actually selects.
+    //
+    // httpProvider reproduces today's fetch()/EventSource() behavior for
+    // getState/getActivityOutput/getExtensionDetail, which the click handler
+    // and poll() below actually call. Its own subscribe()/control exist so
+    // the seam is COMPLETE (any future caller can drive the dashboard
+    // through dataProvider alone), but the live (non-blob) wiring further
+    // down keeps its OWN inline EventSource/fetch code and the Pause/Stop
+    // buttons keep calling fetch() directly, unchanged, for byte-for-byte
+    // parity with before this seam existed -- see the client-code comment
+    // just above confirmStopWorkflow()/pauseWorkflow()/resumeWorkflow() for
+    // why those specifically stay independent of dataProvider.control.
+    //
+    // blobProvider is the read-only blob-hosted SPA counterpart: it has no
+    // backend to POST /stop|/pause|/resume to, so control is null (per the
+    // dataProvider contract, null means read-only). It never bakes a
+    // storage URL into the served page (the page shell stays data-free, per
+    // the Access Model) -- state.json and the change-signal socket URL are
+    // both read from the page's own URL fragment (#state=<url>&socket=<url>)
+    // at runtime, and per-item detail blobs are resolved relative to
+    // state.json's own folder.
+    const PROVIDER_KIND = ${JSON.stringify(providerKind)};
+
+    function apraFleetBlobFragmentParams() {
+        const hash = (typeof location !== 'undefined' && location.hash) ? location.hash.slice(1) : '';
+        const params = new URLSearchParams(hash);
+        return { state: params.get('state'), socket: params.get('socket') };
+    }
+    function apraFleetBlobStateUrl() { return apraFleetBlobFragmentParams().state; }
+    function apraFleetBlobSocketUrl() { return apraFleetBlobFragmentParams().socket; }
+    function apraFleetBlobBaseUrl() {
+        const stateUrl = apraFleetBlobStateUrl();
+        if (!stateUrl) return '';
+        const idx = stateUrl.lastIndexOf('/');
+        return idx >= 0 ? stateUrl.slice(0, idx + 1) : '';
+    }
+    const BLOB_POLL_INTERVAL_MS = 15000;
+
+    const httpProvider = {
+        getState: async function () {
+            const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+            const raw = await res.json();
+            return resolveStringRefs(raw, raw._strings || []);
+        },
+        // NOTE: unlike getState/getActivityOutput/getExtensionDetail below,
+        // this subscribe() is never actually called while PROVIDER_KIND is
+        // 'http' -- the live wiring further down keeps its own inline
+        // EventSource, byte-identical to before this seam existed (see the
+        // block comment above). This exists only so the dataProvider
+        // contract is complete for a future non-DOM caller; its onmessage is
+        // deliberately just a re-poll signal (renderState() already
+        // re-dispatches a workflow:state:<namespace> CustomEvent per
+        // extension on every render, so there is nothing else to do here).
+        subscribe: function (onChange) {
+            const source = new EventSource('/events');
+            source.onmessage = () => { onChange(); };
+            const heartbeat = setInterval(() => { onChange(); }, 7000);
+            return () => { source.close(); clearInterval(heartbeat); };
+        },
+        getActivityOutput: async function (activityId) {
+            const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            return res.json();
+        },
+        getExtensionDetail: async function (extId, itemId) {
+            const res = await fetch('/extensions/' + encodeURIComponent(extId) + '/detail/' + encodeURIComponent(itemId));
+            if (!res.ok) return null;
+            return res.json();
+        },
+        control: {
+            stop: () => fetch('/stop', { method: 'POST' }),
+            pause: () => fetch('/pause', { method: 'POST' }),
+            resume: () => fetch('/resume', { method: 'POST' }),
+        }
+    };
+
+    const blobProvider = {
+        getState: async function () {
+            const url = apraFleetBlobStateUrl();
+            if (!url) throw new Error('blob provider: no state URL configured (expected #state=<url> in the page fragment)');
+            const res = await fetch(url, { cache: 'no-store' });
+            const raw = await res.json();
+            return resolveStringRefs(raw, raw._strings || []);
+        },
+        subscribe: function (onChange) {
+            let socket = null;
+            const socketUrl = apraFleetBlobSocketUrl();
+            if (socketUrl) {
+                try {
+                    socket = new WebSocket(socketUrl);
+                    socket.onmessage = () => { onChange(); };
+                    // A dropped/broken socket must not silently stop updates
+                    // -- the backstop interval below keeps polling regardless
+                    // of socket health.
+                    socket.onerror = () => {};
+                } catch (e) {
+                    socket = null;
+                }
+            }
+            const heartbeat = setInterval(() => { onChange(); }, BLOB_POLL_INTERVAL_MS);
+            return () => {
+                if (socket) { try { socket.close(); } catch (e) { /* already gone */ } }
+                clearInterval(heartbeat);
+            };
+        },
+        getActivityOutput: async function (activityId) {
+            const base = apraFleetBlobBaseUrl();
+            const res = await fetch(base + 'activities/' + encodeURIComponent(activityId) + '.json', { cache: 'no-store' });
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            return res.json();
+        },
+        getExtensionDetail: async function (extId, itemId) {
+            const base = apraFleetBlobBaseUrl();
+            const res = await fetch(base + 'extensions/' + encodeURIComponent(extId) + '/' + encodeURIComponent(itemId) + '.json', { cache: 'no-store' });
+            if (!res.ok) return null;
+            return res.json();
+        },
+        control: null
+    };
+
+    const dataProvider = PROVIDER_KIND === 'blob' ? blobProvider : httpProvider;
+    if (typeof window !== 'undefined') { window.dataProvider = dataProvider; }
+    `}
 
     function saveState() {
       if (!globalState) return;
@@ -454,9 +617,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         btn.disabled = true;
         btn.textContent = 'loading...';
         try {
-            const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
-            if (!res.ok) throw new Error('request failed: ' + res.status);
-            const data = await res.json();
+            const data = await dataProvider.getActivityOutput(activityId);
             const full = data[field];
             if (typeof full !== 'string') throw new Error('missing ' + field + ' in response');
             span.textContent = full;
@@ -471,7 +632,22 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         }
     });
 
-    ${isHistory ? '' : `
+    ${isHistory ? '' : (providerKind === 'blob' ? `
+    // fleet-bridge Part D2: blob-hosted SPA polling. There is no /events SSE
+    // feed in this mode -- blobProvider.subscribe() (above) opens the
+    // change-signal socket (if the page's URL fragment carries one) and
+    // always ALSO runs its own backstop interval, so a dropped/absent socket
+    // degrades to plain polling rather than going silent. schedulePoll()'s
+    // coalescing is identical to the http path, so a burst of change signals
+    // still costs at most one /state(-equivalent) refresh per window.
+    const POLL_COALESCE_MS = 400;
+    let pollTimer = null;
+    function schedulePoll() {
+        if (pollTimer) return;
+        pollTimer = setTimeout(() => { pollTimer = null; poll(); }, POLL_COALESCE_MS);
+    }
+    dataProvider.subscribe(() => { schedulePoll(); });
+    ` : `
     // Coalesce SSE-triggered refreshes: a busy run broadcasts one event
     // per log line / activity tick, and refetching + re-rendering the full
     // (potentially multi-MB) /state payload for each of them is what made
@@ -505,7 +681,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // is already scheduled/in flight when the heartbeat tick lands.
     const HEARTBEAT_INTERVAL_MS = 7000;
     setInterval(() => { schedulePoll(); }, HEARTBEAT_INTERVAL_MS);
-    `}
+    `)}
 
     function renderTreeIncremental(tree) {
         tree.forEach((group, gIdx) => {
@@ -906,12 +1082,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
     async function poll() {
       try {
-        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
-        const raw = await res.json();
-        // apra-fleet-eft.27.1: undo the server's string-table dedup before
-        // handing the state to renderState()/renderTreeIncremental(), which
-        // both expect plain, already-resolved strings.
-        const state = resolveStringRefs(raw, raw._strings || []);
+        // fleet-bridge Part D2: dataProvider.getState() already returns the
+        // fully resolved (string-table dedup undone) state object -- see
+        // httpProvider/blobProvider above -- so renderState() sees exactly
+        // what it always has, regardless of which provider is active.
+        const state = await dataProvider.getState();
         renderState(state);
       } catch(e) {
           console.error("Poll Error:", e);

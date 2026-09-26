@@ -1,0 +1,82 @@
+# A complete consumer of packages/apra-fleet-bridge/templates/azure-pipelines.yml,
+# filled in for the Azure DevOps toy project (org apralabs, project
+# e2e-fleet-testing, member aztoy). Copy it into your own repo and change the
+# values marked CHANGE ME; README.md next to this file walks through each one.
+#
+# HOW THE TEMPLATE IS CONSUMED. The template lives in the apra-fleet GitHub
+# repository, so it is pulled in as a repository resource and referenced with
+# `template: <path>@<alias>`. Pin `ref` to the SAME commit or tag as the
+# apra-fleet checkout on your agent (bridgeHome below): the template and the
+# fleet-bridge CLI are versioned together, and the CLI rejects any flag it does
+# not know, so a template newer or older than the CLI fails loudly on its first
+# step rather than half-working.
+#
+# The run-time choices (which work items, which branch) are this pipeline's
+# own runtime parameters, so whoever queues it picks them in the Azure DevOps
+# "Run pipeline" form; they are forwarded to the template unchanged.
+#
+# ASCII only.
+
+trigger: none
+pr: none
+
+resources:
+  repositories:
+    - repository: apra-fleet
+      type: github
+      name: Apra-Labs/apra-fleet
+      # CHANGE ME: a GitHub service connection in your Azure DevOps project
+      # (Project settings > Service connections > New > GitHub). Azure DevOps
+      # requires one even for a public repository.
+      endpoint: github-apra-fleet
+      # CHANGE ME: the tag or commit your agent's apra-fleet checkout is on.
+      ref: refs/heads/main
+
+parameters:
+  - name: workItems
+    type: string
+    displayName: Work item ids or URLs, comma-separated
+    default: '9,10,11,12'
+  - name: targetBranch
+    type: string
+    displayName: Sprint branch (new; the sprint commits here)
+  - name: baseBranch
+    type: string
+    displayName: Base branch (the PR targets it)
+    default: main
+  - name: goal
+    type: string
+    displayName: Priority ceiling
+    default: P1/P2
+    values:
+      - P1
+      - P1/P2
+      - P1/P2/P3
+  - name: awaitUntil
+    type: string
+    displayName: Hold the job until
+    default: plan-approved
+    values:
+      - launch
+      - plan-round
+      - plan-approved
+      - plan-settled
+
+extends:
+  template: packages/apra-fleet-bridge/templates/azure-pipelines.yml@apra-fleet
+  parameters:
+    workItems: ${{ parameters.workItems }}
+    targetBranch: ${{ parameters.targetBranch }}
+    baseBranch: ${{ parameters.baseBranch }}
+    goal: ${{ parameters.goal }}
+    awaitUntil: ${{ parameters.awaitUntil }}
+    # CHANGE ME: everything below describes your agent machine.
+    agentPool: fleet-sprints
+    bridgeHome: 'C:\ak\apra-fleet'
+    member: aztoy
+    repoPath: 'C:\ak\aztoy'
+    repoRemoteUrl: 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy'
+    secretName: fleet_bridge_azdevops_pat
+    maxCycles: 5
+    budget: '50'
+    awaitTimeoutMinutes: 20

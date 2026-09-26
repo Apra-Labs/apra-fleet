@@ -1681,6 +1681,13 @@ export class FleetWorkflow extends EventEmitter {
             // signals a missing member via plain response text rather than a
             // structured error. Surface it as a typed error, never `null`.
             if (outText.startsWith('Member "') && outText.includes('" not found.')) {
+                // DELIBERATELY NOT gated on `opts.silent` (unlike the outer
+                // catch below). `silent` means "this COMMAND may fail and I
+                // handle the outcome"; a member that does not exist is not a
+                // command outcome at all, it is a fleet/config fault that no
+                // caller can have been expecting, and the callers that ask
+                // for silence are exactly the failSoft plumbing probes that
+                // would otherwise swallow it with no trace. Keep it loud.
                 console.error(`[Command API Error]`, outText);
                 this.emit('activity:end', { ...activityMeta, error: outText, duration, success: false });
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
@@ -1712,7 +1719,30 @@ export class FleetWorkflow extends EventEmitter {
             this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
             return failSoft ? { ok: true, output: cleanOutput, error: null } : cleanOutput;
         } catch (error) {
-            console.error(`[Command API Error]`, error.message || error);
+            // `opts.silent` suppresses this console line the same way it
+            // already suppresses the `[Command]` dispatch line above, and
+            // NOTHING else: the typed error is still built with the identical
+            // message/details, activity:end still fires, and the throw /
+            // softFail() routing below is untouched. An uncaught failure
+            // still fails exactly as before.
+            //
+            // WHY: some dispatches are deliberate probes whose FAILURE is the
+            // success case -- beads-children.mjs's assertChildIdFree() runs
+            // `bd show <id> --json` precisely to confirm an id is free, and
+            // `bd` reports "free" by exiting non-zero. It asks for silence,
+            // caught the error, classified it and proceeded -- and still
+            // printed a full `[Command API Error]` block per probe. A real
+            // sprint log carried four of them in finalization alone, roughly
+            // sixty lines above a genuine HTTP 401 that cost the run its pull
+            // request. Bogus traffic in the error channel teaches a reader to
+            // skim exactly where the real error is.
+            //
+            // The suppressed text is not lost for a postmortem: the
+            // activity:end event below (and the journal/viewer fed by it)
+            // carries the same `error` string regardless of `silent`.
+            if (!opts.silent) {
+                console.error(`[Command API Error]`, error.message || error);
+            }
             if (error instanceof WorkflowError) {
                 // activity:end for typed errors was already emitted at the
                 // throw site above (see the matching comment in agent()'s

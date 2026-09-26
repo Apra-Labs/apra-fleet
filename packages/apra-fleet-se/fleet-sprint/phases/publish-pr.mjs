@@ -295,6 +295,16 @@ export async function runPublishPrPhase({
                 // worktree-model-v2.md section 4.6: this call stays workspace-
                 // independent by design, credential-file-read + REST only).
                 remoteUrlOverride: originUrl,
+                // The operator-chosen Azure DevOps PAT secret name, threaded
+                // from the validated sprint args exactly as the sync
+                // preflight/self-heal paths do. The provider default
+                // ('azdevops_pat') is not usable when an operator already has
+                // that name committed to an unrelated project, and minting
+                // with the wrong PAT here does double damage: the PR creation
+                // 401s AND the bad credential overwrites the member's working
+                // git credential on disk. Undefined when unset -- provisioning
+                // then falls back to the provider default, unchanged.
+                azdevopsPatSecretName: validated.azdevopsPatSecretName,
             });
             if (!prResult.ok) {
                 if (prResult.authFailure) {

@@ -65,6 +65,15 @@
  * field rather than a provider-name conditional of its own.
  *
  * ASCII only.
+ *
+ * GENERIC-BOUNDARY-EXCEPTION: this file IS the Azure DevOps provider's own
+ * implementation module (fleet-sprint/vcs-providers/azure-devops.mjs) -- it
+ * names 'azure-devops'/'Azure DevOps' throughout in its own error/log text,
+ * registration string and doc-skill reference. That is provider-local
+ * self-description, not a leak: no sprint agent reads this file's source,
+ * and a caller who never selects this provider never sees any of these
+ * strings. Dated 2026-09-21 (the fleet-bridge PR that added the
+ * generic-boundary provider-branding check).
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';

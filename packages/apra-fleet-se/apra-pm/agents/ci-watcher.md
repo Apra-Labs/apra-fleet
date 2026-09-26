@@ -48,6 +48,11 @@ gh run list --pr <prNumber> --limit 5 --json databaseId,status,conclusion,headSh
 (In PR-scoped mode, apply Step 2 to the runs for the PR's head commit instead of
 `expectedHeadSha`.)
 
+<!-- GENERIC-BOUNDARY-EXCEPTION: this role currently checks CI only via the `gh` CLI
+     (GitHub Actions); naming GitHub here is the disclaimed LIMIT of that support, not an
+     assumption that every target uses it -- the very next clause is the explicit
+     non-GitHub fallback (not_configured, never a guess). Dated 2026-09-21 (the
+     fleet-bridge PR that added the generic-boundary provider-branding check). -->
 If `gh` is unavailable or the repo's remote is not GitHub, do not guess at another CI
 system: return `status: "not_configured"` with `notes` naming what was found.
 

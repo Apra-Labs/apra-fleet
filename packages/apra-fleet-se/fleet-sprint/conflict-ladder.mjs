@@ -92,12 +92,41 @@ export async function detectAndAbortRebaseConflict({ command, member, log, maxTr
     }
 
     log(`[Sync] G-push pull-rebase for member '${member}' left unmerged path(s) (${unmergedPaths.join(', ')}) -- running 'git rebase --abort' to restore a clean working tree (Tier 1, script-only; no agent dispatched).`);
-    await command('git rebase --abort', { member_name: member, silent: true, failSoft: true, label: `G-push rebase --abort for '${member}'` });
+    // Result captured (previously fully discarded) so a failed abort itself
+    // is at least logged. It does NOT gate what happens next -- this
+    // function's return value (unmergedPaths) was already decided above,
+    // before this abort attempt, and the porcelain re-check below is the
+    // one authoritative, mechanical signal for whether the tree actually
+    // ended up clean (this module's whole reason to exist: "never inferred
+    // from a failing command's exit code/message alone"). Silently
+    // discarding an abort failure meant it left no trace at all unless the
+    // re-check below also happened to fail -- now it always gets its own
+    // line.
+    const abortResult = await command('git rebase --abort', { member_name: member, silent: true, failSoft: true, label: `G-push rebase --abort for '${member}'` });
+    if (!abortResult || !abortResult.ok) {
+        log(`[Sync] WARNING: 'git rebase --abort' for member '${member}' reported failure (${abortResult ? abortResult.error : 'no result'}) -- working tree state is unconfirmed until the post-abort status check below.`);
+    }
 
     const statusAfter = await command('git status --porcelain', { member_name: member, silent: true, failSoft: true, label: `post-abort clean-state check for '${member}'` });
-    const remaining = statusAfter && statusAfter.output ? String(statusAfter.output).trim() : '';
-    if (remaining !== '') {
-        log(`[Sync] WARNING: 'git rebase --abort' for member '${member}' did not fully restore a clean working tree -- porcelain still shows: ${remaining}`);
+    if (!statusAfter || !statusAfter.ok) {
+        // `silent + failSoft` means a transport/exec failure here comes back
+        // as `ok: false` with no output -- NOT a thrown error. An empty
+        // `output` is ALSO exactly what a genuinely clean tree looks like,
+        // so treating a failed probe the same as an empty one (the old
+        // `(output || '').trim()` behavior) silently reported "clean" for a
+        // state that was never actually observed. This is the one place
+        // that mistake gets made real: a member that went unreachable right
+        // after 'git rebase --abort' would previously be logged as fully
+        // recovered. The conservative response -- this function's return
+        // value doesn't depend on this check, only the log line does -- is
+        // to warn loudly and treat the state as unknown/dirty, never as a
+        // silent, unverified "clean".
+        log(`[Sync] WARNING: post-abort clean-state check for member '${member}' itself failed (${statusAfter ? statusAfter.error : 'no result'}) -- cannot confirm 'git rebase --abort' actually restored a clean working tree.`);
+    } else {
+        const remaining = statusAfter.output ? String(statusAfter.output).trim() : '';
+        if (remaining !== '') {
+            log(`[Sync] WARNING: 'git rebase --abort' for member '${member}' did not fully restore a clean working tree -- porcelain still shows: ${remaining}`);
+        }
     }
 
     return unmergedPaths;
