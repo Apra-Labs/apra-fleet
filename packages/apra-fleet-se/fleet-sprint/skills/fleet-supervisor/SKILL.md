@@ -49,7 +49,28 @@ Connection refused/timeout = not running. `{"sprints": [...]}` = already up,
 skip this.
 
 Start it detached (it runs indefinitely -- exits only on `POST
-/api/shutdown` or SIGINT/SIGTERM, never on its own):
+/api/shutdown` or SIGINT/SIGTERM, never on its own).
+
+Supported path -- the installed `apra-fleet` binary runs the supervisor in
+the foreground on its own embedded runtime, so no separate `node` on PATH is
+needed:
+
+```bash
+apra-fleet supervisor          # background/detached; Ctrl-C or POST /api/shutdown stops it
+```
+
+Everything after `supervisor` is passed to the supervisor verbatim, so the
+options below work unchanged (`apra-fleet supervisor --port 9000`,
+`apra-fleet supervisor --beads-dir <path>`, and `apra-fleet supervisor
+--help` for the supervisor's own usage). This needs `apra-fleet install` to
+have installed the workflow assets; if it has not, the command says so and
+tells you to run `apra-fleet install`.
+
+Note you usually do NOT need to start it by hand at all: `apra-fleet
+install` already registers the `fleet-supervisor` OS service and starts it
+(see "Auto-start on login/boot" below).
+
+Fallback, only in a source checkout (needs a `node` on PATH):
 
 ```bash
 node packages/apra-fleet-se/bin/serve.mjs   # background/detached, from repo root
@@ -207,18 +228,51 @@ restart command exists:
 
 ## Auto-start on login/boot
 
-Instead of a human running `node bin/serve.mjs` by hand each session, the
-supervisor can be registered with the OS to start automatically on
-login/boot. Resolve commands per the target member's own OS (`agent.os`) --
-do not assume the orchestrator's shell; some members run PowerShell, not
-POSIX. Every example below assumes the repo root is
-`/path/to/apra-fleet` (POSIX) or `C:\path\to\apra-fleet` (Windows) --
-substitute the real path on the target member. After registering (any OS),
-run the same-process smoke test from section 0 above (`GET /api/sprints`,
-`GET /api/members`) against the newly auto-started instance to confirm it is
-actually serving, not just that the OS accepted the registration.
+Rather than starting the supervisor by hand each session, it can be
+registered with the OS to start automatically on login/boot.
 
-### Windows
+### Supported path: `apra-fleet install` does this for you
+
+`apra-fleet install` registers the `fleet-supervisor` OS service itself and
+starts it, on Linux (a `systemd --user` unit), macOS (a launchd
+LaunchAgent) and Windows (a Scheduled Task). The registered service runs the
+installed binary's own subcommand -- `<install dir>/bin/apra-fleet
+supervisor` -- so no separate `node` on PATH is involved on any platform.
+
+Nothing else is needed for auto-start. To manage it:
+
+```bash
+apra-fleet status      # reports "Service (fleet supervisor):" installed/running
+apra-fleet uninstall   # removes the fleet-supervisor service registration
+```
+
+If `apra-fleet install` cannot register the service it FAILS with a non-zero
+exit and names the reason -- it never reports a successful install with the
+supervisor silently unregistered. The one exception is `apra-fleet install
+--workflows none`, which does not install the supervisor at all and says so.
+
+### Fallback: hand-rolled service recipes for a SOURCE CHECKOUT
+
+Everything below is the fallback for running the supervisor out of a source
+checkout with your own `node`, when you are NOT using an installed
+`apra-fleet` binary. Prefer `apra-fleet install` above wherever it applies.
+
+WARNING: these recipes deliberately reuse the same task name and launchd
+label that `apra-fleet install` registers (`ApraFleetSupervisor`,
+`com.apra-fleet.supervisor`), so do not combine them with an
+install-registered supervisor on one machine -- register one or the other,
+not both, or they will collide and fight over the port.
+
+Resolve commands per the target member's own OS (`agent.os`) -- do not
+assume the orchestrator's shell; some members run PowerShell, not POSIX.
+Every example below assumes the repo root is `/path/to/apra-fleet` (POSIX)
+or `C:\path\to\apra-fleet` (Windows) -- substitute the real path on the
+target member. After registering (any OS), run the same-process smoke test
+from section 0 above (`GET /api/sprints`, `GET /api/members`) against the
+newly auto-started instance to confirm it is actually serving, not just that
+the OS accepted the registration.
+
+#### Windows (source checkout)
 
 **Option A -- Task Scheduler, "At log on" trigger** (simplest; runs in the
 user's own session):
@@ -251,7 +305,7 @@ nssm stop ApraFleetSupervisor
 nssm remove ApraFleetSupervisor confirm
 ```
 
-### macOS (launchd user LaunchAgent)
+#### macOS (launchd user LaunchAgent, source checkout)
 
 Create `~/Library/LaunchAgents/com.apra-fleet.supervisor.plist`:
 ```xml
@@ -297,7 +351,7 @@ launchctl stop com.apra-fleet.supervisor
 launchctl unload ~/Library/LaunchAgents/com.apra-fleet.supervisor.plist
 ```
 
-### Linux (systemd --user unit)
+#### Linux (systemd --user unit, source checkout)
 
 Create `~/.config/systemd/user/apra-fleet-supervisor.service`:
 ```ini

@@ -284,7 +284,28 @@ Not by invoking a CLI directly. The supported entry point is the **always-on
 supervisor** (`fleet-se-serve`), a small local HTTP service (default port 8787)
 that owns a reservation ledger -- it knows which members and which issue scopes
 are already claimed by a running sprint, and refuses launches that would collide
-(an HTTP 409 naming the conflicting sprint). Launching a sprint is one POST:
+(an HTTP 409 naming the conflicting sprint).
+
+**Starting the supervisor.** `apra-fleet install` registers it as the
+`fleet-supervisor` OS service (a `systemd --user` unit on Linux, a launchd
+LaunchAgent on macOS, a Scheduled Task on Windows) and starts it, so after an
+install it is already running and comes back on login/boot. `apra-fleet status`
+reports it on a `Service (fleet supervisor):` line, and `apra-fleet uninstall`
+removes the registration. To run it in the foreground instead:
+
+```bash
+apra-fleet supervisor        # runs until Ctrl-C or POST /api/shutdown
+```
+
+That needs no separate Node install -- the `apra-fleet` binary runs the
+supervisor on its own embedded runtime. Arguments are passed through verbatim, so
+`apra-fleet supervisor --port 9000` and `apra-fleet supervisor --help` work. From
+a source checkout you can instead run `node packages/apra-fleet-se/bin/serve.mjs`
+with your own Node. If `apra-fleet install` cannot register the service it fails
+loudly with a non-zero exit naming the reason, rather than reporting a successful
+install with no supervisor registered.
+
+Launching a sprint is one POST:
 
 ```jsonc
 POST http://127.0.0.1:8787/api/sprints
