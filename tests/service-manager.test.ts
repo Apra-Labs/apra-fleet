@@ -136,6 +136,203 @@ describe('WindowsServiceManager', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Windows -- 'fleet-supervisor' stop must take down the WHOLE process tree.
+//
+// The scheduled task's action is a wrapper .bat, so the process the Task
+// Scheduler owns is a cmd.exe and the apra-fleet process actually holding the
+// supervisor port is its CHILD. `schtasks /end` alone could leave that child
+// alive as an orphan still bound to the port while query() reported the task
+// as not Running -- so `apra-fleet stop` printed "Fleet supervisor service
+// stopped." and the next `apra-fleet start` could not bind.
+//
+// REGRESSION GUARD (which assertion fails if the impl is reverted to a bare
+// `schtasks /end` for fleet-supervisor):
+//   expect(execFileSync).toHaveBeenCalledWith(
+//     'taskkill', ['/F', '/T', '/PID', '4242'])
+// in 'taskkills the wrapper pid WITH /T so the apra-fleet child dies with
+// it'. A bare /end issues no taskkill at all, so that exact-argument-vector
+// assertion is the guard. The ordering assertion in 'discovers the wrapper
+// pid BEFORE ending the task' is the second guard -- a reverted impl makes no
+// discovery call either, so its discoveryIdx >= 0 expectation fails too.
+//
+// PLATFORM INDEPENDENCE (same discipline as the header of
+// tests/service-manager-name-isolation.test.ts): node:child_process,
+// node:fs and node:os are mocked at the top of this file, so execFileSync and
+// spawn -- the only child_process entry points this manager uses -- are both
+// automocked and NO real powershell / taskkill / schtasks process is ever
+// spawned. Nothing below reads or overrides process.platform, so this block
+// passes identically on Linux, macOS and Windows.
+// ---------------------------------------------------------------------------
+describe('WindowsServiceManager -- fleet-supervisor stop terminates the process tree', () => {
+  const SUPERVISOR_WRAPPER = 'apra-fleet-supervisor-service.bat';
+  const MCP_WRAPPER = 'apra-fleet-service.bat';
+  const WRAPPER_PID = 4242;
+
+  function supervisor() {
+    return new WindowsServiceManager('fleet-supervisor');
+  }
+
+  /** Every execFileSync call as a [command, args] pair, in call order. */
+  function calledCommands(): Array<[string, string[]]> {
+    return vi.mocked(execFileSync).mock.calls.map(c =>
+      [String(c[0]), ((c[1] ?? []) as unknown as string[])],
+    );
+  }
+
+  /** Index of the first execFileSync call matching a predicate, or -1. */
+  function callIndex(pred: (cmd: string, args: string[]) => boolean): number {
+    return calledCommands().findIndex(([cmd, args]) => pred(cmd, args));
+  }
+
+  /** The PowerShell scripts handed to `powershell -EncodedCommand`, decoded. */
+  function decodedDiscoveryScripts(): string[] {
+    return calledCommands()
+      .filter(([cmd]) => cmd === 'powershell')
+      .map(([, args]) => Buffer.from(
+        args[args.indexOf('-EncodedCommand') + 1], 'base64',
+      ).toString('utf16le'));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+    // Default simulated host: exactly one live wrapper process, and every
+    // command succeeds.
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) =>
+      (cmd === 'powershell' ? `${WRAPPER_PID}\r\n` : '') as any,
+    );
+  });
+
+  it('taskkills the wrapper pid WITH /T so the apra-fleet child dies with it', async () => {
+    await supervisor().stop();
+    // REGRESSION GUARD -- see the block header. /T is the whole point: it is
+    // what extends the kill from the cmd.exe wrapper to its descendants.
+    expect(execFileSync).toHaveBeenCalledWith(
+      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)],
+    );
+  });
+
+  it('discovers the pid with an encoded PowerShell query scoped to THIS service wrapper', async () => {
+    await supervisor().stop();
+
+    const psCalls = calledCommands().filter(([cmd]) => cmd === 'powershell');
+    expect(psCalls).toHaveLength(1);
+    const [, psArgs] = psCalls[0];
+    // Explicit -EncodedCommand, never a raw one-liner: no path or argument is
+    // ever handed to a Windows shell to re-parse (CLAUDE.md convention).
+    expect(psArgs).toHaveLength(4);
+    expect(psArgs.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+
+    const script = decodedDiscoveryScripts()[0];
+    expect(script).toContain('Win32_Process');
+    expect(script).toContain('ProcessId');
+    expect(script).toContain(SUPERVISOR_WRAPPER);
+    // Scoped to one service: it can never match the MCP server's wrapper.
+    expect(script).not.toContain(MCP_WRAPPER);
+  });
+
+  it('discovers the wrapper pid BEFORE ending the task -- /end first would orphan the child', async () => {
+    await supervisor().stop();
+    const discoveryIdx = callIndex(cmd => cmd === 'powershell');
+    const treeKillIdx = callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'));
+    const endIdx = callIndex((cmd, args) => cmd === 'schtasks' && args[0] === '/end');
+    expect(discoveryIdx).toBeGreaterThanOrEqual(0);
+    expect(treeKillIdx).toBeGreaterThan(discoveryIdx);
+    expect(endIdx).toBeGreaterThan(treeKillIdx);
+  });
+
+  it('still ends the scheduled task, under its own task name, for scheduler bookkeeping', async () => {
+    await supervisor().stop();
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleetSupervisor']);
+    expect(execFileSync).not.toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleet']);
+  });
+
+  it('tree-kills EVERY matching wrapper pid, not just the first', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) =>
+      (cmd === 'powershell' ? '4242\r\n4243\r\n\r\n' : '') as any,
+    );
+    await supervisor().stop();
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242']);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243']);
+  });
+
+  it('never uses the MCP server server.json handshake', async () => {
+    await supervisor().stop();
+    expect(mockGracefulStop).not.toHaveBeenCalled();
+  });
+
+  // -- tolerated failures -----------------------------------------------
+  it('resolves when nothing is running and the task is not registered', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') return '' as any; // no wrapper process alive
+      if (cmd === 'schtasks') throw new Error('ERROR: The system cannot find the file specified.');
+      return '' as any;
+    });
+    await expect(supervisor().stop()).resolves.toBeUndefined();
+    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything());
+  });
+
+  it('tolerates the pid exiting between discovery and the kill (taskkill exit 128)', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') return `${WRAPPER_PID}\r\n` as any;
+      if (cmd === 'taskkill') {
+        const err: any = new Error(`ERROR: The process "${WRAPPER_PID}" not found.`);
+        err.status = 128;
+        throw err;
+      }
+      return '' as any;
+    });
+    await expect(supervisor().stop()).resolves.toBeUndefined();
+  });
+
+  // -- loud failures: a survivor must never read as "stopped" ------------
+  it('rejects when the tree-kill genuinely fails, so the caller cannot print success', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') return `${WRAPPER_PID}\r\n` as any;
+      if (cmd === 'taskkill') {
+        const err: any = new Error('ERROR: Access is denied.');
+        err.status = 1;
+        throw err;
+      }
+      return '' as any;
+    });
+    await expect(supervisor().stop()).rejects.toThrow(
+      /Failed to terminate the ApraFleetSupervisor process tree/,
+    );
+  });
+
+  it('rejects when it cannot even determine whether the tree survived', async () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any, _args: any) => {
+      if (cmd === 'powershell') throw new Error('powershell is not recognized');
+      return '' as any;
+    });
+    await expect(supervisor().stop()).rejects.toThrow(
+      /Could not determine whether the ApraFleetSupervisor process tree is still running/,
+    );
+  });
+
+  // -- isolation: the MCP server branch is untouched ---------------------
+  it('ISOLATION: the default mcp-server stop() does NOT take the tree-kill path', async () => {
+    let capturedFallback: ((pid: number) => void) | undefined;
+    mockGracefulStop.mockImplementationOnce(async (fn) => { capturedFallback = fn; });
+
+    await new WindowsServiceManager().stop();
+
+    // Still the server.json handshake, with no new pre-step of any kind.
+    expect(mockGracefulStop).toHaveBeenCalledWith(expect.any(Function));
+    expect(decodedDiscoveryScripts()).toEqual([]);
+    expect(callIndex((cmd, args) => cmd === 'schtasks' && args[0] === '/end')).toBe(-1);
+
+    // Still the plain, non-tree taskkill /F /PID <pid> -- no /T added.
+    capturedFallback!(4242);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242']);
+    expect(callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'))).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Linux
 // ---------------------------------------------------------------------------
 describe('LinuxServiceManager', () => {
