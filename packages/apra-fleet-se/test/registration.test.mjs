@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
-import { buildManifest, PACKAGE_ID, APRA_FLEET_API_RANGE } from '../src/registration/manifest.mjs';
+import { buildManifest, PACKAGE_ID, APRA_FLEET_API_RANGE, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { createRegistration, UNREGISTER_TIMEOUT_MS } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
@@ -192,6 +192,15 @@ describe('buildManifest', () => {
         }
         assert.ok(manifest.nav.some((e) => e.scope === 'project'), 'expected at least one scope:"project" nav entry');
         assert.ok(manifest.nav.some((e) => e.scope === undefined), 'expected at least one global (no scope) nav entry');
+
+        // (apra-fleet-i9ag.3.3) Sprints must be unscoped (renders with no
+        // project selected) and its path must be the single source
+        // SPRINTS_UI_PATH -- the same value bin/serve.mjs mounts the real
+        // dashboard handler against -- not a hand-copied literal.
+        const sprintsEntry = manifest.nav.find((e) => e.label === 'Sprints');
+        assert.ok(sprintsEntry, 'expected a Sprints nav entry');
+        assert.equal(sprintsEntry.path, SPRINTS_UI_PATH);
+        assert.equal(sprintsEntry.scope, undefined, 'expected the Sprints nav entry to carry no scope:"project"');
 
         assert.ok(Array.isArray(manifest.panels) && manifest.panels.length > 0);
         for (const entry of manifest.panels) {

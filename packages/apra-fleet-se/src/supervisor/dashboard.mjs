@@ -1411,13 +1411,23 @@ export function createDashboard(deps = {}) {
 }
 
 /**
- * Registers `GET /` against a supervisor (server.mjs), mirroring the
- * registration pattern of registerSprintRoutes()/registerReservationRoutes().
+ * Registers `GET /` (plus, when given, every path in `extraIndexPaths`
+ * against the SAME handler) against a supervisor (server.mjs), mirroring
+ * the registration pattern of registerSprintRoutes()/registerReservationRoutes().
+ *
+ * (apra-fleet-i9ag.3.3) `extraIndexPaths` lets bin/serve.mjs mount this
+ * exact page at the manifest's Sprints nav path (registration/manifest.mjs's
+ * SPRINTS_UI_PATH) too, so the shell's Sprints nav entry embeds the real
+ * dashboard instead of the /ui placeholder -- one handler, served at
+ * however many paths the caller wires it to, never a second hand-copied
+ * implementation.
+ *
  * @param {{ route: (method: string, path: string, handler: Function) => void }} supervisor
  * @param {ReturnType<typeof createDashboard>} dashboard
+ * @param {{ extraIndexPaths?: string[] }} [opts]
  */
-export function registerDashboardRoutes(supervisor, dashboard) {
-    supervisor.route('GET', '/', async (req, res) => {
+export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths = [] } = {}) {
+    const renderIndexRoute = async (req, res) => {
         // (apra-fleet-i9ag.3.2) The console's /ext/<id> proxy stamps this
         // request's mount path on it (mount-prefix.mjs's MOUNT_PATH_HEADER);
         // resolveMountPrefix() validates it and falls back to '' (serve-direct,
@@ -1450,7 +1460,13 @@ export function registerDashboardRoutes(supervisor, dashboard) {
         }
         res.writeHead(200, headers);
         res.end(body);
-    });
+    };
+    supervisor.route('GET', '/', renderIndexRoute);
+    for (const extraPath of extraIndexPaths) {
+        if (typeof extraPath === 'string' && extraPath !== '' && extraPath !== '/') {
+            supervisor.route('GET', extraPath, renderIndexRoute);
+        }
+    }
 
     // (apra-fleet-siqi.1.1) GET /state -- the lean JSON poll endpoint: the
     // SAME sprint-stack view model GET / renders into HTML (acceptance

@@ -57,7 +57,7 @@ import {
     formatNoBeadsWarning, formatProbeFailedWarning,
 } from '../src/supervisor/beads-identity.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
-import { buildManifest } from '../src/registration/manifest.mjs';
+import { buildManifest, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { createRegistration } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
@@ -492,7 +492,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
     // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
-    registerDashboardRoutes(supervisor, dashboard);
+    // (apra-fleet-i9ag.3.3) Also mounted at the manifest's Sprints nav path
+    // (registration/manifest.mjs's SPRINTS_UI_PATH -- the single source for
+    // that path, read here rather than hand-copied) so the shell's Sprints
+    // nav entry embeds this same real dashboard instead of the /ui
+    // placeholder registerUiRoutes() answers everything else with.
+    registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths: [SPRINTS_UI_PATH] });
 
     // supervisor-viewer-parity: GET /api/backlog/tasks -- the flat,
     // filterable data source the dashboard's Backlog tab re-fetches from
