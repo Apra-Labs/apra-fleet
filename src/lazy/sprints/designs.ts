@@ -56,20 +56,20 @@ export const BUILT_IN_DESIGNS: Design[] = [
   {
     id: 'classic',
     name: 'Classic',
-    description: 'The engine as it ships: plan, build a round, review the round, repeat; final review and docs at the end. One helper builds at a time per streak.',
+    description: 'Plans the work, builds it in small rounds, and reviews each round before the next. Careful and a bit slower; wrote the strongest tests in our tests.',
     helpers: 3,
     build: { mode: 'classic' },
   },
   {
     id: 'pipeline',
     name: 'Pipeline',
-    description: 'Every ready task gets its own helper at once, landings one at a time behind the check, one split review per cycle.',
+    description: 'Every task gets its own helper at the same time; finished work is merged one piece at a time, then several reviewers check it together.',
     build: { mode: 'pipeline' },
   },
   {
     id: 'fast-pipeline',
     name: 'Fast pipeline',
-    description: 'The pipeline without its fixed costs: plans again only when there is new work, no acceptance-test tasks, doers never on the cheapest model, one reviewer unless the change is big, no docs pass.',
+    description: 'Builds everything at once, like Pipeline, but skips the extra steps that slow small jobs down. The best all-rounder in our tests, and the default.',
     plan: { run: 'when-needed' },
     build: { mode: 'pipeline', minModel: 'standard', acceptanceTasks: false },
     review: { split: 'auto', splitMinFiles: 20 },
@@ -78,7 +78,7 @@ export const BUILT_IN_DESIGNS: Design[] = [
   {
     id: 'features-only',
     name: 'Features only',
-    description: 'Get it working, nothing else: parallel builds gated by the check, no reviews at any stage, no docs pass. The check is your safety net.',
+    description: 'Builds everything at once with no reviews at all. Very fast; only your check command (for example the tests) guards what gets merged.',
     plan: { run: 'when-needed', review: false },
     build: { mode: 'pipeline', minModel: 'standard', acceptanceTasks: false },
     review: { run: 'off' },
@@ -87,7 +87,7 @@ export const BUILT_IN_DESIGNS: Design[] = [
   {
     id: 'solo',
     name: 'Solo',
-    description: 'No planning: one helper takes the whole ask in one go, then one final review. The baseline every other design has to beat.',
+    description: 'One helper does the whole job in one go, then one final review. Cheapest and fastest; fine for small, focused changes.',
     helpers: 2,
     plan: { run: 'off' },
     build: { mode: 'classic', minModel: 'standard' },
@@ -97,7 +97,7 @@ export const BUILT_IN_DESIGNS: Design[] = [
   {
     id: 'e2e-only',
     name: 'End-to-end tests only',
-    description: 'No product code changes: one helper writes and runs end-to-end tests of what you describe, a reviewer turns every failure into a task for a later sprint.',
+    description: 'Changes no product code: a helper writes and runs end-to-end tests of what you describe, and every failure becomes a task to fix later.',
     cycles: 1,
     helpers: 2,
     plan: { run: 'off' },
@@ -129,7 +129,7 @@ export const BUILT_IN_DESIGNS: Design[] = [
   {
     id: 'classic-docs-check',
     name: 'Classic + docs check',
-    description: 'Classic, plus a custom check after every build: every usage example in the README must run and print what it says.',
+    description: 'Classic, plus a check after every round that each example in the README actually runs and prints what it says.',
     helpers: 3,
     build: { mode: 'classic' },
     blocks: [
@@ -269,6 +269,42 @@ function engineRecipeModule() {
   return engineRecipe;
 }
 
+const FIELD_WORDS: Record<string, string> = {
+  'plan.run': 'Plan the work', 'plan.review': 'Review the plan', 'build.mode': 'How tasks are built', 'build.minModel': 'Model for builders',
+  'build.acceptanceTasks': 'Acceptance-test tasks', 'review.run': 'Review', 'review.split': 'Reviewers', 'review.splitMinFiles': 'Big means at least this many files',
+  'test.run': 'Project tests', 'finish.finalReview': 'Final review', 'finish.harvest': 'Wrap up',
+};
+
+/** The engine's validation message in the designer's own words. */
+export function humanizeDesignError(message: string, design: Design): string {
+  const m = /^blocks\[(\d+)\]\.(\w+) (.*)$/.exec(message);
+  if (m) {
+    const i = Number(m[1]);
+    const b = design.blocks?.[i];
+    const who = `Step ${i + 1}${b?.name ? ` (${b.name})` : ''}`;
+    if (m[2] === 'instructions' && /required/.test(m[3])) return `${who}: write ${b?.kind === 'check' ? 'the rule to check' : 'what it should do'}.`;
+    if (m[2] === 'command' && /required/.test(m[3])) return `${who}: write the command to run.`;
+    if (m[2] === 'name') return `${who}: ${m[3].replace(/^is required$/, 'needs a name')}.`;
+    return `${who}: ${m[3]}.`;
+  }
+  const f = /^([a-z]+\.[A-Za-z]+) (.*)$/.exec(message);
+  if (f && FIELD_WORDS[f[1]]) return `${FIELD_WORDS[f[1]]}: ${f[2]}.`;
+  return /[.!?]$/.test(message) ? message : message + '.';
+}
+
+/** Things that can run but that you probably want to know about. */
+export function designWarnings(design: Design): string[] {
+  const out: string[] = [];
+  const reviewOff = design.review?.run === 'off';
+  const finalOff = design.finish?.finalReview === false;
+  const checks = (design.blocks ?? []).some(b => b.kind === 'check' || b.kind === 'command');
+  if (reviewOff && finalOff && !design.check && !checks && (design.build?.mode ?? 'pipeline') !== 'off') {
+    out.push('Nothing checks this work: no review, no final review and no check command. Fine for throwaway work; risky for anything you will merge.');
+  }
+  if ((design.build?.mode ?? 'pipeline') === 'pipeline' && !design.check) out.push('Tip: set "Check after each landing" (for example your test command) so a broken task never lands.');
+  return out;
+}
+
 /** Throws with a readable message when the design cannot run. */
 export async function checkDesign(design: Design): Promise<void> {
   if (design.cycles !== undefined && (!Number.isInteger(design.cycles) || design.cycles < 1 || design.cycles > 10)) {
@@ -281,7 +317,11 @@ export async function checkDesign(design: Design): Promise<void> {
     throw new Error('The check must be one line of at most 300 characters');
   }
   const { normalizeRecipe } = await engineRecipeModule();
-  normalizeRecipe(launchPlanFor(design).recipe);
+  try {
+    normalizeRecipe(launchPlanFor(design).recipe);
+  } catch (e) {
+    throw new Error(humanizeDesignError((e as Error).message, design));
+  }
 }
 
 /** The steps a design runs, in order, for display. */

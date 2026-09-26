@@ -10,7 +10,7 @@ export const HOME_CSS = String.raw`
 .hx-top h2 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
 .hx-sub { color: var(--muted); font-size: 14px; margin-top: 2px; }
 .gh-chip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 12px 4px 4px; font-size: 13px; }
-.gh-chip .av { width: 24px; height: 24px; border-radius: 50%; background: var(--chip); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px; overflow: hidden; }
+.gh-chip .av { width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: var(--bg); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px; overflow: hidden; }
 .gh-chip .av img { width: 100%; height: 100%; }
 .composer { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 60%, transparent); }
 .composer textarea { width: 100%; min-height: 84px; resize: vertical; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 16px; outline: none; }
@@ -18,8 +18,9 @@ export const HOME_CSS = String.raw`
 .composer .row > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); flex: 1 1 200px; min-width: 0; }
 .composer input[type=text], .composer select, .hx select, .hx input[type=text], .hx input[type=number], .hx input[type=time], .hx textarea { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; min-width: 0; }
 .composer .go { display: flex; gap: 8px; align-items: flex-end; margin-left: auto; }
-.advice { display: flex; gap: 10px; align-items: flex-start; background: color-mix(in srgb, var(--accent) 7%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
-.advice b { color: var(--accent); }
+.advice { display: flex; gap: 10px; align-items: flex-start; background: var(--chip); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+.advice b { color: var(--ink); }
+.advice.low { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
 .advice ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -39,8 +40,11 @@ export const HOME_CSS = String.raw`
 .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .step { border: 1px dashed var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
 .step .n { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
-.step.done { border-style: solid; opacity: .7; }
-.step.done .n { background: var(--ok); }
+.step.done { border-style: solid; }
+.step.done b { color: var(--muted); }
+.step.done .n { background: var(--ok); font-size: 0; position: relative; }
+.step.done .n::after { content: ''; position: absolute; left: 8px; top: 5px; width: 6px; height: 11px; border: solid var(--accent-ink); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg); }
+@media (max-width: 640px) { nav { flex-wrap: wrap; } nav .nav-gap { display: none; } nav button { padding: 8px 10px; } }
 .step p { margin: 0; color: var(--muted); font-size: 13px; }
 .evidence { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
 .gh-card { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
@@ -100,6 +104,26 @@ export const HOME_CSS = String.raw`
 .preview-line { font-size: 14px; background: var(--chip); border-radius: 10px; padding: 10px 12px; }
 .preview-line.bad { color: var(--bad); }
 @media (max-width: 860px) { .cols, .iss { grid-template-columns: 1fr; } }
+.wel-back { position: fixed; inset: 0; background: color-mix(in srgb, var(--ink) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+.wel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; width: min(620px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 26px 26px 20px; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.wel h2 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+.wel h2 span { color: var(--accent); }
+.wel p { margin: 0; color: var(--muted); }
+.wel .dots { display: flex; gap: 6px; }
+.wel .dots i { width: 22px; height: 4px; border-radius: 2px; background: var(--line); }
+.wel .dots i.on { background: var(--accent); }
+.wel .feat { display: flex; gap: 12px; align-items: flex-start; }
+.wel .feat .ic { flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--chip); display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--accent); font-size: 14px; }
+.wel .feat b { display: block; }
+.wel .feat span { color: var(--muted); font-size: 13.5px; }
+.wel .foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.wel .opt { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.wel .opt.best { border-color: var(--accent); }
+.wel .row2 { display: flex; gap: 8px; }
+.wel .row2 input { flex: 1; }
+.wel .how { display: grid; grid-template-columns: 28px 1fr; gap: 10px 12px; align-items: start; }
+.wel .how .n { width: 26px; height: 26px; border-radius: 50%; background: var(--chip); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.wel .how code { background: var(--chip); padding: 2px 6px; border-radius: 6px; }
 `;
 
 export const HOME_HTML = String.raw`
@@ -215,15 +239,20 @@ export const HOME_JS = String.raw`
     var folders = (H.data.folders || []);
     var list = el('datalist', { id: 'hx-folders' }, folders.map(function (f) { return el('option', { value: f }); }));
     var folder = el('input', { type: 'text', list: 'hx-folders', placeholder: '/home/you/code/project', value: lastFolder() || folders[0] || '', 'aria-label': 'Project folder' });
+    var folderName = el('b', { style: 'color: var(--ink)' });
+    function showFolder() { var n = folder.value.trim().split('/').filter(Boolean).pop() || ''; folderName.textContent = n ? ' - ' + n : ''; folder.title = folder.value; }
+    folder.addEventListener('input', showFolder); showFolder();
     var design = designSelect('auto', true);
     var adviceBox = el('div', {});
     var start = el('button', { cls: 'act primary', type: 'button', text: 'Start sprint' });
     var later = el('button', { cls: 'act', type: 'button', text: 'Schedule it', title: 'Run this on a schedule instead' });
     function showAdvice() {
       adviceBox.textContent = '';
+      var autoOpt = design.querySelector('option[value="auto"]');
+      if (autoOpt) autoOpt.textContent = H.advice && ask.value.trim() ? 'Let lazyfleet pick (' + H.advice.designName + ')' : 'Let lazyfleet pick (recommended)';
       if (!H.advice || !ask.value.trim()) return;
       var a = H.advice;
-      adviceBox.appendChild(el('div', { cls: 'advice' }, [
+      adviceBox.appendChild(el('div', { cls: 'advice' + (a.profile.confidence === 'low' ? ' low' : '') }, [
         el('div', {}, [
           el('div', {}, ['Suggested design: ', el('b', { text: a.designName }), design.value !== 'auto' ? el('span', { style: 'color: var(--muted)', text: ' (you picked another)' }) : null]),
           el('ul', {}, a.reasons.map(function (r) { return el('li', { text: r }); }))
@@ -246,7 +275,9 @@ export const HOME_JS = String.raw`
       start.disabled = true; start.textContent = 'Starting...';
       rememberFolder(folder.value.trim());
       api('sprints', { method: 'POST', body: { repo: folder.value.trim(), ask: ask.value, design: d } }).then(function (r) {
-        H.draft = ''; H.advice = null; toast('Sprint started'); openSprint(r.runId);
+        H.draft = ''; H.advice = null;
+        var c = homeRoot.querySelector('.composer'); if (c) c.remove();
+        toast('Sprint started'); openSprint(r.runId);
       }).catch(function (e) { toast(e.message); start.disabled = false; start.textContent = 'Start sprint'; });
     });
     later.addEventListener('click', function () {
@@ -254,7 +285,7 @@ export const HOME_JS = String.raw`
       goTab('schedules', 'new');
     });
     return el('div', { cls: 'composer' }, [ask, adviceBox, el('div', { cls: 'row' }, [
-      el('label', {}, ['Project folder', folder, list]),
+      el('label', {}, [el('span', {}, ['Project folder', folderName]), folder, list]),
       el('label', {}, ['Sprint design', design]),
       el('div', { cls: 'go' }, [later, start])
     ])]);
@@ -282,9 +313,9 @@ export const HOME_JS = String.raw`
     var hasSprint = d.running.length || d.recent.length;
     if (!hasSprint || !d.github.signedIn || !d.schedulesTotal) {
       homeRoot.appendChild(el('div', { cls: 'steps' }, [
-        el('div', { cls: 'step' + (hasSprint ? ' done' : '') }, [el('span', { cls: 'n', text: hasSprint ? '+' : '1' }), el('b', { text: 'Start a sprint' }), el('p', { text: 'Describe a job above and pick the project folder. lazyfleet suggests a design and you can watch it on the board.' })]),
-        el('div', { cls: 'step' + (d.github.signedIn ? ' done' : '') }, [el('span', { cls: 'n', text: d.github.signedIn ? '+' : '2' }), el('b', { text: 'Connect GitHub' }), el('p', { text: 'See your issues and turn any of them into a sprint with one click.' }), d.github.signedIn ? null : el('button', { cls: 'linkish', type: 'button', text: 'Connect ->', onclick: function () { goTab('issues'); } })]),
-        el('div', { cls: 'step' + (d.schedulesTotal ? ' done' : '') }, [el('span', { cls: 'n', text: d.schedulesTotal ? '+' : '3' }), el('b', { text: 'Let it run on its own' }), el('p', { text: 'A schedule picks up labeled issues at night, within limits you set, and reports back on each issue.' }), d.schedulesTotal ? null : el('button', { cls: 'linkish', type: 'button', text: 'New schedule ->', onclick: function () { goTab('schedules', 'new'); } })])
+        el('div', { cls: 'step' + (hasSprint ? ' done' : '') }, [el('span', { cls: 'n', text: hasSprint ? 'done' : '1' }), el('b', { text: 'Start a sprint' }), el('p', { text: 'Describe a job above and pick the project folder. lazyfleet suggests a design and you can watch it on the board.' })]),
+        el('div', { cls: 'step' + (d.github.signedIn ? ' done' : '') }, [el('span', { cls: 'n', text: d.github.signedIn ? 'done' : '2' }), el('b', { text: 'Connect GitHub' }), el('p', { text: 'See your issues and turn any of them into a sprint with one click.' }), d.github.signedIn ? null : el('button', { cls: 'linkish', type: 'button', text: 'Connect ->', onclick: function () { goTab('issues'); } })]),
+        el('div', { cls: 'step' + (d.schedulesTotal ? ' done' : '') }, [el('span', { cls: 'n', text: d.schedulesTotal ? 'done' : '3' }), el('b', { text: 'Let it run on its own' }), el('p', { text: 'A schedule picks up labeled issues at night, within limits you set, and reports back on each issue.' }), d.schedulesTotal ? null : el('button', { cls: 'linkish', type: 'button', text: 'New schedule ->', onclick: function () { goTab('schedules', 'new'); } })])
       ]));
     }
 
@@ -359,7 +390,7 @@ export const HOME_JS = String.raw`
         })();
       }).catch(function (e) { toast(e.message); });
     }
-    var browserOpt = el('div', { cls: 'gh-opt' }, [el('b', { text: 'Sign in with GitHub' }), el('p', { text: 'Opens GitHub in your browser and asks you to approve lazyfleet. Needs a GitHub OAuth app client id, set once.' })]);
+    var browserOpt = el('div', { cls: 'gh-opt' }, [el('b', { text: 'Sign in with GitHub' }), el('p', { text: I.gh && I.gh.clientIdSet ? 'Shows a code, you enter it on GitHub, and you are signed in.' : 'Browser sign-in needs a GitHub OAuth app (its client id, once). Most people use one of the other two ways.' })]);
     if (I.gh && I.gh.clientIdSet) browserOpt.appendChild(el('button', { cls: 'act primary', type: 'button', text: 'Sign in with GitHub', onclick: startDevice }));
     else browserOpt.appendChild(el('div', { style: 'display:flex; gap:6px' }, [clientIn, el('button', { cls: 'act', type: 'button', text: 'Save', onclick: function () {
       api('github/settings', { method: 'POST', body: { clientId: clientIn.value.trim() } }).then(function (g) { I.gh = g; renderIssues(); toast('Saved'); }).catch(function (e) { toast(e.message); });
@@ -389,7 +420,7 @@ export const HOME_JS = String.raw`
     card.appendChild(el('div', { cls: 'meta' }, [
       el('span', { text: 'by ' + i.author + ' - ' + ago(i.createdAt) }),
       i.trusted ? null : el('span', { cls: 'warn-chip', title: 'Opened by someone outside the repo. Read it before you sprint it: its text goes to the helpers as the job description.', text: 'outside contributor' }),
-      el('span', { cls: 'chip', title: 'The design lazyfleet would pick for this issue', text: 'suggests ' + i.suggested.designName }),
+      el('span', { cls: 'chip', title: i.suggested.why || 'The design lazyfleet would pick for this issue', text: 'suggests ' + i.suggested.designName }),
       i.sprint ? el('button', { cls: 'linkish', type: 'button', text: 'View sprint (' + (i.sprint.verdict || i.sprint.status) + ')', onclick: function () { openSprint(i.sprint.runId); } }) : null,
       el('a', { href: i.url, target: '_blank', rel: 'noopener', cls: 'linkish', text: 'On GitHub' })
     ]));
@@ -401,7 +432,7 @@ export const HOME_JS = String.raw`
       var go = el('button', { cls: 'act primary', type: 'button', text: 'Start sprint', onclick: function () {
         if (!folder.value.trim()) { toast('Pick the folder where ' + I.repo + ' is checked out'); folder.focus(); return; }
         go.disabled = true; go.textContent = 'Starting...';
-        api('github/sprint', { method: 'POST', body: { repo: I.repo, number: i.number, folder: folder.value.trim(), design: design.value } }).then(function (r) { toast('Sprint started'); I.folder = folder.value.trim(); openSprint(r.runId); })
+        api('github/sprint', { method: 'POST', body: { repo: I.repo, number: i.number, folder: folder.value.trim(), design: design.value } }).then(function (r) { toast('Sprint started'); I.folder = folder.value.trim(); I.open = null; openSprint(r.runId); })
           .catch(function (e) { toast(e.message); go.disabled = false; go.textContent = 'Start sprint'; });
       } });
       card.appendChild(el('div', { cls: 'drawer-inline' }, [
@@ -414,7 +445,16 @@ export const HOME_JS = String.raw`
         S2.prefill = { name: I.repo.split('/')[1] + ' issues', repo: I.folder || '', source: { type: 'issues', repo: I.repo, labels: I.labels.length ? I.labels : i.labels.slice(0, 1), trustedOnly: true }, design: 'auto', comment: true };
         goTab('schedules', 'new');
       } }));
-      act.appendChild(el('button', { cls: 'act primary', type: 'button', text: i.sprint ? 'Sprint again' : 'Sprint it', onclick: function () { I.open = i.number; renderIssues(); } }));
+      var running = i.sprint && (i.sprint.status === 'running' || i.sprint.status === 'starting');
+      if (running) {
+        act.appendChild(el('button', { cls: 'act', type: 'button', text: 'Sprint again', onclick: function () { if (confirm('A sprint for #' + i.number + ' is still running. Start another one anyway?')) { I.open = i.number; renderIssues(); } } }));
+        act.appendChild(el('button', { cls: 'act primary', type: 'button', text: 'View sprint', onclick: function () { openSprint(i.sprint.runId); } }));
+      } else {
+        act.appendChild(el('button', { cls: 'act primary', type: 'button', text: i.sprint ? 'Sprint again' : 'Sprint it', onclick: function () {
+          if (!i.trusted && !confirm('#' + i.number + ' was opened by ' + i.author + ', who is not an owner, member or collaborator of ' + I.repo + '. Its text becomes the job description for the helpers. Read it first. Sprint it anyway?')) return;
+          I.open = i.number; renderIssues();
+        } }));
+      }
       card.appendChild(act);
     }
     return card;
@@ -425,7 +465,13 @@ export const HOME_JS = String.raw`
     if (!I.gh || !I.gh.signedIn) { issuesRoot.appendChild(signInCard()); return; }
     issuesRoot.appendChild(el('div', { cls: 'hx-top' }, [
       el('div', {}, [el('h2', { text: 'Issues' }), el('div', { cls: 'hx-sub', text: 'Open issues from your GitHub repos. Sprint one now, or let a schedule pick them up.' })]),
-      el('div', { style: 'display:flex; gap:8px; align-items:center' }, [ghChip(I.gh), el('button', { cls: 'act', type: 'button', text: 'Sign out', onclick: function () { api('github/logout', { method: 'POST', body: {} }).then(function () { I.repos = null; I.repo = null; I.issues = null; loadIssues(); }); } })])
+      el('div', { style: 'display:flex; gap:8px; align-items:center' }, [ghChip(I.gh), el('button', { cls: 'act', type: 'button', text: 'Sign out', onclick: function () {
+        api('schedules').then(function (r) {
+          var n = r.schedules.filter(function (x) { return x.enabled && x.source.type === 'issues'; }).length;
+          if (!confirm('Sign out of GitHub?' + (n ? '\n\n' + n + ' schedule' + (n === 1 ? ' picks' : 's pick') + ' up GitHub issues and will skip until you sign in again. Results of finished sprints are posted once you are back.' : ''))) return;
+          return api('github/logout', { method: 'POST', body: {} }).then(function () { I.repos = null; I.repo = null; I.issues = null; loadIssues(); });
+        });
+      } })])
     ]));
     var search = el('input', { type: 'text', placeholder: 'Find a repo', value: I.filter, 'aria-label': 'Find a repo' });
     var list = el('div', { cls: 'repo-list' });
@@ -433,7 +479,7 @@ export const HOME_JS = String.raw`
       list.textContent = '';
       (I.repos || []).filter(function (r) { return !I.filter || r.fullName.toLowerCase().indexOf(I.filter.toLowerCase()) !== -1; }).forEach(function (r) {
         list.appendChild(el('button', { type: 'button', cls: 'repo' + (r.fullName === I.repo ? ' on' : ''), onclick: function () { I.repo = r.fullName; I.labels = []; I.open = null; loadRepoIssues().then(renderIssues); } }, [
-          el('b', { text: r.fullName }), el('small', { text: r.openIssues + ' open' + (r.private ? ' - private' : '') + (r.folder ? ' - linked to a folder' : '') })
+          el('b', { text: r.fullName }), el('small', { title: 'GitHub counts open pull requests too', text: r.openIssues + ' open items' + (r.private ? ' - private' : '') + (r.folder ? ' - linked to a folder' : '') })
         ]));
       });
       if (!list.childNodes.length) list.appendChild(el('div', { cls: 'note', text: 'No repos match.' }));
@@ -479,9 +525,14 @@ export const HOME_JS = String.raw`
         el('div', { style: 'display:flex; gap:6px' }, [
           el('button', { cls: 'act', type: 'button', text: 'Run now', onclick: function (ev) {
             var b = ev.target; b.disabled = true; b.textContent = 'Starting...';
-            api('schedules/' + s.id + '/run', { method: 'POST', body: {} }).then(function (r) {
+            var done = function (r) {
               toast(r.runId ? 'Sprint started' : (r.last ? r.last.text : 'Not started'));
               if (r.runId) openSprint(r.runId); else loadSchedules();
+            };
+            api('schedules/' + s.id + '/run', { method: 'POST', body: {} }).then(function (r) {
+              if (!r.needsConfirm) return done(r);
+              if (!confirm('This would normally not start now:\n\n- ' + r.warnings.join('\n- ') + '\n\nStart it anyway?')) { b.disabled = false; b.textContent = 'Run now'; return; }
+              return api('schedules/' + s.id + '/run', { method: 'POST', body: { override: true } }).then(done);
             }).catch(function (e) { toast(e.message); loadSchedules(); });
           } }),
           el('button', { cls: 'act', type: 'button', text: 'Edit', onclick: function () { S2.editing = JSON.parse(JSON.stringify(s)); renderSchedules(); } }),
@@ -489,6 +540,7 @@ export const HOME_JS = String.raw`
         ])
       ]),
       el('div', { cls: 'sentence', text: sentence(s) }),
+      el('div', { cls: 'next' }, ['In ', el('code', { title: s.repo, text: s.repo })]),
       el('div', { cls: 'next', text: s.enabled ? (s.nextAt ? 'Next: ' + clock(s.nextAt) + ' (' + until(s.nextAt) + ')' + (s.retryAt ? ' - retrying after a skip' : '') : '') : 'Off' }),
       s.log.length ? el('details', {}, [el('summary', { style: 'cursor:pointer; color:var(--muted); font-size:13px', text: 'What it did (' + s.log.length + ')' }), logList]) : el('div', { cls: 'next', text: 'Has not run yet.' })
     ]);
@@ -503,11 +555,14 @@ export const HOME_JS = String.raw`
       limits: s.limits || { perDay: 1 }, requireClean: s.requireClean !== false, comment: s.comment !== false, enabled: s.enabled !== false
     };
     if (d.source.type === 'issues' && Array.isArray(d.source.labels)) d.source.labels = d.source.labels.join(', ');
-    var preview = el('div', { cls: 'preview-line', text: '...' });
-    function changed() {
+    var preview = el('div', { cls: 'preview-line', text: 'Fill in the steps below; a summary of when it runs appears here.' });
+    var touched = !!s.id;
+    function changed(fromUser) {
+      if (fromUser !== false) touched = true;
       clearTimeout(S2.previewTimer);
       S2.previewTimer = setTimeout(function () {
         api('schedules/preview', { method: 'POST', body: d }).then(function (r) {
+          if (!r.ok && !touched) return;
           preview.className = 'preview-line' + (r.ok ? '' : ' bad');
           preview.textContent = r.ok ? r.whenText + '. First run ' + clock(r.nextAt) + ' (' + until(r.nextAt) + ').' : r.error;
         });
@@ -543,7 +598,10 @@ export const HOME_JS = String.raw`
         });
         what.appendChild(el('label', {}, ['GitHub repo', repoIn, repoList]));
         what.appendChild(el('label', {}, ['Labels (all must match)', text(d.source, 'labels', 'lazyfleet')]));
-        what.appendChild(check('Only issues from the repo\'s owners, members and collaborators', d.source, 'trustedOnly'));
+        var trust = check('Only issues from the repo\'s owners, members and collaborators', d.source, 'trustedOnly');
+        trust.querySelector('input').addEventListener('change', function () { draw(); changed(); });
+        what.appendChild(trust);
+        if (d.source.trustedOnly === false) what.appendChild(el('div', { cls: 'wide warn-chip', style: 'border-radius:8px; padding:8px 10px; font-size:13px', text: 'Anyone who can open an issue with these labels can now start a sprint, and the issue text becomes the helpers\' job description. Keep this on unless only your team can add these labels.' }));
         what.appendChild(check('Comment on the issue when the sprint finishes', d, 'comment'));
       } else {
         what.appendChild(el('label', { cls: 'wide' }, ['The job', text(d.source, 'ask', 'e.g. Update dependencies, fix anything that breaks, and keep the tests green.', true)]));
@@ -585,7 +643,7 @@ export const HOME_JS = String.raw`
       ]));
     }
     draw();
-    changed();
+    changed(false);
     return box;
   }
 
@@ -609,6 +667,82 @@ export const HOME_JS = String.raw`
   }
 
   // =========================================================================
+  // First-run welcome
+  // =========================================================================
+  var W = { step: 0, data: null };
+  function closeWelcome(done) {
+    var b = document.querySelector('.wel-back'); if (b) b.remove();
+    if (done) api('welcome/done', { method: 'POST', body: {} }).catch(function () {});
+  }
+  function welcome() {
+    var back = document.querySelector('.wel-back');
+    if (!back) { back = el('div', { cls: 'wel-back', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Welcome to lazyfleet' }); document.body.appendChild(back); }
+    back.textContent = '';
+    var box = el('div', { cls: 'wel' });
+    back.appendChild(box);
+    box.appendChild(el('div', { cls: 'dots' }, [0, 1, 2].map(function (i) { return el('i', { cls: i <= W.step ? 'on' : '' }); })));
+    var d = W.data;
+    if (W.step === 0) {
+      box.appendChild(el('h2', {}, ['Welcome to lazy', el('span', { text: 'fleet' })]));
+      box.appendChild(el('p', { text: 'It is already running, and Claude Code already goes through it. Nothing to configure. Here is what it does for you:' }));
+      [['*', 'Secrets stay secret', 'Paste keys and passwords straight into Claude. It only ever sees a stand-in; the real value is used when a command runs.'],
+       ['>', 'Whole jobs, handed off', 'Describe a job and helpers plan it, build it in private copies of your project, and review it while you keep working.'],
+       ['#', 'Your GitHub issues, on autopilot', 'Turn any issue into a sprint with one click, or let a schedule pick up labeled issues overnight and report back.']
+      ].forEach(function (f) { box.appendChild(el('div', { cls: 'feat' }, [el('div', { cls: 'ic', text: f[0] }), el('div', {}, [el('b', { text: f[1] }), el('span', { text: f[2] })])])); });
+      box.appendChild(el('div', { cls: 'foot' }, [
+        el('button', { cls: 'linkish', type: 'button', text: 'Skip setup', onclick: function () { closeWelcome(true); } }),
+        el('button', { cls: 'act primary', type: 'button', text: 'Quick setup (1 minute)', onclick: function () { W.step = 1; welcome(); } })
+      ]));
+    } else if (W.step === 1) {
+      box.appendChild(el('h2', { text: 'Connect GitHub' }));
+      box.appendChild(el('p', { text: 'Optional. It lets lazyfleet show your issues and turn them into sprints. The sign-in is kept in the vault, so Claude never sees it.' }));
+      var next = function () { W.step = 2; welcome(); };
+      if (d.github.signedIn) {
+        box.appendChild(el('div', { cls: 'opt best' }, [el('b', { text: 'Connected as ' + d.github.login }), el('p', { text: 'Your issues are on the Issues tab.' })]));
+      } else {
+        if (d.ghCli) box.appendChild(el('div', { cls: 'opt best' }, [
+          el('b', { text: 'Use your GitHub CLI login' }), el('p', { text: 'Found a signed-in GitHub CLI (gh) on this machine. One click, nothing copied.' }),
+          el('div', {}, [el('button', { cls: 'act primary', type: 'button', text: 'Use gh login', onclick: function (e) {
+            e.target.disabled = true;
+            api('github/use-cli', { method: 'POST', body: {} }).then(function (r) { toast('Connected as ' + r.login); d.github.signedIn = true; d.github.login = r.login; next(); }).catch(function (err) { toast(err.message); e.target.disabled = false; });
+          } })])
+        ]));
+        var tok = el('input', { type: 'password', placeholder: 'ghp_... or github_pat_...', 'aria-label': 'GitHub token' });
+        box.appendChild(el('div', { cls: 'opt' + (d.ghCli ? '' : ' best') }, [
+          el('b', { text: 'Paste a token' }), el('p', { text: 'A fine-grained token with Issues read and write on your repos. Create one at github.com/settings/tokens.' }),
+          el('div', { cls: 'row2' }, [tok, el('button', { cls: 'act' + (d.ghCli ? '' : ' primary'), type: 'button', text: 'Connect', onclick: function () {
+            api('github/token', { method: 'POST', body: { token: tok.value.trim() } }).then(function (r) { toast('Connected as ' + r.login); d.github.signedIn = true; d.github.login = r.login; next(); }).catch(function (err) { toast(err.message); });
+          } })])
+        ]));
+        if (d.github.clientIdSet) box.appendChild(el('div', {}, [el('button', { cls: 'linkish', type: 'button', text: 'Or sign in with GitHub in the browser ->', onclick: function () { closeWelcome(false); goTab('issues'); } })]));
+      }
+      box.appendChild(el('div', { cls: 'foot' }, [
+        el('button', { cls: 'linkish', type: 'button', text: d.github.signedIn ? 'Back' : 'Skip for now', onclick: function () { if (d.github.signedIn) { W.step = 0; welcome(); } else next(); } }),
+        el('button', { cls: 'act primary', type: 'button', text: 'Next', onclick: next })
+      ]));
+    } else {
+      box.appendChild(el('h2', { text: 'You are set' }));
+      box.appendChild(el('p', { text: 'lazyfleet keeps running in the background and starts again when you log in. Three ways back to this page:' }));
+      var url = d.pageUrl;
+      box.appendChild(el('div', { cls: 'how' }, [
+        el('span', { cls: 'n', text: '1' }), el('div', {}, [el('b', { text: 'Bookmark it' }), el('div', {}, [el('code', { text: url }), ' ', el('button', { cls: 'linkish', type: 'button', text: 'Copy', onclick: function () { navigator.clipboard.writeText(url).then(function () { toast('Copied'); }); } })])]),
+        el('span', { cls: 'n', text: '2' }), el('div', {}, [el('b', { text: 'From any terminal' }), el('div', {}, [el('code', { text: 'lazyfleet ui' }), ' opens it; ', el('code', { text: 'lazyfleet status' }), ' checks everything is on.'])]),
+        el('span', { cls: 'n', text: '3' }), el('div', {}, [el('b', { text: 'From Claude' }), el('div', { text: 'Ask for a bigger job as usual. Claude offers to hand it to a sprint and gives you the link.' })])
+      ]));
+      box.appendChild(el('div', { cls: 'foot' }, [
+        el('button', { cls: 'linkish', type: 'button', text: 'Back', onclick: function () { W.step = 1; welcome(); } }),
+        el('button', { cls: 'act primary', type: 'button', text: 'Start my first sprint', onclick: function () {
+          closeWelcome(true); goTab('home');
+          setTimeout(function () { var t = document.querySelector('.composer textarea'); if (t) t.focus(); }, 400);
+        } })
+      ]));
+    }
+    var first = box.querySelector('button.primary'); if (first) first.focus();
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && document.querySelector('.wel-back')) closeWelcome(true); });
+  api('welcome').then(function (r) { W.data = r; if (!r.done) welcome(); }).catch(function () {});
+
+  // =========================================================================
   // Wiring
   // =========================================================================
   var current = null;
@@ -619,6 +753,7 @@ export const HOME_JS = String.raw`
   }
   window.addEventListener('lazy:tab', function (e) {
     current = e.detail;
+    designsCache = null;
     if (current === 'schedules' && /^#schedules\/new/.test(location.hash) && !S2.prefill) S2.prefill = {};
     refresh();
   });

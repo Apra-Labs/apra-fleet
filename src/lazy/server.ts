@@ -15,7 +15,7 @@ import { getAllAgents } from '../services/registry.js';
 import { isAutoMember } from '../services/member-reaper.js';
 import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
 import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
-import { checkDesign, deleteDesign, designSteps, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
+import { checkDesign, deleteDesign, designSteps, designWarnings, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
 import { handleFleet, startScheduler, type FleetDeps } from './api-fleet.js';
 
 export interface SprintDeps {
@@ -136,7 +136,7 @@ async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse
     const d = (await readJson(req)) as Design;
     try {
       await checkDesign(d);
-      json(res, 200, { ok: true, steps: designSteps(d) });
+      json(res, 200, { ok: true, steps: designSteps(d), warnings: designWarnings(d) });
     } catch (e) {
       json(res, 200, { ok: false, error: (e as Error).message, steps: designSteps(d) });
     }
@@ -228,7 +228,8 @@ export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<
     const t = url.searchParams.get('t');
     if (t && safeEqual(t, config.uiToken)) {
       res.writeHead(302, {
-        'set-cookie': `lazy_t=${encodeURIComponent(config.uiToken)}; HttpOnly; SameSite=Strict; Path=/_lazy`,
+        // Kept for a year so a bookmark of the page keeps working; the token never leaves this machine.
+        'set-cookie': `lazy_t=${encodeURIComponent(config.uiToken)}; HttpOnly; SameSite=Strict; Path=/_lazy; Max-Age=31536000`,
         location: '/_lazy/',
       });
       res.end();
@@ -312,6 +313,12 @@ export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<
     activity.totals.requests += url.pathname.startsWith('/_lazy') ? 0 : 1;
     if (url.pathname === '/_lazy' || url.pathname.startsWith('/_lazy/')) {
       handleUi(req, res, url).catch(e => json(res, 500, { error: (e as Error).message }));
+      return;
+    }
+    // DNS-rebinding guard for the proxy too: a web page that rebinds a name to
+    // 127.0.0.1 must not be able to send placeholders through and read secrets back.
+    if (!allowedHosts().has(String(req.headers.host))) {
+      json(res, 403, { type: 'error', error: { type: 'permission_error', message: 'lazyfleet only answers on its own address (127.0.0.1)' } });
       return;
     }
     proxy(req, res).catch(e => {

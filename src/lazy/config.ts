@@ -38,7 +38,8 @@ export const DEFAULT_PORT = 7777;
 
 function defaults(): LazyConfig {
   return {
-    port: DEFAULT_PORT,
+    // LAZYFLEET_PORT picks the port for a fresh install (a second user, a test home).
+    port: Number(process.env.LAZYFLEET_PORT) > 0 ? Number(process.env.LAZYFLEET_PORT) : DEFAULT_PORT,
     upstream: 'https://api.anthropic.com',
     detection: { context: true, entropy: true },
     helpers: { maxParallel: 3, idleMinutes: 120, askBeforeRemote: true },

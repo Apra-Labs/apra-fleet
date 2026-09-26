@@ -169,6 +169,8 @@ export interface Board {
   members: string[];
   phases: Array<{ title: string; startedAt?: string; endedAt?: string | null; current: boolean }>;
   currentPhase?: string;
+  /** The current step in plain words: "Building (round 2)", "Final review", "Custom step: Docs". */
+  phaseText?: string;
   /** The five plain stages for the current cycle. */
   stages: Array<{ stage: Stage; state: 'done' | 'current' | 'todo' }>;
   cycle: number;
@@ -256,12 +258,29 @@ export function mentionedIds(text: string, ids: string[]): string[] {
 }
 
 /** What a helper is doing, in plain words instead of the engine's step names. */
+const STAGE_WORDS: Record<Stage, string> = { Plan: 'Planning', Build: 'Building', Review: 'Reviewing', Test: 'Testing', 'Wrap up': 'Wrapping up' };
+
+/** An engine phase title in plain words, for lists and headers. */
+export function phaseText(title: string, cycle: number): string {
+  const block = /^Block:\s*(.+?)(\s+C\d+)?$/i.exec(title);
+  if (block) return `Custom step: ${block[1]}`;
+  if (/^final review/i.test(title)) return 'Final review';
+  const { stage } = stageOf(title);
+  if (!stage) return title;
+  return STAGE_WORDS[stage] + (cycle > 1 && stage !== 'Wrap up' ? ` (round ${cycle})` : '');
+}
+
 export function describeActivity(label: string, taskIds: string[], titleOf: (id: string) => string | undefined): string {
   const l = label.trim();
   const first = taskIds[0] ? titleOf(taskIds[0]) ?? taskIds[0] : '';
   const more = taskIds.length > 1 ? ` (+${taskIds.length - 1} more)` : '';
   const on = first ? `: ${first}${more}` : '';
+  if (/^block:\s*(.+?)(\s+C\d+)?$/i.test(l)) return `Custom step: ${l.replace(/^block:\s*/i, '').replace(/\s+C\d+$/, '')}`;
   if (/streak assignment/i.test(l)) return 'Splitting the work between helpers';
+  if (/review the beads dag/i.test(l)) return 'Checking the plan';
+  if (/analyze the sprint scope|build pipeline mode/i.test(l)) return 'Planning the work and creating issues';
+  if (/review the work just done/i.test(l)) return `Reviewing${on}`;
+  if (/harvest durable knowledge/i.test(l)) return 'Writing up what was learned';
   if (/plan review|review.*plan/i.test(l)) return 'Checking the plan';
   if (/re-?plan/i.test(l)) return 'Re-planning what is left';
   if (/planner|^plan\b/i.test(l)) return 'Planning the work and creating issues';
@@ -479,6 +498,7 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
     members: state.args?.members ?? [],
     phases,
     currentPhase: current ? stageOf(current.title).stage ?? current.title : undefined,
+    phaseText: current ? phaseText(current.title, cycle) : undefined,
     stages,
     cycle,
     columns: COLUMNS,

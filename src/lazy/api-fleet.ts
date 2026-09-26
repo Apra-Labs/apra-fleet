@@ -3,6 +3,7 @@
  * Routes live under /_lazy/api/ next to the sprint routes; the caller has
  * already checked the sign-in cookie and the CSRF header.
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -13,6 +14,28 @@ import { listDesigns } from './sprints/designs.js';
 import { listSprints } from './sprints/index.js';
 import { loadRegistry, markIssueReported, type LaunchInput } from './sprints/launcher.js';
 import * as sched from './schedules.js';
+import { lazyDir } from './config.js';
+
+/** First-run welcome: done once, never nagging again. */
+function welcomeFile(): string {
+  return path.join(lazyDir(), 'welcome.json');
+}
+export function welcomeDone(): boolean {
+  try {
+    return JSON.parse(fs.readFileSync(welcomeFile(), 'utf-8')).done === true;
+  } catch {
+    return false;
+  }
+}
+export function markWelcomeDone(): void {
+  fs.mkdirSync(lazyDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(welcomeFile(), JSON.stringify({ done: true, at: new Date().toISOString() }) + '\n');
+}
+function ghCliReady(): Promise<boolean> {
+  return new Promise(resolve => {
+    import('node:child_process').then(({ execFile }) => execFile('gh', ['auth', 'token'], { timeout: 8000 }, err => resolve(!err)));
+  });
+}
 
 export interface FleetDeps {
   vault: Vault;
@@ -103,12 +126,12 @@ async function needToken(vault: Vault): Promise<string> {
   return t;
 }
 
-async function signIn(vault: Vault, token: string, source: 'vault' | 'gh') {
+const TOKEN_RE = /^(gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})$/;
+
+async function signIn(vault: Vault, token: string, source: 'stored' | 'gh') {
   const me = await gh.whoami(token);
-  if (source === 'vault') {
-    if (vault.valueOf(gh.TOKEN_NAME) !== undefined) vault.delete(gh.TOKEN_NAME);
-    vault.add(gh.TOKEN_NAME, token, 'GitHub sign-in for lazyfleet (issues and comments)', false);
-  }
+  if (source === 'stored') gh.saveStoredToken(token);
+  if (vault.valueOf(gh.TOKEN_NAME) !== undefined) vault.delete(gh.TOKEN_NAME);
   gh.updateGithubSettings({ source, login: me.login, avatarUrl: me.avatarUrl });
   return me;
 }
@@ -117,6 +140,45 @@ function scheduleView(s: sched.Schedule, now: Date) {
   const due = sched.isDue(s, now);
   const next = !s.enabled ? null : s.retryAt ? s.retryAt : due ? now.toISOString() : sched.nextRun(s, new Date(Math.max(now.getTime(), Date.parse(s.lastFiredAt ?? s.createdAt)))).toISOString();
   return { ...s, whenText: sched.describeWhen(s), nextAt: next, log: s.log.slice(-20).reverse() };
+}
+
+/** A project folder has to be a git checkout; the path alone is not enough. */
+export function checkProjectFolder(folder: string): void {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(folder);
+  } catch {
+    throw new Error(`${folder} does not exist`);
+  }
+  if (!st.isDirectory()) throw new Error(`${folder} is a file, not a project folder`);
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: folder, stdio: 'ignore', timeout: 10000 });
+  } catch {
+    throw new Error(`${folder} is not a git checkout; sprints work on git projects`);
+  }
+}
+
+/** The GitHub repo a checkout's origin points at, if it is on GitHub. */
+function remoteRepo(folder: string): string | null {
+  try {
+    return gh.repoFromRemote(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: folder, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 }));
+  } catch {
+    return null;
+  }
+}
+
+/** A folder picked for a GitHub repo must not be a checkout of a different one. */
+export function checkFolderMatchesRepo(folder: string, repo: string): void {
+  const r = remoteRepo(folder);
+  if (r && r.toLowerCase() !== repo.toLowerCase()) throw new Error(`${folder} is a checkout of ${r}, not ${repo}`);
+}
+
+function checkScheduleTarget(raw: any): void {
+  const folder = String(raw?.repo ?? '').trim();
+  if (folder && path.isAbsolute(folder)) checkProjectFolder(folder);
+  if (raw?.source?.type === 'issues' && raw.source.repo && folder) checkFolderMatchesRepo(folder, gh.validRepo(raw.source.repo));
+  const design = String(raw?.design ?? 'auto');
+  if (design !== 'auto' && !listDesigns(folder || undefined).some(d => d.id === design)) throw new Error(`There is no sprint design called "${design}"`);
 }
 
 /** Folder for a GitHub repo: remembered, or found among this machine's recent sprints. */
@@ -158,6 +220,17 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     return true;
   }
 
+  // ---- first-run welcome --------------------------------------------------
+  if (p === '/welcome' && m === 'GET') {
+    send(res, 200, { done: welcomeDone(), github: await githubStatus(deps.vault), ghCli: await ghCliReady(), pageUrl: `http://${req.headers.host}/_lazy/` });
+    return true;
+  }
+  if (p === '/welcome/done' && m === 'POST') {
+    markWelcomeDone();
+    send(res, 200, { ok: true });
+    return true;
+  }
+
   // ---- advisor ------------------------------------------------------------
   if (p === '/advisor/recommend' && m === 'POST') {
     const b = await body(req);
@@ -185,8 +258,9 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
   }
   if (p === '/github/token' && m === 'POST') {
     const token = String((await body(req)).token ?? '').trim();
-    if (token.length < 20) throw new Error('Paste the whole token');
-    const me = await signIn(deps.vault, token, 'vault');
+    if (token.length > 300) throw new Error('That is too long for a token; paste only the token itself');
+    if (!TOKEN_RE.test(token)) throw new Error('That does not look like a GitHub token. They start with ghp_, gho_ or github_pat_ and have no spaces.');
+    const me = await signIn(deps.vault, token, 'stored');
     send(res, 200, { ok: true, login: me.login });
     return true;
   }
@@ -209,13 +283,14 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     const s = gh.loadGithubSettings();
     const r = await gh.pollDeviceFlow(s.clientId ?? '', String((await body(req)).deviceCode ?? ''));
     if (r.token) {
-      const me = await signIn(deps.vault, r.token, 'vault');
+      const me = await signIn(deps.vault, r.token, 'stored');
       send(res, 200, { ok: true, login: me.login });
     } else send(res, 200, { pending: true, slowDown: !!r.slowDown });
     return true;
   }
   if (p === '/github/logout' && m === 'POST') {
     if (deps.vault.valueOf(gh.TOKEN_NAME) !== undefined) deps.vault.delete(gh.TOKEN_NAME);
+    gh.clearStoredToken();
     const s = gh.loadGithubSettings();
     gh.saveGithubSettings({ clientId: s.clientId, projects: s.projects });
     send(res, 200, { ok: true });
@@ -244,7 +319,7 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
           ...i, body: i.body.slice(0, 1200),
           trusted: gh.TRUSTED_ASSOCIATIONS.has(i.association),
           sprint: hit ? { runId: hit.runId, status: run?.status ?? 'unknown', verdict: run?.verdict ?? null } : null,
-          suggested: { designId: r.designId, designName: r.designName, kind: r.profile.kind, size: r.profile.size },
+          suggested: { designId: r.designId, designName: r.designName, kind: r.profile.kind, size: r.profile.size, why: r.reasons.slice(0, 2).join(' ') },
         };
       }),
     });
@@ -254,7 +329,9 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     const b = await body(req);
     const repo = gh.validRepo(b.repo);
     const folder = String(b.folder ?? '').trim();
-    if (!path.isAbsolute(folder) || !fs.existsSync(path.join(folder, '.git'))) throw new Error('Pick the folder where this repo is checked out (it needs a .git folder)');
+    if (!path.isAbsolute(folder)) throw new Error('Pick the folder where this repo is checked out (a full path)');
+    checkProjectFolder(folder);
+    checkFolderMatchesRepo(folder, repo);
     gh.rememberProjectFolder(repo, folder);
     send(res, 200, { ok: true });
     return true;
@@ -262,10 +339,15 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
   if (p === '/github/sprint' && m === 'POST') {
     const b = await body(req);
     const repo = gh.validRepo(b.repo);
+    const n = b.number;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) throw new Error('The issue number must be a whole number');
     const token = await needToken(deps.vault);
-    const issue = await gh.getIssue(token, repo, Number(b.number));
     const folder = folderFor(repo, b.folder);
     if (!folder) throw new Error(`Pick the folder where ${repo} is checked out on this machine`);
+    if (!path.isAbsolute(folder)) throw new Error('Pick the folder where this repo is checked out (a full path)');
+    checkProjectFolder(folder);
+    checkFolderMatchesRepo(folder, repo);
+    const issue = await gh.getIssue(token, repo, n);
     if (b.folder) gh.rememberProjectFolder(repo, folder);
     const ask = gh.askFromIssue(issue);
     const design = String(b.design || '') || recommend(ask, folder).designId;
@@ -280,7 +362,9 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     return true;
   }
   if (p === '/schedules' && m === 'POST') {
-    const saved = sched.saveSchedule(await body(req));
+    const raw = await body(req);
+    checkScheduleTarget(raw);
+    const saved = sched.saveSchedule(raw);
     send(res, 200, { ok: true, schedule: scheduleView(saved, now) });
     return true;
   }
@@ -306,7 +390,12 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     if (action === 'run') {
       const s = sched.loadSchedules().find(x => x.id === id);
       if (!s) { send(res, 404, { error: 'no such schedule' }); return true; }
-      const runId = await sched.fire(s, schedulerDeps(deps), { force: true });
+      const override = (await body(req)).override === true;
+      if (!override) {
+        const warnings = await sched.runNowWarnings(s, schedulerDeps(deps));
+        if (warnings.length) { send(res, 200, { needsConfirm: true, warnings }); return true; }
+      }
+      const runId = await sched.fire(s, schedulerDeps(deps), { override });
       const after = sched.loadSchedules().find(x => x.id === id);
       send(res, 200, { ok: true, runId, last: after?.log.slice(-1)[0] ?? null });
       return true;

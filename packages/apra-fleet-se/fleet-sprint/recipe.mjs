@@ -138,9 +138,9 @@ export function recipeProblems(recipe) {
     const out = [];
     const hasWork = recipe.build.mode !== 'off' || recipe.blocks.some((b) => b.kind === 'work');
     const hasAnything = hasWork || recipe.blocks.length > 0 || recipe.test.run !== 'off' || recipe.finish.finalReview;
-    if (!hasAnything) out.push('this design does nothing: turn on Build, a test, a custom block or the final review');
+    if (!hasAnything) out.push('This design does nothing. Turn on Build, the project tests, a custom step or the final review');
     if (recipe.build.mode === 'off' && recipe.plan.run !== 'off' && !recipe.blocks.some((b) => b.kind === 'work')) {
-        out.push('Plan makes tasks, but nothing builds them: turn Build on or Plan off');
+        out.push('Plan makes tasks, but nothing builds them. Turn Build on, or Plan off');
     }
     return out;
 }

@@ -3,7 +3,7 @@
 // LAZYFLEET_GITHUB_API and LAZYFLEET_GITHUB_WEB set to its URL.
 import http from 'node:http';
 
-export async function startFakeGithub({ token = 'gho_fake_token_0123456789abcdef', login = 'octo-dev', repos, pendingPolls = 1 } = {}) {
+export async function startFakeGithub({ token = 'gho_FakeToken0123456789abcdefABCDEF01', login = 'octo-dev', repos, pendingPolls = 1 } = {}) {
   const state = {
     token,
     login,

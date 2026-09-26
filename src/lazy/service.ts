@@ -38,10 +38,40 @@ function xml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export function installService(): void {
-  const { command, args } = serveCommand();
-  fs.mkdirSync(lazyDir(), { recursive: true, mode: 0o700 });
+export interface ServiceResult {
+  /** True when it starts again on its own after a reboot or login. */
+  autostart: boolean;
+  /** Something the person should know, in plain words. */
+  note?: string;
+}
 
+function lingerOff(): boolean {
+  try {
+    const user = os.userInfo().username;
+    return /Linger=no/.test(execFileSync('loginctl', ['show-user', user, '-p', 'Linger'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return false;
+  }
+}
+
+export function installService(): ServiceResult {
+  fs.mkdirSync(lazyDir(), { recursive: true, mode: 0o700 });
+  // LAZYFLEET_SERVICE=detached: no login service (containers, CI, test homes).
+  if (process.env.LAZYFLEET_SERVICE === 'detached') {
+    startDetached();
+    return { autostart: false, note: 'Started without a login service (LAZYFLEET_SERVICE=detached); run `lazyfleet on` after a reboot.' };
+  }
+  try {
+    return installLoginService();
+  } catch {
+    // No user service manager here (no systemd user session, say): still run now.
+    startDetached();
+    return { autostart: false, note: 'This machine has no user service manager, so lazyfleet will not start on its own after a reboot. Run `lazyfleet on` when you log in (or add it to your shell profile).' };
+  }
+}
+
+function installLoginService(): ServiceResult {
+  const { command, args } = serveCommand();
   if (process.platform === 'linux') {
     fs.mkdirSync(path.dirname(unitPath()), { recursive: true });
     fs.writeFileSync(
@@ -63,10 +93,12 @@ export function installService(): void {
         '',
       ].join('\n'),
     );
-    execFileSync('systemctl', ['--user', 'daemon-reload']);
+    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'enable', UNIT], { stdio: 'ignore' });
-    execFileSync('systemctl', ['--user', 'restart', UNIT]);
-    return;
+    execFileSync('systemctl', ['--user', 'restart', UNIT], { stdio: 'ignore' });
+    return lingerOff()
+      ? { autostart: true, note: 'It starts when you log in. To keep it running while you are logged out (a server, say): loginctl enable-linger' }
+      : { autostart: true };
   }
 
   if (process.platform === 'darwin') {
@@ -90,17 +122,18 @@ export function installService(): void {
       // not loaded yet
     }
     execFileSync('launchctl', ['bootstrap', domain, plistPath()]);
-    return;
+    return { autostart: true };
   }
 
   if (process.platform === 'win32') {
     const tr = [command, ...args].map(a => `"${a}"`).join(' ');
     execFileSync('schtasks', ['/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', 'lazyfleet', '/TR', tr], { stdio: 'ignore' });
     startDetached();
-    return;
+    return { autostart: true };
   }
 
   startDetached();
+  return { autostart: false, note: 'lazyfleet does not know how to start itself on this system; run `lazyfleet on` after a reboot.' };
 }
 
 export function uninstallService(): void {
@@ -137,9 +170,14 @@ export function uninstallService(): void {
 }
 
 export function restartService(): void {
-  if (process.platform === 'linux') execFileSync('systemctl', ['--user', 'restart', UNIT]);
-  else if (process.platform === 'darwin') execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${LABEL}`]);
-  else startDetached();
+  try {
+    if (process.env.LAZYFLEET_SERVICE === 'detached') startDetached();
+    else if (process.platform === 'linux') execFileSync('systemctl', ['--user', 'restart', UNIT], { stdio: 'ignore' });
+    else if (process.platform === 'darwin') execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${LABEL}`]);
+    else startDetached();
+  } catch {
+    startDetached();
+  }
 }
 
 function startDetached(): void {

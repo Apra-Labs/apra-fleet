@@ -169,6 +169,13 @@ pre.log { background: var(--panel); border: 1px solid var(--line); border-radius
 .pill.verdict-fail { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 .pill.verdict-pass { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 @media (max-width: 820px) { .dz { grid-template-columns: 1fr; } }
+.result-panel { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.result-panel.bad { border-left-color: var(--warn); }
+.result-panel .try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.result-panel .try code { background: var(--chip); border-radius: 6px; padding: 4px 8px; overflow-x: auto; max-width: 100%; }
+.result-panel .notes { white-space: pre-wrap; color: var(--muted); font-size: 13px; margin-top: 6px; max-height: 320px; overflow: auto; }
+.dz-ed [data-off] { opacity: .45; }
+.dz-warn { font-size: 13px; color: var(--warn); }
 `;
 
 export const SPRINTS_HTML = String.raw`
@@ -230,7 +237,14 @@ export const SPRINTS_JS = String.raw`
     if (m < 60) return m + 'm ' + (s % 60) + 's';
     return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
   }
-  function ago(iso) { if (!iso) return '-'; return dur(Date.now() - Date.parse(iso)) + ' ago'; }
+  function ago(iso) {
+    if (!iso) return '-';
+    var ms = Date.now() - Date.parse(iso);
+    if (ms >= 2 * 86400000) return Math.floor(ms / 86400000) + ' days ago';
+    if (ms >= 86400000) return 'yesterday';
+    return dur(ms) + ' ago';
+  }
+  function base(p) { return String(p || '').split('/').filter(Boolean).pop() || ''; }
   function money(n) { return '$' + (n || 0).toFixed(2); }
   function statusPill(status) {
     var live = status === 'running' || status === 'starting';
@@ -357,6 +371,7 @@ export const SPRINTS_JS = String.raw`
       grid.appendChild(el('div', { cls: 'sp-item', onclick: function () { go(s.runId); } }, [
         el('div', { cls: 'sp-meta' }, [statusPill(s.status), s.verdict ? verdictPill(s.verdict) : null, s.currentPhase ? el('span', { text: s.currentPhase }) : null, s.design ? el('span', { cls: 'chip-d', text: s.design }) : null, el('span', { text: ago(s.startedAt) })]),
         el('h3', { text: s.title }),
+        s.repo ? el('div', { cls: 'sp-meta' }, [el('span', { title: s.repo, text: base(s.repo) })]) : null,
         bar(s.progress.done, s.progress.total),
         el('div', { cls: 'sp-meta' }, [
           el('span', { text: s.progress.total ? s.progress.done + ' of ' + s.progress.total + ' done' : (s.status === 'starting' ? 'Setting up' : 'Planning') }),
@@ -467,6 +482,7 @@ export const SPRINTS_JS = String.raw`
       return;
     }
     if (b.progress.total) root.appendChild(el('div', { style: 'margin: -6px 0 12px' }, [bar(b.progress.done, b.progress.total)]));
+    if (!live && rec) root.appendChild(resultPanel(v, b, rec));
 
     var tabs = [['board', 'Board', b.cards.length], ['helpers', 'Helpers', b.helpersNow.length], ['code', 'Code changes', S.code && S.code.available ? S.code.totals.files : null], ['log', 'Log', null]];
     var nav = el('div', { cls: 'subnav' });
@@ -483,11 +499,11 @@ export const SPRINTS_JS = String.raw`
 
   // Which design step the engine is on now, from its current phase title.
   function stepNow(b, design) {
-    var t = String(b.currentPhase || '');
+    var t = String(b.phaseText || b.currentPhase || '');
     if (!b.live || !t) return null;
-    var m = /^Block: (.+?)( C\d+)?$/.exec(t);
+    var m = /^Custom step: (.+)$/.exec(t);
     if (m) return m[1];
-    if (/^Final Review/i.test(t)) return 'Final review';
+    if (/^Final review/i.test(t)) return 'Final review';
     var cur = (b.stages || []).filter(function (x) { return x.state === 'current'; })[0];
     return cur ? cur.stage : null;
   }
@@ -497,6 +513,26 @@ export const SPRINTS_JS = String.raw`
     if (b.cycle > 1) wrap.appendChild(el('span', { cls: 'chip-d', title: 'The sprint loops back when review or testing finds more to do', text: 'Round ' + b.cycle }));
     return wrap;
   }
+  // What a finished sprint produced, and what to do next.
+  function resultPanel(v, b, rec) {
+    var r = b.result || {};
+    var head = { PASS: 'Done. The final reviewer passed it.', FAIL: 'Done, but the final review found problems.', DONE: 'Done. Every task is closed.', OPEN: 'Finished with open tasks.' }[v.verdict] || (v.status === 'failed' ? 'The sprint stopped with an error.' : 'The sprint has ended.');
+    var copyBtn = function (text) { return el('button', { cls: 'act', type: 'button', text: 'Copy', onclick: function () { navigator.clipboard.writeText(text).then(function () { toast('Copied'); }); } }); };
+    var tryCmd = 'git -C ' + rec.repo + ' checkout ' + rec.branch;
+    var box = el('div', { cls: 'result-panel ' + (v.verdict === 'PASS' || v.verdict === 'DONE' ? 'ok' : 'bad') }, [
+      el('b', { text: head }),
+      el('div', { cls: 'sp-meta' }, [el('span', { text: b.progress.done + ' of ' + b.progress.total + ' tasks done' }), b.startedAt && b.endedAt ? el('span', { text: dur(Date.parse(b.endedAt) - Date.parse(b.startedAt)) }) : null, el('span', { text: money(b.cost) + ' estimated' })]),
+      rec.publish ? el('div', { text: 'A pull request was opened for branch ' + rec.branch + '.' }) : el('div', {}, ['The work is on branch ', el('code', { text: rec.branch }), ' in ', el('code', { text: rec.repo }), '. Nothing was merged; review it and merge it when you are happy.']),
+      rec.publish ? null : el('div', { cls: 'try' }, [el('code', { text: tryCmd }), copyBtn(tryCmd)]),
+      el('div', { style: 'display:flex; gap:8px; flex-wrap:wrap' }, [
+        el('button', { cls: 'act', type: 'button', text: 'See the code changes', onclick: function () { go(S.runId, 'code'); } }),
+        v.verdict === 'OPEN' || v.verdict === 'FAIL' ? el('button', { cls: 'act', type: 'button', text: 'See what is still open', onclick: function () { go(S.runId, 'board'); } }) : null
+      ]),
+      r.notes ? el('details', {}, [el('summary', { style: 'cursor:pointer', text: v.verdict === 'DONE' || v.verdict === 'OPEN' ? 'Summary' : 'What the final reviewer said' }), el('div', { cls: 'notes', text: String(r.notes).slice(0, 4000) })]) : null
+    ]);
+    return box;
+  }
+
   function phaseBar(b) {
     var wrap = el('div', { cls: 'phases' });
     (b.stages || []).forEach(function (st) {
@@ -701,11 +737,12 @@ export const SPRINTS_JS = String.raw`
 
 
   // ---- sprint designs ------------------------------------------------------
-  var PLAN_RUN = [['always', 'Every cycle'], ['when-needed', 'Again only when there is new work'], ['first-cycle', 'First cycle only'], ['off', 'Off (one helper takes the whole ask)']];
-  var BUILD_MODE = [['pipeline', 'All ready tasks at once (pipeline)'], ['classic', 'Round by round (classic)'], ['off', 'Off (no product code)']];
-  var TIERS = [['', 'Whatever the plan says'], ['standard', 'At least standard'], ['premium', 'Premium only']];
-  var SPLIT = [['always', 'Split across reviewers'], ['auto', 'Split only when the change is big'], ['never', 'One reviewer']];
-  var KINDS = [['check', 'Check (a reviewer with your rule)'], ['work', 'Work (a helper does your instructions)'], ['command', 'Command (run a shell command)']];
+  var PLAN_RUN = [['always', 'Every cycle'], ['when-needed', 'Only for new work'], ['first-cycle', 'First cycle only'], ['off', 'Off: one helper does it all']];
+  var BUILD_MODE = [['pipeline', 'All at once'], ['classic', 'Round by round'], ['off', 'Off: no code changes']];
+  var TIERS = [['', 'As planned'], ['standard', 'At least standard'], ['premium', 'Premium only']];
+  var SPLIT = [['always', 'Several, by area'], ['auto', 'Several if big'], ['never', 'One']];
+  var KINDS = [['check', 'Check'], ['work', 'Work'], ['command', 'Command']];
+  var KIND_HELP = { check: 'A reviewer checks the sprint against your rule. Problems become tasks, or just a report.', work: 'A helper does your instructions on the sprint branch and commits.', command: 'Runs a shell command. A failure becomes a task with the output.' };
 
   function copyDesign(d) { return JSON.parse(JSON.stringify(d)); }
   function sel(options, value, onchange) {
@@ -757,6 +794,8 @@ export const SPRINTS_JS = String.raw`
       ]));
     });
     root.appendChild(el('div', { cls: 'dz' }, [list, current ? (S.draft || current.source === 'mine' ? designEditor(S.draft || copyDesign(current)) : designReadOnly(current)) : el('div')]));
+    // On a phone the editor sits below the list: bring it into view when one is picked.
+    if (window.innerWidth < 820 && (S.designId || S.draft)) setTimeout(function () { var e = root.querySelector('.dz-ed'); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
   }
 
   function designReadOnly(d) {
@@ -767,7 +806,7 @@ export const SPRINTS_JS = String.raw`
       el('div', { style: 'font-size: 13px; color: var(--muted)', text: d.source === 'built-in' ? 'Built-in designs cannot be changed. Copy one to make it your own.' : 'This design comes from the project folder (.lazyfleet/designs). Copy it to change it for yourself.' }),
       el('div', { cls: 'dz-actions' }, [
         el('button', { cls: 'act', type: 'button', text: 'Copy and edit', onclick: function () {
-          var c = copyDesign(d); delete c.steps; c.id = ''; c.source = 'mine'; c.name = d.name + ' (copy)';
+          var c = copyDesign(d); delete c.steps; delete c.auto; c.id = ''; c.source = 'mine'; c.name = d.name + ' (copy)'; c.description = 'Copy of ' + d.name + '. ' + (d.description || '');
           S.draft = c; render();
         } }),
         el('button', { cls: 'act primary', type: 'button', text: 'Start a sprint with it', onclick: function () { S.formDesign = d.id; S.formOpen = true; go(null); } })
@@ -780,6 +819,26 @@ export const SPRINTS_JS = String.raw`
     delete d.steps;
     var preview = el('div', {});
     var msg = el('div', { cls: 'dz-msg' });
+    var warn = el('div', { cls: 'dz-warn' });
+    var ed;
+    // Settings that do not apply to this design are dimmed and disabled, with the reason as a tooltip.
+    function applies() {
+      if (!ed) return;
+      var mode = d.build.mode || 'pipeline';
+      var why = {
+        plan: d.plan.run === 'off' ? 'Planning is off' : '',
+        pipeline: mode !== 'pipeline' ? 'Only when tasks are built all at once' : '',
+        classic: mode === 'pipeline' ? 'Only when tasks are built round by round' : '',
+        build: mode === 'off' ? 'Building is off' : '',
+        split: mode !== 'pipeline' ? 'Only when tasks are built all at once' : d.review.run === 'off' ? 'Review is off' : ''
+      };
+      ed.querySelectorAll('[data-need]').forEach(function (n) {
+        var reason = why[n.getAttribute('data-need')];
+        if (reason) { n.setAttribute('data-off', ''); n.title = reason; } else { n.removeAttribute('data-off'); n.removeAttribute('title'); }
+        n.querySelectorAll('input, select, textarea').forEach(function (c) { c.disabled = !!reason; });
+      });
+    }
+    function need(node, key) { node.setAttribute('data-need', key); return node; }
     var timer = null;
     function changed() {
       clearTimeout(timer);
@@ -788,6 +847,8 @@ export const SPRINTS_JS = String.raw`
           preview.textContent = ''; preview.appendChild(track(r.steps));
           msg.className = 'dz-msg ' + (r.ok ? 'ok' : 'bad');
           msg.textContent = r.ok ? 'This design can run.' : r.error;
+          warn.textContent = r.ok && r.warnings && r.warnings.length ? r.warnings.join(' ') : '';
+          applies();
         }).catch(function (e) { msg.className = 'dz-msg bad'; msg.textContent = e.message; });
       }, 250);
     }
@@ -801,10 +862,11 @@ export const SPRINTS_JS = String.raw`
       d.blocks.forEach(function (b, i) {
         var box = el('div', { cls: 'dz-blk' });
         box.appendChild(field('Kind', sel(KINDS, b.kind, function (v) { b.kind = v; drawBlocks(); changed(); })));
+        box.appendChild(el('div', { cls: 'wide', style: 'font-size:12.5px; color:var(--muted)', text: KIND_HELP[b.kind] || '' }));
         box.appendChild(field('Name', text(b.name, 'e.g. Docs match the code', set(b, 'name'))));
         box.appendChild(field('When', sel([['after-build', 'After every build'], ['finish', 'Once, at the end']], b.slot, set(b, 'slot'))));
         if (b.kind === 'command') {
-          box.appendChild(field('Command', text(b.command, 'e.g. npm run lint', set(b, 'command')), 'wide'));
+          box.appendChild(field('Command', text(b.command, 'e.g. npm run lint (runs in a copy of your project)', set(b, 'command')), 'wide'));
         } else {
           box.appendChild(field(b.kind === 'check' ? 'The rule to check' : 'What to do', text(b.instructions, b.kind === 'check' ? 'e.g. Every README example must run and print what it says.' : 'e.g. Write end-to-end tests for the checkout flow. Do not change product code.', set(b, 'instructions'), true), 'wide'));
         }
@@ -818,7 +880,7 @@ export const SPRINTS_JS = String.raw`
       });
       blocksBox.appendChild(el('div', { style: 'grid-column: 1 / -1; display:flex; gap:8px; flex-wrap: wrap' }, KINDS.map(function (k) {
         return el('button', { cls: 'act', type: 'button', text: '+ ' + k[0][0].toUpperCase() + k[0].slice(1), onclick: function () {
-          d.blocks.push(k[0] === 'command' ? { kind: 'command', name: 'Lint', command: 'npm run lint' } : { kind: k[0], name: k[0] === 'check' ? 'My check' : 'My work', instructions: '' });
+          d.blocks.push(k[0] === 'command' ? { kind: 'command', name: 'My command', command: '' } : { kind: k[0], name: k[0] === 'check' ? 'My check' : 'My work', instructions: '' });
           drawBlocks(); changed();
         } });
       })));
@@ -831,26 +893,27 @@ export const SPRINTS_JS = String.raw`
         field('Cycles at most', num(d.cycles, 1, 10, 'engine default (5)', set(d, 'cycles'))),
         field('What it is for', text(d.description, 'One sentence people will see when they pick it', set(d, 'description')), 'wide')
       ]),
-      el('div', {}, [preview, msg]),
+      el('div', {}, [preview, msg, warn]),
+      d.auto ? el('details', { open: true }, [el('summary', { style: 'cursor:pointer; font-size:13px', text: 'What lazyfleet learned (from ' + d.auto.runs + ' sprints)' }), el('ul', { cls: 'evidence' }, d.auto.evidence.map(function (x) { return el('li', { text: x }); }))]) : null,
       el('div', { cls: 'dz-sec' }, [
         el('h4', { text: 'Plan' }),
         field('Plan the work', sel(PLAN_RUN, d.plan.run, set(d.plan, 'run'))),
-        check('A second helper reviews the plan', d.plan.review !== false, function (v) { d.plan.review = v; changed(); })
+        need(check('A second helper reviews the plan', d.plan.review !== false, function (v) { d.plan.review = v; changed(); }), 'plan')
       ]),
       el('div', { cls: 'dz-sec' }, [
         el('h4', { text: 'Build' }),
         field('How tasks are built', sel(BUILD_MODE, d.build.mode || 'pipeline', set(d.build, 'mode'))),
-        field('Model for builders', sel(TIERS, d.build.minModel || '', set(d.build, 'minModel'))),
+        need(field('Model for builders', sel(TIERS, d.build.minModel || '', set(d.build, 'minModel'))), 'build'),
         field('Check after each landing', text(d.check, 'optional, e.g. npm ci && npm test', set(d, 'check'))),
-        field('Helpers (round by round only)', num(d.helpers, 2, 64, '3', set(d, 'helpers'))),
-        check('Add an acceptance-test task per feature (pipeline)', d.build.acceptanceTasks !== false, function (v) { d.build.acceptanceTasks = v; changed(); })
+        need(field('Helpers', num(d.helpers, 2, 64, '3', set(d, 'helpers'))), 'classic'),
+        need(check('Add an acceptance-test task per feature', d.build.acceptanceTasks !== false, function (v) { d.build.acceptanceTasks = v; changed(); }), 'pipeline')
       ]),
       blocksBox,
       el('div', { cls: 'dz-sec' }, [
         el('h4', { text: 'Review and test' }),
         field('Review', sel([['on', 'On'], ['off', 'Off']], d.review.run, set(d.review, 'run'))),
-        field('Reviewers (pipeline)', sel(SPLIT, d.review.split, set(d.review, 'split'))),
-        field('Big means at least this many files', num(d.review.splitMinFiles, 1, 10000, '20', set(d.review, 'splitMinFiles'))),
+        need(field('Reviewers', sel(SPLIT, d.review.split, set(d.review, 'split'))), 'split'),
+        need(field('Big means at least this many files', num(d.review.splitMinFiles, 1, 10000, '20', set(d.review, 'splitMinFiles'))), 'split'),
         check('Run the project deploy and integration tests when it has them', d.test.run !== 'off', function (v) { d.test.run = v ? 'auto' : 'off'; changed(); })
       ]),
       el('div', { cls: 'dz-sec' }, [

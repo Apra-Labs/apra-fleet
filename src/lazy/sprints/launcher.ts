@@ -343,6 +343,7 @@ export function validateLaunch(input: LaunchInput): Required<Pick<LaunchInput, '
   const ask = String(input.ask ?? '').trim();
   if (!repo || !path.isAbsolute(repo)) throw new Error('Pick a project folder (full path)');
   if (!fs.existsSync(repo)) throw new Error(`Folder not found: ${repo}`);
+  if (!fs.statSync(repo).isDirectory()) throw new Error(`${repo} is a file, not a project folder`);
   if (ask.length < 8) throw new Error('Say what you want done, in a sentence or two');
   if (ask.length > 8000) throw new Error('Keep the ask under 8000 characters');
   let maxHelpers: number | undefined;
@@ -613,7 +614,13 @@ function writePool(rec: SprintRecord): void {
  */
 export async function launchSprint(input: LaunchInput, deps: LauncherDeps = realDeps): Promise<SprintRecord> {
   const v = validateLaunch(input);
-  const repo = (await deps.run('git', ['rev-parse', '--show-toplevel'], v.repo)).trim() || v.repo;
+  let top: string;
+  try {
+    top = (await deps.run('git', ['rev-parse', '--show-toplevel'], v.repo)).trim();
+  } catch {
+    throw new Error(`${v.repo} is not a git checkout; sprints work on git projects`);
+  }
+  const repo = top || v.repo;
   const base = (input.base?.trim() || (await deps.run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repo)).trim());
   if (!base || base === 'HEAD') throw new Error('Could not tell which branch to start from; pick a base branch');
   const slug = slugify(path.basename(repo), 30);

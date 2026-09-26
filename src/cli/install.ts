@@ -679,6 +679,13 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
 function run(cmd: string, opts?: Record<string, unknown>): void {
   // Windows needs a shell for .cmd executables (e.g. claude.cmd)
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
+  // APRA_FLEET_INSTALL_QUIET=1: capture child output into console.log, so a
+  // caller with its own progress display (lazyfleet) decides what to show.
+  if (process.env.APRA_FLEET_INSTALL_QUIET === '1') {
+    const out = execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'], ...shellOpt, ...opts });
+    if (out && String(out).trim()) console.log(String(out).trim());
+    return;
+  }
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
@@ -1615,7 +1622,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       // not installed - install it
       // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
       // pin -- see that file's comment for why (schema v66 compatibility).
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: process.env.APRA_FLEET_INSTALL_QUIET === '1' ? 'pipe' : 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install

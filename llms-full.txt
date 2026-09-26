@@ -33,7 +33,7 @@ No config files, no new commands to learn, no vocabulary.
 ## Install
 
 ```bash
-git clone -b feat/lazyfleet https://github.com/vbv-nyk/apra-fleet.git lazyfleet
+git clone -b feat/lazyfleet https://github.com/Apra-Labs/apra-fleet.git lazyfleet
 cd lazyfleet && npm install && npm run build && npm link
 lazyfleet
 ```

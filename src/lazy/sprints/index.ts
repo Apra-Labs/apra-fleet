@@ -83,7 +83,7 @@ export function listSprints(): SprintSummary[] {
       progress: b.progress,
       working: b.helpersNow.length,
       helpers: b.members.length,
-      currentPhase: b.currentPhase,
+      currentPhase: b.phaseText ?? b.currentPhase,
       cost: b.cost,
       branch: rec?.branch,
       repo: rec?.repo,

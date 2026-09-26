@@ -50,9 +50,16 @@ describe('your own designs', () => {
   });
 
   it('refuses a design the engine cannot run, with the reason', async () => {
-    await expect(designs.saveDesign({ id: '', name: 'Broken', description: '', plan: { run: 'sometimes' as any } })).rejects.toThrow(/plan\.run must be one of/);
+    await expect(designs.saveDesign({ id: '', name: 'Broken', description: '', plan: { run: 'sometimes' as any } })).rejects.toThrow(/^Plan the work: must be one of always/);
     await expect(designs.saveDesign({ id: '', name: 'Idle', description: '', build: { mode: 'off' }, plan: { run: 'off' }, test: { run: 'off' }, finish: { finalReview: false } })).rejects.toThrow(/does nothing/);
     await expect(designs.saveDesign({ id: '', name: 'Loop', description: '', cycles: 99 })).rejects.toThrow(/Cycles/);
+  });
+
+  it('speaks the designer\'s words in errors and warns when nothing checks the work', async () => {
+    await expect(designs.saveDesign({ id: '', name: 'Half', description: '', blocks: [{ kind: 'check', name: 'My check' }] as any })).rejects.toThrow('Step 1 (My check): write the rule to check.');
+    await expect(designs.saveDesign({ id: '', name: 'Cmd', description: '', blocks: [{ kind: 'command', name: 'Lint' }] as any })).rejects.toThrow('Step 1 (Lint): write the command to run.');
+    expect(designs.designWarnings({ id: 'x', name: 'x', description: '', review: { run: 'off' }, finish: { finalReview: false } }).join(' ')).toMatch(/Nothing checks this work/);
+    expect(designs.designWarnings({ id: 'x', name: 'x', description: '', review: { run: 'off' }, finish: { finalReview: false }, check: 'npm test' }).join(' ')).not.toMatch(/Nothing checks/);
   });
 
   it("a project's design wins over yours and over a built-in with the same id", () => {

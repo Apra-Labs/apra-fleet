@@ -21,6 +21,8 @@ export interface AskProfile {
   /** How many separate pieces of work the ask names. */
   parts: number;
   words: number;
+  /** 'low' when the ask is too short or vague to plan well. */
+  confidence: 'high' | 'low';
 }
 
 /** Read an ask the way a person skimming it would: what kind of work, and how much. */
@@ -28,18 +30,30 @@ export function profileAsk(ask: string): AskProfile {
   const t = String(ask || '');
   const lower = t.toLowerCase();
   const words = (t.match(/\S+/g) || []).length;
-  const builds = /\b(build|add|implement|create|introduce|support|make)\b/.test(lower);
+  const builds = /\b(build|add|implement|create|introduce|support|make|refactor|rewrite|migrate)\b/.test(lower);
+  const fixes = /\b(fix|bug|broken|crash|crashes|regression|error|fails?|failing|wrong)\b/.test(lower);
+  const docsObject = /\b(readme|docs?|documentation|typo|changelog|comments?)\b/.test(lower);
+  const codeObject = /\b(function|module|feature|endpoint|page|command|api|class|component|service|screen)s?\b/.test(lower);
+  const testsOnly = (/\b(end[- ]to[- ]end|e2e)\b/.test(lower) || /\b(write|add|improve|increase)\b[^.]{0,30}\btests?\b/.test(lower)) && !fixes && !(builds && codeObject);
   let kind: AskKind = 'feature';
-  if (/\b(end[- ]to[- ]end|e2e)\b/.test(lower) || (/\b(write|add|improve|increase)\b[^.]{0,30}\btests?\b/.test(lower) && !/\b(function|module|feature|endpoint|page|command)s?\b/.test(lower))) kind = 'tests';
-  else if (/\b(fix|bug|broken|crash|crashes|regression|error|fails?|failing)\b/.test(lower) && !/\b(add|build|implement)\b[^.]{0,20}\b(feature|function|module)/.test(lower)) kind = 'bugfix';
-  else if (/\b(readme|docs?|documentation|typo|changelog)\b/.test(lower) && !builds) kind = 'docs';
-  // Pieces of work: function-like names, list items, and "X, Y and Z" runs of nouns.
+  // Tests win only when tests are the whole job; a fix that also asks for a test is a fix.
+  if (testsOnly) kind = 'tests';
+  else if (docsObject && !codeObject && !(builds && !/\b(readme|docs?|documentation)\b/.test(lower))) kind = 'docs';
+  else if (fixes && !(builds && codeObject && !/\bfix\b/.test(lower))) kind = 'bugfix';
+  // Pieces of work: function-like names, list items, and "a, b, c and d" lists.
   const calls = new Set((t.match(/\b[A-Za-z_][A-Za-z0-9_]*\s*\(/g) || []).map(s => s.replace(/\s*\($/, '')));
   const bullets = (t.match(/^\s*(?:[-*]|\d+[.)])\s+/gm) || []).length;
+  let listItems = 0;
+  for (const sentence of t.replace(/\([^)]*\)/g, '').split(/[.!?;:](?:\s|$)|\n/)) {
+    const commas = (sentence.match(/,/g) || []).length;
+    if (commas >= 2) listItems = Math.max(listItems, sentence.split(/,|\band\b/).filter(x => x.trim()).length);
+  }
   const sentences = (t.match(/[.!?](\s|$)/g) || []).length;
-  const parts = Math.max(1, calls.size, bullets, Math.min(sentences, 6) > 3 ? Math.ceil(sentences / 2) : 1);
-  const size: AskSize = parts <= 2 && words < 80 ? 'small' : parts >= 6 || words > 180 ? 'large' : 'medium';
-  return { kind, size, parts, words };
+  const parts = Math.max(1, calls.size, bullets, listItems, sentences > 3 ? Math.ceil(sentences / 2) : 1);
+  const size: AskSize = parts <= 2 && words < 60 ? 'small' : parts >= 6 || words > 160 ? 'large' : 'medium';
+  const vague = /\b(better|nicer|improve it|clean ?up|stuff|things)\b/.test(lower) && !codeObject && !docsObject;
+  const confidence = words < 4 || vague || (!builds && !fixes && !docsObject && !testsOnly && !codeObject && words < 12) ? 'low' : 'high';
+  return { kind, size, parts, words, confidence };
 }
 
 // ---------------------------------------------------------------------------
@@ -119,14 +133,16 @@ export function score(s: DesignStats): number {
 // ---------------------------------------------------------------------------
 
 /** Starting points from the design benchmarks, before you have history of your own. */
-function seed(p: AskProfile): { id: string; why: string } {
+function seed(p: AskProfile & { text?: string }): { id: string; why: string } {
   if (p.kind === 'tests') return { id: 'e2e-only', why: 'it asks for tests, and this design writes and runs them without changing product code' };
-  if (p.kind === 'docs') return { id: 'solo', why: 'documentation work is one focused change, which one helper does fastest' };
+  if (p.kind === 'docs') return /\b(example|examples|runnable|accurate|out of date|outdated|wrong)\b/i.test(p.text ?? '')
+    ? { id: 'classic-docs-check', why: 'it is about docs being right, and this design adds a check that every README example runs' }
+    : { id: 'solo', why: 'documentation work is one focused change, which one helper does fastest' };
   if (p.kind === 'bugfix') return p.size === 'large'
     ? { id: 'classic', why: 'a broad fix benefits from a review after every round' }
     : { id: 'solo', why: 'a focused fix is fastest with one helper, and a final review still checks it' };
-  if (p.size === 'small') return { id: 'classic', why: 'on small features Classic finished fast with the strongest tests in the benchmarks' };
-  return { id: 'fast-pipeline', why: `with ${p.parts} parts, building them at once paid off: about twice as fast as Classic on the larger benchmark task` };
+  if (p.size === 'small') return { id: 'classic', why: 'in our tests Classic finished small features quickly and wrote the strongest tests' };
+  return { id: 'fast-pipeline', why: `with about ${p.parts} parts, building them at once pays off: in our tests it was about twice as fast as Classic on an 8-part job, for about a quarter more usage` };
 }
 
 export interface Recommendation {
@@ -149,7 +165,9 @@ export function recommend(ask: string, repo?: string, history: Outcome[] = outco
   const designs = listDesigns(repo);
   const name = (id: string) => designs.find(d => d.id === id)?.name ?? id;
   const exists = (id: string) => designs.some(d => d.id === id);
-  const reasons = [`Reads as ${profile.size === 'small' ? 'a small' : profile.size === 'large' ? 'a large' : 'a medium'} ${profile.kind === 'bugfix' ? 'bug fix' : profile.kind === 'tests' ? 'testing job' : profile.kind === 'docs' ? 'docs change' : 'feature'}${profile.parts > 1 ? ` with about ${profile.parts} parts` : ''}.`];
+  const reasons: string[] = [];
+  if (profile.confidence === 'low') reasons.push('This is too short to plan well. Say what should change and how you will know it is done, and the suggestion (and the sprint) get much better.');
+  reasons.push(`Reads as ${profile.size === 'small' ? 'a small' : profile.size === 'large' ? 'a large' : 'a medium'} ${profile.kind === 'bugfix' ? 'bug fix' : profile.kind === 'tests' ? 'testing job' : profile.kind === 'docs' ? 'docs change' : 'feature'}${profile.parts > 1 ? ` with about ${profile.parts} parts` : ''}.`);
   const similar = history.filter(o => o.kind === profile.kind && o.size === profile.size && exists(o.designId));
   const stats = statsFor(similar).sort((a, b) => score(b) - score(a));
   const auto = autoDesignId(profile.kind, profile.size);
@@ -162,10 +180,13 @@ export function recommend(ask: string, repo?: string, history: Outcome[] = outco
     chosen = auto;
     reasons.push(`${name(auto)} was tuned from your earlier sprints of this kind.`);
   } else {
-    const s = seed(profile);
+    const s = seed({ ...profile, text: ask });
     chosen = exists(s.id) ? s.id : 'fast-pipeline';
     reasons.push(`Suggested because ${s.why}.`);
-    if (!similar.length) reasons.push('No sprints of this kind yet; this gets sharper as you run more.');
+    const sameKind = statsFor(history.filter(o => o.kind === profile.kind && exists(o.designId)));
+    const mine = sameKind.find(x => x.designId === chosen);
+    if (mine) reasons.push(`Your earlier ${profile.kind === 'bugfix' ? 'bug-fix' : profile.kind} sprints with ${name(chosen)}: ${describe(mine)}.`);
+    else if (!similar.length) reasons.push('No sprints like this yet; suggestions get sharper as you run more.');
   }
   return {
     designId: chosen,
@@ -215,7 +236,12 @@ export function evolveDesigns(history: Outcome[] = outcomes(), now = new Date())
       result.skipped.push({ bucket, reason: `${runs.length} of ${EVOLVE_MIN_RUNS} finished sprints needed` });
       continue;
     }
-    const ranked = statsFor(runs).sort((a, b) => score(b) - score(a));
+    // Only compare designs with at least two runs each: one run is luck, not evidence.
+    const ranked = statsFor(runs).filter(x => x.runs >= 2).sort((a, b) => score(b) - score(a));
+    if (!ranked.length) {
+      result.skipped.push({ bucket, reason: 'no design has run twice on this kind of work yet, so there is nothing reliable to compare' });
+      continue;
+    }
     const best = ranked[0];
     const base = designs.find(d => d.id === best.designId) ?? BUILT_IN_DESIGNS.find(d => d.id === 'fast-pipeline')!;
     const d: Design = JSON.parse(JSON.stringify({ ...base, source: undefined }));
@@ -236,13 +262,18 @@ export function evolveDesigns(history: Outcome[] = outcomes(), now = new Date())
       if (d.review?.run === 'off') { d.review = { ...(d.review ?? {}), run: 'on' }; evidence.push(`Review on: ${failed} of ${bestRuns.length} sprints did not pass without it.`); }
       if (d.plan?.review === false) { d.plan = { ...(d.plan ?? {}), review: true }; evidence.push('Plan review on, for the same reason.'); }
     }
-    if (failed === 0 && secondCycle === 0 && (d.build?.mode ?? 'pipeline') === 'pipeline' && (d.review?.split ?? 'always') === 'always') {
+    if (failed === 0 && secondCycle === 0 && (d.build?.mode ?? 'pipeline') === 'pipeline' && d.review?.run !== 'off' && (d.review?.split ?? 'always') === 'always') {
       d.review = { ...(d.review ?? {}), split: 'auto', splitMinFiles: d.review?.splitMinFiles ?? 20 };
       evidence.push('One reviewer unless the change is big: every sprint passed in one cycle, so the split review was not earning its cost.');
     }
     if (failed === 0 && best.minutes > 0 && d.finish?.harvest !== false && best.cost > 1) {
       d.finish = { ...(d.finish ?? {}), harvest: false };
       evidence.push('No docs pass: it adds about two minutes per sprint and these sprints passed without it.');
+    }
+    // Never learn a design with nothing checking the work.
+    if (d.review?.run === 'off' && d.finish?.finalReview === false && !d.check) {
+      d.finish = { ...(d.finish ?? {}), finalReview: true };
+      evidence.push('Final review kept on: without a review or a check command, nothing would check the work.');
     }
     d.id = id;
     d.name = `Auto: ${kind === 'bugfix' ? 'bug fixes' : kind === 'tests' ? 'testing' : kind === 'docs' ? 'docs' : 'features'} (${size})`;

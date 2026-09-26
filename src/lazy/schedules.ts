@@ -103,6 +103,7 @@ export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
   if (!name || name.length > 80) throw new Error('Give the schedule a name (up to 80 characters)');
   const repo = String(raw?.repo ?? '').trim();
   if (!repo || !path.isAbsolute(repo)) throw new Error('Pick the project folder (a full path)');
+  if (raw?.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error('enabled must be true or false');
   let source: Schedule['source'];
   if (raw?.source?.type === 'issues') {
     const labels = (Array.isArray(raw.source.labels) ? raw.source.labels : String(raw.source.labels ?? '').split(','))
@@ -113,27 +114,37 @@ export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
   } else {
     const ask = String(raw?.source?.ask ?? '').trim();
     if (ask.length < 10) throw new Error('Describe what the sprint should do (at least a sentence)');
-    source = { type: 'ask', ask: ask.slice(0, 8000) };
+    if (ask.length > 8000) throw new Error('Keep the job under 8000 characters');
+    source = { type: 'ask', ask };
   }
   const w = raw?.when ?? {};
   let when: ScheduleWhen;
   if (w.type === 'interval') {
-    const hours = Number(w.hours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 168) throw new Error('Repeat every 1 to 168 hours');
+    const hours = w.hours;
+    if (typeof hours !== 'number' || !Number.isInteger(hours) || hours < 1 || hours > 168) throw new Error('Repeat every 1 to 168 hours');
     when = { type: 'interval', hours };
   } else {
     const time = String(w.time ?? '');
     if (!TIME_RE.test(time)) throw new Error('Pick a time like 02:00');
-    const days = (Array.isArray(w.days) ? w.days : []).map(Number).filter((d: number) => Number.isInteger(d) && d >= 0 && d <= 6);
+    if (w.days !== undefined && !Array.isArray(w.days)) throw new Error('Days are a list');
+    const days: number[] = w.days ?? [];
+    if (days.some(d => typeof d !== 'number' || !Number.isInteger(d) || d < 0 || d > 6)) throw new Error('Days are 0 (Sunday) to 6 (Saturday)');
     when = { type: 'daily', time, days: [...new Set<number>(days)].sort() };
   }
   const window = String(raw?.window ?? '').trim();
-  if (window && !WINDOW_RE.test(window)) throw new Error('A quiet window looks like 22:00-07:00');
-  const perDay = Number(raw?.limits?.perDay ?? 1);
-  if (!Number.isInteger(perDay) || perDay < 1 || perDay > 20) throw new Error('Sprints per day: 1 to 20');
+  if (window && !WINDOW_RE.test(window)) throw new Error('A time window looks like 22:00-07:00');
+  if (window) {
+    const [a, b] = window.split('-');
+    if (a === b) throw new Error('The time window starts and ends at the same time, so it would never run');
+    if (when.type === 'daily' && !inWindow(window, new Date(2000, 0, 1, ...(when.time!.split(':').map(Number) as [number, number])))) {
+      throw new Error(`${when.time} is outside the window ${window}, so it would never run`);
+    }
+  }
+  const perDay = raw?.limits?.perDay ?? 1;
+  if (typeof perDay !== 'number' || !Number.isInteger(perDay) || perDay < 1 || perDay > 20) throw new Error('Sprints per day: a whole number from 1 to 20');
   const usage = raw?.limits?.usagePerDay;
-  const usagePerDay = usage === undefined || usage === null || usage === '' ? undefined : Number(usage);
-  if (usagePerDay !== undefined && (!Number.isFinite(usagePerDay) || usagePerDay <= 0 || usagePerDay > 1000)) throw new Error('Usage per day is an estimate in dollars, above 0');
+  const usagePerDay = usage === undefined || usage === null || usage === '' ? undefined : usage;
+  if (usagePerDay !== undefined && (typeof usagePerDay !== 'number' || !Number.isFinite(usagePerDay) || usagePerDay < 0.01 || usagePerDay > 1000)) throw new Error('Usage per day: between $0.01 and $1000 (an estimate)');
   const design = String(raw?.design ?? 'auto').trim() || 'auto';
   if (!/^[a-z0-9-]{1,40}$/.test(design)) throw new Error('Pick a design');
   return {
@@ -148,6 +159,7 @@ export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
     limits: { perDay, ...(usagePerDay !== undefined ? { usagePerDay } : {}) },
     requireClean: raw?.requireClean !== false,
     comment: source.type === 'issues' && raw?.comment !== false,
+    ...(raw?.requireClean !== undefined && typeof raw.requireClean !== 'boolean' ? (() => { throw new Error('requireClean must be true or false'); })() : {}),
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     lastFiredAt: existing?.lastFiredAt,
     log: existing?.log ?? [],
@@ -298,22 +310,52 @@ async function blocker(s: Schedule, now: Date, deps: TickDeps): Promise<{ text: 
     if (used >= s.limits.usagePerDay) return { text: `today's usage limit is spent ($${used.toFixed(2)} of $${s.limits.usagePerDay.toFixed(2)})`, retry: false };
   }
   if (!fs.existsSync(s.repo)) return { text: `the project folder ${s.repo} is missing`, retry: false };
-  if (s.requireClean) {
-    const clean = await deps.repoIsClean(s.repo);
-    if (clean === null) return { text: 'the project folder is not a git checkout', retry: false };
-    if (!clean) return { text: 'the project has uncommitted changes (you may be working in it)', retry: true };
-  }
+  const clean = await deps.repoIsClean(s.repo);
+  if (clean === null) return { text: `the project folder ${s.repo} is not a git checkout`, retry: false };
+  if (s.requireClean && !clean) return { text: 'the project has uncommitted changes (you may be working in it)', retry: true };
   return null;
 }
 
-/** Start one sprint for this schedule now, or log why not. Returns the run id when it started. */
-export async function fire(s: Schedule, deps: TickDeps, { force = false } = {}): Promise<string | null> {
+/** Folders a sprint is being started in right now, so two starts never race into one folder. */
+const starting = new Set<string>();
+
+/** Why Run now would normally not start: shown to the person, who may start it anyway. */
+export async function runNowWarnings(s: Schedule, deps: TickDeps): Promise<string[]> {
+  const out: string[] = [];
+  if (!s.enabled) out.push('the schedule is off');
+  const block = await blocker(s, deps.now(), deps);
+  if (block) out.push(block.text);
+  return out;
+}
+
+/**
+ * Start one sprint for this schedule now, or log why not. Returns the run id
+ * when it started. `override` (Run now, after the person confirmed) skips the
+ * limits and the clean-folder check, but never starts a second sprint in a
+ * folder that already has one running or starting.
+ */
+export async function fire(s: Schedule, deps: TickDeps, { override = false } = {}): Promise<string | null> {
   const now = deps.now();
+  const key = path.resolve(s.repo);
+  if (starting.has(key)) {
+    log(s.id, { action: 'skipped', text: 'Not started: another sprint is being started in this project right now.' }, now, { retryAt: new Date(now.getTime() + RETRY_MINUTES * 60000).toISOString() });
+    return null;
+  }
   const block = await blocker(s, now, deps);
-  if (block && !(force && block.retry)) {
+  const busy = block && /already running in this project|folder .* is missing|not a git checkout/.test(block.text);
+  if (block && (!override || busy)) {
     log(s.id, { action: 'skipped', text: `Not started: ${block.text}.` }, now, block.retry ? { retryAt: new Date(now.getTime() + RETRY_MINUTES * 60000).toISOString() } : { lastFiredAt: now.toISOString(), retryAt: undefined });
     return null;
   }
+  starting.add(key);
+  try {
+    return await start(s, deps, now);
+  } finally {
+    starting.delete(key);
+  }
+}
+
+async function start(s: Schedule, deps: TickDeps, now: Date): Promise<string | null> {
   let ask: string, title: string | undefined, issue: Issue | undefined;
   if (s.source.type === 'issues') {
     const token = await deps.githubToken();
@@ -332,7 +374,8 @@ export async function fire(s: Schedule, deps: TickDeps, { force = false } = {}):
     const fresh = issues.filter(i => !done.has(`${i.repo}#${i.number}`));
     const eligible = s.source.trustedOnly ? fresh.filter(i => TRUSTED_ASSOCIATIONS.has(i.association)) : fresh;
     if (!eligible.length) {
-      const why = fresh.length && s.source.trustedOnly ? `${fresh.length} open issue${fresh.length === 1 ? '' : 's'} labeled ${s.source.labels.join(', ')}, but none from the repo's owners, members or collaborators` : `no open issues labeled ${s.source.labels.join(', ')} that have not been sprinted yet`;
+      const labeled = s.source.labels.join(' and ');
+    const why = fresh.length && s.source.trustedOnly ? `${fresh.length} open issue${fresh.length === 1 ? '' : 's'} labeled ${labeled}, but none from the repo's owners, members or collaborators` : `no open issues labeled ${labeled} that have not been sprinted yet`;
       log(s.id, { action: 'skipped', text: `Nothing to do: ${why}.` }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
       return null;
     }
@@ -368,6 +411,8 @@ export function resultComment(x: SprintSummaryLike): string {
   ].filter(Boolean).join('\n');
 }
 
+const waitingForSignIn = new Set<string>();
+
 /** One pass: start what is due, then report finished sprints back to their issues. */
 export async function tick(deps: TickDeps): Promise<void> {
   const now = deps.now();
@@ -381,7 +426,13 @@ export async function tick(deps: TickDeps): Promise<void> {
     const s = byId.get(x.scheduleId);
     if (!s || !s.comment) { deps.markReported(x.runId); continue; }
     const token = await deps.githubToken();
-    if (!token) continue;
+    if (!token) {
+      if (!waitingForSignIn.has(x.runId)) {
+        waitingForSignIn.add(x.runId);
+        log(s.id, { action: 'error', text: `Could not report the result on ${x.issue.repo}#${x.issue.number}: signed out of GitHub. It will be posted once you sign in again.` }, now);
+      }
+      continue;
+    }
     try {
       const url = await deps.comment(token, x.issue.repo, x.issue.number, resultComment(x));
       deps.markReported(x.runId);

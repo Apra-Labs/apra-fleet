@@ -17,6 +17,7 @@ import { lazyDir, loadConfig, saveConfig, type LazyConfig } from './config.js';
 import { helperSettingsPath, writeHelperSettings } from './mode.js';
 import { installService, restartService, uninstallService } from './service.js';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const HELP = `lazyfleet - Claude, minus the babysitting
 
@@ -78,6 +79,7 @@ async function installIntegration(): Promise<void> {
   console.log = grab;
   console.warn = grab;
   console.error = grab;
+  process.env.APRA_FLEET_INSTALL_QUIET = '1';
   try {
     const { runInstall } = await import('../cli/install.js');
     await runInstall(['--llm', 'claude', '--skill', 'fleet']);
@@ -86,6 +88,7 @@ async function installIntegration(): Promise<void> {
     dump();
     throw e;
   } finally {
+    delete process.env.APRA_FLEET_INSTALL_QUIET;
     console.log = origLog;
     console.warn = origWarn;
     console.error = origErr;
@@ -112,7 +115,7 @@ async function install(): Promise<void> {
   }
 
   process.stdout.write('  [2/3] Starting the background helper ... ');
-  installService();
+  const service = installService();
   if (!(await healthy(cfg, 15_000))) {
     console.log('failed');
     console.error(`\nThe background helper did not start. Claude was NOT changed and still works as before.`);
@@ -125,16 +128,27 @@ async function install(): Promise<void> {
   setBaseUrl(ours);
   console.log('ok');
 
+  const page = `${baseUrl(cfg)}/_lazy/`;
+  const firstRun = !fs.existsSync(path.join(lazyDir(), 'welcome.json'));
   console.log(`
-Done. Restart any open Claude Code sessions and just work as usual:
+Welcome to lazyfleet. It is running now${service.autostart ? ', starts again when you log in,' : ''} and
+Claude Code goes through it. Restart any open Claude Code sessions, then just
+work as usual:
 
-  - Paste keys and passwords straight into chat. Claude never sees them;
-    it gets a stand-in, and the real value is used when commands run.
-  - Big jobs get split up and run in parallel on their own.
+  - Paste keys and passwords straight into chat. Claude never sees them.
+  - Ask for a bigger job and Claude offers to hand it to helpers (a sprint).
 
-  Vault and settings:  lazyfleet ui
-  Turn it off:         lazyfleet off
+  Your dashboard:  ${page}
+                   (open it any time with: lazyfleet ui)
+  Check it is on:  lazyfleet status
+  Turn it off:     lazyfleet off
 `);
+  if (service.note) console.log(`Note: ${service.note}\n`);
+  if (firstRun && !process.argv.includes('--no-open')) {
+    console.log('Opening the dashboard for a one-minute setup (connect GitHub, optional)...');
+    console.log(`If no browser opens, visit: ${page}?t=${cfg.uiToken}\n`);
+    openBrowser(`${page}?t=${cfg.uiToken}`);
+  }
 }
 
 async function uninstall(): Promise<void> {
@@ -156,6 +170,18 @@ async function status(): Promise<void> {
   if (routed && !up) {
     console.log('\nClaude is pointed at lazyfleet but it is not running, so Claude cannot connect.');
     console.log('Fix: `lazyfleet on` (restarts it) or `lazyfleet off` (bypass).');
+    return;
+  }
+  if (!up) return;
+  console.log(`Dashboard:          ${baseUrl(cfg)}/_lazy/  (lazyfleet ui)`);
+  try {
+    const home = await pageApi(cfg, 'home');
+    console.log(`GitHub:             ${home.github.signedIn ? `connected as ${home.github.login}` : 'not connected (optional: Issues tab)'}`);
+    console.log(`Sprints:            ${home.running.length} running, ${home.week.sprints} this week`);
+    const next = home.next[0];
+    console.log(`Schedules:          ${home.schedulesTotal ? `${home.schedulesTotal}${next ? `, next "${next.name}" at ${new Date(next.nextAt).toLocaleString()}` : ''}` : 'none'}`);
+  } catch {
+    // The basics above are what matter; the rest is a bonus.
   }
 }
 

@@ -318,7 +318,8 @@ ${HOME_HTML}
   window.lazyShowTab = showTab;
   window.addEventListener('hashchange', function () { showTab((location.hash.slice(1) || 'home').split('/')[0]); });
   document.querySelectorAll('nav button').forEach(function (b) {
-    b.addEventListener('click', function () { showTab(b.dataset.tab); history.replaceState(null, '', '#' + b.dataset.tab); });
+    // Update the address first: pages read it when their tab opens.
+    b.addEventListener('click', function () { history.replaceState(null, '', '#' + b.dataset.tab); showTab(b.dataset.tab); });
   });
   // Tabs are linkable: /_lazy/#presets
   showTab(location.hash ? location.hash.slice(1).split('/')[0] : 'home');
