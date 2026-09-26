@@ -449,12 +449,20 @@ third-party workflow packages can be registered and reached through a
 `/ext/<package id>/*` reverse proxy (SSE included) using a per-package
 derived upstream credential rather than the raw fleet key, and
 `compose_permissions` refuses to auto-grant a member curl access to the
-console or supervisor's own control-plane ports. Today it serves from a dev
-checkout only -- packaging it into the SEA binary and the npm-distributed
-package is still open. A known gap: the Members table's owner column and the
-member-detail drawer action need further work before every screen action in
-the design's action table has both a tested route and a tested UI control.
-See [docs/console-architecture.md](docs/console-architecture.md).
+console or supervisor's own control-plane ports. The member drawer now has
+an in-place edit form (name, category, tags, icon, unattended mode, LLM
+provider, and host/port/username for remote members) and compose-permissions
+inputs (role, tags, grant list, grant reason), both submitting only the
+fields the operator actually changed rather than the whole record. Today it
+serves from a dev checkout only -- packaging it into the SEA binary and the
+npm-distributed package is still open. Known gaps: the Members table's owner
+column and the member-detail drawer action need further work before every
+screen action in the design's action table has both a tested route and a
+tested UI control, and the edit form's re-sync-on-background-refresh
+behavior has a known defect where an operator's untouched fields can be
+spuriously resubmitted after another operator's concurrent change lands
+mid-edit -- see [docs/console-architecture.md](docs/console-architecture.md)
+for the dirty-diff design and the invariant this defect violates.
 
 ## Documentation
 

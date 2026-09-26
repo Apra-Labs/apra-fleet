@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Members } from "../src/pages/Members";
 import { MEMBERS_A, MEMBERS_B } from "./member-fixtures";
+import { type FetchCall, findButton, jsonResponse, makeFetchMock } from "./harness";
 
 // apra-fleet-9h9j.2.3: end-to-end coverage for the Members screen (W1 table,
 // drawer actions, background refresh, apra-fleet-9h9j.2.1) against a mocked
@@ -15,43 +16,6 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
-
-interface FetchCall {
-  url: string;
-  method: string;
-  body: unknown;
-}
-
-function jsonResponse(status: number, payload: unknown) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => payload
-  };
-}
-
-/** A fetch stub that always answers GET /api/fleet/members from `membersPayload`
- *  and any POST /api/fleet/<action> from `actionOverrides[path]`, defaulting
- *  to a generic success envelope. Every call is recorded in `calls`. */
-function makeFetchMock(membersPayload: unknown, actionOverrides: Record<string, unknown> = {}) {
-  const calls: FetchCall[] = [];
-  const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ url, method, body });
-
-    if (url === "/api/fleet/members" && method === "GET") {
-      return jsonResponse(200, membersPayload);
-    }
-    if (url in actionOverrides) {
-      return actionOverrides[url];
-    }
-    return jsonResponse(200, { text: `ok:${url}` });
-  });
-  return { fn, calls };
-}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -79,14 +43,6 @@ async function renderMembers(refreshIntervalMs?: number) {
 
 function headerTexts(): string[] {
   return Array.from(container.querySelectorAll("th")).map((th) => th.textContent ?? "");
-}
-
-function findButton(label: string): HTMLButtonElement {
-  const button = Array.from(container.querySelectorAll("button")).find(
-    (b) => b.textContent === label
-  );
-  if (!button) throw new Error(`button "${label}" not found`);
-  return button as HTMLButtonElement;
 }
 
 describe("Members screen (apra-fleet-9h9j.2.3)", () => {
@@ -129,19 +85,21 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
 
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 
+    // Compose permissions is no longer a generic ACTIONS entry (it needs
+    // role/tags/grant/grant_reason inputs, apra-fleet-i9ag.6.2.1) -- its own
+    // coverage lives in the paired [test] task's suite.
     const actions: Array<[string, string]> = [
       ["Provision LLM auth", "/api/fleet/provision-llm-auth"],
       ["Provision VCS auth", "/api/fleet/provision-vcs-auth"],
       ["Revoke VCS auth", "/api/fleet/revoke-vcs-auth"],
       ["Setup SSH key", "/api/fleet/setup-ssh-key"],
-      ["Compose permissions", "/api/fleet/compose-permissions"],
       ["Update LLM CLI", "/api/fleet/update-llm-cli"],
       ["Remove member", "/api/fleet/remove-member"]
     ];
 
     for (const [label, path] of actions) {
       await act(async () => {
-        findButton(label).click();
+        findButton(container, label).click();
       });
     }
 
@@ -169,7 +127,7 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
       (row as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {
-      findButton("Show member detail").click();
+      findButton(container, "Show member detail").click();
     });
 
     const detailCalls = calls.filter((c) => c.url === "/api/fleet/member-detail");
@@ -197,7 +155,7 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
       (row as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {
-      findButton("Show member detail").click();
+      findButton(container, "Show member detail").click();
     });
 
     const alert = Array.from(container.querySelectorAll('[role="alert"]')).find((el) =>
@@ -221,7 +179,7 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
     });
 
     await act(async () => {
-      findButton("Remove member").click();
+      findButton(container, "Remove member").click();
     });
 
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();

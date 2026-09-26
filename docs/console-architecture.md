@@ -284,6 +284,80 @@ render-time exception degrades to a visible error message instead of a blank
 screen. Treat "the client type still compiles" as no evidence of shape
 agreement across this boundary.
 
+### Member edit and compose-permissions: dirty-field-only submission
+
+The member drawer's "Edit member" and "Compose permissions" sections both
+submit against a deliberately narrow field set, not the full server schema:
+
+- **Edit member** exposes only `friendly_name`, `category`, `tags`, `icon`,
+  `unattended`, `llm_provider`, and (for remote members only) `host`/`port`/
+  `username`. Password, key-path, cloud-provisioning and model-selection
+  fields are intentionally out of scope for this form -- they carry
+  different risk/side-effect profiles (secret rotation, provisioning calls)
+  that deserve their own dedicated flow rather than living in a generic
+  field-diff form.
+- **Every submit body is built by diffing the form's current values against
+  a baseline snapshot of the member, and only the fields that actually
+  differ are included.** This is not a minor optimization: `tags` is a
+  *replace* semantics field server-side (an empty array clears the existing
+  tag list), so sending an untouched field back on every save would
+  silently rewrite or wipe it. The same dirty-diff shape is used for
+  compose-permissions, where the server schema has no built-in "at least one
+  of role/tags" validation -- that rule is enforced client-side before any
+  request is issued, because a bodyless compose-permissions call answers
+  HTTP 200 with a prose refusal string rather than a thrown error (a bare
+  string response is not treated as a tool failure), so skipping the guard
+  would look like a false "success" to a caller that only checks for
+  thrown errors.
+- **`unattended` has an asymmetric read/write encoding that is easy to get
+  wrong.** The server always emits a concrete boolean-or-string read value
+  (`false`, `"auto"`, or `"dangerous"`) once a member has been registered,
+  but the write side (`update_member`) accepts `"false"` as a *string*
+  sentinel to distinguish "explicitly reset to interactive" from "field
+  omitted, leave unattended mode alone." A form or client that reuses the
+  same type for both directions will either be unable to express "reset to
+  interactive" or will accidentally coerce an omitted field into an
+  explicit reset -- these two must be modeled as distinct read and write
+  types even though they describe the same underlying value.
+
+**Invariant: a dirty-diff baseline must never be allowed to move
+independently of the form state it is diffed against, once the form has
+captured its own initial values.** The member drawer's edit form snapshots
+its baseline once, at mount, from the member object handed to it as a prop.
+If the surrounding page later re-fetches that member (e.g. on a background
+poll) and passes a *newer* member object into the same still-mounted
+drawer without also resetting the form's own captured state, the dirty-diff
+comparison silently starts comparing the operator's (unchanged, stale-by-
+now) form values against a moved baseline. Every field the operator did not
+touch then reads as "dirty" relative to the new baseline and gets included
+in the next submit body -- overwriting whatever changed server-side in the
+interim. This is worse than doing nothing: the entire reason to diff against
+a baseline rather than always sending every field is to avoid clobbering a
+concurrent change, and a baseline that moves out from under a frozen form
+reintroduces exactly that clobber, but only for fields the operator never
+touched (making it look like an unrelated, unedited field was the one that
+reverted). The durable fix pattern for this shape of bug is to track
+per-field "has the operator touched this" flags recorded independently of
+any snapshot comparison, rather than diffing two ever-changing objects
+against each other -- a touched-flags model cannot be invalidated by a
+background refresh because it never re-derives dirtiness from object
+identity or a recomputed baseline.
+
+### Shell-ui tests must resolve form fields by section, not label alone
+
+The member drawer intentionally reuses the same field label (e.g. "Tags") in
+more than one section -- the edit form's tags and the compose-permissions
+form's tags are different fields with different semantics (replace-the-list
+vs. an input to the permission-compose call), and duplicating the label is
+the correct, readable UI choice. A test helper that queries by label text
+alone is therefore ambiguous the moment a second section reuses a label; the
+shared shell-ui test harness resolves this by scoping the field lookup to
+a named section (matching the section's `aria-label`) first, then finding
+the labeled field within that scope. Any new drawer section that reuses an
+existing label anywhere else in the same drawer needs to go through this
+section-scoped lookup, not a bare "find by label" query, or the test will
+silently bind to the wrong instance of the field.
+
 ### Drawer detail actions must actually call their detail route
 
 A drawer or page that exposes a "detail" action (e.g. reading richer

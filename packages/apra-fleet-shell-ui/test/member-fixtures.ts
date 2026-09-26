@@ -21,7 +21,8 @@ export const MEMBERS_A: { members: FleetMember[] } = {
       reservedBy: "sprint-42",
       owner: { package: "fleet-sprint", ref: "proj-alpha" },
       env: { REGION: "us-east-1" },
-      vcsTokenExpiresAt: "2026-12-31T00:00:00.000Z"
+      vcsTokenExpiresAt: "2026-12-31T00:00:00.000Z",
+      unattended: "dangerous"
     },
     {
       id: "member-2",
@@ -31,7 +32,8 @@ export const MEMBERS_A: { members: FleetMember[] } = {
       llmProvider: "openai",
       llm_auth: "expired",
       tags: null,
-      reservedBy: null
+      reservedBy: null,
+      unattended: false
     }
   ]
 };
@@ -46,7 +48,25 @@ export const MEMBERS_B: { members: FleetMember[] } = {
       llmProvider: "claude",
       llm_auth: "ok",
       tags: null,
-      reservedBy: null
+      reservedBy: null,
+      unattended: "auto"
     }
   ]
 };
+
+// `type` here is the REAL agentType value ("local"), unlike MEMBERS_A/MEMBERS_B's
+// placeholder "worker"/"orchestrator" strings -- MemberDrawer's remote-only-fields
+// check is `member.type === "remote"`, so this is the value that actually exercises
+// it. Used by the member edit flow suite (test/member-edit.test.tsx).
+export const LOCAL_MEMBER: FleetMember = {
+  id: "member-local-1",
+  name: "local-one",
+  type: "local",
+  os: "linux",
+  llmProvider: "claude",
+  llm_auth: "ok",
+  tags: ["core"],
+  reservedBy: null
+};
+
+export const MEMBERS_LOCAL: { members: FleetMember[] } = { members: [LOCAL_MEMBER] };
