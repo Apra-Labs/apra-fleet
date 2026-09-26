@@ -1,9 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyIsolatedHome } from '../../../tests/helpers/isolated-home.mjs';
 
 // apra-fleet-fyc.3.2 -- regression pin for apra-fleet-fyc.3 (missing
 // packages/apra-fleet-se/package.json in the root npm 'files' allowlist,
@@ -34,15 +34,11 @@ describe('fyc.3 regression: packages/apra-fleet-se/package.json ships and instal
     });
 
     test('extraction assertion: buildDevManifest + extractWorkflowSubsystemAssets install a package.json ("type":"module") into workflows/fleet-sprint', async () => {
-        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-fyc3-home-'));
-        const previousHome = process.env.HOME;
-        const previousUserProfile = process.env.USERPROFILE;
+        // dist/cli/config.js captures os.homedir() at module-load time, so
+        // HOME/USERPROFILE must be set before it (transitively) first loads.
+        const home = await applyIsolatedHome('apra-fleet-fyc3-home-');
+        const tmpHome = home.tempHome;
         try {
-            // dist/cli/config.js captures os.homedir() at module-load time, so
-            // HOME/USERPROFILE must be set before it (transitively) first loads.
-            process.env.HOME = tmpHome;
-            process.env.USERPROFILE = tmpHome;
-
             const cacheBust = `${Date.now()}-${Math.random()}`;
             const installMod = await import(`../../../dist/cli/install.js?fyc3=${cacheBust}`);
             const assetsMod = await import(`../../../dist/cli/workflow-assets.js?fyc3=${cacheBust}`);
@@ -72,9 +68,7 @@ describe('fyc.3 regression: packages/apra-fleet-se/package.json ships and instal
             const installedPkg = JSON.parse(fs.readFileSync(installedPkgPath, 'utf-8'));
             assert.strictEqual(installedPkg.type, 'module', 'installed workflows/fleet-sprint/package.json must declare "type":"module"');
         } finally {
-            if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
-            if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
-            fs.rmSync(tmpHome, { recursive: true, force: true });
+            await home.restore();
         }
     });
 

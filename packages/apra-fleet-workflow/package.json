@@ -18,7 +18,7 @@
     "./viewer/lean-state": "./src/viewer/lean-state.mjs"
   },
   "scripts": {
-    "test": "node --test --test-timeout=60000 test/*.test.mjs"
+    "test": "node --test --import ./test/isolated-home-setup.mjs --test-timeout=60000 test/*.test.mjs"
   },
   "type": "module",
   "dependencies": {

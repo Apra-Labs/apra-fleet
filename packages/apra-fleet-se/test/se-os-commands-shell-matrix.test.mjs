@@ -586,7 +586,10 @@ describe('emitted commands round-trip through the REAL target shell and deliver 
                 const home = path.join(root, PLAIN_DIRNAME);
                 const helper = writeHelperStandIn(home, target.file);
                 const { command } = getSeCommands(target).readCredentialHelper('github');
-                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+                // isolated-home-allow: this exercises bash's own $HOME
+                // resolution for a credential-helper path, not os.homedir()
+                // -- USERPROFILE is set alongside HOME per the lane's rule.
+                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
                 assert.equal(res.status, 0, `the emitted command must run cleanly under bash.\ncommand: ${command}\nstderr: ${res.stderr}`);
 
                 const got = parseArgvReport(res.stdout);
@@ -616,7 +619,10 @@ describe('emitted commands round-trip through the REAL target shell and deliver 
                 const home = path.join(root, HOSTILE_DIRNAME);
                 const helper = writeHelperStandIn(home, target.file);
                 const { command } = getSeCommands(target).readCredentialHelper('github');
-                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+                // isolated-home-allow: this exercises bash's own $HOME
+                // resolution for a credential-helper path, not os.homedir()
+                // -- USERPROFILE is set alongside HOME per the lane's rule.
+                const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
                 assert.equal(res.status, 0, `the emitted command must run cleanly under bash even when HOME contains a quote and a space.\ncommand: ${command}\nstderr: ${res.stderr}`);
 
                 const got = parseArgvReport(res.stdout);

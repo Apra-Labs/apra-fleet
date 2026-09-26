@@ -119,14 +119,23 @@ export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
   assertHomeResolves(tempHome);
 
   let restored = false;
-  const restore = async () => {
+  /**
+   * @param {{ keepDir?: boolean }} [opts] - keepDir: true skips removing
+   *   tempHome, for the rare caller that installs real files under the
+   *   isolated home and needs them to outlive the env-var restore (e.g. a
+   *   later step in the same test spawns a child process pointed at that
+   *   same directory). Env vars are always restored regardless.
+   */
+  const restore = async (opts = {}) => {
     if (restored) return;
     restored = true;
     for (const key of HOME_VARS) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
-    await fsp.rm(tempHome, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
+    if (!opts.keepDir) {
+      await fsp.rm(tempHome, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
+    }
   };
 
   return { tempHome, dataDir, restore };
