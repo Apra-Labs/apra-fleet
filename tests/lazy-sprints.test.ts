@@ -246,8 +246,11 @@ describe('launcher', () => {
     expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(`node "${path.join(done.workspace, 'inbox-hook.cjs')}"`);
     const exclude = fs.readFileSync(path.join(done.workspace, 'h1', '.git', 'info', 'exclude'), 'utf-8').split('\n');
     expect(exclude).toEqual(expect.arrayContaining(['.beads/', '.lazyfleet/', '.claude/settings.json', '/.claude/agents/', '.claude/settings.local.json', '/permissions.json', '/.fleet-task.md']));
-    // Every clone carries the role contracts that match this engine, not whatever ~/.claude/agents holds.
+    // Every clone carries the role contracts that match this engine, not whatever ~/.claude/agents holds,
+    // and is kept out of the user's own checkout.
     for (const h of ['h0', 'h1']) {
+      const deny = JSON.parse(fs.readFileSync(path.join(done.workspace, h, '.claude', 'settings.json'), 'utf-8')).permissions.deny;
+      expect(deny).toEqual(expect.arrayContaining([`Edit(/${path.resolve(repo)}/**)`, `Bash(cd ${path.resolve(repo)}:*)`, `Bash(git -C ${path.resolve(repo)}:*)`]));
       const agents = path.join(done.workspace, h, '.claude', 'agents');
       expect(fs.readFileSync(path.join(agents, 'plan-reviewer.md'), 'utf-8')).toContain('_shared/GRAPH-SEMANTICS.md');
       expect(fs.existsSync(path.join(agents, '_shared', 'GRAPH-SEMANTICS.md'))).toBe(true);

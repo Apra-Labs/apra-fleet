@@ -466,15 +466,12 @@ function hookScriptPath(rec: SprintRecord): string {
 }
 
 /**
- * Put the landing-note hook in a clone's project settings (.claude/settings.json).
- * Not settings.local.json: the fleet rewrites that file whole whenever it
- * composes a helper's permissions, which would drop the hook.
+ * Change a clone's project settings (.claude/settings.json), keeping the file
+ * out of git. Not settings.local.json: the fleet rewrites that file whole
+ * whenever it composes a helper's permissions.
  */
-async function installInboxHook(deps: LauncherDeps, rec: SprintRecord, dir: string): Promise<void> {
-  const script = hookScriptPath(rec);
-  if (!fs.existsSync(script)) fs.writeFileSync(script, INBOX_HOOK_SCRIPT, { mode: 0o755 });
-  const rel = path.join('.claude', 'settings.json');
-  const file = path.join(dir, rel);
+async function editProjectSettings(deps: LauncherDeps, dir: string, edit: (settings: any) => void): Promise<void> {
+  const file = path.join(dir, '.claude', 'settings.json');
   const tracked = (await deps.run('git', ['ls-tree', '--name-only', 'HEAD', '--', '.claude/settings.json'], dir)).trim().length > 0;
   let settings: any = {};
   try {
@@ -482,21 +479,55 @@ async function installInboxHook(deps: LauncherDeps, rec: SprintRecord, dir: stri
   } catch {
     settings = {};
   }
-  const command = `node "${script}"`;
-  const post = Array.isArray(settings.hooks?.PostToolUse) ? settings.hooks.PostToolUse : [];
-  if (!post.some((m: any) => (m.hooks || []).some((h: any) => h.command === command))) {
-    post.push({ matcher: '', hooks: [{ type: 'command', command }] });
-  }
-  settings.hooks = { ...(settings.hooks || {}), PostToolUse: post };
+  edit(settings);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
-  if (tracked) {
-    await deps.run('git', ['update-index', '--skip-worktree', '--', '.claude/settings.json'], dir);
-  } else {
-    const exclude = path.join(dir, '.git', 'info', 'exclude');
-    const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf-8') : '';
-    if (!cur.split('\n').includes('.claude/settings.json')) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}.claude/settings.json\n`);
+  if (tracked) await deps.run('git', ['update-index', '--skip-worktree', '--', '.claude/settings.json'], dir);
+  else excludeFromGit(dir, '.claude/settings.json');
+}
+
+/** Put the landing-note hook in a clone's project settings. */
+async function installInboxHook(deps: LauncherDeps, rec: SprintRecord, dir: string): Promise<void> {
+  const script = hookScriptPath(rec);
+  if (!fs.existsSync(script)) fs.writeFileSync(script, INBOX_HOOK_SCRIPT, { mode: 0o755 });
+  const command = `node "${script}"`;
+  await editProjectSettings(deps, dir, (settings) => {
+    const post = Array.isArray(settings.hooks?.PostToolUse) ? settings.hooks.PostToolUse : [];
+    if (!post.some((m: any) => (m.hooks || []).some((h: any) => h.command === command))) {
+      post.push({ matcher: '', hooks: [{ type: 'command', command }] });
+    }
+    settings.hooks = { ...(settings.hooks || {}), PostToolUse: post };
+  });
+}
+
+/** Permission rules that keep a helper out of the user's own checkout. */
+export function keepOutRules(repo: string): string[] {
+  const paths = new Set([path.resolve(repo)]);
+  try {
+    paths.add(fs.realpathSync(repo));
+  } catch {
+    // keep the plain path
   }
+  const rules: string[] = [];
+  for (const p of paths) {
+    // Edit(path) rules cover every file-editing tool, Write included.
+    rules.push(`Edit(/${p}/**)`, `Bash(cd ${p}:*)`, `Bash(git -C ${p}:*)`);
+  }
+  return rules;
+}
+
+/**
+ * A helper works only in its own clone. Its git remote points at the user's
+ * checkout, and a model that loses its way can find that checkout on disk and
+ * start editing and committing there. Deny it outright.
+ */
+async function keepOutOfUserRepo(deps: LauncherDeps, rec: SprintRecord, dir: string): Promise<void> {
+  const rules = keepOutRules(rec.repo);
+  await editProjectSettings(deps, dir, (settings) => {
+    const deny: string[] = Array.isArray(settings.permissions?.deny) ? settings.permissions.deny : [];
+    for (const r of rules) if (!deny.includes(r)) deny.push(r);
+    settings.permissions = { ...(settings.permissions || {}), deny };
+  });
 }
 
 /**
@@ -547,6 +578,7 @@ async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, 
   await deps.run('bd', joined ? ['dolt', 'pull'] : ['bootstrap', '--yes'], dir);
   await hideLocalConfig(deps, dir);
   await installInboxHook(deps, rec, dir);
+  await keepOutOfUserRepo(deps, rec, dir);
   await installAgentContracts(deps, dir);
   hideFleetFiles(dir);
   await assertClean(deps, dir, `Helper ${i + 1}`);
@@ -659,6 +691,7 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
     }
     await deps.run('bd', ['dolt', 'push'], h0);
     await hideLocalConfig(deps, h0);
+    await keepOutOfUserRepo(deps, rec, h0);
     await installAgentContracts(deps, h0);
     hideFleetFiles(h0);
     await assertClean(deps, h0, 'Helper 1');

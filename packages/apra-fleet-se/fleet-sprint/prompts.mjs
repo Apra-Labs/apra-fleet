@@ -350,10 +350,21 @@ export function buildStreakAssignmentPrompt({ readyBeadIds }) {
  * @param {{ beadIds: string[], branch: string, feedback: string|null, kbKnowledge?: object[] }} opts
  * @returns {string}
  */
+// Every doer prompt carries this. A doer that lands outside its checkout
+// (a cheap model once ran `find / -name .git` and adopted the first match)
+// silently edits and commits in someone else's working copy.
+const WORKSPACE_RULE =
+    'STAY IN YOUR OWN CHECKOUT: the directory you were started in is your working copy -- run ' +
+    '`pwd` and `git status` there first. Make every file edit and run every git command inside ' +
+    'it. Never cd into, edit, or run git against any other directory, even another checkout of ' +
+    'this project you find on disk (such as the one your git remote points at). If the directory ' +
+    'you were started in is not a git checkout, stop and report status "BLOCKED".';
+
 export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
     const lines = [
         `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
+        WORKSPACE_RULE,
         'Work each assigned bead per your agent contract: read `bd show <id>` for its ' +
         'full acceptance criteria, implement and verify the change, then `bd close <id>` ' +
         'once it is done. Return your report strictly as the required JSON schema ' +
@@ -383,6 +394,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
 // state" switch, stated in the words that contract keys on, plus the
 // permission-block rule every doer prompt carries.
 const PIPELINE_DOER_RULES = [
+    WORKSPACE_RULE,
     'BEAD STATE IS MANAGED BY THE ORCHESTRATOR: the orchestrator manages claim/close for your ' +
     'assigned bead ids, and you must NOT run any `bd` command (no claim, no close, no update, no ' +
     'show). Everything you need about the work is in this prompt. Work only inside your current ' +
