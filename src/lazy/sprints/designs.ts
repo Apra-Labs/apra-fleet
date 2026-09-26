@@ -199,6 +199,8 @@ export async function saveDesign(input: Design): Promise<Design> {
   if (BUILT_IN_DESIGNS.some(b => b.id === id)) throw new Error(`"${name}" is a built-in design; save it under another name`);
   const design: Design = { ...input, id, name, description: String(input.description || '').trim() };
   delete design.source;
+  // Saving a learned design by hand makes it yours: the advisor stops rewriting it.
+  if (design.auto) design.auto = { ...design.auto, locked: true };
   await checkDesign(design);
   fs.mkdirSync(myDir(), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(myDir(), `${id}.json`), JSON.stringify(design, null, 2) + '\n');

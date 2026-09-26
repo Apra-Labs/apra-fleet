@@ -49,6 +49,12 @@ describe('your own designs', () => {
     expect(designs.listDesigns().some(d => d.id === 'my-lean')).toBe(false);
   });
 
+  it('locks a learned design once you save it yourself', async () => {
+    const saved = await designs.saveDesign({ id: 'auto-feature-small', name: 'Auto: features (small)', description: 'x', build: { mode: 'classic' }, auto: { basedOn: 'classic', evidence: ['e'], runs: 3, updatedAt: '2026-09-26T00:00:00Z' } });
+    expect(designs.getDesign('auto-feature-small').auto).toMatchObject({ locked: true });
+    designs.deleteDesign(saved.id);
+  });
+
   it('refuses a design the engine cannot run, with the reason', async () => {
     await expect(designs.saveDesign({ id: '', name: 'Broken', description: '', plan: { run: 'sometimes' as any } })).rejects.toThrow(/^Plan the work: must be one of always/);
     await expect(designs.saveDesign({ id: '', name: 'Idle', description: '', build: { mode: 'off' }, plan: { run: 'off' }, test: { run: 'off' }, finish: { finalReview: false } })).rejects.toThrow(/does nothing/);
