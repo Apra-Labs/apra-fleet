@@ -59,9 +59,22 @@ export const PIPELINE_PLANNING_GUIDANCE =
     '5. Prefer many short independent lanes over a few long ones: different lanes build at once, ' +
     'while tasks in one lane build one after another in streakOrder.';
 
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [], pipeline = false }) {
+// The same guidance for a sprint design that turns acceptance-test tasks off
+// (recipe build.acceptanceTasks: false): each code task carries its own tests.
+const ACCEPTANCE_ITEM_START = '2. For EVERY feature, add one task';
+export const PIPELINE_PLANNING_GUIDANCE_NO_ACCEPTANCE = PIPELINE_PLANNING_GUIDANCE.replace(
+    PIPELINE_PLANNING_GUIDANCE.slice(
+        PIPELINE_PLANNING_GUIDANCE.indexOf(ACCEPTANCE_ITEM_START),
+        PIPELINE_PLANNING_GUIDANCE.indexOf('3. Fix the SHAPE'),
+    ),
+    '2. Do NOT add separate acceptance-test tasks: each code task writes the tests that prove its own ' +
+    'behaviour, and one task that wires the pieces together (for example the module that exports ' +
+    'them) also tests them working together.\n',
+);
+
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [], pipeline = false, acceptanceTasks = true }) {
     const lines = [];
-    if (pipeline) lines.push(PIPELINE_PLANNING_GUIDANCE);
+    if (pipeline) lines.push(acceptanceTasks ? PIPELINE_PLANNING_GUIDANCE : PIPELINE_PLANNING_GUIDANCE_NO_ACCEPTANCE);
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
     // beads whose acceptance criteria are themselves defective, and absent
@@ -388,6 +401,41 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
         lines.push(wrapUntrustedBlock('reviewer.notes', feedback));
     }
     return lines.join('\n\n');
+}
+
+/**
+ * Prompt for a sprint design's "work" block (fleet-sprint/recipe.mjs): a doer
+ * does the block's instructions on the sprint branch. It is not a task from
+ * the task list, so there is nothing to claim or close.
+ * @param {{ block: { name: string, instructions: string }, branch: string }} opts
+ */
+export function buildWorkBlockPrompt({ block, branch }) {
+    return [
+        `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
+        'Assigned bead ids (comma-separated): (none -- this is a sprint design block, not a task)',
+        `SPRINT DESIGN BLOCK "${block.name}": this work comes from the sprint's design, not from the task ` +
+        'list. There are no bead ids to claim or close and you must NOT run any `bd` command. Do the work ' +
+        'described below, commit it on the branch above, then stop at the VERIFY checkpoint with ' +
+        '`closedIds` empty and a short summary of what you did and what you found in `notes`.',
+        `WHAT TO DO:\n${block.instructions}`,
+        WORKSPACE_RULE,
+        'PERMISSION BLOCKS MUST BE SURFACED, NOT ROUTED AROUND: if any tool or git invocation is blocked ' +
+        'by the permission layer, STOP and report the block in your notes with status "BLOCKED" -- do ' +
+        'NOT substitute a wrapper script, an alternate binary, or any other workaround whose purpose is ' +
+        'to bypass the block, even if you judge the underlying operation safe.',
+    ].join('\n\n');
+}
+
+/**
+ * Focus text for a sprint design's "check" block: narrows one review to the
+ * block's instructions. Appended to the ordinary reviewer prompt.
+ * @param {{ name: string, instructions: string }} block
+ */
+export function buildCheckBlockFocus(block) {
+    return `SPRINT DESIGN CHECK "${block.name}": in this review judge ONLY the rule below, against the ` +
+        'current state of the sprint branch. Return APPROVED if it holds. If it does not, return ' +
+        'CHANGES_NEEDED with `reopenIds` for the tasks whose work breaks it, or `newTasks` that each ' +
+        `describe one fix, so the orchestrator can act on it.\n\nTHE RULE:\n${block.instructions}`;
 }
 
 // Shared by both pipeline doer prompts: the doer.md "externally-managed bead

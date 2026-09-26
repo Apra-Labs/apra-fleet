@@ -63,6 +63,7 @@ import {
 import { isPostDispatchSyncFailure } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
+import { applyModelFloor } from '../recipe.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -483,6 +484,8 @@ export async function runDevelopPhase({
                     const requiredTier = streakRequiredTier(streak);
                     if (requiredTier) doerModel = requiredTier;
                 }
+                // A sprint design can set a floor under every doer's tier.
+                doerModel = applyModelFloor(validated.recipe, doerModel);
                 if (streakModels.length > 1) {
                     log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                 }

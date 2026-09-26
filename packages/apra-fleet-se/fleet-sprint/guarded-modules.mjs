@@ -123,6 +123,8 @@ export const GUARDED_MODULES = [
     'phases/develop.mjs',
     'phases/develop-pipeline.mjs',
     'review-slices.mjs',
+    'phases/recipe-blocks.mjs',
+    'recipe.mjs',
     // apra-fleet-3swo.6.5: the per-round Review and the per-cycle Deploy
     // phases. Same nested-entry reporting caveat as the four above (they are
     // always REPORTED as 'review.mjs' and 'deploy.mjs'), so the same rule

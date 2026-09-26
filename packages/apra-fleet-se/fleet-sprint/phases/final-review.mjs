@@ -145,6 +145,7 @@ export async function runFinalReviewPhase({
     computeChildFloor,
     createChildBeadWithAllocatedId,
     sanitizePrText,
+    skipReview = false,
 }) {
     phase(`Final Review C${finalCycleLabel}`);
 
@@ -226,6 +227,20 @@ export async function runFinalReviewPhase({
     // dispatching the reviewer persona over the whole sprint -- so its policy
     // routes to getMemberForRole('reviewer'), unlike the per-round reviewer
     // which takes the pool head.
+    if (skipReview) {
+        // The sprint design turned the final review off: the verdict comes
+        // from task state alone.
+        const done = finalOpenAtGoal.length === 0 && finalUnclosedVerifyIds.length === 0;
+        finalVerdictResult = {
+            verdict: done ? 'PASS' : 'FAIL',
+            notes: `The final review is turned off in this sprint design, so this verdict comes from task state only: ` +
+                `${finalClosedCount} task(s) closed, ${finalOpenAtGoal.length} still open at goal priority ${validated.goal}.`,
+            newTasks: [],
+            reopenIds: [],
+        };
+        log(`Final Review: turned off in this sprint design -- verdict ${finalVerdictResult.verdict} from task state.`);
+        return { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount: finalOpenAtGoal.length, finalDeferredAtGoalIds };
+    }
     const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
         prompt: buildFinalVerdictPrompt({
             targetIssues,

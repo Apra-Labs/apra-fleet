@@ -34,6 +34,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildPipelineDoerPrompt, buildPipelineFixPrompt } from '../prompts.mjs';
+import { applyModelFloor } from '../recipe.mjs';
 
 /** How many times one task may bounce at landing before it is given back. */
 export const MAX_LANDING_BOUNCES = 3;
@@ -312,7 +313,7 @@ export async function runBuildPipelinePhase({
         const sameCheckout = member === orchestratorMember;
         const branchSync = makeBranchGitSync(taskBranch);
         const ctx = { ...dispatchCtx, withGitSync: (m, pushCode, fn, opts) => branchSync.withGitSync(m, pushCode, fn, opts) };
-        const model = normalizeTierToken(task.metadata && task.metadata.model);
+        const model = applyModelFloor(validated.recipe, normalizeTierToken(task.metadata && task.metadata.model));
 
         // Cut the task branch from the latest sprint branch.
         if (!sameCheckout) {

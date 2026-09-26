@@ -589,6 +589,41 @@ orchestrator, and only for the seconds a landing takes. In a shared-workspace
 fleet (no `--sync`) members share one checkout, so the pipeline runs one task
 at a time there.
 
+## Sprint designs (`--recipe-file`)
+
+A sprint design ("recipe", `fleet-sprint/recipe.mjs`) is JSON that turns the
+engine's fixed sequence into a configurable one without a second runner. The
+runner keeps its order -- Plan, Build, custom blocks, Deploy/Integration test,
+Cycle Evaluation (with Re-Review), then Finalization -- and asks the recipe at
+each slot whether and how to run it. No recipe means every answer is the
+engine's own, so the default path is unchanged (the golden transcripts pin it).
+
+| Setting | Values | Effect |
+|---|---|---|
+| `plan.run` | `always` (default), `when-needed`, `first-cycle`, `off` | `when-needed` skips Plan on cycle 2+ unless open work is still undecomposed (a non-task bead with no children) or rejected findings wait to be resubmitted: reopened and reviewer-created tasks go straight back to the builders. `off` sends the childless sprint root straight to one doer (the target-issue exemption), which is a "solo agent" baseline. |
+| `plan.review` | `true` (default), `false` | `false` accepts the planner's graph without a plan-reviewer round. |
+| `build.mode` | `classic`, `pipeline`, `off` | Must agree with `--pipeline`; `off` skips Develop entirely (test-only or check-only designs). |
+| `build.minModel` | `cheap`, `standard`, `premium` | A floor under every doer's tier, in both build modes. Fine-grained plans otherwise put small tasks on the cheap tier. |
+| `build.acceptanceTasks` | `true` (default), `false` | Pipeline planning without the per-feature "Acceptance test:" tasks (`PIPELINE_PLANNING_GUIDANCE_NO_ACCEPTANCE`). |
+| `review.run` | `on` (default), `off` | `off` skips the per-round review, the Re-Review, and exits a cycle once nothing is open at goal priority. |
+| `review.split` / `splitMinFiles` | `always` (default), `auto`, `never` / 20 | Whether the pipeline's end-of-cycle review is sliced; `auto` only above the file threshold. |
+| `test.run` | `auto` (default), `off` | `off` skips Deploy and Integration test even when their runbooks exist. |
+| `finish.finalReview` | `true` (default), `false` | `false` derives PASS/FAIL from task state (nothing open at goal priority) without a final reviewer. |
+| `finish.harvest` | `true` (default), `false` | `false` skips the docs/changelog pass. |
+| `blocks[]` | `kind` `check`/`work`/`command`, `slot` `after-build`/`finish` | Custom blocks, `phases/recipe-blocks.mjs`. |
+
+Custom blocks reuse paths the engine already trusts. A `check` block is a
+fresh reviewer dispatch whose focus is the block's instructions; its verdict
+goes through `applyReviewTransitions()` (shared with Re-Review): guarded
+reopens and validated new tasks, or nothing with `onFail: "ignore"`. A `work`
+block is a doer dispatch on the sprint branch inside a code-write bracket,
+with `buildWorkBlockPrompt()` (no bead ids, no `bd`, the workspace and
+permission-block rules). A `command` block runs on the orchestrator in a
+read-side bracket; a failure files a P1 "Fix: <name> failed" task with the
+output tail (`onFail: "new-task"`, the default). The module is in
+`guarded-modules.mjs`. Recipe text is plain ASCII and bounded in length,
+because it reaches prompts and shells.
+
 ## Orchestrator-bracketed git sync (`synced` mode)
 
 In `synced` mode, every dispatch that reads or writes git-tracked state is

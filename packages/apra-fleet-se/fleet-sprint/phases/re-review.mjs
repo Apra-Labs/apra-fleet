@@ -190,22 +190,52 @@ export async function runReReviewPhase({
     // DEFERRED bead named here is skipped with the identical
     // "deferred scope, not reopened" outcome instead of being pulled
     // back into a sprint that no longer targets it.
+    pendingRejectedNewTasks = await applyReviewTransitions(reReviewVerdict, {
+        log, command, cycle, validated, targetIssues, orchestratorMember,
+        rejectedNewTasks, pendingRejectedNewTasks,
+        bdListScoped, goalMax, recordReopen,
+        childIdAllocator, sprintMutexId,
+        computeChildFloor, createChildBeadWithAllocatedId,
+        trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+    });
+    await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+
+    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };
+}
+
+/**
+ * Apply what a review verdict asks for: guarded reopens, then each newTask
+ * validated and created under the sprint root (rejects are recorded, never
+ * sent to bd). Shared by Re-Review and the sprint design's check blocks
+ * (recipe-blocks.mjs). Returns the updated pendingRejectedNewTasks list. The
+ * caller closes the bd write bracket (syncBeadsAfter).
+ */
+export async function applyReviewTransitions(verdict, {
+    log, command, cycle, validated, targetIssues, orchestratorMember,
+    rejectedNewTasks, pendingRejectedNewTasks,
+    bdListScoped, goalMax, recordReopen,
+    childIdAllocator, sprintMutexId,
+    computeChildFloor, createChildBeadWithAllocatedId,
+    trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+    source = 'Re-review', stage = 're-review',
+}) {
     await applyGuardedReopens({
-        entries: reReviewVerdict.reopenIds,
+        entries: verdict.reopenIds,
         bdListScoped, goalMax, goal: validated.goal, log, command,
         member: orchestratorMember,
-        logPrefix: 'Re-review reopenIds',
+        // Re-Review's own label, renamed for a design block's verdict.
+        logPrefix: 'Re-review reopenIds'.replace('Re-review', source),
         buildReopenCommand: ({ id }) => ({
             cmd: `bd update ${id} --status=open`,
-            label: `Reopen ${id} per re-review verdict`,
+            label: `Reopen ${id} per ${source.toLowerCase()} verdict`,
         }),
         // Track per-bead reopen counts for reopen-thrash detection.
         onReopened: ({ id }) => recordReopen(id),
     });
-    for (const newTask of reReviewVerdict.newTasks) {
+    for (const newTask of verdict.newTasks) {
         const validation = validateNewTask(newTask);
         if (!validation.ok) {
-            log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
+            log(`${source} newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
             rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
             // Track it for resurfacing into the NEXT planning-phase
             // dispatch too -- see trackRejectedNewTaskForResurfacing()'s
@@ -238,14 +268,14 @@ export async function runReReviewPhase({
         // id under a shared parent.
         const persisted = await persistNewTaskBestEffort({
             command, member: orchestratorMember, parentId: targetIssues[0],
-            newTask, cycle, log, stage: 're-review',
+            newTask, cycle, log, stage,
             createFn: async () => {
                 const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0], log });
                 await createChildBeadWithAllocatedId({
                     command, allocator: childIdAllocator, member: orchestratorMember,
                     title, description, priority, parentId: targetIssues[0],
                     sprintId: sprintMutexId, floor, log,
-                    label: `Create follow-up task from re-review newTasks: ${title}`,
+                    label: `Create follow-up task from ${source.toLowerCase()} newTasks: ${title}`,
                 });
             },
         });
@@ -258,7 +288,5 @@ export async function runReReviewPhase({
 
     // D-push the orchestrator's applied re-review reopens/newTask
     // creates, same as the Develop/Review transition site above.
-    await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
-
-    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };
+    return pendingRejectedNewTasks;
 }

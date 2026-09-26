@@ -170,6 +170,8 @@ import { runDeployPhase } from './phases/deploy.mjs';
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
 import { runIntegTestPhase } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
+import { runRecipeBlocks } from './phases/recipe-blocks.mjs';
+import { planRunsThisCycle, hasUndecomposedWork, buildRuns, reviewRuns, testRuns, splitReview } from './recipe.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
 // its own phase() call to the findings D-push and RETURNS the sprint verdict
@@ -1460,6 +1462,7 @@ async function runSprintCycle(context) {
     const planReviewSlices = async () => planReviewSlicesFor({
         command, validated, orchestratorMember,
         members: [...new Set([...getMembersForRole(ROLE_REVIEWER), ...(await readPipelineMemberPool())])],
+        shouldSplit: (n) => splitReview(validated.recipe, n),
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
@@ -2420,7 +2423,26 @@ async function runSprintCycle(context) {
         // below still reads (planCapDeferredIds / lastVerdict / planningRounds)
         // plus the pendingRejectedNewTasks list it reassigns -- the one mutable
         // local that used to be shared through the closure.
-        const planOutcome = await runPlanPhase({
+        // Sprint design: Plan may be off, first-cycle only, or run only when
+        // there is something left to plan (work not yet split into tasks, or
+        // rejected findings waiting to be resubmitted). A reopened or
+        // reviewer-created task goes straight back to the builders.
+        const recipe = validated.recipe;
+        let needsPlanning = true;
+        if (recipe && recipe.plan.run === 'when-needed' && cycle > 1) {
+            needsPlanning = pendingRejectedNewTasks.length > 0 || hasUndecomposedWork(
+                await bdListScoped(`--status=${NOT_DONE_STATUSES} --json`),
+                await decomposedParentIds(),
+            );
+        }
+        const planRuns = planRunsThisCycle(recipe, { cycle, needsPlanning });
+        if (!planRuns) {
+            log(`Plan C${cycle}: skipped by the sprint design (${recipe.plan.run === 'off' ? 'planning is turned off' : 'nothing new to plan'}).`);
+        }
+        const planOutcome = !planRuns
+            ? { pendingRejectedNewTasks, planCapDeferredIds: [], lastVerdict: null, planningRounds: 0 }
+            : await runPlanPhase({
+            skipPlanReview: Boolean(recipe && !recipe.plan.review),
             phase, log, command, dispatchCtx,
             cycle, validated, targetIssues, requirementsContent,
             orchestratorMember, getMemberForRole,
@@ -2520,7 +2542,9 @@ async function runSprintCycle(context) {
         // Cycle Evaluation so a permanently-blocked bead is surfaced by the
         // stall-abort / final-verdict evidence rather than by this loop
         // silently `break`-ing out and being mistaken for success.
-        if (readyBeads.length === 0) {
+        if (!buildRuns(recipe)) {
+            log('Build is turned off in this sprint design -- skipping Develop/Review for this cycle.');
+        } else if (readyBeads.length === 0) {
             log('No ready beads to dispatch this cycle (may be blocked/in_progress work remaining) -- skipping Develop/Review loop for this cycle.');
         } else {
         // =======================
@@ -2695,7 +2719,7 @@ async function runSprintCycle(context) {
             // back through this destructuring assignment; on the round where
             // every streak failed (empty review scope) they come back
             // unchanged, which is why no `if` is needed here.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
+            if (reviewRuns(recipe)) ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, orchestratorMember,
                 gitSync,
@@ -2734,6 +2758,21 @@ async function runSprintCycle(context) {
         }
         } // end Develop & Review loop (skipped when readyBeads.length === 0)
 
+        // Sprint design: custom blocks that run after the build.
+        if (recipe && recipe.blocks.some((b) => b.slot === 'after-build')) {
+            ({ pendingRejectedNewTasks } = await runRecipeBlocks({
+                slot: 'after-build', recipe, cycle,
+                phase, log, command, dispatchCtx,
+                validated, targetIssues, orchestratorMember, doerPool: getMembersForRole(ROLE_DOER), reviewer: getMembersForRole(ROLE_REVIEWER)[0],
+                gitSync, dispatchReview, bdListScoped, updateDashboard,
+                transitions: {
+                    rejectedNewTasks, pendingRejectedNewTasks, goalMax, recordReopen,
+                    childIdAllocator, sprintMutexId, computeChildFloor, createChildBeadWithAllocatedId,
+                    trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+                },
+            }));
+        }
+
         // =======================
         // 4. Deploy & Integration
         // =======================
@@ -2743,8 +2782,10 @@ async function runSprintCycle(context) {
         // error, portability quirk on a given member, etc.) SKIPS the dependent
         // phase with a logged warning -- it must never throw and kill the
         // sprint.
-        const hasDeploy = await probeFileExists('deploy.md', getMemberForRole('deployer'));
-        const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
+        // Sprint design: tests can be turned off even when the runbooks exist.
+        if (!testRuns(recipe)) log('Deploy and integration tests are turned off in this sprint design.');
+        const hasDeploy = testRuns(recipe) && await probeFileExists('deploy.md', getMemberForRole('deployer'));
+        const hasPlaybook = testRuns(recipe) && await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
 
@@ -2988,7 +3029,7 @@ async function runSprintCycle(context) {
         // CURRENT state here, before ever deciding to exit -- rather than either
         // silently exiting on a stale verdict nothing this cycle backs, or
         // looping forever with no way to confirm completion.
-        if (openAtGoal.length === 0 && !reviewedThisCycle) {
+        if (openAtGoal.length === 0 && !reviewedThisCycle && reviewRuns(recipe)) {
             // The phase body lives in ./phases/re-review.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The `if` above
@@ -3067,6 +3108,13 @@ async function runSprintCycle(context) {
             break;
         }
 
+        // Sprint design with review turned off: nothing open is enough.
+        if (!reviewRuns(recipe) && openAtGoal.length === 0 && stillOpenVerifyIds.length === 0) {
+            log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope (review is turned off in this sprint design). Exiting cycle loop.`);
+            endGroup();
+            break;
+        }
+
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
             // apra-fleet-rp7a.1: the deferred enumeration rides on the EXIT
             // line specifically, because this is the line that says the sprint
@@ -3112,6 +3160,20 @@ async function runSprintCycle(context) {
     // 6. Finalization: the evidence-based final verdict drives the return value
     // =======================
     group('Finalization');
+    // Sprint design: custom blocks that run once, before the final review.
+    if (validated.recipe && validated.recipe.blocks.some((b) => b.slot === 'finish')) {
+        ({ pendingRejectedNewTasks } = await runRecipeBlocks({
+            slot: 'finish', recipe: validated.recipe, cycle: finalCycleLabel,
+            phase, log, command, dispatchCtx,
+            validated, targetIssues, orchestratorMember, doerPool: getMembersForRole(ROLE_DOER), reviewer: getMembersForRole(ROLE_REVIEWER)[0],
+            gitSync, dispatchReview, bdListScoped, updateDashboard,
+            transitions: {
+                rejectedNewTasks, pendingRejectedNewTasks, goalMax, recordReopen,
+                childIdAllocator, sprintMutexId, computeChildFloor, createChildBeadWithAllocatedId,
+                trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+            },
+        }));
+    }
     // The phase body lives in ./phases/final-review.mjs (apra-fleet-3swo.6.6),
     // which receives its state explicitly instead of closing over
     // runSprintCycle's locals. The group('Finalization') banner above stays
@@ -3136,6 +3198,7 @@ async function runSprintCycle(context) {
         kbPriming, kbWork, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
+        skipReview: Boolean(validated.recipe && !validated.recipe.finish.finalReview),
     });
 
     // =======================
@@ -3196,7 +3259,9 @@ async function runSprintCycle(context) {
     // nonetheless run HERE, after Regression Test (whose summary it folds into
     // the analysis document) and before Publish PR (which pushes the branch the
     // harvester just committed to).
-    await runHarvestPhase({
+    if (validated.recipe && !validated.recipe.finish.harvest) {
+        log('Harvest is turned off in this sprint design -- no docs or changelog pass.');
+    } else await runHarvestPhase({
         phase, log, dispatchCtx,
         validated, targetIssues, finalCycleLabel, budget,
         closedCountHistory, highWaterClosedCount,

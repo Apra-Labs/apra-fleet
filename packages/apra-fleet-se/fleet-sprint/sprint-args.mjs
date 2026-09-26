@@ -5,6 +5,7 @@
 // importers of fleet-sprint/runner.js (including bin/cli.mjs) resolve
 // unchanged. This is a move-only extraction: behaviour, validation order and
 // error message text are all deliberately unchanged from the pre-move code.
+import { normalizeRecipe } from './recipe.mjs';
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
 
@@ -169,6 +170,9 @@ const KNOWN_ARG_KEYS = new Set([
     // Optional path, relative to each member's work folder, of the inbox file
     // the pipeline appends landing notes to (see develop-pipeline.mjs).
     'pipeline_inbox',
+    // Optional sprint design (fleet-sprint/recipe.mjs): which blocks run and
+    // how. Absent means the engine's own fixed sequence, unchanged.
+    'recipe',
 ]);
 
 /**
@@ -433,6 +437,20 @@ export function validateArgs(args) {
         throw new Error('[Arg Contract] pipeline_parallel, max_doers, gate_command, pipeline_member_pool and pipeline_inbox only apply with pipeline: true.');
     }
 
+    // --- recipe (optional sprint design) ------------------------------------
+    let recipe = null;
+    try {
+        recipe = normalizeRecipe(args.recipe);
+    } catch (err) {
+        throw new Error(`[Arg Contract] Invalid recipe: ${err.message}.`);
+    }
+    if (recipe && recipe.build.mode === 'pipeline' && !pipeline) {
+        throw new Error('[Arg Contract] The sprint design builds in pipeline mode: pass pipeline: true as well.');
+    }
+    if (recipe && recipe.build.mode === 'classic' && pipeline) {
+        throw new Error('[Arg Contract] The sprint design builds in classic mode, but pipeline: true was passed.');
+    }
+
     // --- worklist_effort_budget (optional) ---------------------------------
     if (args.worklist_effort_budget !== undefined
         && (typeof args.worklist_effort_budget !== 'number'
@@ -504,5 +522,6 @@ export function validateArgs(args) {
         gateCommand: args.gate_command === undefined ? undefined : args.gate_command.trim(),
         pipelineMemberPool: args.pipeline_member_pool,
         pipelineInbox: args.pipeline_inbox,
+        recipe,
     };
 }

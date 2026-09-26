@@ -97,6 +97,7 @@ export async function runPlanPhase({
     reconcilePendingRejectedNewTasks,
     stageCommandBodyMemberSide,
     updateDashboard,
+    skipPlanReview = false,
 }) {
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
     // a local so the body below reads exactly as it did inline, and handed
@@ -163,6 +164,7 @@ export async function runPlanPhase({
             stalenessNotes: parentNotesStalenessNotes,
             // Build pipeline mode: plan for parallel builds and an end-of-cycle review.
             pipeline: validated.pipeline === true,
+            acceptanceTasks: !(validated.recipe && validated.recipe.build.acceptanceTasks === false),
         });
         // The planner writes no code but MUTATES beads (it creates the task
         // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
@@ -284,6 +286,16 @@ export async function runPlanPhase({
         // correctly-flavored error for each (apra-fleet-9ta.4). The engine
         // stamps that marker from the policy row; the notes below are the
         // per-error-class text this call site still owns.
+        if (skipPlanReview) {
+            // The sprint design turned plan review off: the planner's graph
+            // is used as it stands.
+            log(`Plan C${cycle}: plan review is turned off in this sprint design -- using the planner's graph as it stands.`);
+            lastVerdict = { verdict: 'APPROVED', notes: 'Plan review turned off by the sprint design.', taskAssignments: [] };
+            planApproved = true;
+            await updateDashboard();
+            continue;
+        }
+
         const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
             prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',

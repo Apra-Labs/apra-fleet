@@ -105,7 +105,7 @@ export function mergeVerdicts(verdicts) {
  * anything short of that, or a diff that cannot be read, returns null and the
  * caller keeps its single review.
  */
-export async function planReviewSlicesFor({ command, validated, orchestratorMember, members }) {
+export async function planReviewSlicesFor({ command, validated, orchestratorMember, members, shouldSplit = () => true }) {
     if (!Array.isArray(members) || members.length < 3) return null;
     await command(`git fetch origin ${validated.baseBranch} --quiet`, {
         member_name: orchestratorMember, silent: true, failSoft: true, label: `Review slices: fetch '${validated.baseBranch}'`,
@@ -115,6 +115,8 @@ export async function planReviewSlicesFor({ command, validated, orchestratorMemb
     });
     if (!diff.ok) return null;
     const files = String(diff.output).split('\n').map((s) => s.trim()).filter(Boolean);
+    // A sprint design can keep small diffs to one reviewer.
+    if (!shouldSplit(files.length)) return null;
     const slices = buildReviewSlices(files, Math.min(6, members.length - 1));
     if (slices.length < 2) return null;
     const used = members.slice(0, slices.length + 1);

@@ -18,6 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { normalizeRecipe } from '../fleet-sprint/recipe.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -182,6 +183,7 @@ export function buildOptionsSpec() {
         'gate-command': { type: 'string' },
         'member-pool-file': { type: 'string' },
         'inbox-file': { type: 'string' },
+        'recipe-file': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -343,7 +345,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, pipeline, pipelineParallel, maxDoers, gateCommand, memberPoolFile, inboxFile }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, pipeline, pipelineParallel, maxDoers, gateCommand, memberPoolFile, inboxFile, recipe }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -385,6 +387,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
         if (memberPoolFile !== undefined) args.pipeline_member_pool = memberPoolFile;
         if (inboxFile !== undefined) args.pipeline_inbox = inboxFile;
     }
+    // Sprint design: only forwarded when one was given.
+    if (recipe !== undefined && recipe !== null) args.recipe = recipe;
     return args;
 }
 
@@ -644,6 +648,25 @@ async function main() {
     if (!values.pipeline && (values['max-doers'] !== undefined || values['gate-command'] !== undefined || values['member-pool-file'] !== undefined || values['inbox-file'] !== undefined)) {
         console.error('Error: --max-doers, --gate-command, --member-pool-file and --inbox-file only apply with --pipeline.');
         process.exit(1);
+    }
+    // --recipe-file: the sprint design, read and checked before any fleet
+    // connection so a bad design fails with a clear message straight away.
+    let recipe;
+    if (values['recipe-file'] !== undefined) {
+        try {
+            recipe = normalizeRecipe(JSON.parse(await fs.readFile(values['recipe-file'], 'utf-8')));
+        } catch (err) {
+            console.error(`Error: --recipe-file ${values['recipe-file']}: ${err.message}`);
+            process.exit(1);
+        }
+        if (recipe && recipe.build.mode === 'pipeline' && !values.pipeline) {
+            console.error('Error: the sprint design builds in pipeline mode; pass --pipeline too.');
+            process.exit(1);
+        }
+        if (recipe && recipe.build.mode === 'classic' && values.pipeline) {
+            console.error('Error: the sprint design builds in classic mode; drop --pipeline.');
+            process.exit(1);
+        }
     }
     // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
     // so malformed JSON fails before any fleet connection; the runner's
@@ -1075,6 +1098,7 @@ async function main() {
                 gateCommand: values['gate-command'],
                 memberPoolFile: values['member-pool-file'],
                 inboxFile: values['inbox-file'],
+                recipe,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc
