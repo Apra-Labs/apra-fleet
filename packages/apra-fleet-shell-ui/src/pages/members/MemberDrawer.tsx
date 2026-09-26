@@ -139,66 +139,72 @@ function tagsEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
-/** Builds the update_member body from the edit form's CURRENT state against
- *  the member's baseline (re-derived from `member`, not stored separately --
- *  MemberDrawer remounts fresh per selected member, so the baseline is stable
- *  for the component's lifetime). Returns null when nothing changed. Every
- *  field is included ONLY when it actually differs from the baseline --
- *  sending an untouched field back would rewrite it (and, for tags, replace
- *  or clear the existing list) on every submit. */
-function buildUpdateBody(member: FleetMember, state: EditFormState): UpdateMemberBody | null {
+/** Builds the update_member body from the edit form's CURRENT state. A field
+ *  is sent ONLY when the operator touched it in this drawer AND its value
+ *  differs from the value derived from the CURRENT `member` prop. The baseline
+ *  is NOT stable for the mount's life: Members.tsx re-points `member` on every
+ *  refresh (including the background poll) while the drawer stays mounted, so
+ *  a pure value-diff would flag a field another operator changed server-side
+ *  as dirty and the next save would silently revert it. The touched gate
+ *  (apra-fleet-i9ag.6.4) keeps untouched fields out of the body regardless of
+ *  how the baseline moves. Returns null when nothing is sendable; otherwise the
+ *  body plus the form keys it covers (so a successful save can clear exactly
+ *  those touched flags). */
+function buildUpdateBody(
+  member: FleetMember,
+  state: EditFormState,
+  touched: ReadonlySet<keyof EditFormState>
+): { body: UpdateMemberBody; sent: (keyof EditFormState)[] } | null {
   const baseline = initialEditState(member);
   const body: UpdateMemberBody = {};
-  let dirty = false;
+  const sent: (keyof EditFormState)[] = [];
+  const changed = (key: keyof EditFormState) => touched.has(key) && state[key] !== baseline[key];
 
-  if (state.friendlyName !== baseline.friendlyName) {
+  if (changed("friendlyName")) {
     body.friendly_name = state.friendlyName;
-    dirty = true;
+    sent.push("friendlyName");
   }
-  if (state.category !== baseline.category) {
+  if (changed("category")) {
     body.category = state.category;
-    dirty = true;
+    sent.push("category");
   }
   const newTags = state.tagsText.split(",").map((t) => t.trim()).filter(Boolean);
-  if (!tagsEqual(newTags, member.tags ?? [])) {
+  if (touched.has("tagsText") && !tagsEqual(newTags, member.tags ?? [])) {
     body.tags = newTags;
-    dirty = true;
+    sent.push("tagsText");
   }
   const trimmedIcon = state.icon.trim();
-  if (trimmedIcon && trimmedIcon !== baseline.icon) {
+  if (touched.has("icon") && trimmedIcon && trimmedIcon !== baseline.icon) {
     body.icon = trimmedIcon;
-    dirty = true;
+    sent.push("icon");
   }
-  // baseline.unattended is now usually the member's real reported mode (see
-  // initialEditState), so this only fires when the operator actually changes
-  // the selection away from it -- state.unattended can still be "" here (the
-  // untouched sentinel) only when the server never reported a value, and "" is
-  // never a postable UpdateMemberBody["unattended"] value, so that case can
-  // never make it past this !== check into a dirty body.
-  if (state.unattended !== baseline.unattended && state.unattended !== "") {
+  // state.unattended can be "" (the sentinel) only when the server never
+  // reported a value -- "" is never a postable UpdateMemberBody["unattended"]
+  // value, so it never makes it into the body even when touched.
+  if (changed("unattended") && state.unattended !== "") {
     body.unattended = state.unattended as UpdateMemberBody["unattended"];
-    dirty = true;
+    sent.push("unattended");
   }
-  if (state.llmProvider !== baseline.llmProvider) {
+  if (changed("llmProvider")) {
     body.llm_provider = state.llmProvider as UpdateMemberBody["llm_provider"];
-    dirty = true;
+    sent.push("llmProvider");
   }
   if (member.type === "remote") {
-    if (state.host !== baseline.host) {
+    if (changed("host")) {
       body.host = state.host;
-      dirty = true;
+      sent.push("host");
     }
-    if (state.port !== baseline.port) {
+    if (changed("port")) {
       body.port = Number(state.port);
-      dirty = true;
+      sent.push("port");
     }
-    if (state.username !== baseline.username) {
+    if (changed("username")) {
       body.username = state.username;
-      dirty = true;
+      sent.push("username");
     }
   }
 
-  return dirty ? body : null;
+  return sent.length > 0 ? { body, sent } : null;
 }
 
 interface ComposeFormState {
@@ -252,9 +258,12 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
     )
   );
   // MemberDrawer is re-keyed per selected member (Members.tsx), so this
-  // initializer only runs once for the currently-open member -- it is the
-  // dirty-diff baseline for the whole life of this mount.
+  // initializer only pre-fills the form once per mount. It is NOT the
+  // dirty-diff baseline: `member` is re-pointed on every refresh while this
+  // mount lives, so buildUpdateBody diffs against the current `member` and
+  // only for fields in editTouched (see buildUpdateBody).
   const [editState, setEditState] = useState<EditFormState>(() => initialEditState(member));
+  const [editTouched, setEditTouched] = useState<ReadonlySet<keyof EditFormState>>(() => new Set());
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editResult, setEditResult] = useState<{ message: string; isError: boolean } | null>(null);
   const [composeState, setComposeState] = useState<ComposeFormState>(COMPOSE_INITIAL_STATE);
@@ -297,18 +306,26 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
 
   function updateEditField<K extends keyof EditFormState>(key: K, value: EditFormState[K]) {
     setEditState((prev) => ({ ...prev, [key]: value }));
+    setEditTouched((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
   }
 
   async function handleEditSubmit() {
-    const body = buildUpdateBody(currentMember, editState);
-    if (!body) {
+    const built = buildUpdateBody(currentMember, editState, editTouched);
+    if (!built) {
       setEditResult({ message: "No changes to submit.", isError: true });
       return;
     }
     setEditSubmitting(true);
     setEditResult(null);
     try {
-      const result = await updateMember(memberId, body);
+      const result = await updateMember(memberId, built.body);
+      // Only a successful save clears the sent fields' touched flags -- a
+      // failed save keeps them so a retry re-sends the same edits.
+      setEditTouched((prev) => {
+        const next = new Set(prev);
+        for (const key of built.sent) next.delete(key);
+        return next;
+      });
       setEditResult({ message: result.text ?? "", isError: false });
       onUpdated();
     } catch (err) {

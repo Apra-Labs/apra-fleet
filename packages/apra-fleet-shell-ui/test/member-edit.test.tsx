@@ -34,9 +34,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderMembers() {
+async function renderMembers(refreshIntervalMs?: number) {
   await act(async () => {
-    root.render(<Members />);
+    root.render(<Members refreshIntervalMs={refreshIntervalMs} />);
   });
 }
 
@@ -169,6 +169,54 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     // be dirty (baseline stuck on the pre-rename name) and would reappear here.
     expect(Object.keys(secondBody).sort()).toEqual(["member_id", "tags"]);
     expect(secondBody.tags).toEqual(["core", "extra"]);
+  });
+
+  it("a background refresh that renames the member server-side while the drawer is open does not make friendly_name dirty -- editing only tags posts member_id + tags ONLY (apra-fleet-i9ag.6.4)", async () => {
+    // The 15s poll re-points MemberDrawer's `member` prop without remounting
+    // it, so the form keeps the pre-rename friendly name the operator never
+    // typed. A pure value-diff against the refreshed member would flag that
+    // stale value as dirty and the save would REVERT the other operator's
+    // rename -- only operator-touched fields may be sent.
+    vi.useFakeTimers();
+    try {
+      let currentMembers: { members: FleetMember[] } = MEMBERS_LOCAL;
+      const { fn, calls } = makeFetchMock(() => currentMembers, {
+        "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
+      });
+      vi.stubGlobal("fetch", fn);
+
+      await renderMembers(1000);
+      await openDrawerFor(container, "local-one");
+
+      currentMembers = { members: [{ ...LOCAL_MEMBER, name: "renamed-elsewhere" }] };
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The poll landed: the drawer title reflects the server-side rename,
+      // while the form still holds the name it was pre-filled with.
+      expect(calls.filter((c) => c.url === "/api/fleet/members")).toHaveLength(2);
+      expect(container.querySelector('[role="dialog"] h2')?.textContent ?? "").toContain("renamed-elsewhere");
+      const nameInput = findFieldInSection(container, "Edit member", "Friendly name") as HTMLInputElement;
+      expect(nameInput.value).toBe(LOCAL_MEMBER.name);
+
+      const tagsInput = findFieldInSection(container, "Edit member", "Tags") as HTMLInputElement;
+      await act(async () => {
+        setInputValue(tagsInput, "core, extra");
+      });
+      await act(async () => {
+        findButton(container, "Save changes").click();
+      });
+
+      const updateCalls = calls.filter((c) => c.url === "/api/fleet/update-member");
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0].body).toEqual({ member_id: LOCAL_MEMBER.id, tags: ["core", "extra"] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not render host/port/username inputs for a local-type member", async () => {
