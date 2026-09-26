@@ -69,6 +69,11 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     owner: agent.owner ?? undefined,
     env: agent.env ?? undefined,
     llmAuthExpiresAt: agent.llmAuthExpiresAt ?? undefined,
+    // Permission mode for unattended execution (apra-fleet-i9ag.6.3), mirroring
+    // list-members.ts's same field/rationale: settable via update_member but
+    // previously never surfaced back, so a console/UI edit form could not tell
+    // 'dangerous' (skip all permission checks) from false (interactive prompts).
+    unattended: agent.unattended ?? false,
   };
 
   // -- Cloud Info (parallel with connectivity check) --

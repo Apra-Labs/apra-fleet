@@ -453,13 +453,21 @@ launch form, per-sprint live view and history) in an iframe under
 `/ext/se/*` -- every page it renders resolves its own links correctly whether
 opened directly or embedded, and the dashboard, the console and a running
 sprint's live viewer cross-link back to each other (console origin, and a
-shared per-sprint card anchor) with no hardcoded host or port. Today it
-serves from a dev checkout only -- packaging it into the SEA binary and the
-npm-distributed package is still open. A known gap: the Members table's owner
-column and the member-detail drawer action need further work before every
-screen action in the design's action table has both a tested route and a
-tested UI control. See
-[docs/console-architecture.md](docs/console-architecture.md) and
+shared per-sprint card anchor) with no hardcoded host or port. The member
+drawer now has an in-place edit form (name, category, tags, icon, unattended
+mode, LLM provider, and host/port/username for remote members) and
+compose-permissions inputs (role, tags, grant list, grant reason), both
+submitting only the fields the operator actually changed rather than the
+whole record. Today it serves from a dev checkout only -- packaging it into
+the SEA binary and the npm-distributed package is still open. Known gaps: the
+Members table's owner column and the member-detail drawer action need further
+work before every screen action in the design's action table has both a
+tested route and a tested UI control, and the edit form's
+re-sync-on-background-refresh behavior has a known defect where an operator's
+untouched fields can be spuriously resubmitted after another operator's
+concurrent change lands mid-edit -- see
+[docs/console-architecture.md](docs/console-architecture.md) for the
+dirty-diff design and the invariant this defect violates. See also
 [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
 
 ## Documentation

@@ -146,6 +146,7 @@
  * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member
  * @property {Object<string, string>} [env] - Free-form name -> value map for this member
+ * @property {false | "auto" | "dangerous"} unattended - Permission mode for unattended execution
  *
  * Mirrors the `members` array entries list-members.ts's json format builds field-for-field
  * (pinned by test/client-server-typedef-parity.test.mjs).
@@ -285,6 +286,7 @@
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping
  * @property {Object<string, string>} [env] - Free-form name -> value map for this member
  * @property {string} [llmAuthExpiresAt] - ISO 8601 expiry of this member's LLM auth, when known
+ * @property {false | "auto" | "dangerous"} unattended - Permission mode for unattended execution
  */
 
 /**
