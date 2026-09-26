@@ -315,3 +315,12 @@ execute_prompt result (`structuredContent`), recorded run from 8.5 q1:
 ```
 
 A partial reply, if any, is kept in `response`. The suggested grant is the exact command because agy matches command grants exactly (8.5 q1); `Bash(git status --short --branch)` composes to `command(git status --short --branch)`. A command containing shell chaining gets no suggestion (compose_permissions would refuse it). apra-fleet-client exposes the block as the `PermissionDenied` typedef and `permissionDenialOf(result)`; apra-fleet-workflow forwards it on `AgentDispatchError.details.permissionDenied`. Other providers never set it.
+
+### 8.8 Live check of the implementation (fleet-agy-local, before redeploy)
+
+Run directly from the branch build (no fleet server), through Git Bash as a gitbash member runs it, work folder `C:\akhil\git\apra-fleet-agy`:
+1. `provisionAgyProject` (the real member-side script, real agy): `provisioned bba51815-f6e9-4fd4-abe5-6a5aaf9e60dd 5497ms`; `probeAgyProject` -> `ok`.
+2. fleet's gitbash dispatch command (`... agy --add-dir "C:/akhil/git/apra-fleet-agy" --project "bba51815-..." --model "gemini-3.8-flash-low" --output-format json -p ...`) with no grants, task "run `git status --short --branch`": exit 0, empty result, `permissionDenial` = `{"actions":["command"],"denials":[{"action":"command","target":"git status --short --branch"}],"suggestedGrants":["Bash(git status --short --branch)"],...,"signals":["result_json","transcript"]}`.
+3. The suggested grant composed with `AgyProvider.composePermissionConfig` and deep-merged into the project file (id/name/projectResources kept; allow `["read_file(*)","command(git status --short --branch)"]`, 90 deny rules), same dispatch: `"## fix/agy-prompt-body-toolsearch...origin/fix/agy-prompt-body-toolsearch [ahead 41, behind 45]\n?? .fleet-smoke-task.md\n?? .gemini/"`, no denial.
+
+Both scratch projects were deleted afterwards; `default-cli-project.json` and `e6d3551b-...json` were unchanged (sha256).

@@ -224,6 +224,12 @@ describe('provisionAgyProject -- real script runs', { timeout: 60000 }, () => {
     await expect(provisionAgyProject(agent, undefined, fakeAgy({ mode: 'fail' }))).rejects.toThrow(/agy exited 3/);
   });
 
+  it('never spawns the real agy under the test suite when no stand-in is set', async () => {
+    const agent = localAgyAgent();
+    await expect(provisionAgyProject(agent)).rejects.toThrow(/agy exited 97/);
+    expect(listProjects(fakeHome)).toEqual([]);
+  });
+
   it('serializes concurrent provisioning on one machine so each member gets its own id', async () => {
     const a = localAgyAgent({ friendlyName: 'agy-a' });
     const b = localAgyAgent({ friendlyName: 'agy-b' });

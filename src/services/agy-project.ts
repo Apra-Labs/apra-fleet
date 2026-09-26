@@ -278,6 +278,13 @@ export async function provisionAgyProject(
   agyCommand: { file: string; args: string[] } | undefined = agyCommandOverride,
 ): Promise<string> {
   if (!agent.workFolder) throw new AgyProjectError('member has no work folder');
+  // Under the test suite (NODE_ENV=test, set by tests/setup.ts) never spawn
+  // the real agy: it would create projects in the developer's real
+  // ~/.gemini and run a model turn. Without a test override the stand-in
+  // exits 97 and provisioning fails ("agy exited 97").
+  if (!agyCommand && process.env.NODE_ENV === 'test') {
+    agyCommand = { file: process.execPath, args: ['-e', 'process.exit(97)', '--'] };
+  }
   const model = getModelOverride('agy', 'cheap') ?? AGY_MODEL_FOR_TIER.cheap;
   const script = buildAgyNewProjectScript({
     workFolder: agent.workFolder,
