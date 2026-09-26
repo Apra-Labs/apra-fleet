@@ -1918,6 +1918,10 @@ async function runSprintCycle(context) {
         ...getMembersForRole('integ-test-runner'),
         ...getMembersForRole('regression-test-runner'),
         ...getMembersForRole('harvester'),
+        // Build pipeline mode is the exception to the rule above: every task
+        // lands by merging on the orchestrator's own checkout, which has to
+        // be on the sprint branch, so that member is ensured too.
+        ...(validated.pipeline ? [orchestratorMember] : []),
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can
