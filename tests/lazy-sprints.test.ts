@@ -258,6 +258,41 @@ describe('launcher', () => {
     expect(listSprints().find(s => s.runId === rec.runId)).toMatchObject({ status: 'stopped' }); // fake pid is not alive
   });
 
+  it('follows a sprint design: the test-only design runs the classic path with Build off and its blocks', async () => {
+    const repo = path.join(tmp, 'tested');
+    fs.mkdirSync(repo, { recursive: true });
+    const f = fakeDeps();
+    const rec = await launcher.launchSprint({ repo, ask: 'Test the checkout flow end to end', design: 'e2e-only' }, f.deps as any);
+    for (let i = 0; i < 50 && launcher.getRecord(rec.runId)!.setup.state === 'preparing'; i++) await new Promise(r => setTimeout(r, 10));
+    const done = launcher.getRecord(rec.runId)!;
+    expect(done.setup.state).toBe('started');
+    expect(done).toMatchObject({ designId: 'e2e-only', designName: 'End-to-end tests only', mode: 'classic', maxCycles: 1 });
+    expect(done.helpers).toEqual(['lz-tested-0', 'lz-tested-1']);
+    const a = f.engineArgs;
+    expect(a).not.toContain('--pipeline');
+    expect(a).toEqual(expect.arrayContaining(['--recipe-file', done.recipeFile!, '--max-cycles', '1']));
+    const recipe = JSON.parse(fs.readFileSync(done.recipeFile!, 'utf-8'));
+    expect(recipe.build.mode).toBe('off');
+    expect(recipe.plan.run).toBe('off');
+    expect(recipe.blocks.map((b: any) => b.kind)).toEqual(['work', 'check']);
+  });
+
+  it('a check typed for a classic design becomes a command block, and for a pipeline design the landing gate', async () => {
+    const { launchPlanFor, getDesign } = await import('../src/lazy/sprints/designs.js');
+    const classic = launchPlanFor({ ...getDesign('classic'), check: 'npm test' });
+    expect(classic.gateCommand).toBeUndefined();
+    expect((classic.recipe.blocks as any[])[0]).toMatchObject({ kind: 'command', name: 'Check', command: 'npm test' });
+    const pipe = launchPlanFor({ ...getDesign('pipeline'), check: 'npm test' });
+    expect(pipe.gateCommand).toBe('npm test');
+    expect(pipe.recipe.blocks).toEqual([]);
+  });
+
+  it('refuses an unknown design before touching anything', async () => {
+    const f = fakeDeps();
+    await expect(launcher.launchSprint({ repo: tmp, ask: 'Anything at all here', design: 'no-such-design' }, f.deps as any)).rejects.toThrow(/no sprint design called/);
+    expect(f.calls.filter(c => c.cmd === 'bd' || (c.cmd === 'git' && c.args[0] === 'clone'))).toEqual([]);
+  });
+
   it('adds builders when the engine reports tasks waiting, within the limit', async () => {
     const repo = path.join(tmp, 'grow');
     fs.mkdirSync(repo, { recursive: true });
@@ -336,6 +371,25 @@ describe('sprint API', () => {
     expect(launched).toEqual({ repo: '/x', ask: 'add dark mode' });
     const code = await (await fetch(`http://127.0.0.1:${port}/_lazy/api/sprints/${RUN_ID}/code`, { headers: h })).json();
     expect(code.available).toBe(false); // started elsewhere: no repo on record
+  });
+
+  it('lists, checks, saves and deletes sprint designs', async () => {
+    const h = await headers();
+    const base = `http://127.0.0.1:${port}/_lazy/api/designs`;
+    const list = await (await fetch(base, { headers: h })).json();
+    expect(list.default).toBe('pipeline');
+    const solo = list.designs.find((d: any) => d.id === 'solo');
+    expect(solo.steps.find((s: any) => s.step === 'Plan')).toMatchObject({ on: false });
+    const bad = await (await fetch(`${base}/check`, { method: 'POST', headers: h, body: JSON.stringify({ name: 'X', build: { mode: 'off' } }) })).json();
+    expect(bad).toMatchObject({ ok: false });
+    expect(bad.error).toMatch(/nothing builds them/);
+    const good = await (await fetch(`${base}/check`, { method: 'POST', headers: h, body: JSON.stringify({ name: 'X', build: { mode: 'classic' } }) })).json();
+    expect(good.ok).toBe(true);
+    const saved = await (await fetch(base, { method: 'POST', headers: h, body: JSON.stringify({ name: 'Api Lean', description: 'd', build: { mode: 'classic' }, finish: { harvest: false } }) })).json();
+    expect(saved.design).toMatchObject({ id: 'api-lean', source: 'mine' });
+    expect((await fetch(`${base}/api-lean`, { method: 'DELETE', headers: h })).status).toBe(200);
+    const after = await (await fetch(base, { headers: h })).json();
+    expect(after.designs.some((d: any) => d.id === 'api-lean')).toBe(false);
   });
 });
 

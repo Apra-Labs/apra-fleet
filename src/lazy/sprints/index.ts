@@ -8,6 +8,7 @@ import path from 'node:path';
 import { buildBoard, findRun, listRunFiles, runTitle, taskDetail, type Board } from './board.js';
 import { codeChanges, commitDiff, fileDiff } from './code.js';
 import { getRecord, loadRegistry, type SprintRecord } from './launcher.js';
+import { designSteps, getDesign } from './designs.js';
 
 export interface SprintSummary {
   runId: string;
@@ -24,6 +25,9 @@ export interface SprintSummary {
   branch?: string;
   repo?: string;
   setup?: SprintRecord['setup'];
+  design?: string;
+  /** The final reviewer's PASS/FAIL once the sprint has finished. */
+  verdict?: string;
 }
 
 function engineGone(rec: SprintRecord): boolean {
@@ -33,6 +37,22 @@ function engineGone(rec: SprintRecord): boolean {
     return false;
   } catch {
     return true;
+  }
+}
+
+function verdictOf(result: unknown): string | undefined {
+  const v = result && typeof result === 'object' ? (result as { verdict?: unknown }).verdict : undefined;
+  return typeof v === 'string' ? v : undefined;
+}
+
+/** The steps of the design a sprint follows, when it was started from this page. */
+function designFor(rec: SprintRecord | undefined) {
+  if (!rec?.designId) return undefined;
+  try {
+    const d = getDesign(rec.designId, rec.repo);
+    return { id: d.id, name: d.name, steps: designSteps(d) };
+  } catch {
+    return { id: rec.designId, name: rec.designName ?? rec.designId, steps: [] };
   }
 }
 
@@ -62,6 +82,8 @@ export function listSprints(): SprintSummary[] {
       branch: rec?.branch,
       repo: rec?.repo,
       setup: rec?.setup,
+      design: rec?.designName,
+      verdict: verdictOf(b.result),
     });
   }
 
@@ -92,6 +114,8 @@ export interface SprintView {
   record?: Omit<SprintRecord, 'pid'>;
   board?: Board;
   status: string;
+  design?: { id: string; name: string; steps: Array<{ step: string; detail: string; on: boolean }> };
+  verdict?: string;
 }
 
 export function sprintView(runId: string): SprintView | null {
@@ -108,7 +132,7 @@ export function sprintView(runId: string): SprintView | null {
     board.live = false;
     board.status = 'stopped';
   }
-  return { record, board, status: board.status };
+  return { record, board, status: board.status, design: designFor(rec), verdict: verdictOf(board.result) };
 }
 
 export function sprintTask(runId: string, taskId: string) {

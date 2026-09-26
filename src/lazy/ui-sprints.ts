@@ -134,6 +134,41 @@ pre.log { background: var(--panel); border: 1px solid var(--line); border-radius
 .form-card textarea { min-height: 90px; resize: vertical; }
 .form-card .actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 640px) { .form-card { grid-template-columns: 1fr; } }
+
+.track { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.track .st { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 3px 9px; font-size: 12.5px; line-height: 1.4; }
+.track .st b { font-weight: 600; }
+.track .st small { color: var(--muted); margin-left: 6px; }
+.track .st.off { opacity: .5; text-decoration: line-through; }
+.track .st.custom { border-style: dashed; }
+.track .st.now { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+.track .to { color: var(--muted); font-size: 12px; }
+.dz { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.dz-list { display: flex; flex-direction: column; gap: 8px; }
+.dz-item { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; color: var(--ink); font: inherit; display: flex; flex-direction: column; gap: 4px; }
+.dz-item:hover { border-color: var(--muted); }
+.dz-item.on { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+.dz-item .src { font-size: 11px; color: var(--muted); }
+.dz-item p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.dz-ed { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.dz-ed h3 { margin: 0; font-size: 16px; }
+.dz-sec { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+.dz-sec > h4 { grid-column: 1 / -1; margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.dz-sec label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.dz-sec label.inline { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+.dz-ed input[type=text], .dz-ed input[type=number], .dz-ed select, .dz-ed textarea { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font: inherit; min-width: 0; }
+.dz-ed textarea { min-height: 70px; resize: vertical; }
+.dz-blk { grid-column: 1 / -1; border: 1px dashed var(--line); border-radius: 10px; padding: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px 10px; }
+.dz-blk .wide { grid-column: 1 / -1; }
+.dz-blk .row { display: flex; gap: 6px; justify-content: flex-end; grid-column: 1 / -1; }
+.dz-msg { font-size: 13px; }
+.dz-msg.bad { color: var(--bad); }
+.dz-msg.ok { color: var(--ok); }
+.dz-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.chip-d { font-size: 11.5px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
+.pill.verdict-fail { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+.pill.verdict-pass { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+@media (max-width: 820px) { .dz { grid-template-columns: 1fr; } }
 `;
 
 export const SPRINTS_HTML = String.raw`
@@ -145,7 +180,7 @@ export const SPRINTS_HTML = String.raw`
 export const SPRINTS_JS = String.raw`
 (function () {
   var root = document.getElementById('sp-root');
-  var S = { view: 'list', runId: null, sub: 'board', list: [], sprint: null, code: null, diffKey: null, collapsed: {}, timer: null, formOpen: false };
+  var S = { view: 'list', runId: null, sub: 'board', list: [], sprint: null, code: null, diffKey: null, collapsed: {}, timer: null, formOpen: false, designs: null, defaultDesign: 'pipeline', designId: null, draft: null, formDesign: null };
 
   function api(path, opts) {
     opts = opts || {};
@@ -202,6 +237,18 @@ export const SPRINTS_JS = String.raw`
     var labels = { running: 'Running', starting: 'Starting', success: 'Done', failed: 'Failed', stopped: 'Stopped', aborted: 'Stopped', pausing: 'Pausing', paused: 'Paused', finished: 'Finished' };
     return el('span', { cls: 'pill ' + status }, [live ? el('span', { cls: 'pulse' }) : null, labels[status] || status]);
   }
+  function verdictPill(v) {
+    return el('span', { cls: 'pill ' + (v === 'PASS' ? 'verdict-pass' : 'verdict-fail'), title: 'The final review verdict' }, [v === 'PASS' ? 'Passed review' : 'Review: ' + v]);
+  }
+  function track(steps, nowStep) {
+    var t = el('div', { cls: 'track' });
+    (steps || []).forEach(function (st, i) {
+      if (i) t.appendChild(el('span', { cls: 'to', text: '->' }));
+      var custom = ['Plan', 'Build', 'Review', 'Test', 'Final review', 'Wrap up'].indexOf(st.step) === -1;
+      t.appendChild(el('span', { cls: 'st' + (st.on ? '' : ' off') + (custom ? ' custom' : '') + (nowStep && st.step === nowStep ? ' now' : ''), title: st.detail }, [el('b', { text: st.step }), st.on && st.detail ? el('small', { text: st.detail }) : null]));
+    });
+    return t;
+  }
   function bar(done, total) { var pct = total ? Math.round(done * 100 / total) : 0; return el('div', { cls: 'bar' }, [el('i', { style: 'width:' + pct + '%' })]); }
   function typeIcon(type) {
     var t = type === 'bug' ? 'bug' : type === 'feature' || type === 'epic' ? 'feature' : type === 'chore' ? 'chore' : 'task';
@@ -214,6 +261,10 @@ export const SPRINTS_JS = String.raw`
   function parseHash() {
     var parts = location.hash.slice(1).split('/');
     if (parts[0] !== 'sprints') return false;
+    if (parts[1] === 'designs') {
+      S.view = 'designs'; S.runId = null; S.designId = parts[2] || null;
+      return true;
+    }
     S.runId = parts[1] || null;
     S.view = S.runId ? 'sprint' : 'list';
     S.sub = parts[2] || 'board';
@@ -226,11 +277,24 @@ export const SPRINTS_JS = String.raw`
     S.sprint = null; S.code = null; S.diffKey = null;
     refresh(true);
   }
+  function goDesigns(id) {
+    history.replaceState(null, '', '#sprints/designs' + (id ? '/' + id : ''));
+    parseHash();
+    S.draft = null;
+    refresh(true);
+  }
   function active() { return !document.getElementById('tab-sprints').hidden; }
+  function loadDesigns() {
+    return api('designs').then(function (r) { S.designs = r.designs; S.defaultDesign = r['default']; return r.designs; });
+  }
 
   // ---- data ----------------------------------------------------------------
   function refresh(force) {
     if (!active()) return;
+    if (S.view === 'designs') {
+      if (force || !S.designs) loadDesigns().then(render).catch(function (e) { renderError(e); });
+      return;
+    }
     if (S.view === 'list') {
       api('sprints').then(function (r) { S.list = r.sprints; render(); }).catch(function (e) { renderError(e); });
     } else {
@@ -267,6 +331,7 @@ export const SPRINTS_JS = String.raw`
   function render() {
     document.body.classList.toggle('wide', active());
     if (S.view === 'list') return renderList();
+    if (S.view === 'designs') return renderDesigns();
     return renderSprint();
   }
 
@@ -276,7 +341,10 @@ export const SPRINTS_JS = String.raw`
     root.textContent = '';
     root.appendChild(el('div', { cls: 'sp-top' }, [
       el('h2', { text: 'Sprints' }),
-      el('button', { cls: 'act primary', type: 'button', text: S.formOpen ? 'Close' : 'New sprint', onclick: function () { S.formOpen = !S.formOpen; render(); } })
+      el('div', { style: 'display:flex; gap:8px' }, [
+        el('button', { cls: 'act', type: 'button', text: 'Sprint designs', onclick: function () { goDesigns(null); } }),
+        el('button', { cls: 'act primary', type: 'button', text: S.formOpen ? 'Close' : 'New sprint', onclick: function () { S.formOpen = !S.formOpen; render(); } })
+      ])
     ]));
     if (S.formOpen) root.appendChild(keepForm || newSprintForm());
     if (!S.list.length) {
@@ -286,7 +354,7 @@ export const SPRINTS_JS = String.raw`
     var grid = el('div', { cls: 'sp-list' });
     S.list.forEach(function (s) {
       grid.appendChild(el('div', { cls: 'sp-item', onclick: function () { go(s.runId); } }, [
-        el('div', { cls: 'sp-meta' }, [statusPill(s.status), s.currentPhase ? el('span', { text: s.currentPhase }) : null, el('span', { text: ago(s.startedAt) })]),
+        el('div', { cls: 'sp-meta' }, [statusPill(s.status), s.verdict ? verdictPill(s.verdict) : null, s.currentPhase ? el('span', { text: s.currentPhase }) : null, s.design ? el('span', { cls: 'chip-d', text: s.design }) : null, el('span', { text: ago(s.startedAt) })]),
         el('h3', { text: s.title }),
         bar(s.progress.done, s.progress.total),
         el('div', { cls: 'sp-meta' }, [
@@ -316,25 +384,46 @@ export const SPRINTS_JS = String.raw`
     var base = el('input', { type: 'text', placeholder: 'current branch', value: saved.base || '' });
     var budget = el('input', { type: 'number', min: '0', step: '1', placeholder: 'no limit' });
     var publish = el('input', { type: 'checkbox' });
+    var design = el('select', {});
+    var designAbout = el('div', { cls: 'wide', style: 'display:flex; flex-direction:column; gap:6px' });
+    function showDesign() {
+      var d = (S.designs || []).filter(function (x) { return x.id === design.value; })[0];
+      designAbout.textContent = '';
+      if (!d) return;
+      designAbout.appendChild(el('div', { style: 'font-size:13px; color: var(--muted)', text: d.description }));
+      designAbout.appendChild(track(d.steps));
+    }
+    function fillDesigns() {
+      design.textContent = '';
+      (S.designs || []).forEach(function (d) { design.appendChild(el('option', { value: d.id, text: d.name + (d.source === 'built-in' ? '' : d.source === 'project' ? ' (this project)' : ' (yours)') })); });
+      design.value = S.formDesign || saved.design || S.defaultDesign;
+      if (!design.value && S.designs && S.designs.length) design.value = S.designs[0].id;
+      showDesign();
+    }
+    design.addEventListener('change', showDesign);
+    if (S.designs) fillDesigns(); else loadDesigns().then(fillDesigns);
     var btn = el('button', { cls: 'act primary', type: 'submit', text: 'Start sprint' });
     var form = el('form', { cls: 'form-card', onsubmit: function (e) {
       e.preventDefault();
-      var body = { repo: repo.value.trim(), ask: ask.value, goal: goal.value, base: base.value.trim() || undefined, publish: publish.checked };
+      var body = { repo: repo.value.trim(), ask: ask.value, goal: goal.value, base: base.value.trim() || undefined, publish: publish.checked, design: design.value || undefined };
       if (helpers.value) body.maxHelpers = Number(helpers.value);
       if (gate.value.trim()) body.gateCommand = gate.value.trim();
       if (budget.value) body.budget = Number(budget.value);
-      try { localStorage.setItem('lazy.sprintForm', JSON.stringify({ repo: body.repo, maxHelpers: body.maxHelpers, gateCommand: body.gateCommand, goal: body.goal, base: base.value.trim() })); } catch (e2) {}
+      try { localStorage.setItem('lazy.sprintForm', JSON.stringify({ repo: body.repo, maxHelpers: body.maxHelpers, gateCommand: body.gateCommand, goal: body.goal, base: base.value.trim(), design: body.design })); } catch (e2) {}
+      S.formDesign = null;
       btn.disabled = true; btn.textContent = 'Starting...';
       api('sprints', { method: 'POST', body: body }).then(function (r) { S.formOpen = false; toast('Sprint started'); go(r.runId); })
         .catch(function (err) { toast(err.message); btn.disabled = false; btn.textContent = 'Start sprint'; });
     } }, [
       el('label', { cls: 'wide' }, ['What should get done?', ask]),
+      el('label', { cls: 'wide' }, ['Sprint design', design]),
+      designAbout,
       el('label', {}, ['Project folder', repo]),
       el('label', {}, ['Start from branch', base]),
       el('label', { title: 'Every ready task starts at once. Set a number only if you want to hold back.' }, ['Most helpers at once', helpers]),
       el('label', {}, ['How far to go', goal]),
       el('label', { title: 'An estimate from token prices. With a Claude subscription this is plan usage, not money.' }, ['Usage limit (estimated $)', budget]),
-      el('label', { cls: 'wide', title: 'Runs in a fresh copy of your project, so include any install step.' }, ['Check after each merge (a failing check sends the work back to its helper)', gate]),
+      el('label', { cls: 'wide', title: 'Runs in a fresh copy of your project, so include any install step. Overrides the design check.' }, ['Check after each merge (a failing check sends the work back to its helper)', gate]),
       el('label', { cls: 'inline' }, [publish, 'Open a pull request when done (otherwise the work lands as a branch in your project)']),
       el('div', { cls: 'actions' }, [btn])
     ]);
@@ -350,7 +439,7 @@ export const SPRINTS_JS = String.raw`
     var title = (b && b.title) || (rec && rec.title) || S.runId;
     var live = v.status === 'running' || v.status === 'starting' || v.status === 'pausing' || v.status === 'paused';
 
-    var stats = el('div', { cls: 'sp-stats' }, [statusPill(v.status)]);
+    var stats = el('div', { cls: 'sp-stats' }, [statusPill(v.status), v.verdict ? verdictPill(v.verdict) : null, v.design ? el('span', { cls: 'chip-d', title: 'Sprint design', text: v.design.name }) : null]);
     if (b) {
       stats.appendChild(el('span', {}, [el('b', { text: b.progress.done + '/' + b.progress.total }), ' done']));
       if (b.pipeline && b.live) {
@@ -370,7 +459,7 @@ export const SPRINTS_JS = String.raw`
       api('sprints/' + encodeURIComponent(S.runId) + '/stop', { method: 'POST' }).then(function () { toast('Stopping'); refresh(true); });
     } }) : null]);
     root.appendChild(el('div', { cls: 'sp-head' }, [el('div', {}, [el('h2', { text: title }), stats]), actions]));
-    if (b) root.appendChild(phaseBar(b));
+    if (b) root.appendChild(v.design && v.design.steps && v.design.steps.length ? designBar(v.design, b) : phaseBar(b));
 
     if (!b) {
       root.appendChild(setupSteps(rec));
@@ -391,6 +480,22 @@ export const SPRINTS_JS = String.raw`
     if (rec && rec.setup && rec.setup.state !== 'started') root.appendChild(setupSteps(rec));
   }
 
+  // Which design step the engine is on now, from its current phase title.
+  function stepNow(b, design) {
+    var t = String(b.currentPhase || '');
+    if (!b.live || !t) return null;
+    var m = /^Block: (.+?)( C\d+)?$/.exec(t);
+    if (m) return m[1];
+    if (/^Final Review/i.test(t)) return 'Final review';
+    var cur = (b.stages || []).filter(function (x) { return x.state === 'current'; })[0];
+    return cur ? cur.stage : null;
+  }
+  function designBar(design, b) {
+    var wrap = el('div', { style: 'display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom: 12px' });
+    wrap.appendChild(track(design.steps.filter(function (st) { return st.on; }), stepNow(b, design)));
+    if (b.cycle > 1) wrap.appendChild(el('span', { cls: 'chip-d', title: 'The sprint loops back when review or testing finds more to do', text: 'Round ' + b.cycle }));
+    return wrap;
+  }
   function phaseBar(b) {
     var wrap = el('div', { cls: 'phases' });
     (b.stages || []).forEach(function (st) {
@@ -591,6 +696,181 @@ export const SPRINTS_JS = String.raw`
       pre.appendChild(el('span', { cls: cls, text: line || ' ' }));
     });
     return pre;
+  }
+
+
+  // ---- sprint designs ------------------------------------------------------
+  var PLAN_RUN = [['always', 'Every cycle'], ['when-needed', 'Again only when there is new work'], ['first-cycle', 'First cycle only'], ['off', 'Off (one helper takes the whole ask)']];
+  var BUILD_MODE = [['pipeline', 'All ready tasks at once (pipeline)'], ['classic', 'Round by round (classic)'], ['off', 'Off (no product code)']];
+  var TIERS = [['', 'Whatever the plan says'], ['standard', 'At least standard'], ['premium', 'Premium only']];
+  var SPLIT = [['always', 'Split across reviewers'], ['auto', 'Split only when the change is big'], ['never', 'One reviewer']];
+  var KINDS = [['check', 'Check (a reviewer with your rule)'], ['work', 'Work (a helper does your instructions)'], ['command', 'Command (run a shell command)']];
+
+  function copyDesign(d) { return JSON.parse(JSON.stringify(d)); }
+  function sel(options, value, onchange) {
+    var s = el('select', {});
+    options.forEach(function (o) { s.appendChild(el('option', { value: o[0], text: o[1] })); });
+    s.value = value === undefined || value === null ? options[0][0] : value;
+    s.addEventListener('change', function () { onchange(s.value); });
+    return s;
+  }
+  function field(label, input, cls) { return el('label', { cls: cls || null }, [label, input]); }
+  function check(label, value, onchange) {
+    var c = el('input', { type: 'checkbox' });
+    c.checked = !!value;
+    c.addEventListener('change', function () { onchange(c.checked); });
+    return el('label', { cls: 'inline' }, [c, label]);
+  }
+  function text(value, placeholder, onchange, multi) {
+    var t = el(multi ? 'textarea' : 'input', multi ? { placeholder: placeholder } : { type: 'text', placeholder: placeholder });
+    t.value = value || '';
+    t.addEventListener('input', function () { onchange(t.value); });
+    return t;
+  }
+  function num(value, min, max, placeholder, onchange) {
+    var n = el('input', { type: 'number', min: String(min), max: String(max), placeholder: placeholder });
+    n.value = value === undefined || value === null ? '' : String(value);
+    n.addEventListener('input', function () { onchange(n.value === '' ? undefined : Number(n.value)); });
+    return n;
+  }
+
+  function renderDesigns() {
+    root.textContent = '';
+    root.appendChild(el('button', { cls: 'back', type: 'button', text: '<- All sprints', onclick: function () { go(null); } }));
+    root.appendChild(el('div', { cls: 'sp-top' }, [
+      el('div', {}, [el('h2', { text: 'Sprint designs' }), el('div', { style: 'color: var(--muted); font-size: 13px; margin-top: 4px', text: 'A design decides which steps a sprint runs and how. Pick one when you start a sprint, or build your own here.' })]),
+      el('button', { cls: 'act primary', type: 'button', text: 'New design', onclick: function () {
+        S.designId = null;
+        S.draft = { id: '', name: 'My design', description: '', build: { mode: 'pipeline' } };
+        history.replaceState(null, '', '#sprints/designs');
+        render();
+      } })
+    ]));
+    if (!S.designs) { root.appendChild(el('div', { cls: 'empty', text: 'Loading...' })); return; }
+    var current = S.draft || (S.designs.filter(function (d) { return d.id === S.designId; })[0]) || S.designs[0];
+    var list = el('div', { cls: 'dz-list' });
+    S.designs.forEach(function (d) {
+      list.appendChild(el('button', { type: 'button', cls: 'dz-item' + (!S.draft && current && d.id === current.id ? ' on' : ''), onclick: function () { goDesigns(d.id); } }, [
+        el('div', { style: 'display:flex; justify-content: space-between; gap: 8px' }, [el('b', { text: d.name }), el('span', { cls: 'src', text: d.source === 'built-in' ? 'built in' : d.source === 'project' ? 'this project' : 'yours' })]),
+        el('p', { text: d.description })
+      ]));
+    });
+    root.appendChild(el('div', { cls: 'dz' }, [list, current ? (S.draft || current.source === 'mine' ? designEditor(S.draft || copyDesign(current)) : designReadOnly(current)) : el('div')]));
+  }
+
+  function designReadOnly(d) {
+    return el('div', { cls: 'dz-ed' }, [
+      el('h3', { text: d.name }),
+      el('div', { style: 'color: var(--muted); font-size: 13.5px', text: d.description }),
+      track(d.steps),
+      el('div', { style: 'font-size: 13px; color: var(--muted)', text: d.source === 'built-in' ? 'Built-in designs cannot be changed. Copy one to make it your own.' : 'This design comes from the project folder (.lazyfleet/designs). Copy it to change it for yourself.' }),
+      el('div', { cls: 'dz-actions' }, [
+        el('button', { cls: 'act', type: 'button', text: 'Copy and edit', onclick: function () {
+          var c = copyDesign(d); delete c.steps; c.id = ''; c.source = 'mine'; c.name = d.name + ' (copy)';
+          S.draft = c; render();
+        } }),
+        el('button', { cls: 'act primary', type: 'button', text: 'Start a sprint with it', onclick: function () { S.formDesign = d.id; S.formOpen = true; go(null); } })
+      ])
+    ]);
+  }
+
+  function designEditor(d) {
+    d.plan = d.plan || {}; d.build = d.build || {}; d.review = d.review || {}; d.test = d.test || {}; d.finish = d.finish || {}; d.blocks = d.blocks || [];
+    delete d.steps;
+    var preview = el('div', {});
+    var msg = el('div', { cls: 'dz-msg' });
+    var timer = null;
+    function changed() {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        api('designs/check', { method: 'POST', body: d }).then(function (r) {
+          preview.textContent = ''; preview.appendChild(track(r.steps));
+          msg.className = 'dz-msg ' + (r.ok ? 'ok' : 'bad');
+          msg.textContent = r.ok ? 'This design can run.' : r.error;
+        }).catch(function (e) { msg.className = 'dz-msg bad'; msg.textContent = e.message; });
+      }, 250);
+    }
+    function set(obj, key) { return function (v) { if (v === '' || v === undefined) delete obj[key]; else obj[key] = v; changed(); }; }
+
+    var blocksBox = el('div', { cls: 'dz-sec' });
+    function drawBlocks() {
+      blocksBox.textContent = '';
+      blocksBox.appendChild(el('h4', { text: 'Custom steps' }));
+      if (!d.blocks.length) blocksBox.appendChild(el('div', { style: 'grid-column: 1 / -1; font-size: 13px; color: var(--muted)', text: 'None yet. A check is a reviewer with your own rule; work is a helper doing your instructions on the sprint branch; a command runs something like a linter and turns a failure into a task.' }));
+      d.blocks.forEach(function (b, i) {
+        var box = el('div', { cls: 'dz-blk' });
+        box.appendChild(field('Kind', sel(KINDS, b.kind, function (v) { b.kind = v; drawBlocks(); changed(); })));
+        box.appendChild(field('Name', text(b.name, 'e.g. Docs match the code', set(b, 'name'))));
+        box.appendChild(field('When', sel([['after-build', 'After every build'], ['finish', 'Once, at the end']], b.slot, set(b, 'slot'))));
+        if (b.kind === 'command') {
+          box.appendChild(field('Command', text(b.command, 'e.g. npm run lint', set(b, 'command')), 'wide'));
+        } else {
+          box.appendChild(field(b.kind === 'check' ? 'The rule to check' : 'What to do', text(b.instructions, b.kind === 'check' ? 'e.g. Every README example must run and print what it says.' : 'e.g. Write end-to-end tests for the checkout flow. Do not change product code.', set(b, 'instructions'), true), 'wide'));
+        }
+        if (b.kind === 'work') box.appendChild(field('Model', sel([['standard', 'Standard'], ['premium', 'Premium'], ['cheap', 'Cheap']], b.model, set(b, 'model'))));
+        if (b.kind !== 'work') box.appendChild(field('When it fails', sel([['new-task', 'Turn it into tasks to fix'], ['ignore', 'Only report it']], b.onFail, set(b, 'onFail'))));
+        box.appendChild(el('div', { cls: 'row' }, [
+          i > 0 ? el('button', { cls: 'act', type: 'button', text: 'Up', onclick: function () { d.blocks.splice(i - 1, 0, d.blocks.splice(i, 1)[0]); drawBlocks(); changed(); } }) : null,
+          el('button', { cls: 'act danger', type: 'button', text: 'Remove', onclick: function () { d.blocks.splice(i, 1); drawBlocks(); changed(); } })
+        ]));
+        blocksBox.appendChild(box);
+      });
+      blocksBox.appendChild(el('div', { style: 'grid-column: 1 / -1; display:flex; gap:8px; flex-wrap: wrap' }, KINDS.map(function (k) {
+        return el('button', { cls: 'act', type: 'button', text: '+ ' + k[0][0].toUpperCase() + k[0].slice(1), onclick: function () {
+          d.blocks.push(k[0] === 'command' ? { kind: 'command', name: 'Lint', command: 'npm run lint' } : { kind: k[0], name: k[0] === 'check' ? 'My check' : 'My work', instructions: '' });
+          drawBlocks(); changed();
+        } });
+      })));
+    }
+    drawBlocks();
+
+    var ed = el('div', { cls: 'dz-ed' }, [
+      el('div', { cls: 'dz-sec', style: 'border-top: 0; padding-top: 0' }, [
+        field('Name', text(d.name, 'Name', set(d, 'name'))),
+        field('Cycles at most', num(d.cycles, 1, 10, 'engine default (5)', set(d, 'cycles'))),
+        field('What it is for', text(d.description, 'One sentence people will see when they pick it', set(d, 'description')), 'wide')
+      ]),
+      el('div', {}, [preview, msg]),
+      el('div', { cls: 'dz-sec' }, [
+        el('h4', { text: 'Plan' }),
+        field('Plan the work', sel(PLAN_RUN, d.plan.run, set(d.plan, 'run'))),
+        check('A second helper reviews the plan', d.plan.review !== false, function (v) { d.plan.review = v; changed(); })
+      ]),
+      el('div', { cls: 'dz-sec' }, [
+        el('h4', { text: 'Build' }),
+        field('How tasks are built', sel(BUILD_MODE, d.build.mode || 'pipeline', set(d.build, 'mode'))),
+        field('Model for builders', sel(TIERS, d.build.minModel || '', set(d.build, 'minModel'))),
+        field('Check after each landing', text(d.check, 'optional, e.g. npm ci && npm test', set(d, 'check'))),
+        field('Helpers (round by round only)', num(d.helpers, 2, 64, '3', set(d, 'helpers'))),
+        check('Add an acceptance-test task per feature (pipeline)', d.build.acceptanceTasks !== false, function (v) { d.build.acceptanceTasks = v; changed(); })
+      ]),
+      blocksBox,
+      el('div', { cls: 'dz-sec' }, [
+        el('h4', { text: 'Review and test' }),
+        field('Review', sel([['on', 'On'], ['off', 'Off']], d.review.run, set(d.review, 'run'))),
+        field('Reviewers (pipeline)', sel(SPLIT, d.review.split, set(d.review, 'split'))),
+        field('Big means at least this many files', num(d.review.splitMinFiles, 1, 10000, '20', set(d.review, 'splitMinFiles'))),
+        check('Run the project deploy and integration tests when it has them', d.test.run !== 'off', function (v) { d.test.run = v ? 'auto' : 'off'; changed(); })
+      ]),
+      el('div', { cls: 'dz-sec' }, [
+        el('h4', { text: 'At the end' }),
+        check('Final review (otherwise pass means nothing left open)', d.finish.finalReview !== false, function (v) { d.finish.finalReview = v; changed(); }),
+        check('Wrap up: docs and changelog', d.finish.harvest !== false, function (v) { d.finish.harvest = v; changed(); })
+      ]),
+      el('div', { cls: 'dz-actions' }, [
+        d.id && d.source === 'mine' ? el('button', { cls: 'act danger', type: 'button', text: 'Delete', onclick: function () {
+          if (!confirm('Delete the design "' + d.name + '"?')) return;
+          api('designs/' + encodeURIComponent(d.id), { method: 'DELETE' }).then(function () { toast('Deleted'); S.draft = null; S.designs = null; goDesigns(null); }).catch(function (e) { toast(e.message); });
+        } }) : null,
+        S.draft ? el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: function () { S.draft = null; render(); } }) : null,
+        el('button', { cls: 'act primary', type: 'button', text: 'Save design', onclick: function () {
+          api('designs', { method: 'POST', body: d }).then(function (r) { toast('Saved'); S.draft = null; loadDesigns().then(function () { goDesigns(r.design.id); }); })
+            .catch(function (e) { msg.className = 'dz-msg bad'; msg.textContent = e.message; });
+        } })
+      ])
+    ]);
+    changed();
+    return ed;
   }
 
   window.addEventListener('lazy:tab', function (e) {

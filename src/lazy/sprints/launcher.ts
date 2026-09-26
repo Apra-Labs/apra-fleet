@@ -23,6 +23,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lazyDir } from '../config.js';
 import { findRun } from './board.js';
+import { engineCli } from './engine-path.js';
+import { checkDesign, getDesign, launchPlanFor, type Design } from './designs.js';
+
+export { engineCli };
 
 export type SprintGoal = 'P1' | 'P1/P2' | 'P1/P2/P3';
 
@@ -58,6 +62,11 @@ export interface SprintRecord {
   mode?: 'pipeline' | 'classic';
   maxCycles?: number;
   dispatchTimeoutS?: number;
+  /** The sprint design this run follows (designs.ts). */
+  designId?: string;
+  designName?: string;
+  /** The design's engine recipe, written for --recipe-file. */
+  recipeFile?: string;
 }
 
 export interface LaunchInput {
@@ -71,7 +80,9 @@ export interface LaunchInput {
   base?: string;
   publish?: boolean;
   budget?: number;
-  /** Benchmarks: 'classic' runs the engine's own round loop with a fixed helper count. */
+  /** Which sprint design to follow (an id from listDesigns); default "pipeline". */
+  design?: string;
+  /** Benchmarks, older callers: 'classic' or 'pipeline' pick that built-in design. */
   mode?: 'pipeline' | 'classic';
   /** Classic mode only: how many helpers (default 3). */
   helpers?: number;
@@ -167,17 +178,6 @@ export function realFreePort(): Promise<number> {
       srv.close(() => resolve(port));
     });
   });
-}
-
-/** packages/apra-fleet-se/bin/cli.mjs, found from this file's location. */
-export function engineCli(): string {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'packages', 'apra-fleet-se', 'bin', 'cli.mjs');
-    if (fs.existsSync(candidate)) return candidate;
-    dir = path.dirname(dir);
-  }
-  throw new Error('sprint engine not found (packages/apra-fleet-se/bin/cli.mjs)');
 }
 
 export function realStartEngine(rec: SprintRecord, args: string[]): { pid?: number } {
@@ -607,6 +607,13 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
   const busy = loadRegistry().find(r => r.workspace === workspace && r.setup.state === 'preparing');
   if (busy) throw new Error(`A sprint for this project is still being set up (${busy.title})`);
 
+  // The design decides the mode, the recipe, and its own defaults; explicit
+  // inputs (a check typed in the form, a cycle count) win over the design's.
+  const chosen = getDesign(input.design ?? input.mode, repo);
+  const design: Design = { ...chosen, ...(v.gateCommand ? { check: v.gateCommand } : {}), ...(input.maxCycles ? { cycles: Math.round(Number(input.maxCycles)) } : {}) };
+  await checkDesign(design);
+  const plan = launchPlanFor(design);
+
   const runId = crypto.randomUUID();
   const title = input.title?.trim() || titleFromAsk(v.ask);
   const rec: SprintRecord = {
@@ -621,14 +628,17 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
     goal: v.goal,
     // Pipeline: the one that lands work, plus one builder; more join as tasks
     // wait. Classic: a fixed pool, as the engine's round loop expects.
-    helpers: input.mode === 'classic'
-      ? Array.from({ length: Math.max(1, Math.min(8, Math.round(Number(input.helpers ?? 3)))) }, (_, i) => helperName(slug, i))
+    helpers: plan.mode === 'classic'
+      ? Array.from({ length: Math.max(2, Math.min(8, Math.round(Number(input.helpers ?? plan.helpers ?? 3)))) }, (_, i) => helperName(slug, i))
       : [helperName(slug, 0), helperName(slug, 1)],
-    mode: input.mode === 'classic' ? 'classic' : 'pipeline',
-    ...(input.maxCycles ? { maxCycles: Math.round(Number(input.maxCycles)) } : {}),
+    mode: plan.mode,
+    designId: design.id,
+    designName: design.name,
+    recipeFile: path.join(workspace, `design-${runId}.json`),
+    ...(plan.maxCycles ? { maxCycles: plan.maxCycles } : {}),
     ...(input.dispatchTimeoutS ? { dispatchTimeoutS: Math.round(Number(input.dispatchTimeoutS)) } : {}),
     ...(v.maxHelpers !== undefined ? { maxHelpers: v.maxHelpers } : {}),
-    ...(v.gateCommand ? { gateCommand: v.gateCommand } : {}),
+    ...(plan.gateCommand ? { gateCommand: plan.gateCommand } : {}),
     poolFile: path.join(workspace, `pool-${runId}.json`),
     logPath: path.join(lazyDir(), 'sprints', `${runId}.log`),
     createdAt: new Date().toISOString(),
@@ -636,6 +646,8 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
     publish: !!input.publish,
     budget: input.budget !== undefined ? Number(input.budget) : undefined,
   };
+  fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(rec.recipeFile!, JSON.stringify(plan.recipe, null, 2) + '\n');
   upsert(rec);
   void prepareAndStart(rec, deps);
   return rec;
@@ -726,6 +738,7 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
       if (rec.maxHelpers !== undefined) args.push('--max-doers', String(rec.maxHelpers));
       if (rec.gateCommand) args.push('--gate-command', rec.gateCommand);
     }
+    if (rec.recipeFile && fs.existsSync(rec.recipeFile)) args.push('--recipe-file', rec.recipeFile);
     if (rec.maxCycles) args.push('--max-cycles', String(rec.maxCycles));
     if (rec.dispatchTimeoutS) args.push('--dispatch-timeout-s', String(rec.dispatchTimeoutS));
     if (rec.budget !== undefined) args.push('--budget', String(rec.budget));

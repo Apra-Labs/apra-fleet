@@ -15,6 +15,7 @@ import { getAllAgents } from '../services/registry.js';
 import { isAutoMember } from '../services/member-reaper.js';
 import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
 import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
+import { checkDesign, deleteDesign, designSteps, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
 
 export interface SprintDeps {
   launch: (input: LaunchInput) => Promise<{ runId: string }>;
@@ -120,6 +121,32 @@ const RUN_ID = '([A-Za-z0-9._-]{1,128})';
 /** Sprint board API. Returns false when the path is not a sprint route. */
 async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse, url: URL, deps: SprintDeps): Promise<boolean> {
   const p = url.pathname;
+  if (p === '/_lazy/api/designs' && req.method === 'GET') {
+    const repo = url.searchParams.get('repo') || undefined;
+    json(res, 200, { default: DEFAULT_DESIGN, designs: listDesigns(repo).map(d => ({ ...d, steps: designSteps(d) })) });
+    return true;
+  }
+  if (p === '/_lazy/api/designs' && req.method === 'POST') {
+    const saved = await saveDesign((await readJson(req)) as Design);
+    json(res, 200, { ok: true, design: { ...saved, steps: designSteps(saved) } });
+    return true;
+  }
+  if (p === '/_lazy/api/designs/check' && req.method === 'POST') {
+    const d = (await readJson(req)) as Design;
+    try {
+      await checkDesign(d);
+      json(res, 200, { ok: true, steps: designSteps(d) });
+    } catch (e) {
+      json(res, 200, { ok: false, error: (e as Error).message, steps: designSteps(d) });
+    }
+    return true;
+  }
+  const dm = /^\/_lazy\/api\/designs\/([a-z0-9-]{1,40})$/.exec(p);
+  if (dm && req.method === 'DELETE') {
+    deleteDesign(dm[1]);
+    json(res, 200, { ok: true });
+    return true;
+  }
   if (p === '/_lazy/api/sprints' && req.method === 'GET') {
     json(res, 200, { sprints: listSprints() });
     return true;
