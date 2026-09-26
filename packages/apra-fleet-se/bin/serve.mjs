@@ -57,7 +57,7 @@ import {
     formatNoBeadsWarning, formatProbeFailedWarning,
 } from '../src/supervisor/beads-identity.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
-import { buildManifest } from '../src/registration/manifest.mjs';
+import { buildManifest, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { createRegistration } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
@@ -417,11 +417,39 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // tracker minus claimed scope look like right now" implementation.
     const backlog = createBacklog({ ledger, watchdog });
 
+    // (apra-fleet-i9ag.5.1) Resolve the apra-fleet server connection ONCE,
+    // here -- reused below both for the dashboard's header "Console" back-
+    // link (this origin, or nothing when unresolved) and further down for
+    // workflow-package registration (apra-fleet-g6ap.2.1), so the two can
+    // never disagree about where this supervisor's console actually is.
+    // Gated on the SAME fleet-key requirement registration itself has (see
+    // that block below for why): with no fleet.key present, neither the
+    // dashboard link nor registration should even attempt a connection.
+    // Resolution failures are swallowed here -- the dashboard link is
+    // cosmetic; the registration block below still performs its own checks
+    // and logs its own loud warning against the same resolved value.
+    let fleetServerConnection = null;
+    let fleetServerConnectionError = null;
+    if (serviceTokenSource === 'fleet-key') {
+        try {
+            fleetServerConnection = await resolveFleetServerConnection();
+        } catch (err) {
+            fleetServerConnectionError = err;
+        }
+    }
+    // `connection.url` is the MCP endpoint (e.g. 'http://127.0.0.1:PORT/mcp')
+    // -- new URL(...).origin strips the path down to scheme://host:port,
+    // never a hardcoded host/port and never a value built by shell expansion.
+    const consoleOrigin = (fleetServerConnection && fleetServerConnection.mode === 'http'
+        && typeof fleetServerConnection.url === 'string' && fleetServerConnection.url !== '')
+        ? new URL(fleetServerConnection.url).origin
+        : null;
+
     // eft.6.1/6.3: the single-page operator dashboard -- Sprint Stack, then
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
     // via dashboard.mjs's renderIndexPageHtml default; see the import comment
     // above for why no separate launch-form seam is constructed here).
-    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity });
+    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity, consoleOrigin });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a
@@ -464,7 +492,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
     // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
-    registerDashboardRoutes(supervisor, dashboard);
+    // (apra-fleet-i9ag.3.3) Also mounted at the manifest's Sprints nav path
+    // (registration/manifest.mjs's SPRINTS_UI_PATH -- the single source for
+    // that path, read here rather than hand-copied) so the shell's Sprints
+    // nav entry embeds this same real dashboard instead of the /ui
+    // placeholder registerUiRoutes() answers everything else with.
+    registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths: [SPRINTS_UI_PATH] });
 
     // supervisor-viewer-parity: GET /api/backlog/tasks -- the flat,
     // filterable data source the dashboard's Backlog tab re-fetches from
@@ -530,7 +563,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // finishes -- so the SAME template serves live and history at the SAME
     // URL. A dedicated /sprints/:id/history link (registered below) reaches
     // the identical rendering regardless of whether the sprint is still live.
-    const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
+    // (apra-fleet-i9ag.3.8) renderHistory is called with the live proxy's own
+    // per-request resolveMountPrefix() result as its second argument
+    // (proxy.mjs's serveHistory()) -- forwarded into renderForSprint() so the
+    // finished-sprint page carries the same mount-aware back-link the rest of
+    // this dashboard's pages do, instead of silently dropping it here.
+    const liveProxy = createLiveProxy({
+        ledger, spawner,
+        renderHistory: (sprintId, mountPrefix) => historyView.renderForSprint(sprintId, mountPrefix),
+    });
     registerLiveRoutes(supervisor, liveProxy);
     registerHistoryViewRoutes(supervisor, historyView);
 
@@ -636,6 +677,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // signal path (onSignal -> supervisor.stop()) and the in-band
     // POST /api/shutdown path (server.mjs's own route also calls stop()),
     // since both resolve the SAME supervisor.shutdownRequested promise.
+    // (apra-fleet-i9ag.5.1) `fleetServerConnection` (and its resolution
+    // error, if any) was already resolved ONCE, above, before the dashboard
+    // was constructed -- reused verbatim here rather than a second
+    // resolveFleetServerConnection() call, so registration and the
+    // dashboard's "Console" back-link can never resolve to different
+    // connections.
     let registration = null;
     if (serviceTokenSource !== 'fleet-key') {
         console.warn(
@@ -643,29 +690,42 @@ export async function serveMain(argv = process.argv.slice(2)) {
             + `'${serviceTokenSource}'); skipping workflow-package registration. Run any apra-fleet CLI `
             + 'command once to mint fleet.key, then restart the supervisor to register.',
         );
-    } else {
-        let connection = null;
-        try {
-            connection = await resolveFleetServerConnection();
-        } catch (err) {
-            console.warn(`[registration] WARNING: could not resolve the apra-fleet server connection; skipping workflow-package registration: ${err && err.message ? err.message : err}`);
-        }
-        if (connection && connection.mode === 'http' && typeof connection.url === 'string' && connection.url !== '') {
-            const manifest = buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` });
-            registration = createRegistration({ serverUrl: connection.url, token: serviceToken, manifest });
-            registration.register().catch((err) => {
-                console.error(
-                    '[registration] register() failed unexpectedly (it should catch its own errors):',
-                    err,
-                );
-            });
-        } else {
-            console.warn(
-                '[registration] WARNING: no apra-fleet HTTP server URL configured; skipping workflow-package '
-                + "registration. Start the apra-fleet server ('apra-fleet start') or configure "
-                + 'APRA_FLEET_TRANSPORT=http, then restart the supervisor to register.',
+    } else if (fleetServerConnectionError) {
+        console.warn(`[registration] WARNING: could not resolve the apra-fleet server connection; skipping workflow-package registration: ${fleetServerConnectionError && fleetServerConnectionError.message ? fleetServerConnectionError.message : fleetServerConnectionError}`);
+    } else if (fleetServerConnection && fleetServerConnection.mode === 'http'
+        && typeof fleetServerConnection.url === 'string' && fleetServerConnection.url !== '') {
+        const manifest = buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` });
+        // (apra-fleet-i9ag.3.4) The registry's REST surface hangs off the
+        // apra-fleet server's ORIGIN ('<origin>/api/workflow-packages/...',
+        // src/console/routes/workflow-packages.ts), NOT off its MCP endpoint
+        // path. `fleetServerConnection.url` is the MCP endpoint --
+        // 'http://127.0.0.1:<port>/mcp', because src/index.ts writes
+        // createHttpTransport()'s `handle.url` into server.json verbatim and
+        // the client's checkRunningInstance() hands that value straight back.
+        // Passing it through unchanged made createRegistration() POST to
+        // '<origin>/mcp/api/workflow-packages/register', which the real server
+        // answers 404 (not a console path per src/console/server.ts's
+        // isConsolePath, and not '/mcp' either, so http-transport.ts's
+        // fall-through 404s it). register() treats 404 as retryable, so the
+        // supervisor retried with capped backoff FOREVER and never registered
+        // against a real apra-fleet server -- the whole Sprints-in-the-console
+        // hop was dead, loudly logged but never fatal. `consoleOrigin` above
+        // already reduces the same resolved connection to scheme://host:port
+        // for the dashboard's "Console" back-link; reused here so registration
+        // and that link can never disagree about where the server is.
+        registration = createRegistration({ serverUrl: consoleOrigin, token: serviceToken, manifest });
+        registration.register().catch((err) => {
+            console.error(
+                '[registration] register() failed unexpectedly (it should catch its own errors):',
+                err,
             );
-        }
+        });
+    } else {
+        console.warn(
+            '[registration] WARNING: no apra-fleet HTTP server URL configured; skipping workflow-package '
+            + "registration. Start the apra-fleet server ('apra-fleet start') or configure "
+            + 'APRA_FLEET_TRANSPORT=http, then restart the supervisor to register.',
+        );
     }
 
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger

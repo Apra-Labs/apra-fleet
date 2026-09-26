@@ -51,6 +51,17 @@ import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { withTimestamps } from './log-timestamp.mjs';
+// (apra-fleet-i9ag.5.2) Back-link injection: the SAME per-sprint dashboard-
+// card anchor dashboard.mjs renders (sprint-anchor.mjs is the one shared
+// source), reached through mountHref()/resolveMountPrefix() so the link
+// resolves correctly both direct-on-port and through the console's /ext
+// hop -- see mount-prefix.mjs's own doc comment for that split. This
+// injection is deliberately kept IN THIS SUPERVISOR-ONLY module, never in
+// packages/apra-fleet-workflow's generic viewer (docs/generic-engine-
+// boundary.md) -- the child viewer must never learn its HTML is being
+// served through a dashboard.
+import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
+import { sprintCardAnchorId } from './sprint-anchor.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -98,6 +109,40 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/save_logs'").join("'" + prefix + "/save_logs'")
         .split("'/extensions/").join("'" + prefix + "/extensions/")
         .split("'/activities/").join("'" + prefix + "/activities/");
+}
+
+/**
+ * Renders the back-link injected into the live-proxied child HTML, pointing
+ * at the dashboard's card anchor for this sprint (dashboard.mjs's
+ * renderSprintSection(), same id derived via sprintCardAnchorId()).
+ * `target="_top"` so a click from inside the console's /ext iframe navigates
+ * the whole browser tab back to the dashboard, not just the iframe.
+ * @param {string} mountPrefix - resolveMountPrefix()'s per-request result, or ''
+ * @param {string} sprintId
+ * @returns {string}
+ */
+export function renderLiveViewBackLinkHtml(mountPrefix, sprintId) {
+    const href = mountHref(mountPrefix, '/#' + sprintCardAnchorId(sprintId));
+    return '<p class="live-view-back-link"><a href="' + href + '" target="_top">&larr; Back to dashboard</a></p>';
+}
+
+/**
+ * Inserts `backLinkHtml` immediately after the child HTML's opening `<body>`
+ * tag (matched permissively -- any attributes) so it appears at the very top
+ * of the rendered page. Falls back to prepending the whole document when no
+ * `<body>` tag is found (should not happen for the real viewer's HTML, but
+ * keeps this a no-throw transform for any input). No-op on non-string input,
+ * matching rewriteChildHtml()'s own contract.
+ * @param {string} html
+ * @param {string} backLinkHtml
+ * @returns {string}
+ */
+export function injectLiveViewBackLink(html, backLinkHtml) {
+    if (typeof html !== 'string') return html;
+    const match = /<body[^>]*>/i.exec(html);
+    if (!match) return backLinkHtml + html;
+    const insertAt = match.index + match[0].length;
+    return html.slice(0, insertAt) + backLinkHtml + html.slice(insertAt);
 }
 
 /** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
@@ -176,10 +221,11 @@ function proxyStream({ host, port, childPath, req, res, logError }) {
 /**
  * Proxies the child's `/` HTML, buffering it just long enough to rewrite the
  * client-endpoint URLs to the live prefix (the ONE endpoint that needs a body
- * transform -- everything else streams). A pre-response connection failure
- * invokes `onConnectError` so the base handler can fall through to history.
+ * transform -- everything else streams) and inject the dashboard back-link
+ * (apra-fleet-i9ag.5.2). A pre-response connection failure invokes
+ * `onConnectError` so the base handler can fall through to history.
  */
-function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
+function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logError, onConnectError }) {
     let settled = false;
     const fail = (err) => {
         if (settled) return;
@@ -197,7 +243,8 @@ function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
             up.on('end', () => {
                 if (settled) return;
                 settled = true;
-                const html = rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix);
+                const rewritten = rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix);
+                const html = injectLiveViewBackLink(rewritten, renderLiveViewBackLinkHtml(mountPrefix, sprintId));
                 const body = Buffer.from(html, 'utf-8');
                 if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
                 res.writeHead(up.statusCode || 200, {
@@ -228,7 +275,7 @@ function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
  * @param {(p: string, enc: string) => Promise<string>} [readFile]
  * @returns {Promise<string|null>}
  */
-export async function defaultRenderHistory(sprintId, env, readFile) {
+export async function defaultRenderHistory(sprintId, env, readFile, mountPrefix) {
     const read = readFile ?? fsp.readFile;
     const filePath = getTerminalRunStatePath(sprintId, env);
     let raw;
@@ -240,25 +287,34 @@ export async function defaultRenderHistory(sprintId, env, readFile) {
     }
     let state = null;
     try { state = JSON.parse(raw); } catch { state = null; }
-    return renderReadOnlyHistoryHtml(sprintId, state);
+    return renderReadOnlyHistoryHtml(sprintId, state, mountPrefix);
 }
 
 /**
  * Renders the compact read-only historical page for a finished sprint. Contains
  * NO `/events` (SSE) or `/stop` controls -- it is a static, process-free view,
  * so nothing here re-enters the proxy or targets a now-dead child port.
+ *
+ * The back-link is built through mountHref()/resolveMountPrefix() (apra-fleet-i9ag.3.6),
+ * same as renderLiveViewBackLinkHtml() above -- `GET /sprints/:id/live` falls
+ * through to this page once a sprint finishes, so inside the console's
+ * `/ext/<id>` iframe an unprefixed `href="/"` resolves against the console
+ * root rather than this package's mount point. `target="_top"` so the click
+ * navigates the whole browser tab, not just the iframe.
  * @param {string} sprintId
  * @param {object|null} state - parsed terminal state (old_runs/, or legacy
  *   old_sprints/, apra-fleet-eft.37.1) <sprintId>.json, if available
+ * @param {string} [mountPrefix] - resolveMountPrefix()'s per-request result, or ''
  * @returns {string}
  */
-export function renderReadOnlyHistoryHtml(sprintId, state) {
+export function renderReadOnlyHistoryHtml(sprintId, state, mountPrefix) {
     const id = escapeHtml(sprintId);
     const s = state && typeof state === 'object' ? state : {};
     const reason = s.terminalReason ? escapeHtml(String(s.terminalReason)) : 'unknown';
     const startedAt = s.startedAt ? escapeHtml(String(s.startedAt)) : 'unknown';
     const endedAt = s.endedAt ? escapeHtml(String(s.endedAt)) : 'unknown';
     const status = s.status ? escapeHtml(String(s.status)) : 'unknown';
+    const backHref = mountHref(mountPrefix ?? '', '/');
     return (
         '<!DOCTYPE html>\n' +
         '<html lang="en">\n' +
@@ -269,7 +325,7 @@ export function renderReadOnlyHistoryHtml(sprintId, state) {
         'a{color:#60a5fa;}.tag{color:#a1a1aa;}</style>\n' +
         '</head>\n' +
         '<body data-view="history" data-sprint-id="' + id + '">\n' +
-        '<p><a href="/">&larr; Back to supervisor</a></p>\n' +
+        '<p><a href="' + backHref + '" target="_top">&larr; Back to supervisor</a></p>\n' +
         '<h1>Sprint ' + id + '</h1>\n' +
         '<p><strong>Historical, read-only view.</strong> This sprint has finished; ' +
         'its live process is gone, so there is nothing to stream.</p>\n' +
@@ -292,7 +348,7 @@ export function renderReadOnlyHistoryHtml(sprintId, state) {
  *   ledger?: { get: (sprintId: string) => ({ childPid: number|null }|undefined) },
  *   spawner?: { getLiveEntry: (pid: number) => ({ port: number }|undefined) },
  *   resolvePort?: (sprintId: string) => number|undefined,
- *   renderHistory?: (sprintId: string) => Promise<string|null>|string|null,
+ *   renderHistory?: (sprintId: string, mountPrefix: string) => Promise<string|null>|string|null,
  *   host?: string,
  *   env?: NodeJS.ProcessEnv,
  *   readFile?: (p: string, enc: string) => Promise<string>,
@@ -334,7 +390,7 @@ export function createLiveProxy(deps = {}) {
     const resolvePort = deps.resolvePort ?? defaultResolvePort;
 
     const renderHistory = deps.renderHistory
-        ?? ((sprintId) => defaultRenderHistory(sprintId, env, deps.readFile));
+        ?? ((sprintId, mountPrefix) => defaultRenderHistory(sprintId, env, deps.readFile, mountPrefix));
 
     /** Resolve a live port, isolating any injected-resolver failure as "no live". */
     function safeResolvePort(sprintId) {
@@ -347,10 +403,10 @@ export function createLiveProxy(deps = {}) {
     }
 
     /** Render + send the read-only historical view; 404 when no history exists. */
-    async function serveHistory(sprintId, res) {
+    async function serveHistory(sprintId, res, mountPrefix) {
         let html = null;
         try {
-            html = await renderHistory(sprintId);
+            html = await renderHistory(sprintId, mountPrefix);
         } catch (err) {
             logError('[proxy] history render failed for', sprintId, err);
         }
@@ -370,18 +426,32 @@ export function createLiveProxy(deps = {}) {
     async function handleBase(req, res, ctx) {
         const sprintId = ctx?.params?.id;
         if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        // (apra-fleet-i9ag.5.2, apra-fleet-i9ag.3.6) Resolved PER REQUEST, same
+        // as the dashboard's own GET / handler (dashboard.mjs) -- one
+        // live-proxied HTML (and the history fallthrough below) answers both
+        // the direct-on-port hit and the console's /ext/<id> iframe hop.
+        const mountPrefix = resolveMountPrefix(req);
         const port = safeResolvePort(sprintId);
         if (!Number.isInteger(port)) {
-            await serveHistory(sprintId, res);
+            await serveHistory(sprintId, res, mountPrefix);
             return;
         }
+        // (apra-fleet-i9ag.3.7) The rewritten child endpoints must resolve
+        // under the SAME origin the browser is actually viewing: direct-on-
+        // port, that is livePrefixFor(sprintId) unchanged; embedded through
+        // the console's /ext/<id> iframe, that is this package's own mount
+        // point ahead of it (mountHref(), same as the back-link above and the
+        // dashboard's own links) so 'fetch(\"/state\")' etc. re-enter the
+        // console's /ext hop instead of the console root.
         proxyHtml({
             host, port, req, res,
-            prefix: livePrefixFor(sprintId),
+            prefix: mountHref(mountPrefix, livePrefixFor(sprintId)),
+            sprintId,
+            mountPrefix,
             logError,
             // A live entry existed but the child is unreachable (raced with exit):
             // fall through to history rather than serve a dead proxy.
-            onConnectError: () => { serveHistory(sprintId, res).catch((e) => logError(e)); },
+            onConnectError: () => { serveHistory(sprintId, res, mountPrefix).catch((e) => logError(e)); },
         });
     }
 

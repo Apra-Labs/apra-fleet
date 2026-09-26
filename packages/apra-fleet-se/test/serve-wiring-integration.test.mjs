@@ -324,6 +324,35 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         assert.ok(backlogIdx < launchIdx, 'expected Launch Sprint after the Backlog table, within the Backlog tab');
     });
 
+    test('GET /ui/sprints returns the real dashboard, not the /ui placeholder; GET /ui/projects still does', async () => {
+        // (apra-fleet-i9ag.3.3) The manifest's Sprints nav path (registration/
+        // manifest.mjs's SPRINTS_UI_PATH) must be mounted against the SAME
+        // real dashboard handler as GET / -- not the /ui placeholder every
+        // other nav path still answers with. Poll for the marker the same
+        // way the GET / test above does: the dashboard's first render can
+        // outlast a single httpGet under contention.
+        const res = await waitFor(async () => {
+            try {
+                const attempt = await httpGet(port, '/ui/sprints', { serviceToken });
+                return attempt.status === 200 && attempt.body.includes('id="sprint-stack"') ? attempt : false;
+            } catch {
+                return false;
+            }
+        }, {
+            timeoutMs: scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 }),
+            label: 'GET /ui/sprints to render the dashboard with the sprint stack',
+            isAlive: () => !serveExited,
+        });
+        assert.equal(res.status, 200, res.body);
+        assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
+        assert.ok(res.body.includes('id="sprint-stack"'), 'expected the Sprint Stack container');
+        assert.ok(res.body.includes('id="launch-form"'), 'expected the Launch Sprint form markup');
+
+        const projectsRes = await httpGet(port, '/ui/projects', { serviceToken });
+        assert.equal(projectsRes.status, 200);
+        assert.ok(projectsRes.body.includes('fleet-supervisor UI arrives in a later sprint'), 'expected /ui/projects to still answer the placeholder');
+    });
+
     test('POST /api/sprints reaches the real sprint controller (validation error, not 404)', async () => {
         // An intentionally-invalid body (no issue/branch/base/members): the
         // pre-fix stub serve.mjs never called registerSprintRoutes(), so this

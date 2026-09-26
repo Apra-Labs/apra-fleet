@@ -28,6 +28,21 @@
  *    or when the registered baseUrl is unusable (unparseable, or carrying a
  *    scheme other than http:/https: -- see the branch below, which must run
  *    BEFORE any transport is selected).
+ *  - tell the package, on EVERY hop (unlike the credential above, this is not
+ *    gated on `forwardCredential`), what its own console mount path is: the
+ *    `MOUNT_PATH_HEADER` request header carries the exact `/ext/<id>` value
+ *    this module already computes for Location-rewriting (`mountPath` below,
+ *    reused rather than recomputed). The package needs this because it is
+ *    served at `/ext/<id>/...` on the console origin -- any absolute app-path
+ *    it emits (a link, a `fetch()` target, an `EventSource` URL) resolves
+ *    against the console root and 404s unless the package prefixes it with
+ *    this value first. This is the documented contract the package side
+ *    consumes -- see the supervisor's `mount-prefix.mjs`
+ *    (packages/apra-fleet-se/src/supervisor/mount-prefix.mjs). Any inbound
+ *    client-supplied instance of this header is stripped BEFORE the upstream
+ *    headers are assembled (see `DROPPED_REQUEST_HEADERS`): a browser must
+ *    never be able to spoof the mount point, the same discipline already
+ *    applied to the inbound `Cookie` and `Authorization` headers.
  *
  * ---------------------------------------------------------------------------
  * CREDENTIAL FORWARDING -- the security core of this module. Read before
@@ -87,6 +102,25 @@ import { workflowPackageService } from '../services/workflow-packages.js';
 export const EXT_PREFIX = '/ext';
 
 /**
+ * Request header carrying the package's own console mount path (the same
+ * `/ext/<id>` value the Location-rewriting code above computes as
+ * `mountPath` -- reused, not recomputed) on EVERY `/ext/<id>/*` hop. This is
+ * the documented contract the package side consumes to turn an absolute
+ * app-path it would otherwise emit rooted at `/` into one that survives being
+ * served under the console's `/ext/<id>` mount -- see
+ * packages/apra-fleet-se/src/supervisor/mount-prefix.mjs.
+ *
+ * Set unconditionally (unlike the derived upstream credential, which is
+ * gated on `forwardCredential`): a package needs to know where it is mounted
+ * regardless of whether the inbound request happened to carry a console
+ * credential. Any inbound client-supplied instance of this header is
+ * stripped before the upstream headers are assembled (see
+ * `DROPPED_REQUEST_HEADERS`) so a browser can never spoof the mount point --
+ * the proxy's own computed value always wins.
+ */
+export const MOUNT_PATH_HEADER = 'x-apra-fleet-mount-path';
+
+/**
  * The per-package upstream credential derivation now LIVES IN the shared
  * client package (packages/apra-fleet-client/src/auth/local-token.mjs) so the
  * registry health probe (../services/workflow-packages.ts) and a package's own
@@ -123,8 +157,16 @@ const HOP_BY_HOP = new Set([
  *  `authorization` carry the CONSOLE's credentials and must never reach a
  *  third-party package (see the CREDENTIAL FORWARDING note); `host` is
  *  re-derived for the upstream; `accept-encoding` is replaced with
- *  `identity`. */
-const DROPPED_REQUEST_HEADERS = new Set(['cookie', 'authorization', 'host', 'accept-encoding']);
+ *  `identity`; `MOUNT_PATH_HEADER` is proxy-computed only -- a client-supplied
+ *  instance must never reach the upstream, or a browser could spoof the
+ *  mount point the package trusts to build its own app-paths. */
+const DROPPED_REQUEST_HEADERS = new Set([
+  'cookie',
+  'authorization',
+  'host',
+  'accept-encoding',
+  MOUNT_PATH_HEADER,
+]);
 
 export interface ExtProxyOptions {
   /** Pathname already normalised by the caller (../server.ts). */
@@ -374,6 +416,12 @@ export async function handleExtProxyRequest(
   // point the negotiation has already happened. Declining it up front is the
   // only point at which the SSE case can be guaranteed.
   outHeaders['accept-encoding'] = 'identity';
+
+  // Tell the package where it is mounted -- unconditional, on every hop,
+  // unlike the credential below. Derived from the resolved package id via
+  // the SAME `mountPath` the Location-rewriting branch below uses, so the
+  // two never disagree.
+  outHeaders[MOUNT_PATH_HEADER] = mountPath;
 
   // apra-fleet-iywi.11: only attach the derived credential when the inbound
   // request itself was authenticated (always true for a non-GET request,
