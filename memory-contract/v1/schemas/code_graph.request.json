@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_graph.request.json#",
+  "$ref": "#/$defs/v1-code_graph-request",
+  "$defs": {
+    "v1-code_graph-request": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Function, class, or method name to trace in the call graph"
+        },
+        "repo": {
+          "type": "string",
+          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,10 +1,170 @@
-import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
+
+const execFileAsync = promisify(execFile);
+
+// apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
+// transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
+// but the Claude Code CLI signals it INCONSISTENTLY across versions/streams:
+//   - the `type:result` event's `subtype` is `error_max_turns`, and/or
+//   - that same event carries `terminal_reason: "max_turns"`, and/or
+//   - a distinct transcript event of `type: "max_turns_reached"` is emitted
+//     (with no result-event terminal_reason at all).
+// The old parser recorded ONLY `terminal_reason`, so a transcript that carried
+// the signal solely via `subtype`/the standalone event was silently missed --
+// the ekm forensics show one such session run to a 38.5-min hard timeout + cold
+// restart because it was never classified. Detect ANY of these signals on ANY
+// transcript event so the result the parser returns always normalizes to
+// terminalReason 'max_turns' when the session was turn-limit terminated.
+export function isMaxTurnsSignal(obj: any): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  return (
+    obj.terminal_reason === 'max_turns' ||
+    obj.subtype === 'error_max_turns' ||
+    obj.type === 'max_turns_reached' ||
+    obj.stop_reason === 'max_turns'
+  );
+}
+
+// apra-fleet-hzeb.1: the Claude result event's `api_error_status` carries the
+// upstream HTTP status (e.g. 429) when the CLI terminated on an API error. The
+// parser previously dropped it; capture it (coercing a numeric string) so
+// detectUsageLimit can distinguish a 429 usage limit. Returns undefined when
+// absent or non-numeric.
+export function extractApiErrorStatus(obj: any): number | undefined {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const raw = obj.api_error_status;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return undefined;
+}
+
+// apra-fleet-hzeb.1: Claude's own usage-limit message shape, e.g.
+// "You've hit your session limit", "hit your weekly limit", "hit your opus limit".
+const CLAUDE_LIMIT_MESSAGE_RE = /hit your (session|weekly|opus|\w+) limit/i;
+
+// apra-fleet-hzeb.1.2: Claude's usage-limit message sometimes exposes the actual
+// reset time verbatim, e.g. "resets 8:20am (America/New_York)" or "resets at 8pm
+// (America/New_York)". This wall-clock-plus-IANA-zone shape is the primary parse.
+const CLAUDE_RESET_AT_RE = /resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(\s*([A-Za-z][A-Za-z0-9_+\-/]*)\s*\)/i;
+// Best-effort relative shape, e.g. "resets in 45 minutes" / "resets in 2 hours".
+const CLAUDE_RESET_IN_RE = /resets\s+in\s+(\d+)\s*(minute|hour)s?/i;
+
+// apra-fleet-hzeb.1.2: the wall-clock fields of `instant` as observed in
+// `timeZone`, via Intl (no external dependency). `hourCycle: 'h23'` yields
+// 00-23; a few engines still emit '24' for midnight, so normalize it.
+function claudeZoneParts(instant: Date, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const map: Record<string, string> = {};
+  for (const p of dtf.formatToParts(instant)) map[p.type] = p.value;
+  let hour = Number(map.hour);
+  if (hour === 24) hour = 0;
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour,
+    minute: Number(map.minute),
+    second: Number(map.second),
+  };
+}
+
+// Offset (ms) between the wall clock in `timeZone` and UTC at `instant`
+// (positive = zone ahead of UTC).
+function claudeZoneOffsetMs(instant: Date, timeZone: string): number {
+  const p = claudeZoneParts(instant, timeZone);
+  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return asUtc - instant.getTime();
+}
+
+// UTC epoch ms for a wall-clock time (`y`-`mo`-`d` `h`:`min`, mo 1-based) as it
+// occurs in `timeZone`. The double-offset re-check handles DST boundaries where
+// the offset that applies at the naive guess differs from the offset that
+// actually applies at the resolved instant (spring-forward / fall-back).
+function claudeZonedWallClockToUtc(y: number, mo: number, d: number, h: number, min: number, timeZone: string): number {
+  const utcGuess = Date.UTC(y, mo - 1, d, h, min, 0);
+  const offset1 = claudeZoneOffsetMs(new Date(utcGuess), timeZone);
+  let ts = utcGuess - offset1;
+  const offset2 = claudeZoneOffsetMs(new Date(ts), timeZone);
+  if (offset2 !== offset1) ts = utcGuess - offset2;
+  return ts;
+}
+
+/**
+ * apra-fleet-hzeb.1.2: parse a Claude usage-limit reset time from its verbatim
+ * message into a concrete instant, so the usage-limit signal can schedule a
+ * precise resume instead of guessing now+1h. Pure and deterministic: `now` is
+ * injected. Returns null when no reset time is readable -- the caller then falls
+ * back to the guessed window (never to a null signal; a 429 is still a usage
+ * limit even when its reset time is unreadable).
+ *
+ * Supported shapes (case-insensitive, best-effort):
+ *   - "resets 8:20am (America/New_York)" -> the NEXT 08:20 wall-clock in that
+ *     zone that is >= `now` (DST-correct via Intl offset projection).
+ *   - "resets at 8pm (America/New_York)" -> same, with an optional "at" and no
+ *     explicit minutes.
+ *   - "resets in 45 minutes" / "resets in 2 hours" -> `now` + the stated delta.
+ */
+export function parseClaudeResetTime(text: string, now: Date): Date | null {
+  if (!text) return null;
+
+  const inM = CLAUDE_RESET_IN_RE.exec(text);
+  if (inM) {
+    const n = Number(inM[1]);
+    if (Number.isFinite(n) && n >= 0) {
+      const unitMs = /hour/i.test(inM[2]) ? 60 * 60 * 1000 : 60 * 1000;
+      return new Date(now.getTime() + n * unitMs);
+    }
+  }
+
+  const atM = CLAUDE_RESET_AT_RE.exec(text);
+  if (atM) {
+    let hour = Number(atM[1]);
+    const minute = atM[2] ? Number(atM[2]) : 0;
+    const ampm = atM[3].toLowerCase();
+    const timeZone = atM[4].trim();
+    if (hour < 1 || hour > 12 || minute > 59) return null;
+    // 12-hour -> 24-hour: 12am -> 0, 12pm -> 12, otherwise +12 for pm.
+    if (ampm === 'am') hour = hour === 12 ? 0 : hour;
+    else hour = hour === 12 ? 12 : hour + 12;
+
+    // Reject an unknown IANA zone (Intl throws on construction) -> guessed.
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone });
+    } catch {
+      return null;
+    }
+
+    const today = claudeZoneParts(now, timeZone);
+    let ts = claudeZonedWallClockToUtc(today.year, today.month, today.day, hour, minute, timeZone);
+    if (ts < now.getTime()) {
+      // Already passed today in that zone; advance to the next calendar day
+      // (Date.UTC normalizes day overflow before we re-project through the zone).
+      ts = claudeZonedWallClockToUtc(today.year, today.month, today.day + 1, hour, minute, timeZone);
+    }
+    return new Date(ts);
+  }
+
+  return null;
+}
 
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
@@ -21,8 +181,16 @@ export class ClaudeProvider implements ProviderAdapter {
     return 'claude --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string {
     if (os === 'windows') {
+      // The raw `irm ... | iex` form is PowerShell-only syntax -- it only
+      // works when the executing shell IS PowerShell. A gitbash member's
+      // command strings run in bash directly (apra-fleet-7dir.2.4/2.7), so
+      // route through the same base64 -EncodedCommand envelope every other
+      // Windows-targeting PowerShell invocation in this codebase uses.
+      if (shell === 'gitbash') {
+        return wrapPowerShellEncoded('irm https://claude.ai/install.ps1 | iex');
+      }
       return 'irm https://claude.ai/install.ps1 | iex';
     }
     return 'curl -fsSL https://claude.ai/install.sh | bash';
@@ -33,24 +201,25 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
+    let cmd = `cd "${escapedFolder}" && claude`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}" --output-format json --max-turns ${turns}`;
     if (resuming && sessionId) {
       cmd += ` ${buildResumeFlag(sessionId)}`;
     } else if (sessionId) {
       cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
-    if (unattended === 'auto') {
-      cmd += ' --permission-mode auto';
-    } else if (unattended === 'dangerous') {
-      cmd += ' --dangerously-skip-permissions';
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -65,6 +234,28 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--permission-mode auto';
   }
 
+  workspaceEditPermissionFlag(): string | null {
+    // apra-fleet-eft.65.1: grants Edit/Write parity for the dispatched agent's
+    // own work folder in a headless dispatch (which cannot show a trust/permission
+    // prompt) WITHOUT the broad --dangerously-skip-permissions bypass.
+    return '--permission-mode acceptEdits';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto') return '--permission-mode auto';
+    if (unattended === 'dangerous') return '--dangerously-skip-permissions';
+    // apra-fleet-eft.65.1: interactive-session parity for the work folder.
+    // A headless `-p` dispatch cannot present a permission prompt, so with no
+    // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
+    // in its own work folder -- even though an interactive session in the same
+    // trusted workspace would simply accept it. `acceptEdits` auto-approves
+    // file-edit tools (Edit/Write/MultiEdit/NotebookEdit) for the working
+    // directory only; it does NOT auto-approve Bash, network, or edits outside
+    // the workspace, so this restores work-folder Edit/Write parity without
+    // broadening the permission model (unlike --dangerously-skip-permissions).
+    return this.workspaceEditPermissionFlag() ?? '';
+  }
+
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
@@ -73,14 +264,53 @@ export class ClaudeProvider implements ProviderAdapter {
         ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
         : undefined;
 
-    const fromEvent = (obj: any): ParsedResponse | null => {
+    // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY
+    // (present-but-blank) result field on the `type:result` event falls back to
+    // the assistant text we harvested from the stream, instead of being kept as
+    // '' (a plain `obj.result ?? ...` keeps '' because it is not nullish).
+    const firstNonEmpty = (...candidates: any[]): string | undefined => {
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim() !== '') return c;
+      }
+      return undefined;
+    };
+
+    // apra-fleet-eft.28.6: the assistant's reply text carried by a
+    // `type:assistant` stream event (message.content[] text blocks). Real
+    // capture (member 'trust-probe', eft.28 NEW EVIDENCE): the final
+    // `type:result` event's own `result` field came back empty even though the
+    // assistant reply -- including tool output -- was fully present in these
+    // preceding events. Harvesting it here lets the server recover the reply
+    // instead of dropping it and mislabelling the dispatch empty_response.
+    const assistantTextOf = (obj: any): string => {
+      const content = obj?.message?.content;
+      if (obj?.type !== 'assistant' || !Array.isArray(content)) return '';
+      return content
+        .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
+        .map((c: any) => c.text)
+        .join('');
+    };
+
+    const fromEvent = (obj: any, assistantFallback: string, maxTurnsSeen: boolean): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
+      // Normalize terminalReason to 'max_turns' whenever the transcript carried
+      // the turn-limit signal via ANY channel (this event's terminal_reason,
+      // this or a preceding event's subtype/standalone max_turns_reached event)
+      // so downstream classification (execute-prompt) is version-independent.
+      const maxTurns = maxTurnsSeen || isMaxTurnsSignal(obj);
       return {
-        result: obj.result ?? obj.response ?? raw,
+        // Prefer the event's own result text; only when it is missing OR blank
+        // do we substitute the harvested assistant text. The final `?? raw`
+        // preserves the pre-existing behavior for a result event with no result
+        // field at all and no recoverable assistant text.
+        result: firstNonEmpty(obj.result, obj.response, assistantFallback) ?? obj.result ?? obj.response ?? raw,
         sessionId: obj.session_id,
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
         usage: extractUsage(obj.usage),
+        subtype: obj.subtype,
+        terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+        apiErrorStatus: extractApiErrorStatus(obj),
       };
     };
 
@@ -88,34 +318,86 @@ export class ClaudeProvider implements ProviderAdapter {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         // JSON array of events (some Claude Code versions collect JSONL into an array)
+        let assistantText = '';
+        let maxTurnsSeen = false;
         for (const obj of parsed) {
-          const r = fromEvent(obj);
+          assistantText += assistantTextOf(obj);
+          maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+          const r = fromEvent(obj, assistantText, maxTurnsSeen);
           if (r) return r;
         }
       } else {
         // Single object - old Claude Code format
+        const maxTurns = isMaxTurnsSignal(parsed);
         return {
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
           isError: parsed.is_error === true || result.code !== 0,
           raw,
           usage: extractUsage(parsed.usage),
+          subtype: parsed.subtype,
+          terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
+          apiErrorStatus: extractApiErrorStatus(parsed),
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
+    let assistantText = '';
+    let maxTurnsSeen = false;
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const r = fromEvent(JSON.parse(trimmed));
+        const obj = JSON.parse(trimmed);
+        assistantText += assistantTextOf(obj);
+        maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+        const r = fromEvent(obj, assistantText, maxTurnsSeen);
         if (r) return r;
       } catch { /* skip non-JSON lines */ }
     }
 
-    // Fallback: plain text output
-    return { result: raw, sessionId: undefined, isError: result.code !== 0, raw, usage: undefined };
+    // Fallback: plain text output. A stream that emitted a standalone
+    // max_turns_reached event but no terminating `type:result` event still
+    // reaches here -- preserve the turn-limit signal so it is never lost.
+    return {
+      result: raw,
+      sessionId: undefined,
+      isError: result.code !== 0,
+      raw,
+      usage: undefined,
+      terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
+    };
+  }
+
+  // apra-fleet-hzeb.1 / hzeb.1.2: Claude signals a usage limit via a 429
+  // api_error_status OR a terminal_reason of 'api_error' -- independent of process
+  // exit code (exit 1 with is_error, OR exit 0 carrying the message as the result
+  // text). A 429 is definitively a usage/quota limit on its own; the broader
+  // 'api_error' terminal reason can mean other things, so there we additionally
+  // require Claude's own "hit your <...> limit" message to avoid misclassifying an
+  // unrelated API error. When the message exposes a real reset time we parse it
+  // into a concrete `resumeAt` (source 'parsed'); otherwise we fall back to the
+  // guessed window (source 'guessed') -- NEVER to null, since a 429 is still a
+  // usage limit even when its reset time is unreadable.
+  detectUsageLimit(_result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    const is429 = parsed.apiErrorStatus === 429;
+    const isApiErrorTerminal = parsed.terminalReason === 'api_error';
+    if (!is429 && !isApiErrorTerminal) return null;
+    const text = parsed.result ?? '';
+    if (!is429 && !CLAUDE_LIMIT_MESSAGE_RE.test(text)) return null;
+
+    const now = new Date();
+    const parsedReset = parseClaudeResetTime(text, now);
+    if (parsedReset) {
+      return {
+        type: 'usage_limit',
+        resumeAt: parsedReset.toISOString(),
+        resumeAtSource: 'parsed',
+        message: text,
+      };
+    }
+    return guessedUsageLimitSignal(text, now.getTime());
   }
 
   supportsResume(): boolean {
@@ -131,6 +413,50 @@ export class ClaudeProvider implements ProviderAdapter {
     return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
   }
 
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'caller-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: a headless `claude -p` dispatch is batch-only -- it
+  // emits nothing on the exec channel until the whole turn is done, so a
+  // `timeout_s`-sized rolling deadline on that channel is a false kill, not a
+  // stall signal. Claude's real mechanism is the StallDetector polling the
+  // session transcript (resolveSessionLogPath below returns a real file), and
+  // that still receives `timeout_s` as its thresholdMs.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'total_ceiling';
+  }
+
+  // apra-fleet-lmtg.1: Claude Code's CLI supports fork-mode dispatch natively
+  // via `--resume <source> --fork-session` -- per `claude --help`, --fork-session
+  // "When resuming, create a new session ID instead of reusing the original".
+  // The CLI honors a caller-supplied `--session-id` even in fork mode, so we
+  // pre-mint the forked session's id (same as a plain caller-minted dispatch)
+  // and pass it explicitly rather than letting the CLI mint its own and
+  // scraping it out of the response afterward. The source session is left
+  // untouched; only the forked dispatch continues under the new id.
+  supportsFork(): boolean {
+    return true;
+  }
+
+  forkFlag(sourceSessionId: string, newSessionId: string): string {
+    return buildForkFlag(sourceSessionId, newSessionId);
+  }
+
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    const encoded = encodeClaudeProjectDir(workFolder);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+  }
+
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    const encoded = encodeClaudeProjectDir(workFolder);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded);
+  }
+
   // Bare family aliases -- the claude CLI resolves these to the current
   // generation automatically (`claude --help`: "Provide an alias for the
   // latest model (e.g. 'fable', 'opus', or 'sonnet')"), so these never go
@@ -143,14 +469,27 @@ export class ClaudeProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'haiku';
-    if (tier === 'mid') return 'sonnet';
+    if (tier === 'standard') return 'sonnet';
     return 'opus';
   }
 
   modelFlag(model: string): string {
     return `--model "${escapeDoubleQuoted(model)}"`;
+  }
+
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.claude/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(agentName: string): string {
+    return `--agent "${escapeDoubleQuoted(agentName)}"`;
   }
 
   classifyError(output: string): PromptErrorCategory {
@@ -205,5 +544,324 @@ export class ClaudeProvider implements ProviderAdapter {
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
   }
+
+  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
+    // Live-verified (apra-fleet-2xs.5, docs/member-onboarding-journey.md 3a): `claude
+    // mcp add` is Claude's own native registration mechanism -- it writes .mcp.json
+    // (project scope) or the user-scope config itself, round-tripping the bearer
+    // header intact. Shelling out here (rather than hand-writing .mcp.json) means
+    // future changes to Claude Code's config format are Anthropic's problem, not
+    // ours, and it composes correctly with whatever the user does afterward via the
+    // same CLI.
+    const args = [
+      'mcp', 'add',
+      '--transport', 'http',
+      '--scope', opts.scope,
+      'apra-fleet-member',
+      opts.url,
+      '--header', `Authorization: Bearer ${opts.token}`,
+    ];
+    await execFileAsync('claude', args, { cwd: opts.workFolder });
+    return {
+      mechanism: 'cli-verb',
+      detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
+    };
+  }
+
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
+    // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
+    // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
+    // unattended dispatches. There is no surgical --skip-trust equivalent for Claude
+    // (only the overbroad --dangerously-skip-permissions), so seeding this flag directly
+    // is the only viable fix.
+    //
+    // Live-verified format ground truth (apra-fleet-eft.40 notes, real ~/.claude.json):
+    // project keys are ABSOLUTE PATHS WITH FORWARD SLASHES even on Windows. Normalize so
+    // a folder passed with backslashes, or with a trailing slash, still hits the SAME
+    // entry -- that is also what makes re-running this idempotent.
+    const key = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+
+    // A Windows member registered as Git-for-Windows bash speaks POSIX: the
+    // PowerShell strings below are handed verbatim to bash.exe and fail with
+    // "Get-Content: command not found" -- and because this method never
+    // inspects the write's exit code, that failure surfaces as a FALSE
+    // "seeded trust" while nothing lands on disk (apra-fleet-7dir.2.8).
+    // Selecting the POSIX branch for a gitbash member is what fixes that;
+    // every other Windows member (pwsh7/powershell5/unrecorded) keeps the
+    // byte-identical PowerShell strings it got before.
+    const usePosix = isPosixShell(agentOs, shell);
+    const isWindows = !usePosix;
+    const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
+    // Per-call staging names: register_member and compose_permissions can seed the
+    // same home concurrently (or two local ephemeral members can), and fixed names
+    // would interleave chunk appends / clobber each other's tmp. The same names are
+    // used by the file channel and every exec command below.
+    const staging = workspaceTrustStagingNames();
+    const tmpFile = isWindows ? `$env:USERPROFILE\\${staging.tmpRel}` : `$HOME/${staging.tmpRel}`;
+
+    // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
+    // the orchestrator host, so it must be read through the same execCommand channel --
+    // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
+    // one round-trip, and (crucially) the already-satisfied case still costs exactly one
+    // exec, so the "no write when nothing to do" contract is observable as before.
+    const mcpFile = `${key}/.mcp.json`;
+    const SPLIT = '---FLEET_MCP_SPLIT---';
+
+    const readCmd = isWindows
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
+    const readResult = await execCommand(readCmd, 10000);
+
+    // Substring split (not line-split): if ~/.claude.json has no trailing newline the
+    // marker glues onto its closing brace, and only a substring split separates cleanly.
+    // No marker at all -> treat the whole payload as ~/.claude.json with no .mcp.json.
+    const rawStdout = readResult.stdout;
+    const splitIdx = rawStdout.indexOf(SPLIT);
+    const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
+    const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
+
+    let existing: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(homeRaw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
+    } catch {
+      // File missing, empty, or not JSON -- a member that has never run Claude
+      // interactively has no ~/.claude.json at all yet. Start from an empty object.
+    }
+
+    // A missing / unparseable / server-less .mcp.json is NOT an error: seed nothing
+    // extra and fall through to the pre-existing trust-only behaviour.
+    let declaredServers: string[] = [];
+    try {
+      const mcpParsed = JSON.parse(mcpRaw);
+      const servers = mcpParsed?.mcpServers;
+      if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+        declaredServers = Object.keys(servers);
+      }
+    } catch {
+      // no .mcp.json (or garbage in it) -- trust-only path.
+    }
+
+    const rawProjects = existing.projects;
+    const projects: Record<string, unknown> = (rawProjects && typeof rawProjects === 'object' && !Array.isArray(rawProjects))
+      ? rawProjects as Record<string, unknown>
+      : {};
+    const rawEntry = projects[key];
+    const existingEntry: Record<string, unknown> = (rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry))
+      ? rawEntry as Record<string, unknown>
+      : {};
+
+    // apra-fleet-9oo: trust and MCP-server enablement are computed INDEPENDENTLY, because
+    // an already-trusted member (hasTrustDialogAccepted true) can still be missing its
+    // enabledMcpjsonServers entries -- the old unconditional early return here is exactly
+    // why members never got project MCP servers auto-approved. Short-circuit only when
+    // BOTH are already satisfied.
+    const trustNeeded = existingEntry.hasTrustDialogAccepted !== true;
+
+    const enabled = Array.isArray(existingEntry.enabledMcpjsonServers)
+      ? (existingEntry.enabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    const disabled = Array.isArray(existingEntry.disabledMcpjsonServers)
+      ? (existingEntry.disabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    // Union-merge, deny wins: keep every existing entry in its existing order, append
+    // only names that are missing (in .mcp.json declaration order, so re-runs are
+    // byte-identical), and NEVER add a name a human explicitly disabled.
+    const serversToAdd = declaredServers.filter(n => !enabled.includes(n) && !disabled.includes(n));
+
+    if (!trustNeeded && serversToAdd.length === 0) {
+      console.error(`[claude] workspace trust: already present for "${key}"`);
+      return { seeded: false, detail: `already trusted: ${key}`, mcpServersSeeded: [] };
+    }
+
+    // MERGE: preserve every sibling field already on the project entry (history,
+    // allowedTools, etc.) and every other project's entry in the file -- never replace
+    // the entry, or the file, wholesale. Note enabledMcpjsonServers is only written when
+    // something is actually being added -- an absent array is never "tidied" into [].
+    const mergedEntry: Record<string, unknown> = { ...existingEntry, hasTrustDialogAccepted: true };
+    if (serversToAdd.length > 0) mergedEntry.enabledMcpjsonServers = [...enabled, ...serversToAdd];
+    const mergedProjects = { ...projects, [key]: mergedEntry };
+    const merged = { ...existing, projects: mergedProjects };
+    const contentStr = JSON.stringify(merged, null, 2);
+
+    // ATOMIC write: stage the full merged content in a temp file, then rename over the
+    // real file in one filesystem operation -- a crash or concurrent read mid-write can
+    // never observe a partially-written ~/.claude.json.
+    //
+    // GitHub #499: the staged content must NOT ride the command line on a Windows
+    // host. A real ~/.claude.json grows to tens of KB (84 KB in the report), and
+    // Windows caps a process command line at 32767 chars (cmd.exe at 8191) -- a
+    // single WriteAllText(...'<whole file>'...) or `bash -c '<heredoc>'` spawn fails
+    // with ENAMETOOLONG and trust is never seeded. Delivery order:
+    //   1. transport.writeHomeFile (node:fs for a local member, SFTP for SSH) --
+    //      no command line carries the content at all;
+    //   2. one exec when the command comfortably fits (unchanged behaviour);
+    //   3. otherwise base64 chunks appended with several small execs, then one
+    //      decode+move -- works for both PowerShell and gitbash members.
+    // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging });
+
+    const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
+    // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
+    // `detail` already encodes that distinction, so log it verbatim rather than
+    // hard-coding "seeded" for the already-trusted/servers-only case.
+    const detail = trustNeeded
+      ? `seeded trust: ${key}${mcpNote}`
+      : `already trusted: ${key}${mcpNote}`;
+    console.error(`[claude] workspace trust: ${detail}`);
+    return { seeded: trustNeeded, detail, mcpServersSeeded: serversToAdd };
+  }
 }
 
+/** Member-side staging file names for one ensureWorkspaceTrusted call, relative to
+ *  the member's home. Unique per call (pid + random) so concurrent seeds of the same
+ *  home never share a staging file; shared by the out-of-band (node:fs / SFTP)
+ *  channel and the exec-based fallbacks so every path stages in the same place. */
+export interface WorkspaceTrustStagingNames {
+  tmpRel: string;
+  b64Rel: string;
+}
+
+export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
+  const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  return {
+    tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
+    b64Rel: `.claude.json.fleet-trust-${token}.b64`,
+  };
+}
+
+/** Longest single command string ensureWorkspaceTrusted will hand to execCommand on
+ *  a Windows host. The hard caps are CreateProcess's 32767 chars (LocalStrategy
+ *  spawns powershell.exe/bash.exe directly; a Windows sshd hands the command to
+ *  its default shell the same way) and cmd.exe's 8191 (only when sshd's default
+ *  shell is cmd.exe, where these PowerShell/bash commands would not run anyway).
+ *  8000 is deliberately conservative: it is under BOTH caps with room for any
+ *  wrapper a strategy may add, and the cost is only more round-trips on the
+ *  chunked FALLBACK path (the file channel is the primary path), e.g. ~31 execs
+ *  for a 128 KB file. */
+export const WORKSPACE_TRUST_MAX_COMMAND_CHARS = 8000;
+
+/** Base64 characters per chunk command: chunk + ~200 chars of PowerShell/bash
+ *  scaffolding stays well under WORKSPACE_TRUST_MAX_COMMAND_CHARS. */
+const TRUST_CHUNK_CHARS = 6000;
+
+export interface WorkspaceTrustWritePlan {
+  /** How the content reached the member. */
+  mechanism: 'file-channel' | 'single-exec' | 'chunked-exec';
+  /** Every command string handed to execCommand, in order. */
+  commands: string[];
+}
+
+/**
+ * Build the command sequence that delivers `contentStr` to `homeFile` on a Windows
+ * host without any single command exceeding the CreateProcess/cmd.exe limits:
+ * base64 chunks appended to a staging file, then one decode + atomic move. Base64
+ * keeps every chunk free of quotes/newlines, so no escaping can drift between the
+ * PowerShell and gitbash flavours. Exported for tests (GitHub #499).
+ */
+export function buildChunkedTrustWriteCommands(contentStr: string, opts: { posix: boolean; homeFile: string; tmpFile: string; b64File: string; chunkChars?: number }): string[] {
+  const chunkChars = opts.chunkChars ?? TRUST_CHUNK_CHARS;
+  const b64 = Buffer.from(contentStr, 'utf8').toString('base64');
+  const chunks: string[] = [];
+  for (let i = 0; i < b64.length; i += chunkChars) chunks.push(b64.slice(i, i + chunkChars));
+  if (chunks.length === 0) chunks.push('');
+
+  const cmds: string[] = [];
+  if (opts.posix) {
+    // gitbash on a Windows host: bash.exe -c '<cmd>' is still one CreateProcess call.
+    chunks.forEach((chunk, i) => {
+      cmds.push(`printf '%s' '${chunk}' ${i === 0 ? '>' : '>>'} "${opts.b64File}"`);
+    });
+    cmds.push(`base64 -d "${opts.b64File}" > "${opts.tmpFile}" && rm -f "${opts.b64File}" && mv "${opts.tmpFile}" "${opts.homeFile}"`);
+  } else {
+    chunks.forEach((chunk, i) => {
+      const method = i === 0 ? 'WriteAllText' : 'AppendAllText';
+      cmds.push(`[System.IO.File]::${method}("${opts.b64File}", '${chunk}')`);
+    });
+    // WriteAllBytes of the decoded UTF-8 bytes: no BOM, no encoding round-trip.
+    // Error-gated (see psGated): a decode failure must never let the Move-Item run.
+    cmds.push(psGated(`[System.IO.File]::WriteAllBytes("${opts.tmpFile}", [System.Convert]::FromBase64String([System.IO.File]::ReadAllText("${opts.b64File}"))); Remove-Item -Force "${opts.b64File}"; Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`));
+  }
+  return cmds;
+}
+
+/**
+ * Gate a multi-statement PowerShell write so a failure in an earlier statement
+ * aborts the whole command with exit 1. Without this, a .NET exception (e.g. in
+ * WriteAllText/WriteAllBytes) is only STATEMENT-terminating: the trailing
+ * Move-Item still runs, moves whatever stale tmp exists over the real
+ * ~/.claude.json, and the command exits 0. The single-command write is the
+ * cheapest path; it is still gated by the same helper.
+ */
+function psGated(script: string): string {
+  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+}
+
+/** The single-exec write command ensureWorkspaceTrusted has always used -- still the
+ *  cheapest path when it fits. The PowerShell form is error-gated (psGated); the
+ *  POSIX heredoc form is unchanged. */
+export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
+  return opts.isWindows
+    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
+    : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
+}
+
+async function deliverWorkspaceTrustFile(
+  contentStr: string,
+  opts: {
+    isWindows: boolean;
+    agentOs: 'linux' | 'macos' | 'windows';
+    execCommand: WorkspaceTrustExecFn;
+    transport?: WorkspaceTrustTransport;
+    homeFile: string;
+    tmpFile: string;
+    staging: WorkspaceTrustStagingNames;
+  },
+): Promise<WorkspaceTrustWritePlan> {
+  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging } = opts;
+  const onWindowsHost = agentOs === 'windows';
+
+  // 1. Out-of-band file channel: content never touches a command line. Stage under
+  //    the member's home and move into place with one tiny exec so the write stays
+  //    atomic from the member's point of view.
+  if (transport?.writeHomeFile) {
+    try {
+      await transport.writeHomeFile(staging.tmpRel, contentStr);
+      const moveCmd = isWindows
+        ? `Move-Item -Force "${tmpFile}" "${homeFile}"`
+        : `mv "${tmpFile}" "${homeFile}"`;
+      const r = await execCommand(moveCmd, 10000);
+      if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+      return { mechanism: 'file-channel', commands: [moveCmd] };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[claude] workspace trust: file channel failed (${msg}); falling back to exec delivery`);
+    }
+  }
+
+  // 2. One exec when it fits. Non-Windows hosts always take this path (heredoc,
+  //    unchanged); a Windows host only when the whole command is under the limit.
+  const single = buildSingleTrustWriteCommand(contentStr, { isWindows, homeFile, tmpFile });
+  if (!onWindowsHost || single.length <= WORKSPACE_TRUST_MAX_COMMAND_CHARS) {
+    await execCommand(single, 10000);
+    return { mechanism: 'single-exec', commands: [single] };
+  }
+
+  // 3. Chunked delivery for a Windows host (either shell flavour).
+  const b64File = isWindows ? `$env:USERPROFILE\\${staging.b64Rel}` : `$HOME/${staging.b64Rel}`;
+  const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
+  for (const cmd of cmds) {
+    const r = await execCommand(cmd, 10000);
+    if (r.code !== 0) {
+      // Best-effort member-side cleanup of the partial staging files, mirroring
+      // the orchestrator-side temp-dir cleanup in the file channel.
+      const cleanup = isWindows
+        ? `Remove-Item -Force -ErrorAction SilentlyContinue "${b64File}", "${tmpFile}"`
+        : `rm -f "${b64File}" "${tmpFile}"`;
+      try { await execCommand(cleanup, 10000); } catch { /* best-effort */ }
+      throw new Error(`chunked write of ~/.claude.json failed on a Windows member (exit ${r.code}, ${cmds.length} commands of <=${WORKSPACE_TRUST_MAX_COMMAND_CHARS} chars): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+    }
+  }
+  return { mechanism: 'chunked-exec', commands: cmds };
+}

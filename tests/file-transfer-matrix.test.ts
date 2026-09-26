@@ -228,10 +228,5 @@ describe('File-transfer cross-OS matrix', () => {
 
   // ── Windows fleet host → * ───────────────────────────────────────────────────
   //
-  // These combinations require a Windows CI runner. Marked TODO until a
-  // windows-latest GitHub Actions job is wired up for the fleet test suite.
-
-  describe.todo('Windows fleet host → local Windows member — needs Windows runner');
-  describe.todo('Windows fleet host → remote Linux member (SFTP) — needs Windows runner');
-  describe.todo('Windows fleet host → remote Windows member (SFTP) — needs Windows runner');
+  // Not covered here. File a bead if the Windows-host matrix is wanted.
 });

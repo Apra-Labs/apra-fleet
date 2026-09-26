@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from '../test-helpers.js';
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { stopPrompt } from '../../src/tools/stop-prompt.js';
@@ -32,6 +32,14 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
     },
   };
 });
+
+// execute_prompt now auto-provisions agent files on first dispatch to a remote
+// member (see execute-prompt-provisioning.test.ts) -- mock it away here so it
+// doesn't consume the mockExecCommand queue and shift call-index assertions.
+vi.mock('../../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
 
 // ── Inactivity timer ─────────────────────────────────────────────────────────
 // Tests the rolling inactivity timer and max_total_s ceiling by running real
@@ -124,7 +132,7 @@ describe('Cancellation — integration (T13)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'go', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('resumed');
+    expect(resultText(result)).toContain('resumed');
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });

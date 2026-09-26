@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
@@ -5,6 +6,7 @@ import type { CloudConfig } from '../services/cloud/types.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
+import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
 import { credentialResolve, credentialSet } from '../services/credential-store.js';
@@ -14,10 +16,18 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { checkRunningInstance } from '../services/singleton.js';
+import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { composePermissions } from './compose-permissions.js';
+import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { getMemberHomeDir } from '../services/member-home.js';
+import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 import { withAutoTag } from '../lazy/mode.js';
 
 export const registerMemberSchema = z.object({
@@ -30,11 +40,12 @@ export const registerMemberSchema = z.object({
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
   username: z.string().optional().describe('SSH username (required for remote members). Spaces are allowed (e.g. "tester tester" on Windows) — passed directly to SSH, never shell-interpolated.'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
-  password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  password: z.string().optional().describe('SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine'),
+  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
+  vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('VCS provider this member pushes to and opens pull requests against. Omit to auto-detect it from the member\'s git "origin" remote; pass "none" to record that this member deliberately has no VCS provider (suppresses the auto-detect warning). A member with no VCS provider CANNOT push or open a PR.'),
   // Cloud fields
   cloud_provider: z.enum(['aws'], {
     errorMap: () => ({ message: "Only 'aws' is supported as a cloud provider. GCP and Azure support is planned." }),
@@ -44,7 +55,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  llm_provider: z.enum(['claude', 'codex', 'copilot', 'agy', 'opencode', 'none']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli. Use "none" for a plain command executor with no LLM at all -- execute_prompt is rejected for these members; use execute_command instead.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
@@ -62,9 +73,56 @@ export const registerMemberSchema = z.object({
     standard: z.string().optional(),
     premium: z.string().optional(),
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
+  code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
+
+// --- Interactive-session bootstrap: injectable deps + explicit gate ---
+//
+// The local-Claude bootstrap below does a REAL HTTP GET (via checkRunningInstance)
+// and, if a fleet server happens to be running on the machine, writes
+// settings.local.json and spawns a REAL `claude` process. That is correct
+// behavior in production but dangerous to run unconditionally from unit tests
+// (a dev machine with `apra-fleet start` running in the background would have
+// tests silently spawn real claude processes). Two safeguards:
+//
+// 1. Dependency injection: bootstrapDeps.checkRunningInstance / .spawn default to
+//    the real implementations but can be swapped for fakes in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts), the whole
+//    block is skipped UNLESS APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1 is also
+//    set -- an explicit, opt-in escape hatch for tests that specifically want to
+//    exercise this path (and are expected to inject fakes via
+//    __setInteractiveBootstrapDeps when they do).
+export interface InteractiveBootstrapDeps {
+  checkRunningInstance: typeof checkRunningInstance;
+  spawn: typeof spawn;
+  getProvider: typeof getProvider;
+}
+
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn, getProvider };
+let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
+
+/** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
+export function __setInteractiveBootstrapDeps(overrides: Partial<InteractiveBootstrapDeps>): void {
+  interactiveBootstrapDeps = { ...realInteractiveBootstrapDeps, ...overrides };
+}
+
+/** Test-only: restore the real (non-mocked) bootstrap dependencies. */
+export function __resetInteractiveBootstrapDeps(): void {
+  interactiveBootstrapDeps = realInteractiveBootstrapDeps;
+}
+
+function interactiveBootstrapEnabled(): boolean {
+  // Disabled until the interactive-bootstrap lifecycle is fixed: the detached
+  // `claude --dangerously-load-development-channels` process this spawns has
+  // no register_member input to opt out per call, and no reliable teardown
+  // (remove_member never kills it -- src/tools/remove-member.ts), leaving a
+  // long-running, unlabeled claude.exe with no obvious owner.
+  return false;
+}
 
 export async function registerMember(input: RegisterMemberInput): Promise<string> {
   const warnings: string[] = [];
@@ -82,22 +140,40 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
   }
 
-  // Resolve {{secure.NAME}} tokens in password field
+  // unreservable is reserved for members that never receive a real agent
+  // dispatch (e.g. a beads-only fleet-sprint orchestrator shared across
+  // concurrent sprints). Without this constraint, an ordinary dispatch
+  // member flagged unreservable would let two sprints dispatch to it
+  // concurrently -- interleaving prompts into one working tree -- and any
+  // member with update_member access could self-escalate past the
+  // exclusivity guard entirely.
+  if (input.unreservable && (input.llm_provider ?? 'claude') !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT registered.';
+  }
+
+  // SF-17: a remote member's work_folder is used verbatim on the MEMBER's
+  // machine -- `~` and relative paths are never resolved for it (by design; see
+  // work-folder-validation.ts). Reject them here so the caller supplies a
+  // fully-qualified path instead of the system guessing one at runtime.
+  if (!isLocal && !isFullyQualifiedPath(input.work_folder)) {
+    return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT registered.');
+  }
+
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
+  let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-    let match: RegExpExecArray | null;
+    const tokens = findSecretTokens(resolvedPassword);
     let resolved = resolvedPassword;
-    const tokenNames = new Set<string>();
-    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
-      tokenNames.add(match[1]);
-    }
+    const tokenNames = new Set(tokens.map((t) => t.name));
+    passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
       const entry = credentialResolve(name, input.friendly_name);
       if (entry && 'denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
       if (entry && 'expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
       if (entry) {
-        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+        resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
+        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
         continue;
       }
       // Credential not found — auto-create via OOB
@@ -106,9 +182,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       if (!oob.password) return `❌ No credential received for "${name}". Member was NOT registered.`;
       const plaintext = decryptPassword(oob.password);
       credentialSet(name, plaintext, !!oob.persist, 'deny');
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext);
+      resolved = resolved.replaceAll(`{{secret.${name}}}`, plaintext);
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext); // legacy spelling
     }
     resolvedPassword = resolved;
+    if (passwordLegacyNames.length > 0) {
+      logWarn('register_member', legacyTokenWarning(passwordLegacyNames), { id: input.friendly_name, friendlyName: input.friendly_name });
+      warnings.push(legacyTokenWarning(passwordLegacyNames));
+    }
   }
 
   // Out-of-band password collection for remote password auth without inline password
@@ -211,6 +292,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     createdAt: new Date().toISOString(),
     gitAccess: input.git_access,
     gitRepos: input.git_repos,
+    // apra-fleet-5oo: an explicitly-supplied provider always wins and is never
+    // probed for. 'none' is an explicit "this member has no VCS provider"
+    // declaration -- it is NOT an Agent.vcsProvider value (src/types.ts), so it
+    // is recorded as absent here and only suppresses the warning below.
+    vcsProvider: (input.vcs_provider && input.vcs_provider !== 'none') ? input.vcs_provider : undefined,
     cloud: cloudConfig,
     llmProvider: input.llm_provider ?? 'claude',
     modelCheap: input.model_cheap,
@@ -220,12 +306,20 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     modelTiers: normalizedModelTiers,
     category: input.category,
     tags: withAutoTag(input.tags, isLocal),
+    codeIntelProvider: input.code_intel_provider,
+    unreservable: input.unreservable ?? false,
+    shell: input.shell,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
   let detectedOS: Agent['os'] = isCloud ? 'linux' : undefined;
   let claudeVersion: string | undefined;
   let connResult: { ok: boolean; latencyMs?: number; error?: string } = { ok: true };
+  let agentProvisionResult: ProvisionResult | undefined;
+  // apra-fleet-5oo: true only when the provider below was resolved by probing
+  // the member's own git remote (never when the caller supplied it), so the
+  // result line can say where the value came from.
+  let vcsProviderAutoDetected = false;
 
   if (!skipSshOps) {
     const strategy = getStrategy(tempAgent);
@@ -264,11 +358,35 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
     tempAgent.os = detectedOS;
 
-    const cmds = getOsCommands(detectedOS);
+    // Step 2b: probe which Windows shell this member actually has (gitbash /
+    // pwsh7 / powershell5). Windows-only, and skipped entirely when the
+    // operator supplied `shell` explicitly -- an explicit value always wins
+    // (apra-fleet-7dir.1.3). Never fails registration: probeWindowsShell
+    // degrades to powershell5 with a warning.
+    if (shouldProbeShell(detectedOS, tempAgent.shell)) {
+      // A remote member's raw command strings are handed straight to its own
+      // sshd DefaultShell (see shell-probe.ts's isProvenRemoteBashChannel doc
+      // comment) -- a Git-bash binary being installed there proves nothing
+      // about that, unlike a local member where LocalStrategy spawns the
+      // resolved bash.exe path directly.
+      const probeTransport = tempAgent.agentType === 'local' ? 'local' : 'ssh';
+      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs), probeTransport);
+      tempAgent.shell = probe.shell;
+      if (probe.warning) warnings.push(probe.warning);
+    }
+
+    // The registration-time probes below must speak the SAME shell the member
+    // was just registered with, so pass it -- a gitbash member gets bash
+    // strings, every other value resolves exactly as before.
+    const cmds = getOsCommands(detectedOS, tempAgent.shell);
     const provider = getProvider(input.llm_provider ?? 'claude');
     const providerName = provider.name;
+    // No-LLM members (apra-fleet-us9.14) have no CLI to verify or authenticate --
+    // NoneProvider.versionCommand() throws by design (see providers/none.ts), so
+    // this must be skipped entirely rather than merely tolerating a rejection.
+    const isNoLlm = providerName === 'none';
 
-    const versionCheck = strategy.execCommand(cmds.agentVersion(provider), 15000)
+    const versionCheck = isNoLlm ? Promise.resolve() : strategy.execCommand(cmds.agentVersion(provider), 15000)
       .then(r => {
         r.code === 0
           ? (claudeVersion = r.stdout.trim())
@@ -276,11 +394,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       })
       .catch(() => { warnings.push(`Could not verify ${providerName} CLI availability`); });
 
-    const authCheck = !isLocal
+    const authCheck = isNoLlm ? Promise.resolve() : (!isLocal
       ? strategy.execCommand(cmds.agentVersion(provider), 60000)
           .then(r => { r.code !== 0 && warnings.push(`${providerName} CLI not available — you may need to run provision_llm_auth`); })
           .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_llm_auth to set up authentication`); })
-      : Promise.resolve();
+      : Promise.resolve());
 
     const mkdirCheck = isLocal
       ? import('node:fs').then(({ mkdirSync }) => {
@@ -289,7 +407,59 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
           .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
-    await Promise.all([versionCheck, authCheck, mkdirCheck]);
+    // Step 3b: best-effort VCS-provider detection (apra-fleet-5oo).
+    //
+    // Registration could previously mint a fully dispatch-capable member with
+    // Agent.vcsProvider left unset -- nothing here ever asked for or detected
+    // it -- and the gap only surfaced hours later, mid-sprint, when
+    // fleet-sprint's VCSModule.resolveProvider() threw "member has no
+    // registered VCS provider" on the member's first push/PR.
+    //
+    // Modelled on the Windows shell probe above (shouldProbeShell /
+    // probeWindowsShell) in both spirit and failure behavior: an explicit
+    // operator value skips the probe entirely, and the probe itself NEVER
+    // fails registration -- a work folder with no git repo in it yet is the
+    // common "register before clone" case, not an error. It degrades to a
+    // loud warning below instead.
+    //
+    // Runs INSIDE the Promise.all below rather than after it: the probe is
+    // independent of the CLI/auth/mkdir checks, so sequencing it behind them
+    // would add a whole extra SSH round trip to every registration for no
+    // ordering reason. Racing mkdirCheck is harmless in particular: a folder
+    // mkdir had to CREATE cannot contain a git repo, so the probe's answer is
+    // the same ("no remote") whichever of the two lands first.
+    const vcsProviderCheck = input.vcs_provider
+      ? Promise.resolve()
+      : strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000)
+          .then(remoteRes => {
+            // Take stdout regardless of exit code: both OS builders swallow
+            // the failure ("|| true" / "try {} catch {}") so an absent repo
+            // yields empty output rather than a non-zero code, and stderr is
+            // never a URL.
+            const remoteUrl = String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim();
+            const detected = detectVcsProviderFromRemoteUrl(remoteUrl);
+            if (detected) {
+              tempAgent.vcsProvider = detected;
+              vcsProviderAutoDetected = true;
+            }
+          })
+          .catch(() => { /* Best effort -- fall through to the warning below. */ });
+
+    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
+
+    // --- Provision role-agent definition files (planner.md, doer.md, ...) ---
+    // Remote members have their own home dir and never receive these via install() --
+    // only when connectivity is confirmed do we attempt the probe/push round trip.
+    if (connResult.ok) {
+      agentProvisionResult = await provisionAgents(tempAgent);
+      if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
+      // so composed project-scoped permissions are honored on the first dispatch,
+      // even if the member was never opened interactively. Best-effort/non-fatal;
+      // non-Claude providers no-op.
+      await seedWorkspaceTrust(tempAgent, strategy, 'register_member');
+    }
 
     // --- Validate opencode model_tiers against available models ---
     if (!skipSshOps && (input.llm_provider ?? 'claude') === 'opencode' && normalizedModelTiers) {
@@ -298,9 +468,22 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
   } else {
     tempAgent.os = detectedOS;
-    if (isCloud) {
+    if (isCloud && (input.llm_provider ?? 'claude') !== 'none') {
       warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
+      warnings.push('Agent files not provisioned -- run update_member after the instance starts.');
+      warnings.push('Workspace trust not seeded -- run update_member after the instance starts.');
     }
+  }
+
+  // apra-fleet-5oo: registration must never silently produce a dispatch-capable
+  // member that cannot push or open a PR. Registration is NOT refused (that
+  // would break the common "register the member, then clone into its work
+  // folder" flow), but the gap is surfaced HERE, loudly, at registration time
+  // rather than reactively hours into an unattended sprint. A member with
+  // llm_provider 'none' never dispatches an agent and never pushes, so it is
+  // exempt; so is an explicit vcs_provider (including 'none').
+  if (!tempAgent.vcsProvider && !input.vcs_provider && (input.llm_provider ?? 'claude') !== 'none') {
+    warnings.push('VCS provider could not be determined (no git remote found, or vcs_provider not supplied) -- this member will be UNABLE to push or open a PR until provisioned. Run provision_vcs_auth with an explicit provider (github/bitbucket/azure-devops) -- it requires the provider, it does not detect one, and sets vcsProvider as a side effect of provisioning credentials. Or run update_member with vcs_provider set to record the provider directly, without provisioning credentials. Re-registering this member is NOT a remedy -- the same folder path is rejected as a duplicate registration.');
   }
 
   // OS support warning for cloud members: cloud features are designed for Linux
@@ -317,9 +500,136 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
 
+  // SF-18: warm the member's home-dir cache.
+  //
+  // Every provider's transcript path is built under the MEMBER's home dir
+  // (issue #390). Only pollDirectoryActivity ever probed it, and that runs
+  // exclusively for provisional (AGY/OpenCode) dispatches -- so for Claude
+  // members, whose entries always carry a caller-minted logFilePath, the
+  // cache was never populated and the synchronous dispatch path
+  // (getCachedMemberPathContext) permanently used the username-convention
+  // GUESS. A member with a relocated or domain-suffixed home then got a
+  // transcript path that cannot exist, which silently disables stall detection
+  // for it.
+  //
+  // Fired here (registration) rather than on the dispatch path so the FIRST
+  // dispatch already benefits, and deliberately NOT awaited: registration's
+  // reported result must not depend on it, and nothing downstream blocks on it.
+  if (!isLocal && !skipSshOps && connResult.ok) {
+    void getMemberHomeDir(tempAgent).catch(() => { /* best effort -- falls back to the guess */ });
+  }
+
+  // --- Auto-run compose_permissions for the member's role/tags (apra-fleet-5oo.1) ---
+  // register_member must not leave a member with an attribution-only settings
+  // stub: compose_permissions is the single source of truth for the member's
+  // composed permission allowlist, so it is run automatically here rather than
+  // relying on a separate manual step nobody is forced to take. Tags are
+  // already known at registration time; fall back to the 'doer' role when no
+  // doer/reviewer tag was supplied (matches compose_permissions' own default
+  // primary-mode resolution). Refusal is the only failure mode: if
+  // compose_permissions itself fails, the registration must NOT be reported as
+  // fully successful.
+  let composeResult: string;
+  try {
+    composeResult = await composePermissions({
+      member_id: tempAgent.id,
+      role: 'doer',
+      tags: tempAgent.tags,
+    });
+  } catch (e: any) {
+    composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+  }
+  if (!composeResult.startsWith('✅')) {
+    // Strip any leading non-ASCII status glyph from the underlying tool's
+    // message so this hard-failure report stays ASCII (repo convention).
+    const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+    return `ERROR: member not provisioned -- "${tempAgent.friendlyName}" was registered but compose_permissions failed: ${asciiDetail}`;
+  }
+
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
     writeAgyWorkspaceOverlays(input.work_folder);
+  }
+
+  // Interactive session bootstrap for local Claude members
+  const name = input.friendly_name;
+  const memberProvider = input.llm_provider ?? 'claude';
+  if (isLocal && memberProvider === 'claude' && interactiveBootstrapEnabled()) {
+    // HIGH-1: Verify fleet server is running before spawning.
+    // Resolve the ACTUAL running instance (server.json, singleton-managed) instead of
+    // assuming DEFAULT_PORT -- this respects APRA_FLEET_PORT and EADDRINUSE fallback.
+    const instance = await interactiveBootstrapDeps.checkRunningInstance();
+    if (!instance.running) {
+      return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
+    }
+    const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
+
+    // Mint through the pluggable issuer: workspace_id is the hard security
+    // boundary (docs/hub-spoke-master-plan.md section 3); the local dev-mode
+    // issuer derives it from this install's identity (one machine == one
+    // workspace). A hub-era issuer swaps in behind the same interface.
+    const { getTokenIssuer } = await import('../services/token-issuer.js');
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({
+      member_id: tempAgent.id,
+      role: 'doer',
+      work_folder: input.work_folder,
+    });
+
+    // Registration uses the provider's OWN native mechanism (apra-fleet-fnz.1,
+    // docs/member-onboarding-journey.md section 3/4 Journey A) rather than
+    // hand-writing a config file -- this is also what makes the mechanism
+    // provider-agnostic (AGY/OpenCode implement the same interface method with
+    // their own native paths) and avoids fighting compose_permissions' own
+    // writes to the same provider config (apra-fleet-2xs.1).
+    const memberProviderAdapter = interactiveBootstrapDeps.getProvider(tempAgent.llmProvider);
+    if (memberProviderAdapter.registerMcpEndpoint) {
+      try {
+        await memberProviderAdapter.registerMcpEndpoint({
+          // Identity is keyed on the member UUID everywhere -- the URL fallback
+          // param carries the UUID, matching the JWT's member_id claim.
+          url: mcpUrl + '?member=' + tempAgent.id,
+          token,
+          workFolder: input.work_folder,
+          scope: 'project',
+        });
+      } catch (e: any) {
+        warnings.push(`Could not register MCP endpoint: ${e.message}`);
+      }
+    } else {
+      warnings.push(`Provider "${memberProviderAdapter.name}" has no registerMcpEndpoint() -- interactive session bootstrap skipped.`);
+    }
+
+    // CRITICAL-2: Kill existing claude process for this member before re-spawning
+    const { sessionRegistry } = await import('../services/session-registry.js');
+    const existingSession = sessionRegistry.get(issuer.workspaceId(), tempAgent.id);
+    if (existingSession?.pid) {
+      try {
+        process.kill(existingSession.pid);
+        logLine('register_member', `Killed existing claude pid=${existingSession.pid} for member ${name}`);
+      } catch {
+        // Process already gone -- ignore
+      }
+    }
+
+    try {
+      const proc = interactiveBootstrapDeps.spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      proc.unref();
+      if (proc.pid) {
+        sessionRegistry.register({
+          member_id: tempAgent.id,
+          workspace_id: issuer.workspaceId(),
+          role: 'doer',
+          work_folder: input.work_folder,
+          server: null,
+          pid: proc.pid,
+          status: 'idle',
+        });
+      }
+      logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
+    } catch (e: any) {
+      warnings.push(`Could not launch claude: ${e.message}`);
+    }
   }
 
   let result = `✅ Member registered successfully!\n\n`;
@@ -333,11 +643,19 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (tempAgent.vcsProvider) {
+    result += `  VCS Provider: ${tempAgent.vcsProvider}${vcsProviderAutoDetected ? ' (auto-detected from origin)' : ''}\n`;
+  } else if (input.vcs_provider === 'none') {
+    result += `  VCS Provider: none (declared explicitly -- this member cannot push or open a PR)\n`;
+  }
   if (tempAgent.category) {
     result += `  Category: ${tempAgent.category}\n`;
   }
   if (tempAgent.tags && tempAgent.tags.length > 0) {
     result += `  Tags:     ${tempAgent.tags.join(', ')}\n`;
+  }
+  if (tempAgent.unreservable) {
+    result += `  Unreservable: true (shared -- never exclusively reserved)\n`;
   }
   if (tempAgent.modelCheap) result += `  Model Cheap: ${tempAgent.modelCheap}\n`;
   if (tempAgent.modelStandard) result += `  Model Standard: ${tempAgent.modelStandard}\n`;
@@ -348,6 +666,15 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
   if (claudeVersion) {
     result += `  CLI:     ${claudeVersion}\n`;
+  }
+  if (agentProvisionResult) {
+    if (agentProvisionResult.skippedReason) {
+      result += `  Agents:  skipped (${agentProvisionResult.skippedReason})\n`;
+    } else if (agentProvisionResult.pushed.length > 0) {
+      result += `  Agents:  ${agentProvisionResult.pushed.length} file(s) provisioned\n`;
+    } else {
+      result += `  Agents:  up to date\n`;
+    }
   }
   if (!isLocal) {
     result += `  Auth:    ${tempAgent.authType}\n`;

@@ -19,7 +19,7 @@ annoying things just stop happening:
 
 1. **You stop worrying about pasting secrets.** Drop an API key, a database
    password or a whole `.env` straight into chat. Claude never receives it. It
-   gets a stand-in like `{{secure.github_token}}`, and the real value is put
+   gets a stand-in like `{{secret.github_token}}`, and the real value is put
    back only at the moment a command or file edit runs on your machine.
 2. **You stop managing anything.** When a job splits into independent pieces,
    Claude spins up helpers on its own, runs them in parallel, merges the work
@@ -56,9 +56,9 @@ You type:
 
 Claude sees:
 
-> deploy to staging, the token is {{secure.github_token}}
+> deploy to staging, the token is {{secret.github_token}}
 
-Claude runs `gh auth login --with-token <<< {{secure.github_token}}`, and your
+Claude runs `gh auth login --with-token <<< {{secret.github_token}}`, and your
 machine runs it with the real token. The token also gets hidden in everything
 that follows: command output, files Claude reads, and earlier messages as the
 conversation is re-sent.

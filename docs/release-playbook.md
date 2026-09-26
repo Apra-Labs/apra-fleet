@@ -2,26 +2,6 @@
 
 How to cut a release. That's it.
 
-## 0. Check the vendor/apra-pm submodule
-
-apra-fleet vendors the apra-pm skill at `vendor/apra-pm`. Before releasing,
-make sure it points at a real, merged commit on apra-pm's `main` -- not a
-feature-branch tip or a leftover detached-HEAD commit from development.
-
-```bash
-cd vendor/apra-pm
-git fetch origin
-git checkout main && git pull origin main   # move to latest merged apra-pm
-cd ../..
-git add vendor/apra-pm
-git commit -m "chore(vendor): repoint apra-pm submodule to main"
-```
-
-If apra-pm has unreleased fixes sitting on a feature branch, merge that
-branch to apra-pm's own `main` first (PR + merge in the apra-pm repo), then
-repoint the submodule as above. Never release apra-fleet with the submodule
-pinned to an unmerged commit.
-
 ## 1. Bump the version -- in both package.json AND version.json
 
 Both files must be bumped together, in the same commit. This is not
@@ -36,19 +16,19 @@ that commit.
 
 ```json
 // package.json
-"version": "0.3.6"
+"version": "X.Y.Z"
 ```
 
 ```json
 // version.json
-{ "version": "0.3.6" }
+{ "version": "X.Y.Z" }
 ```
 
 Commit the bump:
 
 ```bash
 git add package.json package-lock.json version.json
-git commit -m "chore: bump version to 0.3.6"
+git commit -m "chore: bump version to X.Y.Z"
 git push
 ```
 
@@ -59,14 +39,14 @@ in `.github/workflows/ci.yml`, which builds the binaries and creates the
 GitHub release.
 
 ```bash
-git tag v0.3.6
-git push origin v0.3.6
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 ## 3. Wait for CI
 
 ```bash
-gh run list --workflow=ci.yml --branch v0.3.6 --limit 3
+gh run list --workflow=ci.yml --branch vX.Y.Z --limit 3
 ```
 
 Wait until it shows `completed / success`.
@@ -79,8 +59,8 @@ not the final notes -- always replace them with a short, human-written
 summary:
 
 ```bash
-gh release view v0.3.6                 # see the auto-generated draft
-gh release edit v0.3.6 --notes "..."   # replace with a clean summary
+gh release view vX.Y.Z                 # see the auto-generated draft
+gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 ```
 
 Keep the summary short: what changed and why. It's fine to leave GitHub's

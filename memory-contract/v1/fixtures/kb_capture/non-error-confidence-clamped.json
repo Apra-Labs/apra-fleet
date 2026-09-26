@@ -1,0 +1,26 @@
+{
+  "tool": "kb_capture",
+  "case": "non-error-confidence-clamped",
+  "kind": "non_error_outcome",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "A capture that asks for CONFIRMED directly",
+    "summary": "kb_capture always clamps an incoming CONFIRMED down to INFERRED; CONFIRMED is only minted by kb_promote.",
+    "content": "This entry requests confidence: CONFIRMED at capture time.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"7175a825-1687-481c-b034-ad6dac4ce068\",\"audn_decision\":\"add\",\"confidence_clamped\":true}"
+      }
+    ]
+  },
+  "note": "authority group, non_error_outcomes: the silent clamp branch gets no taxonomy code by design (taxonomy.json _meta.group_definitions.authority). Observable via confidence_clamped:true in the response, not via a thrown/response-field error code."
+}

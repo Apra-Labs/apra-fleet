@@ -11,17 +11,25 @@ export const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
 export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
 export const DATA_DIR = path.join(FLEET_BASE, 'data');
 export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
+// Workflow subsystem (apra-fleet workflow <name>) -- see
+// docs/workflow-subsystem-plan.md Section 2.1 for the on-disk layout.
+export const NODE_MODULES_DIR = path.join(FLEET_BASE, 'node_modules');
+export const SCHEMAS_DIR = path.join(FLEET_BASE, 'schemas');
+export const WORKFLOWS_DIR = path.join(FLEET_BASE, 'workflows');
 
 // Claude entries use the bare family aliases (haiku/sonnet/opus) instead of
 // dated model IDs -- the claude CLI/settings.json resolve these to the
 // current generation automatically, so they never go stale as Anthropic
 // ships new models. Other providers' CLIs don't share this alias support,
 // so their entries stay pinned to literal model IDs.
+// gemini-3.5-flash(-lite) remain here because they are AGY's (Antigravity's)
+// own model ids, not the removed gemini provider's -- AGY is built on
+// Google's Gemini stack and inherits its model catalog. See agy.ts's
+// modelTiers()/modelForTier().
 export const CURATED_CHEAP_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite-preview',
   'haiku',
   'gpt-5.4-mini',
 ] as const;
@@ -31,7 +39,6 @@ export const CURATED_STANDARD_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
   'sonnet',
-  'gemini-3-flash-preview',
   'gpt-5.4',
 ] as const;
 
@@ -39,17 +46,20 @@ export const CURATED_PREMIUM_MODELS = [
   'sonnet',
   'opus',
   'gpt-oss-120b',
-  'gemini-3.1-pro-preview',
 ] as const;
 
 export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
-  gemini: 'gemini-3.5-flash',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
   agy: 'gemini-3.5-flash',
   opencode: 'ollama/qwen3-coder:30b',
 };
+
+/** Supported install targets, in deterministic profile-discovery fallback order. */
+export const INSTALLABLE_LLM_PROVIDERS: readonly LlmProvider[] = [
+  'claude', 'codex', 'copilot', 'agy', 'opencode',
+];
 
 export interface ProviderInstallConfig {
   configDir: string;
@@ -63,68 +73,73 @@ export interface ProviderInstallConfig {
 export interface MultiProviderInstallConfig {
   providers: Record<string, {
     skill: 'none' | 'all' | 'fleet' | 'pm';
+    // Optional for backward compatibility -- older install-config.json files
+    // (written before the workflow subsystem existed) won't have this field.
+    workflowsMode?: 'all' | 'none';
     installedAt: string;
   }>;
 }
 
-export function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
+export function getProviderInstallConfig(provider: LlmProvider, homeDir = home): ProviderInstallConfig {
   switch (provider) {
     case 'agy':
       return {
-        configDir: path.join(home, '.gemini', 'antigravity-cli'),
-        settingsFile: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.gemini', 'antigravity-cli', 'agents'),
+        configDir: path.join(homeDir, '.gemini', 'antigravity-cli'),
+        settingsFile: path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json'),
+        skillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'agents'),
         name: 'Antigravity',
-      };
-    case 'gemini':
-      return {
-        configDir: path.join(home, '.gemini'),
-        settingsFile: path.join(home, '.gemini', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.gemini', 'agents'),
-        name: 'Gemini',
       };
     case 'codex':
       return {
-        configDir: path.join(home, '.codex'),
-        settingsFile: path.join(home, '.codex', 'config.toml'),
-        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.codex'),
+        settingsFile: path.join(homeDir, '.codex', 'config.toml'),
+        skillsDir: path.join(homeDir, '.codex', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.codex', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Codex',
       };
     case 'copilot':
       return {
-        configDir: path.join(home, '.copilot'),
-        settingsFile: path.join(home, '.copilot', 'settings.json'),
-        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.copilot'),
+        settingsFile: path.join(homeDir, '.copilot', 'settings.json'),
+        skillsDir: path.join(homeDir, '.copilot', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.copilot', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Copilot',
       };
     case 'opencode':
       return {
-        configDir: path.join(home, '.config', 'opencode'),
-        settingsFile: path.join(home, '.config', 'opencode', 'opencode.json'),
-        skillsDir: path.join(home, '.config', 'opencode', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.config', 'opencode', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.config', 'opencode', 'agents'),
+        configDir: path.join(homeDir, '.config', 'opencode'),
+        settingsFile: path.join(homeDir, '.config', 'opencode', 'opencode.json'),
+        skillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.config', 'opencode', 'agents'),
         name: 'OpenCode',
       };
     case 'claude':
     default:
       return {
-        configDir: path.join(home, '.claude'),
-        settingsFile: path.join(home, '.claude', 'settings.json'),
-        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.claude', 'agents'),
+        configDir: path.join(homeDir, '.claude'),
+        settingsFile: path.join(homeDir, '.claude', 'settings.json'),
+        skillsDir: path.join(homeDir, '.claude', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.claude', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.claude', 'agents'),
         name: 'Claude',
       };
   }
+}
+
+/**
+ * Home-relative agents dir for a provider (e.g. '.claude/agents'), or undefined
+ * when the provider has no agents dir (codex, copilot). Derived from
+ * getProviderInstallConfig() so install and remote provisioning cannot drift.
+ */
+export function getAgentsDirRelative(provider: LlmProvider): string | undefined {
+  const paths = getProviderInstallConfig(provider);
+  if (!paths.agentsDir) return undefined;
+  return path.relative(home, paths.agentsDir).replace(/\\/g, '/');
 }
 
 export function readConfig(paths: ProviderInstallConfig): any {
@@ -157,12 +172,12 @@ export function writeConfig(paths: ProviderInstallConfig, config: any): void {
   fs.writeFileSync(paths.settingsFile, content);
 }
 
-export function readInstallConfig(): MultiProviderInstallConfig {
-  if (!fs.existsSync(INSTALL_CONFIG_PATH)) {
+export function readInstallConfig(installConfigPath = INSTALL_CONFIG_PATH): MultiProviderInstallConfig {
+  if (!fs.existsSync(installConfigPath)) {
     return { providers: {} };
   }
   try {
-    const data = JSON.parse(fs.readFileSync(INSTALL_CONFIG_PATH, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(installConfigPath, 'utf-8'));
     // Handle old format migration
     if (data.llm && data.skill) {
       return {
@@ -184,10 +199,15 @@ export function readInstallConfig(): MultiProviderInstallConfig {
   }
 }
 
-export function writeInstallConfig(llm: string, skill: 'none' | 'all' | 'fleet' | 'pm'): void {
+export function writeInstallConfig(
+  llm: string,
+  skill: 'none' | 'all' | 'fleet' | 'pm',
+  workflowsMode: 'all' | 'none' = 'all'
+): void {
   const config = readInstallConfig();
   config.providers[llm] = {
     skill,
+    workflowsMode,
     installedAt: new Date().toISOString()
   };
   fs.mkdirSync(DATA_DIR, { recursive: true });

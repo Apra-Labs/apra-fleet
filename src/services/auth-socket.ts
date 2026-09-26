@@ -9,6 +9,7 @@ import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
+import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -189,6 +190,7 @@ export function submitPassword(memberName: string, plaintext: string, persist?: 
     clearTimeout(waiter.timer);
     passwordWaiters.delete(memberName);
     waiter.resolve(pending.encryptedPassword);
+    fleetEvents.emit('credential:stored', { name: memberName });
   }
   return { ok: true };
 }
@@ -531,9 +533,9 @@ function buildHeadlessFallback(memberName: string, reason: string, context?: { c
     contextLines = `\n\n  Command: ${context.command}`;
   }
   if (isConfirm) {
-    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
   }
-  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
 }
 
 /**
@@ -723,7 +725,7 @@ export function launchAuthTerminal(
       // Linux: find available terminal emulator and use its exec-flag convention.
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
       }
       child = spawn(terminal.bin, [...terminal.execArgs, ...fullArgs], { detached: true, stdio: 'ignore' });
       if (child.pid) {
@@ -741,6 +743,6 @@ export function launchAuthTerminal(
 
     return 'launched';
   } catch (err: any) {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
   }
 }

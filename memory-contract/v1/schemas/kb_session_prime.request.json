@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_session_prime.request.json#",
+  "$ref": "#/$defs/v1-kb_session_prime-request",
+  "$defs": {
+    "v1-kb_session_prime-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "session_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files the agent expects to touch this session"
+        },
+        "hint_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Symbols likely to be relevant"
+        },
+        "hint_modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Module names likely to be relevant"
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

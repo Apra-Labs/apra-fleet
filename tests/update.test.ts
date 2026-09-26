@@ -60,6 +60,11 @@ describe('runUpdate (T6)', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ llm: 'gemini', skill: 'pm' }));
     vi.mocked(fs.chmodSync).mockImplementation(() => {});
+    vi.mocked(fs.renameSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.rmSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.writeFileSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
   });
 
   afterEach(() => {
@@ -118,7 +123,7 @@ describe('runUpdate (T6)', () => {
     // Check installer spawn
     expect(spawn).toHaveBeenCalledWith(
       expect.stringContaining('apra-fleet-installer-linux-x64'),
-      ['install', '--force', '--llm', 'gemini', '--skill', 'pm'],
+      ['install', '--force', '--llm', 'gemini', '--skill', 'pm', '--workflows', 'all'],
       expect.objectContaining({ detached: true })
     );
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -150,7 +155,7 @@ describe('runUpdate (T6)', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('install-config.json missing'));
     expect(spawn).toHaveBeenCalledWith(
       expect.anything(),
-      ['install', '--force', '--llm', 'claude', '--skill', 'all'],
+      ['install', '--force', '--llm', 'claude', '--skill', 'all', '--workflows', 'all'],
       expect.anything()
     );
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -183,9 +188,74 @@ describe('runUpdate (T6)', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Could not parse install-config.json'));
     expect(spawn).toHaveBeenCalledWith(
       expect.anything(),
-      ['install', '--force', '--llm', 'claude', '--skill', 'all'],
+      ['install', '--force', '--llm', 'claude', '--skill', 'all', '--workflows', 'all'],
       expect.anything()
     );
     expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  // apra-fleet-7pm.10 -- read-back of persisted workflowsMode threaded into the
+  // re-invoked install --force so a prior `--workflows none` choice survives an
+  // update instead of silently reverting to the `all` default.
+  it('install-config.json with workflowsMode "none" -- threads --workflows none into the re-invoked install', async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: {
+        gemini: { skill: 'pm', workflowsMode: 'none', installedAt: '2026-01-01T00:00:00.000Z' },
+      },
+    }));
+
+    vi.mocked(fetch).mockImplementation(async (url: any) => {
+      if (url.toString().includes('releases/latest')) {
+        return {
+          ok: true,
+          json: async () => ({
+            tag_name: 'v99.9.9',
+            assets: [{ name: `apra-fleet-installer-linux-x64`, browser_download_url: 'http://foo' }]
+          }),
+        } as any;
+      }
+      return { ok: true, body: { pipeTo: async () => {} } } as any;
+    });
+
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+    await runUpdate();
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.anything(),
+      ['install', '--force', '--llm', 'gemini', '--skill', 'pm', '--workflows', 'none'],
+      expect.anything()
+    );
+  });
+
+  it('install-config.json with workflowsMode field absent (older format) -- defaults to --workflows all', async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: {
+        gemini: { skill: 'pm', installedAt: '2026-01-01T00:00:00.000Z' },
+      },
+    }));
+
+    vi.mocked(fetch).mockImplementation(async (url: any) => {
+      if (url.toString().includes('releases/latest')) {
+        return {
+          ok: true,
+          json: async () => ({
+            tag_name: 'v99.9.9',
+            assets: [{ name: `apra-fleet-installer-linux-x64`, browser_download_url: 'http://foo' }]
+          }),
+        } as any;
+      }
+      return { ok: true, body: { pipeTo: async () => {} } } as any;
+    });
+
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+    await runUpdate();
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.anything(),
+      ['install', '--force', '--llm', 'gemini', '--skill', 'pm', '--workflows', 'all'],
+      expect.anything()
+    );
   });
 });

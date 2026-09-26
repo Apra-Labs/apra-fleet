@@ -19,7 +19,7 @@ Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` w
 - **Antigravity:** `agy --version 2>&1`
 - **Codex:** `codex --version`
 - **Copilot:** `copilot --version`
-- **Gemini:** `gemini --version`
+- **OpenCode:** `opencode --version 2>&1`
 
 If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
 
@@ -31,7 +31,7 @@ Call `provision_llm_auth`. Skip for local members - they inherit auth from the P
 
 **Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
 
-Antigravity, Codex, Copilot, and Gemini do not support attribution config  -  skip this step for those providers.
+Antigravity, Codex, Copilot, and OpenCode do not support attribution config  -  skip this step for those providers.
 
 ## Step 3: Detect VCS Provider
 
@@ -65,7 +65,7 @@ Add to the member's status file:
 
 ```
 ## Member Profile
-- LLM Provider: Claude (or agy, gemini, etc.)
+- LLM Provider: Claude (or agy, codex, etc.)
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)
@@ -80,8 +80,8 @@ If the task you are about to dispatch requires an API key, token, or password (e
 
 **Steps:**
 1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`)  -  Fleet opens an OOB terminal prompt for the value
-2. Pass the `sec://NAME` handle in the task prompt  -  reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call  -  never in AI prompt text.
-3. The member uses `{{secure.NAME}}` in `execute_command`  -  Fleet resolves the value server-side and redacts it from output before the LLM sees it
+2. Reference the credential by NAME only in the task prompt (e.g. `"authenticate using credential github_pat"`)  -  never paste the raw `sec://NAME` handle into a prompt or command; `execute_command` rejects any command containing one. The secret value is only injected server-side when `{{secret.NAME}}` appears in an `execute_command` call  -  never in AI prompt text.
+3. The member uses `{{secret.NAME}}` in `execute_command`  -  Fleet resolves the value server-side and redacts it from output before the LLM sees it
 
 **Example  -  dispatching a member that needs to push code to GitHub:**
 
@@ -93,5 +93,5 @@ credential_store_set  name=github_pat
 "When pushing code to GitHub, authenticate using credential github_pat."
 
 # Member uses it in a command transparently
-execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+execute_command  command="git remote set-url origin https://token:{{secret.github_pat}}@github.com/Org/Repo.git"
 ```

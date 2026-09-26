@@ -1,4 +1,4 @@
-# Cloud Compute Member Management — Requirements
+# Cloud Compute Member Management - Requirements
 
 ## Objective
 Add first-class support for cloud compute members (starting with AWS EC2) in apra-fleet. A cloud member should start/stop automatically based on demand, run long-lived tasks (ML training) reliably, and minimize costs by never sitting idle.
@@ -8,19 +8,19 @@ Add first-class support for cloud compute members (starting with AWS EC2) in apr
 The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shell scripts (`fleet-ec2.sh`, watchdog). Here's what worked and what didn't:
 
 ### What worked:
-- `fleet-ec2.sh ensure <conf>` — starts instance, waits for SSH, updates fleet member IP
-- `fleet-ec2.sh watchdog <conf>` — auto-stops after 30 min idle
+- `fleet-ec2.sh ensure <conf>` - starts instance, waits for SSH, updates fleet member IP
+- `fleet-ec2.sh watchdog <conf>` - auto-stops after 30 min idle
 - Activity file touch mechanism (`/tmp/fleet-ec2-activity-<instance-id>`)
 - `provision_llm_auth` to deploy Claude CLI credentials after instance start
 - `provision_vcs_auth` to deploy GitHub App tokens for git access
 
 ### What broke repeatedly:
-1. **Watchdog killed the instance during active work** — The activity file is on the PM machine, but when Claude is running on the remote member via `execute_prompt`, nothing touches the local activity file. The watchdog saw 30 min of "no activity" and stopped the instance mid-task.
-2. **Dynamic IP changes** — No Elastic IP, so every restart gets a new IP. Required manual `update_member` call each time. The `ensure` script updates the fleet, but PM code had to handle this explicitly.
-3. **Training crashes went undetected** — A DataLoader OOM killed the training process, but the GPU held 19GB of orphaned memory. No monitoring detected this for hours.
-4. **Rate limits on remote Claude CLI** — When the remote Claude CLI hit rate limits, the instance sat idle burning money with no useful work happening.
-5. **No auto-restart for long tasks** — Training crashed and had to be manually restarted from checkpoint. No self-healing wrapper.
-6. **`execute_prompt` timeouts** — Long-running prompts would timeout on the PM side while the remote Claude process continued. PM lost track of the session state.
+1. **Watchdog killed the instance during active work** - The activity file is on the PM machine, but when Claude is running on the remote member via `execute_prompt`, nothing touches the local activity file. The watchdog saw 30 min of "no activity" and stopped the instance mid-task.
+2. **Dynamic IP changes** - No Elastic IP, so every restart gets a new IP. Required manual `update_member` call each time. The `ensure` script updates the fleet, but PM code had to handle this explicitly.
+3. **Training crashes went undetected** - A DataLoader OOM killed the training process, but the GPU held 19GB of orphaned memory. No monitoring detected this for hours.
+4. **Rate limits on remote Claude CLI** - When the remote Claude CLI hit rate limits, the instance sat idle burning money with no useful work happening.
+5. **No auto-restart for long tasks** - Training crashed and had to be manually restarted from checkpoint. No self-healing wrapper.
+6. **`execute_prompt` timeouts** - Long-running prompts would timeout on the PM side while the remote Claude process continued. PM lost track of the session state.
 
 ## Requirements
 
@@ -45,9 +45,9 @@ The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shel
 - **Stop on idle**: Built-in idle detection (not a separate shell script):
   - Track last activity time per member (updated on every `execute_command`/`execute_prompt` call)
   - Configurable idle timeout (default 30 min)
-  - **GPU-aware**: Before stopping, check if the GPU has active processes (`nvidia-smi`). If GPU is busy, DON'T stop — reset the idle timer.
+  - **GPU-aware**: Before stopping, check if the GPU has active processes (`nvidia-smi`). If GPU is busy, DON'T stop - reset the idle timer.
   - **Process-aware**: Check for known long-running processes (training scripts, nohup jobs)
-- **No Elastic IP needed**: Handle dynamic IPs transparently — the member's host updates automatically on every start
+- **No Elastic IP needed**: Handle dynamic IPs transparently - the member's host updates automatically on every start
 
 ### R3: Long-Running Task Support
 - **Self-healing wrapper**: When `execute_prompt` launches a long-running task (training), wrap it in a resilient shell script that:
@@ -64,8 +64,8 @@ The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shel
 
 ### R4: Efficient Data Exchange
 - **Minimize PM-member data transfer**:
-  - PM sends: task files (PLAN.md, progress.json, CLAUDE.md) — small
-  - Member returns: progress updates (progress.json), commit hashes — small
+  - PM sends: task files (PLAN.md, progress.json, CLAUDE.md) - small
+  - Member returns: progress updates (progress.json), commit hashes - small
   - Large data (datasets, models) stays on the member, never transferred to PM
 - **Progress polling**: Use `execute_command` (cheap) to poll `cat progress.json` instead of running Claude prompts for status checks
 - **Git as transport**: All code changes go through git push/pull, not file transfer
@@ -75,7 +75,7 @@ The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shel
 - Dashboard/report: `fleet_status` should show:
   - Instance state (running/stopped)
   - Uptime since last start
-  - Estimated cost (instance_type → $/hr lookup)
+  - Estimated cost (instance_type -> $/hr lookup)
   - Current GPU utilization
   - Active task (if any)
 - Configurable budget alerts (optional, future)
@@ -101,4 +101,4 @@ The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shel
 ## Architecture Notes
 - The fleet server already manages members via SSH. Cloud support adds a lifecycle layer on top.
 - Start/stop is a PM-side operation (AWS CLI runs on PM machine, not on the member)
-- The member itself doesn't know it's a cloud instance — it's just an SSH target. The cloud awareness is in the fleet server.
+- The member itself doesn't know it's a cloud instance - it's just an SSH target. The cloud awareness is in the fleet server.

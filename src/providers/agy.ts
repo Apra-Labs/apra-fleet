@@ -1,10 +1,18 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { stripAnsi } from '../utils/ansi.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
+import { transformAgentForAgy } from '../cli/agent-transform.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
   cheap:    'Gemini 3.5 Flash (Medium)',
@@ -32,8 +40,16 @@ export class AgyProvider implements ProviderAdapter {
     return 'agy --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string {
     if (os === 'windows') {
+      // A gitbash member's command strings run in bash directly
+      // (apra-fleet-7dir.2.4/2.7) -- route through the same base64
+      // -EncodedCommand envelope every other Windows-targeting PowerShell
+      // invocation in this codebase uses, instead of the raw `powershell
+      // -Command "..."` form.
+      if (shell === 'gitbash') {
+        return wrapPowerShellEncoded('irm https://antigravity.google/cli/install.ps1 | iex');
+      }
       return 'powershell -Command "irm https://antigravity.google/cli/install.ps1 | iex"';
     }
     return 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
@@ -51,9 +67,11 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    const normalizedFolder = folder.replace(/\\/g, '/');
+    const fullPromptPath = path.posix.join(normalizedFolder, promptFile);
+    let instruction = `Your task is described in ${fullPromptPath}. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
@@ -61,19 +79,23 @@ export class AgyProvider implements ProviderAdapter {
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
-    const settingsScript = `${SCRIPTS_UNIX}/agy-settings-merge.js`;
 
-    let cmd = `cd "${escapedFolder}" && node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}" && agy -p "${instruction}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}"`;
 
-    // Only pass --conversation when resuming an existing session. For fresh sessions,
-    // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
-    if (sessionId && resuming) {
-      cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+    if (resuming) {
+      if (sessionId) {
+        cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+      } else {
+        cmd += ` --continue`;
+      }
     }
 
-    if (unattended === 'dangerous') {
-      cmd += ' --dangerously-skip-permissions';
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
 
     // After agy exits, read its transcript from disk (primary output channel --
     // agy writes its response to CONOUT$, not stdout, so file I/O is required).
@@ -90,15 +112,101 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   permissionModeAutoFlag(): string | null {
-    return null;
+    return '--mode accept-edits';
+  }
+
+  workspaceEditPermissionFlag(): string | null {
+    // Mirrors claude.ts's acceptEdits: auto-approves file-edit tools for the
+    // dispatched agent's own work folder only, without the broad
+    // --dangerously-skip-permissions bypass. This is AGY's baseline for any
+    // headless dispatch -- without it, doers cannot edit/write a new file at
+    // all, since a headless `-p` run cannot show a permission prompt.
+    return '--mode accept-edits';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'dangerous') return this.skipPermissionsFlag();
+    if (unattended === 'auto') {
+      // AGY has no broader-but-still-classifier-safe mode beyond baseline
+      // edit parity, so 'auto' does NOT escalate to a permission bypass here
+      // (that would silently grant more than the operator asked for -- see
+      // unattended='dangerous' for an explicit full-bypass opt-in).
+      logWarn('agy', "WARNING: unattended='auto' has no broader-than-baseline mode for AGY -- using --mode accept-edits (same as default). Use unattended='dangerous' for a full permission bypass.");
+    }
+    // default (false/undefined) and 'auto' both resolve to the same baseline.
+    return this.workspaceEditPermissionFlag() ?? '';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout;
+    let extractedSessionId: string | undefined;
+    const sessionMatch = raw.match(/FLEET_SESSION_ID:([^\r\n]+)/);
+    if (sessionMatch) {
+      extractedSessionId = sessionMatch[1].trim();
+    }
 
-    // Primary path: extract response from the transcript JSONL that agy writes after
-    // completing its task. This is more reliable than PTY/ANSI capture because agy
-    // writes its LLM response to CONOUT$ (not stdout), but always writes a transcript file.
+    // Primary path: parse AGY's native JSON envelope from stdout
+    // Format: {"conversation_id":"...","status":"SUCCESS"|"ERROR","response":"...","usage":{"input_tokens":...,"output_tokens":...}}
+    try {
+      const strippedForJson = stripAnsi(raw)
+        .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
+        .replace(/^FLEET_PID:\d+\r?\n/m, '')
+        .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
+        .trim();
+
+      const lines = strippedForJson.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let parsedObj: any = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const candidate = JSON.parse(line);
+            const isEnvelopeStatus = candidate && (candidate.status === 'SUCCESS' || candidate.status === 'ERROR');
+            const hasEnvelopeKeys = candidate && typeof candidate === 'object' && ('conversation_id' in candidate || isEnvelopeStatus) && ('response' in candidate || 'error' in candidate);
+            if (hasEnvelopeKeys) {
+              parsedObj = candidate;
+              break;
+            }
+          } catch { /* keep looking */ }
+        }
+      }
+
+      if (!parsedObj) {
+        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"response"\s*:[\s\S]*?\}/);
+        if (jsonMatch) {
+          try {
+            parsedObj = JSON.parse(jsonMatch[0]);
+          } catch { /* fallthrough */ }
+        }
+      }
+
+      if (parsedObj) {
+        const convId = parsedObj.conversation_id && typeof parsedObj.conversation_id === 'string' && parsedObj.conversation_id.trim()
+          ? parsedObj.conversation_id.trim()
+          : undefined;
+
+        const errString = typeof parsedObj.error === 'string' ? parsedObj.error.trim() : '';
+        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim())
+          ? parsedObj.response.trim()
+          : errString;
+        const isError = result.code !== 0 || parsedObj.status === 'ERROR';
+
+        return {
+          result: resultText,
+          sessionId: convId ?? extractedSessionId,
+          isError,
+          raw,
+          usage: parsedObj.usage && typeof parsedObj.usage === 'object' ? {
+            input_tokens: parsedObj.usage.input_tokens ?? 0,
+            output_tokens: parsedObj.usage.output_tokens ?? 0,
+          } : undefined,
+        };
+      }
+    } catch { /* fallthrough */ }
+
+    // Secondary path: diagnostic warning on non-JSON fallthrough
+    logWarn('agy_provider', 'No valid native JSON envelope found in AGY output; falling back to transcript/ANSI parsing');
+
     const startMarker = 'FLEET_TRANSCRIPT_START';
     const endMarker = 'FLEET_TRANSCRIPT_END';
     const startIdx = raw.indexOf(startMarker);
@@ -108,11 +216,16 @@ export class AgyProvider implements ProviderAdapter {
       const section = raw.substring(startIdx + startMarker.length, endIdx);
       const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
       let lastResponse = '';
+      let sessionId: string | undefined;
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string };
+          const entry = JSON.parse(line) as { type?: string; source?: string; status?: string; content?: string; conversation_id?: string };
+          if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
+            sessionId = entry.conversation_id.trim();
+          }
+          const isModelTurn = entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'GENERIC' || entry.type === 'MODEL_RESPONSE';
           if (
-            entry.type === 'PLANNER_RESPONSE' &&
+            isModelTurn &&
             entry.status === 'DONE' &&
             typeof entry.content === 'string' &&
             entry.content.trim()
@@ -124,7 +237,7 @@ export class AgyProvider implements ProviderAdapter {
       if (lastResponse) {
         return {
           result: lastResponse,
-          sessionId: undefined,
+          sessionId: sessionId ?? extractedSessionId,
           isError: result.code !== 0,
           raw,
           usage: undefined,
@@ -135,16 +248,24 @@ export class AgyProvider implements ProviderAdapter {
     // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
     console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
+      .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
+      .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
       .replace(/\r/g, '')
       .trim();
     return {
       result: stripped,
-      sessionId: undefined,
+      sessionId: extractedSessionId,
       isError: result.code !== 0,
       raw,
       usage: undefined,
     };
+  }
+
+  // apra-fleet-hzeb.1: AGY has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
   }
 
   supportsResume(): boolean {
@@ -153,6 +274,31 @@ export class AgyProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: like Claude, an AGY dispatch is batch/CONOUT$-only --
+  // the exec channel carries no mid-turn signal, so a `timeout_s`-sized
+  // rolling deadline there is a false kill. AGY's working mechanism is the
+  // StallDetector watching its brain/transcript directory (resolveSessionLogDir
+  // below returns a real path), which still gets `timeout_s` as thresholdMs.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'total_ceiling';
+  }
+
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
@@ -171,7 +317,7 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-3.5-flash-lite';
     if (tier === 'premium') return 'claude-sonnet-4.6';
     return 'gemini-3.5-flash';
@@ -179,6 +325,19 @@ export class AgyProvider implements ProviderAdapter {
 
   modelFlag(model: string): string {
     return '';
+  }
+
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.gemini/antigravity-cli/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, relPath: string): string {
+    return transformAgentForAgy(content, relPath);
+  }
+
+  agentNameFlag(agentName: string): string {
+    return `--agent "${escapeDoubleQuoted(agentName)}"`;
   }
 
   classifyError(output: string): PromptErrorCategory {
@@ -190,7 +349,8 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    const agyAllow = convertClaudeAllowToAgyPermissions(allow);
+    return [{ permissions: { allow: agyAllow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -224,9 +384,8 @@ export class AgyProvider implements ProviderAdapter {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-    const settingsScript = `${SCRIPTS_WIN}\\agy-settings-merge.js`;
 
-    let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
 
     // After agy exits, read its conversation transcript via the installed helper script.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
@@ -239,10 +398,125 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   jsonOutputFlag(): string {
-    return '';
+    return '--output-format json';
   }
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
   }
+
+  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
+    // AGY has no `agy mcp` CLI verb (`agy help` lists: changelog, help, install, models,
+    // plugin(s), update -- no mcp verb) and no project/user scope distinction -- it reads
+    // MCP server config from a single centralized, machine-global file. See
+    // docs/member-onboarding-journey.md section 3a for the live-verified investigation.
+    // Merge under mcpServers.<name>, preserving any sibling entries (mirrors the
+    // uninstall-time precision-cleanup pattern in src/cli/uninstall.ts).
+    const configDir = path.join(os.homedir(), '.gemini', 'config');
+    const configFile = path.join(configDir, 'mcp_config.json');
+    fs.mkdirSync(configDir, { recursive: true });
+
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(configFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      } catch {
+        // malformed file -- start fresh rather than write on top of unparseable state
+        settings = {};
+      }
+    }
+
+    const mcpServers = (settings.mcpServers as Record<string, unknown> | undefined) ?? {};
+    mcpServers['apra-fleet-member'] = {
+      type: 'http',
+      url: opts.url,
+      headers: { Authorization: `Bearer ${opts.token}` },
+    };
+    settings.mcpServers = mcpServers;
+
+    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
+
+    return {
+      mechanism: 'config-file-merge',
+      detail: `merged apra-fleet-member into ${configFile} (mcpServers.apra-fleet-member)`,
+    };
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
+    // config is machine-global (live-verified, docs/member-onboarding-journey.md section
+    // 3a). No-op.
+    return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
+  }
+}
+
+export interface AgyPermissionRule {
+  action: 'command' | 'read_file' | 'write_file' | 'mcp' | 'read_url' | 'execute_url' | 'custom' | 'invoke_subagent' | 'send_message';
+  target: string;
+}
+
+export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {
+  const rules: AgyPermissionRule[] = [];
+  const added = new Set<string>();
+
+  const addRule = (action: AgyPermissionRule['action'], target: string) => {
+    const key = `${action}:${target}`;
+    if (!added.has(key)) {
+      added.add(key);
+      rules.push({ action, target });
+    }
+  };
+
+  for (const item of allow) {
+    if (item === 'Read' || item === 'Glob' || item === 'Grep') {
+      addRule('read_file', '*');
+    } else if (item === 'Write' || item === 'Edit') {
+      addRule('write_file', '*');
+    } else if (item === 'Agent') {
+      addRule('invoke_subagent', '*');
+      addRule('send_message', '*');
+    } else if (item.startsWith('Bash(')) {
+      const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
+      if (match && match[1]) {
+        const cmdName = match[1].trim();
+        addRule('command', cmdName === '*' ? '*' : cmdName);
+      } else {
+        addRule('command', '*');
+      }
+    } else if (item === 'Bash') {
+      addRule('command', '*');
+    } else if (item.startsWith('Mcp(')) {
+      const match = item.match(/^Mcp\(([^)]+)\)/);
+      addRule('mcp', match ? match[1] : '*');
+    } else if (item === 'Mcp') {
+      addRule('mcp', '*');
+    } else if (item.startsWith('mcp__')) {
+      // Claude's real MCP permission-string format is `mcp__<server>__<tool>` (e.g.
+      // "mcp__apra-fleet__kb_capture") -- NOT the fictional `Mcp(name)` shape above.
+      // AGY's own permission model is server-granular, not per-tool (see the 'mcp'
+      // action's target). The 'apra-fleet' server deliberately colocates safe
+      // read-only KB tools (kb_query, kb_capture, ...) alongside destructive
+      // fleet-admin tools (remove_member, shutdown_server, credential_store_*) --
+      // see src/services/tool-registry.ts's registerAllTools. Auto-collapsing a
+      // narrow per-tool Claude grant like "mcp__apra-fleet__kb_query" into a
+      // server-level AGY rule would silently hand that member blanket access to
+      // every tool on the server, not just the one requested -- a real privilege
+      // escalation, not a convenience gap. Until the MCP surface is split by trust
+      // tier (or AGY gains per-tool granularity), do NOT auto-grant here; surface it
+      // so a human can escalate deliberately, same as the NEVER_AUTO_GRANT pattern
+      // in compose-permissions.ts.
+      const rest = item.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      const server = sep >= 0 ? rest.slice(0, sep) : rest;
+      console.warn(`[agy] refusing to auto-grant mcp permission "${item}": AGY has no per-tool MCP granularity, only server-level ("${server}"), and that server also exposes destructive tools. Escalate manually if this member genuinely needs it.`);
+      addRule('custom', item);
+    } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
+      addRule('read_url', '*');
+    } else {
+      console.warn(`[agy] warning: unmapped permission token "${item}"`);
+      addRule('custom', item);
+    }
+  }
+
+  return rules;
 }

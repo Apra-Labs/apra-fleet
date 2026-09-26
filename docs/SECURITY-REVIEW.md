@@ -1,16 +1,16 @@
-# Security Review — apra-fleet
+# Security Review - apra-fleet
 
 **Date:** 2026-02-25
 **Reviewer:** Claude Opus 4.6 (automated deep review)
-**Scope:** Full codebase — all source, tests, config, docs, and dependencies
+**Scope:** Full codebase - all source, tests, config, docs, and dependencies
 **Commit:** `3138710` (main branch)
-**Remediation update:** 2026-02-26 — 6 of 14 findings addressed (see RESOLVED tags below)
+**Remediation update:** 2026-02-26 - 6 of 14 findings addressed (see RESOLVED tags below)
 
 ---
 
 ## Executive Summary
 
-The codebase manages a fleet of remote Claude Code agents via SSH. It handles SSH credentials, API keys, OAuth tokens, and executes shell commands on remote machines — making it a high-value security target.
+The codebase manages a fleet of remote Claude Code agents via SSH. It handles SSH credentials, API keys, OAuth tokens, and executes shell commands on remote machines - making it a high-value security target.
 
 **Overall assessment: Solid security posture with a few notable findings.**
 
@@ -18,17 +18,17 @@ No leaked credentials, hardcoded secrets, or critical vulnerabilities were found
 
 | Severity | Count | Resolved |
 |----------|-------|----------|
-| Critical | 0     | —        |
+| Critical | 0     | -        |
 | High     | 2     | 2        |
 | Medium   | 5     | 3        |
 | Low      | 4     | 1        |
-| Info     | 3     | —        |
+| Info     | 3     | -        |
 
 ---
 
 ## HIGH Severity
 
-### H1. No SSH Host Key Verification — RESOLVED
+### H1. No SSH Host Key Verification - RESOLVED
 
 **Files:** `src/services/ssh.ts:66-88`
 
@@ -40,13 +40,13 @@ No `hostVerifier` or `hostHash` option is set. This means the tool blindly trust
 
 **Impact:** An attacker performing ARP spoofing, DNS hijacking, or sitting on the same network could intercept SSH connections and steal passwords or execute arbitrary commands.
 
-**Recommendation:** Implement host key verification — either trust-on-first-use (TOFU) with a local known_hosts file, or prompt the user to confirm fingerprints.
+**Recommendation:** Implement host key verification - either trust-on-first-use (TOFU) with a local known_hosts file, or prompt the user to confirm fingerprints.
 
 > **Resolution:** Implemented TOFU host key verification. New `src/services/known-hosts.ts` stores fingerprints in `~/.apra-fleet/data/known_hosts` (JSON, mode 0o600). `getSSHConfig()` now sets `hostVerifier` callback with SHA-256 fingerprint checks. `connectWithTOFU()` auto-accepts new keys on mismatch with a warning. Also removed the `config as any` cast (see L1).
 
 ---
 
-### H2. Registry File Written Without Restricted Permissions — RESOLVED
+### H2. Registry File Written Without Restricted Permissions - RESOLVED
 
 **File:** `src/services/registry.ts:33`
 
@@ -54,13 +54,13 @@ No `hostVerifier` or `hostHash` option is set. This means the tool blindly trust
 fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
 ```
 
-The registry file contains encrypted passwords and agent metadata. It is written with **default permissions** (typically 0o644 on Linux — world-readable). Compare this to the salt file which is correctly written with `{ mode: 0o600 }`.
+The registry file contains encrypted passwords and agent metadata. It is written with **default permissions** (typically 0o644 on Linux - world-readable). Compare this to the salt file which is correctly written with `{ mode: 0o600 }`.
 
 On a multi-user system, any local user can read `~/.apra-fleet/data/registry.json` and obtain encrypted passwords. Combined with the salt file (if also readable), they could decrypt them.
 
 **Note:** The fleet directory itself is created with 0o700, which mitigates this on initial creation. However, if the directory permissions are ever changed or the directory already exists with wider permissions, the registry file is exposed.
 
-**Impact:** Local privilege escalation — other users on the same machine could read encrypted credentials.
+**Impact:** Local privilege escalation - other users on the same machine could read encrypted credentials.
 
 **Recommendation:** Add `{ mode: 0o600 }` to the `writeFileSync` call for the registry file, matching the pattern used for the salt file.
 
@@ -88,7 +88,7 @@ The security of the encrypted passwords therefore rests entirely on file-system 
 
 ---
 
-### M2. Legacy Static Salt Fallback Weakens Encryption — RESOLVED
+### M2. Legacy Static Salt Fallback Weakens Encryption - RESOLVED
 
 **File:** `src/utils/crypto.ts:11, 46-48, 75-83`
 
@@ -96,7 +96,7 @@ The security of the encrypted passwords therefore rests entirely on file-system 
 const LEGACY_SALT = 'apra-fleet-salt';  // removed
 ```
 
-The decryption function fell back to a hardcoded static salt if the per-installation salt failed. Any passwords encrypted before the random salt was introduced use this **publicly known, hardcoded value** as their salt. The key derivation for these passwords is deterministic given hostname + username — both are trivially discoverable.
+The decryption function fell back to a hardcoded static salt if the per-installation salt failed. Any passwords encrypted before the random salt was introduced use this **publicly known, hardcoded value** as their salt. The key derivation for these passwords is deterministic given hostname + username - both are trivially discoverable.
 
 **Impact:** Passwords encrypted with the legacy salt can be decrypted by anyone who knows the target's hostname and username.
 
@@ -106,7 +106,7 @@ The decryption function fell back to a hardcoded static salt if the per-installa
 
 ---
 
-### M3. SSH Public Key Deployment via Shell Concatenation — RESOLVED
+### M3. SSH Public Key Deployment via Shell Concatenation - RESOLVED
 
 **File:** `src/tools/setup-ssh-key.ts:86`
 
@@ -157,7 +157,7 @@ When an API key is provisioned via the `api_key` parameter, it is written **in p
 
 ---
 
-### M5. Unbounded stdout/stderr Accumulation — RESOLVED
+### M5. Unbounded stdout/stderr Accumulation - RESOLVED
 
 **File:** `src/services/ssh.ts:115-123`
 
@@ -180,7 +180,7 @@ Command output is accumulated in memory with no size limit. A malicious or buggy
 
 ## LOW Severity
 
-### L1. `config as any` Type Assertion Bypasses Type Safety — RESOLVED
+### L1. `config as any` Type Assertion Bypasses Type Safety - RESOLVED
 
 **File:** `src/services/ssh.ts:88`
 
@@ -246,13 +246,13 @@ All are well-maintained, widely-used packages. The `ssh2` package has had histor
 ### I3. Shell Escaping Is Comprehensive and Well-Tested
 
 The `src/utils/shell-escape.ts` module provides:
-- `escapeShellArg()` — single-quote escaping for Unix
-- `escapeDoubleQuoted()` — double-quote escaping for Unix
-- `escapeWindowsArg()` — cmd.exe metacharacter escaping
-- `escapeGrepPattern()` — regex metacharacter escaping
-- `sanitizeSessionId()` — strict alphanumeric whitelist
+- `escapeShellArg()` - single-quote escaping for Unix
+- `escapeDoubleQuoted()` - double-quote escaping for Unix
+- `escapeWindowsArg()` - cmd.exe metacharacter escaping
+- `escapeGrepPattern()` - regex metacharacter escaping
+- `sanitizeSessionId()` - strict alphanumeric whitelist
 
-All are covered by dedicated tests in `tests/shell-escape.test.ts` including injection attempt test cases. The prompt execution path uses Base64 encoding to avoid shell escaping entirely — a good defense-in-depth approach.
+All are covered by dedicated tests in `tests/shell-escape.test.ts` including injection attempt test cases. The prompt execution path uses Base64 encoding to avoid shell escaping entirely - a good defense-in-depth approach.
 
 ---
 
@@ -273,13 +273,13 @@ All are covered by dedicated tests in `tests/shell-escape.test.ts` including inj
 
 ## Summary of Recommendations (Priority Order)
 
-1. ~~**Add SSH host key verification** to prevent MITM attacks (H1)~~ — RESOLVED
-2. ~~**Set 0o600 permissions on registry.json** writes (H2)~~ — RESOLVED
-3. ~~**Sanitize `friendlyName`** before embedding in shell commands during SSH key deployment (M3)~~ — RESOLVED
-4. ~~**Migrate legacy static salt** passwords and remove hardcoded fallback (M2)~~ — RESOLVED
-5. ~~**Add output size limits** to prevent OOM from large command output (M5)~~ — RESOLVED
+1. ~~**Add SSH host key verification** to prevent MITM attacks (H1)~~ - RESOLVED
+2. ~~**Set 0o600 permissions on registry.json** writes (H2)~~ - RESOLVED
+3. ~~**Sanitize `friendlyName`** before embedding in shell commands during SSH key deployment (M3)~~ - RESOLVED
+4. ~~**Migrate legacy static salt** passwords and remove hardcoded fallback (M2)~~ - RESOLVED
+5. ~~**Add output size limits** to prevent OOM from large command output (M5)~~ - RESOLVED
 6. **Consider alternative API key storage** instead of appending to shell profiles (M4)
 7. **Document the encryption threat model** so users understand the protection boundaries (M1)
 8. **Add `npm audit`** to CI pipeline for automated dependency vulnerability scanning
 
-*Also resolved: L1 (`config as any` type assertion) — fixed as part of the H1 TOFU implementation.*
+*Also resolved: L1 (`config as any` type assertion) - fixed as part of the H1 TOFU implementation.*

@@ -1,8 +1,15 @@
 # OpenCode Exploration
 
-Living notes on what works / does not work with **OpenCode** (https://opencode.ai,
-repo sst/opencode), based on REAL observations. Goal: add OpenCode as another
-supported LLM provider in apra-fleet (alongside claude, gemini, codex, copilot, agy).
+> Historical investigation record. OpenCode is now a shipped provider
+> (`src/providers/opencode.ts`); the user-facing guide is
+> [opencode-getting-started.md](opencode-getting-started.md). This file is
+> retained because `src/providers/opencode.ts` cites its findings by section
+> and line as the rationale for specific integration decisions. Do not treat
+> the `[TBD]`/`[DOC]` items below as open work.
+
+Notes on what works / does not work with **OpenCode** (https://opencode.ai,
+repo sst/opencode), based on real observations made while adding OpenCode as a
+supported LLM provider in apra-fleet (alongside claude, codex, copilot, agy).
 
 Status legend:
 - [OK]   = verified by direct observation in this environment
@@ -208,7 +215,7 @@ registration with `opencode agent list`.
 - [OK] Installed doer, planner, plan-reviewer, reviewer; all four appear in
   `opencode agent list` as `(subagent)`.
 - [TBD] Not yet RUN: actually invoking one of these agents against a local model. The
-  prompt bodies reference fleet concepts (progress.json, {{secure.NAME}}, fleet
+  prompt bodies reference fleet concepts (progress.json, {{secret.NAME}}, fleet
   dispatch) that won't apply outside apra-fleet - faithful copy, runtime fidelity
   against a 30-106B local model unverified.
 - INTEGRATION NOTE: this is exactly how an apra-fleet `opencode` provider would install

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_export.request.json#",
+  "$ref": "#/$defs/v1-kb_export-request",
+  "$defs": {
+    "v1-kb_export-request": {
+      "type": "object",
+      "properties": {
+        "repo_remote_url": {
+          "type": "string",
+          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
+        },
+        "repo_path": {
+          "type": "string",
+          "description": "Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "global"
+          ],
+          "description": "project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the given repo path (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8)."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

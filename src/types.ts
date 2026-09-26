@@ -1,12 +1,18 @@
 export type { CloudConfig } from './services/cloud/types.js';
 import type { CloudConfig } from './services/cloud/types.js';
 
-export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'opencode';
+export type LlmProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
 export interface Agent {
   id: string;
   friendlyName: string;
-  agentType: 'local' | 'remote';
+  agentType: 'local' | 'remote' | 'relay';
+  /** Hub-side member id this agent is addressed by over the relay (only
+   *  set/used for agentType: 'relay' -- apra-fleet-jfn). Maps a local
+   *  registry entry to the hub's member record, which relay-executor.ts's
+   *  getAgentForMember (the reverse direction) and RelayStrategy (this
+   *  direction) both key on. */
+  relayMemberId?: string;
   cloud?: CloudConfig;
   host?: string;
   port?: number;
@@ -17,13 +23,25 @@ export interface Agent {
   workFolder: string;
   sessionId?: string;
   os?: 'windows' | 'macos' | 'linux';
+  /** Windows shell this member's OS commands should target. Only meaningful
+   *  when os is 'windows' -- non-windows members leave this unset. Set by
+   *  the Windows shell probe (apra-fleet-7dir.1.3) or an explicit operator
+   *  override on register_member/update_member. */
+  shell?: 'gitbash' | 'pwsh7' | 'powershell5';
   createdAt: string;
   lastUsed?: string;
   icon?: string;
-  gitAccess?: 'read' | 'push' | 'admin' | 'issues' | 'full';
+  gitAccess?: 'read' | 'push' | 'push+pr' | 'admin' | 'issues' | 'full';
   gitRepos?: string[];
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
+  /** The label/scopeUrl actually used for the LAST provision_vcs_auth deploy
+   *  on this agent. scheduleCredentialCleanup's timer reads these back so the
+   *  eventual revoke targets the exact same credential-helper file/config-key
+   *  pair the deploy wrote, instead of guessing at unlabeled/default-host
+   *  values that may belong to a different, still-valid credential. */
+  vcsCredentialLabel?: string;
+  vcsCredentialScopeUrl?: string;
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
   modelCheap?: string;
   modelStandard?: string;
@@ -36,6 +54,18 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  codeIntelProvider?: 'codebase-memory' | 'gitnexus' | 'none';
+  /** sprintId that currently reserves this member for exclusive dispatch, or
+   *  null/absent when unreserved. Server-side reservation authority
+   *  (apra-fleet-eft.10) -- closes the manual-CLI bypass around the
+   *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
+   *  this field only introduces and persists the value. */
+  reservedBy?: string | null;
+  /** This member fills a role (e.g. fleet-sprint's `orchestrator`) that is
+   *  designed to be shared by more than one sprint at once, so it can never
+   *  be exclusively reserved: reserve/release/force_release are no-op
+   *  successes and overlap guards skip it. Defaults to false/absent. */
+  unreservable?: boolean;
 }
 
 export interface GitHubAppConfig {

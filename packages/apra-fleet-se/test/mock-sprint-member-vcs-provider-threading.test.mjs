@@ -1,0 +1,155 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+
+const check = (cond, msg) => assert.ok(cond, msg);
+
+// =============================================================================
+// apra-fleet-417.9 -- end-to-end coverage for the resolveMemberVcsProvider
+// wiring runSprintCycle's withGitSync bracket passes into syncMemberBefore
+// (G-pull) and syncMemberAfterOrdered (G-push), through the REAL runner.js
+// call sites (~line 4931/4981), not just the isolated
+// vcs-nongithub-auth-selfheal.test.mjs unit tests (which inject a hand-rolled
+// resolveMemberProvider straight into syncMemberAfter, bypassing withGitSync
+// entirely) or vcs-member-provider-resolver.test.mjs (apra-fleet-417.8, which
+// covers createMemberVcsProviderResolver in isolation with a stubbed
+// callTool, never dispatched through a sprint).
+//
+// Precedence note (see runner.js's own comment on `resolveMemberVcsProvider`,
+// just above the withGitSync brackets it feeds): there are two ways this
+// resolver gets wired --
+//   1. `context.resolveMemberVcsProvider` -- an explicitly-injected resolver.
+//      This tier is NOT reachable through the production entry point: every
+//      real caller (bin/cli.mjs, and this harness) drives runner.js via
+//      `WorkflowEngine.executeFile()`, whose `runWithContext()` always builds
+//      `context` as `{ ...this._bindPrimitives(), args, budget }` (see
+//      apra-fleet-workflow/src/workflow/index.mjs) -- there is no key through
+//      which a caller of `executeFile()` can set `context.resolveMemberVcsProvider`
+//      (or its `onAuthFailure`/`memberSessionGuard`/`ensureVcsAuthFresh`/
+//      `onLlmAuthFailure` siblings); those are direct-`main()`/
+//      `runSprintCycle()`-call-only injection points, exercised nowhere in
+//      this suite.
+//   2. `args.callTool` -- the real VCSModule.resolveProvider() lookup via
+//      createMemberVcsProviderResolver, which IS reachable through
+//      `executeFile()` (via the `callTool` arg this harness already
+//      threads through as `args.callTool` -- see apra-fleet-eft.75.3's
+//      `callTool` passthrough). This is the tier exercised below.
+//
+// The observable that proves the threading (not just that a self-heal fired,
+// since both AUTH and UNKNOWN classifications share the same bounded
+// self-heal + single-retry mechanics -- see vcs-nongithub-auth-selfheal.
+// test.mjs's own note on this): a BARE Azure DevOps TF401019 failure text (no
+// generic git auth tail) on the per-member G-push classifies 'auth' (not
+// 'unknown') ONLY once the member's own resolved 'azure-devops' provider is
+// threaded all the way from `args.callTool`'s member_detail response, through
+// createMemberVcsProviderResolver, through withGitSync's
+// syncMemberAfterOrdered call, to classifyGitFailure(text, provider).
+// =============================================================================
+
+// The syncMemberAfter G-push command shape is exactly `git push <remote>
+// <branch>` (no `-u`) -- this pattern deliberately excludes the Publish
+// step's `git push -u origin <branch>` (a different command entirely, see
+// mock-sprint-publish-push-failure.test.mjs's own note on this), so this
+// injection cannot accidentally reach any step but the per-dispatch G-push.
+const G_PUSH_PATTERN = /^git push origin /;
+
+// A bare TF401019 literal -- no generic git-auth tail -- so classifyFailure()
+// alone would call it 'unknown'; only naming the 'azure-devops' provider
+// reaches azure-devops.mjs's own TF401019 rule (apra-fleet-417.6/417.7).
+const TF401019_BARE = "remote: TF401019: The Git repository with name or identifier 'core' does not exist, or you do not have permission to perform this operation.";
+
+// apra-fleet-d6fq.2: base=180000 is the pre-existing standalone-calibrated
+// budget, not a guess -- apra-fleet-5ey2's real-bd carry-over reports (reproduced
+// three separate passes: 2026-08-23/24/27) show this file only exceeds
+// 180000ms under the default 8-way concurrent suite (file elapsed 215-218s
+// each time), and that same bead explicitly records "standalone reruns of
+// this failure family pass while the full concurrent suite times out,
+// consistent with a harness concurrency issue rather than N separate test
+// bugs." Directly confirmed: `node scripts/run-tests.mjs real
+// test/mock-sprint-member-vcs-provider-threading.test.mjs` standalone --
+// pass=1 fail=0, duration 30792.3ms, comfortably under the 180000ms base.
+// scaledTimeout() keeps this budget unscaled at concurrency<=1 and
+// multiplies it (3x = 540000ms) under the real 8-way suite, which
+// apra-fleet-d6fq.1 makes non-inert.
+test('mock sprint: a member whose provider resolves to azure-devops (via args.callTool) classifies a bare G-push TF401019 failure as auth, not unknown, end to end through withGitSync', { timeout: scaledTimeout(180000) }, async () => {
+    await withScenarioMarkers('417.9 resolveMemberVcsProvider threading', async () => {
+        const vcsAuthCalls = [];
+        const base = defaultMockCallTool();
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') {
+                return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+            }
+            if (name === 'provision_vcs_auth') {
+                vcsAuthCalls.push(args);
+            }
+            return base(name, args);
+        };
+
+        const scenario = await runDevelopLoopScenario('417_9vcsprov', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: exercise resolveMemberVcsProvider threading through withGitSync' }],
+            maxCycles: 1,
+            callTool,
+            gitGhFailurePattern: G_PUSH_PATTERN,
+            gitGhFailureMessage: TF401019_BARE,
+            // apra-fleet-5co8.10: this scenario's member resolves to the
+            // 'azure-devops' provider (see callTool's member_detail stub
+            // above), so its git remote must be ADO-shaped
+            // (https://dev.azure.com/ORG/PROJECT/_git/REPO) for the
+            // provider's own buildProvisionArgs() to derive an org_url --
+            // a GitHub-shaped default origin (the harness's normal default)
+            // makes derivation fail before any provision_vcs_auth call is
+            // ever attempted, which is the regression this bead fixes.
+            originUrl: 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo',
+        });
+
+        // The persistent (never-recovering) G-push failure surfaces as a
+        // typed post-dispatch sync failure -- same shape as
+        // mock-sprint-planner-dpush-failure-no-redispatch.test.mjs's D-push
+        // equivalent -- rather than hanging or silently succeeding.
+        check(scenario.error, `expected the persistently-failing G-push to surface as a sync error, got no error at all. logs: ${JSON.stringify(scenario.logs.slice(-30))}`);
+
+        // THE acceptance criterion: the bare TF401019 literal classifies
+        // 'auth', not 'unknown', once the member's azure-devops provider is
+        // resolved via args.callTool -> createMemberVcsProviderResolver ->
+        // withGitSync's resolveMemberVcsProvider -> syncMemberAfterOrdered ->
+        // classifyGitFailure(text, provider).
+        check(
+            scenario.logs.some((l) => /auth git failure for member 'local'/.test(l)),
+            `expected an 'auth git failure' log line for member 'local' (provider threading must classify auth, not unknown), got logs: ${JSON.stringify(scenario.logs.filter((l) => /git failure/.test(l)))}`,
+        );
+        check(
+            !scenario.logs.some((l) => /unknown git failure for member 'local'/.test(l)),
+            `must NOT classify unknown once the member's azure-devops provider is resolved end to end, got logs: ${JSON.stringify(scenario.logs.filter((l) => /git failure/.test(l)))}`,
+        );
+
+        // The self-heal (provision_vcs_auth) fired for the classified auth
+        // failure -- proving the whole chain (not just the log line) reached
+        // the real onAuthFailure callback.
+        check(
+            vcsAuthCalls.some((c) => c && c.member_name === 'local'),
+            `expected a provision_vcs_auth self-heal call for member 'local', got: ${JSON.stringify(vcsAuthCalls)}`,
+        );
+
+        // apra-fleet-5co8.8: retry-count-independent guard. Preflight
+        // (runner.js:3095) and each of the 3 bounded post-dispatch sync
+        // retry attempts (POST_DISPATCH_SYNC_RETRY_DELAYS_MS, runner.js:20)
+        // each record a provision_vcs_auth call for member 'local' into
+        // vcsAuthCalls, so an exactly-one count is unsatisfiable and must
+        // NOT be asserted here (withdrawn, see bead notes). Instead assert a
+        // property that holds across every recorded call regardless of how
+        // many attempts fired: each carries the resolved 'azure-devops'
+        // provider and an org_url derived by that provider's own
+        // buildProvisionArgs (vcs-providers/azure-devops.mjs:364).
+        const localCalls = vcsAuthCalls.filter((c) => c && c.member_name === 'local');
+        check(
+            localCalls.every((c) => c.provider === 'azure-devops'),
+            `expected every provision_vcs_auth call for member 'local' to carry provider 'azure-devops', got: ${JSON.stringify(localCalls)}`,
+        );
+        check(
+            localCalls.every((c) => typeof c.org_url === 'string' && /^https:\/\/dev\.azure\.com\//.test(c.org_url)),
+            `expected every provision_vcs_auth call for member 'local' to carry an org_url matching https://dev.azure.com/, got: ${JSON.stringify(localCalls)}`,
+        );
+    });
+});

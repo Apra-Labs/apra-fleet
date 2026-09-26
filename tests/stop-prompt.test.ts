@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import { stopPrompt } from '../src/tools/stop-prompt.js';
@@ -21,6 +21,14 @@ vi.mock('../src/services/strategy.js', () => ({
     transferFiles: vi.fn(),
     close: vi.fn(),
   }),
+}));
+
+// execute_prompt now auto-provisions agent files on first dispatch (see
+// execute-prompt-provisioning.test.ts) -- mock it away here so it doesn't
+// consume the mockExecCommand queue and shift the call-index assertions below.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
 }));
 
 describe('stop_prompt (T8)', () => {
@@ -138,7 +146,7 @@ describe('stop_prompt busy-clear (T6)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).not.toContain('already running');
-    expect(result).toContain('done');
+    expect(resultText(result)).not.toContain('already running');
+    expect(resultText(result)).toContain('done');
   });
 });

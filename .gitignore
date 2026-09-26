@@ -1,10 +1,17 @@
 node_modules/
 dist/
 data/
+
+# apra-fleet-se's package-local vendored schema snapshot (apra-fleet-bun):
+# build artifact written by packages/apra-fleet-se/scripts/vendor-schemas.mjs,
+# not a checked-in fixture (contrast with test/fixtures/vendor-apra-pm-schemas/).
+packages/apra-fleet-se/vendor/schemas/
 .fleet-task.md
 *.js.map
 *.tsbuildinfo
 .env
+tests/integration/email-test-config.json
+examples/workflows/email-notify/config.json
 *.pem
 fleet.config.json
 ~/.claude-fleet/
@@ -20,13 +27,117 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
-.claude/settings.json
+# Per-clone beads-DB backup directories (created by pre-clone safety copies); never commit
+.beads.bak-*/
+# beads runtime gate lock (created next to .beads/ by bd); never commit
+.beads.gate.lock
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
+
+# sprint-logs/ holds three kinds of file and only two are deliverables. Keep
+# this split in sync with apra-pm/skills/pm/cost.md and
+# apra-pm/docs/sprint-workflow.md, which tell the harvester what to commit --
+# a rule here that contradicts those docs is silently unstageable output, and
+# a sprint has already burned a cycle rediscovering that (apra-fleet-tm7.13).
+#
+#   calibration.json          TRACKED. The blended historical averages future
+#                             cost quotes read; one bounded file per package.
+#   <branch>-<ts>.analysis.md TRACKED. The human-readable Sprint Execution
+#                             Summary, same class as docs/sprint-analysis-*.md.
+#   <branch>-<ts>.jsonl       IGNORED (below). Raw per-dispatch ledgers: they
+#                             accumulate per run with no bound, and they embed
+#                             the operator's home path -- redaction still
+#                             leaves the username inside the dash-encoded
+#                             Claude project slug, so they are not safe to
+#                             publish from a public repo.
+#   sprint_*.json             IGNORED (below). Per-run state snapshot written
+#                             by bin/cli.mjs on every sprint exit; pure scratch.
+#
+# Do NOT reintroduce a blanket '/sprint-logs/' directory rule: a directory-level
+# ignore shadows everything inside it, so the two tracked kinds above become
+# unstageable without 'git add -f' no matter what a narrower pattern says.
+**/sprint-logs/*.jsonl
+**/sprint-logs/sprint_*.json
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.
 GEMINI.md
 AGENTS.md
 COPILOT-INSTRUCTIONS.md
+
+# local compose_permissions ledger artifact
+/permissions.json
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/
+
+# Local tool scaffolding, not project deliverables
+.agents/
+.codex/
+
+# Auto-sprint scaffold logs left in repo root (not under sprint-logs/)
+/auto-sprint-*.log
+/auto-sprint-*.err.log
+
+# Fleet-sprint orchestrator run artifacts left in repo root
+/fleet-sprint-eft-*.log*
+
+# Fleet log dumps (e.g. .fleet-log-win-excerpt.txt) -- local debug artifacts, never commit
+.fleet-log-*
+
+# Fleet orchestrator review and plan scaffold outputs -- per-round reviewer/planner scratch, never commit
+.fleet-review*.json
+.fleet-plan*.json
+
+# Planner and beads scratch files left in repo root
+/tasks.json
+/.scratch-dolt-settle/
+
+# Ad-hoc `bd show --json` / `bd list --json` scratch dumps left at repo root
+/all.json
+
+# Per-file integration-test progress state (scripts/run-integ-suites.mjs)
+/integ-suite-status.json
+/integ-suite-status.json.tmp
+/integ-suite-heartbeat.json
+/integ-suite-run.log
+
+# (The per-run sprint state dumps bin/cli.mjs writes on every sprint exit are
+# covered by the scoped '**/sprint-logs/sprint_*.json' rule above. The blanket
+# '/sprint-logs/' rule that used to sit here shadowed the whole directory,
+# making calibration.json and the analysis summaries unstageable -- see the
+# note at the top of this file.)
+
+# Per-member installed agent role files -- must stay on disk, never committed
+.claude/agents/
+packages/apra-fleet-se/auto-sprint/logs/
+
+# my-beads-db-27m.26: repo-root beads scratch export dir (all.json/open.json),
+# not referenced by any tracked file -- pollutes the clean-worktree check.
+/.rev/
+
+# my-beads-db-27m.46: ad-hoc `bd list --json > <name>.json` dumps left in the
+# repo root by review/doer sessions. These are scratch, not deliverables --
+# whatever writes them should target a temp dir, but until every caller does,
+# ignore the known dump names so they stop failing the clean-worktree gate.
+/ready.json
+
+# Orchestrator planner-round scratch output. Scoped to this one file, NOT a
+# blanket '.fleet/' rule: .fleet/kb-canonical.json (the KB export) is a
+# tracked deliverable living in the same directory -- see the sprint-logs/
+# note above for why a directory-level rule here would shadow it the same
+# way.
+.fleet/planner-output.json
+
+# Per-bead review scratch dumps (reviewer working files), never commit.
+.review-tmp/
+
+# Ad-hoc `bd` issue-dump scratch left at repo root (same class as /all.json
+# above, different name).
+/open.json
+
+# Sprint-runtime verdict/scratch output the orchestrator writes at repo root
+# (e.g. .fleet-out/plan-review-verdict.json) -- per-run, never commit. Its own
+# directory, so a directory rule shadows nothing tracked (unlike .fleet/).
+/.fleet-out/

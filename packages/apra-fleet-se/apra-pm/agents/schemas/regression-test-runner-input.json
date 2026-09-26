@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/regression-test-runner-input@1",
+  "version": 1,
+  "title": "regression-test-runner input",
+  "description": "Required dispatch-context keys for the regression-test-runner role, per agents/regression-test-runner.md Inputs section. The runner owns the regression-test-playbook.md sandbox lifecycle (Setup/Teardown) itself, running once per sprint. Unlike integ-test-runner, this role takes no featureIds (it does not close features) and no deployedSha (Part 2 runs its own fresh install against branch HEAD, not a specific cycle's deploy). Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["repoRoot"],
+  "properties": {
+    "repoRoot": {
+      "type": "string",
+      "description": "Repo root path where regression-test-playbook.md lives."
+    }
+  }
+}

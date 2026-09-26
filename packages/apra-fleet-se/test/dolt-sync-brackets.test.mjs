@@ -1,0 +1,1149 @@
+import { test, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import {
+    classifyDoltFailure,
+    doltPullBefore,
+    doltPushAfter,
+    extractConflictingTables,
+    isMemberSyncRemoteConfigured,
+    preflightBeadsHealthGate,
+    verifyDoerStreakClosed,
+} from '../fleet-sprint/runner.js';
+import {
+    invalidateSyncRemoteCache,
+    clearLastSyncedTip,
+    clearTipProbeFailures,
+    extractDoltRemoteUrl,
+} from '../fleet-sprint/dolt-sync.mjs';
+import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-3swo.5.7: the D-push flags now live in the policy table, so the
+// census below reads them from there rather than from runner.js source.
+import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+import {
+    loadVcsStderrCorpus,
+    stderrSamples,
+    stderrSample,
+    stderrText,
+    recordedKinds,
+    provenance,
+} from './helpers/vcs-stderr-corpus.mjs';
+
+// The sync.remote probe memo and the remote-tip fingerprint are both
+// module-level, process-lifetime caches keyed by member name (apra-fleet-akuv,
+// dolt sync budget review section B.1). This file reuses member names like
+// 'memberA' across many independently-scripted command() mocks, so a
+// positively-parsed answer cached by one test would otherwise leak into every
+// later test for that member. Reset both caches before every test.
+beforeEach(() => {
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
+});
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// =============================================================================
+// apra-fleet-eft.9.1 -- D-pull/D-push bracket helpers and the Plan 3.3 dolt
+// insertion points.
+//
+// Two layers are covered here:
+//   1. Behavioural unit tests of the helpers doltPullBefore / doltPushAfter /
+//      verifyDoerStreakClosed, injected with a scripted command() mock. The
+//      single most important of these proves that verifyDoerStreakClosed's
+//      MANDATORY pre-read D-pull is what stops a remote doer's just-pushed
+//      close from being falsely reported FAILED (the exact regression this
+//      bead exists to prevent).
+//   2. A source-level enumeration of the Plan 3.3 dolt bracket insertion
+//      points in runner.js, asserting that every beads-MUTATING dispatch role
+//      (planner, doer, integ-test-runner, harvester) carries `pushBeads: true`
+//      so its beads mutations are D-pushed to the shared remote, while every
+//      read-only role does not. A future edit that adds a mutating dispatch
+//      without `pushBeads: true` (exactly the integ-test-runner/harvester
+//      omission this bead's rework fixed) fails this test instead of silently
+//      dropping those beads mutations on the floor.
+// =============================================================================
+
+// A tiny scripted command() mock. `script` maps a cmd-substring -> a sequence
+// of results consumed one-per-call (the last entry sticks once the queue is
+// down to one). A result may be an object ({ ok } or { ok:false, error }) for
+// failSoft dolt steps, or a raw string for a non-failSoft read (e.g. bd show
+// --json, which returns its raw stdout). Records every call with its opts so
+// tests can assert explicit member_name threading (Plan 3.2) and call order.
+function makeCommandMock(script) {
+    const calls = [];
+    const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        for (const [key, queue] of queues) {
+            if (cmd.includes(key)) {
+                const next = queue.length > 1 ? queue.shift() : queue[0];
+                return typeof next === 'function' ? next() : next;
+            }
+        }
+        return { ok: true, output: '', error: null };
+    };
+    return { command, calls };
+}
+
+const OK = { ok: true, output: '', error: null };
+const fail = (error) => ({ ok: false, output: '', error });
+
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2 -- failure texts driven into the command() mocks below
+// are RECORDED from real `bd dolt` runs, not typed from memory. See
+// test/fixtures/vcs-stderr/README.md for the recorder and re-record steps.
+// -----------------------------------------------------------------------------
+const REAL_DOLT_AUTH_ID = 'dolt/auth/could-not-read-username-prompts-disabled';
+const REAL_DOLT_AUTH = stderrText(REAL_DOLT_AUTH_ID);
+const REAL_DOLT_DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+const REAL_DOLT_TRANSIENT_REFUSED = stderrText('dolt/transient/connection-refused');
+const REAL_DOLT_NO_REMOTE = stderrText('dolt/no-remote/pull-with-no-remote-configured');
+const REAL_DOLT_EMPTY_REMOTE = stderrText('dolt/empty-remote/pull-git-remote-without-dolt-data');
+const REAL_DOLT_REMOTE_UNREACHABLE = stderrText('dolt/remote-unreachable/push-to-nonexistent-path');
+
+// -----------------------------------------------------------------------------
+// classifyDoltFailure -- asserted against RECORDED real `bd dolt` output
+// (apra-fleet-j918.6.2). The corpus lives in test/fixtures/vcs-stderr/ and is
+// produced by that directory's record-vcs-stderr.mjs; see its README.md.
+//
+// Recorded through `bd dolt`, NOT the raw `dolt` CLI, because that is the only
+// surface dolt-sync.mjs ever parses: bd re-surfaces dolt's error as
+// `Error 1105: ...` out of dolt_pull()/dolt_push(), and the raw CLI wording is
+// different text entirely.
+//
+// NON-OBVIOUS RISK this guards, and why the assertions are written by
+// DIRECTION rather than as a bag of equalities: the realistic defect is a
+// message REWORD (dolt's or bd's), not a deleted rule, and the two directions
+// that hurt are:
+//
+//   diverged -> unknown    fail-fast is disabled: doltPushAfter stops raising
+//                          DoltDivergedError, so an independent-history
+//                          divergence is papered over instead of surfaced for
+//                          reconcile.
+//   diverged -> transient  worse: the D-push bracket RETRIES a divergence,
+//                          turning a hard stop into a retry loop against a
+//                          remote that refuses it identically every time.
+//
+// REAL-CAPTURE FINDING worth keeping: the recorded divergence sample earns its
+// 'diverged' verdict from "histories have diverged" on its FOURTH line. Its
+// first line is `Error 1105: unknown push error; no common ancestor`, which
+// matches no rule at all -- so any change that truncates or first-lines dolt
+// output before classifying flips the verdict to 'unknown' and silently
+// disables fail-fast. That is asserted explicitly below.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure assigns every RECORDED real-dolt sample to its recorded bucket', () => {
+    const corpus = loadVcsStderrCorpus();
+    const samples = stderrSamples('dolt');
+    assert.ok(samples.length > 0, 'the recorded dolt corpus must not be empty');
+    assert.match(String(corpus.tools.dolt), /^dolt version /, 'the corpus must record the dolt version');
+    assert.match(String(corpus.tools.bd), /^bd version /, 'the corpus must record the bd version that wrapped dolt');
+    for (const s of samples) {
+        assert.equal(classifyDoltFailure(s.stderr), s.expect, provenance(s));
+    }
+});
+
+test('the recorded dolt corpus covers every bucket classifyDoltFailure can return', () => {
+    // A new bucket must not be able to arrive with only hand-typed coverage:
+    // this fails until record-vcs-stderr.mjs grows a recipe that provokes it.
+    assert.deepEqual(
+        recordedKinds('dolt'),
+        ['auth', 'diverged', 'empty-remote', 'no-remote', 'remote-unreachable', 'transient', 'unknown'],
+        'every classifyDoltFailure verdict needs at least one recorded real-dolt sample',
+    );
+});
+
+test('classifyDoltFailure: recorded divergence is never softened to unknown or hardened into a retry', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'diverged')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'unknown', `${provenance(s)}: diverged read as unknown DISABLES fail-fast`);
+        assert.notEqual(got, 'transient', `${provenance(s)}: diverged read as transient turns a hard stop into a RETRY LOOP`);
+        assert.notEqual(got, 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
+        assert.equal(got, 'diverged', provenance(s));
+    }
+    // The load-bearing line is NOT the first one. Pin that explicitly so a
+    // future "just log the first line" change fails here rather than in
+    // production.
+    const div = stderrSample('dolt/diverged/push-no-common-ancestor');
+    const firstLine = div.stderr.split('\n').find((l) => l.includes('Error 1105'));
+    assert.equal(
+        classifyDoltFailure(firstLine),
+        'unknown',
+        `${provenance(div)}: precondition -- the Error 1105 line alone classifies as unknown, so the verdict depends on NOT truncating`,
+    );
+    assert.equal(classifyDoltFailure(div.stderr), 'diverged', `${provenance(div)}: the full recorded output must classify diverged`);
+});
+
+test('classifyDoltFailure: recorded transient output is never hardened into diverged', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'transient')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'diverged', `${provenance(s)}: transient read as diverged would ABORT the sprint on a network blip`);
+        assert.equal(got, 'transient', provenance(s));
+    }
+});
+
+test('classifyDoltFailure: unclassifiable output is unknown (never silently transient)', () => {
+    for (const s of stderrSamples('dolt').filter((x) => x.expect === 'unknown')) {
+        const got = classifyDoltFailure(s.stderr);
+        assert.notEqual(got, 'transient', `${provenance(s)}: unrecognized output must NOT be silently retried as transient`);
+        assert.equal(got, 'unknown', provenance(s));
+    }
+    // No real invocation produces empty output, so this edge stays synthetic.
+    assert.equal(classifyDoltFailure(''), 'unknown');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-fmu: `bd dolt push` shells out to git, so it can surface the SAME
+// credential-failure text a plain git push does (live-observed on a D-push,
+// not just a G-push). classifyDoltFailure gains the same 'auth' kind as
+// classifyGitFailure, checked after 'diverged' but before 'transient'.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure: credential-style outputs classify as a new "auth" kind, checked after diverged but before transient', () => {
+    // RECORDED: a real `bd dolt pull` against an HTTPS remote with no usable
+    // credential helper and GIT_TERMINAL_PROMPT=0 (apra-fleet-j918.6.2).
+    assert.equal(classifyDoltFailure(REAL_DOLT_AUTH), 'auth', provenance(stderrSample(REAL_DOLT_AUTH_ID)));
+    // The literal text from the 2026-08-02 fleet-mac live incident, kept
+    // verbatim: it is real observed output, and it is the exact string whose
+    // misclassification as 'diverged' hard-aborted a healthy sprint and made
+    // dolt.mjs check AUTH before DIVERGED (see that provider's header).
+    assert.equal(
+        classifyDoltFailure("fatal: could not read Username for 'https://github.com': Device not configured"),
+        'auth',
+        'the live-observed D-push credential failure must classify as auth',
+    );
+    assert.equal(classifyDoltFailure('remote: Bad credentials'), 'auth');
+    assert.equal(classifyDoltFailure('remote: Authentication failed'), 'auth');
+    // Divergence must never be misclassified as auth -- asserted against the
+    // RECORDED divergence, not a hand-typed approximation of one.
+    assert.equal(classifyDoltFailure(REAL_DOLT_DIVERGED), 'diverged');
+    // Transient stays transient, unaffected.
+    assert.equal(classifyDoltFailure(REAL_DOLT_TRANSIENT_REFUSED), 'transient');
+});
+
+// -----------------------------------------------------------------------------
+// classifyDoltFailure / doltPullBefore / doltPushAfter -- 'no-remote'
+// (apra-fleet-eft.16.1/16.2): a local beads clone with no configured dolt
+// remote has nothing to pull/push. This must classify distinctly from
+// diverged/transient/unknown and the brackets must skip (not throw) for it,
+// while still throwing for every other failure kind (regression guard so the
+// skip is not over-broad).
+// -----------------------------------------------------------------------------
+test("classifyDoltFailure: 'Error 1105: no remote' and 'no remote' fetch text classify as no-remote", () => {
+    // RECORDED: `bd dolt pull` in a beads clone with no Dolt remote at all.
+    assert.equal(classifyDoltFailure(REAL_DOLT_NO_REMOTE), 'no-remote', provenance(stderrSample('dolt/no-remote/pull-with-no-remote-configured')));
+    assert.match(
+        REAL_DOLT_NO_REMOTE,
+        /Error 1105: no remote/,
+        'the recorded sample is the real "Error 1105: no remote" wording this bucket was written for',
+    );
+    // The `[Command Failed] Error: ` prefix is added by the fleet command()
+    // layer, not by bd, so it cannot be recorded from a bd invocation -- wrap
+    // the RECORDED text rather than re-typing a whole fake message.
+    assert.equal(classifyDoltFailure(`[Command Failed] Error: ${REAL_DOLT_NO_REMOTE}`), 'no-remote');
+    assert.equal(classifyDoltFailure('no remote configured for this repository'), 'no-remote');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2: the two remaining benign/fatal non-error buckets
+// (empty-remote, remote-unreachable) had no recorded coverage either. Both are
+// ROUTING decisions -- empty-remote is a benign skip, remote-unreachable is a
+// named permanent diagnosis -- so a reword that collapses either into
+// 'unknown' or 'transient' changes behavior silently.
+// -----------------------------------------------------------------------------
+test('classifyDoltFailure: recorded empty-remote and remote-unreachable keep their distinct buckets', () => {
+    const empty = stderrSample('dolt/empty-remote/pull-git-remote-without-dolt-data');
+    assert.equal(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'empty-remote', provenance(empty));
+    assert.notEqual(classifyDoltFailure(REAL_DOLT_EMPTY_REMOTE), 'transient', `${provenance(empty)}: an empty remote must never be retried`);
+
+    const unreachable = stderrSample('dolt/remote-unreachable/push-to-nonexistent-path');
+    assert.equal(classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE), 'remote-unreachable', provenance(unreachable));
+    assert.notEqual(
+        classifyDoltFailure(REAL_DOLT_REMOTE_UNREACHABLE),
+        'diverged',
+        `${provenance(unreachable)}: a dead remote must never be reported to the operator as data divergence`,
+    );
+    // extractDoltRemoteUrl feeds the named diagnosis for this bucket, so it
+    // must survive the real wrapper text too, not just a hand-typed one.
+    assert.match(
+        String(extractDoltRemoteUrl(REAL_DOLT_REMOTE_UNREACHABLE)),
+        /this-path-does-not-exist\.git$/,
+        `${provenance(unreachable)}: extractDoltRemoteUrl must recover the remote URL from the REAL wrapper text`,
+    );
+});
+
+test('doltPullBefore: a no-remote failure returns a benign skip, never throws', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt pull': [fail("fetch from origin/main: Error 1105: no remote")],
+    });
+    const res = await doltPullBefore('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1, 'no-remote is not retried');
+});
+
+test('doltPullBefore: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command, sleep: async () => {} }),
+        DoltDivergedError,
+        'diverged D-pull failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
+        DoltSyncError,
+        'transient-exhausted D-pull failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
+        DoltSyncError,
+        'unknown D-pull failures are not swallowed by the no-remote skip',
+    );
+});
+
+test('doltPushAfter: a no-remote failure returns a benign skip, never throws, and issues no reconcile pull', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail("[Command Failed] Error: fetch from origin/main: Error 1105: no remote")],
+    });
+    const res = await doltPushAfter('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no-remote D-push triggers no reconcile pull');
+});
+
+test('doltPushAfter: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command, sleep: async () => {} }),
+        DoltDivergedError,
+        'diverged D-push failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command, sleep: async () => {} }),
+        DoltSyncError,
+        'transient-exhausted D-push failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command, sleep: async () => {} }),
+        DoltSyncError,
+        'unknown D-push failures are not swallowed by the no-remote skip',
+    );
+});
+
+// -----------------------------------------------------------------------------
+// doltPullBefore (D-pull).
+// -----------------------------------------------------------------------------
+test('doltPullBefore: happy path runs `bd dolt pull` with an explicit member_name', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt pull': [OK] });
+    const res = await doltPullBefore('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA' });
+    const pull = calls.find((c) => c.cmd.includes('bd dolt pull'));
+    assert.ok(pull, 'a bd dolt pull was issued');
+    assert.equal(pull.opts.member_name, 'memberA', 'D-pull carries an explicit member_name (3.2)');
+});
+
+test('doltPullBefore: a divergence raises a typed DoltDivergedError (never retried blindly)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] });
+    await assert.rejects(() => doltPullBefore('memberA', { command }), DoltDivergedError);
+    const pulls = calls.filter((c) => c.cmd.includes('bd dolt pull'));
+    assert.equal(pulls.length, 1, 'a diverged D-pull is issued exactly once, not retried');
+});
+
+test('doltPullBefore: a transient failure is retried, then succeeds', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), OK] });
+    const res = await doltPullBefore('memberA', { command });
+    assert.equal(res.ok, true);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2);
+});
+
+test('doltPullBefore: requires an injected command()', async () => {
+    await assert.rejects(() => doltPullBefore('memberA', {}), /requires an injected command/);
+});
+
+// -----------------------------------------------------------------------------
+// doltPushAfter (D-push).
+// -----------------------------------------------------------------------------
+test('doltPushAfter: clean push publishes with explicit member_name, no reconcile', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [OK] });
+    const res = await doltPushAfter('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+    const push = calls.find((c) => c.cmd.includes('bd dolt push'));
+    assert.equal(push.opts.member_name, 'memberA', 'D-push carries an explicit member_name (3.2)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull on a clean push');
+});
+
+test('doltPushAfter: pushBeads:false is a no-op read-only bracket (nothing published)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [OK] });
+    const res = await doltPushAfter('memberA', { command, pushBeads: false });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false });
+    assert.equal(calls.length, 0, 'pushBeads:false issues no dolt command at all');
+});
+
+test('doltPushAfter: push loser reconciles with EXACTLY ONE D-pull then one re-push (first-successful-pusher-wins)', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail('Updates were rejected because the remote contains work'), OK],
+        'bd dolt pull': [OK],
+    });
+    const res = await doltPushAfter('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: true });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1, 'exactly one reconcile pull');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push, reconcile-pull, then re-push');
+});
+
+test('doltPushAfter: still rejected after the one reconcile raises typed DoltDivergedError, no further retry', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail('cannot fast-forward: divergent branches')],
+        'bd dolt pull': [OK],
+    });
+    await assert.rejects(() => doltPushAfter('memberA', { command }), DoltDivergedError);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push then one re-push, never a third');
+});
+
+test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDivergedError), no reconcile', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail('connection refused')] });
+    await assert.rejects(() => doltPushAfter('memberA', { command, sleep: async () => {} }), DoltSyncError);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.30.2/30.3 + stabilization Issue 31 -- neutralized-sandbox
+// D-push isolation, two layers: (1) PRE-GATE: when bd-level sync.remote is
+// positively absent, no `bd dolt push` is issued at all (run 15 final review:
+// bd auto-provisions a Dolt remote from git origin on the attempt, so a
+// credentialed clone would reach the real shared remote); (2) failure-path
+// downgrade as defense-in-depth if a push does fire and fail.
+//
+// A misconfigured/mis-wired Dolt-level remote in a neutralized sandbox can
+// make a real 'bd dolt push' attempt and fail with a credentials-style error
+// (e.g. 'could not read Username for https://github.com') that
+// classifyDoltFailure has no pattern for and so classifies as 'unknown' --
+// NOT 'no-remote'. doltPushAfter must still treat this as a benign
+// no-remote skip when the member's bd-level sync.remote is itself
+// neutralized/absent (checked via isMemberSyncRemoteConfigured /
+// opts.checkSyncRemoteConfigured), and must still raise DoltSyncError,
+// unchanged from eft.16.1, when sync.remote IS actively configured (the
+// negative control). Hermetic: command() is always a scripted mock here --
+// no real bd/dolt process and no network I/O.
+// -----------------------------------------------------------------------------
+const CREDENTIALS_ERROR = 'could not read Username for https://github.com: terminal prompts disabled';
+
+test('doltPushAfter: PRE-GATE (stabilization Issue 31) -- with bd-level sync.remote absent, NO bd dolt push command is issued at all', async () => {
+    // The safety-critical assertion from run 15's final review: it is not
+    // enough that a neutralized-sandbox push FAILURE is downgraded to a
+    // benign skip -- the push must never be ATTEMPTED, because bd
+    // auto-provisions a Dolt remote from git origin on the attempt and a
+    // credentialed clone would push to the real shared remote successfully.
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const checkSyncRemoteConfigured = async () => false; // simulates a neutralized/absent bd-level sync.remote
+
+    const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 0, 'no bd dolt push command is ISSUED when sync.remote is absent (pre-gate, not failure downgrade)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued either');
+    assert.ok(
+        logs.some((l) => l.includes("skipped pre-attempt") && l.includes('no push command issued')),
+        `expected a 'skipped pre-attempt ... no push command issued' log line, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, sync.remote reads absent BEFORE the pre-gate runs', async () => {
+    // Pre-gate reports ABSENT up front -- so the failure-path downgrade
+    // branch is reached via the SAME early-return pre-gate skip, not a
+    // second, differently-answered probe (apra-fleet-7h6n.5 retired the
+    // failure path's own re-probe: it now reuses the pre-gate's cached
+    // boolean instead of calling checkSyncRemoteConfigured again, so a
+    // stateful check that changes its answer BETWEEN the pre-gate and the
+    // failure path -- the previous version of this test -- can no longer be
+    // observed; see the two tests immediately below for that new contract).
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const checkSyncRemoteConfigured = async () => false;
+
+    const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 0, 'the push was never attempted -- the pre-gate itself skipped it');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued for this benign skip');
+    assert.ok(
+        logs.some((l) => l.includes('skipped pre-attempt') && l.includes('no push command issued')),
+        `expected a 'skipped pre-attempt ... no push command issued' log line, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+// apra-fleet-7h6n.5: the failure-path downgrade branch at dolt-sync.mjs's
+// doltPushGuarded() now reuses the pre-gate's cached
+// isMemberSyncRemoteConfigured()/checkSyncRemoteConfigured() result instead
+// of re-invoking it a second time in the same doltPushAfter() call. Since the
+// pre-gate already returned `true` by the time the failure path is
+// reachable (a `false` result exits before any push is attempted), the
+// cached value is always `true` there -- the failure-path skip branch stays
+// in the code (defense-in-depth against a future caller wiring) but can no
+// longer independently observe a DIFFERENT (stale/changed) answer than the
+// pre-gate did; see the retired stateful-race scenario the previous version
+// of the test above covered.
+test('doltPushAfter (apra-fleet-7h6n.5): checkSyncRemoteConfigured is invoked at MOST ONCE per call -- the failure-path downgrade reuses the pre-gate result rather than re-probing', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once per doltPushAfter call -- the failure path must reuse the cached pre-gate result, not re-probe');
+});
+
+test('doltPushAfter (apra-fleet-7h6n.5): a stale/changed answer between pre-gate and failure path is no longer observable -- the cached pre-gate value (configured) wins even if a later probe would have reported absent', async () => {
+    // Same stateful-answer shape the retired test above used (pre-gate sees
+    // `true`, a hypothetical second probe would see `false`) -- proves the
+    // SECOND answer is never consulted at all: checkSyncRemoteConfigured is
+    // called once, so the failure surfaces as DoltSyncError (the cached
+    // `true` from the pre-gate), not the benign no-remote skip the old
+    // double-probe behavior produced.
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const answers = [true, false];
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => {
+        checkCalls += 1;
+        return answers.length > 1 ? answers.shift() : answers[0];
+    };
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
+    assert.equal(checkCalls, 1, 'the second (would-be `false`) answer is never consulted -- only one probe happens per call');
+});
+
+// apra-fleet-7h6n.9 (verifying apra-fleet-7h6n.5): the two 7h6n.5 tests above
+// only drive the FAILURE path with a checkSyncRemoteConfigured spy. This one
+// drives the SUCCESS path (push succeeds outright, doltPushGuarded() never
+// reaches its failure-path downgrade branch at all) with the same kind of
+// spy, so "at most once per call" is verified across both branches
+// doltPushAfter can take, not just the one the .5 fix actually touched.
+test('doltPushAfter (apra-fleet-7h6n.9): checkSyncRemoteConfigured is invoked at most once per call on the SUCCESS path too (push succeeds, failure-path downgrade never runs)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [OK] });
+    let checkCalls = 0;
+    const checkSyncRemoteConfigured = async () => { checkCalls += 1; return true; };
+
+    const res = await doltPushAfter('memberA', { command, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push succeeded on the first attempt');
+    assert.equal(checkCalls, 1, 'checkSyncRemoteConfigured must be invoked exactly once on the success path -- only the pre-gate ever calls it');
+});
+
+test('doltPushAfter: negative control -- with an active configured sync.remote, the same non-diverged failure still throws DoltSyncError (eft.16.1 semantics preserved)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const checkSyncRemoteConfigured = async () => true; // simulates an actively configured bd-level sync.remote
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.31: prove D-push isolation holds structurally, not just
+// because the real fleet-e2e-toy remote happened to be unreachable without
+// GitHub credentials. C4/C5's "stop" was an accident of the test machine
+// lacking credentials, not the neutralization actually working -- the
+// pre-attempt gate (eft.30/eft.30.2 above) had not landed yet at that point
+// and check-sandbox-sync-remote.mjs reported clean beforehand regardless.
+// This test uses a REAL, fully local, credential-free "hazard" remote (a
+// bare git repo whose path carries the fleet-e2e-toy identity, reachable via
+// a plain filesystem path -- no GitHub auth involved at all) so that if the
+// pre-gate did NOT hold, the push below would simply succeed and land on it.
+// Asserting it never does, with a remote that WOULD happily accept the push,
+// is what proves isolation does not depend on missing credentials.
+// -----------------------------------------------------------------------------
+test('(eft.31) D-push never reaches a fake/local hazard remote even when it is fully reachable with no credentials required', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eft31-hazard-remote-'));
+    try {
+        // A REAL, local, credential-free stand-in for the actual fleet-e2e-toy
+        // Dolt remote from C4/C5.
+        const hazardRemote = path.join(tmpDir, 'fleet-e2e-toy.git');
+        execFileSync('git', ['init', '--bare', '-b', 'main', hazardRemote]);
+
+        const workDir = path.join(tmpDir, 'work');
+        fs.mkdirSync(workDir);
+        execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
+        execFileSync('git', ['config', 'user.email', 'eft31@test.local'], { cwd: workDir });
+        execFileSync('git', ['config', 'user.name', 'eft-31-test'], { cwd: workDir });
+        fs.writeFileSync(path.join(workDir, 'README.md'), 'seed\n', 'utf-8');
+        execFileSync('git', ['add', 'README.md'], { cwd: workDir });
+        execFileSync('git', ['commit', '-m', 'seed'], { cwd: workDir });
+        execFileSync('git', ['remote', 'add', 'origin', hazardRemote], { cwd: workDir });
+
+        // Sanity: this hazard remote genuinely accepts a push with ZERO
+        // credentials -- unlike the real fleet-e2e-toy remote, nothing here
+        // would ever block an actually-issued push.
+        execFileSync('git', ['push', 'origin', 'main'], { cwd: workDir });
+
+        let pushAttempted = false;
+        const command = async (cmd) => {
+            if (cmd.includes('bd dolt push')) {
+                pushAttempted = true;
+                // If this ever runs, it is a REAL push to the reachable
+                // hazard remote -- it would succeed outright.
+                execFileSync('git', ['push', 'origin', 'main'], { cwd: workDir });
+                return { ok: true, output: '', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const checkSyncRemoteConfigured = async () => false; // neutralized sandbox (eft.25.1)
+
+        const res = await doltPushAfter('sandbox-member', { command, checkSyncRemoteConfigured });
+
+        assert.equal(pushAttempted, false, 'no `bd dolt push` command was ever ISSUED against the reachable hazard remote');
+        assert.deepEqual(
+            res,
+            { ok: true, member: 'sandbox-member', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' },
+            'the D-push bracket reports a benign no-remote skip, not a push',
+        );
+
+        // Confirm nothing actually reached the hazard remote: it still has
+        // exactly the one seed commit, nothing added by a D-push attempt.
+        const remoteLog = execFileSync('git', ['log', '--oneline', 'main'], { cwd: hazardRemote, encoding: 'utf-8' })
+            .trim().split('\n').filter(Boolean);
+        assert.equal(remoteLog.length, 1, 'the hazard remote received exactly the one seed push and nothing from a D-push attempt');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('doltPushAfter: default isMemberSyncRemoteConfigured check (no override) is exercised end-to-end -- absent sync.remote skips, configured sync.remote throws', async () => {
+    const absent = makeCommandMock({
+        'bd dolt push': [fail(CREDENTIALS_ERROR)],
+        'bd config get sync.remote': [{ ok: true, output: JSON.stringify({ value: '' }), error: null }],
+    });
+    const resAbsent = await doltPushAfter('memberA', { command: absent.command });
+    assert.deepEqual(resAbsent, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    const configCallAbsent = absent.calls.find((c) => c.cmd.includes('bd config get sync.remote'));
+    assert.ok(configCallAbsent, 'doltPushAfter consulted bd-level sync.remote via command()');
+    assert.equal(configCallAbsent.opts.member_name, 'memberA', 'sync.remote query carries an explicit member_name (3.2)');
+
+    // The sync.remote probe is memoized per member (apra-fleet-akuv), and the
+    // 'absent' phase above just cached a POSITIVE (configured:false) answer
+    // for 'memberA'. This test deliberately re-probes the SAME member with a
+    // different mocked answer within a single test, so the memo must be
+    // dropped here or the 'configured' phase below would silently reuse the
+    // stale 'absent' answer instead of exercising a fresh probe.
+    invalidateSyncRemoteCache('memberA');
+    const configured = makeCommandMock({
+        'bd dolt push': [fail(CREDENTIALS_ERROR)],
+        'bd config get sync.remote': [{ ok: true, output: JSON.stringify({ value: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' }), error: null }],
+    });
+    await assert.rejects(() => doltPushAfter('memberA', { command: configured.command }), DoltSyncError);
+});
+
+test('isMemberSyncRemoteConfigured: fail-safe -- an unparsable / errored / missing-output query is treated as CONFIGURED', async () => {
+    const errored = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: false, error: 'boom' }),
+    });
+    assert.equal(errored, true, 'a failSoft error result fails safe (configured)');
+
+    const unparsable = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: 'not json', error: null }),
+    });
+    assert.equal(unparsable, true, 'unparsable JSON fails safe (configured)');
+
+    const emptyOutput = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: '', error: null }),
+    });
+    assert.equal(emptyOutput, true, 'no output to positively parse fails safe (configured)');
+
+    const positivelyAbsent = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: JSON.stringify({ value: '' }), error: null }),
+    });
+    assert.equal(positivelyAbsent, false, 'a clean parse of an empty value is the only "not configured" case');
+});
+
+// apra-fleet-eft.32: the try/catch around the injected command() call itself
+// (a thrown exception, as opposed to a failSoft `{ ok: false }` result) is a
+// distinct fail-closed branch from the three above and was previously
+// unexercised.
+test('isMemberSyncRemoteConfigured: fail-safe -- a thrown command() exception is treated as CONFIGURED', async () => {
+    const thrown = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => { throw new Error('ECONNRESET'); },
+    });
+    assert.equal(thrown, true, 'a thrown command() exception fails safe (configured)');
+});
+
+// apra-fleet-eft.32: end-to-end proof (via doltPushAfter's default
+// isMemberSyncRemoteConfigured check, no override) that every one of the four
+// fail-closed sync.remote query outcomes -- command() throwing, a failSoft
+// error result, unparseable output, and empty output -- is treated as
+// CONFIGURED and so a non-diverged 'bd dolt push' failure still raises
+// DoltSyncError instead of being downgraded to a benign no-remote skip. This
+// is the safety-critical default (eft.16.1): an inconclusive sync.remote read
+// must never silently swallow a real push failure.
+test('doltPushAfter: every fail-closed isMemberSyncRemoteConfigured path (command() throws, failSoft error, unparseable output, empty output) still throws DoltSyncError on a non-diverged push failure', async () => {
+    const scenarios = [
+        { name: 'command() throws', configHandler: async () => { throw new Error('ECONNRESET'); } },
+        { name: 'failSoft error result', configHandler: async () => ({ ok: false, output: '', error: 'boom' }) },
+        { name: 'unparseable output', configHandler: async () => ({ ok: true, output: 'not json', error: null }) },
+        { name: 'empty output', configHandler: async () => ({ ok: true, output: '', error: null }) },
+    ];
+
+    for (const { name, configHandler } of scenarios) {
+        const command = async (cmd) => {
+            if (cmd.includes('bd config get sync.remote')) return configHandler();
+            if (cmd.includes('bd dolt push')) return fail(CREDENTIALS_ERROR);
+            return OK;
+        };
+        await assert.rejects(
+            () => doltPushAfter('memberA', { command }),
+            DoltSyncError,
+            `fail-closed path '${name}' must still throw DoltSyncError (member treated as configured, no silent no-remote skip)`,
+        );
+    }
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.58.1 -- extractConflictingTables: best-effort table-name
+// extraction from raw dolt conflict output, feeding the pre-flight
+// beads-health gate's one-line cause message.
+// -----------------------------------------------------------------------------
+test('extractConflictingTables: recognizes the "table <name>" shape', () => {
+    assert.deepEqual(extractConflictingTables('cannot fast-forward: table issues'), ['issues']);
+});
+
+test('extractConflictingTables: recognizes the "`<name>` table" shape', () => {
+    assert.deepEqual(extractConflictingTables('merge conflict: `dependencies` table'), ['dependencies']);
+});
+
+test('extractConflictingTables: recognizes the "conflict in <name>" shape', () => {
+    assert.deepEqual(extractConflictingTables('data conflict in issue_comments during merge'), ['issue_comments']);
+});
+
+test('extractConflictingTables: dedupes repeated mentions of the same table', () => {
+    const tables = extractConflictingTables('conflict in issues; table issues has unresolved rows');
+    assert.deepEqual(tables, ['issues']);
+});
+
+test('extractConflictingTables: collects multiple distinct tables', () => {
+    const tables = extractConflictingTables('conflict in issues; conflict in dependencies');
+    assert.deepEqual(new Set(tables), new Set(['issues', 'dependencies']));
+});
+
+test('extractConflictingTables: returns [] for unrecognizable output, never throws', () => {
+    assert.deepEqual(extractConflictingTables('some brand-new dolt failure text'), []);
+    assert.deepEqual(extractConflictingTables(''), []);
+    assert.doesNotThrow(() => extractConflictingTables(null));
+    assert.doesNotThrow(() => extractConflictingTables(undefined));
+    assert.deepEqual(extractConflictingTables(null), []);
+    assert.deepEqual(extractConflictingTables(undefined), []);
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.58.1 -- preflightBeadsHealthGate: the pre-flight beads-health
+// gate that must catch a diverged orchestrator beads clone BEFORE any setup
+// mutation (git branch ensure / PR commands), with an actionable one-line
+// cause naming the workspace path, conflicting table(s), and remediation.
+// -----------------------------------------------------------------------------
+test('preflightBeadsHealthGate: happy path passes through doltPullBefore\'s ok result unchanged', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [OK] });
+    const res = await preflightBeadsHealthGate('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA' });
+});
+
+test('preflightBeadsHealthGate: no-remote skip passes through unchanged (not treated as a divergence)', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail('Error 1105: no remote')] });
+    const res = await preflightBeadsHealthGate('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', skipped: true, reason: 'no-remote' });
+});
+
+test('preflightBeadsHealthGate: a non-diverged (transient-exhausted/unknown) failure is re-thrown unchanged, not rewritten', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] });
+    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command, sleep: async () => {} }), DoltSyncError);
+});
+
+test('preflightBeadsHealthGate: on divergence, composes a one-line cause naming workspace, table(s), and remediation, then throws DoltDivergedError', async () => {
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const command = async (cmd, opts = {}) => {
+        if (cmd.includes('bd dolt pull')) return fail('cannot fast-forward: conflict in table issues');
+        if (cmd === 'pwd') return { ok: true, output: '/home/ci/sprint-workspace\n', error: null };
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command, log }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'rethrows as DoltDivergedError');
+            assert.match(err.message, /beads DB diverged/, 'message matches the required /beads DB diverged/ cause line');
+            assert.ok(err.message.includes('/home/ci/sprint-workspace'), `message names the resolved workspace path, got: ${err.message}`);
+            assert.ok(err.message.includes('issues'), `message names the conflicting table, got: ${err.message}`);
+            assert.ok(/resolve or re-init from the shared remote/.test(err.message), `message includes remediation guidance, got: ${err.message}`);
+            return true;
+        },
+    );
+    assert.ok(
+        logs.some((l) => /beads DB diverged/.test(l)),
+        `expected the composed cause to be logged to the main log, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('preflightBeadsHealthGate: falls back to "unknown" table(s) and the member id (workspace) when neither is resolvable', async () => {
+    const command = async (cmd) => {
+        if (cmd.includes('bd dolt pull')) return fail('cannot fast-forward: local changes diverge from remote, please resolve');
+        if (cmd === 'pwd') return { ok: false, output: '', error: 'pwd not available' };
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError);
+            assert.ok(err.message.includes("workspace: memberA"), `expected a member-id workspace fallback, got: ${err.message}`);
+            assert.ok(err.message.includes('unknown'), `expected an "unknown" table fallback, got: ${err.message}`);
+            return true;
+        },
+    );
+});
+
+test('preflightBeadsHealthGate: a thrown pwd probe never blocks the abort -- still throws DoltDivergedError with a member-id fallback', async () => {
+    const command = async (cmd) => {
+        if (cmd.includes('bd dolt pull')) return fail('conflict in table issues');
+        if (cmd === 'pwd') throw new Error('unexpected pwd failure');
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'a broken diagnostics probe never masks the real divergence error');
+            assert.ok(err.message.includes('workspace: memberA'));
+            return true;
+        },
+    );
+});
+
+// -----------------------------------------------------------------------------
+// verifyDoerStreakClosed -- the single most divergence-sensitive read.
+//
+// This is the whole reason apra-fleet-eft.9.1 exists: a remote doer closes its
+// assigned beads in ITS OWN clone and D-pushes them. The orchestrator reads a
+// DIFFERENT clone, so it MUST D-pull first, or it observes stale (still-open)
+// status and falsely reports the streak FAILED.
+// -----------------------------------------------------------------------------
+test('verifyDoerStreakClosed: D-pulls BEFORE the bd show read, so a remote doer close is NOT falsely reported FAILED', async () => {
+    // Model the two-clone reality: the orchestrator clone shows the beads as
+    // still OPEN until it D-pulls, at which point it observes the doer's
+    // just-pushed closes. If verifyDoerStreakClosed read WITHOUT pulling first,
+    // it would see the open snapshot and wrongly return [BD-1, BD-2] (FAILED).
+    let pulled = false;
+    const openSnapshot = JSON.stringify([
+        { id: 'BD-1', status: 'open' },
+        { id: 'BD-2', status: 'open' },
+    ]);
+    const closedSnapshot = JSON.stringify([
+        { id: 'BD-1', status: 'closed' },
+        { id: 'BD-2', status: 'closed' },
+    ]);
+    const calls = [];
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        if (cmd.includes('bd dolt pull')) {
+            pulled = true;
+            return OK;
+        }
+        if (cmd.includes('bd show')) {
+            // Return the freshly-pulled snapshot only if the D-pull ran first.
+            return pulled ? closedSnapshot : openSnapshot;
+        }
+        return OK;
+    };
+
+    const unclosed = await verifyDoerStreakClosed({
+        command,
+        orchestratorMember: 'orchestrator',
+        beadIds: ['BD-1', 'BD-2'],
+    });
+
+    assert.deepEqual(unclosed, [], 'after the mandatory D-pull the just-pushed closes are visible: streak passes, not FAILED');
+
+    // Structural proof the pull HAPPENED and happened BEFORE the read.
+    const pullIdx = calls.findIndex((c) => c.cmd.includes('bd dolt pull'));
+    const showIdx = calls.findIndex((c) => c.cmd.includes('bd show'));
+    assert.ok(pullIdx !== -1, 'a D-pull was issued');
+    assert.ok(showIdx !== -1, 'a bd show verification read was issued');
+    assert.ok(pullIdx < showIdx, 'the D-pull runs strictly BEFORE the bd show verification read');
+    assert.equal(calls[pullIdx].opts.member_name, 'orchestrator', 'the D-pull runs on the orchestrator clone (3.2 explicit member)');
+    assert.equal(calls[showIdx].opts.member_name, 'orchestrator', 'the verification read runs on the orchestrator clone');
+});
+
+test('verifyDoerStreakClosed: genuinely-unclosed beads are still reported after a successful D-pull', async () => {
+    const snapshot = JSON.stringify([
+        { id: 'BD-1', status: 'closed' },
+        { id: 'BD-2', status: 'in_progress' },
+    ]);
+    const { command } = makeCommandMock({
+        'bd dolt pull': [OK],
+        'bd show': [snapshot],
+    });
+    const unclosed = await verifyDoerStreakClosed({
+        command,
+        orchestratorMember: 'orchestrator',
+        beadIds: ['BD-1', 'BD-2'],
+    });
+    assert.deepEqual(unclosed, ['BD-2'], 'a genuinely-open bead is correctly reported as unclosed');
+});
+
+test('verifyDoerStreakClosed: a diverged D-pull propagates the typed error (not swallowed into a false PASS)', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] });
+    await assert.rejects(
+        () => verifyDoerStreakClosed({ command, orchestratorMember: 'orchestrator', beadIds: ['BD-1'] }),
+        DoltDivergedError,
+    );
+});
+
+// -----------------------------------------------------------------------------
+// Plan 3.3 dolt bracket INSERTION POINTS (source-level enumeration).
+//
+// Every beads-MUTATING dispatch role must carry `pushBeads: true` so its
+// mutations are D-pushed to the shared remote; every read-only role must not.
+// This locks in the integ-test-runner/harvester D-push that this bead's rework
+// added, and fails if a future mutating dispatch omits it.
+// -----------------------------------------------------------------------------
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
+
+/** Given the index of an opening '(' returns the index of its matching ')', skipping string/template contents. */
+function balancedClose(src, openParenIdx) {
+    let depth = 0;
+    for (let i = openParenIdx; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '(') depth++;
+        else if (ch === ')') { depth--; if (depth === 0) return i; }
+        else if (ch === '"' || ch === "'" || ch === '`') {
+            for (i++; i < src.length; i++) {
+                if (src[i] === '\\') { i++; continue; }
+                if (src[i] === ch) break;
+            }
+        }
+    }
+    return src.length;
+}
+
+/** Non-comment, non-string call sites of `withGitSync(` with their balanced call text. */
+function withGitSyncCallTexts(src) {
+    const re = /(?<![.\w])withGitSync\(/g;
+    const texts = [];
+    let m;
+    while ((m = re.exec(src)) !== null) {
+        const openIdx = m.index + m[0].length - 1;
+        // Skip the function DECLARATION line (`async function withGitSync(`).
+        const lineStart = src.lastIndexOf('\n', m.index) + 1;
+        const lineText = src.slice(lineStart, src.indexOf('\n', m.index));
+        if (/^(async\s+)?function\b/.test(lineText.trim())) continue;
+        if (lineText.trim().startsWith('//') || lineText.trim().startsWith('*')) continue;
+        const end = balancedClose(src, openIdx);
+        texts.push(src.slice(openIdx, end + 1));
+    }
+    return texts;
+}
+
+// -----------------------------------------------------------------------------
+// apra-fleet-fmu: doltPushAfter/doltPullBefore's bounded one-shot
+// onAuthFailure self-heal on an 'auth'-classified `bd dolt` failure. Mirrors
+// the git-side coverage in git-sync-brackets.test.mjs. An active
+// checkSyncRemoteConfigured (true) is used throughout so these failures reach
+// the real self-heal path rather than the eft.30.2 no-remote downgrade.
+// -----------------------------------------------------------------------------
+const CREDENTIALS_ERROR_2 = "fatal: could not read Username for 'https://github.com': Device not configured";
+
+// -----------------------------------------------------------------------------
+// apra-fleet-647.1.3.3: an 'unknown'-classified `bd dolt` failure gets the
+// SAME bounded one-shot self-heal + single retry as 'auth', rather than
+// failing immediately. 'diverged' remains excluded -- never retried (see the
+// standalone negative-control test below, which is NOT parameterizable here
+// since diverged behaves differently by design).
+//
+// apra-fleet-7h6n.3: the auth-kind and unknown-kind self-heal tests above
+// used to be EIGHT separate top-level test() calls (four shapes x two
+// classification kinds) differing only by which error string/classification
+// drove them (the bead's audit estimated seven; re-counting them here found
+// eight -- four shapes symmetric across both kinds, noted for the record).
+// Loop-ified into one parameterized test with a subtest per (shape, kind)
+// pair -- same assertions, same per-case pass/fail granularity via node:test
+// subtests, one shared body per shape.
+// -----------------------------------------------------------------------------
+const NOVEL_DOLT_ERROR = 'some totally novel bd dolt failure the classifier has never seen before';
+
+const SELF_HEAL_KINDS = [
+    {
+        kind: 'auth', article: 'an',
+        error: CREDENTIALS_ERROR_2,
+        assertHealInfoError: (info) => assert.match(info.error, /could not read Username/),
+        pushRetryRejection: DoltSyncError,
+    },
+    {
+        kind: 'unknown', article: 'an',
+        error: NOVEL_DOLT_ERROR,
+        assertHealInfoError: (info) => assert.equal(info.error, NOVEL_DOLT_ERROR),
+        pushRetryRejection: (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
+    },
+];
+
+test('doltPushAfter/doltPullBefore: bounded one-shot onAuthFailure self-heal on auth- and unknown-classified failures (apra-fleet-7h6n.3, parameterized)', async (t) => {
+    for (const { kind, article, error, assertHealInfoError, pushRetryRejection } of SELF_HEAL_KINDS) {
+        if (kind === 'unknown') {
+            assert.equal(classifyDoltFailure(error), 'unknown', 'precondition: injected error must classify as unknown');
+        }
+
+        await t.test(`doltPushAfter: self-heal success -- ${article} ${kind}-classified D-push heals once via onAuthFailure and the single bounded retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async (info) => {
+                healCalls += 1;
+                assert.equal(info.member, 'memberA');
+                assertHealInfoError(info);
+            };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+            assert.equal(healCalls, 1, 'expected exactly one self-heal call');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
+        });
+
+        await t.test(`doltPushAfter: self-heal called but the retry STILL fails on ${article} ${kind}-classified failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] }); // single-entry queue -> same failure every call
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+                pushRetryRejection,
+            );
+            assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
+        });
+
+        await t.test(`doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on ${article} ${kind}-classified failure -- no retry, single attempt`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(error)] });
+            const checkSyncRemoteConfigured = async () => true;
+            await assert.rejects(
+                () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
+                DoltSyncError,
+            );
+            assert.equal(
+                calls.filter((c) => c.cmd.includes('bd dolt push')).length,
+                1,
+                'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
+            );
+        });
+
+        await t.test(`doltPullBefore: ${article} ${kind}-classified D-pull heals once via onAuthFailure and the retry succeeds`, async () => {
+            const { command, calls } = makeCommandMock({ 'bd dolt pull': [fail(error), OK] });
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const checkSyncRemoteConfigured = async () => true;
+            const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+            assert.deepEqual(res, { ok: true, member: 'memberA' });
+            assert.equal(healCalls, 1);
+            assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+        });
+    }
+});
+
+test('doltPullBefore: a DIVERGED D-pull is still never retried/self-healed even when onAuthFailure is provided', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt pull': [fail('error: failed to push some refs to origin/main; Updates were rejected because the remote contains work that you do not have locally.')],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const checkSyncRemoteConfigured = async () => true;
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+        DoltDivergedError,
+    );
+    assert.equal(healCalls, 0, 'a diverged failure must never invoke onAuthFailure self-heal');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1, 'diverged must not be retried at all, bounded to a single attempt');
+});
+
+test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-only roles do not', () => {
+    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
+    const sites = withGitSyncCallTexts(src);
+
+    // Baseline: nine bracketed dispatches (kept in step with
+    // dispatch-sync-bracket-coverage.test.mjs's EXPECTED_WITHGITSYNC_CALL_COUNT).
+    // Bumped 8 -> 9 (2026-07-19): the doer max_turns-exhaustion resume path
+    // (dispatchDoerResume) is the same logical doer streak continuing, so it
+    // gets its own withGitSync(...) bracket identical in shape to the
+    // original dispatchDoer.
+    // Bumped 9 -> 10 (2026-07-19, stabilization log Issue 9): the reviewer
+    // gained the same max_turns-exhaustion resume path
+    // (dispatchReviewerResume) -- a READ-side bracket (pushCode: false, no
+    // pushBeads), so the pushBeads count below is unchanged.
+    // 10 -> 11 (stabilization log iteration 5): Final Review resume bracket
+    // (read-side, no pushBeads -- pushBeads count below unchanged).
+    // 16 -> 18 (apra-fleet-eft.68.1): the in-cycle SCOPED replan added two new
+    // withGitSync(...) brackets in the develop loop -- the scoped planner
+    // dispatch (mutating: pushBeads:true) and the scoped plan-review dispatch
+    // (read-side: no pushBeads).
+    // 18 -> 20 (integ/regression split): the new once-per-sprint Regression
+    // Test phase added two withGitSync(...) brackets -- its dispatch and its
+    // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
+    // (pushBeads:true): the runner files parent-less
+    // `[regression][carry-over]` bug beads that must reach the shared remote.
+    // 20 -> 18 (apra-fleet-3swo.5.3): the planner's two brackets -- its
+    // interactive dispatch and its max_turns-exhaustion resume -- moved out of
+    // runner.js onto the dispatchRole engine (fleet-sprint/dispatch-role.mjs),
+    // which opens the SAME bracket (pushCode:false, pushBeads:true) from one
+    // generic place driven by role-policies.mjs. The scoped-replan planner
+    // bracket, which is still inline, is what keeps the planner role
+    // represented in the roleMarkers check below.
+    // 18 -> 16 (same bead): the plan-reviewer's two read-side brackets
+    // followed the planner onto the engine. Both were read-side with no
+    // pushBeads, so the pushBeads count below is unchanged.
+    // 16 -> 15 (same bead): the scoped-replan planner's bracket followed them,
+    // taking the last planner-role pushBeads:true bracket with it.
+    // 15 -> 14 (same bead): the scoped-replan plan-reviewer's read-side
+    // bracket followed them; it carried no pushBeads, so the count below is
+    // unchanged.
+    // 14 -> 12 (apra-fleet-3swo.5.7): the harvester's dispatch+resume pair
+    // moved onto the engine, starting the execution-side migration. Both were
+    // pushCode:true / pushBeads:true, so the pushBeads count below drops by
+    // two with them.
+    // 12 -> 10 (same bead): the deployer's two read-side brackets followed
+    // them. Neither carried pushBeads, so the count below is unchanged.
+    // 10 -> 8 (same bead): the regression runner's two brackets followed
+    // them; both carried pushBeads:true, so the count below drops by two.
+    // 8 -> 6 (same bead): the integ runner's two brackets followed them; both
+    // carried pushBeads:true, so the count below drops by two.
+    // 6 -> 4 (same bead): the final review's two read-side brackets followed
+    // them; neither carried pushBeads, so the count below is unchanged.
+    // 4 -> 2 (same bead): the per-round reviewer's two read-side brackets
+    // followed them; neither carried pushBeads, so the count below is
+    // unchanged. Only the doer pair is left inline.
+    // apra-fleet-3swo.5.7: RE-ANCHORED, not deleted. Every dispatch ladder has
+    // migrated onto fleet-sprint/dispatch-role.mjs, whose single withGitSync
+    // call passes `pushBeads` as an EXPRESSION read out of the policy row, so
+    // runner.js has no dispatch bracket left for a text scan to find -- a scan
+    // that stayed here would pass vacuously forever.
+    //
+    // The FACT it pinned -- WHICH roles mutate beads and therefore D-push --
+    // is unchanged and is asserted against the policy table that now carries
+    // it. That the flag is really PASSED to a real bracket is proved
+    // behaviourally by the two dispatch-pin files, which run the engine.
+    assert.equal(
+        sites.length,
+        0,
+        `expected 0 INLINE withGitSync(...) dispatch brackets now that every ladder runs on the engine, found ${sites.length}`,
+    );
+
+    // Five roles mutate beads: planner (new tasks, plus the scoped replan),
+    // doer (closes), integ-test-runner (feature-close + bug-file),
+    // regression-test-runner (carry-over bugs) and harvester (issue-defer).
+    const beadPushers = allDispatchPolicies().filter((p) => p.bracket.pushBeads === true);
+    assert.deepEqual(
+        [...new Set(beadPushers.map((p) => p.ladder))].sort(),
+        ['doer', 'harvester', 'integ-test-runner', 'planner', 'regression-test-runner', 'scoped-replan-planner'],
+        'exactly the beads-mutating roles may D-push; a read-only role that starts pushing beads is the regression this pins',
+    );
+    for (const p of allDispatchPolicies()) {
+        if (p.bracket.wrapped) continue;
+        assert.equal(p.bracket.pushBeads, null, `${p.role}: an unbracketed dispatch carries no push flags`);
+    }
+});

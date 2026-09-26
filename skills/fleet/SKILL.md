@@ -64,6 +64,8 @@ See sub-documents for detailed usage:
 - `skill-matrix.md`  -  skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md`  -  VCS auth provisioning per provider
 - `beads.md`  -  Beads persistent task DB: commands, backlog ops, session recovery patterns
+- `beads-conflict-resolution.md`  -  manual dolt SQL recovery when `bd dolt pull`/`push` reports a real merge conflict
+- `knowledge-agent.md`  -  Knowledge Bank workflow: persistent cross-session codebase context for members
 
 ## Beads  -  Persistent Task Tracking
 
@@ -73,13 +75,13 @@ Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fl
 
 See `beads.md` for the full command reference and workflow examples.
 
-## Secure Credentials
+## Secret variables
 
-The `{{secure.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
+The `{{secret.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
 
 **How it works:**
 1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat
-2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`
+2. Reference it as `{{secret.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, `provision_llm_auth`, or `setup_git_app`
 3. Fleet resolves the token server-side before execution; LLM does not see the secret.
 
 **When to use:**
@@ -87,7 +89,7 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 - Rotating credentials: `credential_store_delete` then `credential_store_set`  -  no re-provisioning required
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
-NOTE: **`{{secure.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally  -  the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+NOTE: **`{{secret.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally  -  the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secret.NAME}}` in the fields documented above.
 
 **Access control (scoping):** Credentials can be scoped to specific members.
 - `members="*"` (default)  -  all members can access the credential
@@ -147,7 +149,7 @@ Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 Both `send_files` and `receive_files` are batch operations  -  always transfer all files in a single call, never one file per call.
 
-- `send_files`  -  push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
+- `send_files`  -  push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Optional `substitutions: { name: value }` replaces every `{{name}}` token in each file before transfer  -  see Substitutions section below. Always try to batch multiple files in a single call.
 - `receive_files`  -  pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
 **Directories and globs:** `send_files` accepts individual file paths only  -  directories and glob patterns are not supported yet. To transfer an entire directory, tar it locally and extract on the member:
@@ -160,6 +162,37 @@ Both `send_files` and `receive_files` are batch operations  -  always transfer a
 
 **Cross-OS transfers:** Both `send_files` and `receive_files` work bidirectionally for Linux<->Windows transfers (fleet host on Linux, member on Windows, and vice versa).
 
+## Substitutions (send_files and execute_prompt)
+
+Both `send_files` and `execute_prompt` accept an optional `substitutions: { "token_name": "value" }` parameter that replaces `{{token_name}}` placeholders in file content or prompt text before the content is delivered to the member.
+
+**Usage:**
+```
+send_files(
+  local_paths=["docs/sprint-briefing.md"],
+  substitutions={ branch: "feat/task-1", base_branch: "main", member_name: "Alice" }
+)
+
+execute_prompt(
+  member=...,
+  prompt="Continue Phase {{phase}}. Branch: {{branch}}.",
+  substitutions={ phase: "3", branch: "feat/task-1" }
+)
+```
+
+**Rules:**
+- Token names must match `[A-Za-z_][A-Za-z0-9_]*`  -  no dots, hyphens, or other special characters.
+- All tokens used in any file (or the prompt string) must have a corresponding key in `substitutions`. Missing tokens cause the call to fail with zero side effects (no files written, no CLI invoked).
+- Extra keys are silently ignored  -  pass a superset map without error.
+- No recursive substitution: values containing `{{...}}` are written verbatim.
+- Source files on the fleet host are never modified; only the delivered copy is substituted.
+- If `substitutions` is omitted and file/prompt content contains `{{token}}` patterns, a warning is returned (call still succeeds).
+
+**[SECURE] Secrets boundary -- never use substitutions for secrets:**
+- Substitution keys with dots (e.g. `secret.github_pat`) are rejected outright.
+- `{{secret.NAME}}` patterns in file/prompt content pass through verbatim  -  they are resolved later only by `execute_command` via the credential store, not here.
+- Substitution values are never logged. But callers must not put plaintext secrets in substitution values; use `{{secret.NAME}}` in `execute_command` for secrets.
+
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
@@ -167,7 +200,11 @@ Both `send_files` and `receive_files` are batch operations  -  always transfer a
 - How to handle permission denials during execution
 - How to recompose when switching roles
 
-## execute_prompt Timeout Parameters
+## execute_prompt Parameters
+
+`execute_prompt` accepts `substitutions` (see Substitutions section above), `model`, `resume`, and timeout parameters.
+
+### Timeout Parameters
 
 `execute_prompt` accepts two independent timeout parameters:
 
@@ -188,15 +225,25 @@ The `resume` parameter controls whether a prior session is continued:
 
 | Value | Behaviour |
 |-------|-----------|
-| `true` (default) | If a session ID is stored for this member, continues it. If none exists, starts fresh. |
+| `true` (default) | Best-effort resume of the member's STORED LAST session. If a session ID is stored for this member, continues it; if none exists, starts fresh. |
 | `false` | Always starts a fresh session  -  ignores any stored session ID. |
+| `"<session-id>"` (string) | EXPLICIT resume of exactly that session, preferred over the member's stored session. Terminal on an unknown/expired id: the call returns structured `{ isError: true, reason: "session_not_found" }`, makes NO LLM call, and does NOT fall back to a fresh session. |
 
-`resume` is boolean only. There is no way to target a specific session ID by value.
-The tool always resumes the most recently stored session for that member.
+`resume` accepts a boolean OR a session-ID string, so a caller CAN target a specific
+session by value. The `session_id` parameter is a shorthand for the string form
+(`session_id: "X"` is equivalent to `resume: "X"`, and takes precedence over `resume`).
+
+Prefer the string form whenever the prompt depends on one specific session's prior
+context. `true` resolves to the member's single globally-stored last session, which is
+shared across every role and has no task scoping  -  under `true`, a retry can silently
+land in an unrelated role's session and answer with the wrong shape. The string form
+trades that silent-wrong-context failure for a loud, pre-LLM `session_not_found` that the
+caller can handle (typically: re-dispatch once with `resume: false`).
 
 **Automatic stale-session recovery:** If `resume=true` and the stored session has expired
 or the provider returns an error, `execute_prompt` retries once automatically with a fresh
-session. This recovery is transparent  -  no caller intervention required.
+session. This recovery is transparent  -  no caller intervention required. It applies ONLY
+to `resume: true`; an explicit session-ID string never falls back this way (see the table).
 
 **Provider support:**
 
@@ -204,9 +251,9 @@ session. This recovery is transparent  -  no caller intervention required.
 |----------|---------------|-------|
 | Claude | Full | `claude --resume <sessionId>` |
 | Antigravity (agy) | Full | `agy --conversation <sessionId>` |
+| OpenCode | Full | `opencode run --session <sessionId>` (`--continue` when no id is stored) |
 | Codex | Partial | `resume` command supported |
 | Copilot | None | Always starts fresh regardless of `resume` value |
-| Gemini | Full | Native session support |
 
 Session IDs are parsed from `execute_prompt` output and stored server-side per member.
 The output footer contains: `session: <sessionId>` when the provider supports it.
@@ -227,9 +274,9 @@ Per-provider flag behaviour:
 |----------|--------------|-------------------|
 | Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
 | Antigravity (agy) | None (config-file only via `compose_permissions`) | `--dangerously-skip-permissions` |
+| OpenCode | `--auto` | `--dangerously-skip-permissions` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
 | Copilot | Not supported  -  warns and runs interactively | Not supported |
-| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
 
 Auto-approval is delivered via config files written by `compose_permissions`  -  call it before every dispatch.
 
@@ -266,9 +313,9 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 | Concern | How to handle |
 |---------|---------------|
-| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), AGENTS.md (Codex and OpenCode), COPILOT.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md)  -  skip for all other providers |
-| **Timeouts** | Antigravity/Gemini members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Antigravity members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 

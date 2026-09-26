@@ -1,7 +1,9 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 // Known exception: Codex CLI cannot take a caller-supplied session ID.
 // It uses a positional 'resume' keyword; session discovery relies on the mtime-scan
@@ -21,7 +23,10 @@ export class CodexProvider implements ProviderAdapter {
     return 'codex --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: no windows branch exists here -- `npm
+  // install -g` runs unchanged from any shell (apra-fleet-7dir.2.7: named
+  // here as an adapter needing no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'macos') {
       return 'brew install --cask codex';
     }
@@ -43,11 +48,8 @@ export class CodexProvider implements ProviderAdapter {
     if (sessionId) {
       cmd += ' resume';
     }
-    if (unattended === 'auto') {
-      cmd += ' --ask-for-approval auto-edit';
-    } else if (unattended === 'dangerous') {
-      cmd += ` ${this.skipPermissionsFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
@@ -60,6 +62,12 @@ export class CodexProvider implements ProviderAdapter {
 
   permissionModeAutoFlag(): string | null {
     return '--ask-for-approval auto-edit';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto') return this.permissionModeAutoFlag() ?? '';
+    if (unattended === 'dangerous') return this.skipPermissionsFlag();
+    return '';
   }
 
   /**
@@ -99,12 +107,40 @@ export class CodexProvider implements ProviderAdapter {
     };
   }
 
+  // apra-fleet-hzeb.1: Codex has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+  }
+
   supportsResume(): boolean {
     return true;
   }
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: LOAD-BEARING. resolveSessionLogDir() below returns
+  // null, so the StallDetector has no log to poll for a Codex dispatch and the
+  // exec-level rolling timer is Codex's ONLY stall signal. Decoupling it here
+  // would not "relax" stall detection for Codex, it would remove it. Do not
+  // flip this to 'total_ceiling' without first giving Codex a pollable
+  // transcript path.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
+  }
+
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
+    return '';
+  }
+
+  resolveSessionLogDir(_workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string | null {
+    return null;
   }
 
   resumeFlag(_sessionId?: string): string {
@@ -119,13 +155,26 @@ export class CodexProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gpt-5.4-mini';
     return 'gpt-5.4';
   }
 
   modelFlag(model: string): string {
     return `--model "${escapeDoubleQuoted(model)}"`;
+  }
+
+  agentDirectories(agentName: string): { project: string; home: string } {
+    const rel = `.codex/agents/${agentName}.md`;
+    return { project: rel, home: rel };
+  }
+
+  transformAgent(content: string, _relPath: string): string {
+    return content;
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
   }
 
   classifyError(output: string): PromptErrorCategory {
@@ -198,6 +247,14 @@ export class CodexProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `exec "${promptLiteral}"`;
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
+    // provider-trust-matrix note on the parent bug); Codex was not part of that
+    // investigation and no equivalent per-project trust gate is known. No-op until a
+    // Codex-specific gate is live-verified.
+    return { seeded: false, detail: 'codex: no known per-project trust gate' };
   }
 }
 

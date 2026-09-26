@@ -43,4 +43,11 @@ export class MacOSCommands extends LinuxCommands {
   override parseMemory(stdout: string): string {
     return stdout.trim().substring(0, 200);
   }
+
+  // --- Agent provisioning ---
+  // stock macOS has no sha256sum -- shasum -a 256 is the built-in equivalent
+
+  override hashFilesRecursive(dir: string): string {
+    return `cd "${escapeDoubleQuoted(dir)}" 2>/dev/null && find . -type f -exec shasum -a 256 {} + 2>/dev/null || true`;
+  }
 }

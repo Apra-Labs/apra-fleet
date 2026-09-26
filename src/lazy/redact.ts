@@ -1,7 +1,7 @@
 /**
  * Request scrubbing and response restoring.
  *
- * Outbound, every known secret is replaced by `{{secure.NAME}}` wherever it
+ * Outbound, every known secret is replaced by `{{secret.NAME}}` wherever it
  * appears, and new secrets found in user text or tool output are added to the
  * vault first. Inbound, placeholders inside tool calls are swapped back for
  * the real value so tools run with it -- the model itself never sees it.
@@ -13,14 +13,15 @@
 import { detectSecrets, type DetectMode, type DetectOptions } from './detect.js';
 import type { Origin, Preset, VaultLike } from './vault.js';
 
-export const PLACEHOLDER_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+// Restores both spellings; {{secure.NAME}} is the legacy form upstream still accepts.
+export const PLACEHOLDER_RE = /\{\{(?:secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
 export function placeholder(name: string): string {
-  return `{{secure.${name}}}`;
+  return `{{secret.${name}}}`;
 }
 
 export const SYSTEM_NOTE =
-  'Some values in this conversation appear as {{secure.NAME}}. Each is a real secret held on the ' +
+  'Some values in this conversation appear as {{secret.NAME}}. Each is a real secret held on the ' +
   "user's machine. Use the token exactly as written wherever the value is needed (commands, files, " +
   'config, code); it is replaced with the real value when the tool runs. Never ask the user to ' +
   'reveal it, and do not try to print, decode or guess it.';
@@ -64,7 +65,7 @@ export class Redactor {
     let cursor = 0;
     for (const f of findings) {
       const value = out.slice(f.start, f.end);
-      if (value.includes('{{secure.')) continue;
+      if (value.includes('{{secret.')) continue;
       const name = this.vault.remember(f.kind, value, origin);
       events.push({ name, kind: 'new', origin });
       rebuilt += out.slice(cursor, f.start) + placeholder(name);
@@ -140,7 +141,7 @@ export class Redactor {
     if (typeof body.system === 'string') out.system = this.scrubText(body.system, null, events);
     else if (Array.isArray(body.system)) out.system = body.system.map((b: any) => this.scrubBlock(b, 'system', events));
 
-    const usesPlaceholders = JSON.stringify(out.messages).includes('{{secure.');
+    const usesPlaceholders = JSON.stringify(out.messages).includes('{{secret.');
     const presets = this.vault.presets?.() ?? [];
     if (usesPlaceholders || presets.length > 0) out.system = appendSystemNote(out.system, this.systemNote(presets));
     return { body: out, events, usesPlaceholders };

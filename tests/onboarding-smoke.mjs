@@ -51,18 +51,19 @@ if (state.bannerShown !== false) {
 }
 
 // --- Simulate wrapTool helper ---
-// Banner bypasses JSON check; welcome-back and nudges still respect it.
+// eft.23 fix: the JSON check now gates the first-run banner too (not just
+// welcome-back/nudges) — a JSON-typed tool's content[0] must never be
+// prefixed with the banner block, or machine callers that JSON.parse()
+// content[0] directly (e.g. auto-sprint's cli.mjs) break on the very first
+// call after a fresh install. The banner is deferred, not lost: it fires on
+// the next non-JSON active-tool call instead.
 // Optional notify callback is called for preamble and suffix (simulates sendLoggingMessage).
 function simulateWrapTool(toolName, result, notify) {
   const isJson = isJsonResponse(result);
   let preamble = null;
-  if (isActiveTool(toolName)) {
+  if (isActiveTool(toolName) && !isJson) {
     const banner = getFirstRunPreamble();
-    if (banner) {
-      preamble = banner;
-    } else if (!isJson) {
-      preamble = getWelcomeBackPreamble();
-    }
+    preamble = banner ?? getWelcomeBackPreamble();
   }
   const suffix = isJson ? null : getOnboardingNudge(toolName, {}, result);
 
@@ -93,37 +94,38 @@ if (t1.preamble !== null) { console.error('  FAIL'); process.exit(1); }
 if (getOnboardingState().bannerShown !== false) { console.error('  FAIL'); process.exit(1); }
 console.log('  PASS\n');
 
-// --- Test 2: fleet_status with JSON response — banner bypasses JSON check ---
-console.log('--- Test 2: fleet_status (active tool, JSON response) should show banner ---');
+// --- Test 2: fleet_status with JSON response — eft.23 fix: banner must be suppressed ---
+console.log('--- Test 2: fleet_status (active tool, JSON response) must NOT show banner (eft.23) ---');
 const t2NotifyCalls = [];
 const t2 = simulateWrapTool('fleet_status', '{"members":[]}', (text) => t2NotifyCalls.push(text));
 console.log(`  preamble: ${t2.preamble ? 'YES (' + t2.preamble.length + ' chars)' : 'null'}`);
-console.log(`  contains banner: ${t2.preamble?.includes('One model is a tool') ?? false}`);
-console.log(`  contains guide: ${t2.preamble?.includes('Getting Started') ?? false}`);
+console.log(`  content[0]: ${JSON.stringify(t2.content[0]?.text)}`);
 console.log(`  bannerShown: ${getOnboardingState().bannerShown}`);
-console.log(`  Expected: preamble=YES (banner+guide even for JSON), bannerShown=true`);
-if (!t2.preamble) { console.error('  FAIL: no preamble — banner must bypass JSON check'); process.exit(1); }
-if (!t2.preamble.includes('One model is a tool')) { console.error('  FAIL: missing banner'); process.exit(1); }
+console.log(`  Expected: preamble=null, content[0] is the raw JSON payload, bannerShown=false (deferred)`);
+if (t2.preamble !== null) { console.error('  FAIL: banner must be suppressed for JSON responses'); process.exit(1); }
+if (t2.content[0]?.text !== '{"members":[]}') { console.error('  FAIL: content[0] must be the raw JSON payload'); process.exit(1); }
+try { JSON.parse(t2.content[0].text); } catch (e) { console.error('  FAIL: content[0] must be parseable JSON: ' + e.message); process.exit(1); }
+if (getOnboardingState().bannerShown !== false) { console.error('  FAIL: banner must be deferred, not consumed, on JSON calls'); process.exit(1); }
 console.log('  PASS\n');
 
-// --- Test 2b: notify callback was called with banner text ---
-console.log('--- Test 2b: notify callback called with banner text ---');
+// --- Test 2b: notify callback was NOT called (nothing to show yet) ---
+console.log('--- Test 2b: notify callback not called on JSON response ---');
 console.log(`  notify call count: ${t2NotifyCalls.length}`);
-console.log(`  Expected: at least 1 call with banner text`);
-if (t2NotifyCalls.length === 0) { console.error('  FAIL: notify was never called'); process.exit(1); }
-if (!t2NotifyCalls[0].includes('One model is a tool')) { console.error('  FAIL: notify not called with banner text'); process.exit(1); }
+console.log(`  Expected: 0 calls (banner deferred, no welcome-back on first run)`);
+if (t2NotifyCalls.length !== 0) { console.error('  FAIL: notify should not fire for a suppressed/deferred banner'); process.exit(1); }
 console.log('  PASS\n');
 
-// --- Test 3: second call should NOT show banner again ---
-console.log('--- Test 3: fleet_status (second call) ---');
+// --- Test 3: first non-JSON call after JSON calls should show the deferred banner ---
+console.log('--- Test 3: fleet_status (first non-JSON call) shows the deferred banner ---');
 const t3 = simulateWrapTool('fleet_status', 'No members registered.');
-console.log(`  preamble: ${t3.preamble ? 'YES (welcome-back)' : 'null'}`);
-console.log(`  Expected: preamble=null (welcome-back already shown in t2 preamble fallback)`);
-// welcome-back shows once per session; it was consumed by t2's getWelcomeBackPreamble path
-// Actually t2 consumed the banner, not welcome-back. t3 tries banner (null) then welcome-back.
-const isWelcomeBack = t3.preamble?.includes('Fleet') ?? false;
-console.log(`  is welcome-back: ${isWelcomeBack}`);
-console.log('  PASS (welcome-back shown once is acceptable)\n');
+console.log(`  preamble: ${t3.preamble ? 'YES' : 'null'}`);
+console.log(`  contains banner: ${t3.preamble?.includes('One model is a tool') ?? false}`);
+console.log(`  bannerShown: ${getOnboardingState().bannerShown}`);
+console.log(`  Expected: preamble=YES (banner), bannerShown=true`);
+if (!t3.preamble) { console.error('  FAIL: deferred banner must fire on first non-JSON call'); process.exit(1); }
+if (!t3.preamble.includes('One model is a tool')) { console.error('  FAIL: missing banner'); process.exit(1); }
+if (getOnboardingState().bannerShown !== true) { console.error('  FAIL: banner should now be consumed'); process.exit(1); }
+console.log('  PASS\n');
 
 // --- Test 4: register_member nudge ---
 console.log('--- Test 4: register_member nudge ---');

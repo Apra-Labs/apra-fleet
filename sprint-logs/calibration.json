@@ -78,42 +78,64 @@
     "standard": 80000,
     "premium": 150000
   },
+  "context_limits": {
+    "_doc": "Doer context-window budgeting. Used to predict whether a ready-task streak will fit in the model usable context before autocompact/session-limit truncation, and to split streaks proactively. Keyed by tier.",
+    "model_context_tokens": {
+      "_doc": "Total context window per tier (tokens).",
+      "cheap": 200000,
+      "standard": 200000,
+      "premium": 200000
+    },
+    "autocompact_headroom_fraction": 0.72,
+    "base_prompt_tokens": 9000,
+    "per_task_input_overhead_tokens": 3500,
+    "output_expansion_factor": 1
+  },
+  "parallelism": {
+    "_doc": "Doer concurrency (EXPERIMENTAL -- default 1 = proven serial path). When max_doers>1, independent bd-ready tasks are fanned out into isolated git worktrees, worked by one doer each in parallel, then merged back into the sprint branch sequentially with a conflict->re-queue fallback. This path is NOT yet default: on s10 (win32) it hit cross-platform worktree fragility (worktree \"already exists\" leak on re-create, and worktree-branch merges landing nothing -> 0 commits). Until that is hardened and validated on all runner OSes, max_doers stays 1 so sprints use the pre-parallelism serial path (which commits doers directly on the sprint branch, no worktree/merge machinery). Set >1 to opt into the experimental parallel path. Width is also capped by the harness concurrency limit and the number of ready tasks. Project-agnostic: no assumptions about language, layout, or task shape.",
+    "max_doers": 1,
+    "worktree_root": ".auto-sprint/wt"
+  },
   "historical": {
     "_doc": "Written by harvester after each sprint. Contains actual per-role output token averages from sprint-log JSONL files. Used by auto-sprint.js computeSprintQuote() to improve future estimates. Do not edit manually.",
     "max_sprints_in_sample": 5,
-    "sprints_sampled": 3,
-    "last_updated": "2026-06-30",
-    "cycle_avg": 2,
-    "reviewer_ratio_avg": 0.4157036813589812,
-    "bucket_avg_tokens": {},
+    "sprints_sampled": 5,
+    "last_updated": "2026-07-22",
+    "cycle_avg": 1.53376,
+    "reviewer_ratio_avg": 0.5772489538431513,
+    "bucket_avg_tokens": {
+      "S": 6117.75,
+      "L": 17924,
+      "M": 12628
+    },
     "roles": {
       "setup": {
-        "avg_output_tokens": 4418,
-        "sample_n": 2
+        "avg_output_tokens": 4304.19008,
+        "sample_n": 8
       },
       "sprint-meta": {
-        "avg_output_tokens": 794,
-        "sample_n": 2
+        "avg_output_tokens": 1176.79072,
+        "sample_n": 8
       },
       "cycle-state": {
-        "avg_output_tokens": 4964,
-        "sample_n": 6
-      },
-      "ready-streaks": {
-        "avg_output_tokens": 2347,
+        "avg_output_tokens": 3612.58208,
         "sample_n": 14
       },
+      "ready-streaks": {
+        "avg_output_tokens": 2064.9730285714286,
+        "sample_n": 29
+      },
       "doer": {
-        "avg_output_tokens": 9305.583333333334,
-        "sample_n": 8
+        "avg_output_tokens": 8424.533333333335,
+        "sample_n": 17
       },
       "reviewer": {
-        "avg_output_tokens": 4125.111111111111,
-        "sample_n": 7
+        "avg_output_tokens": 4428.263111111111,
+        "sample_n": 14
       },
       "log-append-iter": {
-        "avg_output_tokens": 2500.805555555555,
-        "sample_n": 8
+        "avg_output_tokens": 2769.4035555555556,
+        "sample_n": 15
       },
       "feedback-commit-reviewer": {
         "avg_output_tokens": 3396,
@@ -128,12 +150,12 @@
         "sample_n": 2
       },
       "check-blockers": {
-        "avg_output_tokens": 1778.5,
-        "sample_n": 2
+        "avg_output_tokens": 2143.5791999999997,
+        "sample_n": 7
       },
       "log-append-end": {
-        "avg_output_tokens": 1924.8333333333333,
-        "sample_n": 6
+        "avg_output_tokens": 2594.3181866666664,
+        "sample_n": 13
       },
       "ci-watcher": {
         "avg_output_tokens": 1220,
@@ -144,23 +166,87 @@
         "sample_n": 1
       },
       "final-reviewer": {
-        "avg_output_tokens": 10054.666666666666,
-        "sample_n": 3
+        "avg_output_tokens": 9101.08992,
+        "sample_n": 9
       },
       "cycle-meta": {
-        "avg_output_tokens": 969.3333333333334,
-        "sample_n": 4
+        "avg_output_tokens": 1279.4595199999999,
+        "sample_n": 12
       },
       "push-sha": {
-        "avg_output_tokens": 467.1666666666667,
-        "sample_n": 4
+        "avg_output_tokens": 552.4917333333333,
+        "sample_n": 11
       },
       "exit-check": {
-        "avg_output_tokens": 2458.5,
-        "sample_n": 4
+        "avg_output_tokens": 2886.88896,
+        "sample_n": 11
       },
       "setup-shell": {
-        "avg_output_tokens": 1077,
+        "avg_output_tokens": 1762.47104,
+        "sample_n": 7
+      },
+      "state-read": {
+        "avg_output_tokens": 773.136,
+        "sample_n": 6
+      },
+      "preflight-bd-schema": {
+        "avg_output_tokens": 424.65311999999994,
+        "sample_n": 6
+      },
+      "state-init": {
+        "avg_output_tokens": 1293.77472,
+        "sample_n": 6
+      },
+      "stamp-setup": {
+        "avg_output_tokens": 264.37888,
+        "sample_n": 6
+      },
+      "stamp-plan": {
+        "avg_output_tokens": 342.56416,
+        "sample_n": 8
+      },
+      "state": {
+        "avg_output_tokens": 1181.3060799999998,
+        "sample_n": 16
+      },
+      "stamp-develop": {
+        "avg_output_tokens": 266.7952,
+        "sample_n": 8
+      },
+      "heartbeat": {
+        "avg_output_tokens": 1663.8081828571426,
+        "sample_n": 15
+      },
+      "deadlock-diag": {
+        "avg_output_tokens": 1241.2,
+        "sample_n": 2
+      },
+      "stamp-harvest": {
+        "avg_output_tokens": 426.45311999999996,
+        "sample_n": 6
+      },
+      "harvest-clean-process-files": {
+        "avg_output_tokens": 794.3376,
+        "sample_n": 6
+      },
+      "planner": {
+        "avg_output_tokens": 17870,
+        "sample_n": 1
+      },
+      "plan-reviewer": {
+        "avg_output_tokens": 6204,
+        "sample_n": 1
+      },
+      "plan-commit": {
+        "avg_output_tokens": 2208,
+        "sample_n": 1
+      },
+      "feedback-write-reviewer": {
+        "avg_output_tokens": 2686,
+        "sample_n": 1
+      },
+      "reset-orphans": {
+        "avg_output_tokens": 402,
         "sample_n": 1
       }
     }

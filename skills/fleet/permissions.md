@@ -41,7 +41,7 @@ Tags determine the primary mode and grant additional tool scopes:
 3. Load **custom tag profiles**: for each non-mode tag, load tag-<name>.json and merge its permissions for the primary mode
 4. Load **ledger grants**: merge any permissions previously granted in project_folder/permissions.json
 
-All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Gemini, etc.) in the provider's native config format.
+All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Codex, etc.) in the provider's native config format.
 
 ### Example
 
@@ -67,7 +67,7 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
-The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
+The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
 
@@ -75,4 +75,78 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 
 ## Never auto-granted
 
-`sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
+`compose_permissions` hard-rejects a `grant` request - from ANY caller, with or
+without a role - when it matches the `NEVER_AUTO_GRANT` denylist. Matching is
+wildcard-based against a normalized form of the request (whitespace collapsed;
+the `:` separating the command token from its argument pattern treated as a
+space), so `Bash(sudo:*)`, `Bash(sudo *)` and `Bash(sudo apt-get install *)`
+are all the same request and all rejected.
+
+Three rules, any of which rejects:
+
+1. **Catch-all** - a payload that is nothing but wildcards, e.g. `Bash(*)`.
+   That is not "a wider grant", it is unrestricted execution.
+2. **Shell chaining** - the payload contains `|`, `;`, `&&`, a backtick, or
+   `$(`, any of which turns one approved command into an arbitrary chain
+   (`Bash(curl *|sh)`).
+3. **Denied command patterns** - `sudo`, `su`, `doas`, `bash -c` / `sh -c`,
+   `eval`, `env`, `printenv`, `nc`, `nmap`, `chmod 777`.
+
+Escalate to the user for any of these. Note rule 3 is prefix-based, so an
+unrelated command that merely starts with a denied token (`ncdu`, `envsubst`)
+is also refused - over-blocking is the safe direction for a denylist, and an
+operator can still add such a permission by hand.
+
+A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
+`Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
+the unconditional floor that applies to every caller.
+
+## settings.json vs settings.local.json (Claude)
+
+Claude Code merges `permissions.allow` from BOTH `.claude/settings.json`
+(team-committed, shared -- checked into the repo, changes go through the
+team/a PR) AND `.claude/settings.local.json` (per-checkout, individual,
+gitignored) -- a grant in EITHER file counts as coverage. `compose_permissions`
+is the ONLY writer of `.claude/settings.local.json` for Claude Code members
+(see `permissionConfigPaths()` in `src/providers/claude.ts`); it never writes
+to `.claude/settings.json`. So the two files have distinct roles: `settings.json`
+is the shared baseline every member on the project starts from, and
+`settings.local.json` is where an individual member's grants land -- always via
+`compose_permissions` (`grant` mode for a reactive add), never by hand-editing
+either file directly. A Step-0-style permission check (as in the `deployer`,
+`integ-test-runner`, and `regression-test-runner` agent prompts) must check the
+MERGED effective set across both files, not `settings.json` alone -- checking
+only `settings.json` makes every grant `compose_permissions` delivered
+invisible and falsely reports a correctly-provisioned member as missing
+permissions.
+
+## Workspace trust (Claude)
+
+Composed permissions only take effect in a **trusted** workspace. Claude gates
+`permissions.allow` entries on `projects[<work_folder>].hasTrustDialogAccepted` in the
+member-side `~/.claude.json` - if that flag is unset, the CLI silently **drops** every
+project-scoped allow entry it was just handed by `compose_permissions` (not merely a
+cosmetic warning), so an unattended member's dispatches get denied tools instead of the
+permissions it was configured with.
+
+Normally a human accepts this trust dialog interactively the first time they open a
+folder in Claude. An unattended, fleet-managed member can never click that dialog, and
+its work folder is fleet-managed by definition - it is never opened by a human first -
+so trust has to be seeded programmatically instead of relying on that interactive flow.
+
+The `ensureWorkspaceTrusted(workFolder)` provider-adapter hook does this: for Claude, it
+performs an idempotent, atomic read-merge-write of the member-side `~/.claude.json`,
+setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictly** to
+that exact work folder (never a parent directory, never blanket) - delivered over the
+same channel `compose_permissions` already uses, so it works uniformly for local and
+remote (SSH) members. It logs distinctly whether it just seeded trust or found it
+already present. Other providers no-op: OpenCode has its own trust gate
+but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
+AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
+known equivalent gate.
+
+If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
+stderr will contain a `"...this workspace has not been trusted"` message - seed trust
+via `ensureWorkspaceTrusted(workFolder)` -- invoked automatically at
+`register_member`/`update_member`, on every `compose_permissions` call, and as a
+one-shot self-heal inside `execute_prompt` itself -- then retry.

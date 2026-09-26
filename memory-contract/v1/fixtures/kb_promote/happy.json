@@ -1,0 +1,19 @@
+{
+  "tool": "kb_promote",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "e12c88e9-0a56-44dd-b1ee-c522b3559a3e",
+    "reason": "Manually re-read src/example.ts and confirmed exampleFn(x) returns x + 1 exactly as captured."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

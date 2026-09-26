@@ -1,0 +1,8 @@
+{
+  "provider": "smtp",
+  "host": "smtp.gmail.com",
+  "port": 587,
+  "user": "you@example.com",
+  "from": "you@example.com",
+  "to": "recipient@example.com"
+}

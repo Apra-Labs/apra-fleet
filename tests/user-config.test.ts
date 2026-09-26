@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from './test-helpers.js';
-import { loadUserConfig, getModelOverride, _resetCache } from '../src/services/user-config.js';
+import { loadUserConfig, getModelOverride, getLogPreviewChars, DEFAULT_LOG_PREVIEW_CHARS, _resetCache } from '../src/services/user-config.js';
 
 const CONFIG_PATH = path.join(FLEET_DIR, 'config.json');
 
@@ -144,6 +144,53 @@ describe('getModelOverride', () => {
     expect(getModelOverride('agy', 'premium')).toBe('Custom Premium');
     expect(getModelOverride('agy', 'cheap')).toBeUndefined();
     expect(getModelOverride('claude', 'premium')).toBeUndefined();
+  });
+});
+
+describe('getLogPreviewChars', () => {
+  beforeEach(() => {
+    _resetCache();
+    if (!fs.existsSync(FLEET_DIR)) fs.mkdirSync(FLEET_DIR, { recursive: true });
+    try { fs.unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+  });
+
+  afterEach(() => {
+    _resetCache();
+    try { fs.unlinkSync(CONFIG_PATH); } catch { /* ignore */ }
+  });
+
+  it('returns the default when no config file exists', () => {
+    expect(getLogPreviewChars()).toBe(DEFAULT_LOG_PREVIEW_CHARS);
+  });
+
+  it('returns the configured previewChars', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: 512 } }), 'utf-8');
+    expect(getLogPreviewChars()).toBe(512);
+  });
+
+  it('accepts 0 (no preview) as a valid override', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: 0 } }), 'utf-8');
+    expect(getLogPreviewChars()).toBe(0);
+  });
+
+  it('floors a fractional previewChars', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: 100.9 } }), 'utf-8');
+    expect(getLogPreviewChars()).toBe(100);
+  });
+
+  it('ignores a negative or non-numeric previewChars and warns', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: -5 } }), 'utf-8');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(getLogPreviewChars()).toBe(DEFAULT_LOG_PREVIEW_CHARS);
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('logging.previewChars'));
+    spy.mockRestore();
+  });
+
+  it('ignores a non-numeric previewChars', () => {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ logging: { previewChars: 'lots' } }), 'utf-8');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(getLogPreviewChars()).toBe(DEFAULT_LOG_PREVIEW_CHARS);
+    spy.mockRestore();
   });
 });
 

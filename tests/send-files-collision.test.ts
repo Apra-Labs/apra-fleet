@@ -42,7 +42,7 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/a/dir/report.txt', '/b/dir/report.txt'],
     });
 
-    expect(result).toContain('⛔');
+    expect(result).toContain('[ERR]');
     expect(result).toContain('report.txt');
     expect(mockTransferFiles).not.toHaveBeenCalled();
   });
@@ -56,7 +56,7 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/a/log.txt', '/b/unique.txt', '/c/log.txt'],
     });
 
-    expect(result).toContain('⛔');
+    expect(result).toContain('[ERR]');
     expect(result).toContain('log.txt');
     expect(mockTransferFiles).not.toHaveBeenCalled();
   });
@@ -71,7 +71,7 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/a/a.txt', '/b/b.txt'],
     });
 
-    expect(result).not.toContain('⛔');
+    expect(result).not.toContain('[ERR]');
     expect(mockTransferFiles).toHaveBeenCalledOnce();
   });
 
@@ -85,7 +85,7 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/some/path/only.txt'],
     });
 
-    expect(result).not.toContain('⛔');
+    expect(result).not.toContain('[ERR]');
     expect(mockTransferFiles).toHaveBeenCalledOnce();
   });
 });

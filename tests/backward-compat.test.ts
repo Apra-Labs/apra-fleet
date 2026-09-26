@@ -4,7 +4,7 @@ import { join } from 'path';
 import { getProvider } from '../src/providers/index.js';
 import type { LlmProvider } from '../src/types.js';
 
-const VENDOR_PM = join(__dirname, '..', 'vendor', 'apra-pm');
+const VENDOR_PM = join(__dirname, '..', 'packages', 'apra-fleet-se', 'apra-pm');
 const SKILL_DIR = join(VENDOR_PM, 'skills', 'pm');
 const AGENTS_DIR = join(VENDOR_PM, 'agents');
 
@@ -69,9 +69,10 @@ describe('sprint state-file names are preserved', () => {
     });
   }
 
-  it('tpl-progress.json template exists', () => {
-    expect(existsSync(join(SKILL_DIR, 'tpl-progress.json'))).toBe(true);
-  });
+  // tpl-progress.json was removed upstream (apra-pm PR#29, commit 29aba29):
+  // it was an unreferenced template in a skill whose docs state repeatedly
+  // that no progress.json is used, so its "existence" was never a real
+  // backward-compat guarantee -- deleting it is the fix, not a regression.
 });
 
 // -- (c) Beads lifecycle hooks unchanged ----------------------------------------
@@ -106,7 +107,6 @@ describe('beads lifecycle hooks are preserved', () => {
 describe('provider instruction filenames are correct', () => {
   const expected: Record<LlmProvider, string> = {
     claude: 'CLAUDE.md',
-    gemini: 'GEMINI.md',
     codex: 'AGENTS.md',
     copilot: 'COPILOT.md',
     agy: 'AGY.md',
@@ -123,7 +123,7 @@ describe('provider instruction filenames are correct', () => {
 
 // -- Agent files exist ----------------------------------------------------------
 
-describe('agent definition files are present in vendor/apra-pm', () => {
+describe('agent definition files are present in packages/apra-fleet-se/apra-pm', () => {
   const agents = ['planner.md', 'doer.md', 'reviewer.md', 'plan-reviewer.md'];
 
   for (const agent of agents) {
@@ -144,7 +144,8 @@ describe('pm skill sub-documents are present', () => {
     'worktrees.md',
     'simple-sprint.md',
     'fleet-addendum.md',
-    'tpl-progress.json',
+    // tpl-progress.json intentionally omitted -- retired upstream in apra-pm
+    // commit 29aba29 (unreferenced progress.json template in a skill).
   ];
 
   for (const doc of docs) {

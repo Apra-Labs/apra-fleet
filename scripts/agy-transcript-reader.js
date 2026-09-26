@@ -24,6 +24,7 @@ try {
       id, '.system_generated', 'logs', 'transcript.jsonl'
     );
     if (fs.existsSync(tp)) {
+      console.log('FLEET_SESSION_ID:' + id);
       console.log('FLEET_TRANSCRIPT_START');
       console.log(fs.readFileSync(tp, 'utf8'));
       console.log('FLEET_TRANSCRIPT_END');

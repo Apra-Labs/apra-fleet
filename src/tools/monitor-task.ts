@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
@@ -31,20 +32,53 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
   }
 
   const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+  const isWindows = getAgentOS(agent) === 'windows';
+
+  // POSIX (linux/darwin) task dir/commands are byte-identical to before this
+  // change. Windows members now get a real task dir too: execute-command.ts's
+  // long_running path writes generateTaskWrapperWindows()'s run.ps1 to this
+  // same $env:USERPROFILE\.fleet-tasks\<taskId> path and launches it detached
+  // via Invoke-CimMethod Win32_Process.Create, so these commands read the
+  // same status.json/task.pid/task.log shape that script writes.
+  //
+  // Shell-agnostic by construction (apra-fleet-7dir.5.2 audit): statusCmd,
+  // pidCmd and logCmd below branch on `isWindows` alone -- getAgentShell(agent)
+  // is intentionally NOT consulted -- because each Windows branch is already
+  // wrapped in wrapPowerShellEncoded, which base64-encodes the whole script
+  // into a single `powershell -EncodedCommand <blob>` string. That string is
+  // shell-agnostic AS A STRING: whatever shell actually runs it on the member
+  // (cmd.exe, PowerShell, or bash.exe for a gitbash member) just execs the
+  // literal powershell.exe binary with an opaque base64 argument -- nothing is
+  // left for that outer shell to re-tokenize or corrupt, the same reasoning
+  // execute-command.ts's long_running Windows launch documents for why it does
+  // not branch on isPosixShell either. A gitbash member therefore gets the
+  // exact same statusCmd/pidCmd/logCmd string as a powershell5/pwsh7/unset
+  // Windows member; only true POSIX members (linux/darwin) get a different,
+  // byte-identical-to-before string.
   const taskDir = `~/.fleet-tasks/${input.task_id}`;
+  const winTaskDir = `$env:USERPROFILE\\.fleet-tasks\\${input.task_id}`;
+
+  const statusCmd = isWindows
+    ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}\\status.json") { Get-Content "${winTaskDir}\\status.json" -Raw } else { echo '{}' }`)
+    : `cat ${taskDir}/status.json 2>/dev/null || echo '{}'`;
+
+  const pidCmd = isWindows
+    ? wrapPowerShellEncoded(`$pidFile = "${winTaskDir}\\task.pid"; if (Test-Path $pidFile) { $p = (Get-Content $pidFile -Raw).Trim() } else { $p = $null }; if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { echo alive } else { echo dead }`)
+    : `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`;
+
+  const logCmd = isWindows
+    ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}\\task.log") { Get-Content "${winTaskDir}\\task.log" -Tail 20 } else { echo '' }`)
+    : `tail -20 ${taskDir}/task.log 2>/dev/null || echo ''`;
 
   // Run in parallel: status.json, PID liveness check, GPU util (cloud only), log tail
   const [statusResult, pidResult, gpuResult, logResult] = await Promise.allSettled([
-    strategy.execCommand(`cat ${taskDir}/status.json 2>/dev/null || echo '{}'`, 10000),
-    strategy.execCommand(
-      `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`,
-      10000,
-    ),
+    strategy.execCommand(statusCmd, 10000),
+    strategy.execCommand(pidCmd, 10000),
     agent.cloud
       ? strategy.execCommand(cmds.gpuUtilization(), 10000)
       : Promise.resolve({ stdout: '', stderr: '', code: 0 }),
-    strategy.execCommand(`tail -20 ${taskDir}/task.log 2>/dev/null || echo ''`, 10000),
+    strategy.execCommand(logCmd, 10000),
   ]);
 
   // Parse status.json

@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/backlog-groomer-input@1",
+  "version": 1,
+  "title": "backlog-groomer input",
+  "description": "Required dispatch-context keys for the backlog-groomer role, per agents/backlog-groomer.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["identity"],
+  "properties": {
+    "identity": {
+      "type": "string",
+      "description": "Operator's own assignee value in this beads DB (email or username). Derived from git config when not supplied explicitly."
+    },
+    "scope": {
+      "type": "string",
+      "description": "Optional narrowing: a bead id to groom the subtree of, a priority floor, or a count cap. Default: all open/in_progress beads assigned to identity."
+    },
+    "mode": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["define-sprint", "what-needs-grooming", "groom"] },
+      "minItems": 1,
+      "description": "Which of the three usage modes to run. Default: all three."
+    },
+    "include-others": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, other assignees' beads are loaded for context and reported in a visibly separate section, never merged into identity's buckets or mutated."
+    },
+    "dry-run": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true, mutations are proposed as exact bd commands only. If false, warranted mutations are executed, each paired with an evidence/reasoning note."
+    }
+  }
+}

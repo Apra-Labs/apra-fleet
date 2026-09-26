@@ -1,0 +1,12 @@
+node_modules/
+e2e-results/
+*.log
+.antigravitycli/
+
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.beads/interactions.jsonl

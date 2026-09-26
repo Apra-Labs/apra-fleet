@@ -4,6 +4,7 @@ import { getAgent, updateAgent } from '../registry.js';
 import { awsProvider } from './aws.js';
 import { provisionAuth } from '../../tools/provision-auth.js';
 import { provisionVcsAuth } from '../../tools/provision-vcs-auth.js';
+import { invalidatePreflightCache } from '../preflight-check.js';
 
 const SSH_POLL_ATTEMPTS = 30;
 const SSH_POLL_DELAY_MS = 2000;
@@ -32,12 +33,42 @@ async function waitForSsh(host: string, port: number): Promise<void> {
   );
 }
 
+/**
+ * Decide whether a provisioning call failed, from its structured half when
+ * present and its prose only as a fallback.
+ *
+ * Both tools return `{ text, structuredContent }` and `structuredContent.ok`
+ * is the field to branch on -- it survives any future wording change. The
+ * guard mirrors provisionOutcome() in
+ * packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs: a result that carries no
+ * structuredContent at all (a stale test double, or an older client shape)
+ * must fall back to the ASCII `[FAIL]` prose marker rather than throw a
+ * TypeError -- reProvisionAuth is best-effort, so a throw here would be
+ * swallowed by the catch below and silently report every provision as a
+ * hard failure.
+ */
+function provisionFailed(result: unknown): boolean {
+  const structured = (result as { structuredContent?: { ok?: unknown } } | null | undefined)?.structuredContent;
+  if (structured && typeof structured.ok === 'boolean') return !structured.ok;
+  return /^\[FAIL\]/.test(provisionSummary(result));
+}
+
+/** First line of a provisioning result's prose, tolerant of a missing `text`. */
+function provisionSummary(result: unknown): string {
+  const text = (result as { text?: unknown } | null | undefined)?.text;
+  return (typeof text === 'string' ? text : '').split('\n')[0].trim();
+}
+
 async function reProvisionAuth(agent: Agent): Promise<void> {
   // F5: Re-provision Claude OAuth credentials from PM machine (best-effort)
   try {
+    // apra-fleet-3swo.7.2: branch on the structured ok discriminator instead
+    // of testing whether the summary text starts with the success emoji --
+    // the tools no longer emit emoji at all, and `ok` is the field that
+    // survives any future wording change.
     const result = await provisionAuth({ member_id: agent.id });
-    if (!result.startsWith('\u2705')) {
-      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
+    if (provisionFailed(result)) {
+      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + provisionSummary(result));
     }
   } catch (e) {
     // Truncate error message to prevent accidental credential leakage in log output
@@ -55,8 +86,8 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
         git_access: agent.gitAccess,
         repos: agent.gitRepos,
       });
-      if (!result.startsWith('\u2705')) {
-        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
+      if (provisionFailed(result)) {
+        log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + provisionSummary(result));
       }
     } catch (e) {
       // Truncate error message to prevent accidental credential leakage in log output
@@ -94,6 +125,7 @@ export async function ensureCloudReady(agent: Agent): Promise<Agent> {
       if (currentIp !== agent.host) {
         log('IP updated for ' + agent.friendlyName + ': ' + agent.host + ' -> ' + currentIp);
         updateAgent(agent.id, { host: currentIp });
+        invalidatePreflightCache(agent.id);
       }
     } catch {
       // Cannot get IP — SSH to existing host may still work
@@ -124,6 +156,7 @@ export async function ensureCloudReady(agent: Agent): Promise<Agent> {
 
   // Update registry: new IP + reset idle timer (wiring point for T7)
   updateAgent(agent.id, { host: newIp, lastUsed: new Date().toISOString() });
+  invalidatePreflightCache(agent.id);
 
   // Poll SSH readiness
   const sshPort = agent.port ?? 22;

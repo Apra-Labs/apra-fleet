@@ -1,11 +1,47 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
-import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
+import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
-import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid, getAgentOS } from '../src/utils/agent-helpers.js';
 import { writeStatusline } from '../src/services/statusline.js';
+import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
+import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
+import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
+import { recordKnownSession, isKnownSession } from '../src/services/known-sessions.js';
+import { localWorkspaceId } from '../src/services/token-issuer.js';
+// apra-fleet-63x.2: the same pricing function FleetWorkflow.agent() calls
+// (packages/apra-fleet-workflow/src/workflow/index.mjs's _resolveCost ->
+// calculateCost) to turn a dispatch's reported usage into a real budget-
+// tracked cost figure -- imported directly (relative path, not the package's
+// "exports" map, which does not expose this submodule) so this test can
+// prove the fix all the way through pricing, not just that a `usage` field
+// exists on the structured error.
+import { calculateCost } from '../packages/apra-fleet-workflow/src/workflow/pricing.mjs';
+// apra-fleet-y8q.2: the client-side timeout-derivation function
+// (packages/apra-fleet-client/src/client/api.mjs) whose sufficiency depends
+// entirely on the server sharing one max_total_s deadline budget across an
+// attempt and its retry (apra-fleet-y8q.1) -- imported here so the test can
+// pin the client formula and the server's real retry-budget behavior
+// together, not just each in isolation.
+import { deriveTimeoutMs } from '@apralabs/apra-fleet-client';
+// apra-fleet-6a7.1: mocked below so these tests can assert the self-heal
+// CALL SITE in execute-prompt.ts (classified once, invoked once, gated by
+// trustHealAttempted) without needing to also drive the real
+// ClaudeProvider.ensureWorkspaceTrusted exec sequence -- that real
+// implementation is already covered by tests/ensure-workspace-trusted.test.ts.
+import { seedWorkspaceTrust } from '../src/utils/workspace-trust.js';
+// tests/setup.ts globally mocks preflight-check.js (preflightCheck always
+// resolves {ok: true} by default) so pre-existing dispatch tests are
+// unaffected -- overridden per-test below to assert the preflight_* reason
+// code mapping at the execute-prompt call site.
+import { preflightCheck } from '../src/services/preflight-check.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
+import type { UsageLimitSignal } from '../src/providers/provider.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -23,11 +59,28 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// Agent-file provisioning (#336 / auto-refresh on dispatch) is covered in its own
+// suite (execute-prompt-provisioning.test.ts) -- mock it away here so it doesn't
+// consume the mockExecCommand queue and shift the call-index assertions below.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
+// apra-fleet-6a7.1: seedWorkspaceTrust is mocked so the workspace_not_trusted
+// self-heal tests below can assert on the CALL SITE (invoked once, gated by
+// trustHealAttempted) without also having to drive ClaudeProvider's real
+// ensureWorkspaceTrusted exec sequence through mockExecCommand.
+vi.mock('../src/utils/workspace-trust.js', () => ({
+  seedWorkspaceTrust: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('executePrompt', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
   });
 
   afterEach(() => {
@@ -35,26 +88,44 @@ describe('executePrompt', () => {
     vi.useRealTimers();
   });
 
-  it('rejects prompt containing {{secure.NAME}} token without executing', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-guard' });
+  it('rejects prompt containing {{secret.NAME}} token without executing', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-guard' });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secret.github_pat}} to auth', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
+    expect(resultText(result)).toContain('execute_command');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects prompt with {{secret.NAME}} token regardless of surrounding text', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-guard-2' });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'auth with {{secret.my_token_123}} please', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects prompt containing legacy {{secure.NAME}} token without executing', async () => {
+    const member = makeTestAgent({ friendlyName: 'secure-guard-legacy' });
     addAgent(member);
 
     const result = await executePrompt({ member_id: member.id, prompt: 'use {{secure.github_pat}} to auth', resume: false, timeout_s: 5 });
-    expect(result).toContain('{{secure.NAME}} token');
-    expect(result).toContain('execute_command');
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('rejects prompt with {{secure.NAME}} token regardless of surrounding text', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-guard-2' });
+  it('rejects prompt containing a mix of {{secret.NAME}} and {{secure.NAME}} tokens', async () => {
+    const member = makeTestAgent({ friendlyName: 'mixed-guard' });
     addAgent(member);
 
-    const result = await executePrompt({ member_id: member.id, prompt: 'auth with {{secure.my_token_123}} please', resume: false, timeout_s: 5 });
-    expect(result).toContain('{{secure.NAME}} token');
+    const result = await executePrompt({ member_id: member.id, prompt: 'use {{secret.a}} and {{secure.b}} to auth', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('{{secret.NAME}} token');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('allows prompt without {{secure.NAME}} token', async () => {
+  it('allows prompt without {{secret.NAME}} token', async () => {
     const member = makeTestAgent({ friendlyName: 'secure-allow' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -64,7 +135,7 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'authenticate using credential github_pat', resume: false, timeout_s: 5 });
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockExecCommand).toHaveBeenCalled();
   });
 
@@ -78,8 +149,8 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('Hello world');
-    expect(result).toContain('sess-123');
+    expect(resultText(result)).toContain('Hello world');
+    expect(resultText(result)).toContain('sess-123');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -96,8 +167,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('/login');
-    expect(result).toContain('provision_llm_auth');
+    expect(resultText(result)).toContain('/login');
+    expect(resultText(result)).toContain('provision_llm_auth');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -119,7 +190,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('recovered');
+    expect(resultText(result)).toContain('recovered');
     // 4 calls: writePromptFile + main (500) + retry (recovered) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -137,8 +208,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('500');
-    expect(result).toContain('failed');
+    expect(resultText(result)).toContain('500');
+    expect(resultText(result)).toContain('failed');
     // 4 calls: writePromptFile + main (500) + retry (500) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -161,7 +232,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('finally');
+    expect(resultText(result)).toContain('finally');
     // 5 calls: writePromptFile + main (stale) + stale-retry (500) + server-retry (ok) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(5);
   });
@@ -183,7 +254,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('fresh');
+    expect(resultText(result)).toContain('fresh');
     // 4 calls: writePromptFile + main (stale) + stale-retry (fresh) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -284,7 +355,7 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[1][0]).not.toContain('"premium"');
   });
 
-  it('appends token line when usage is present in response', async () => {
+  it('reports usage via structuredContent when present in response', async () => {
     const member = makeTestAgent({ friendlyName: 'token-member' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -294,7 +365,13 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('Tokens: input=100 output=200');
+    expect(resultText(result)).not.toContain('Tokens:');
+    if (typeof result !== 'string') {
+      expect(result.structuredContent).toMatchObject({
+        response: 'done',
+        usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 },
+      });
+    }
   });
 
   it('does not append token line when usage is absent', async () => {
@@ -307,7 +384,7 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).not.toContain('Tokens:');
+    expect(resultText(result)).not.toContain('Tokens:');
     expect(getAgent(member.id)?.tokenUsage).toBeUndefined();
   });
 
@@ -350,8 +427,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('something unexpected happened');
-    expect(result).toContain('failed');
+    expect(resultText(result)).toContain('something unexpected happened');
+    expect(resultText(result)).toContain('failed');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -480,7 +557,7 @@ describe('kill-before-retry (T5)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     // 4 calls: kill + writePromptFile + main + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
     expect(mockExecCommand.mock.calls[0][0]).toContain('kill');
@@ -669,12 +746,16 @@ describe('busy-state clear on all exit paths (T5)', () => {
     )).toBe(true);
   });
 
-  it('clears inFlightAgents and sets offline after SSH connection failure', async () => {
+  it('clears inFlightAgents and sets offline after SSH connection failure survives the apra-fleet-02s.1 dispatch-exception retry', async () => {
     const member = makeTestAgent({ friendlyName: 'ep-exception' });
     memberId = member.id;
     addAgent(member);
+    // apra-fleet-02s.1 gives the main execCommand call one bounded retry on a
+    // thrown exception -- a persistent SSH failure must reject BOTH attempts
+    // (not just the first) to still reach the outer catch's offline marking.
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockRejectedValueOnce(new Error('ssh connection lost'))
       .mockRejectedValueOnce(new Error('ssh connection lost'))
       .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
@@ -715,6 +796,190 @@ describe('busy-state clear on all exit paths (T5)', () => {
     expect(vi.mocked(writeStatusline).mock.calls.some(
       c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
     )).toBe(true);
+  });
+});
+
+describe('server-side member reservation enforced at dispatch (apra-fleet-eft.10.3)', () => {
+  let memberId: string;
+  const savedSprintEnv = process.env.APRA_FLEET_SPRINT_ID;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    delete process.env.APRA_FLEET_SPRINT_ID;
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+    if (savedSprintEnv === undefined) delete process.env.APRA_FLEET_SPRINT_ID;
+    else process.env.APRA_FLEET_SPRINT_ID = savedSprintEnv;
+  });
+
+  it('rejects a dispatch to a member reserved by a DIFFERENT sprint, naming the owning sprint, without dispatching', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-reserved', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-other';
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(resultText(result)).toContain('ep-reserved');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    if (typeof result !== 'string' && result.structuredContent) {
+      expect(result.structuredContent.reason).toBe('reserved');
+    }
+  });
+
+  it('rejects a manual dispatch (no APRA_FLEET_SPRINT_ID) to a reserved member -- closes the manual-CLI bypass', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-manual', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('allows a dispatch from the OWNING sprint against its reserved member', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-owner', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-owner';
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'owner-ok', session_id: 'sess-owner' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('owner-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('allows a dispatch to an UNRESERVED member regardless of sprint env (no-reservation behavior unchanged)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-free' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-other';
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'free-ok', session_id: 'sess-free' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('free-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  // apra-fleet-eft.29 / eft.29.1: the CLI/shared-fleet-server path (eft.7.1)
+  // never stamps APRA_FLEET_SPRINT_ID on the (pre-existing, never-spawned-by-
+  // the-sprint) fleet server process, so a member reserved by ITS OWN owning
+  // sprint was rejected as if from another sprint. A per-call `sprint_id`
+  // (the same opaque token the caller already passed to member_reservation)
+  // must be preferred over the env var for this comparison.
+  it('allows a dispatch from the OWNING sprint via per-call sprint_id, even with no/mismatched APRA_FLEET_SPRINT_ID env (eft.29.1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-owner-sprintid', reservedBy: 'integ-smoke-1784570804' });
+    memberId = member.id;
+    addAgent(member);
+    // Deliberately left unset (the eft.29 repro condition): the shared fleet
+    // server process was never stamped with this sprint's identity.
+    expect(process.env.APRA_FLEET_SPRINT_ID).toBeUndefined();
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'owner-ok-via-sprint-id', session_id: 'sess-owner-2' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({
+      member_id: memberId,
+      prompt: 'hi',
+      resume: false,
+      timeout_s: 5,
+      sprint_id: 'integ-smoke-1784570804',
+    });
+
+    expect(resultText(result)).toContain('owner-ok-via-sprint-id');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('still rejects a dispatch whose sprint_id names a DIFFERENT sprint than the reservation, even if APRA_FLEET_SPRINT_ID happens to match the owner (sprint_id takes precedence)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-cross-sprintid', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-owner';
+
+    const result = await executePrompt({
+      member_id: memberId,
+      prompt: 'hi',
+      resume: false,
+      timeout_s: 5,
+      sprint_id: 'sprint-intruder',
+    });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  // apra-fleet-eft.29.2 acceptance criterion 3: an UNRESERVED member with NO
+  // per-call sprint_id and currentSprintId() undefined (no APRA_FLEET_SPRINT_ID
+  // env either) must dispatch unchanged -- the eft.29.1 sprint_id plumbing
+  // must not regress the pre-existing no-reservation path.
+  it('dispatches unchanged for an unreserved member with no sprint_id and no APRA_FLEET_SPRINT_ID env (no regression to the no-reservation path)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-free-no-token' });
+    memberId = member.id;
+    addAgent(member);
+    expect(process.env.APRA_FLEET_SPRINT_ID).toBeUndefined();
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'free-no-token-ok', session_id: 'sess-free-no-token' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('free-no-token-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+    if (typeof result !== 'string' && result.structuredContent) {
+      expect(result.structuredContent.reason).not.toBe('reserved');
+    }
+  });
+});
+
+describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+  });
+
+  it('rejects execute_prompt for a member with llm_provider "none", with a clear error pointing to execute_command, without ever entering busy state', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-llm-member', llmProvider: 'none' });
+    memberId = member.id;
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'do something', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('no-llm-member');
+    expect(resultText(result)).toContain('execute_command');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(inFlightAgents.has(memberId)).toBe(false);
   });
 });
 
@@ -762,7 +1027,7 @@ describe('MCP disconnect cleanup (T10)', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('aborted');
+    expect(resultText(result)).toContain('aborted');
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
     expect(vi.mocked(writeStatusline).mock.calls.some(
@@ -848,6 +1113,1539 @@ describe('MCP disconnect cleanup (T10)', () => {
     expect(vi.mocked(writeStatusline).mock.calls.some(
       c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
     )).toBe(true);
+  });
+});
+
+describe('confirmed stall aborts the in-flight dispatch (apra-fleet-3c9.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      getStallDetector().stallCheckList.delete(memberId);
+    }
+  });
+
+  // apra-fleet-3c9 (root cause of a 60.5-minute hung dispatch): before
+  // apra-fleet-3c9.1, the stall detector's onStall callback killed the remote
+  // pid but had no handle on the pending strategy.execCommand() promise, so a
+  // CONFIRMED stall still left the client waiting out its full
+  // deriveTimeoutMs()/max_total_s deadline. This test drives onStall directly
+  // (bypassing the real poll interval/threshold -- exactly as the bead
+  // describes: "simulates a confirmed stall ... asserts onStall's
+  // AbortController rejects/settles it promptly") against a fake
+  // RemoteStrategy whose execCommand hangs forever unless aborted. Against
+  // pre-fix code (no stallAbortController wired into onStall, or its signal
+  // not threaded into strategy.execCommand), this test hangs until vitest's
+  // own test timeout instead of resolving -- a clear, loud failure rather
+  // than a silent pass.
+  it('a confirmed stall settles the pending execCommand promptly via abort and returns a typed "stalled" error, never waiting out max_total_s', async () => {
+    const member = makeTestAgent({ friendlyName: 'confirmed-stall' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+        // Simulates a hung remote dispatch: this promise NEVER settles on its
+        // own -- only a fired abort signal can resolve it. If onStall's
+        // AbortController were not wired into this call's signal, this
+        // promise (and therefore the whole dispatch) would hang forever.
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    // A deliberately huge max_total_s: if a regression fell back to waiting
+    // out the client hard deadline instead of a prompt abort, this test would
+    // hang rather than pass -- proving the fix, not just a lucky short timer.
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    // Flush microtasks so executePrompt reaches the main execCommand call and
+    // registers this dispatch's stall-detector entry (stallDetector.add runs
+    // before the main dispatch, see execute-prompt.ts).
+    await vi.advanceTimersByTimeAsync(0);
+
+    const entry = getStallDetector().getEntry(memberId);
+    expect(entry).toBeDefined();
+    expect(typeof entry?.onStall).toBe('function');
+
+    // Simulate the poll loop confirming a stall (StallDetector._poll() calling
+    // entry.onStall() after the threshold elapses) -- directly, without
+    // waiting out any real/fake threshold timer ourselves.
+    entry?.onStall?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'stalled' });
+    expect(resultText(result)).toContain('confirmed stall');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+
+  it('does not abort a live (non-stalled) dispatch -- onStall never fires, and the dispatch completes normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-stall-live-dispatch' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-no-stall', session_id: 's-no-stall' }), stderr: '', code: 0 })  // main: completes normally
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(resultText(result)).toContain('ok-no-stall');
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+});
+
+describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it('retries once with a fresh session after the main execCommand throws, and succeeds', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-ok' });
+    memberId = member.id;
+    addAgent(member);
+    // no PID stored, so the pre-check tryKillPid at the top of executePrompt is a no-op.
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      // no kill call here: onPidCaptured never fired since the main call rejected
+      // before invoking it, so tryKillPid inside the catch is also a no-op
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry execCommand succeeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('uses a fresh, non-resumed session on the retry command', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-fresh-session', sessionId: 'old-sess' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    // calls[2] is the retry command -- it must not carry the `--resume old-sess`
+    // flag a resumed dispatch would otherwise use, since the retry starts a
+    // deliberately fresh session rather than continuing the failed one.
+    const retryCmd = mockExecCommand.mock.calls[2][0];
+    expect(retryCmd).not.toContain('old-sess');
+  });
+
+  it('still returns a dispatch_failed structured error if the retry also throws', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-fails-too' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      .mockRejectedValueOnce(new Error('inactivity timeout again')); // retry execCommand also throws
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('inactivity timeout again');
+  });
+
+  it('does not retry when the client already cancelled the request (signal aborted)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-skip-on-abort' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('Command aborted by client')) // main execCommand throws
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+
+    const result = await executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    // 3 calls: writePromptFile + the one failed main call (no retry attempt) +
+    // deletePromptFile in the finally block.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it("caps a dispatch-exception retry's maxTotalMs/timeoutMs to whatever remains of max_total_s since the original attempt started", async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-caps-retry' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // Simulate 60s of elapsed wall-clock time before the SSH inactivity
+        // exception fires, out of a 100s max_total_s budget.
+        vi.setSystemTime(new Date(Date.now() + 60_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockImplementationOnce(async (_cmd: string, retryTimeoutMs?: number, retryMaxTotalMs?: number) => {
+        // Only ~40s of the original 100s max_total_s budget is left -- the
+        // retry must not get a fresh full 100s (or 1000s inactivity) budget.
+        expect(retryMaxTotalMs).toBeGreaterThan(0);
+        expect(retryMaxTotalMs).toBeLessThanOrEqual(40_000);
+        expect(retryTimeoutMs).toBeLessThanOrEqual(40_000);
+        return { stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 };
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 100 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips the dispatch-exception retry entirely once the shared max_total_s budget is already exhausted', async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-exhausted' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt already burned the entire 10s max_total_s
+        // budget by the time the inactivity exception fires.
+        vi.setSystemTime(new Date(Date.now() + 20_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 10 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('inactivity timeout');
+    // 3 calls: writePromptFile + the one failed main call (no retry attempt,
+    // shared budget already exhausted) + deletePromptFile.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('client timeout budget covers the shared server-side retry budget (apra-fleet-y8q.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  // apra-fleet-y8q.1 made the server share ONE max_total_s deadline budget
+  // across an original attempt and its retry, capping total server-side
+  // wall-clock time at max_total_s -- not the pre-fix ~2x max_total_s.
+  // deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) only adds
+  // a fixed 30s grace margin on top of max_total_s*1000, so it is sufficient
+  // ONLY because of that shared-budget invariant. Pin this for representative
+  // max_total_s values: the client's derived deadline always covers the
+  // server's actual (shared-budget) worst case, with margin to spare.
+  it.each([10, 60, 300, 900, 3600, 7200])(
+    'client deadline covers the shared-budget server worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const sharedBudgetWorstCaseMs = maxTotalS * 1000; // apra-fleet-y8q.1: one shared budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeGreaterThan(sharedBudgetWorstCaseMs);
+    }
+  );
+
+  // The fixed 30s grace margin alone is NOT enough to cover a full second
+  // retry budget once max_total_s grows past it -- proving the client relies
+  // on the server's shared-budget invariant (apra-fleet-y8q.1), not an
+  // oversized client margin, to stay safe. Restricted to max_total_s values
+  // where the old unshared ~2x worst case actually exceeds the 30s margin
+  // (below that, even the old worst case happened to fit -- not a meaningful
+  // regression pin).
+  it.each([60, 300, 900, 3600, 7200])(
+    'client deadline would NOT have covered the old unshared ~2x worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const oldUnsharedWorstCaseMs = maxTotalS * 2 * 1000; // pre-fix: a full second retry budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeLessThan(oldUnsharedWorstCaseMs);
+    }
+  );
+
+  // End-to-end: drive the REAL executePrompt() through an inactivity retry
+  // that exhausts the shared max_total_s budget (apra-fleet-y8q.1's
+  // retryBudget() skips the retry once exhausted), and assert the server's
+  // typed dispatch_failed error comes back well within the client's
+  // deriveTimeoutMs-derived window -- i.e. a real caller would see a clean
+  // typed error, not a raw client-side McpClient TIMEOUT rejection. Fails
+  // against pre-apra-fleet-y8q.1 code: the unconditional retry would consume
+  // a second full max_total_s budget (mockExecCommand's queue would also be
+  // exhausted, since this test supplies none for a retry attempt), pushing
+  // total elapsed server time past deriveTimeoutMs's window.
+  it('an inactivity-retry that exhausts the shared budget returns the typed dispatch_failed error within the client-derived timeout window, not a raw timeout (apra-fleet-y8q.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'y8q2-exhausted-within-client-budget' });
+    memberId = member.id;
+    addAgent(member);
+
+    const maxTotalS = 100;
+    const start = Date.now();
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt burns the ENTIRE max_total_s budget before the
+        // SSH inactivity exception fires -- the worst case the shared-budget
+        // fix caps total server time to.
+        vi.setSystemTime(new Date(Date.now() + maxTotalS * 1000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (retry skipped -- shared budget exhausted)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: maxTotalS });
+
+    // The server surfaced its own typed dispatch_failed error...
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+
+    // ...and did so within the client's derived timeout budget, not after it
+    // -- a real client using deriveTimeoutMs() would have received this
+    // clean typed error instead of giving up first with a raw TIMEOUT.
+    const elapsedMs = Date.now() - start;
+    const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+    expect(elapsedMs).toBeLessThan(clientDeadlineMs);
+    // Sanity: this really did hit (not comfortably undershoot) the shared
+    // budget ceiling, proving the assertion above is a real race rather than
+    // trivially true because nothing took any time.
+    expect(elapsedMs).toBeGreaterThanOrEqual(maxTotalS * 1000);
+  });
+});
+
+describe('dispatch-exception retry -- process-tree termination on kill (apra-fleet-eft.13.4)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it('invokes process-tree termination of the prior CLI invocation before retrying on a simulated timeout', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-tree-kill' });
+    memberId = member.id;
+    addAgent(member);
+
+    // Real (unmocked) OS commands -- lets us assert the exact kill command
+    // the retry path issues, not just a loose substring match.
+    const cmds = getOsCommands(getAgentOS(member));
+    const expectedKillCmd = cmds.killPid(9001);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _timeout?: number, _maxTotal?: number, onPidCaptured?: (pid: number) => void) => {
+        // Simulate the prior CLI invocation's PID being captured mid-flight
+        // (as the real ssh strategy does via setStoredPid + onPidCaptured,
+        // src/services/strategy.ts), then the call times out before the
+        // process exits -- mirroring a backgrounded server left running as
+        // an orphan across the retry (the apra-fleet-eft.13 cascade).
+        setStoredPid(memberId, 9001);
+        onPidCaptured?.(9001);
+        return Promise.reject(new Error('inactivity timeout'));
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // tryKillPid inside the catch -> process-tree kill
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry succeeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    // 5 calls: writePromptFile, main (throws), kill, retry, deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
+
+    const killCall = mockExecCommand.mock.calls[2][0];
+    expect(killCall).toBe(expectedKillCmd);
+    // Assert it is a genuine process-tree termination (apra-fleet-eft.13.3),
+    // not a bare `kill -9 <pid>`: it must recurse through descendants via
+    // pgrep -P before killing the pid itself, so a backgrounded child of the
+    // abandoned CLI invocation (e.g. a fixed-port test/dev server) doesn't
+    // survive the retry still holding its port.
+    expect(killCall).toContain('pgrep -P');
+    expect(killCall).toContain('9001');
+  });
+
+  it('tolerates a failed kill (process-tree termination rejects) without throwing -- the retry still proceeds and succeeds', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-kill-fails' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _timeout?: number, _maxTotal?: number, onPidCaptured?: (pid: number) => void) => {
+        setStoredPid(memberId, 9002);
+        onPidCaptured?.(9002);
+        return Promise.reject(new Error('inactivity timeout'));
+      })
+      .mockRejectedValueOnce(new Error('kill: no such process'))  // tryKillPid's process-tree kill command fails
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry still proceeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('max_turns classification (apra-fleet-p4f.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('classifies a max_turns-exhausted transcript as max_turns_exhausted even when stderr has auth-like noise', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-with-auth-noise' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt',
+        }),
+        // Auth-like noise unrelated to the real failure -- the structured
+        // terminalReason must take priority over this regex-bait.
+        stderr: 'warning: Not logged in to an unrelated helper tool',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(resultText(result)).toContain('max_turns');
+    expect(resultText(result)).not.toContain('/login');
+  });
+
+  // apra-fleet-63x.1: a max_turns-exhausted CLI invocation still ran real
+  // turns and burned real tokens before hitting its ceiling -- the parsed
+  // usage figure must reach the caller so FleetWorkflow.agent() can price and
+  // record the partial spend instead of silently under-counting it as $0.
+  it('carries partial usage on a max_turns_exhausted structured error rather than dropping it (apra-fleet-63x.1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-with-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-usage',
+          usage: { input_tokens: 12345, output_tokens: 6789 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'max_turns_exhausted',
+      usage: { input_tokens: 12345, output_tokens: 6789, total_tokens: 12345 + 6789 },
+    });
+  });
+
+  it('reports no usage field on a max_turns_exhausted error when the CLI reported none (nothing fabricated)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-no-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-no-usage',
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(result.structuredContent).not.toHaveProperty('usage');
+  });
+
+  // apra-fleet-63x.2 (verification for apra-fleet-63x.1's cost half): it is
+  // not enough for the structuredContent to merely CARRY a `usage` field --
+  // the whole point of apra-fleet-63x was that a max_turns/timeout dispatch's
+  // spend was reported as undefined downstream (observed: a 10-hour run with
+  // dozens of max_turns exhaustions reporting stats.totalCost of $0). This
+  // drives the real executePrompt() through an exhausted (max_turns) dispatch
+  // that still burned real partial tokens, then feeds the resulting usage
+  // through the SAME calculateCost() FleetWorkflow.agent() prices every
+  // dispatch's cost with (packages/apra-fleet-workflow/src/workflow/
+  // index.mjs's _resolveCost), asserting the budget-tracked cost is a
+  // defined, non-negative number reflecting that partial usage -- never
+  // undefined/null. Fails against pre-apra-fleet-63x.1 code: before that fix,
+  // the nonzero-exit branch attached no `usage` field at all, so
+  // calculateCost(model, undefined) -> null here, not a number.
+  it('an exhausted (max_turns) dispatch with partial usage prices to a real, defined, non-negative cost via calculateCost -- never undefined/null (apra-fleet-63x.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-cost-tracking' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-cost',
+          usage: { input_tokens: 8000, output_tokens: 4000 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+
+    const usage = (result.structuredContent as any)?.usage;
+    const cost = calculateCost('sonnet', usage);
+
+    expect(typeof cost).toBe('number');
+    expect(Number.isFinite(cost)).toBe(true);
+    expect(cost).toBeGreaterThanOrEqual(0);
+    // A genuinely partial (non-zero) usage figure must price to a strictly
+    // positive cost, not the "no usage available" $0/null case.
+    expect(cost).toBeGreaterThan(0);
+  });
+
+  it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
+    const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Not logged in', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    // apra-fleet-391: 'auth' is a structured reason (not overloaded onto
+    // 'nonzero_exit') so fleet-sprint's LLM-auth self-heal can key off
+    // err.details.reason directly instead of regexing the message text.
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
+    expect(resultText(result)).toContain('/login');
+  });
+
+  // apra-fleet-eft.14 (2026-07-19 stabilization loop): the member CLI can
+  // die silently mid-turn -- its session transcript stops at a tool_result
+  // with no final assistant message -- and still exit 0 with EMPTY stdout.
+  // parseResponse then falls through to its plain-text fallback with
+  // result: ''. That must be classified as a typed dispatch failure at the
+  // source, never returned as a wrapper-only "success".
+  it('classifies exit-0-with-empty-stdout as a typed empty_response dispatch error', async () => {
+    const member = makeTestAgent({ friendlyName: 'silent-death' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'some late unrelated warning', code: 0 })  // main: exit 0, NO output
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(resultText(result)).toContain('no parseable output');
+    expect(resultText(result)).toContain('some late unrelated warning');
+  });
+
+  it('a whitespace-only parsed result is also empty_response, not a success', async () => {
+    const member = makeTestAgent({ friendlyName: 'whitespace-death' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: '   \n  ', session_id: 'sess-ws' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+  });
+
+  // apra-fleet-eft.28.7: end-to-end regression for the eft.28.6 server-side
+  // output-extraction fix. This mirrors the real trust-probe capture named in
+  // eft.28 NEW EVIDENCE: the final `type:result` event's session_id parses fine
+  // but its own `result` field is blank, even though the assistant's full reply
+  // (incl. tool use) is present in the preceding `type:assistant` stream events.
+  // Pre-eft.28.6, ClaudeProvider.parseResponse returned `result: ''` for this
+  // exact stream, which execute-prompt.ts's empty-result guard (apra-fleet-eft.14,
+  // just above) then classified as a typed `empty_response` failure -- so the
+  // caller got only the {usage, sessionId} wrapper and lost the reply text, even
+  // though it was fully present member-side. This test fails against that
+  // pre-fix behavior and passes once the assistant text is recovered.
+  it('recovers and returns the assistant reply text (not just {usage, sessionId}) when the result event text is blank but session_id parses', async () => {
+    const member = makeTestAgent({ friendlyName: 'recovers-reply' });
+    addAgent(member);
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-recover' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Here is the full ' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'bash' }, { type: 'text', text: 'answer.' }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-recover', usage: { input_tokens: 5, output_tokens: 7 } }),
+    ].join('\n');
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: stream, stderr: '', code: 0 })  // main: exit 0, blank result event, recoverable assistant text
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(result.structuredContent).toMatchObject({ sessionId: 'sid-recover' });
+    expect(resultText(result)).toContain('Here is the full answer.');
+    expect(resultText(result)).toContain('sid-recover');
+  });
+
+  it('still classifies a genuinely empty result (no recoverable assistant text) as empty_response, not a silent success', async () => {
+    const member = makeTestAgent({ friendlyName: 'genuinely-empty' });
+    addAgent(member);
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-empty' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-empty' }),
+    ].join('\n');
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: stream, stderr: '', code: 0 })  // main: exit 0, blank result, no assistant text at all
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(resultText(result)).toContain('no parseable output');
+  });
+});
+
+// apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions without
+// killing the CLI, so the pre-fix behavior fell through into the stale-session /
+// server-overloaded retries below and could walk into eft.28's dead-session hang.
+// It must instead be classified as a typed dispatch error and fail fast, before
+// either retry path fires.
+describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('fails fast with a typed workspace_not_trusted error naming ensureWorkspaceTrusted', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-folder' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Ignoring 17 permissions.allow entries -- this workspace has not been trusted', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    expect(resultText(result)).toContain('ensureWorkspaceTrusted');
+    // Only 3 calls: writePromptFile + main (untrusted) + deletePromptFile -- no retry.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not fall through to the stale-session retry, even with a resumable session', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-with-session', sessionId: 'old-sess' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const promise = executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    // 3 calls only -- proves the stale-session retry (which would add a 4th call) never fired.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+// apra-fleet-hzeb.2: execute_prompt relays a provider usage-limit signal
+// (detectUsageLimit) as a terminal `reason: 'usage_limit'` result, checked
+// immediately after EVERY provider.parseResponse() call in the dispatch path
+// and regardless of exit code -- a fresh session can never cure a plan/quota
+// limit, so it must short-circuit the stale-session and server-overloaded
+// retries below it rather than burning the shared retry budget.
+describe('execute_prompt: usage-limit relay (apra-fleet-hzeb.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('relays a usage_limit signal, skips the stale-session AND server-overloaded retries even though both would otherwise fire, and clears inFlightAgents', async () => {
+    const member = makeTestAgent({ friendlyName: 'usage-limit-member', sessionId: 'old-sess' });
+    addAgent(member);
+    const signal: UsageLimitSignal = {
+      type: 'usage_limit',
+      resumeAt: '2024-01-15T13:20:00.000Z',
+      resumeAtSource: 'parsed',
+      message: "You've hit your session limit",
+    };
+    const detectSpy = vi.spyOn(ClaudeProvider.prototype, 'detectUsageLimit').mockReturnValue(signal);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      // Deliberately shaped so that, absent the usage-limit short-circuit,
+      // BOTH the stale-session retry (member.sessionId set + resume:true +
+      // code!==0) and the server-overloaded retry (stderr matches the
+      // overloaded classifier) would otherwise fire.
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', api_error_status: 429, result: "You've hit your session limit", session_id: 'sess-ul-1' }),
+        stderr: 'HTTP 429 Too Many Requests',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    expect(inFlightAgents.has(member.id)).toBe(false);
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    expect(detectSpy).toHaveBeenCalled();
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit', sessionId: 'sess-ul-1' });
+    expect(result.structuredContent?.usageLimit).toBe(signal);
+    expect(resultText(result)).toContain('usage limit');
+    expect(resultText(result)).toContain(signal.resumeAt);
+    // 3 calls: writePromptFile + ONE main dispatch + deletePromptFile -- no
+    // stale-session or server-overloaded retry dispatch was made.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
+
+  it('classifies an exit-0 result whose text carries the usage-limit message as usage_limit, never as a success response', async () => {
+    const member = makeTestAgent({ friendlyName: 'usage-limit-exit0' });
+    addAgent(member);
+    const signal: UsageLimitSignal = {
+      type: 'usage_limit',
+      resumeAt: '2024-01-15T20:00:00.000Z',
+      resumeAtSource: 'guessed',
+      message: "You've hit your weekly limit",
+    };
+    vi.spyOn(ClaudeProvider.prototype, 'detectUsageLimit').mockReturnValue(signal);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', result: "You've hit your weekly limit", session_id: 'sess-ul-exit0' }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit' });
+    expect(result.structuredContent?.usageLimit).toBe(signal);
+    // A success response wraps the reply as "[RESULT] Response from ..." --
+    // must never appear for a usage_limit classification, even at exit 0.
+    expect(resultText(result)).not.toContain('[RESULT]');
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  // Regression pin: a genuinely transient 529 overload (no api_error_status,
+  // no 'api_error' terminalReason -- just a stderr string) must NOT be
+  // reclassified as a usage limit. detectUsageLimit stays null and the
+  // pre-existing single 5s retry-then-fail path is unchanged.
+  it('a 529 overloaded fixture leaves detectUsageLimit null and takes the existing single 5s retry path, returning reason: overloaded', async () => {
+    const member = makeTestAgent({ friendlyName: 'overloaded-529' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 529 Overloaded', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 529 Overloaded', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const promise = executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'overloaded' });
+    expect(result.structuredContent?.usageLimit).toBeUndefined();
+    // 4 calls: writePromptFile + main (529) + overloaded-retry (529) + deletePromptFile.
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+});
+
+// apra-fleet-6a7.1: the code!==0 workspace_not_trusted classification above
+// (eft.40.3) never runs for an exit-0/empty-stdout dispatch -- a SEPARATE
+// branch. Live evidence (apra-fleet-2g2, fleet-win-dev1, 2026-08-02) showed
+// exactly that: exit 0, empty stdout, and a stderr tail carrying the same
+// trust phrase, so the existing reactive self-heal never fired and the
+// dispatch fell through as a generic empty_response. These tests cover the
+// new self-heal-and-retry-once path added for that gap.
+describe('exit-0/empty-stdout workspace_not_trusted self-heal-and-retry (apra-fleet-6a7.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('self-heals once via seedWorkspaceTrust and retries the dispatch, returning the retry\'s real result on success', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-empty-heals' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Ignoring 4 permissions.allow entries -- this workspace has not been trusted', code: 0 })  // main: exit 0, empty stdout, trust phrase in stderr
+      .mockResolvedValueOnce({  // heal-retry: succeeds now that trust was seeded
+        stdout: JSON.stringify({ result: 'recovered after trust heal', session_id: 'sess-healed' }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(resultText(result)).toContain('recovered after trust heal');
+    expect(vi.mocked(seedWorkspaceTrust)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(seedWorkspaceTrust).mock.calls[0][0]).toMatchObject({ friendlyName: 'untrusted-empty-heals' });
+    // 4 calls: writePromptFile + main (untrusted, empty) + heal-retry (ok) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('classifies as workspace_not_trusted (not generic empty_response) when the heal-and-retry is still empty', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-empty-still-fails' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 0 })  // main: exit 0, empty stdout
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 0 })  // heal-retry: still untrusted/empty
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    expect(resultText(result)).toContain('ensureWorkspaceTrusted');
+    expect(vi.mocked(seedWorkspaceTrust)).toHaveBeenCalledTimes(1);
+    // 4 calls: writePromptFile + main + heal-retry + deletePromptFile -- exactly
+    // ONE retry, never a second heal/retry loop even though it failed again.
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('a plain (non-trust) exit-0/empty-stdout dispatch is unaffected -- no self-heal, still generic empty_response', async () => {
+    const member = makeTestAgent({ friendlyName: 'plain-empty-unaffected' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'some unrelated late warning', code: 0 })  // main: exit 0, empty, no trust phrase
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(vi.mocked(seedWorkspaceTrust)).not.toHaveBeenCalled();
+    // 3 calls only -- no heal-retry fired for a non-trust empty response.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+// apra-fleet-eft.80.3: hard-threshold budget exhaustion must reject the NEW
+// dispatch with a structured budget_exhausted error BEFORE any LLM call --
+// unlike workspace_not_trusted (which fails after the main exec has already
+// run), this gate sits ahead of writePromptFile, so the spawn-spy assertion
+// here is a hard 0 calls, not "3 calls, no retry."
+describe('budget_exhausted admission gate (apra-fleet-eft.80.3)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    _resetBudgetState();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    _resetBudgetState();
+  });
+
+  it('rejects with budget_exhausted and makes no LLM call (spawn-spy: 0 execCommand calls)', async () => {
+    const member = makeTestAgent({ friendlyName: 'budget-exhausted-member' });
+    addAgent(member);
+    setBudget(member.id, { limit: 1000, unit: 'tokens', hardFraction: 1.0 });
+    // Provider has no getUsage() capability here (see providerWithoutUsage in
+    // budget-awareness.test.ts) -- makeTestAgent's default provider setup does
+    // not implement getUsage, so this exercises the estimated-source path.
+    // Directly seed the estimated spend past the hard threshold rather than
+    // round-tripping through recordAndEvaluate.
+    const { recordEstimatedSpend } = await import('../src/services/budget-awareness.js');
+    recordEstimatedSpend(member.id, 1000); // 100% of a 1000-token budget
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'budget_exhausted',
+      budgetUsage: { spent: 1000, budget: 1000, scope: member.id, unit: 'tokens', source: 'estimated' },
+    });
+    expect(resultText(result)).toContain('budget exhausted');
+    expect(resultText(result)).toContain('No LLM call was made');
+    // No writePromptFile, no main command, no deletePromptFile: the gate sits
+    // ahead of every exec, so the spawn-spy sees zero calls.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not reject when spend is below the hard threshold -- dispatch proceeds normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'budget-below-threshold' });
+    addAgent(member);
+    setBudget(member.id, { limit: 1000, unit: 'tokens', hardFraction: 1.0 });
+    const { recordEstimatedSpend } = await import('../src/services/budget-awareness.js');
+    recordEstimatedSpend(member.id, 500); // 50% -- warn band and hard threshold both uncrossed
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-budget-ok' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ reason: 'budget_exhausted' });
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+});
+// apra-fleet-<bead>: a prompt written whole into a single remote exec command
+// line can exceed the SSH exec channel's / Windows CreateProcess's
+// command-line ceiling once the Windows path's UTF-16LE + base64
+// -EncodedCommand encoding (~2.67x inflation) is applied -- observed live
+// (2026-07-30, fleet-win-dev1) as a garbled "Unable to exec ..." response
+// instead of real review output for a large (multi-bead `bd show --json`)
+// Review-phase prompt. writePromptFile() now chunks any content over
+// REMOTE_PROMPT_CHUNK_CHARS across multiple bounded exec calls (first
+// creates/overwrites, the rest append) rather than embedding it whole.
+describe('writePromptFile chunking (large remote prompts)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('writes a large prompt to a Windows remote member in multiple bounded Set-Content/Add-Content calls', async () => {
+    const member = makeTestAgent({ friendlyName: 'win-chunk-member', os: 'windows' });
+    addAgent(member);
+    const bigPrompt = 'A'.repeat(9500); // > 2 chunks at 4000 chars/chunk
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-chunked' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: bigPrompt, resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+
+    // 3 chunks (4000 + 4000 + 1500) + main command + deletePromptFile = 5 calls.
+    const calls = mockExecCommand.mock.calls;
+    expect(calls.length).toBe(5);
+    const writeCalls = calls.slice(0, 3).map((c) => c[0] as string);
+    // Every write call must stay well under a Windows CreateProcess-safe ceiling.
+    for (const cmd of writeCalls) {
+      expect(cmd.length).toBeLessThan(20000);
+    }
+
+    // Decode each -EncodedCommand blob and confirm the chunks reconstruct the
+    // exact original prompt in order (accounting for the doubled '' escaping
+    // Set-Content/Add-Content -Value apply to single quotes).
+    const decoded = writeCalls.map((cmd) => {
+      const b64 = cmd.replace(/^powershell -EncodedCommand /, '').trim();
+      return Buffer.from(b64, 'base64').toString('utf16le');
+    });
+    expect(decoded[0]).toContain('Set-Content');
+    expect(decoded[1]).toContain('Add-Content');
+    expect(decoded[2]).toContain('Add-Content');
+    const reconstructed = decoded
+      .map((psScript) => {
+        const m = psScript.match(/-Value '([\s\S]*)' -NoNewline/);
+        return m ? m[1].replace(/''/g, "'") : '';
+      })
+      .join('');
+    expect(reconstructed).toBe(bigPrompt);
+  });
+
+  it('writes a large prompt to a POSIX remote member in multiple bounded base64 append calls', async () => {
+    const member = makeTestAgent({ friendlyName: 'posix-chunk-member', os: 'linux' });
+    addAgent(member);
+    const bigPrompt = 'B'.repeat(8200); // > 2 chunks at 4000 chars/chunk
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-chunked-posix' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: bigPrompt, resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+
+    // 3 chunks (4000 + 4000 + 200) + main command + deletePromptFile = 5 calls.
+    const calls = mockExecCommand.mock.calls;
+    expect(calls.length).toBe(5);
+    const writeCalls = calls.slice(0, 3).map((c) => c[0] as string);
+    expect(writeCalls[0]).toContain('mkdir -p');
+    expect(writeCalls[0]).toMatch(/> \.fleet-task\.md$/);
+    expect(writeCalls[1]).toMatch(/>> \.fleet-task\.md$/);
+    expect(writeCalls[2]).toMatch(/>> \.fleet-task\.md$/);
+
+    const reconstructed = writeCalls
+      .map((cmd) => {
+        const m = cmd.match(/echo '([^']+)' \| base64 -d/);
+        return m ? Buffer.from(m[1], 'base64').toString('utf-8') : '';
+      })
+      .join('');
+    expect(reconstructed).toBe(bigPrompt);
+  });
+
+  it('small prompts still write in a single exec call on both OS paths (no behavior change under the chunk threshold)', async () => {
+    const member = makeTestAgent({ friendlyName: 'small-prompt-member', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-small' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'a short prompt', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+    // 3 calls: single writePromptFile chunk + main command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+// apra-fleet-eft.81.2: context-headroom admission control (apra-fleet-eft.81.1)
+// pins the same 3-band decision at the execute_prompt tool boundary: a demand
+// that doesn't fit a resumed session's remaining window rejects BEFORE any
+// spawn; the identical demand against a fresh session passes; a demand that
+// fits the raw window but eats into the reserved safety margin passes with a
+// structured contextWarning attached; and declaring no demand at all (both
+// expected_context_tokens and context_size omitted) is a total no-op --
+// back-compat with every pre-eft.81.1 caller. The "engine supplies bucket"
+// case pins that context_size ('S'/'M'/'L') alone -- with no explicit
+// expected_context_tokens -- is enough to derive the numeric demand used in
+// the admission decision (DEFAULT_SIZE_BUCKET_TOKENS), i.e. a caller (an
+// orchestrating "engine") that only knows a task's S/M/L size metadata still
+// gets a real admission check.
+describe('context-headroom admission gate at the execute_prompt boundary (apra-fleet-eft.81.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    _resetSessionUsage();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    _resetSessionUsage();
+  });
+
+  it('rejects with insufficient_context_headroom and makes no LLM call when a resumed session with high cumulative usage cannot fit an L-size demand', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-reject-resumed', sessionId: 'sess-high-cumulative' });
+    addAgent(member);
+    // claude (non-opus) window = 200_000. Cumulative usage of 150_000 leaves
+    // only 50_000 raw remaining -- less than the L bucket's 60_000 demand, so
+    // this does not fit at all (band 3: REJECT), regardless of the 20_000
+    // safety margin.
+    recordSessionUsage('sess-high-cumulative', { input_tokens: 100_000, output_tokens: 50_000 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'L', timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'insufficient_context_headroom',
+      detail: { demand: DEFAULT_SIZE_BUCKET_TOKENS.L, window: 200_000 },
+    });
+    expect(resultText(result)).toContain('insufficient context headroom');
+    // The gate sits ahead of writePromptFile/the main exec/deletePromptFile:
+    // the spawn-spy sees zero calls, exactly like the budget_exhausted gate.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('the identical L-size demand against a fresh session (no prior cumulative usage) passes and dispatches normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-pass-fresh' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-fresh-ok' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, context_size: 'L', timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+    expect((result.structuredContent as any)?.contextWarning).toBeUndefined();
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('a near-margin demand (fits the raw window but eats into the safety margin) still dispatches, with a structured contextWarning attached', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-near-margin', sessionId: 'sess-near-margin' });
+    addAgent(member);
+    // window=200_000, cumulative=145_000 -> rawRemaining=55_000, margin=20_000
+    // -> headroom=35_000. A 40_000-token demand fits the raw remaining window
+    // (55_000) but lands inside the 20_000 safety margin (band 2: ALLOW +
+    // structured warning), not a band-1 comfortable fit and not a band-3 reject.
+    recordSessionUsage('sess-near-margin', { input_tokens: 100_000, output_tokens: 45_000 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-near-margin' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, expected_context_tokens: 40_000, timeout_s: 5 });
+
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect((result.structuredContent as any)?.contextWarning).toMatchObject({
+      detail: { demand: 40_000, window: 200_000 },
+    });
+    expect((result.structuredContent as any)?.contextWarning?.message).toContain('safety margin');
+  });
+
+  it('back-compat: omitting both expected_context_tokens and context_size skips the admission check entirely -- no rejection, no warning', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-omitted-backcompat', sessionId: 'sess-omitted' });
+    addAgent(member);
+    // Seed a cumulative total that WOULD reject any declared L/M/S demand, to
+    // prove the gate is skipped altogether (not merely "always passes") when
+    // the caller declares no demand at all.
+    recordSessionUsage('sess-omitted', { input_tokens: 190_000, output_tokens: 5_000 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-omitted' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+    expect((result.structuredContent as any)?.contextWarning).toBeUndefined();
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('engine supplies bucket: context_size alone (no explicit expected_context_tokens) derives the numeric demand from S/M/L size metadata', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-engine-bucket', sessionId: 'sess-engine-bucket' });
+    addAgent(member);
+    // Cumulative usage chosen so the S bucket (4_000) fits comfortably but the
+    // M bucket (20_000) does not fit at all -- this proves the actual bucket
+    // token VALUE (not just "some declared demand") reaches the admission
+    // decision, i.e. the size metadata was really translated into a token
+    // count rather than being ignored.
+    recordSessionUsage('sess-engine-bucket', { input_tokens: 190_000, output_tokens: 0 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-engine-bucket' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const passing = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'S', timeout_s: 5 });
+    expect(passing.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+
+    const rejecting = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'M', timeout_s: 5 });
+    expect(rejecting.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'insufficient_context_headroom',
+      detail: { demand: DEFAULT_SIZE_BUCKET_TOKENS.M },
+    });
+  });
+
+  describe('AGY provider dispatches', () => {
+    it('fresh AGY dispatch (resume: false) emits no --conversation flag and records returned conversation_id', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy' });
+      addAgent(agyMember);
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-9876',
+        status: 'SUCCESS',
+        response: 'Done with AGY task',
+        usage: { input_tokens: 1000, output_tokens: 200 },
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: `FLEET_PID:1234\n${agyOutput}`,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'do task', resume: false, timeout_s: 5 });
+
+      expect(mockExecCommand).toHaveBeenCalled();
+      const promptCmdCall = mockExecCommand.mock.calls.find(call => call[0].includes('agy'));
+      expect(promptCmdCall).toBeDefined();
+      const executedCmd = promptCmdCall![0];
+      expect(executedCmd).toContain('--output-format json');
+      expect(executedCmd).not.toContain('--conversation');
+
+      expect(resultText(result)).toContain('Done with AGY task');
+      expect((result.structuredContent as any)?.sessionId).toBe('agy-conv-9876');
+
+      const updatedAgent = getAgent(agyMember.id);
+      expect(updatedAgent?.sessionId).toBe('agy-conv-9876');
+    });
+
+    it('resumed AGY dispatch (resume: true) passes --conversation with target session ID', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-resumer', llmProvider: 'agy', sessionId: 'agy-conv-existing' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-conv-existing');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-existing',
+        status: 'SUCCESS',
+        response: 'Resumed AGY task response',
+        usage: { input_tokens: 500, output_tokens: 100 },
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'continue task', resume: true, timeout_s: 5 });
+
+      expect(mockExecCommand).toHaveBeenCalled();
+      const promptCmdCall = mockExecCommand.mock.calls.find(call => call[0].includes('agy'));
+      expect(promptCmdCall).toBeDefined();
+      const executedCmd = promptCmdCall![0];
+      expect(executedCmd).toContain('--conversation "agy-conv-existing"');
+      expect(resultText(result)).toContain('Resumed AGY task response');
+    });
+
+    it('session_id parameter acts as explicit session resume', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-session-id-param', llmProvider: 'agy' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-conv-shorthand');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-shorthand',
+        status: 'SUCCESS',
+        response: 'Shorthand response',
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'task with session_id', session_id: 'agy-conv-shorthand', timeout_s: 5 });
+      expect(resultText(result)).toContain('Shorthand response');
+    });
+
+    it('explicit resume with returned session mismatch rejects with session_not_found', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-mismatch', llmProvider: 'agy' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-expected-id');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-different-id',
+        status: 'SUCCESS',
+        response: 'Mismatched response',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+        },
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'task', session_id: 'agy-expected-id', timeout_s: 5 });
+      expect(result.structuredContent?.reason).toBe('session_not_found');
+      expect(result.structuredContent?.isError).toBe(true);
+      expect((result.structuredContent as any)?.returnedSessionId).toBe('agy-different-id');
+      expect(isKnownSession(agyMember.id, 'agy-different-id')).toBe(true);
+      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, total_tokens: 150 });
+
+      const updatedAgent = getAgent(agyMember.id);
+      expect(updatedAgent?.tokenUsage).toEqual({ input: 100, output: 50 });
+    });
+
+    it('explicit resume skips fresh-session trust-heal retry', async () => {
+      const claudeMember = makeTestAgent({ friendlyName: 'claude-explicit-trust', llmProvider: 'claude' });
+      addAgent(claudeMember);
+      recordKnownSession(claudeMember.id, 'sess-untrusted-explicit');
+
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: 'this workspace has not been trusted -- ensureWorkspaceTrusted',
+        code: 0,
+      });
+
+      mockExecCommand.mockClear();
+
+      const result = await executePrompt({ member_id: claudeMember.id, prompt: 'task', session_id: 'sess-untrusted-explicit', timeout_s: 5 });
+      expect(result.structuredContent?.reason).toBe('workspace_not_trusted');
+      // Verify seedWorkspaceTrust was NOT invoked and no retry prompt was dispatched
+      expect(seedWorkspaceTrust).not.toHaveBeenCalled();
+      const promptCmdCalls = mockExecCommand.mock.calls.filter(c => c[0].includes('claude'));
+      expect(promptCmdCalls).toHaveLength(1);
+    });
+  });
+});
+
+// ---- R3 regression coverage: preflight_* reason code mapping ----
+describe('executePrompt -- preflight reason code mapping', () => {
+  const mockPreflightCheck = vi.mocked(preflightCheck);
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
+    mockPreflightCheck.mockReset();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('maps preflight code "offline" to reason preflight_offline and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-offline-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: false,
+      authValid: false,
+      reason: 'Member is unreachable',
+      code: 'offline',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_offline');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(resultText(result)).toContain('Pre-dispatch check failed');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('maps preflight code "auth_missing" to reason preflight_auth_missing and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-auth-missing-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'No LLM credentials found',
+      code: 'auth_missing',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_auth_missing');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('maps preflight code "auth_expired" to reason preflight_auth_expired and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-auth-expired-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'OAuth token expired',
+      code: 'auth_expired',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_auth_expired');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('falls back to reason dispatch_failed for an unrecognized preflight code', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-unknown-code-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'Something else went wrong',
+      code: undefined,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('dispatch_failed');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to dispatch when preflight passes (ok: true)', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-ok-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({ ok: true, connectivity: true, authValid: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason ?? '').not.toMatch(/^preflight_/);
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('skips the preflight check entirely for local members', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-preflight-local-test-'));
+    try {
+      const member = makeTestLocalAgent({ friendlyName: 'preflight-local-member', workFolder: tmpDir });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+      await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+      expect(mockPreflightCheck).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('claims the busy lock before the preflight await, so a second near-simultaneous dispatch to the same member is rejected as busy instead of racing past the busy check', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-race-member' });
+    addAgent(member);
+
+    let resolvePreflight: (value: unknown) => void = () => {};
+    const pendingPreflight = new Promise((resolve) => { resolvePreflight = resolve; });
+    mockPreflightCheck.mockReturnValueOnce(pendingPreflight as any);
+    mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+    // Fire the first dispatch but do not await it yet.
+    const firstDispatch = executePrompt({ member_id: member.id, prompt: 'task-1', resume: false, timeout_s: 5 });
+
+    // Drain microtasks until the first call has actually reached (and is
+    // blocked inside) the preflight await -- this is the exact window the
+    // fix closes: inFlightAgents.add() must have already run by this point.
+    for (let i = 0; i < 20 && mockPreflightCheck.mock.calls.length < 1; i++) {
+      await Promise.resolve();
+    }
+    expect(mockPreflightCheck).toHaveBeenCalledTimes(1);
+    expect(inFlightAgents.has(member.id)).toBe(true);
+
+    // Second near-simultaneous dispatch to the SAME member while the first
+    // is still awaiting preflight. Before the fix, both calls would pass the
+    // busy check (neither had claimed the lock yet) and double-dispatch.
+    const secondDispatch = executePrompt({ member_id: member.id, prompt: 'task-2', resume: false, timeout_s: 5 });
+
+    resolvePreflight({ ok: true, connectivity: true, authValid: true, latencyMs: 1 });
+
+    const [firstResult, secondResult] = await Promise.all([firstDispatch, secondDispatch]);
+
+    expect(secondResult.structuredContent?.reason).toBe('busy');
+    expect(resultText(secondResult)).toContain('already running');
+    expect(firstResult.structuredContent?.reason ?? '').not.toBe('busy');
+    expect(firstResult.structuredContent?.reason ?? '').not.toMatch(/^preflight_/);
+    // preflightCheck itself was only ever invoked once -- the second dispatch
+    // never got far enough to call it at all, confirming no double-dispatch.
+    expect(mockPreflightCheck).toHaveBeenCalledTimes(1);
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
+
+  it('releases the busy lock even when preflightCheck itself throws instead of resolving {ok: false}', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-throws-member' });
+    addAgent(member);
+    mockPreflightCheck.mockRejectedValueOnce(new Error('preflight blew up unexpectedly'));
+
+    await expect(
+      executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 }),
+    ).rejects.toThrow('preflight blew up unexpectedly');
+
+    // The lock claimed just before the preflight await must not leak just
+    // because preflightCheck rejected instead of resolving a failure result.
+    expect(inFlightAgents.has(member.id)).toBe(false);
   });
 });
 

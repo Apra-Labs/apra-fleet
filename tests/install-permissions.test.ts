@@ -12,14 +12,14 @@ describe('buildRequiredPerms', () => {
     }
   });
 
-  it('includes tracker_* for Gemini provider', () => {
-    const paths = getProviderInstallConfig('gemini');
+  it('includes tracker_* for AGY (Antigravity) provider', () => {
+    const paths = getProviderInstallConfig('agy');
     const perms = buildRequiredPerms(paths);
     expect(perms).toContain('tracker_*');
   });
 
   it('always includes mcp__apra-fleet__* and Agent(*)', () => {
-    for (const provider of ['claude', 'gemini', 'codex'] as const) {
+    for (const provider of ['claude', 'agy', 'codex'] as const) {
       const perms = buildRequiredPerms(getProviderInstallConfig(provider));
       expect(perms).toContain('mcp__apra-fleet__*');
       expect(perms).toContain('Agent(*)');
@@ -36,14 +36,14 @@ describe('pruneInvalidRules', () => {
     expect(result).toContain('Agent(*)');
   });
 
-  it('preserves tracker_* for Gemini provider', () => {
+  it('preserves tracker_* for OpenCode provider', () => {
     const allow = ['mcp__apra-fleet__*', 'tracker_*', 'Agent(*)'];
-    const result = pruneInvalidRules(allow, 'Gemini');
+    const result = pruneInvalidRules(allow, 'OpenCode');
     expect(result).toContain('tracker_*');
   });
 
   it('preserves tracker_* for non-Claude providers', () => {
-    for (const name of ['Gemini', 'Codex', 'Copilot', 'Antigravity']) {
+    for (const name of ['OpenCode', 'Codex', 'Copilot', 'Antigravity']) {
       const allow = ['tracker_*', 'other_rule'];
       const result = pruneInvalidRules(allow, name);
       expect(result).toContain('tracker_*');

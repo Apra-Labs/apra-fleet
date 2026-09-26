@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
+import { getOsCommands } from '../src/os/index.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
 
 const makeLocalAgent = makeTestLocalAgent;
@@ -16,9 +18,19 @@ describe('LocalStrategy', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // maxRetries/retryDelay let Node's own rmSync retry through the Windows
+    // EBUSY window (antivirus/child-process handle not yet released) instead
+    // of throwing and cascading into the next case's beforeEach hook --
+    // same pattern fe336c09 used for kb-bible-v2.test.ts.
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
+  // These four cases spawn a real PowerShell/shell child process via
+  // strategy.execCommand(). Observed real cost is 3981ms-5044ms under
+  // full-suite Windows host contention (my-beads-db-27m.28/.34) -- right at
+  // or over vitest's 5000ms default test timeout, which vitest.config.ts
+  // does not override globally. 15000ms gives >3x margin over measured cost
+  // without raising the global testTimeout.
   it('execCommand() runs command locally and returns stdout/code', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(member);
@@ -26,7 +38,7 @@ describe('LocalStrategy', () => {
     const result = await strategy.execCommand('echo hello-fleet');
     expect(result.stdout.trim()).toBe('hello-fleet');
     expect(result.code).toBe(0);
-  });
+  }, 15000);
 
   it('execCommand() does not leak CLAUDECODE to child process', async () => {
     process.env.CLAUDECODE = 'test-leak-marker';
@@ -41,7 +53,42 @@ describe('LocalStrategy', () => {
     } finally {
       delete process.env.CLAUDECODE;
     }
-  });
+  }, 15000);
+
+  // apra-fleet-eft.65.3: pins apra-fleet-eft.65.1's fix -- a coding agent
+  // dispatched via LocalStrategy's clean-env exec must receive a
+  // tool-permission configuration that grants Edit/Write for a brand-new
+  // file in its own work folder (no hard-block), via the surgical
+  // `--permission-mode acceptEdits` flag rather than the broad
+  // `--dangerously-skip-permissions` bypass. Per eft.65.3's acceptance
+  // criteria, this asserts the deterministic, testable surface -- the
+  // composed permission config actually reaching the spawned process through
+  // LocalStrategy's real clean-env exec pipeline -- not live agent
+  // free-behavior (no real `claude` binary is required: the actual CLI name
+  // is substituted with `echo` so the test can inspect exactly what argv
+  // LocalStrategy hands to the child process).
+  it('LocalStrategy clean-env exec preserves the provider-composed Edit/Write permission-parity flag for a headless coding-agent dispatch', async () => {
+    const provider = new ClaudeProvider();
+    const cmds = getOsCommands(os.platform() === 'win32' ? 'windows' : 'linux');
+    const built = cmds.buildAgentPromptCommand(provider, { folder: tmpDir, promptFile: '.fleet-task.md' });
+    // Same command LocalStrategy would actually spawn for a real coding-agent
+    // dispatch, except the `claude` binary is swapped for `echo` so this test
+    // doesn't depend on a real CLI being installed -- we only need to prove
+    // the permission flag survives LocalStrategy's clean-env wrapping intact.
+    const echoCmd = built.replace(/claude(\.cmd)?\s+-p/, 'echo -p');
+
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
+    const result = await strategy.execCommand(echoCmd);
+    console.log('strategy.test.ts result:', result);
+    expect(result.code).toBe(0);
+    // The tool-permission configuration handed to the dispatched agent
+    // grants Edit/Write parity for the work folder (no hard-block)...
+    const stdoutNormalized = result.stdout.replace(/\s+/g, ' ');
+    expect(stdoutNormalized).toContain('--permission-mode acceptEdits');
+    // ...via the surgical flag, never the broad permission-bypass escape hatch.
+    expect(stdoutNormalized).not.toContain('--dangerously-skip-permissions');
+  }, 15000);
 
   it('execCommand() returns non-zero code for failed commands', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });
@@ -49,7 +96,7 @@ describe('LocalStrategy', () => {
 
     const result = await strategy.execCommand('exit 42');
     expect(result.code).not.toBe(0);
-  });
+  }, 15000);
 
   it('transferFiles() copies files to target folder', async () => {
     const member = makeLocalAgent({ workFolder: tmpDir });

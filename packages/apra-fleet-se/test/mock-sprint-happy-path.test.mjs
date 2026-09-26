@@ -1,0 +1,548 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch, mockCmdResult, isSpawnFailure } from './helpers/mock-sprint-harness.mjs';
+
+const check = (cond, msg) => assert.ok(cond, msg);
+
+// apra-fleet-eft.75.2: runOnce() derives its branch via uniqueMockBranch(tag)
+// (this process's own pid appended) rather than a fixed literal -- see that
+// helper's doc comment in helpers/mock-sprint-harness.mjs. Computed once here
+// so every assertion below that needs to match the exact branch string
+// (including inside a regex, hence the escaped variant) stays in sync with
+// whatever runOnce('run1') actually used.
+const RUN1_BRANCH = uniqueMockBranch('run1');
+const RUN1_BRANCH_RE_SAFE = RUN1_BRANCH.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+// apra-fleet-1cb.2: direct regression assertion for the isError/nonzero-exit
+// contract used by helpers/mock-sprint-harness.mjs's command() dispatch
+// (formerly test/advanced-mock-runner-test.mjs, split into this file --
+// apra-fleet-fih.1) -- protects against mockCmdResult()/isSpawnFailure()
+// silently drifting back to conflating "shell exited nonzero" with "MCP
+// dispatch failed" (the bug apra-fleet-1cb.1 fixed). Exercises the two
+// functions directly rather than a full mock sprint, so it stays fast and
+// pinpoints the exact function at fault on a regression.
+test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failure is isError:true', () => {
+    // A nonzero shell exit (e.g. a `bd` command failing on bad input) is
+    // normal data, matching src/tools/execute-command.ts -- never isError.
+    const nonzeroExit = mockCmdResult(1, '', 'bead already closed');
+    assert.strictEqual(nonzeroExit.isError, undefined);
+    assert.strictEqual(nonzeroExit.structuredContent.exitCode, 1);
+    assert.match(nonzeroExit.content[0].text, /^Exit code: 1/);
+
+    // A genuine spawn/transport failure (process never ran) IS isError:true
+    // in the command() dispatch logic -- isSpawnFailure() is what
+    // distinguishes that case from an ordinary nonzero exit code.
+    assert.strictEqual(isSpawnFailure({ code: undefined }), true);
+    assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
+    assert.strictEqual(isSpawnFailure({ code: 1 }), false);
+    assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
+
+// apra-fleet-fih.1: happy-path + determinism scenarios (run1, run2), split
+// out of the former monolithic advanced-mock-runner-test.mjs. run1/run2 are
+// compared against EACH OTHER (dispatch sequence determinism, final bead
+// state determinism), so they must run in the same file/process.
+test('mock sprint: happy path is deterministic across two independent runs', async () => {
+    await withScenarioMarkers('run1+run2 determinism', async () => {
+        console.log('Running mock sprint scenario (pass 1)...');
+        const run1 = await runOnce('run1');
+        console.log('Running mock sprint scenario (pass 2)...');
+        const run2 = await runOnce('run2');
+
+        check(run1.result && run1.result.status === 'success', `Run1 did not succeed: ${JSON.stringify(run1.result)}`);
+        check(run2.result && run2.result.status === 'success', `Run2 did not succeed: ${JSON.stringify(run2.result)}`);
+
+        // apra-fleet-unw.14: branch/base_branch/goal/max_cycles values passed
+        // into executeFile() must actually reach and be exposed by the runner,
+        // not just be parsed and dropped.
+        check(run1.result && run1.result.branch === RUN1_BRANCH, `Run1 result did not expose branch: ${JSON.stringify(run1.result)}`);
+        check(run1.result && run1.result.baseBranch === 'main', `Run1 result did not expose baseBranch: ${JSON.stringify(run1.result)}`);
+        check(run1.result && run1.result.goal === 'P1/P2', `Run1 result did not expose goal: ${JSON.stringify(run1.result)}`);
+        check(run1.result && run1.result.maxCycles === 5, `Run1 result did not expose maxCycles: ${JSON.stringify(run1.result)}`);
+
+        // apra-fleet-unw.14: git semantics -- ensure/create the sprint branch is
+        // the first GIT command dispatched, and push + PR-raise are the last
+        // two commands dispatched (finalization).
+        // apra-fleet-zzu: the fetch + checkout used to be one `a && b` shell
+        // string (a single commandLog entry) -- split into two sequential
+        // command() calls so this phase works on Windows PowerShell 5.1, which
+        // rejects `&&` outright.
+        // auto-sprint-9: a THIRD command was added -- a failSoft fetch of the
+        // sprint branch itself (origin/<branch>), so real pushed sprint work
+        // is adopted instead of always being force-reset to base. The mock's
+        // git/gh interceptor succeeds for any command by default (it's a
+        // hermetic tempDir, not a real git remote -- see mock-sprint-harness.mjs),
+        // so this fetch "succeeds" here and the checkout adopts origin/<branch>
+        // as its start point, not origin/<baseBranch>.
+        // apra-fleet-eft.58.1: the pre-flight beads-health gate now runs
+        // BEFORE branch-ensure (that is the whole point -- a diverged beads
+        // DB must be caught before any setup mutation), so the git fetch/
+        // checkout sequence is no longer necessarily commandLog[0..2]: it is
+        // preceded by that gate's `bd config get sync.remote --json` pre-
+        // check and (only if this real, hermetic tempDir's bd reports a
+        // configured sync.remote) a `bd dolt pull`. Whether that second entry
+        // fires is environment-dependent (a real `bd config get` read, not a
+        // scripted mock -- see doltPullBefore()'s own doc comment on the
+        // no-remote skip), so this asserts on the first GIT command's
+        // position rather than a fixed index, and that everything before it
+        // is exactly this gate's own bd command(s).
+        // The beads identity precondition (fleet-sprint/beads-identity-
+        // check.mjs) now runs FIRST of all: its three read-only probes per
+        // member (`bd where --json`, `bd config get sync.remote --json`,
+        // `git remote get-url origin`) precede even the beads-health gate,
+        // so they are skipped here before locating the first REAL git
+        // command (the branch-ensure fetch).
+        // Exactly three here: run1 is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
+        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
+        check(
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
+            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
+        );
+        // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
+        // interceptor succeeds by default), so Ensure Sprint Branch now also
+        // unconditionally probes for a pre-existing local branch (needed to
+        // decide whether a successful fetch is actually safe to reset over).
+        // This hermetic mock's rev-parse intercept (see
+        // helpers/mock-sprint-harness.mjs) answers deterministically from its
+        // per-member checkout-state model, which starts empty -- no local
+        // branch has been checked out yet at this point in the run -- so the
+        // probe reports "no local branch" and the tip-comparison merge-base
+        // probes are correctly skipped (only relevant once a local branch
+        // exists), falling straight through to the checkout. This adds
+        // exactly ONE new commandLog entry (the rev-parse) before the
+        // checkout that did not exist before this fix.
+        check(
+            run1.commandLog.length >= firstGitIdx + 4 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
+            `Expected first git commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 1] && new RegExp(`^git fetch origin ${RUN1_BRANCH_RE_SAFE}\\b`).test(run1.commandLog[firstGitIdx + 1]),
+            `Expected second git commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 1])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git rev-parse --verify --quiet refs/heads/${RUN1_BRANCH}`),
+            `Expected third git commandLog entry to be the local-branch probe, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 3] && run1.commandLog[firstGitIdx + 3].includes(`git checkout -B ${RUN1_BRANCH}`),
+            `Expected fourth git commandLog entry to be the sprint-branch checkout (no local branch existed yet, so no tip-comparison probes), got: ${JSON.stringify(run1.commandLog[firstGitIdx + 3])}`
+        );
+        // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
+        // `git remote get-url origin` (isHostedGithubRemote()) BEFORE
+        // deciding whether to attempt PR creation -- this mock's origin
+        // is a hosted GitHub URL by default (see mock-sprint-harness.mjs's
+        // `originUrl` option), so the PR-raise path is still exercised, just
+        // with this extra probe command in between.
+        // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
+        // curl POST itself.
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read sitting between the probe
+        // and the curl. The credential read MOVED SERVER-SIDE: the create-PR
+        // command now goes out through the vcs_credential_exec handoff, which
+        // reads and substitutes the credential inside the server, so the
+        // orchestrator dispatches no credential-read command at all and the
+        // tail is one entry shorter.
+        // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
+        // origin URL the Publish PR step already resolved a few lines
+        // earlier) makes provisionVcsAuthForMember skip its own internal
+        // `git remote get-url origin` re-derivation -- eliminating what
+        // used to be a second, redundant classification-shaped probe here.
+        const pushIdx = run1.commandLog.length - 3;
+        const originUrlIdx = run1.commandLog.length - 2;
+        const prIdx = run1.commandLog.length - 1;
+        check(
+            run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
+            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+        );
+        check(
+            run1.commandLog[originUrlIdx] === 'git remote get-url origin',
+            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
+        );
+        // apra-fleet-3swo.7.6: replaces the retired "second-to-last entry is
+        // the credential-token read" assertion. Strictly stronger than what it
+        // replaces -- it pins this bead's headline property, that the
+        // orchestrator NEVER reads the plaintext credential itself, anywhere
+        // in the run rather than merely at one tail position.
+        check(
+            !run1.commandLog.some((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')),
+            `Expected NO credential-token read to be dispatched by the orchestrator (the vcs_credential_exec handoff reads it server-side), got: ${JSON.stringify(run1.commandLog.filter((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')))}`
+        );
+        check(
+            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('curl -sS -X POST') && run1.commandLog[prIdx].includes('/pulls') && run1.commandLog[prIdx].includes('"base":"main"') && run1.commandLog[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
+            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
+        );
+        // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
+        // `git merge --ff-only <remote>/<branch>` to bring a member's own
+        // checkout up to the shared sprint branch's tip before it works --
+        // `--ff-only` makes this incapable of ever creating a merge commit
+        // (it fast-forwards cleanly or fails outright with a typed
+        // GitDivergedError, never silently reconciling divergent history),
+        // so it is not the operation R12 forbids. R12 is specifically about
+        // never merging the sprint's PR into base/main without human review
+        // -- a real (non-ff-only) `git merge` or any `gh pr merge` call.
+        // Exclude the safe, ff-only self-sync explicitly rather than
+        // widening the check to miss a genuine violation.
+        check(
+            !run1.commandLog.some((c) => (/^git\s+merge/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
+            `Runner must never auto-merge (pm skill R12); found a merge command in the log: ${JSON.stringify(run1.commandLog)}`
+        );
+
+        const seq1 = run1.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
+        const seq2 = run2.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
+        check(
+            JSON.stringify(seq1) === JSON.stringify(seq2),
+            `Dispatched agent sequences differ between runs (non-deterministic).\nRun1: ${seq1.join(', ')}\nRun2: ${seq2.join(', ')}`
+        );
+
+        for (const type of REQUIRED_AGENT_TYPES) {
+            check(run1.dispatched.some((d) => d.agent === type), `Phase for agentType '${type}' was never dispatched (run1)`);
+            check(run2.dispatched.some((d) => d.agent === type), `Phase for agentType '${type}' was never dispatched (run2)`);
+        }
+        check(
+            run1.dispatched.some((d) => d.agent === 'reviewer' && d.label === 'Final Review'),
+            "Final Review phase (agentType 'reviewer', label 'Final Review') was not dispatched (run1)"
+        );
+
+        // apra-fleet-unw2.10 (N12): a normal sprint run must genuinely harvest
+        // OK -- not merely dispatch the harvester phase. The mock harvester
+        // returns FAILED if any of the five vendored-required inputs is missing
+        // from the prompt it actually received (see buildMockFleetApi's
+        // 'harvester' branch), so re-running that exact check against the
+        // real dispatched prompt here is proof the runner supplies all five for
+        // real -- not that the mock's contract check was loosened to pass.
+        for (const [label, run] of [['run1', run1], ['run2', run2]]) {
+            const harvesterDispatch = run.dispatched.find((d) => d.agent === 'harvester');
+            check(harvesterDispatch !== undefined, `No harvester dispatch found (${label})`);
+            if (harvesterDispatch) {
+                const p = harvesterDispatch.prompt;
+                const missing = checkHarvesterContract(p);
+                check(missing.length === 0, `Harvester prompt missing/blank required input(s): ${missing.join(', ')} (${label})`);
+            }
+        }
+
+        check(
+            JSON.stringify(run1.finalBeads) === JSON.stringify(run2.finalBeads),
+            `Final beads DB state differs between runs.\nRun1: ${JSON.stringify(run1.finalBeads)}\nRun2: ${JSON.stringify(run2.finalBeads)}`
+        );
+
+        const expectedClosedTitles = [
+            'Task: Implement registerMember in client.js',
+            'Task: Implement listMembers in client.js',
+            'Task: Add tests for API endpoints'
+        ];
+        for (const title of expectedClosedTitles) {
+            const bead = run1.finalBeads.find((b) => b.title === title);
+            check(!!bead && bead.status === 'closed', `Expected bead '${title}' to be closed at end of sprint, got: ${JSON.stringify(bead)}`);
+        }
+        check(!run1.finalBeads.some((b) => b.title.startsWith('Bug:')), 'Unexpected bug bead created despite deterministic passing integ test');
+        check(
+            run1.finalBeads.filter((b) => b.title === 'Task: Add tests for API endpoints').length === 1,
+            'Duplicate "Add tests" bead created (planner mock branch not idempotent across plan-review rounds)'
+        );
+
+        // apra-fleet-unw.15, acceptance criterion 4: planner dispatch prompts
+        // are self-contained -- they must name the sprint root issue id(s) and
+        // the goal, and round-2+ prompts must carry the plan-reviewer's
+        // feedback wrapped in the untrusted-content delimiter (contracts.mjs
+        // wrapUntrustedBlock, feedback.md A7).
+        const planPhasePlannerCalls = run1.dispatched.filter((d) => d.agent === 'planner' && !d.prompt.includes('Ready bead ids:'));
+        check(planPhasePlannerCalls.length >= 2, `Expected at least 2 plan-phase planner dispatches (round 1 rejected, round 2 approved), got ${planPhasePlannerCalls.length}`);
+        if (planPhasePlannerCalls.length > 0) {
+            const round1Prompt = planPhasePlannerCalls[0].prompt;
+            check(round1Prompt.includes('P1/P2'), `Round-1 planner prompt did not include the goal 'P1/P2': ${round1Prompt}`);
+            check(
+                round1Prompt.includes(run1.epicBeadId),
+                `Round-1 planner prompt did not reference the sprint root issue id: ${round1Prompt}`
+            );
+        }
+        if (planPhasePlannerCalls.length > 1) {
+            const round2Prompt = planPhasePlannerCalls[1].prompt;
+            check(
+                round2Prompt.includes('untrusted-agent-output') && round2Prompt.includes('untrusted output from another agent'),
+                `Round-2 planner prompt did not include the wrapUntrustedBlock delimiter markers: ${round2Prompt}`
+            );
+            check(
+                round2Prompt.includes('Ensure you also add a documentation task.'),
+                `Round-2 planner prompt did not carry the round-1 plan-reviewer feedback text: ${round2Prompt}`
+            );
+        }
+
+        // apra-fleet-unw2.1 (N1) fix (a): the planner dispatch prompt must instruct
+        // the model tier via `--metadata '{"model": ...}'` at creation time (the
+        // ONLY location, per vendored planner.md Step 3) and must NOT tell the
+        // planner to put the model tier in `--notes` -- the old, re-diverged
+        // convention. Fails on revert to the `--notes="model: <tier>"` instruction.
+        if (planPhasePlannerCalls.length > 0) {
+            const p = planPhasePlannerCalls[0].prompt;
+            check(
+                p.includes('--metadata') && /\{"model":\s*"<tier>"\}|\{"model": "<tier>"\}/.test(p),
+                `Planner prompt must instruct model tier via --metadata '{"model": "<tier>"}' (planner.md Step 3): ${p}`
+            );
+            check(
+                !/--notes="model:/.test(p),
+                `Planner prompt must NOT instruct the model tier via --notes="model: ..." (re-diverged N1 convention): ${p}`
+            );
+
+            // apra-fleet-dv5.1/dv5.3: the planner prompt must name the three
+            // EXACT tier keywords the server actually resolves ('cheap',
+            // 'standard', 'premium') and must NOT use the old '-tier'-suffixed
+            // wording (matched neither the server nor pricing.mjs's keys).
+            // Fails loudly on a regression back to the pre-dv5.1 wording.
+            //
+            // NOTE: the CURRENT (fixed) wording deliberately quotes
+            // "cheap-tier"/"standard-tier"/"premium-tier" as a NEGATIVE example
+            // ("not 'cheap-tier'/...") to warn the planner away from that
+            // format, so a blanket substring-absence check would self-
+            // contradict. Instead this targets the OLD wording's specific
+            // phrase ("... is one of cheap-tier, standard-tier, premium-tier")
+            // literally, which the current wording never produces.
+            // Issue 29 rewording: the pin now targets the current concise
+            // phrasing "(tier: cheap, standard, or premium)" -- the engine
+            // normalizes alias spellings in code (normalizeTierToken), so the
+            // prompt no longer carries defensive quoting/legalese. The intent
+            // of this check is unchanged: the three tier keywords must be
+            // named for the planner, and the old pre-dv5.1 phrasing must
+            // never return (next check below).
+            check(
+                p.includes('tier: cheap, standard, or premium'),
+                `Planner prompt must name the tier keywords via the concise "(tier: cheap, standard, or premium)" phrasing: ${p}`
+            );
+            check(
+                !/is one of cheap-tier, standard-tier, premium-tier/.test(p),
+                `Planner prompt must NOT use the old pre-dv5.1 phrasing ("is one of cheap-tier, standard-tier, premium-tier"): ${p}`
+            );
+        }
+
+        // apra-fleet-unw2.1 (N1) fix (b): the plan-reviewer dispatch prompt must be
+        // a real, scoped prompt supplying the sprint root / scope (plan-reviewer-
+        // input.json required key "scope"), not the old context-free string. Every
+        // plan-reviewer dispatch must name the sprint root issue id and the goal.
+        const planReviewerDispatches = run1.dispatched.filter((d) => d.agent === 'plan-reviewer');
+        check(planReviewerDispatches.length >= 1, 'Expected at least one plan-reviewer dispatch in run1');
+        for (const d of planReviewerDispatches) {
+            check(
+                /scope/i.test(d.prompt) && d.prompt.includes(run1.epicBeadId),
+                `Plan-reviewer dispatch prompt must supply the sprint root / scope (issue id ${run1.epicBeadId}): ${d.prompt}`
+            );
+            check(
+                d.prompt.includes('P1/P2'),
+                `Plan-reviewer dispatch prompt must name the goal priority: ${d.prompt}`
+            );
+            check(
+                d.prompt !== 'Review the plan per your agent contract.',
+                'Plan-reviewer dispatch prompt must not be the old context-free string (N1 regression)'
+            );
+        }
+
+        // apra-fleet-unw2.1 (N1) fix (c): the doer dispatch prompt must supply the
+        // sprint track `branch` (doer-input.json required key "branch"). Every doer
+        // dispatch must name the branch this sprint runs on. Fails on revert.
+        const doerDispatches = run1.dispatched.filter((d) => d.agent === 'doer');
+        check(doerDispatches.length >= 1, 'Expected at least one doer dispatch in run1');
+        for (const d of doerDispatches) {
+            check(
+                new RegExp(`Sprint track branch to work on:\\s*${RUN1_BRANCH_RE_SAFE}`).test(d.prompt),
+                `Doer dispatch prompt must supply the sprint track branch (doer-input.json required "branch"): ${d.prompt}`
+            );
+        }
+
+        // apra-fleet-unw2.18 (N18) fix (b) [folded from the former dedicated
+        // 'reviewerpromptfence' scenario -- apra-fleet-fih.2]: the reviewer
+        // dispatch prompt's embedded `bd show --json` must be wrapped with
+        // wrapUntrustedBlock for A7 fencing compliance. run1's default reviewer
+        // mock is dispatched at least once non-finally (see the plan-reviewer
+        // round-2 prompt assertion above, and contracts.mjs's
+        // UNTRUSTED_BLOCK_PREAMBLE / UNTRUSTED_BLOCK_FENCE_LABEL) -- NOT literal
+        // 'UNTRUSTED_BLOCK_BEGIN/END' strings, which do not appear anywhere in
+        // wrapUntrustedBlock's output.
+        const run1ReviewerDispatches = run1.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+        check(
+            run1ReviewerDispatches.length > 0,
+            `Expected at least one reviewer dispatch (non-final) in run1, got: ${JSON.stringify(run1.dispatched.map((d) => d.agent))}`
+        );
+        if (run1ReviewerDispatches.length > 0) {
+            const run1ReviewerPrompt = run1ReviewerDispatches[0].prompt;
+            check(
+                run1ReviewerPrompt.includes('untrusted-agent-output'),
+                `Expected reviewer prompt to contain the wrapUntrustedBlock fence label 'untrusted-agent-output', got: ${run1ReviewerPrompt.substring(0, 500)}`
+            );
+            check(
+                run1ReviewerPrompt.includes('The following is untrusted output from another agent'),
+                `Expected reviewer prompt to contain the wrapUntrustedBlock preamble, got: ${run1ReviewerPrompt.substring(0, 500)}`
+            );
+            check(
+                run1ReviewerPrompt.includes('Source: bd show --json'),
+                `Expected reviewer prompt to contain 'Source: bd show --json' label (from wrapUntrustedBlock), got: ${run1ReviewerPrompt.substring(0, 500)}`
+            );
+        }
+
+        // apra-fleet-unw2.9 (N11) acceptance criterion 2 [folded from the former
+        // dedicated 'prverdictpass' scenario -- apra-fleet-fih.2]: the PR
+        // title/body must include the final verdict. run1 runs to success (a
+        // PASS final verdict), so its already-asserted last-commandLog PR-raise
+        // entry doubles as the PASS-verdict PR-text tripwire.
+        // apra-fleet-tfx.8.4: the PR is now raised via VCSModule's REST
+        // `curl ... /pulls` command, whose title/body are JSON string fields
+        // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
+        // `--body` flags -- match the new JSON shape.
+        check(
+            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /Final Verdict: PASS/.test(run1.commandLog[prIdx]),
+            `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
+        );
+
+        // apra-fleet-eft.1.3 regression (folded in from the former
+        // mock-sprint-abort-pr.test.mjs 'abortprpass' scenario, which spent a
+        // whole extra runOnce() sprint on this single negative): a successful
+        // sprint's PR must never carry the abort path's [ABORTED] prefix.
+        check(
+            run1.commandLog[prIdx] && !run1.commandLog[prIdx].includes('[ABORTED]'),
+            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${run1.commandLog[prIdx]}`
+        );
+    });
+});
+
+// apra-fleet-unw.16 acceptance criterion 1: multi-member doer pool.
+//
+// Root-cause regression test for the A2 "Doer/doer casing" pool-collapse
+// bug: getMembersForRole used to special-case the CAPITALIZED
+// 'Doer'/'Reviewer' strings while every call site passed lowercase
+// 'doer'/'reviewer', so the pool silently collapsed to physicalMembers[0]
+// no matter how many members were configured. With 2 distinct members
+// configured and 2 ready (independent) tasks, BOTH members must receive
+// a doer dispatch in round 1.
+//
+// apra-fleet-fih.2: this scenario also covers apra-fleet-unw2.4 (N4)'s
+// branch-ensure-everywhere regression tripwire (formerly a separate
+// 'twomemberensure' scenario) -- identical 2-member/2-task shape, so both
+// sets of assertions run against this single sprint instead of two.
+//
+// Placement note (fih.1): kept in this happy-path file (not the
+// develop-failures file) because it is a successful multi-member run, not a
+// failure-mode scenario -- it verifies pool distribution + branch-ensure
+// topology on the golden path, same spirit as run1/run2 above.
+test('mock sprint: multi-member doer pool distributes work and ensures branch on every member', async () => {
+    await withScenarioMarkers('multidoer (+twomemberensure)', async () => {
+        console.log('Running mock sprint scenario (multi-member doer pool + 2-member branch-ensure)...');
+        const multiDoer = await runDevelopLoopScenario('multidoer', {
+            members: ['m1', 'm2'],
+            taskSpecs: [
+                { title: 'Task: Implement registerMember in client.js' },
+                { title: 'Task: Implement listMembers in client.js' },
+            ],
+            // Always-approve reviewer: keeps this scenario to a single dev
+            // round so the streak-assignment-dispatch-count assertion below
+            // (exactly 1) isn't coupled to the default reviewer mock's
+            // scripted one-time reopen behavior.
+            reviewerHandler: async () => ({
+                content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
+            }),
+        });
+        check(!multiDoer.error, `Multi-doer scenario did not complete: ${multiDoer.error ? multiDoer.error.message : ''}`);
+        const multiDoerFirstRoundDoerCalls = multiDoer.dispatched.filter((d) => d.agent === 'doer');
+        const multiDoerMembers = new Set(multiDoerFirstRoundDoerCalls.map((d) => d.member));
+        check(multiDoerMembers.has('m1'), `Expected member 'm1' to receive a doer dispatch, got members: ${JSON.stringify([...multiDoerMembers])}`);
+        check(multiDoerMembers.has('m2'), `Expected member 'm2' to receive a doer dispatch, got members: ${JSON.stringify([...multiDoerMembers])}`);
+        check(multiDoerFirstRoundDoerCalls.length >= 2, `Expected at least 2 doer dispatches (one per ready task), got ${multiDoerFirstRoundDoerCalls.length}`);
+        for (const t of multiDoer.tasks) {
+            const bead = multiDoer.finalBeadsById.get(t.id);
+            check(!!bead && bead.status === 'closed', `Multi-doer scenario: expected bead '${t.id}' (${t.title}) to be closed, got: ${JSON.stringify(bead)}`);
+        }
+
+        // apra-fleet-unw2.4 (N4): branch-ensure must be dispatched to EVERY member
+        // in the union of the orchestrator/doer/reviewer pools, not just the
+        // orchestrator member. With 2 distinct members configured, the sprint-
+        // branch ensure (`git checkout -B <branch> origin/<base>`) must land on
+        // BOTH members' checkouts before the first doer round.
+        //
+        // This is the regression tripwire for N4: against the PRE-FIX runner
+        // (which dispatched the ensure to `orchestratorMember` only) the second
+        // member's checkout is never ensured, so both the per-member command-log
+        // assertion and the per-member git-state assertion below FAIL; against the
+        // fixed runner (ensure over the union of the pools) both PASS.
+        const ensureBranch = 'auto-sprint/mock-multidoer';
+        const ensureLog = multiDoer.commandLogDetailed.filter((e) => e.command.includes(`git checkout -B ${ensureBranch}`));
+        const ensuredMembers = new Set(ensureLog.map((e) => e.member));
+        check(
+            ensuredMembers.has('m1'),
+            `Expected the sprint-branch ensure to be dispatched to member 'm1', ensure log: ${JSON.stringify(ensureLog)}`
+        );
+        check(
+            ensuredMembers.has('m2'),
+            `Expected the sprint-branch ensure to be dispatched to member 'm2' too (N4: ensure-everywhere, not orchestrator-only), ensure log: ${JSON.stringify(ensureLog)}`
+        );
+        // The modeled per-member git state must agree: BOTH members' checkouts had
+        // the sprint branch ensured (this is the state the pre-fix runner failed
+        // to establish on the non-orchestrator member).
+        const m1Git = multiDoer.memberGitState.get('m1');
+        const m2Git = multiDoer.memberGitState.get('m2');
+        check(
+            m1Git && m1Git.ensuredBranches.has(ensureBranch),
+            `Expected member 'm1' git state to have the sprint branch ensured, got: ${JSON.stringify(m1Git ? [...m1Git.ensuredBranches] : null)}`
+        );
+        check(
+            m2Git && m2Git.ensuredBranches.has(ensureBranch),
+            `Expected member 'm2' git state to have the sprint branch ensured, got: ${JSON.stringify(m2Git ? [...m2Git.ensuredBranches] : null)}`
+        );
+
+        // apra-fleet-unw.16 acceptance criterion 5: no discarded agent()
+        // results. Confirms the streak-assignment prompt/response shape
+        // round-trips (the mock's streak JSON was parsed and used to build
+        // actual streaks, not discarded and replaced unconditionally by the
+        // one-bead fallback).
+        const multiDoerStreakCalls = multiDoer.dispatched.filter((d) => d.prompt.includes('Ready bead ids:'));
+        check(multiDoerStreakCalls.length === 1, `Expected exactly 1 streak-assignment dispatch in the multi-doer scenario (single dev round), got ${multiDoerStreakCalls.length}`);
+    });
+});
+
+// Regression test for the specialist/generalist roleMap-fallback fix:
+// getMemberForRole/getMembersForRole used to fall back to raw
+// physicalMembers (or physicalMembers[0]) for any role NOT explicitly named
+// in roleMap, with no awareness that some OTHER member had already been
+// deliberately reserved for a different role via roleMap. With members
+// ['alice', 'jack'] and roleMap: { reviewer: ['alice'] } (doer left
+// unmapped), the pre-fix pool for 'doer' was the FULL member list --
+// 'alice', already dedicated to reviewer, could receive a doer dispatch
+// purely because of array order. Post-fix, the unmapped-role fallback pool
+// excludes any member named in some other roleMap value, so 'jack' (named
+// nowhere) is the only doer, and 'alice' never leaves her reviewer lane.
+test('mock sprint: unmapped role (doer) never routes to a member specialized elsewhere (reviewer) via roleMap', async () => {
+    await withScenarioMarkers('specialist-generalist doer/reviewer split', async () => {
+        console.log('Running mock sprint scenario (specialist reviewer + generalist doer)...');
+        const result = await runDevelopLoopScenario('specialistgen', {
+            members: ['alice', 'jack'],
+            roleMap: { reviewer: ['alice'] },
+            taskSpecs: [
+                { title: 'Task: Implement registerMember in client.js' },
+                { title: 'Task: Implement listMembers in client.js' },
+            ],
+            reviewerHandler: async () => ({
+                content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
+            }),
+        });
+        check(!result.error, `Specialist/generalist scenario did not complete: ${result.error ? result.error.message : ''}`);
+
+        const doerCalls = result.dispatched.filter((d) => d.agent === 'doer');
+        check(doerCalls.length > 0, `Expected at least one doer dispatch, got ${doerCalls.length}`);
+        const doerMembers = new Set(doerCalls.map((d) => d.member));
+        check(
+            !doerMembers.has('alice'),
+            `Expected 'alice' (reviewer specialist via roleMap) to NEVER receive a doer dispatch, got doer members: ${JSON.stringify([...doerMembers])}`
+        );
+        check(doerMembers.has('jack'), `Expected 'jack' (unmapped generalist) to receive doer dispatches, got: ${JSON.stringify([...doerMembers])}`);
+
+        // 'reviewer' IS explicitly mapped to 'alice' -- this half already
+        // worked pre-fix (explicit roleMap entries were always exclusive),
+        // pinned here so both directions of the split travel together.
+        const reviewCalls = result.dispatched.filter((d) => d.agent === 'reviewer');
+        const reviewMembers = new Set(reviewCalls.map((d) => d.member));
+        check(reviewMembers.has('alice'), `Expected 'alice' to receive reviewer dispatches, got: ${JSON.stringify([...reviewMembers])}`);
+        check(!reviewMembers.has('jack'), `Expected 'jack' to never receive a reviewer dispatch, got: ${JSON.stringify([...reviewMembers])}`);
+    });
+});

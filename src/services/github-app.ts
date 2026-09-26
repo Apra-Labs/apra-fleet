@@ -68,12 +68,32 @@ export async function verifyAppConnectivity(
  * Map fleet access levels to GitHub App installation token permissions.
  */
 export function mapAccessLevel(level: string): Record<string, string> {
+  // 'discussions' is a fine-grained GitHub App permission (like 'issues' or
+  // 'pull_requests') that gates the Discussions GraphQL API (gh api graphql,
+  // the github-discussions-faq skill). Requesting it here only succeeds once
+  // the App's OWN permission set (github.com App settings -> Permissions,
+  // an org-admin action outside this codebase's reach) includes Discussions
+  // and the installation has accepted that grant -- otherwise mintGitToken's
+  // POST /access_tokens call 422s. Scoped to 'issues' and 'full' since those
+  // are the community/collaboration-oriented levels; 'read'/'push'/'push+pr'/
+  // 'admin' stay code-access-only.
+  //
+  // 'workflows' is likewise a fine-grained GitHub App permission (distinct
+  // from 'actions') that gates pushing changes to .github/workflows/**.
+  // Requesting it here only succeeds once the App's own permission set
+  // includes Workflows and the installation has accepted that grant --
+  // same constraint as 'discussions' above. Granted on 'push', 'push+pr',
+  // 'admin' and 'full' (any level that can push commits), since without it
+  // GitHub rejects any push touching workflow files with "refusing to allow
+  // a GitHub App to create or update workflow ... without workflows
+  // permission", regardless of git_access level.
   const levels: Record<string, Record<string, string>> = {
     read: { contents: 'read', metadata: 'read' },
-    push: { contents: 'write', metadata: 'read' },
-    admin: { contents: 'write', administration: 'write', actions: 'write', metadata: 'read' },
-    issues: { issues: 'write', pull_requests: 'write', metadata: 'read' },
-    full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', metadata: 'read' },
+    push: { contents: 'write', metadata: 'read', workflows: 'write' },
+    'push+pr': { contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write' },
+    admin: { contents: 'write', administration: 'write', actions: 'write', metadata: 'read', workflows: 'write' },
+    issues: { issues: 'write', pull_requests: 'write', discussions: 'write', metadata: 'read' },
+    full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', discussions: 'write', metadata: 'read', workflows: 'write' },
   };
   return levels[level] ?? levels.read;
 }
@@ -114,6 +134,23 @@ export async function mintGitToken(
 
   const data = await res.json();
   if (!res.ok) {
+    // GitHub returns 422 (not 403) when the installation token request asks
+    // for a permission the App's own permission set doesn't grant -- e.g.
+    // "The permission 'workflows' is not granted to this installation" or
+    // the generic "The permissions requested are not granted to this
+    // installation.". Surface an actionable, operator-facing referral naming
+    // the requested permission(s) and the App/installation involved, instead
+    // of the raw API text -- and do NOT retry with a reduced permission set;
+    // silently dropping permissions would mask the misconfiguration.
+    if (res.status === 422 && typeof data?.message === 'string' && /permission/i.test(data.message)) {
+      const requested = Object.keys(permissions).join(', ');
+      throw new Error(
+        `GitHub App ${appId} (installation ${installationId}) is not granted one or more of the requested ` +
+        `permissions [${requested}]: ${data.message} An org admin must grant these permissions under the ` +
+        `App's settings (GitHub -> Settings -> Developer settings -> GitHub Apps -> [this app] -> Permissions & events), ` +
+        `then accept the resulting installation permission-update request, before this operation can succeed.`,
+      );
+    }
     throw new Error(`Token mint failed (${res.status}): ${data?.message ?? 'unknown error'}`);
   }
 

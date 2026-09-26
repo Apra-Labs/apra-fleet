@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resolveModelForTier } from '../src/tools/execute-prompt.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { addAgent, getAgent, getAllAgents } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { registerMember } from '../src/tools/register-member.js';
@@ -25,6 +25,14 @@ vi.mock('../src/services/strategy.js', () => ({
     transferFiles: vi.fn(),
     close: vi.fn(),
   }),
+}));
+
+// Agent provisioning is exercised in tests/agent-provisioner.test.ts and the
+// dedicated register/update-member provisioning tests -- stub it out here so
+// these unrelated model-tier tests don't attempt real SFTP uploads.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
 }));
 
 // -- resolveModelForTier unit tests --
@@ -106,7 +114,7 @@ describe('resolveModelForTier', () => {
     const agent = makeTestAgent({ modelTiers: undefined });
 
     expect(resolveModelForTier(agent, 'cheap', claude)).toBe(claude.modelForTier('cheap'));
-    expect(resolveModelForTier(agent, 'mid', claude)).toBe(claude.modelForTier('mid'));
+    expect(resolveModelForTier(agent, 'standard', claude)).toBe(claude.modelForTier('standard'));
     expect(resolveModelForTier(agent, 'premium', claude)).toBe(claude.modelForTier('premium'));
   });
 });
@@ -221,7 +229,7 @@ describe('register_member model_tiers normalization', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {
@@ -324,7 +332,7 @@ describe('update_member model_tiers normalization', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {

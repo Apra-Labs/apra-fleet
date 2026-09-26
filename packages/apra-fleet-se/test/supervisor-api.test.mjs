@@ -1,0 +1,1349 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import http from 'node:http';
+
+import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
+import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
+import { createSpawner } from '../src/supervisor/spawner.mjs';
+import { createSupervisor } from '../src/supervisor/server.mjs';
+import {
+    createSprintController,
+    registerSprintRoutes,
+    proxyChildState,
+    proxyChildStop,
+    defaultMemberOverlapGuard,
+    formatMemberConflict,
+    ApiError,
+} from '../src/supervisor/api.mjs';
+
+// apra-fleet-eft.4.4 -- supervisor HTTP endpoints: members, backlog,
+// sprints CRUD, stop proxy. Validation reuses runner.js validateIssueId /
+// validateBranchName (single source of truth, no duplicated regexes).
+
+async function tmpDir() {
+    return fsp.mkdtemp(path.join(os.tmpdir(), 'eft-api-'));
+}
+
+/** Real ledger + history over a temp dir. */
+async function stores(dir) {
+    const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => '2026-07-18T00:00:00.000Z' });
+    await ledger.start();
+    const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => '2026-07-18T00:00:00.000Z' });
+    await history.start();
+    return { ledger, history };
+}
+
+/**
+ * A spawner built on the REAL createSpawner, with an injected spawn that never
+ * launches a process but records the exact argv it was handed -- so goal
+ * forwarding can be asserted on the true child argv.
+ *
+ * apra-fleet-ou7.1: also injects a fake dataDir/fs so createSpawner's
+ * per-sprint log file open/close (mkdirSync/openSync/closeSync) never
+ * touches the real filesystem in this hermetic unit test file.
+ */
+function recordingSpawner(captured) {
+    let nextPid = 5000;
+    let nextFd = 100;
+    return createSpawner({
+        basePort: 9100,
+        isPortAvailable: async () => true, // deterministic port allocation
+        dataDir: 'fake-data-dir',
+        fs: {
+            mkdirSync() {},
+            openSync() { return nextFd++; },
+            closeSync() {},
+        },
+        spawn: (command, args) => {
+            const pid = nextPid++;
+            captured.push({ command, args, pid });
+            const listeners = {};
+            return {
+                pid,
+                once(ev, cb) { listeners[ev] = cb; return this; },
+                unref() {},
+            };
+        },
+    });
+}
+
+/** Mock req/res driving supervisor.handleRequest directly. */
+function mockReq(method, url, body) {
+    const chunks = body !== undefined ? [Buffer.from(JSON.stringify(body))] : [];
+    return {
+        method,
+        url,
+        on(event, cb) {
+            if (event === 'data') { for (const c of chunks) cb(c); }
+            if (event === 'end') { cb(); }
+            return this;
+        },
+    };
+}
+function mockRes() {
+    return {
+        statusCode: undefined,
+        body: undefined,
+        headersSent: false,
+        writeHead(status) { this.statusCode = status; this.headersSent = true; },
+        end(body) { this.body = body; },
+    };
+}
+const payloadOf = (res) => JSON.parse(res.body);
+
+describe('api -- POST /api/sprints validation + goal forwarding', () => {
+    test('forwards the per-request goal into the child argv (asserted on spawn args)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice', 'bob'], branch: 'feat/x', base: 'main', goal: 'P1/P2',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        // The goal reaches the child argv as `--goal P1/P2`.
+        const gi = args.indexOf('--goal');
+        assert.ok(gi >= 0, 'child argv must contain --goal');
+        assert.equal(args[gi + 1], 'P1/P2');
+        // And it was recorded on the ledger reservation.
+        assert.equal(result.goal, 'P1/P2');
+        assert.deepEqual(result.issueRoots, ['PROJ-1']);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-ou7.1: proves the FULL spawner -> api.launch() -> ledger.claim()
+    // seam, not just spawnSprint()'s own return value or ledger.claim()'s own
+    // storage in isolation -- a regression that stopped api.mjs from forwarding
+    // spawned.logPath into claim() would fail HERE even though spawner.test.mjs
+    // and supervisor-ledger.test.mjs would both stay green.
+    test('the spawned child\'s real logPath is recorded on the ledger reservation, keyed by the SAME sprintId', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+
+        assert.ok(typeof result.logPath === 'string' && result.logPath.length > 0);
+        const reservation = ledger.get(result.sprintId);
+        assert.ok(reservation, 'the ledger must hold a reservation for this sprintId');
+        assert.equal(reservation.logPath, result.logPath);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-k7b.1: the sprintId is now generated BEFORE spawning (not
+    // after) so it can be forwarded into the child's own argv as --run-id --
+    // asserting here that the child's --run-id argv value is the EXACT SAME
+    // id the caller gets back as result.sprintId (and that the ledger claims
+    // that same id), not some independently-generated value.
+    test('forwards the ledger sprintId into the child argv as --run-id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice', 'bob'], branch: 'feat/x', base: 'main',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const ri = args.indexOf('--run-id');
+        assert.ok(ri >= 0, 'child argv must contain --run-id');
+        assert.equal(args[ri + 1], result.sprintId);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a launch WITHOUT a goal emits no --goal flag', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured[0].args.includes('--goal'), false);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.2: launch() persists branch/base/goal on the ledger reservation', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/my-topic', base: 'main', goal: 'P1/P2',
+        });
+        const reservation = ledger.get(result.sprintId);
+        assert.equal(reservation.branch, 'feat/my-topic');
+        assert.equal(reservation.base, 'main');
+        assert.equal(reservation.goal, 'P1/P2');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.2: launch() without a goal persists goal=null on the reservation (not undefined/omitted)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        const reservation = ledger.get(result.sprintId);
+        assert.equal(reservation.branch, 'feat/x');
+        assert.equal(reservation.base, 'main');
+        assert.equal(reservation.goal, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-ymf.1: POST /api/sprints must accept the SAME comma-separated
+    // multi-root `issue` form the CLI's --issue flag already does, splitting
+    // it into individual `issueRoots` (never one opaque joined string) and
+    // validating each id -- see splitIssueIds()/validateLaunchRequest() in
+    // api.mjs. This is the headline behavior added by ymf.1; regression-tests
+    // both the split-and-validate happy path and the per-id validation.
+    test('apra-fleet-ymf.1: comma-separated issue ids launch one sprint scoped to both roots', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'epic-1,epic-2', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+
+        // issueRoots is the SPLIT array, one entry per root -- not the raw
+        // comma-joined string -- matching the CLI's targetIssues shape.
+        assert.deepEqual(result.issueRoots, ['epic-1', 'epic-2']);
+        assert.equal(captured.length, 1);
+        // The child argv still receives the single comma-joined --issue value
+        // (byte-identical to what the CLI's own --issue flag would forward).
+        const args = captured[0].args;
+        const ii = args.indexOf('--issue');
+        assert.ok(ii >= 0, 'child argv must contain --issue');
+        assert.equal(args[ii + 1], 'epic-1,epic-2');
+        // Both roots are recorded on the ledger reservation, not just one.
+        const reservation = ledger.get(result.sprintId);
+        assert.deepEqual(reservation.issueRoots, ['epic-1', 'epic-2']);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: a single-id request still behaves exactly as before (no splitting artifacts)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+        assert.deepEqual(result.issueRoots, ['PROJ-1']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: an invalid id inside an otherwise-valid comma-separated list is rejected (400, no spawn)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'epic-1,bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'issue');
+        // apra-fleet-ymf.2: the rejection must NAME the specific offending id
+        // (not just report field='issue' generically), so a caller with a
+        // multi-id request can tell which of the several ids was bad.
+        assert.match(payloadOf(res).error, /bad id!!/);
+        // No child was spawned -- the whole multi-root launch is rejected,
+        // not just the offending id.
+        assert.equal(captured.length, 0);
+        assert.equal(ledger.list().length, 0, 'no partial ledger claim for a rejected multi-root launch');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('invalid issue id => 400 naming the issue field (via imported validateIssueId)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'issue');
+        // No child was spawned on a rejected launch.
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('invalid branch name => 400 naming the branch field (via imported validateBranchName)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['a'], branch: 'bad branch~name', base: 'main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'branch');
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('invalid base branch => 400 naming the base field', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['a'], branch: 'feat/x', base: 'bad base!' }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'base',
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('empty members => 400 naming the members field', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: [], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'members',
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap members are folded into the reserved member union', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+            roleMap: { doer: ['bob'], reviewer: ['carol'] },
+        });
+        assert.deepEqual([...r.members].sort(), ['alice', 'bob', 'carol']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLaunch)', () => {
+    test('a directly-overlapping member => 409 naming the conflicting sprint id and the overlapping member', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice', 'bob'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-2', members: ['bob', 'carol'], branch: 'feat/y', base: 'main' }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message.includes('s-active')
+                && err.message.includes('bob'),
+        );
+        // No child was spawned on a rejected launch.
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an orchestrator-only overlap (member appears only via roleMap.orchestrator) is caught', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // s-active previously claimed 'orch1' purely through its own orchestrator role.
+        await ledger.claim('s-active', { members: ['alice', 'orch1'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                // 'orch1' never appears in `members`, only in roleMap.orchestrator.
+                roleMap: { orchestrator: ['orch1'] },
+            }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.message.includes('s-active')
+                && err.message.includes('orch1'),
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an unreservable orchestrator member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // s-active already claims 'supervisor' (e.g. from an earlier sprint that
+        // also used it as orchestrator).
+        await ledger.claim('s-active', { members: ['alice', 'supervisor'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [{ name: 'supervisor', unreservable: true }] }),
+            getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { orchestrator: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        // The ledger's own reservation for the NEW sprint never includes the
+        // unreservable member -- it is subtracted from the union entirely.
+        assert.deepEqual([...r.members].sort(), ['dave']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a rejected launch leaves the ledger byte-identical (no partial claim)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice'], issueRoots: ['R1'], childPid: 1 });
+        const before = ledger.toDocument();
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-2', members: ['alice'], branch: 'feat/y', base: 'main' }),
+        );
+        const after = ledger.toDocument();
+        assert.deepEqual(after, before);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a non-overlapping launch claims every member in the union', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice'], issueRoots: ['R1'], childPid: 1 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main',
+            roleMap: { doer: ['carol'], orchestrator: ['dave'] },
+        });
+        assert.deepEqual([...r.members].sort(), ['bob', 'carol', 'dave']);
+        const reservation = ledger.get(r.sprintId);
+        assert.deepEqual([...reservation.members].sort(), ['bob', 'carol', 'dave']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('defaultMemberOverlapGuard / formatMemberConflict directly: multiple conflicting sprints are all named', async () => {
+        const ledgerStub = {
+            list: () => [
+                { sprintId: 's1', members: ['alice', 'bob'] },
+                { sprintId: 's2', members: ['carol'] },
+            ],
+        };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'carol', 'dave'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message === formatMemberConflict([
+                    { sprintId: 's1', members: ['alice'] },
+                    { sprintId: 's2', members: ['carol'] },
+                ]),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: no overlap resolves without throwing', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.doesNotReject(() => guard({ members: ['bob', 'carol'] }));
+    });
+
+    // apra-fleet-eft.26.2 (Hole 2): with member M reserved SERVER-SIDE only
+    // (ledger empty), a launch whose member union includes M is rejected 409,
+    // naming the owning sprint id -- this is what makes a workflow/cli-launched
+    // sprint's member_reservation claim (eft.26.1) visible to a launch routed
+    // through THIS supervisor.
+    test('defaultMemberOverlapGuard: an unreservable member carrying a stale server-side reservedBy is skipped -- no 409', async () => {
+        const ledgerStub = { list: () => [] };
+        // 'alice' somehow still carries a reservedBy (e.g. set before it was
+        // flagged unreservable, or a bug elsewhere) -- the guard must skip it
+        // by construction, not merely because a well-behaved caller never sets
+        // reservedBy on an unreservable member.
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1', unreservable: true }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.doesNotReject(() => guard({ members: ['alice'] }));
+    });
+
+    test('defaultMemberOverlapGuard: a server-side-only reservation (ledger empty) still rejects with 409 naming the owning sprint id', async () => {
+        const ledgerStub = { list: () => [] };
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }, { name: 'bob', reservedBy: null }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'bob'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message.includes('workflow-sprint-1')
+                && err.message.includes('alice')
+                && !err.message.includes('bob'),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: server-side reservations merge with local-ledger conflicts without double-naming a sprint', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 's1' }, { name: 'carol', reservedBy: 's2' }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'carol'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.message === formatMemberConflict([
+                    { sprintId: 's1', members: ['alice'] },
+                    { sprintId: 's2', members: ['carol'] },
+                ]),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: no listMembers injected behaves exactly as pure local-ledger check (backward compatible)', async () => {
+        const ledgerStub = { list: () => [] };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.doesNotReject(() => guard({ members: ['alice'] }));
+    });
+
+    test('defaultMemberOverlapGuard: a listMembers() failure is non-fatal -- the local-ledger check still runs', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const listMembers = async () => { throw new Error('fleet server unreachable'); };
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice'] }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('s1'),
+        );
+    });
+
+    test('POST /api/sprints: member reserved server-side only (ledger empty) is rejected with 409 naming the owning sprint id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }] }),
+            getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-3', members: ['alice'], branch: 'feat/z', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('workflow-sprint-1'),
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- GET /api/members overlay', () => {
+    test('members list is overlaid with live reservations', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['alice'], issueRoots: ['R'], childPid: 1 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [{ name: 'alice' }, { name: 'bob' }] }),
+            getBacklog: () => ({}),
+        });
+        const out = await controller.members();
+        const byName = Object.fromEntries(out.members.map((m) => [m.name, m]));
+        assert.equal(byName.alice.reserved, true);
+        assert.equal(byName.alice.reservedBy, 's1');
+        assert.equal(byName.bob.reserved, false);
+        assert.equal(byName.bob.reservedBy, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-eft.26.2 (Hole 2): with the local ledger EMPTY, a member
+    // reserved only via the fleet server's own reservedBy record (e.g. a
+    // workflow/cli-launched sprint's eft.26.1 member_reservation claim) still
+    // shows up as reserved here -- not just launches routed through this
+    // ledger.
+    test('a member reserved server-side only (ledger empty) is shown as reserved, naming the owning sprint id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }, { name: 'bob', reservedBy: null }] }),
+            getBacklog: () => ({}),
+        });
+        const out = await controller.members();
+        const byName = Object.fromEntries(out.members.map((m) => [m.name, m]));
+        assert.equal(byName.alice.reserved, true);
+        assert.equal(byName.alice.reservedBy, 'workflow-sprint-1');
+        assert.equal(byName.bob.reserved, false);
+        assert.equal(byName.bob.reservedBy, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('the local ledger reservation wins over a stale/differing server-side reservedBy for the same member', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-local', { members: ['alice'], issueRoots: ['R'], childPid: 1 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            // Server record hasn't caught up yet / disagrees; the ledger is
+            // this supervisor's own most-specific knowledge and should win.
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'stale-sprint' }] }),
+            getBacklog: () => ({}),
+        });
+        const out = await controller.members();
+        const byName = Object.fromEntries(out.members.map((m) => [m.name, m]));
+        assert.equal(byName.alice.reservedBy, 's-local');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- apra-fleet-eft.5.5 scope-freshness indicator on claimed-scope responses', () => {
+    test('GET /api/backlog includes scopeFreshness with an explicit never-synced marker when unknown', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({ tasks: ['t1'] }),
+        });
+        const out = await controller.backlog();
+        assert.deepEqual(out.tasks, ['t1']);
+        assert.deepEqual(out.scopeFreshness, { lastSyncedAt: null, ageSeconds: 'never-synced' });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints includes scopeFreshness alongside the live reservation list', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const out = await controller.listSprints();
+        assert.equal(out.sprints.length, 1);
+        assert.deepEqual(out.scopeFreshness, { lastSyncedAt: null, ageSeconds: 'never-synced' });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('scopeFreshness on both endpoints reflects the recorded sync and updates after a later sync', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+
+        await ledger.setScopeFreshness('2026-07-18T00:00:00.000Z');
+        const backlogOut = await controller.backlog();
+        const sprintsOut = await controller.listSprints();
+        assert.equal(backlogOut.scopeFreshness.lastSyncedAt, '2026-07-18T00:00:00.000Z');
+        assert.equal(typeof backlogOut.scopeFreshness.ageSeconds, 'number');
+        assert.equal(sprintsOut.scopeFreshness.lastSyncedAt, '2026-07-18T00:00:00.000Z');
+
+        // A subsequent sync moves lastSyncedAt forward on both endpoints.
+        await ledger.setScopeFreshness('2026-07-18T00:10:00.000Z');
+        const backlogOut2 = await controller.backlog();
+        assert.equal(backlogOut2.scopeFreshness.lastSyncedAt, '2026-07-18T00:10:00.000Z');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- GET /api/sprints and /api/sprints/:id', () => {
+    test('GET /api/sprints/:id returns LIVE child state when running (proxied /state)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async (port) => ({ port, status: 'running', tree: [] }),
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, true);
+        assert.equal(out.state.status, 'running');
+        assert.equal(out.state.port, 9200);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id returns the HISTORICAL record when finished (not live)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({ sprintId: 's-done', event: 'force-released', reason: 'done', members: ['a'], issueRoots: ['R'] });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const out = await controller.getSprint('s-done');
+        assert.equal(out.live, false);
+        assert.equal(out.latest.event, 'force-released');
+        assert.ok(Array.isArray(out.history));
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id for an unknown id => 404', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.getSprint('ghost'),
+            (err) => err instanceof ApiError && err.status === 404,
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.1: a terminal-but-lingering child (the engine already
+    // persisted a terminal run-state, e.g. old_runs/<runId>.json, but the OS
+    // process/embedded viewer port has not exited yet) must be reported
+    // cleanly via hasTerminalState() -- BEFORE resolvePort()/proxyState() are
+    // ever reached -- instead of proxying into a closed port and surfacing a
+    // raw ECONNREFUSED-derived 500. hasTerminalState is injected here
+    // (per its own doc comment: "Inject to stub without real fs reads in
+    // tests") rather than exercising the real fs-backed defaultHasTerminalState.
+    test('apra-fleet-2l4.1: GET /api/sprints/:id on a terminal-but-lingering child returns {live:false, terminal:true} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStateCalled = false;
+        const terminalState = { terminalReason: 'FAILED', verdict: 'FAIL' };
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return terminalState;
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyState: async (port) => { proxyStateCalled = true; return { port, status: 'running', tree: [] }; },
+        });
+        const out = await controller.getSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', live: false, terminal: true, state: terminalState });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStateCalled, false, 'proxyState must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: GET /api/sprints/:id still proxies a genuinely live child (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async (port) => ({ port, status: 'running', tree: [] }),
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, true);
+        assert.equal(out.state.status, 'running');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as the
+    // controller-level tests above, but driven through the REAL HTTP route
+    // (registerSprintRoutes + supervisor.handleRequest) -- the bug this whole
+    // streak fixes was reported as a raw 500/ECONNREFUSED at the HTTP
+    // boundary, so the regression coverage must prove the boundary itself,
+    // not just that the controller method's return value looks right in
+    // isolation. proxyState is stubbed to THROW (simulating the real
+    // ECONNREFUSED a closed viewer port produces) so a regressed guard
+    // (hasTerminalState silently bypassed, proxyState reached anyway) would
+    // surface as an actual 500 here, not a masked pass.
+    test('apra-fleet-2l4.2: GET /api/sprints/:id over HTTP for a terminal-but-lingering child is a clean 200, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx, not a 500 from a doomed proxy into the closed port');
+        const payload = payloadOf(res);
+        // A structured status payload -- NOT the generic { error: ... }
+        // internal-error shape the supervisor's 500 isolation wrapper emits.
+        assert.equal(payload.live, false);
+        assert.equal(payload.terminal, true);
+        assert.ok(payload.state, 'must return a structured status payload, not the generic internal-error object');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints lists live reservations with resolved ports', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+        });
+        const out = await controller.listSprints();
+        assert.equal(out.sprints.length, 1);
+        assert.equal(out.sprints[0].sprintId, 's1');
+        assert.equal(out.sprints[0].port, 9200);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- POST /api/sprints/:id/stop proxy', () => {
+    test('reaches the child /stop endpoint for a live sprint', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42 });
+        let stoppedPort = null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.equal(stoppedPort, 9200);
+        assert.equal(out.status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.1: the SAME terminal-state guard as GET /api/sprints/:id
+    // above, applied to the stop handler -- a persisted terminal run-state
+    // means there is genuinely nothing left to stop, even while the child's
+    // OS process is still alive in its post-terminal dashboard-linger window.
+    // Must return a clean no-op success WITHOUT ever resolving/proxying the
+    // (already-closed) child /stop port.
+    test('apra-fleet-2l4.1: stopping a terminal-but-lingering child returns {status:"already-terminal"} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStopCalled = false;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return { terminalReason: 'FAILED' };
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyStop: async (port) => { proxyStopCalled = true; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', status: 'already-terminal', child: null });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStopCalled, false, 'proxyStop must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as above,
+    // driven through the REAL HTTP route (registerSprintRoutes +
+    // supervisor.handleRequest) instead of calling controller.stopSprint()
+    // directly -- the bug this streak fixes was reported as a raw
+    // 500/ECONNREFUSED at the HTTP boundary. proxyStop is stubbed to THROW
+    // (simulating the real ECONNREFUSED a closed viewer port produces) so a
+    // regressed guard would surface here as an actual 500, not a masked pass.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP for a terminal-but-lingering child is a clean 200 no-op, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx no-op, not a 500 from a doomed proxy into the closed port');
+        assert.deepEqual(payloadOf(res), { sprintId: 's1', status: 'already-terminal', child: null });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Control case: a genuinely live child (hasTerminalState falsy) must
+    // still be proxied/stopped exactly as before over the real HTTP route --
+    // proves the terminal-lingering guard above is not a blanket short-circuit.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP still proxies a genuinely live child (control case, no regression)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        let stoppedPort = null;
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(stoppedPort, 9200);
+        assert.equal(payloadOf(res).status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: a genuinely live child is still stopped exactly as before (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let stoppedPort = null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.equal(stoppedPort, 9200);
+        assert.equal(out.status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('stopping an unknown sprint => 404', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.stopSprint('ghost'),
+            (err) => err instanceof ApiError && err.status === 404,
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- route registration coexists with lifecycle routes', () => {
+    test('all six routes register and exact/pattern routes do not shadow health', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        }));
+
+        // GET /api/members
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/members'), res);
+        assert.equal(res.statusCode, 200);
+
+        // GET /api/backlog
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/backlog'), res);
+        assert.equal(res.statusCode, 200);
+
+        // GET /api/sprints (exact) still works alongside the :id pattern route
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints'), res);
+        assert.equal(res.statusCode, 200);
+        assert.ok(Array.isArray(payloadOf(res).sprints));
+
+        // Lifecycle-owned GET /api/health is not shadowed.
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- default HTTP proxies against a real child server', () => {
+    test('proxyChildState reads /state and proxyChildStop reaches /stop', async () => {
+        let stopHit = false;
+        const server = http.createServer((req, res) => {
+            if (req.url === '/state') { res.writeHead(200); res.end(JSON.stringify({ status: 'running' })); }
+            else if (req.url === '/stop' && req.method === 'POST') { stopHit = true; res.writeHead(200); res.end(); }
+            else { res.writeHead(404); res.end(); }
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            const state = await proxyChildState(port);
+            assert.equal(state.status, 'running');
+            await proxyChildStop(port);
+            assert.equal(stopHit, true);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+});
+
+// apra-fleet-gey.2: the relaunch gate reads history.latestForIssueRoot()
+// BEFORE the member-overlap guard/spawn -- a deterministic, unaddressed
+// prior incarnation (LAUNCH_FAILED, or a FINISHED whose engine-reported
+// terminalReason is in DETERMINISTIC_TERMINAL_REASONS, e.g.
+// BEADS_SYNC_CONFLICT) is refused with a 409 naming the prior sprintId and
+// reason, unless the request sets `overrideRelaunchGate: true`.
+describe('api -- apra-fleet-gey.2 relaunch gate on prior incarnation terminal record', () => {
+    test('a same-root relaunch after a deterministic FINISHED terminalReason (BEADS_SYNC_CONFLICT) is refused 409, naming the prior sprint id and reason', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'issue'
+                && err.message.includes('s-prior')
+                && err.message.includes('BEADS_SYNC_CONFLICT')
+                && err.message.includes('overrideRelaunchGate'),
+        );
+        // No child was spawned and no reservation was claimed on a refused relaunch.
+        assert.equal(captured.length, 0);
+        assert.equal(ledger.list().length, 0);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('overrideRelaunchGate: true proceeds past a deterministic prior FINISHED terminalReason', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main', overrideRelaunchGate: true,
+        });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a same-root relaunch after a LAUNCH_FAILED prior incarnation (apra-fleet-gey.1) is refused 409', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified LAUNCH_FAILED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'watchdog: child exited within launch window',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('s-prior'),
+        );
+        assert.equal(captured.length, 0);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a same-root relaunch after a NON-deterministic prior terminalReason (e.g. SPRINT_STALLED) is NOT gated (false negative only skips the warning)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'SPRINT_STALLED', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no change to first-launch behaviour for a root with no prior record at all (no gate, no warning-relevant history)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // history has records, but for a DIFFERENT issue root -- proves
+        // the gate is scoped per-issue, not a global "any history exists" check.
+        await history.record({
+            sprintId: 's-other', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', members: ['alice'], issueRoots: ['OTHER-ROOT'],
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// apra-fleet-gey.2: best-effort stale-process detection -- launch() re-reads
+// getBuildVersion() on every call and compares it against the value stamped
+// ONCE at controller creation (stampedBuildVersion).
+describe('api -- apra-fleet-gey.2 build-version staleness warning', () => {
+    test('a build-version mismatch between controller-creation stamp and the current on-disk read surfaces buildVersionWarning', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        let calls = 0;
+        // First call (at createSprintController time) stamps 'build-v1'; every
+        // call thereafter (i.e. inside launch()) reads 'build-v2'.
+        const getBuildVersion = () => (calls++ === 0 ? 'build-v1' : 'build-v2');
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.ok(typeof result.buildVersionWarning === 'string');
+        assert.ok(result.buildVersionWarning.includes('build-v1'));
+        assert.ok(result.buildVersionWarning.includes('build-v2'));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no mismatch (build unchanged since controller creation) => buildVersionWarning is null', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const getBuildVersion = () => 'build-v1';
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.buildVersionWarning, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('getBuildVersion() returning null (unreadable file) never blocks a launch and reports no warning', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const getBuildVersion = () => null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.buildVersionWarning, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// GET /api/health `beads` (src/supervisor/beads-identity.mjs): the .beads
+// identity this supervisor resolved at startup, `?refresh=1` re-probing it,
+// and the identity recorded on every launched sprint's ledger entry.
+describe('api -- /api/health beads identity', () => {
+    const identity = { beadsDir: '/p/.beads', prefix: 'proj', databasePath: '/p/.beads/db', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' };
+
+    test('reports { dir, prefix, syncRemote, repoRemote } from the wired beadsIdentity, null when none is wired', async () => {
+        let res = mockRes();
+        await createSupervisor({ port: 0 }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(payloadOf(res).beads, null);
+
+        const beadsIdentity = { get: () => identity, refresh: async () => identity };
+        res = mockRes();
+        await createSupervisor({ port: 0, beadsIdentity }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(payloadOf(res).beads, { dir: '/p/.beads', prefix: 'proj', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' });
+        assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
+    test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
+        let current = null;
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        const beadsIdentity = {
+            get: () => current,
+            getWarning: () => (current ? null : warning),
+            refresh: async () => { current = identity; warning = null; return current; },
+        };
+        const supervisor = createSupervisor({ port: 0, beadsIdentity, logger: { log() {}, error() {} } });
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok', 'liveness is unaffected');
+        assert.equal(payloadOf(res).beads, null);
+        assert.match(payloadOf(res).beadsWarning, /^no beads database found walking up from \/x\./);
+        assert.match(payloadOf(res).beadsWarning, /To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-\.beads-path>, then GET \/api\/health\?refresh=1\./);
+
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(payloadOf(res).beads.prefix, 'proj');
+        assert.equal('beadsWarning' in payloadOf(res), false);
+        assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
+    test('?refresh=1 re-probes before answering; a failed re-probe keeps the last identity and reports beadsRefreshError', async () => {
+        let current = identity;
+        let refreshes = 0;
+        let fail = false;
+        const beadsIdentity = {
+            get: () => current,
+            refresh: async () => {
+                refreshes += 1;
+                if (fail) throw new Error('bd where exploded');
+                current = { ...identity, prefix: 'proj2' };
+                return current;
+            },
+        };
+        const supervisor = createSupervisor({ port: 0, beadsIdentity, logger: { log() {}, error() {} } });
+
+        let res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(refreshes, 0);
+
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(refreshes, 1);
+        assert.equal(payloadOf(res).beads.prefix, 'proj2');
+
+        fail = true;
+        res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/health?refresh=1'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).status, 'ok');
+        assert.equal(payloadOf(res).beads.prefix, 'proj2');
+        assert.match(payloadOf(res).beadsRefreshError, /bd where exploded/);
+    });
+
+    test('launch() records the supervisor beads identity on the ledger entry (null when no beadsIdentity dep)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+            beadsIdentity: { get: () => identity },
+        });
+        const { sprintId } = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.deepEqual(ledger.get(sprintId).beads, { dir: '/p/.beads', prefix: 'proj', syncRemote: 'git+https://x/y.git', repoRemote: 'https://x/y.git' });
+
+        // Survives a reload from disk.
+        const reloaded = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        await reloaded.start();
+        assert.equal(reloaded.get(sprintId).beads.prefix, 'proj');
+
+        const bare = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const second = await bare.launch({ issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main' });
+        assert.equal(ledger.get(second.sprintId).beads, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});

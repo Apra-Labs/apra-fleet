@@ -1,0 +1,436 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert';
+
+import { createVcsAuthSelfHealCallback, createLlmAuthSelfHealCallback, parseOwnerRepoFromRemoteUrl } from '../fleet-sprint/runner.js';
+
+// apra-fleet-fmu: unit coverage for the real end-to-end onAuthFailure
+// self-heal wiring -- createVcsAuthSelfHealCallback() builds the callback
+// runSprintCycle passes into withGitSync (and its D-push equivalent) when a
+// real fleet `callTool` is available (mirrors createMemberSessionGuard's
+// injection pattern, see member-session-guard.test.mjs). It derives `repos`
+// GENERICALLY from the member's own git remote (never hardcoded -- fleet-
+// sprint is a general-purpose product), then calls the new
+// ApraFleet.provisionVcsAuth() client method (packages/apra-fleet-client).
+
+describe('parseOwnerRepoFromRemoteUrl', () => {
+    test('parses an https remote URL with a .git suffix', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl('https://github.com/acme/widgets.git'), 'acme/widgets');
+    });
+
+    test('parses an https remote URL without a .git suffix', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl('https://github.com/acme/widgets'), 'acme/widgets');
+    });
+
+    test('parses an scp-like (git@host:owner/repo.git) remote URL', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl('git@github.com:acme/widgets.git'), 'acme/widgets');
+    });
+
+    test('parses an ssh:// remote URL', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl('ssh://git@github.com/acme/widgets.git'), 'acme/widgets');
+    });
+
+    test('is generic across hosts/orgs -- not hardcoded to any specific repo name', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl('https://gitlab.example.com/some-org/some-repo.git'), 'some-org/some-repo');
+        assert.equal(parseOwnerRepoFromRemoteUrl('git@bitbucket.org:other-org/other-repo.git'), 'other-org/other-repo');
+    });
+
+    test('returns null for unrecognizable / empty input, never throws', () => {
+        assert.equal(parseOwnerRepoFromRemoteUrl(''), null);
+        assert.equal(parseOwnerRepoFromRemoteUrl(null), null);
+        assert.equal(parseOwnerRepoFromRemoteUrl(undefined), null);
+        assert.equal(parseOwnerRepoFromRemoteUrl('not a url'), null);
+    });
+});
+
+// apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the member's
+// provider via VCSModule.resolveProvider(), which calls fleetApi.
+// memberDetail() ('member_detail') BEFORE provision_vcs_auth. Every callTool
+// mock below must answer that lookup with a registered 'github' provider,
+// intercepted here (not counted alongside the provision_vcs_auth calls each
+// test tracks) so the existing call-count assertions stay meaningful.
+const MEMBER_DETAIL_GITHUB = { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+
+describe('createVcsAuthSelfHealCallback', () => {
+    test('calls provision_vcs_auth with the member, github-app defaults, and a repos list derived from the member\'s own git remote', async () => {
+        const calls = [];
+        const command = async (cmd, opts) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://github.com/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const logs = [];
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command, log: (m) => logs.push(m) });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push for \'fleet-mac\'', error: "fatal: could not read Username for 'https://github.com': Device not configured" });
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'provision_vcs_auth');
+        assert.deepEqual(calls[0].args, {
+            member_name: 'fleet-mac',
+            provider: 'github',
+            github_mode: 'github-app',
+            git_access: 'push',
+            repos: ['acme/widgets'],
+        });
+        assert.ok(logs.some((l) => /self-heal/.test(l) && /fleet-mac/.test(l)), `expected a self-heal log entry, got: ${JSON.stringify(logs)}`);
+        assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected a self-heal success log entry, got: ${JSON.stringify(logs)}`);
+    });
+
+    test('never hardcodes repos -- a DIFFERENT member\'s git remote yields a DIFFERENT repos value', async () => {
+        const calls = [];
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'git@github.com:other-org/other-repo.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'some-other-member', label: 'D-push', error: 'auth failure' });
+
+        assert.deepEqual(calls[0].args.repos, ['other-org/other-repo']);
+    });
+
+    test('omits `repos` (rather than guessing) when the git remote cannot be resolved to an owner/repo', async () => {
+        const calls = [];
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: false, output: '', error: 'fatal: No such remote origin' };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'm1', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(calls.length, 1);
+        assert.ok(!('repos' in calls[0].args), `expected no 'repos' key when the remote cannot be resolved, got: ${JSON.stringify(calls[0].args)}`);
+    });
+
+    test('propagates a provision_vcs_auth failure so the bounded one-shot self-heal in runGitStep/runDoltStep treats it as a failed heal (not silently swallowed)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async () => { throw new Error('provision_vcs_auth: fleet server unreachable'); };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'm1', label: 'G-push', error: 'auth failure' }),
+            /fleet server unreachable/,
+        );
+    });
+
+    // =========================================================================
+    // apra-fleet-647.1.2.2: the REACTIVE self-heal caller goes through
+    // VCSModule.resolveProvider() too (via provisionVcsAuthForMember), exactly
+    // like the proactive preflight covered in vcs-auth-preflight.test.mjs.
+    // Two cases the module-level resolveProvider suite (vcs-module.test.mjs)
+    // cannot exercise on its own, because they must prove runner.js's own
+    // call site actually plumbs the registry lookup through end to end: a
+    // non-GitHub-registered member (no 'github' literal leaks into the call),
+    // and a member with no registered provider (typed error, no GitHub
+    // default, no provision_vcs_auth call at all).
+    // =========================================================================
+    test('a member registered with a non-GitHub provider (bitbucket) resolves to that provider with NO github literal anywhere in the call', async () => {
+        const calls = [];
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'bb-member', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'provision_vcs_auth');
+        assert.deepEqual(calls[0].args, {
+            member_name: 'bb-member',
+            provider: 'bitbucket',
+            git_access: 'push',
+            repos: ['acme/widgets'],
+        });
+        assert.ok(!('github_mode' in calls[0].args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(calls[0].args)}`);
+        assert.ok(
+            JSON.stringify(calls[0].args).indexOf('github') === -1,
+            `expected no 'github' literal anywhere in a bitbucket member's provision_vcs_auth call, got: ${JSON.stringify(calls[0].args)}`,
+        );
+    });
+
+    // apra-fleet-5oo NARROWED THIS CASE. The rule pinned here has always been
+    // "no silent GitHub DEFAULT" -- a provider assumed with no evidence.
+    // provisionVcsAuthForMember now has ONE evidence-based fallback: the
+    // member's own git remote, which it already reads for its repos scope. A
+    // remote whose host no registered auth provider claims (or one that cannot
+    // be read at all) is still evidence of nothing, and must still raise
+    // resolveProvider's typed ERROR rather than default to GitHub. The
+    // healed-from-a-real-remote counterpart lives in
+    // test/vcs-provider-missing-selfheal.test.mjs.
+    test('a member with NO registered VCS provider AND a remote no provider claims throws a typed ASCII "ERROR:" naming the member and never calls provision_vcs_auth (no silent GitHub default)', async () => {
+        const calls = [];
+        const command = async () => ({ ok: true, output: 'https://gitlab.example.com/acme/widgets.git', error: null });
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'unprovisioned-member', label: 'G-push', error: 'auth failure' }),
+            (err) => {
+                assert.match(err.message, /^ERROR:/);
+                assert.match(err.message, /unprovisioned-member/);
+                return true;
+            },
+        );
+        assert.equal(calls.length, 0, `expected NO provision_vcs_auth call for a member with no registered provider, got: ${JSON.stringify(calls)}`);
+    });
+
+    // =========================================================================
+    // apra-fleet-5co8.13: onAuthFailure's authRemedy hint lookup used to call
+    // resolveProvider() and then provisionVcsAuthForMember() called it AGAIN
+    // for the same member, making two member_detail round trips per self-heal
+    // attempt. The resolved provider is now threaded through, so exactly ONE
+    // member_detail call should happen per successful self-heal.
+    // =========================================================================
+    test('performs exactly ONE member_detail round trip per self-heal attempt', async () => {
+        let memberDetailCalls = 0;
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://github.com/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') {
+                memberDetailCalls += 1;
+                return MEMBER_DETAIL_GITHUB;
+            }
+            return { status: 'ok' };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(memberDetailCalls, 1, `expected exactly ONE member_detail round trip per self-heal attempt, got ${memberDetailCalls}`);
+    });
+
+    test('a resolution failure during the authRemedy hint lookup does not short-circuit the self-heal attempt', async () => {
+        const calls = [];
+        let memberDetailCalls = 0;
+        const command = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://github.com/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') {
+                memberDetailCalls += 1;
+                // First (hint-lookup) call fails transiently; the fallback
+                // lookup inside provisionVcsAuthForMember (second call)
+                // succeeds, so the self-heal attempt still completes.
+                if (memberDetailCalls === 1) throw new Error('fleet server transiently unreachable');
+                return MEMBER_DETAIL_GITHUB;
+            }
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
+        const logs = [];
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command, log: (m) => logs.push(m) });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+
+        assert.equal(memberDetailCalls, 2, `expected the hint lookup to fail once and the fallback lookup to still run, got ${memberDetailCalls} member_detail calls`);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'provision_vcs_auth');
+        assert.ok(
+            logs.some((l) => /could not resolve member 'fleet-mac'.*auth remedy hint/.test(l)),
+            `expected a hint-lookup-failure log entry that still proceeds, got: ${JSON.stringify(logs)}`,
+        );
+        assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected the self-heal to still succeed, got: ${JSON.stringify(logs)}`);
+    });
+});
+
+// =============================================================================
+// apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
+// classified by matching the RETIRED prose failure/skip emoji, which the
+// server no longer emits (ASCII [OK]/[FAIL]/[SKIP] now) and which wrapTool()
+// never backs with `isError` either -- so a failed provision silently read
+// as a success. Both self-heal callbacks now branch on
+// structuredContent.ok/.reason instead. These cases pin that fix: a [FAIL]
+// prose response carrying structuredContent.ok === false must still be
+// treated as a failure even though its text no longer starts with the old
+// failure emoji.
+// =============================================================================
+describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch on structuredContent, not retired emoji prose', () => {
+    test('createVcsAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false is still treated as a failed provision (throws)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                return {
+                    content: [{ text: '[FAIL] member not found' }],
+                    structuredContent: { ok: false, reason: 'member_not_found' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' }),
+            /provision_vcs_auth failed for member 'fleet-mac'.*\[FAIL\] member not found/,
+        );
+    });
+
+    test('createVcsAuthSelfHealCallback: an [OK] ASCII prose result with structuredContent.ok === true is treated as a successful provision (no throw)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                return {
+                    content: [{ text: '[OK] provisioned' }],
+                    structuredContent: { ok: true, reason: 'ok', expiresAt: null },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
+    });
+
+    test('createLlmAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false returns false (no retry)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[FAIL] secure credential denied' }],
+                    structuredContent: { ok: false, reason: 'secret_variable_denied' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected a structuredContent.ok === false result to NOT be treated as healed');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth failed for member 'fleet-mac'/.test(l) && /Not retrying/.test(l)),
+            `expected a failure log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: structuredContent.reason === "skipped_local_member" (ok: true) is still treated as a skip (no retry), not a success', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[SKIP] local member' }],
+                    structuredContent: { ok: true, reason: 'skipped_local_member' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected skipped_local_member to NOT be treated as healed even though structuredContent.ok is true');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
+            `expected a skip log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: structuredContent.ok === true with a non-skip reason returns true (retry)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                return {
+                    content: [{ text: '[OK] provisioned' }],
+                    structuredContent: { ok: true, reason: 'ok' },
+                };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, true, 'expected structuredContent.ok === true (non-skip reason) to be treated as healed');
+    });
+
+    // =========================================================================
+    // apra-fleet-3swo.13 (review round 2): provisionOutcome()'s prose fallback
+    // (used ONLY when a result carries no structuredContent at all, e.g. a
+    // test double or a very old server) used to match the RETIRED mojibake
+    // cross-mark/star bytes, which can never match real ASCII prose -- making
+    // the fallback's `ok` expression a constant `true` and silently
+    // classifying every structuredContent-less result as a success. These
+    // cases pin that the fallback now matches the real ASCII prefixes
+    // ([FAIL]/[SKIP]) the server actually emits, and would FAIL against the
+    // old mojibake regexes (confirmed by reverting the fix locally before
+    // writing this test).
+    // =========================================================================
+    test('createVcsAuthSelfHealCallback: a [FAIL] prose result with NO structuredContent at all is still treated as a failed provision (prose fallback)', async () => {
+        const command = async () => ({ ok: true, output: 'https://github.com/acme/widgets.git', error: null });
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            if (name === 'provision_vcs_auth') {
+                // No `structuredContent` key at all -- e.g. a bare-{content}
+                // test double or a server that predates the structured half.
+                return { content: [{ text: '[FAIL] member not found' }] };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
+
+        await assert.rejects(
+            () => onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' }),
+            /provision_vcs_auth failed for member 'fleet-mac'.*\[FAIL\] member not found/,
+        );
+    });
+
+    test('createLlmAuthSelfHealCallback: a [SKIP] prose result with NO structuredContent at all is still treated as a skip (prose fallback)', async () => {
+        const callTool = async (name) => {
+            if (name === 'provision_llm_auth') {
+                // No `structuredContent` key at all.
+                return { content: [{ text: '[SKIP] local member' }] };
+            }
+            return { content: [{ text: '' }] };
+        };
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+
+        const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
+
+        assert.equal(healed, false, 'expected a [SKIP] prose result with no structuredContent to NOT be treated as healed');
+        assert.ok(
+            logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
+            `expected a skip log entry, got: ${JSON.stringify(logs)}`,
+        );
+    });
+});

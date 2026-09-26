@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+tests
+docs
+sprint-logs
+*.log
+.claude
+.agents
+.codex

@@ -1,0 +1,927 @@
+import { test } from 'node:test';
+import assert from 'node:assert';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
+import fsSync from 'fs';
+import os from 'os';
+import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
+import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
+// bd record/replay-aware runCmd -- same (cmd, cwd) signature, and in real
+// mode (APRA_FLEET_BD_MOCK=0) byte-for-byte the local exec() copy this
+// replaced; see test/helpers/bd-replay.mjs for the APRA_FLEET_BD_MOCK
+// contract.
+import { runCmd } from './helpers/bd-replay.mjs';
+import { extractVerifyIds } from './helpers/verify-clause.mjs';
+import { StalledSprintError } from '../fleet-sprint/errors.mjs';
+// apra-fleet-j918.13.3: harvest.mjs derives the analysisArtifactFile path
+// (docs/sprint-analysis-<slug>.md) from the sprint's branch via this exact
+// function (see fleet-sprint/phases/harvest.mjs) -- reused (not
+// re-implemented) here so normalizeText() can fold the per-invocation-unique
+// branch's slug back to the golden fixture's original slug.
+import { computeBranchSlug } from '../fleet-sprint/sprint-report.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// =============================================================================
+// apra-fleet-unw.19 -- Golden-transcript snapshot test (feedback.md Testing
+// gap 4: no golden-transcript test, so prompt drift in runner.js is
+// invisible).
+//
+// This test drives ONE deterministic, full-coverage mock sprint cycle
+// against packages/apra-fleet-se/fleet-sprint/runner.js (the exact same
+// deterministic mock-fleet approach as test/advanced-mock-runner-test.mjs's
+// "run1" happy-path scenario: reject-then-approve plan review, default
+// doer/reviewer handlers, deploy.md + integ-test-playbook.md both present),
+// and records the FULL ordered sequence of every command()/agent() dispatch
+// runner.js makes -- member, agentType, schema id (when present), and the
+// exact prompt/command text -- into a golden JSONL snapshot
+// (test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl), one
+// dispatch per line.
+//
+// Every run's transcript is compared line-by-line against that golden file.
+// A mismatch fails with a readable side-by-side diff of the FIRST divergent
+// line (see diffFirstDivergence below) -- not just "snapshot mismatch" --
+// so a human/CI reader can immediately see WHAT changed (e.g. a reworded
+// prompt, a different schema id, a reordered dispatch).
+//
+// Update path (deliberately NOT automatic): run
+//   UPDATE_GOLDEN=1 node --test test/golden-transcript.test.mjs
+// (or `npm run update-golden` from this package) to regenerate the golden
+// file. A normal `npm test` run NEVER writes the golden file -- an
+// intentional prompt change must be a conscious, reviewed diff in the
+// commit, not a silent auto-update.
+// =============================================================================
+
+const GOLDEN_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
+const GOLDEN_PATH = path.join(GOLDEN_DIR, 'mock-sprint-happy-path.jsonl');
+const UPDATE_GOLDEN = process.env.UPDATE_GOLDEN === '1';
+
+// apra-fleet-j918.13.3: the fixed branch literal the committed golden
+// fixture was recorded against, before runGoldenScenario() started minting a
+// per-invocation-unique branch (see uniqueGoldenBranch()) to give every
+// invocation its own sprint-lock identity. normalizeText() folds each run's
+// actual, unique branch back to this literal so the fixture needs no
+// regeneration.
+const CANONICAL_GOLDEN_BRANCH = 'auto-sprint/mock-sprint';
+
+// apra-fleet-7ll: replicate the real execute_command MCP tool's response
+// shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
+// text PLUS a structuredContent.stdout/stderr/exitCode machine-readable
+// channel -- so this mock exercises the same contract FleetWorkflow.command()
+// actually receives in production, instead of a cleaner-than-reality stand-in
+// that silently masked the "Exit code: N\n" prefix bug for this suite's
+// whole lifetime.
+function mockCmdResult(code, stdout, stderr) {
+    const parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push(`[stderr]\n${stderr}`);
+    const output = parts.join('\n') || '(no output)';
+    return {
+        content: [{ text: `Exit code: ${code}\n${output}` }],
+        structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
+    };
+}
+
+// apra-fleet-1cb.1: classifies a runCmd() `err` (Node's child_process exec()
+// callback error) as a genuine spawn/transport failure (the process never
+// ran) as opposed to the process running and exiting nonzero, which is
+// normal data -- see the matching comment in
+// test/helpers/mock-sprint-harness.mjs and src/tools/execute-command.ts,
+// which never sets isError for a nonzero shell exit code.
+function isSpawnFailure(err) {
+    return err.code === undefined || err.code === 'ENOENT';
+}
+
+// apra-fleet-1cb.2: direct regression assertion for the isError/nonzero-exit
+// contract above -- protects against mockCmdResult()/isSpawnFailure()
+// silently drifting back to conflating "shell exited nonzero" with "MCP
+// dispatch failed" (the bug apra-fleet-1cb.1 fixed here). Exercises the two
+// functions directly rather than a full mock sprint, so it stays fast and
+// pinpoints the exact function at fault on a regression.
+test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failure is isError:true', () => {
+    // A nonzero shell exit (e.g. a `bd` command failing on bad input) is
+    // normal data, matching src/tools/execute-command.ts -- never isError.
+    const nonzeroExit = mockCmdResult(1, '', 'bead already closed');
+    assert.strictEqual(nonzeroExit.isError, undefined);
+    assert.strictEqual(nonzeroExit.structuredContent.exitCode, 1);
+    assert.match(nonzeroExit.content[0].text, /^Exit code: 1/);
+
+    // A genuine spawn/transport failure (process never ran) IS isError:true
+    // in the command() dispatch logic below -- isSpawnFailure() is what
+    // distinguishes that case from an ordinary nonzero exit code.
+    assert.strictEqual(isSpawnFailure({ code: undefined }), true);
+    assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
+    assert.strictEqual(isSpawnFailure({ code: 1 }), false);
+    assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
+
+// apra-fleet-spp.5: direct regression coverage for extractVerifyIds()
+// (test/helpers/verify-clause.mjs), the parser both this file's and
+// golden-transcript-3bead.test.mjs's integ-test-runner mock handlers use to
+// find the bead id(s) named in runner.js's "...await verification-closure:
+// <ids>. For each, verify..." prompt clause. A capture anchored on the first
+// '.' (this file's pre-fix regex) truncates a dotted, decomposed-child bead
+// id -- e.g. apra-fleet-xyz.1, this project's standard child-id form -- down
+// to its parent prefix (apra-fleet-xyz), which would make the mock `bd
+// close` the WRONG bead. This test feeds a prompt naming exactly one dotted
+// id and asserts the parser (and, simulating the handler's own `for (const
+// id of verifyIds)` loop, the resulting close list) yields exactly that
+// dotted id, untruncated.
+test('extractVerifyIds: a dotted decomposed-child verify id is preserved, not truncated at its first dot', () => {
+    const prompt =
+        'Additionally, these bead(s) have ALL their children closed and await ' +
+        'verification-closure: apra-fleet-xyz.1. For each, verify against the ' +
+        'deployed build per the playbook.';
+
+    const verifyIds = extractVerifyIds(prompt);
+    assert.deepStrictEqual(verifyIds, ['apra-fleet-xyz.1']);
+
+    // Simulate the mock handler's own close loop to assert exactly this
+    // dotted id -- not a truncated 'apra-fleet-xyz' -- is what gets closed.
+    const closed = [];
+    for (const id of verifyIds) closed.push(id);
+    assert.deepStrictEqual(closed, ['apra-fleet-xyz.1']);
+
+    // Multiple ids, one of which is dotted, comma-separated -- confirms the
+    // dot-tolerance holds alongside normal split-on-comma behavior.
+    const multiPrompt =
+        'await verification-closure: apra-fleet-abc, apra-fleet-xyz.1, apra-fleet-def.2.3. For each, verify ' +
+        'against the deployed build.';
+    assert.deepStrictEqual(
+        extractVerifyIds(multiPrompt),
+        ['apra-fleet-abc', 'apra-fleet-xyz.1', 'apra-fleet-def.2.3']
+    );
+});
+
+async function setup(tempDirSuffix) {
+    const tempDir = path.join(os.tmpdir(), `apra-fleet-golden-${tempDirSuffix}-${Date.now()}-${process.pid}`);
+    await fs.mkdir(tempDir, { recursive: true });
+
+    await runCmd('bd init', tempDir);
+
+    // Deliberately a SINGLE task (not the two-plus-one-added-during-planning
+    // shape test/advanced-mock-runner-test.mjs's "run1" scenario uses):
+    // with 2+ ready beads, runner.js's Develop loop dispatches one doer
+    // streak PER ready bead via `parallel()`, and those streaks are
+    // genuinely, correctly concurrent -- their completion order (and so the
+    // order their post-dispatch `bd show` verification commands land in the
+    // dispatch log) depends on real child-process scheduling, not on
+    // anything runner.js or this mock controls. That's true parallelism
+    // doing its job, not a determinism bug, and it is out of this golden
+    // test's scope to serialize it away. Keeping exactly one ready bead at a
+    // time (via the reopen loop below, not concurrency) sidesteps that race
+    // entirely while still exercising the full planner -> plan-reviewer ->
+    // streak-assignment -> doer -> reviewer -> deploy -> integ -> final
+    // review -> harvest sequence, across TWO develop/review rounds (the
+    // reviewer mock reopens once, then approves).
+    await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember and ensuring it integrates securely using fetch across the MCP JSON-RPC boundary."', tempDir);
+    await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool."', tempDir);
+
+    const initialList = await runCmd('bd list --json', tempDir);
+    const allBeads = JSON.parse(initialList.stdout || '[]');
+    const epicBead = allBeads.find((b) => b.title.includes('Epic:'));
+    const task1 = allBeads.find((b) => b.title.includes('registerMember'));
+
+    await runCmd(`bd update ${task1.id} --parent ${epicBead.id}`, tempDir);
+
+    await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy Apra Fleet Client\nrun `npm publish`');
+    await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
+
+    return { tempDir, epicBead };
+}
+
+async function teardown(tempDir) {
+    if (!tempDir) return;
+    let retries = 8;
+    while (retries > 0) {
+        try {
+            // Windows can hold file handles open briefly after child
+            // processes (bd CLI) exit; retry on EBUSY -- see
+            // test/advanced-mock-runner-test.mjs's identical helper.
+            await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3 });
+            return;
+        } catch (e) {
+            if (e.code === 'EBUSY' && retries > 1) {
+                retries--;
+                await new Promise((r) => setTimeout(r, 400));
+            } else {
+                console.error('Could not fully clean up temp dir:', tempDir, e.message);
+                return;
+            }
+        }
+    }
+}
+
+/**
+ * Extracts a schema's "$id" from a dispatch-time prompt. agent()'s schema
+ * option (packages/apra-fleet-workflow/src/workflow/index.mjs) appends the
+ * full JSON schema text (including "$id") directly onto the prompt before
+ * dispatch, so it is always present verbatim in `opts.prompt` for any
+ * schema-validated dispatch and absent otherwise.
+ * @param {string} prompt
+ * @returns {string|null}
+ */
+function extractSchemaId(prompt) {
+    const match = prompt.match(/"\$id":\s*"([^"]+)"/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Builds a deterministic mock FleetApi that records EVERY executeCommand()
+ * and executePrompt() dispatch, in true call order, into `dispatchLog`.
+ * Behavior is adapted from test/advanced-mock-runner-test.mjs's default
+ * ("run1" happy-path) mock: reject-then-approve plan review (round 1
+ * CHANGES_NEEDED, round 2 APPROVED), default doer (closes every assigned
+ * bead) / reviewer (reopens the first closed bead once, then approves)
+ * handlers, deploy + integ present and both succeeding, and an
+ * evidence-based final verdict / harvester OK. Unlike "run1", the planner
+ * mock here does NOT create an extra task during planning -- see the
+ * single-task comment in setup() above for why (avoiding a genuine,
+ * concurrency-driven race in runner.js's parallel doer dispatch that is
+ * out of scope for this golden test to eliminate).
+ */
+function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
+    let planRound = 0;
+    let reviewRound = 0;
+
+    return {
+        executeCommand: async (opts) => {
+            dispatchLog.push({
+                kind: 'command',
+                member: opts.member_name || null,
+                command: opts.command,
+            });
+
+            // git/gh commands are intercepted rather than run for real:
+            // tempDir is a bare `bd init` scratch dir, not a git repo with
+            // an 'origin' remote -- see the identical comment in
+            // test/advanced-mock-runner-test.mjs.
+            // apra-fleet-eft.64.1: answer `git remote get-url origin`
+            // (now resolved+classified by the Publish PR step before it
+            // decides whether to attempt `gh pr create`) with a hosted
+            // GitHub URL, BEFORE the generic git/gh success stub below --
+            // otherwise the generic stub's non-URL text misclassifies as a
+            // non-hosted remote and this golden scenario silently diverts
+            // onto the skip-PR/direct-close path instead of the `gh pr
+            // create` path this fixture was recorded against.
+            if (/^git remote get-url origin\b/.test(opts.command)) {
+                return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git', '');
+            }
+
+            if (/^(git|gh)\s/.test(opts.command)) {
+                return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
+            }
+
+            const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
+            if (err) {
+                // apra-fleet-1cb.1: only a genuine spawn failure is an MCP-level
+                // isError -- a nonzero-exit bd/node invocation is normal data
+                // with the real exit code, matching execute-command.ts.
+                if (isSpawnFailure(err)) {
+                    return { isError: true, content: [{ text: stderr || err.message }] };
+                }
+                const exitCode = typeof err.code === 'number' ? err.code : 1;
+                return mockCmdResult(exitCode, stdout, stderr);
+            }
+            return mockCmdResult(0, stdout, stderr);
+        },
+
+        executePrompt: async (opts) => {
+            const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
+            // Not gated on opts.agent === 'planner': runner.js no longer sets
+            // agentType on this dispatch (see the streakAssignment schema
+            // comment in contracts.mjs) -- detect it by prompt content instead.
+            const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
+
+            dispatchLog.push({
+                kind: 'prompt',
+                agentType: opts.agent,
+                label: isFinalReview ? 'Final Review' : (isStreakAssignment ? 'Streak Assignment' : null),
+                member: opts.member_name || null,
+                schemaId: extractSchemaId(opts.prompt),
+                prompt: opts.prompt,
+            });
+
+            // --- plan phase: planner ---
+            if (opts.agent === 'planner' && !isStreakAssignment) {
+                return {
+                    content: [{
+                        text: 'Analyzed the Fleet Member API epic. Confirmed the implementation task for registerMember is well-formed and ready to develop.'
+                    }]
+                };
+            }
+
+            // --- plan phase: plan-reviewer ---
+            if (opts.agent === 'plan-reviewer') {
+                planRound++;
+                if (planRound >= 2) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                verdict: 'APPROVED',
+                                notes: 'Code looks solid. We have tasks for implementation and tests.',
+                                taskAssignments: [],
+                            })
+                        }]
+                    };
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'CHANGES_NEEDED',
+                            notes: 'Ensure you also add a documentation task.',
+                            taskAssignments: [],
+                        })
+                    }]
+                };
+            }
+
+            // --- develop phase: streak grouping (still agentType 'planner') ---
+            if (isStreakAssignment) {
+                const idsMatch = opts.prompt.match(/Ready bead ids:\s*(.+)/);
+                const ids = idsMatch ? idsMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                return { content: [{ text: JSON.stringify({ streaks: ids.map((id) => [id]) }) }] };
+            }
+
+            // --- develop phase: doer (default: close every assigned bead) ---
+            if (opts.agent === 'doer') {
+                const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+                const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                for (const id of ids) {
+                    await runCmd(`bd close ${id}`, tempDir);
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            status: 'VERIFY',
+                            closedIds: ids,
+                            notes: 'Implemented the requested fleet client methods using fetch to hit the MCP JSON-RPC endpoints. Closed the assigned beads.'
+                        })
+                    }]
+                };
+            }
+
+            // --- review phase: reviewer (default: reopen the first closed bead once, then approve) ---
+            if (opts.agent === 'reviewer' && !isFinalReview) {
+                reviewRound++;
+                if (reviewRound === 1) {
+                    const closedRes = await runCmd(`bd list --parent ${epicBead.id} --status=closed --json`, tempDir);
+                    const closedBeads = JSON.parse(closedRes.stdout || '[]').sort((a, b) => a.id.localeCompare(b.id));
+                    if (closedBeads.length > 0) {
+                        const target = closedBeads[0];
+                        return {
+                            content: [{
+                                text: JSON.stringify({
+                                    verdict: 'CHANGES_NEEDED',
+                                    notes: `The implementation for ${target.id} is missing error handling for 401 Unauthorized responses. Please fix.`,
+                                    reopenIds: [target.id],
+                                    newTasks: [],
+                                })
+                            }]
+                        };
+                    }
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'APPROVED',
+                            notes: 'Code logic is sound. Error handling and type definitions match the spec. Approved.',
+                            reopenIds: [],
+                            newTasks: [],
+                        })
+                    }]
+                };
+            }
+
+            // --- final review (evidence-based; see the identical mock in
+            // test/advanced-mock-runner-test.mjs for the rationale) ---
+            if (isFinalReview) {
+                const openMatch = opts.prompt.match(/(\d+) bead\(s\) still open at or above goal priority/);
+                const openCount = openMatch ? Number(openMatch[1]) : 0;
+                const hasDeployFailure = opts.prompt.includes('Deploy phase FAILED');
+                const hasIntegFailure = opts.prompt.includes('Integration tests FAILED');
+                if (openCount > 0 || hasDeployFailure || hasIntegFailure) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                verdict: 'FAIL',
+                                notes: `Evidence-based FAIL: ${openCount} open goal-priority bead(s), deployFailure=${hasDeployFailure}, integFailure=${hasIntegFailure}.`,
+                            })
+                        }]
+                    };
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'PASS',
+                            notes: 'All goal-priority beads closed, last review APPROVED, deploy/integ phases (if any) succeeded. Excellent velocity and solid implementation.',
+                        })
+                    }]
+                };
+            }
+
+            // --- deploy phase ---
+            if (opts.agent === 'deployer') {
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            deployed: true,
+                            notes: 'Successfully ran `npm publish` and published @apralabs/apra-fleet-client to the local registry.',
+                        })
+                    }]
+                };
+            }
+
+            // --- integ test phase ---
+            if (opts.agent === 'integ-test-runner') {
+                // apra-fleet-66u.4: mirror the real integ-test-runner agent's
+                // documented contract (runner.js's own dispatch prompt --
+                // "...await verification-closure: <ids>. For each, verify
+                // ... close it (bd close) ...", buildable via runner.js's
+                // verifyClause) by actually closing every verify-routed bead
+                // id the prompt names, the same way the `doer` handler above
+                // extracts and closes its own "Assigned bead ids". Without
+                // this, a scenario whose epic/parent bead becomes
+                // verify-eligible (all children closed) never gets that bead
+                // closed by this mock, so apra-fleet-jfo.2's
+                // stillOpenVerifyIds exit gate correctly refuses to let the
+                // sprint exit -- runner.js then (correctly, by design) loops
+                // Deploy/IntegTest with zero forward progress until it
+                // stall-aborts. That is not a runner.js staleness bug; it is
+                // this mock never performing the side effect its own prompt
+                // asked for. See the apra-fleet-66u.4 bd comment for the
+                // full diagnosis.
+                //
+                // apra-fleet-spp.5: extraction now delegates to the shared
+                // extractVerifyIds() helper (test/helpers/verify-clause.mjs)
+                // instead of an inline /([^.]+)\./ capture, which truncated
+                // a dotted verify id (e.g. apra-fleet-eft.52, this project's
+                // standard decomposed-child form) at its first '.' and would
+                // have made this mock `bd close` the WRONG bead.
+                const verifyIds = extractVerifyIds(opts.prompt);
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id}`, tempDir);
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            featuresClosed: 2,
+                            issuesCreated: 0,
+                            passed: true,
+                            bugsFiled: [],
+                            summary: 'All vitest e2e specs passed successfully.',
+                        })
+                    }]
+                };
+            }
+
+            // --- harvest phase ---
+            if (opts.agent === 'harvester') {
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            status: 'OK',
+                            notes: 'Harvested API usage patterns to memory. Updated context docs.',
+                        })
+                    }]
+                };
+            }
+
+            throw new Error(`golden-transcript.test.mjs: unhandled agentType '${opts.agent}'`);
+        }
+    };
+}
+
+/**
+ * Turns a slugified, human-readable placeholder into a globally-unique bead
+ * identifier. bd assigns each bead an id derived from the (random,
+ * per-tempdir) scratch-directory name it was created in
+ * (`<tempdir-basename>-<random-suffix>`, confirmed by direct inspection: two
+ * `bd init` scratch dirs created back-to-back with the identical command
+ * sequence get DIFFERENT bead ids) -- so raw bead ids are exactly the kind
+ * of volatile, non-deterministic field the golden transcript must never
+ * contain. Titles are static, sprint-authored text and so ARE deterministic
+ * -- this maps each real (volatile) id to a stable placeholder derived from
+ * its bead's title instead.
+ * @param {string} title
+ * @returns {string}
+ */
+function slugify(title) {
+    return title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48);
+}
+
+/**
+ * @param {Array<{id: string, title: string}>} beads
+ * @returns {Map<string, string>} real bead id -> stable "<BEAD:slug>" placeholder
+ */
+function buildIdNormalizationMap(beads) {
+    // Sort by title (deterministic, static text) rather than by id (random
+    // per run) so the same title always maps to the same placeholder.
+    const sorted = [...beads].sort((a, b) => a.title.localeCompare(b.title));
+    const usedSlugs = new Map();
+    const map = new Map();
+    for (const b of sorted) {
+        let slug = slugify(b.title);
+        const count = (usedSlugs.get(slug) || 0) + 1;
+        usedSlugs.set(slug, count);
+        if (count > 1) slug = `${slug}-${count}`;
+        map.set(b.id, `<BEAD:${slug}>`);
+    }
+    return map;
+}
+
+// bd's own "<ISO date>T<ISO time>Z" timestamps (created_at/updated_at/
+// closed_at) show up verbatim inside `bd show --json` output, which
+// runner.js embeds directly into the reviewer's dispatch prompt
+// (buildReviewerPrompt's acceptanceCriteriaJson) -- real wall-clock values,
+// different on every run, and exactly the "timestamps" volatility this
+// issue calls out for normalization.
+const ISO_TIMESTAMP_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/g;
+
+/**
+ * Normalizes volatile content out of a dispatch-log text field: real
+ * (per-run-random) bead ids -> stable "<BEAD:slug>" placeholders, bd's own
+ * ISO-8601 timestamps (created_at/updated_at/closed_at, embedded verbatim in
+ * `bd show --json` output that flows into the reviewer prompt) ->
+ * "<TIMESTAMP>", and the absolute scratch-directory path -> "<TMPDIR>"
+ * (defensive; no known dispatch text embeds it today, since every bd/probe
+ * command runs with `cwd: tempDir` rather than an absolute path baked into
+ * the command string, but this keeps the snapshot robust if that ever
+ * changes), and this run's per-invocation-unique sprint branch (and its
+ * derived docs/sprint-analysis-<slug>.md slug) -> the fixed literal the
+ * committed golden fixture was recorded against (see CANONICAL_GOLDEN_BRANCH).
+ * @param {string} text
+ * @param {Map<string, string>} idMap
+ * @param {string} tempDir
+ * @param {string} [branch]
+ * @returns {string}
+ */
+function normalizeText(text, idMap, tempDir, branch) {
+    if (typeof text !== 'string') return text;
+    let out = text;
+    // Replace longest ids first so no id is ever a substring-prefix of
+    // another id it hasn't been replaced with yet.
+    const ids = [...idMap.keys()].sort((a, b) => b.length - a.length);
+    for (const id of ids) {
+        out = out.split(id).join(idMap.get(id));
+    }
+    // apra-fleet-j918.13.3: runGoldenScenario()'s branch is now unique per
+    // invocation (tag + pid, see uniqueGoldenBranch()) instead of the shared
+    // literal 'auto-sprint/mock-sprint', so that concurrent invocations never
+    // collide on sprint-lock.mjs's (branch, members) key. Fold the actual,
+    // per-run-unique branch string back to that original literal here --
+    // exactly the same "normalize away a volatility THIS harness injected"
+    // treatment already applied to bead ids/timestamps/tempDir above -- so
+    // the committed golden fixture (which was recorded against the old fixed
+    // branch) needs no regeneration, and two independently-tagged runs (e.g.
+    // 'golden-main' vs 'golden-det-2' in the determinism test) still produce
+    // byte-identical transcripts.
+    if (branch) {
+        out = out.split(branch).join(CANONICAL_GOLDEN_BRANCH);
+        // harvest.mjs's analysisArtifactFile (docs/sprint-analysis-<slug>.md)
+        // embeds computeBranchSlug(branch), NOT the raw branch string -- '/'
+        // replaced with '-' plus an 8-char sha256 prefix of the raw branch
+        // (see sprint-report.mjs's computeBranchSlug doc comment). That slug
+        // never matches the plain split() above, and its hash suffix differs
+        // per invocation (deterministic per branch, but the branch itself is
+        // now per-invocation-unique), so fold it back to the golden fixture's
+        // original slug the same way.
+        out = out.split(computeBranchSlug(branch)).join(computeBranchSlug(CANONICAL_GOLDEN_BRANCH));
+    }
+    out = out.replace(ISO_TIMESTAMP_PATTERN, '<TIMESTAMP>');
+    // bd's `owner`/`created_by` fields (embedded in `bd show --json` output
+    // that flows into the reviewer prompt) reflect the local git identity
+    // (git config user.name/user.email) used when the bead was created --
+    // nondeterministic across machines/CI. `owner` is only set when a git
+    // identity is configured, so it's entirely absent on CI runners rather
+    // than merely holding a different value; strip it (with its trailing
+    // comma) rather than replacing its value. `created_by` is always
+    // present, so normalize its value instead.
+    out = out.replace(/\n[ \t]*"owner":\s*"[^"]*",/g, '');
+    out = out.replace(/"created_by":\s*"[^"]*"/g, '"created_by": "<CREATED_BY>"');
+    if (tempDir) {
+        out = out.split(tempDir).join('<TMPDIR>');
+        out = out.split(tempDir.replace(/\\/g, '/')).join('<TMPDIR>');
+    }
+    return out;
+}
+
+/**
+ * Runs one full deterministic mock sprint and returns the normalized,
+ * ordered dispatch transcript: real bead ids and bd's own ISO timestamps are
+ * replaced with stable placeholders by normalizeText() above (the mock
+ * itself never embeds a run id/wall-clock value directly into any
+ * command/prompt text, so no further normalization is needed there).
+ * @param {string} tag - unique per-call scratch-dir suffix
+ * @returns {Promise<{ transcript: object[], result: object }>}
+ */
+// apra-fleet-j918.7.8: memoizes the ONE 'golden-main' run so the snapshot
+// test and the determinism test's "run1" share it instead of each paying for
+// their own byte-identically-configured full sprint run. Caches the PROMISE
+// (not the resolved value) so concurrent callers await the same in-flight
+// run rather than racing two overlapping sprints -- safe regardless of
+// node:test's execution order for this file's top-level tests. The
+// determinism test still performs its OWN, genuinely independent second run
+// (run2, tag 'golden-det-2') and compares it against this memoized run1, so
+// the comparison is never a run against itself -- see that test for the
+// falsification record proving it is not a tautology.
+let goldenMainRunPromise = null;
+function goldenMainRun() {
+    if (!goldenMainRunPromise) goldenMainRunPromise = runGoldenScenario('golden-main');
+    return goldenMainRunPromise;
+}
+
+// apra-fleet-j918.13.3: mirrors mock-sprint-harness.mjs's uniqueMockBranch()
+// -- appends this process's pid (in addition to the tag, since this file
+// itself calls runGoldenScenario() more than once per process: 'golden-main'
+// (memoized), 'golden-progress', and 'golden-det-2') so no two invocations,
+// in this process or any other concurrently-running test file/real sprint,
+// can ever share sprint-lock.mjs's (branch, members) key.
+function uniqueGoldenBranch(tag) {
+    return `auto-sprint/mock-sprint-${tag}-${process.pid}`;
+}
+
+async function runGoldenScenario(tag) {
+    const { tempDir, epicBead } = await setup(tag);
+    const dispatchLog = [];
+    let currentGroup = null;
+    // apra-fleet-j918.13.3: give this invocation its own private sprint-lock
+    // directory instead of relying on sprint-lock.mjs's OS-tmpdir-wide
+    // default (see fleet-sprint/sprint-lock.mjs) -- without this, two
+    // concurrent golden-transcript children collided with
+    // SprintLockHeldError/SPRINT_LOCK_HELD on the shared literal branch
+    // 'auto-sprint/mock-sprint'. Same save/mkdtemp/restore/rm shape as
+    // runDevelopLoopScenario() in test/helpers/mock-sprint-harness.mjs;
+    // golden-transcript-3bead.test.mjs's alternative (set once at module
+    // scope for the whole file) doesn't fit here because THIS file calls
+    // runGoldenScenario() multiple times within one process.
+    const priorSprintLockDir = process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+    const sprintLockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-golden-'));
+    process.env.APRA_FLEET_SPRINT_LOCK_DIR = sprintLockDir;
+    try {
+        const fleetApi = buildTranscriptFleetApi(tempDir, epicBead, dispatchLog);
+        const workflow = new FleetWorkflow(fleetApi, { targetRepo: tempDir });
+        workflow.on('group:start', (e) => { currentGroup = e.title; });
+        const engine = new WorkflowEngine(workflow);
+        const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
+        const branch = uniqueGoldenBranch(tag);
+
+        const result = await engine.executeFile(scriptPath, {
+            target_issue: epicBead.id,
+            members: ['local'],
+            branch,
+            base_branch: 'main',
+            goal: 'P1/P2',
+            max_cycles: 5,
+        }, true);
+
+        const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
+        const idMap = buildIdNormalizationMap(finalBeadsRaw);
+
+        const transcript = dispatchLog.map((entry, index) => {
+            const normalized = { seq: index };
+            if (entry.kind === 'command') {
+                normalized.kind = 'command';
+                normalized.member = entry.member;
+                normalized.command = normalizeText(entry.command, idMap, tempDir, branch);
+            } else {
+                normalized.kind = 'prompt';
+                normalized.agentType = entry.agentType;
+                normalized.label = entry.label;
+                normalized.member = entry.member;
+                normalized.schemaId = entry.schemaId;
+                normalized.prompt = normalizeText(entry.prompt, idMap, tempDir, branch);
+            }
+            return normalized;
+        });
+
+        return { transcript, result };
+    } finally {
+        if (priorSprintLockDir === undefined) {
+            delete process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+        } else {
+            process.env.APRA_FLEET_SPRINT_LOCK_DIR = priorSprintLockDir;
+        }
+        await fs.rm(sprintLockDir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+        await teardown(tempDir);
+    }
+}
+
+function transcriptToJsonl(transcript) {
+    return transcript.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+}
+
+/**
+ * Compares two JSONL transcripts line-by-line and returns a readable
+ * side-by-side diff of the FIRST divergent line, or null if they match.
+ * @param {string} goldenJsonl
+ * @param {string} actualJsonl
+ * @returns {string|null}
+ */
+function diffFirstDivergence(goldenJsonl, actualJsonl) {
+    const goldenLines = goldenJsonl.split('\n');
+    const actualLines = actualJsonl.split('\n');
+    const maxLen = Math.max(goldenLines.length, actualLines.length);
+
+    for (let i = 0; i < maxLen; i++) {
+        const g = goldenLines[i];
+        const a = actualLines[i];
+        if (g === a) continue;
+
+        const lines = [
+            `First divergence at JSONL line ${i + 1} (0-indexed dispatch seq ${i}):`,
+            '',
+        ];
+
+        if (g === undefined) {
+            lines.push('  GOLDEN: <no line -- actual transcript has MORE dispatches than golden>');
+            lines.push(`  ACTUAL: ${a}`);
+            return lines.join('\n');
+        }
+        if (a === undefined) {
+            lines.push(`  GOLDEN: ${g}`);
+            lines.push('  ACTUAL: <no line -- actual transcript has FEWER dispatches than golden>');
+            return lines.join('\n');
+        }
+
+        // Both lines present but differ: parse and do a field-level diff so
+        // the reader sees WHICH field changed, not just two giant JSON blobs.
+        let gObj = null;
+        let aObj = null;
+        try { gObj = JSON.parse(g); } catch { /* leave null */ }
+        try { aObj = JSON.parse(a); } catch { /* leave null */ }
+
+        if (gObj && aObj) {
+            const keys = new Set([...Object.keys(gObj), ...Object.keys(aObj)]);
+            for (const key of keys) {
+                const gVal = gObj[key];
+                const aVal = aObj[key];
+                if (JSON.stringify(gVal) !== JSON.stringify(aVal)) {
+                    lines.push(`  field '${key}' differs:`);
+                    lines.push(`    GOLDEN: ${JSON.stringify(gVal)}`);
+                    lines.push(`    ACTUAL: ${JSON.stringify(aVal)}`);
+                }
+            }
+        } else {
+            lines.push(`  GOLDEN: ${g}`);
+            lines.push(`  ACTUAL: ${a}`);
+        }
+
+        return lines.join('\n');
+    }
+
+    return null;
+}
+
+test('golden transcript: mock sprint happy-path dispatch sequence matches the committed snapshot', async (t) => {
+    const { transcript, result } = await goldenMainRun();
+    const actualJsonl = transcriptToJsonl(transcript);
+
+    assert.strictEqual(result.status, 'success', `Golden scenario did not succeed: ${JSON.stringify(result)}`);
+
+    if (UPDATE_GOLDEN) {
+        await fs.mkdir(GOLDEN_DIR, { recursive: true });
+        await fs.writeFile(GOLDEN_PATH, actualJsonl, 'utf-8');
+        t.diagnostic(`UPDATE_GOLDEN=1: wrote ${transcript.length} dispatch(es) to ${GOLDEN_PATH}`);
+        return;
+    }
+
+    assert.ok(
+        fsSync.existsSync(GOLDEN_PATH),
+        `Golden file does not exist: ${GOLDEN_PATH}. Run with UPDATE_GOLDEN=1 to generate it.`
+    );
+    const goldenJsonl = await fs.readFile(GOLDEN_PATH, 'utf-8');
+
+    if (goldenJsonl === actualJsonl) {
+        return;
+    }
+
+    const diff = diffFirstDivergence(goldenJsonl, actualJsonl);
+    assert.fail(
+        'Dispatch transcript diverged from the committed golden snapshot ' +
+        `(${GOLDEN_PATH}).\n\n${diff}\n\n` +
+        'If this divergence is an INTENTIONAL prompt/dispatch change, regenerate the golden ' +
+        'file (review the diff before committing it):\n' +
+        '  UPDATE_GOLDEN=1 node --test test/golden-transcript.test.mjs\n' +
+        'or: npm run update-golden -w @apralabs/apra-fleet-se'
+    );
+});
+
+// =============================================================================
+// apra-fleet-66u.5: pins the apra-fleet-66u.4 fix (the mock
+// integ-test-runner handler above now issues `bd close` for every
+// verify-routed bead named in its dispatch prompt) on THIS file's
+// mock-sprint/golden-transcript path specifically -- the 2026-08-04
+// recurrence of the apra-fleet-66u false-stall regression happened here,
+// not on the already-covered real-sprint develop-loop harness (see
+// apra-fleet-66u.3's test/66u-stall-progress-credit.test.mjs).
+//
+// This scenario's single task closes under the epic (setup() above), making
+// the epic itself a childful verify-routed target once that one child
+// closes -- exactly the same shape as 66u.3(a)'s epic-closes-via-Integ-Test
+// case, but driven through this file's real runner.js dispatch (not the
+// mock-sprint-harness's runDevelopLoopScenario()). Without the 66u.4 fix,
+// the mock integ-test-runner handler above would never close the epic, so
+// runner.js's stillOpenVerifyIds exit gate would keep looping Deploy/
+// IntegTest with zero forward progress in closedCount/verifyEverIds until
+// staleCycles hit STALL_CYCLE_LIMIT and runner.js threw StalledSprintError
+// (the exact "Closed-count history: [3,3,3] ... the verifier may be
+// failing" shape from the real incident) -- which engine.executeFile()
+// rejects `runGoldenScenario()`'s promise with, caught below.
+//
+// MUTATION CHECK (PERFORMED against real bd by apra-fleet-w7ee.1; recorded
+// here as evidence rather than as a claim). Deleting exactly
+// apra-fleet-66u.4's three-line `for (const id of verifyIds) { await
+// runCmd(`bd close ${id}`, tempDir); }` loop from buildTranscriptFleetApi()'s
+// integ-test-runner handler above (leaving the canned {featuresClosed,
+// passed:true} response, and leaving the doer handler's own closes intact)
+// was OBSERVED to take this file from pass=5 fail=0 to pass=2 fail=3: this
+// test's `caught` assertion failed with a StalledSprintError carrying the
+// original incident's signature, "Sprint stalled: 2 consecutive cycle(s)
+// made no new high-water-mark progress (closed beads + verify-routed beads)
+// ... Closed-count history: [1, 1, 1] (high-water mark on progress score:
+// 2)", and the snapshot and determinism-proof subtests aborted the same way.
+// The tree was then restored byte-for-byte from a pre-mutation copy.
+// The sibling 3-bead guard was likewise proven falsifiable, separately and
+// on its own handler, by apra-fleet-w7ee.2 -- see the MUTATION CHECK block
+// in golden-transcript-3bead.test.mjs for its [3, 3, 3]/high-water-4 shape.
+test('golden transcript: Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
+    let caught = null;
+    let transcript = null;
+    let result = null;
+    try {
+        ({ transcript, result } = await runGoldenScenario('golden-progress'));
+    } catch (err) {
+        caught = err;
+    }
+
+    // Named assertion #1: no false-stall abort fired.
+    assert.ok(
+        !(caught instanceof StalledSprintError),
+        'Expected no false-stall abort on the mock golden sprint\'s same-cycle ' +
+        `Integ Test closure of the childful epic, got: ${caught ? caught.message : 'none'}`
+    );
+    if (caught) throw caught;
+
+    // Named assertion #2: the sprint reached success (not merely "did not
+    // throw" -- confirms the whole runner.js cycle loop actually exited
+    // cleanly via the goal-priority + verify-set completion path).
+    assert.strictEqual(
+        result.status, 'success',
+        `Expected the golden mock sprint to complete successfully, got: ${JSON.stringify(result)}`
+    );
+
+    // Named assertion #3: this run genuinely exercised the same-cycle
+    // verify-closure path apra-fleet-66u.4 fixed -- an integ-test-runner
+    // dispatch actually named the epic in its verification-closure clause
+    // (proves the scenario reaches the childful-target-becomes-verify-
+    // eligible shape, not merely a scenario that happens to avoid it).
+    const integPrompts = transcript.filter((e) => e.kind === 'prompt' && e.agentType === 'integ-test-runner');
+    assert.ok(integPrompts.length > 0, 'Expected at least one integ-test-runner dispatch in the golden transcript');
+    const epicPlaceholder = '<BEAD:epic-fleet-member-management-apis>';
+    const verifyDispatch = integPrompts.find(
+        (e) => e.prompt.includes('verification-closure:') && e.prompt.includes(epicPlaceholder)
+    );
+    assert.ok(
+        verifyDispatch,
+        `Expected an integ-test-runner dispatch naming the epic (${epicPlaceholder}) in its ` +
+        `verification-closure clause -- got prompts: ${JSON.stringify(integPrompts.map((e) => e.prompt))}`
+    );
+});
+
+// run1 (tag 'golden-det-1') and run2 (tag 'golden-det-2') are two genuinely
+// INDEPENDENT full sprint executions, each with its own tempDir and its own
+// cold dolt-sync cache state, so this is a real two-independent-runs
+// comparison, not a run compared against itself.
+//
+// FALSIFICATION (confirmed by hand): temporarily inserting
+// `run2.transcript[0] = { ...run2.transcript[0], seq: 'MUTATED' };`
+// immediately before the jsonl1/jsonl2 comparison below made this test fail
+// with the expected "produced different transcripts" assert.fail and a
+// first-divergence diff naming the mutated `seq` field; the line was removed
+// immediately afterward and `git diff` confirmed a byte-clean revert. This
+// confirms run1 and run2 are still compared as two distinct values, not
+// short-circuited into a tautological self-comparison.
+test('golden transcript: two consecutive runs of the mock sprint produce an identical transcript (determinism proof)', async () => {
+    // run1 uses its own independent scenario run (tag 'golden-det-1') rather
+    // than the memoized goldenMainRun(), so it does not inherit
+    // goldenMainRun()'s warm dolt-sync state (per-member sync.remote/tip
+    // memoization in dolt-sync.mjs). Both runs therefore start independently
+    // cold, making the comparison apples-to-apples without any cache reset.
+    const run1 = await runGoldenScenario('golden-det-1');
+    const run2 = await runGoldenScenario('golden-det-2');
+
+    const jsonl1 = transcriptToJsonl(run1.transcript);
+    const jsonl2 = transcriptToJsonl(run2.transcript);
+
+    if (jsonl1 !== jsonl2) {
+        const diff = diffFirstDivergence(jsonl1, jsonl2);
+        assert.fail(`Two runs of the identical mock sprint produced different transcripts (non-deterministic).\n\n${diff}`);
+    }
+});

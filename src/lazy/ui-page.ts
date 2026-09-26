@@ -102,7 +102,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
       <table><thead><tr><th>Name</th><th>Value</th><th class="hide-sm">Caught in</th><th class="hide-sm">Last seen</th><th></th></tr></thead>
       <tbody id="vault-rows"></tbody></table>
     </div>
-    <p class="note">Claude only ever sees <code>{{secure.name}}</code>. The real value is put back when a command or file edit runs on this machine.
+    <p class="note">Claude only ever sees <code>{{secret.name}}</code>. The real value is put back when a command or file edit runs on this machine.
     Removing a secret means it stops being hidden - including in older conversations that already used it.
     To set one up ahead of time, use <b>Presets</b>.</p>
   </section>
@@ -190,7 +190,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
         api('POST', 'vault/' + s.name + '/reveal').then(function (r) { val.textContent = r.value; reveal.textContent = 'Hide'; });
       } });
       var copy = el('button', { cls: 'act', type: 'button', text: 'Copy token', onclick: function () {
-        navigator.clipboard.writeText('{{secure.' + s.name + '}}').then(function () { toast('Copied {{secure.' + s.name + '}}'); });
+        navigator.clipboard.writeText('{{secret.' + s.name + '}}').then(function () { toast('Copied {{secret.' + s.name + '}}'); });
       } });
       var del = el('button', { cls: 'act danger', type: 'button', text: 'Remove', onclick: function () {
         if (!confirm('Stop hiding "' + s.name + '"? It will be sent to the model as-is if it appears again.')) return;

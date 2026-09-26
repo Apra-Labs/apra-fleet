@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import { removeAgent as removeFromRegistry, getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
@@ -16,6 +17,7 @@ import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
+import { invalidatePreflightCache } from '../services/preflight-check.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -53,7 +55,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     try {
       const conn = await strategy.testConnection();
       if (conn.ok) {
-        const cmds = getOsCommands(getAgentOS(agent));
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
         const exec = async (cmd: string) => {
           const r = await strategy.execCommand(cmd, 15000);
           return r.stdout;
@@ -71,11 +73,16 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           await strategy.execCommand(cmd, 10000).catch(() => {});
         }
 
-        // VCS auth revoke: remove git credential helper if a VCS provider is configured
+        // VCS auth revoke: remove git credential helper if a VCS provider is configured.
+        // Must pass the SAME label/scopeUrl persisted at provision time (see
+        // credential-cleanup.ts) -- omitting them targets the unlabeled/
+        // default-host credential-helper file/config-key pair instead of the
+        // one actually deployed, leaving the real token file orphaned,
+        // unrevoked, on a machine that is being decommissioned.
         if (agent.vcsProvider) {
           const vcsService = vcsProviders[agent.vcsProvider];
           if (vcsService) {
-            await vcsService.revoke(agent, cmds, exec).catch(() => {});
+            await vcsService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl).catch(() => {});
           }
         }
 
@@ -87,12 +94,19 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             // Use the key type + base64 portion to match (ignore trailing comment)
             const parts = pubKey.split(/\s+/);
             const keyMatch = parts.slice(0, 2).join(' ');
-            // Escape forward slashes for sed delimiter
-            const escapedKey = keyMatch.replace(/\//g, '\\/');
-            await strategy.execCommand(
-              `sed -i '/${escapedKey}/d' ~/.ssh/authorized_keys`,
-              10000,
-            ).catch(() => {});
+            const isWindows = getAgentOS(agent) === 'windows';
+            const removeKeyCmd = isWindows
+              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
+              // Escape forward slashes for sed delimiter
+              : `sed -i '/${keyMatch.replace(/\//g, '\\/')}/d' ~/.ssh/authorized_keys`;
+            try {
+              const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
+              if (removeKeyResult.code !== 0) {
+                warnings.push('Could not clear fleet public key from authorized_keys on the member');
+              }
+            } catch {
+              warnings.push('Could not clear fleet public key from authorized_keys on the member');
+            }
           } catch { /* pub key file not found — skip */ }
         }
       } else {
@@ -120,6 +134,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(agent.id);
+  invalidatePreflightCache(agent.id);
   getStallDetector().remove(agent.id);
   writeStatusline();
 

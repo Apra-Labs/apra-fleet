@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { encryptPassword } from '../src/utils/crypto.js';
-import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
+import { credentialResolve, credentialDelete, credentialSet } from '../src/services/credential-store.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -19,6 +19,14 @@ vi.mock('../src/services/strategy.js', () => ({
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
+}));
+
+// Agent provisioning is exercised in tests/agent-provisioner.test.ts and the
+// dedicated register/update-member provisioning tests -- stub it out here so
+// these unrelated OOB tests don't attempt real SFTP uploads.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
 }));
 
 const mockCollectOobPassword = vi.fn<(name: string, tool: string, opts?: any) => Promise<{ password?: string; fallback?: string; persist?: boolean }>>();
@@ -38,7 +46,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {
@@ -54,7 +62,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test',
+      work_folder: '/home/testuser/git/test',
       auth_type: 'password',
     });
 
@@ -71,7 +79,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test2',
+      work_folder: '/home/testuser/git/test2',
       auth_type: 'password',
     });
 
@@ -88,7 +96,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test3',
+      work_folder: '/home/testuser/git/test3',
       auth_type: 'password',
     });
 
@@ -102,7 +110,7 @@ describe('register_member: anonymous OOB password (Test 3)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test4',
+      work_folder: '/home/testuser/git/test4',
       auth_type: 'password',
       password: 'my-password',
     });
@@ -121,7 +129,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     // Clean up any stale credentials from prior runs
     credentialDelete('MyLinPass');
     credentialDelete('PersistCred');
@@ -133,7 +141,7 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     restoreRegistry();
   });
 
-  it('opens OOB when {{secure.NAME}} credential does not exist', async () => {
+  it('opens OOB when {{secret.NAME}} credential does not exist', async () => {
     const encPw = encryptPassword('collected-value');
     mockCollectOobApiKey.mockResolvedValueOnce({ password: encPw, persist: false });
 
@@ -142,9 +150,9 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test5',
+      work_folder: '/home/testuser/git/test5',
       auth_type: 'password',
-      password: '{{secure.MyLinPass}}',
+      password: '{{secret.MyLinPass}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -156,6 +164,26 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     );
   });
 
+  it('resolves an existing credential via legacy {{secure.NAME}} spelling and warns', async () => {
+    credentialSet('SessionCred', 'legacy-value', false, 'deny');
+
+    const result = await registerMember({
+      friendly_name: 'legacy-secure-test',
+      member_type: 'remote',
+      host: '192.168.1.102',
+      username: 'akhil',
+      work_folder: '/home/testuser/git/test6b',
+      auth_type: 'password',
+      password: '{{secure.SessionCred}}',
+    });
+
+    expect(result).toContain('✅ Member registered successfully');
+    expect(mockCollectOobApiKey).not.toHaveBeenCalled();
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain('secure.SessionCred');
+    expect(result).toContain('secret.SessionCred');
+  });
+
   it('stores credential as persistent when user confirms', async () => {
     const encPw = encryptPassword('persist-value');
     mockCollectOobApiKey.mockResolvedValueOnce({ password: encPw, persist: true });
@@ -165,9 +193,9 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test6',
+      work_folder: '/home/testuser/git/test6',
       auth_type: 'password',
-      password: '{{secure.PersistCred}}',
+      password: '{{secret.PersistCred}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -187,9 +215,9 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test7',
+      work_folder: '/home/testuser/git/test7',
       auth_type: 'password',
-      password: '{{secure.SessionCred}}',
+      password: '{{secret.SessionCred}}',
     });
 
     expect(result).toContain('✅ Member registered successfully');
@@ -207,9 +235,9 @@ describe('register_member: named credential auto-create (Test 4)', () => {
       member_type: 'remote',
       host: '192.168.1.102',
       username: 'akhil',
-      work_folder: '~/git/test8',
+      work_folder: '/home/testuser/git/test8',
       auth_type: 'password',
-      password: '{{secure.FailCred}}',
+      password: '{{secret.FailCred}}',
     });
 
     expect(result).toContain('Terminal unavailable');

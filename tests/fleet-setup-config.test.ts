@@ -1,0 +1,311 @@
+import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import {
+  loadConfig,
+  resolveMemberConfigs,
+  bdCheckFor,
+  doltCheckFor,
+  call,
+  toyFolderPath,
+  deleteFolderCommand,
+  cloneAndInitCommand,
+  toyRepoUrlFor,
+  claudeProjectSlug,
+  geminiProjectName,
+  collectTranscriptScript,
+} from '../.github/e2e/fleet-setup.mjs';
+
+const REPO_ROOT = path.join(process.cwd());
+
+describe('fleet-setup.mjs config resolution', () => {
+  it('loads suites.json and members.json', () => {
+    const { suites, members } = loadConfig(REPO_ROOT);
+    expect(suites.suites).toBeTruthy();
+    expect(members.toy_projects).toBeTruthy();
+  });
+
+  it('resolves a remote suite (s1) to doer/reviewer with host/username/folder', () => {
+    const config = loadConfig(REPO_ROOT);
+    const resolved = resolveMemberConfigs('s1', config);
+
+    expect(resolved.doer).toMatchObject({
+      name: 'alice',
+      tags: ['doer'],
+      type: 'remote',
+      provider: 'claude',
+      host: '192.168.1.102',
+      username: 'akhil',
+      folder: '/home/akhil/git/apra-fleet-e2e',
+      os: 'linux',
+    });
+    expect(resolved.reviewer).toMatchObject({
+      name: 'bella',
+      tags: ['reviewer'],
+      type: 'remote',
+      provider: 'claude',
+      host: '192.168.1.13',
+      username: 'akhil',
+      folder: '/Users/akhil/git/apra-fleet-e2e',
+      os: 'macos',
+    });
+  });
+
+  it('resolves a local suite (s1.2) to local-role-specific members.json keys', () => {
+    const config = loadConfig(REPO_ROOT);
+    const resolved = resolveMemberConfigs('s1.2', config);
+
+    expect(resolved.doer.type).toBe('local');
+    expect(resolved.doer.host).toBe('local');
+    expect(resolved.doer.username).toBeUndefined();
+    expect(resolved.doer.folder).toBe('/home/akhil/git/apra-fleet-e2e-doer');
+    expect(resolved.doer.os).toBe('linux');
+
+    expect(resolved.reviewer.type).toBe('local');
+    expect(resolved.reviewer.folder).toBe('/home/akhil/git/apra-fleet-e2e-rev');
+    expect(resolved.reviewer.os).toBe('linux');
+    // doer and reviewer must never collide on the same local folder
+    expect(resolved.doer.folder).not.toBe(resolved.reviewer.folder);
+  });
+
+  it('resolves a local windows suite (s1.1) os as "windows", not the "local_doer_windows" raw key', () => {
+    const config = loadConfig(REPO_ROOT);
+    const resolved = resolveMemberConfigs('s1.1', config);
+    expect(resolved.doer.os).toBe('windows');
+    expect(resolved.reviewer.os).toBe('windows');
+  });
+
+  it('carries each role\'s own llm_provider through, even when it differs from the PM\'s', () => {
+    const config = loadConfig(REPO_ROOT);
+    const resolved = resolveMemberConfigs('s2', config); // pm=claude, doer/reviewer=agy
+    expect(resolved.doer.provider).toBe('agy');
+    expect(resolved.reviewer.provider).toBe('agy');
+  });
+
+  it('throws a clear error for an unknown suite id', () => {
+    const config = loadConfig(REPO_ROOT);
+    expect(() => resolveMemberConfigs('does-not-exist', config)).toThrow(/Unknown suite/);
+  });
+});
+
+describe('fleet-setup.mjs bd/dolt check command selection', () => {
+  // execute_command runs the literal string through the member's native
+  // shell with no translation -- bash's `||`/`$(...)` syntax is rejected by
+  // Windows PowerShell 5.1 ("The token '||' is not a valid statement
+  // separator"), so windows members need their own PowerShell command.
+  it('uses bash-syntax commands for linux and macos', () => {
+    for (const os of ['linux', 'macos']) {
+      expect(bdCheckFor(os)).toMatch(/^which bd \|\|/);
+      expect(doltCheckFor(os)).toMatch(/^which dolt \|\|/);
+      expect(doltCheckFor(os)).not.toContain('Get-Command');
+    }
+  });
+
+  it('uses PowerShell-syntax commands for windows', () => {
+    expect(bdCheckFor('windows')).toMatch(/^if \(Get-Command bd/);
+    expect(bdCheckFor('windows')).not.toContain('||');
+    expect(doltCheckFor('windows')).toMatch(/^if \(Get-Command dolt/);
+    expect(doltCheckFor('windows')).not.toContain('||');
+    expect(doltCheckFor('windows')).not.toContain('$(');
+  });
+});
+
+describe('fleet-setup.mjs teardown toy-folder wipe', () => {
+  it('joins with a backslash for windows, forward slash otherwise', () => {
+    expect(toyFolderPath('C:\\Users\\akhil\\git\\apra-fleet-e2e-doer', 'windows')).toBe(
+      'C:\\Users\\akhil\\git\\apra-fleet-e2e-doer\\fleet-e2e-toy',
+    );
+    expect(toyFolderPath('/home/akhil/git/apra-fleet-e2e-doer', 'linux')).toBe(
+      '/home/akhil/git/apra-fleet-e2e-doer/fleet-e2e-toy',
+    );
+    expect(toyFolderPath('/Users/akhil/git/apra-fleet-e2e-rev', 'macos')).toBe(
+      '/Users/akhil/git/apra-fleet-e2e-rev/fleet-e2e-toy',
+    );
+  });
+
+  it('uses PowerShell Remove-Item for windows, rm -rf otherwise', () => {
+    expect(deleteFolderCommand('C:\\path\\fleet-e2e-toy', 'windows')).toBe(
+      'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\\path\\fleet-e2e-toy"',
+    );
+    expect(deleteFolderCommand('/home/akhil/fleet-e2e-toy', 'linux')).toBe(
+      'rm -rf "/home/akhil/fleet-e2e-toy"',
+    );
+  });
+});
+
+describe('fleet-setup.mjs toy repo bootstrap (clone + bd init)', () => {
+  it('resolves the toy repo URL for a known vcs', () => {
+    const { members } = loadConfig();
+    expect(toyRepoUrlFor('github', members)).toBe('https://github.com/Apra-Labs/fleet-e2e-toy');
+  });
+
+  it('throws a clear error for an unknown vcs', () => {
+    const { members } = loadConfig();
+    expect(() => toyRepoUrlFor('does-not-exist', members)).toThrow(/toy_projects has no entry/);
+  });
+
+  it('uses PowerShell Test-Path guards for windows', () => {
+    const cmd = cloneAndInitCommand('https://github.com/x/y', 'C:\\work\\fleet-e2e-toy', 'windows');
+    expect(cmd).toContain('Test-Path "C:\\work\\fleet-e2e-toy\\.git"');
+    expect(cmd).toContain('Test-Path ".beads\\embeddeddolt"');
+    expect(cmd).toContain('git clone https://github.com/x/y "C:\\work\\fleet-e2e-toy"');
+    expect(cmd).not.toContain('&&');
+  });
+
+  it('uses bash -d guards for linux/macos', () => {
+    for (const os of ['linux', 'macos']) {
+      const cmd = cloneAndInitCommand('https://github.com/x/y', '/work/fleet-e2e-toy', os);
+      expect(cmd).toContain('[ -d "/work/fleet-e2e-toy/.git" ]');
+      expect(cmd).toContain('[ -d ".beads/embeddeddolt" ]');
+      expect(cmd).toContain('git clone https://github.com/x/y "/work/fleet-e2e-toy"');
+      expect(cmd).not.toContain('Test-Path');
+    }
+  });
+});
+
+describe('fleet-setup.mjs deterministic session-log collection', () => {
+  describe('claudeProjectSlug', () => {
+    it('replaces every non-alphanumeric character, not just path separators', () => {
+      expect(claudeProjectSlug('/home/user/fleet-work')).toBe('-home-user-fleet-work');
+      expect(claudeProjectSlug('C:\\Users\\test\\workspace')).toBe('C--Users-test-workspace');
+    });
+  });
+
+  describe('geminiProjectName', () => {
+    it('takes the final path segment across both separator styles', () => {
+      expect(geminiProjectName('/home/user/my-project')).toBe('my-project');
+      expect(geminiProjectName('C:\\Users\\test\\workspace')).toBe('workspace');
+    });
+
+    it('falls back to "project" for an empty/root path', () => {
+      expect(geminiProjectName('/')).toBe('project');
+    });
+  });
+
+  describe('collectTranscriptScript', () => {
+    // Dynamic values (slugs, session ids, work folders) are passed as
+    // base64-encoded process.argv words, not interpolated as quoted string
+    // literals into the -e source -- see collectTranscriptScript's own
+    // comment in fleet-setup.mjs for why (nested-quote corruption observed
+    // on Windows local members). Decode both the script body and the argv
+    // args to assert on the real content, matching what the command
+    // actually does rather than raw substrings of the command line.
+    function decodeCommand(command: string) {
+      const scriptMatch = command.match(/eval\(Buffer\.from\('([^']+)','base64'\)/);
+      const decodedScript = scriptMatch ? Buffer.from(scriptMatch[1], 'base64').toString('utf8') : '';
+      const argMatches = [...command.matchAll(/"([A-Za-z0-9+/=]+)"/g)];
+      const decodedArgs = argMatches.map((m) => Buffer.from(m[1], 'base64').toString('utf8'));
+      return { decodedScript, decodedArgs };
+    }
+
+    it('claude: locates by exact project slug + session id under ~/.claude/projects', () => {
+      const command = collectTranscriptScript('claude', '/home/user/fleet-work', 'sess-123');
+      expect(command).toMatch(/^node -e "eval\(Buffer\.from\(/);
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('.claude');
+      expect(decodedScript).toContain('projects');
+      expect(decodedScript).toContain('copyFileSync');
+      expect(decodedArgs).toEqual(['-home-user-fleet-work', 'sess-123']);
+    });
+
+    it('gemini: locates by project basename + exact session id under ~/.gemini/tmp/<project>/chats', () => {
+      const command = collectTranscriptScript('gemini', '/home/user/my-project', 'session-789-ghi');
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('.gemini');
+      expect(decodedScript).toContain('tmp');
+      expect(decodedScript).toContain('chats');
+      expect(decodedArgs).toEqual(['my-project', 'session-789-ghi']);
+    });
+
+    it('agy: looks up by work folder via last_conversations.json, not by the fleet-tracked session id', () => {
+      const command = collectTranscriptScript('agy', '/home/user/fleet-work', 'sess-should-not-be-used-for-lookup');
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('last_conversations.json');
+      expect(decodedScript).toContain('antigravity-cli');
+      expect(decodedArgs).toEqual(['/home/user/fleet-work']);
+      // the fleet-tracked session id plays no role in agy's own lookup
+      expect(decodedArgs).not.toContain('sess-should-not-be-used-for-lookup');
+    });
+
+    it('never interpolates dynamic values as raw literals into the command line', () => {
+      // The whole point of base64-encoding argv values: nothing left for a
+      // shell/CRT re-quoting pass to corrupt. Guard against a regression
+      // back to interpolating raw literals (e.g. via JSON.stringify) into
+      // the -e source itself.
+      const command = collectTranscriptScript('claude', 'C:\\Users\\test\\workspace', 'sess-1');
+      expect(command).not.toContain('workspace');
+      expect(command).not.toContain('sess-1');
+    });
+
+    it('returns null for providers with no known flat-file transcript', () => {
+      for (const provider of ['opencode', 'codex', 'copilot']) {
+        expect(collectTranscriptScript(provider, '/home/user/x', 'sess-1')).toBeNull();
+      }
+    });
+
+    it('actually executes end-to-end via `node -e` and copies the real file', () => {
+      // Regression test for a real bug found live: `node -e "<script>"` has NO
+      // script-file slot in argv (unlike `node file.js`) -- trailing args start
+      // at argv[1], not argv[2]. Using slice(2) silently dropped the first
+      // argument (the slug) every time, so `A[0]`/`A[1]` were off by one and
+      // fs.existsSync(src) always resolved to a bogus path -- the command ran
+      // cleanly (exit 0) and printed FLEET_LOG_MISSING even when the real
+      // transcript file existed right where expected. A pure string-inspection
+      // test can't catch this class of bug -- it has to actually run the
+      // generated command through a real child `node -e` invocation.
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-collect-home-'));
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-collect-cwd-'));
+      try {
+        const workFolder = 'C:\\Users\\test\\apra-fleet-e2e-doer';
+        const sessionId = 'sess-e2e-abc123';
+        const slug = claudeProjectSlug(workFolder);
+        const projectDir = path.join(fakeHome, '.claude', 'projects', slug);
+        fs.mkdirSync(projectDir, { recursive: true });
+        fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), '{"type":"assistant"}\n');
+
+        const command = collectTranscriptScript('claude', workFolder, sessionId);
+        // command is `node -e "..." "arg1" "arg2"` -- split into execFileSync's
+        // (file, args) form rather than re-parsing shell quoting ourselves.
+        const match = command.match(/^node -e "(.+)" "([^"]+)" "([^"]+)"$/);
+        expect(match).not.toBeNull();
+        const [, evalArg, arg1, arg2] = match as RegExpMatchArray;
+
+        const stdout = execFileSync('node', ['-e', evalArg, arg1, arg2], {
+          cwd,
+          env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+          encoding: 'utf8',
+        });
+
+        expect(stdout.trim()).toBe('FLEET_LOG_COPIED');
+        expect(fs.existsSync(path.join(cwd, `${sessionId}.jsonl`))).toBe(true);
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe('fleet-setup.mjs call() failure detection', () => {
+  // The MCP SDK's own tool dispatch wraps a thrown handler exception as
+  // { content, isError: true } (node_modules/@modelcontextprotocol/sdk's
+  // McpServer.createToolError()) -- this resolves the request, it does not
+  // reject it. Text-only FAIL_MARK sniffing misses that case entirely.
+  it('throws when result.isError is true, even with no FAIL_MARK-prefixed text', async () => {
+    const fn = async () => ({ content: [{ text: 'Internal error: something broke' }], isError: true });
+    await expect(call(fn, {}, 'some_tool')).rejects.toThrow(/some_tool failed/);
+  });
+
+  it('throws when the text starts with the FAIL_MARK, even with isError unset', async () => {
+    const fn = async () => ({ content: [{ text: '❌ Member not found' }] });
+    await expect(call(fn, {}, 'some_tool')).rejects.toThrow(/some_tool failed/);
+  });
+
+  it('resolves normally when neither isError nor FAIL_MARK is present', async () => {
+    const fn = async () => ({ content: [{ text: 'Member registered successfully' }] });
+    const { text } = await call(fn, {}, 'some_tool');
+    expect(text).toBe('Member registered successfully');
+  });
+});

@@ -1,6 +1,6 @@
 <!-- llm-context: Reference for how Apra Fleet uses Beads, the bundled open-source issue tracker. Consult when a user asks about bd commands, task tracking, sprint epics, backlog management, or the PM skill's persistent task state. -->
 <!-- keywords: Beads, bd, task, epic, sprint, backlog, pm, lifecycle, dependency, issue tracker, bd ready, bd create, bd close -->
-<!-- see-also: ../README.md (PM skill overview), ../skills/pm/SKILL.md (PM skill reference), ../skills/pm/beads.md (internal PM Beads rules) -->
+<!-- see-also: ../README.md (PM skill overview), ../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md (PM skill reference), ../packages/apra-fleet-se/apra-pm/skills/pm/beads.md (internal PM Beads rules) -->
 
 # Beads -- Fleet's Persistent Task Tracker
 
@@ -27,6 +27,7 @@ persistent task database across all sprints and sessions.
 | `bd ready` | Show all unblocked, open tasks across all sprints |
 | `bd list --all --pretty` | Full tree: all projects, members, tasks, status |
 | `bd create "<title>" -p <pri> --parent <epic-id> --assignee <member>` | Create a task |
+| `bd create "<title>" --id <explicit-id>` then `bd update <explicit-id> --parent <epic-id>` | Create a task with a pre-decided id under a parent -- `bd create` rejects a call that combines `--id` and `--parent` in the same invocation, so an explicit id and a parent link are always two separate calls, never one |
 | `bd show <id> --json` | Full detail for one task |
 | `bd update <id> --status in_progress --assignee <member>` | Mark a task in progress |
 | `bd close <id>` | Mark a task complete (idempotent) |
@@ -76,6 +77,24 @@ Session crash? Run `bd list --all --pretty`. The PM sees every member's state
 across every active project without reading a single file. Then `bd show <id>`
 for full context on any item.
 
+## Multi-member sync (Dolt-backed clones)
+
+Each member's beads DB is an embedded Dolt clone. `apra-fleet install` also
+provisions a portable Dolt CLI binary alongside `bd` (verified with a version
+check at install time) -- this is a hard prerequisite for any sync path that
+needs to inspect or resolve a Dolt clone directly, not merely an optional
+extra. When more than one member's clone needs to reconcile against a shared
+Dolt remote (for example, an autonomous multi-member sprint whose members are
+genuinely independent checkouts rather than one shared workspace), reads and
+writes are bracketed with a pull before and a push after so no member's clone
+observes stale state for long, and every cross-member push is serialized
+through a single coordinating authority -- a Dolt clone can hard-conflict on a
+concurrent same-row write, and one unresolved conflict wedges that clone's
+sync entirely, so multi-writer coordination is a correctness requirement, not
+a performance nicety. See `packages/apra-fleet-se/docs/architecture.md`'s
+"Dolt sync discipline" section for the full mechanism and its conflict
+recovery ladder.
+
 ---
 
-See [skills/pm/SKILL.md](../skills/pm/SKILL.md) for the full PM skill reference.
+See [the PM skill](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) for the full PM skill reference.

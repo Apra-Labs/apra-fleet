@@ -1,13 +1,93 @@
+import path from 'node:path';
+import os from 'node:os';
 import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 export type { LlmProvider };
 
+/** The OS of the machine a resolved path will be USED on (the member's own
+ *  machine), which is NOT necessarily the OS this hub process runs on. */
+export type TargetOS = 'linux' | 'macos' | 'windows';
+
+/**
+ * apra-fleet issue #390: join path segments using the TARGET member's OS
+ * convention instead of Node's host-dependent `path.join`.
+ *
+ * Providers previously built member-side log paths with the default `path`
+ * module, so a Windows hub produced backslash-joined paths for a Linux member
+ * (and vice versa) -- a path that can never exist on the member, which silently
+ * disables stall detection (Claude) or manufactures a false-positive
+ * stall kill (AGY/OpenCode).
+ *
+ * `targetOs === undefined` deliberately keeps the legacy host-convention
+ * behavior: that is what LOCAL members want (they run as this process's own
+ * user on this process's own OS), and it keeps every pre-existing caller
+ * byte-identical.
+ */
+export function joinForOS(targetOs: TargetOS | undefined, ...segments: string[]): string {
+  if (targetOs === 'windows') return path.win32.join(...segments);
+  if (targetOs === undefined) return path.join(...segments);
+  return path.posix.join(...segments);
+}
+
+/**
+ * apra-fleet issue #390: normalize the `homeDir` argument of
+ * resolveSessionLogPath / resolveSessionLogDir.
+ *
+ *  - `undefined` -> "caller did not say" -> fall back to this process's home
+ *    directory (correct for local members; legacy behavior for everyone else).
+ *  - `null`      -> "caller TRIED to resolve the member's home directory and
+ *    FAILED" -> there is no honest path to build, so return null and let the
+ *    provider report an unresolvable path. Callers must degrade gracefully
+ *    (no signal) rather than poll a fabricated host-home path on a remote
+ *    machine, which is what produced the false kills this fixes.
+ */
+export function resolveHomeDir(homeDir: string | null | undefined): string | null {
+  if (homeDir === null) return null;
+  return homeDir ?? os.homedir();
+}
+
+export type SessionIdStrategy =
+  | { type: 'caller-minted' }
+  | { type: 'provider-minted' };
+
+/**
+ * apra-fleet-25yl.2.1: what the EXEC-LEVEL ROLLING (inactivity) timeout handed
+ * to `strategy.execCommand()` is derived from, for this provider.
+ *
+ *  - 'inactivity_timeout' -- derive it from the caller's `timeout_s`. Choose
+ *    this when the exec channel (stdout/stderr on the dispatch pipe) is a
+ *    REAL mid-turn liveness signal for the provider, OR when preserving the
+ *    provider's current behaviour is the point. Codex is the load-bearing
+ *    case: its adapter returns null from resolveSessionLogDir(), so the
+ *    StallDetector has no transcript to poll and this timer is its ONLY stall
+ *    signal -- decoupling it there disables stall detection outright.
+ *  - 'total_ceiling' -- do NOT arm a `timeout_s`-sized rolling deadline;
+ *    derive it from `max_total_s` instead (a value that can never bind before
+ *    the caller's own hard ceiling does). Choose this when the provider is
+ *    batch/CONOUT$-only, so the exec channel emits nothing mid-turn and a
+ *    `timeout_s`-sized rolling deadline is a false kill. The StallDetector's
+ *    transcript polling is the real stall mechanism for these providers, and
+ *    it still gets `timeout_s` as its thresholdMs.
+ *
+ * This is deliberately a REQUIRED member of {@link ProviderAdapter} rather
+ * than an optional one with a default: a newly added provider must state its
+ * own answer (a compile error if it does not) instead of silently inheriting
+ * whichever branch happens to be the fallback, because the wrong branch
+ * silently disables a kill path.
+ */
+export type ExecTimeoutSource = 'inactivity_timeout' | 'total_ceiling';
+
+export function encodeClaudeProjectDir(workFolder: string): string {
+  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 /**
  * Build a `--resume <id>` flag with session ID sanitization and quoting.
- * Shared by providers that pass session IDs on the command line (Claude, Gemini).
+ * Shared by providers that pass session IDs on the command line (Claude).
  * @param sessionId - The raw session ID (will be sanitized)
  * @param fallback  - Value to return when sessionId is absent (default: '')
  */
@@ -26,6 +106,33 @@ export function buildSessionIdFlag(sessionId: string): string {
   return `--session-id "${sanitizeSessionId(sessionId)}"`;
 }
 
+/**
+ * Build a fork-mode resume flag: seed context from `sourceSessionId`'s transcript
+ * but yield a NEW, distinct session id rather than continuing the source id in
+ * place (contrast with {@link buildResumeFlag}, which resumes the source id
+ * unchanged). Shared by providers whose CLI supports resuming into a forked
+ * session id (Claude's `--fork-session`, used together with `--resume`).
+ *
+ * The forked session id is pre-minted by the caller and passed explicitly via
+ * `--session-id` alongside `--resume ... --fork-session`, rather than letting
+ * the CLI mint its own id and scraping it out of the response afterward -- the
+ * CLI honors a caller-supplied `--session-id` even in fork mode.
+ * @param sourceSessionId - The session ID to seed/fork from (will be sanitized)
+ * @param newSessionId - The caller-minted id the forked session should be created under (will be sanitized)
+ * @param fallback - Value to return when sourceSessionId is absent (default: '')
+ */
+export function buildForkFlag(
+  sourceSessionId: string | undefined,
+  newSessionId: string | undefined,
+  fallback = ''
+): string {
+  if (sourceSessionId) {
+    const sessionIdPart = newSessionId ? `--session-id "${sanitizeSessionId(newSessionId)}" ` : '';
+    return `${sessionIdPart}--resume "${sanitizeSessionId(sourceSessionId)}" --fork-session`;
+  }
+  return fallback;
+}
+
 export interface PromptOptions {
   folder: string;
   promptFile: string;
@@ -36,6 +143,65 @@ export interface PromptOptions {
   tier?: 'cheap' | 'standard' | 'premium';
   maxTurns?: number;
   inv?: string;
+  agentName?: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: a provider-agnostic "this dispatch hit a usage/quota limit
+ * and cannot make progress until `resumeAt`" signal. Distinct from a transient
+ * overload (529/overloaded), which is retryable after a short backoff -- a usage
+ * limit needs a real wall-clock wait until the quota window resets.
+ *
+ * `resumeAt` is ALWAYS a concrete ISO-8601 UTC timestamp, never null: when the
+ * provider CLI exposes a real reset time we parse it (`resumeAtSource: 'parsed'`);
+ * otherwise we fall back to a guessed window (`resumeAtSource: 'guessed'`), so a
+ * consumer can always schedule a resume without special-casing "unknown".
+ */
+export interface UsageLimitSignal {
+  type: 'usage_limit';
+  /** ISO-8601 UTC instant at which work may resume. Never null. */
+  resumeAt: string;
+  /** Whether `resumeAt` was parsed from the provider's own reset time, or guessed. */
+  resumeAtSource: 'parsed' | 'guessed';
+  /** The raw message/output that identified this as a usage limit (for logging). */
+  message: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: THE provider-adapter default resume window for a guessed
+ * usage-limit signal (1 hour). This is the single source of truth for the guess --
+ * fleet-sprint and other consumers must read the signal's `resumeAt`, never
+ * hardcode their own 1h fallback.
+ */
+export const DEFAULT_USAGE_LIMIT_RESUME_MS = 60 * 60 * 1000;
+
+/**
+ * apra-fleet-hzeb.1: build a guessed usage-limit signal whose `resumeAt` is
+ * `now + DEFAULT_USAGE_LIMIT_RESUME_MS`. `now` is injectable for deterministic
+ * tests.
+ */
+export function guessedUsageLimitSignal(message: string, now: number = Date.now()): UsageLimitSignal {
+  return {
+    type: 'usage_limit',
+    resumeAt: new Date(now + DEFAULT_USAGE_LIMIT_RESUME_MS).toISOString(),
+    resumeAtSource: 'guessed',
+    message,
+  };
+}
+
+/**
+ * apra-fleet-hzeb.1: generic quota/usage-limit detector shared by the
+ * non-Claude adapters. Matches the durable "you are out of quota" signatures
+ * (a bare 429, "rate limit", "quota exceeded", "usage limit", "credit limit",
+ * "resource_exhausted") and returns a GUESSED signal. Transient overload
+ * (529 / "overloaded") deliberately does NOT match here -- that stays a
+ * retryable overload, not a usage limit.
+ */
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+
+export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
+  if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
+  return guessedUsageLimitSignal(output, now);
 }
 
 export interface ParsedResponse {
@@ -44,6 +210,76 @@ export interface ParsedResponse {
   isError: boolean;
   raw: string;
   usage?: { input_tokens: number; output_tokens: number };
+  /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
+  subtype?: string;
+  /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
+  terminalReason?: string;
+  /** apra-fleet-hzeb.1: the Claude result event's api_error_status (e.g. 429), when
+   *  present -- previously dropped by the parser. Used by detectUsageLimit. */
+  apiErrorStatus?: number;
+  /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
+   *  dispatch was terminated by a provider usage/quota limit. */
+  usageLimit?: UsageLimitSignal;
+}
+
+// apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
+// parsed response as turn-limit terminated. The claude provider normalizes
+// terminalReason to 'max_turns' when the transcript carried the signal via any
+// channel, but we also accept the raw `error_max_turns` subtype directly so
+// callers cannot regress by keying off only one field.
+export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): boolean {
+  if (!parsed) return false;
+  return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
+}
+
+export interface RegisterMcpEndpointOptions {
+  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
+  url: string;
+  /** JWT bearer token for the member's fleet MCP session. */
+  token: string;
+  workFolder: string;
+  scope: 'project' | 'user';
+}
+
+export interface RegisterMcpEndpointResult {
+  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
+  mechanism: string;
+  /** Human-readable detail for logging/audit -- what file or command was used. */
+  detail: string;
+}
+
+/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
+ *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
+ *  SSH for remote members, local shell exec for local members). Kept as a narrow function
+ *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
+ *  services/strategy.ts. */
+export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+
+/** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
+ *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
+ *  directory, without going through a shell command line: node:fs for a local member,
+ *  SFTP for an SSH member. A merged ~/.claude.json can be far larger than any command
+ *  line a Windows process may carry (CreateProcess caps it at 32767 chars; cmd.exe at
+ *  8191), so the adapter prefers this channel when present and only falls back to
+ *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
+ *  failure so the adapter can fall back. */
+export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+
+export interface WorkspaceTrustTransport {
+  writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+}
+
+export interface EnsureWorkspaceTrustedResult {
+  /** true only when this call just wrote hasTrustDialogAccepted=true because it was
+   *  missing. false when the provider no-ops, or when trust was already present. */
+  seeded: boolean;
+  /** Human-readable detail for logging/audit (apra-fleet-eft.40.1: "log distinctly
+   *  when it SEEDS trust vs finds it already present"). */
+  detail: string;
+  /** apra-fleet-9oo: names from the project's .mcp.json that this call just ADDED to
+   *  projects[<key>].enabledMcpjsonServers (empty/absent when nothing was added).
+   *  Optional so the non-Claude no-op adapters need no change. */
+  mcpServersSeeded?: string[];
 }
 
 export interface ProviderAdapter {
@@ -56,7 +292,12 @@ export interface ProviderAdapter {
   // CLI command building
   cliCommand(args: string): string;
   versionCommand(): string;
-  installCommand(os: 'linux' | 'macos' | 'windows'): string;
+  /** `shell` is the member's registered shell (only meaningful for
+   *  `os === 'windows'`). A gitbash Windows member gets a bash-invokable
+   *  install string; every other combination -- including a Windows member
+   *  with no shell recorded, or pwsh7/powershell5 -- resolves exactly as it
+   *  did before the shell parameter existed (apra-fleet-7dir.2.7). */
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string;
   updateCommand(): string;
 
   // Prompt building
@@ -66,19 +307,100 @@ export interface ProviderAdapter {
   skipPermissionsFlag(): string;
   /** Returns the CLI flag for unattended='auto', or null if the provider does not support it. */
   permissionModeAutoFlag(): string | null;
+  /** apra-fleet-eft.65.1: CLI flag that grants the dispatched agent Edit/Write
+   *  parity for its OWN work folder when running headless with no explicit
+   *  unattended mode (a headless `-p` dispatch cannot present a permission prompt,
+   *  so file edits of a brand-new file would otherwise hard-block). Scoped to
+   *  file-edit tools on the working directory -- it must NOT broaden Bash/network
+   *  permissions the way skipPermissionsFlag() does. Optional: providers that have
+   *  no such surgical flag omit it (undefined), leaving current behavior unchanged. */
+  workspaceEditPermissionFlag?(): string | null;
+  /** Resolves the full permission-mode flag string to append for a given
+   *  unattended setting, encapsulating this provider's own auto/dangerous
+   *  fallback and warning semantics (e.g. AGY has no true auto mode and
+   *  falls back to its dangerous flag with a warning; OpenCode has no true
+   *  dangerous mode and falls back to --auto). Returns '' when no flag
+   *  applies. This is the single source of truth for unattended-mode flag
+   *  resolution: both buildPromptCommand() (POSIX, via os/linux.ts) and
+   *  os/windows.ts call this instead of re-deriving the branching
+   *  themselves, so the two dispatch paths cannot diverge. */
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
+
+  /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
+   *  usage/quota limit (as opposed to a transient overload). Returns a
+   *  {@link UsageLimitSignal} with a concrete `resumeAt`, or null when this was not
+   *  a usage limit. REQUIRED on every adapter: none.ts returns null; the non-Claude
+   *  adapters delegate to {@link defaultUsageLimitSignal} on their raw output; Claude
+   *  keys off its api_error_status / terminal_reason plus its own limit message. */
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null;
 
   // Session management
   supportsResume(): boolean;
   supportsMaxTurns(): boolean;
   resumeFlag(sessionId?: string, resuming?: boolean): string;
+  /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
+  sessionIdStrategy(): SessionIdStrategy;
+  /** apra-fleet-25yl.2.1: what the exec-level rolling (inactivity) timeout is
+   *  derived from for this provider -- see {@link ExecTimeoutSource}. REQUIRED
+   *  on every adapter, deliberately with no default, so a new provider must
+   *  state its answer rather than inherit one. */
+  execTimeoutSource(): ExecTimeoutSource;
+  /** apra-fleet-lmtg.1: true when this provider supports fork-mode dispatch --
+   *  branching a NEW, distinct session id from an existing session's context,
+   *  as opposed to resume (which continues the source id in place). Optional:
+   *  providers that do not implement it are NOT fork-capable. Callers MUST
+   *  check `provider.supportsFork?.() ?? false` before ever calling
+   *  {@link forkFlag} -- never assume support. */
+  supportsFork?(): boolean;
+  /** Builds the CLI flag(s) for a fork-mode dispatch: seeds context from
+   *  `sourceSessionId`'s transcript but yields a NEW session id distinct from
+   *  the source (the source session itself is left untouched). `newSessionId`
+   *  is the caller-minted id the forked session should be created under --
+   *  passed explicitly (e.g. as `--session-id`) rather than left for the CLI
+   *  to mint and scrape back out of the response afterward. Only called
+   *  when `supportsFork()` returns true. For providers whose CLI cannot
+   *  express "new id, seeded from an existing transcript" (i.e. mints a new
+   *  session id NOT derived from source context, same as a fresh dispatch),
+   *  omit both this and {@link supportsFork} rather than faking support. */
+  forkFlag?(sourceSessionId: string, newSessionId: string): string;
+  /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
+   *  ON THE MEMBER'S MACHINE.
+   *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this
+   *                  process's home dir (correct for local members only); `null`
+   *                  means "the member's home dir could not be resolved", and the
+   *                  provider returns '' rather than fabricating a host-home path.
+   *  @param targetOs The MEMBER's OS, used to pick the path-join convention.
+   *                  `undefined` keeps this process's host convention. */
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string;
+  /** Resolves the project/provider root log directory for watching in-flight activity.
+   *  Same `homeDir` / `targetOs` semantics as {@link resolveSessionLogPath}. Returns
+   *  null when this provider has no pollable log directory at all, or when the
+   *  member's home directory could not be resolved. */
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null;
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string;
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string;
   modelFlag(model: string): string;
+
+  // Agent directory resolution
+  /** Returns the project-relative and home-relative paths for an agent file.
+   *  project: relative to workFolder (e.g. '.claude/agents/doer.md')
+   *  home: relative to ~ (e.g. '.claude/agents/doer.md' or '.config/opencode/agents/doer.md') */
+  agentDirectories(agentName: string): { project: string; home: string };
+
+  // Agent file transformation
+  /** Transforms agent file content for this provider (e.g. frontmatter conversion).
+   *  Default: passthrough (return content unchanged). */
+  transformAgent(content: string, relPath: string): string;
+
+  // Agent name CLI flag
+  /** Returns the CLI flag/prefix for activating a named agent.
+   *  Claude/AGY: '--agent "name"'. Others: ''. */
+  agentNameFlag(agentName: string): string;
 
   // Error classification
   classifyError(output: string): PromptErrorCategory;
@@ -110,8 +432,43 @@ export interface ProviderAdapter {
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
   /** Args for headless invocation with a safe literal prompt string.
-   *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
+   *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
+
+  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
+   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
+   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
+   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
+   *  Returns what was done, for logging/audit. */
+  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+
+  /** Optional provider-NATIVE usage/quota read for execute_prompt budget
+   *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
+   *  source of "spent so far" for a member/workspace budget, in the requested
+   *  unit ('dollars' or 'tokens'). Providers with no headless-readable
+   *  usage/quota signal (see docs/execute-prompt-usage-api-survey.md) omit it
+   *  entirely -- budget awareness then falls back to the fleet-side estimated
+   *  accumulation (source: 'estimated'). An implementation that exists but
+   *  cannot answer at runtime (missing Admin credential, endpoint unreachable)
+   *  returns null so the same estimated fallback engages. */
+  getUsage?(opts: { agent: import('../types.js').Agent; unit: 'dollars' | 'tokens'; scope: string }): Promise<{ spent: number } | null>;
+
+  /** Idempotently ensures `workFolder` is a TRUSTED workspace so this provider honors
+   *  composed project-scoped permissions on the member (apra-fleet-eft.40 -- an unattended
+   *  member can never click a trust dialog, and its work folder is fleet-managed by
+   *  definition, so trust must be seeded programmatically). Scoped STRICTLY to exactly
+   *  `workFolder` as resolved on the member -- never a parent directory, never blanket.
+   *  `execCommand` is the delivery channel (same one compose_permissions' deliverConfigFile
+   *  uses), so this works uniformly for local and remote (SSH) members. Non-Claude
+   *  providers no-op -- see each implementation's rationale comment (apra-fleet-eft.40
+   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
+   *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
+   *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
+   *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
+   *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

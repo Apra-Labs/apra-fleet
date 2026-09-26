@@ -1,0 +1,770 @@
+const fs = require('fs');
+const path = require('path');
+
+function generateDarkSVG() {
+  return `<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet Layered Architecture Stack Dark Target Package Links">
+  <defs>
+    <!-- Background Gradient Dark -->
+    <linearGradient id="bgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#060911"/>
+      <stop offset="40%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#080C14"/>
+    </linearGradient>
+
+    <!-- Card Background Dark -->
+    <linearGradient id="cardBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.96"/>
+    </linearGradient>
+
+    <!-- Header Pill Background -->
+    <linearGradient id="pillBgDark" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#FBBF24" stop-opacity="0.1"/>
+    </linearGradient>
+
+    <!-- Glowing Filters -->
+    <filter id="glowGold" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <!-- Grid Pattern Dark -->
+    <pattern id="gridDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.5"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.6"/>
+    </pattern>
+
+    <!-- Consistent Layer Arrowhead Markers -->
+    <marker id="arrowGold" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#F59E0B"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#3B82F6"/>
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#06B6D4"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#8B5CF6"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#F97316"/>
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10B981"/>
+    </marker>
+  </defs>
+
+  <style>
+    a { cursor: pointer; text-decoration: none; }
+    a:hover rect { stroke-width: 2.8; filter: brightness(1.25); }
+    a:hover text { fill: #FFFFFF; }
+  </style>
+
+  <!-- Base Canvas -->
+  <rect width="1600" height="900" fill="url(#bgDark)"/>
+  <rect width="1600" height="900" fill="url(#gridDark)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <g transform="translate(60, 28)">
+    <rect x="0" y="0" width="170" height="24" rx="12" fill="url(#pillBgDark)" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="14" cy="12" r="3.5" fill="#FBBF24" filter="url(#glowGold)"/>
+    <text x="26" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9.5" font-weight="800" letter-spacing="1.5" fill="#FBBF24">ARCHITECTURE STACK</text>
+  </g>
+
+  <text x="800" y="44" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="900" fill="#F8FAFC" text-anchor="middle">Apra Fleet Layered Architecture</text>
+  <text x="800" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#94A3B8" text-anchor="middle">Layered Software Dependencies from OS Primitives to Autonomous Engineering Orchestrators</text>
+
+  <!-- ==================== LAYER 5 (GOLD: #F59E0B) ==================== -->
+  <g transform="translate(60, 100)">
+    <rect x="0" y="11" width="90" height="48" rx="6" fill="#1E293B" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="45" y="26" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#F59E0B" text-anchor="middle">LAYER 5</text>
+    <text x="45" y="42" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#94A3B8" text-anchor="middle">Fleet SE</text>
+
+    <!-- Main Container Rectangle: apra-fleet-se (Unlinked) -->
+    <rect x="110" y="0" width="1260" height="70" rx="10" fill="url(#cardBgDark)" stroke="#F59E0B" stroke-width="2"/>
+    <text x="135" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="800" fill="#FBBF24">apra-fleet-se</text>
+    <text x="135" y="46" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Top-level Software Engineering Orchestration Package</text>
+
+    <!-- Human Stick Figure Icon (apra-fleet-se) -->
+    <g transform="translate(550, 23)">
+      <circle cx="12" cy="12" r="11" fill="#F59E0B" fill-opacity="0.18" stroke="#F59E0B" stroke-width="1.2"/>
+      <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#FBBF24" stroke-width="1.3"/>
+      <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#FBBF24" stroke-width="1.3" stroke-linecap="round"/>
+    </g>
+
+    <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-fleet-se right edge inside) -->
+    <g transform="translate(590, 23)">
+      <circle cx="12" cy="12" r="11" fill="#F59E0B" fill-opacity="0.18" stroke="#F59E0B" stroke-width="1.2"/>
+      <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#FBBF24" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#FBBF24"/>
+      <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#FBBF24"/>
+      <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#FBBF24" stroke-width="1.2" stroke-linecap="round"/>
+      <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#FBBF24"/>
+    </g>
+
+    <!-- Inner Component 1 (LEFT): fleet-supervisor (Unlinked) -->
+    <g transform="translate(640, 9)">
+      <rect x="0" y="0" width="340" height="52" rx="8" fill="#0F172A" stroke="#FBBF24" stroke-width="1.5" stroke-dasharray="5 3"/>
+      <text x="18" y="21" font-family="monospace" font-size="14" font-weight="700" fill="#F8FAFC">fleet-supervisor</text>
+      <text x="18" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#CBD5E1">Central control plane, ledger &amp; node manager</text>
+    </g>
+
+    <!-- Inner Component 2 (RIGHT): fleet-sprint (LINKED: packages/apra-fleet-se/fleet-sprint/docs/README.md) -->
+    <a href="packages/apra-fleet-se/fleet-sprint/docs/README.md" target="_blank">
+      <g transform="translate(1010, 9)">
+        <rect x="0" y="0" width="340" height="52" rx="8" fill="#0F172A" stroke="#FBBF24" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="18" y="21" font-family="monospace" font-size="14" font-weight="700" fill="#F8FAFC">fleet-sprint</text>
+        <text x="18" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#CBD5E1">Autonomous multi-task sprint engine &amp; viewer</text>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 4 (BLUE: #3B82F6) ==================== -->
+  <g transform="translate(60, 220)">
+    <rect x="0" y="10" width="90" height="48" rx="6" fill="#1E293B" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="45" y="25" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#3B82F6" text-anchor="middle">LAYER 4</text>
+    <text x="45" y="41" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#94A3B8" text-anchor="middle">Workflow</text>
+
+    <!-- Centered apra-fleet-workflow (Unlinked) -->
+    <rect x="500" y="0" width="480" height="68" rx="10" fill="url(#cardBgDark)" stroke="#3B82F6" stroke-width="2"/>
+    <text x="525" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#60A5FA">apra-fleet-workflow</text>
+    <text x="525" y="47" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Workflow orchestration engine &amp; step loop execution</text>
+  </g>
+
+  <!-- ==================== LAYER 3 (CYAN: #06B6D4) ==================== -->
+  <g transform="translate(60, 350)">
+    <rect x="0" y="12" width="90" height="48" rx="6" fill="#1E293B" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="45" y="27" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#06B6D4" text-anchor="middle">LAYER 3</text>
+    <text x="45" y="43" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="600" fill="#94A3B8" text-anchor="middle">Client / Runners</text>
+
+    <!-- Component 1: auto-sprint.js (LINKED: packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) -->
+    <a href="packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md" target="_blank">
+      <g transform="translate(110, 0)">
+        <rect x="0" y="0" width="280" height="72" rx="10" fill="url(#cardBgDark)" stroke="#06B6D4" stroke-width="1.5"/>
+        <text x="20" y="26" font-family="monospace" font-size="14" font-weight="700" fill="#38BDF8">auto-sprint.js</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Single-agent loop script</text>
+
+        <!-- Human Stick Figure Icon (auto-sprint.js) -->
+        <g transform="translate(205, 24)">
+          <circle cx="12" cy="12" r="11" fill="#06B6D4" fill-opacity="0.18" stroke="#06B6D4" stroke-width="1.2"/>
+          <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#38BDF8" stroke-width="1.3"/>
+          <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#38BDF8" stroke-width="1.3" stroke-linecap="round"/>
+        </g>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (auto-sprint.js right edge inside) -->
+        <g transform="translate(240, 24)">
+          <circle cx="12" cy="12" r="11" fill="#06B6D4" fill-opacity="0.18" stroke="#06B6D4" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#38BDF8" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#38BDF8"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#38BDF8"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#38BDF8" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#38BDF8"/>
+        </g>
+      </g>
+    </a>
+
+    <!-- Component 2: apra-fleet-client (LINKED: packages/apra-fleet-client/docs/overview.md) -->
+    <a href="packages/apra-fleet-client/docs/overview.md" target="_blank">
+      <rect x="500" y="0" width="480" height="72" rx="10" fill="url(#cardBgDark)" stroke="#06B6D4" stroke-width="2"/>
+      <text x="520" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#38BDF8">apra-fleet-client</text>
+      <text x="520" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Thin client wrapper for fleet MCP tools &amp; RPC</text>
+    </a>
+
+    <!-- Component 3: apra-pm (LINKED: packages/apra-fleet-se/apra-pm/README.md) -->
+    <a href="packages/apra-fleet-se/apra-pm/README.md" target="_blank">
+      <g transform="translate(1010, 0)">
+        <rect x="0" y="0" width="360" height="72" rx="10" fill="url(#cardBgDark)" stroke="#06B6D4" stroke-width="1.5"/>
+        <text x="20" y="26" font-family="monospace" font-size="14" font-weight="700" fill="#38BDF8">apra-pm</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Project Manager Orchestrator</text>
+
+        <!-- Human Stick Figure Icon (apra-pm) -->
+        <g transform="translate(285, 24)">
+          <circle cx="12" cy="12" r="11" fill="#06B6D4" fill-opacity="0.18" stroke="#06B6D4" stroke-width="1.2"/>
+          <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#38BDF8" stroke-width="1.3"/>
+          <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#38BDF8" stroke-width="1.3" stroke-linecap="round"/>
+        </g>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-pm right edge inside) -->
+        <g transform="translate(320, 24)">
+          <circle cx="12" cy="12" r="11" fill="#06B6D4" fill-opacity="0.18" stroke="#06B6D4" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#38BDF8" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#38BDF8"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#38BDF8"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#38BDF8" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#38BDF8"/>
+        </g>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 2 (PURPLE: #8B5CF6) ==================== -->
+  <g transform="translate(60, 490)">
+    <rect x="0" y="12" width="90" height="48" rx="6" fill="#1E293B" stroke="#8B5CF6" stroke-width="1.5"/>
+    <text x="45" y="27" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#8B5CF6" text-anchor="middle">LAYER 2</text>
+    <text x="45" y="43" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#94A3B8" text-anchor="middle">MCP &amp; Roles</text>
+
+    <!-- Left: apra-fleet-mcp (LINKED: docs/mcp-tools.md) -->
+    <a href="docs/mcp-tools.md" target="_blank">
+      <g transform="translate(240, 0)">
+        <rect x="0" y="0" width="350" height="72" rx="10" fill="url(#cardBgDark)" stroke="#8B5CF6" stroke-width="2"/>
+        <text x="20" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#A78BFA">apra-fleet-mcp</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Fleet Model Context Protocol tool server</text>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-fleet-mcp right edge inside) -->
+        <g transform="translate(310, 24)">
+          <circle cx="12" cy="12" r="11" fill="#8B5CF6" fill-opacity="0.18" stroke="#8B5CF6" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#A78BFA" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#A78BFA"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#A78BFA"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#A78BFA" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#A78BFA"/>
+        </g>
+      </g>
+    </a>
+
+    <!-- Dotted horizontal arrow between apra-fleet-mcp & Agent Roles -->
+    <path d="M 595 36 L 925 36" fill="none" stroke="#A78BFA" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrowPurple)"/>
+
+    <!-- Rightmost: Agent Roles (LINKED: packages/apra-fleet-se/docs/role-contracts.md) -->
+    <a href="packages/apra-fleet-se/docs/role-contracts.md" target="_blank">
+      <rect x="930" y="0" width="440" height="72" rx="10" fill="url(#cardBgDark)" stroke="#8B5CF6" stroke-width="2"/>
+      <text x="955" y="22" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#A78BFA">Agent Roles</text>
+      <text x="955" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#94A3B8">Specialized personas in CLI sessions</text>
+
+      <!-- Role Badges inside Agent Roles -->
+      <g transform="translate(955, 46)">
+        <rect x="0" y="0" width="54" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+        <text x="27" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#A78BFA" text-anchor="middle">Doer</text>
+
+        <rect x="60" y="0" width="66" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+        <text x="93" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#A78BFA" text-anchor="middle">Reviewer</text>
+
+        <rect x="132" y="0" width="60" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+        <text x="162" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#A78BFA" text-anchor="middle">Planner</text>
+
+        <rect x="198" y="0" width="64" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+        <text x="230" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#A78BFA" text-anchor="middle">Deployer</text>
+
+        <rect x="268" y="0" width="76" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+        <text x="306" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#A78BFA" text-anchor="middle">CI Watcher</text>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 1 (ORANGE: #F97316) ==================== -->
+  <g transform="translate(60, 630)">
+    <rect x="0" y="8" width="90" height="48" rx="6" fill="#1E293B" stroke="#F97316" stroke-width="1.5"/>
+    <text x="45" y="23" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#F97316" text-anchor="middle">LAYER 1</text>
+    <text x="45" y="39" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#94A3B8" text-anchor="middle">LLM CLIs</text>
+
+    <!-- Claude (Unlinked) -->
+    <g transform="translate(110, 0)">
+      <rect x="0" y="0" width="300" height="64" rx="10" fill="url(#cardBgDark)" stroke="#F97316" stroke-width="1.5"/>
+      <rect x="15" y="12" width="64" height="20" rx="4" fill="#F97316" fill-opacity="0.2" stroke="#F97316" stroke-width="1"/>
+      <text x="47" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#FB923C" text-anchor="middle">CLAUDE</text>
+      <text x="90" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#F8FAFC">Claude Code CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#94A3B8">Anthropic CLI tool interface</text>
+    </g>
+
+    <!-- AGY (Unlinked) -->
+    <g transform="translate(460, 0)">
+      <rect x="0" y="0" width="380" height="64" rx="10" fill="url(#cardBgDark)" stroke="#F97316" stroke-width="1.5"/>
+      <rect x="15" y="12" width="50" height="20" rx="4" fill="#F97316" fill-opacity="0.2" stroke="#F97316" stroke-width="1"/>
+      <text x="40" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#FB923C" text-anchor="middle">AGY</text>
+      <text x="76" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#F8FAFC">Antigravity CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#94A3B8">Google Antigravity agent CLI</text>
+    </g>
+
+    <!-- OpenCode (Unlinked) -->
+    <g transform="translate(890, 0)">
+      <rect x="0" y="0" width="480" height="64" rx="10" fill="url(#cardBgDark)" stroke="#F97316" stroke-width="1.5"/>
+      <rect x="15" y="12" width="80" height="20" rx="4" fill="#F97316" fill-opacity="0.2" stroke="#F97316" stroke-width="1"/>
+      <text x="55" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#FB923C" text-anchor="middle">OPENCODE</text>
+      <text x="105" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#F8FAFC">OpenCode CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#94A3B8">Open-source agent CLI framework</text>
+    </g>
+  </g>
+
+  <!-- ==================== LAYER 0 (EMERALD: #10B981) ==================== -->
+  <g transform="translate(60, 770)">
+    <rect x="0" y="8" width="90" height="48" rx="6" fill="#1E293B" stroke="#10B981" stroke-width="1.5"/>
+    <text x="45" y="23" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#10B981" text-anchor="middle">LAYER 0</text>
+    <text x="45" y="39" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#94A3B8" text-anchor="middle">OS Base</text>
+
+    <!-- Main Container Rectangle: Operating Systems (Unlinked) -->
+    <rect x="110" y="0" width="1260" height="64" rx="10" fill="url(#cardBgDark)" stroke="#10B981" stroke-width="2"/>
+    <text x="135" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#34D399">Operating Systems (OS Layer)</text>
+    <text x="135" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Host environment providing process execution, file system access, and system calls</text>
+
+    <!-- OS Badges -->
+    <g transform="translate(950, 18)">
+      <rect x="0" y="0" width="90" height="28" rx="6" fill="#10B981" fill-opacity="0.15" stroke="#10B981" stroke-width="1"/>
+      <text x="45" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#34D399" text-anchor="middle">Windows</text>
+
+      <rect x="105" y="0" width="80" height="28" rx="6" fill="#10B981" fill-opacity="0.15" stroke="#10B981" stroke-width="1"/>
+      <text x="145" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#34D399" text-anchor="middle">Linux</text>
+
+      <rect x="198" y="0" width="80" height="28" rx="6" fill="#10B981" fill-opacity="0.15" stroke="#10B981" stroke-width="1"/>
+      <text x="238" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#34D399" text-anchor="middle">macOS</text>
+
+        <rect x="290" y="0" width="70" height="28" rx="6" fill="#10B981" fill-opacity="0.15" stroke="#10B981" stroke-width="1"/>
+        <text x="325" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#34D399" text-anchor="middle">etc.</text>
+      </g>
+    </g>
+
+    <!-- ==================== BOTTOM LEGEND ROW ==================== -->
+    <g transform="translate(420, 856)">
+      <!-- Human Icon Legend -->
+      <g transform="translate(0, 0)">
+        <circle cx="12" cy="12" r="11" fill="#3B82F6" fill-opacity="0.18" stroke="#3B82F6" stroke-width="1.2"/>
+        <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#60A5FA" stroke-width="1.3"/>
+        <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#60A5FA" stroke-width="1.3" stroke-linecap="round"/>
+        <text x="32" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Human User Interaction Surface</text>
+      </g>
+
+      <!-- Divider Dot -->
+      <circle cx="270" cy="12" r="2.5" fill="#475569"/>
+
+      <!-- Skill Icon Legend -->
+      <g transform="translate(300, 0)">
+        <circle cx="12" cy="12" r="11" fill="#8B5CF6" fill-opacity="0.18" stroke="#8B5CF6" stroke-width="1.2"/>
+        <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#A78BFA" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#A78BFA"/>
+        <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#A78BFA"/>
+        <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#A78BFA" stroke-width="1.2" stroke-linecap="round"/>
+        <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#A78BFA"/>
+        <text x="32" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Skill Capability Surface</text>
+      </g>
+    </g>
+
+  <!-- ==================== CASCADED & DIRECT ARROW CONNECTIONS ==================== -->
+  <g fill="none" stroke-width="1.8">
+
+    <!-- 1. CASCADED VERTICAL SPINE: Layer 5 -> Layer 4 -> Layer 3 -->
+    <path d="M 800 170 L 800 214" stroke="#3B82F6" stroke-width="2" marker-end="url(#arrowBlue)"/>
+    <path d="M 800 288 L 800 344" stroke="#06B6D4" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+    <!-- 2. apra-fleet-client -> apra-fleet-mcp -->
+    <path d="M 580 422 L 475 484" stroke="#8B5CF6" marker-end="url(#arrowPurple)"/>
+
+    <!-- 3. apra-pm -> Agent Roles -->
+    <path d="M 1250 422 L 1250 484" stroke="#8B5CF6" stroke-width="2" marker-end="url(#arrowPurple)"/>
+
+    <!-- 4. DOTTED ARROW: apra-fleet-mcp -> OS Base PASSING BETWEEN CLAUDE AND AGY -->
+    <path d="M 475 562 L 495 580 L 495 764" stroke="#10B981" stroke-dasharray="5 3" marker-end="url(#arrowEmerald)"/>
+    <g transform="translate(443, 580)">
+      <rect x="0" y="0" width="104" height="20" rx="10" fill="#0F172A" stroke="#10B981" stroke-width="1"/>
+      <text x="52" y="10" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#34D399" text-anchor="middle">commands &amp; ops</text>
+    </g>
+
+    <!-- 5. THREE SEPARATE PROMPT ARROWS & BADGES TO LLM CLIs -->
+    <path d="M 360 562 L 320 624" stroke="#F97316" marker-end="url(#arrowOrange)"/>
+    <g transform="translate(305, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#0F172A" stroke="#F97316" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#FB923C" text-anchor="middle">prompts</text>
+    </g>
+
+    <path d="M 475 562 L 670 624" stroke="#F97316" marker-end="url(#arrowOrange)"/>
+    <g transform="translate(540, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#0F172A" stroke="#F97316" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#FB923C" text-anchor="middle">prompts</text>
+    </g>
+
+    <path d="M 590 562 L 1150 624" stroke="#F97316" marker-end="url(#arrowOrange)"/>
+    <g transform="translate(835, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#0F172A" stroke="#F97316" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#FB923C" text-anchor="middle">prompts</text>
+    </g>
+
+    <!-- 6. auto-sprint.js -> Claude CLI -->
+    <path d="M 240 422 L 240 624" stroke="#F97316" stroke-dasharray="4 2" marker-end="url(#arrowOrange)"/>
+
+    <!-- 7. RIGHTMOST HIGHWAY ARROW: fleet-sprint -> Agent Roles -->
+    <path d="M 1350 135 L 1480 135 L 1480 526 L 1434 526" stroke="#8B5CF6" stroke-width="2" marker-end="url(#arrowPurple)"/>
+  </g>
+</svg>`;
+}
+
+function generateLightSVG() {
+  return `<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet Layered Architecture Stack Light Target Package Links">
+  <defs>
+    <!-- Background Gradient Light -->
+    <linearGradient id="bgLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow Filter -->
+    <filter id="shadowLightCard" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <!-- Grid Pattern Light -->
+    <pattern id="gridLight" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E2E8F0" stroke-width="1" opacity="0.8"/>
+      <circle cx="40" cy="40" r="1.5" fill="#CBD5E1" opacity="0.8"/>
+    </pattern>
+
+    <!-- Consistent Layer Arrowhead Markers -->
+    <marker id="arrowGoldLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#D97706"/>
+    </marker>
+    <marker id="arrowBlueLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#2563EB"/>
+    </marker>
+    <marker id="arrowCyanLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#0284C7"/>
+    </marker>
+    <marker id="arrowPurpleLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#7C3AED"/>
+    </marker>
+    <marker id="arrowOrangeLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#EA580C"/>
+    </marker>
+    <marker id="arrowEmeraldLight" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <style>
+    a { cursor: pointer; text-decoration: none; }
+    a:hover rect { stroke-width: 2.8; filter: brightness(0.95); }
+    a:hover text { fill: #0F172A; }
+  </style>
+
+  <!-- Base Canvas -->
+  <rect width="1600" height="900" fill="url(#bgLight)"/>
+  <rect width="1600" height="900" fill="url(#gridLight)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <g transform="translate(60, 28)">
+    <rect x="0" y="0" width="170" height="24" rx="12" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="14" cy="12" r="3.5" fill="#D97706"/>
+    <text x="26" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9.5" font-weight="800" letter-spacing="1.5" fill="#B45309">ARCHITECTURE STACK</text>
+  </g>
+
+  <text x="800" y="44" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="900" fill="#0F172A" text-anchor="middle">Apra Fleet Layered Architecture</text>
+  <text x="800" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#64748B" text-anchor="middle">Layered Software Dependencies from OS Primitives to Autonomous Engineering Orchestrators</text>
+
+  <!-- ==================== LAYER 5 (GOLD: #D97706) ==================== -->
+  <g transform="translate(60, 100)">
+    <rect x="0" y="11" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="26" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#B45309" text-anchor="middle">LAYER 5</text>
+    <text x="45" y="42" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#64748B" text-anchor="middle">Fleet SE</text>
+
+    <!-- Main Container Rectangle: apra-fleet-se (Unlinked) -->
+    <rect x="110" y="0" width="1260" height="70" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="2" filter="url(#shadowLightCard)"/>
+    <text x="135" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="800" fill="#B45309">apra-fleet-se</text>
+    <text x="135" y="46" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Top-level Software Engineering Orchestration Package</text>
+
+    <!-- Human Stick Figure Icon (apra-fleet-se) -->
+    <g transform="translate(550, 23)">
+      <circle cx="12" cy="12" r="11" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2"/>
+      <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#B45309" stroke-width="1.3"/>
+      <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#B45309" stroke-width="1.3" stroke-linecap="round"/>
+    </g>
+
+    <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-fleet-se right edge inside) -->
+    <g transform="translate(590, 23)">
+      <circle cx="12" cy="12" r="11" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2"/>
+      <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#B45309" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#B45309"/>
+      <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#B45309"/>
+      <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#B45309" stroke-width="1.2" stroke-linecap="round"/>
+      <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#B45309"/>
+    </g>
+
+    <!-- Inner Component 1 (LEFT): fleet-supervisor (Unlinked) -->
+    <g transform="translate(640, 9)">
+      <rect x="0" y="0" width="340" height="52" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5" stroke-dasharray="5 3"/>
+      <text x="18" y="21" font-family="monospace" font-size="14" font-weight="700" fill="#0F172A">fleet-supervisor</text>
+      <text x="18" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#475569">Central control plane, ledger &amp; node manager</text>
+    </g>
+
+    <!-- Inner Component 2 (RIGHT): fleet-sprint (LINKED: packages/apra-fleet-se/fleet-sprint/docs/README.md) -->
+    <a href="packages/apra-fleet-se/fleet-sprint/docs/README.md" target="_blank">
+      <g transform="translate(1010, 9)">
+        <rect x="0" y="0" width="340" height="52" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="18" y="21" font-family="monospace" font-size="14" font-weight="700" fill="#0F172A">fleet-sprint</text>
+        <text x="18" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#475569">Autonomous multi-task sprint engine &amp; viewer</text>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 4 (BLUE: #2563EB) ==================== -->
+  <g transform="translate(60, 220)">
+    <rect x="0" y="10" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#2563EB" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="25" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#1D4ED8" text-anchor="middle">LAYER 4</text>
+    <text x="45" y="41" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#64748B" text-anchor="middle">Workflow</text>
+
+    <!-- Centered apra-fleet-workflow (Unlinked) -->
+    <rect x="500" y="0" width="480" height="68" rx="10" fill="#FFFFFF" stroke="#2563EB" stroke-width="2" filter="url(#shadowLightCard)"/>
+    <text x="525" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#1D4ED8">apra-fleet-workflow</text>
+    <text x="525" y="47" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Workflow orchestration engine &amp; step loop execution</text>
+  </g>
+
+  <!-- ==================== LAYER 3 (CYAN: #0284C7) ==================== -->
+  <g transform="translate(60, 350)">
+    <rect x="0" y="12" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#0284C7" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="27" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#0369A1" text-anchor="middle">LAYER 3</text>
+    <text x="45" y="43" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="600" fill="#64748B" text-anchor="middle">Client / Runners</text>
+
+    <!-- Component 1: auto-sprint.js (LINKED: packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) -->
+    <a href="packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md" target="_blank">
+      <g transform="translate(110, 0)">
+        <rect x="0" y="0" width="280" height="72" rx="10" fill="#FFFFFF" stroke="#0284C7" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+        <text x="20" y="26" font-family="monospace" font-size="14" font-weight="700" fill="#0369A1">auto-sprint.js</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Single-agent loop script</text>
+
+        <!-- Human Stick Figure Icon (auto-sprint.js) -->
+        <g transform="translate(205, 24)">
+          <circle cx="12" cy="12" r="11" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+          <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#0369A1" stroke-width="1.3"/>
+          <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#0369A1" stroke-width="1.3" stroke-linecap="round"/>
+        </g>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (auto-sprint.js right edge inside) -->
+        <g transform="translate(240, 24)">
+          <circle cx="12" cy="12" r="11" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#0369A1" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#0369A1"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#0369A1"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#0369A1" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#0369A1"/>
+        </g>
+      </g>
+    </a>
+
+    <!-- Component 2: apra-fleet-client (LINKED: packages/apra-fleet-client/docs/overview.md) -->
+    <a href="packages/apra-fleet-client/docs/overview.md" target="_blank">
+      <rect x="500" y="0" width="480" height="72" rx="10" fill="#FFFFFF" stroke="#0284C7" stroke-width="2" filter="url(#shadowLightCard)"/>
+      <text x="520" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#0369A1">apra-fleet-client</text>
+      <text x="520" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Thin client wrapper for fleet MCP tools &amp; RPC</text>
+    </a>
+
+    <!-- Component 3: apra-pm (LINKED: packages/apra-fleet-se/apra-pm/README.md) -->
+    <a href="packages/apra-fleet-se/apra-pm/README.md" target="_blank">
+      <g transform="translate(1010, 0)">
+        <rect x="0" y="0" width="360" height="72" rx="10" fill="#FFFFFF" stroke="#0284C7" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+        <text x="20" y="26" font-family="monospace" font-size="14" font-weight="700" fill="#0369A1">apra-pm</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Project Manager Orchestrator</text>
+
+        <!-- Human Stick Figure Icon (apra-pm) -->
+        <g transform="translate(285, 24)">
+          <circle cx="12" cy="12" r="11" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+          <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#0369A1" stroke-width="1.3"/>
+          <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#0369A1" stroke-width="1.3" stroke-linecap="round"/>
+        </g>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-pm right edge inside) -->
+        <g transform="translate(320, 24)">
+          <circle cx="12" cy="12" r="11" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#0369A1" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#0369A1"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#0369A1"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#0369A1" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#0369A1"/>
+        </g>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 2 (PURPLE: #7C3AED) ==================== -->
+  <g transform="translate(60, 490)">
+    <rect x="0" y="12" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="27" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#6D28D9" text-anchor="middle">LAYER 2</text>
+    <text x="45" y="43" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#64748B" text-anchor="middle">MCP &amp; Roles</text>
+
+    <!-- Left: apra-fleet-mcp (LINKED: docs/mcp-tools.md) -->
+    <a href="docs/mcp-tools.md" target="_blank">
+      <g transform="translate(240, 0)">
+        <rect x="0" y="0" width="350" height="72" rx="10" fill="#FFFFFF" stroke="#7C3AED" stroke-width="2" filter="url(#shadowLightCard)"/>
+        <text x="20" y="26" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#6D28D9">apra-fleet-mcp</text>
+        <text x="20" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Fleet Model Context Protocol tool server</text>
+
+        <!-- Vertical Parallel Skill Glyph: Hammer + Screwdriver (apra-fleet-mcp right edge inside) -->
+        <g transform="translate(310, 24)">
+          <circle cx="12" cy="12" r="11" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1.2"/>
+          <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#6D28D9" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#6D28D9"/>
+          <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#6D28D9"/>
+          <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#6D28D9" stroke-width="1.2" stroke-linecap="round"/>
+          <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#6D28D9"/>
+        </g>
+      </g>
+    </a>
+
+    <!-- Dotted horizontal arrow between apra-fleet-mcp & Agent Roles -->
+    <path d="M 595 36 L 925 36" fill="none" stroke="#7C3AED" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrowPurpleLight)"/>
+
+    <!-- Rightmost: Agent Roles (LINKED: packages/apra-fleet-se/docs/role-contracts.md) -->
+    <a href="packages/apra-fleet-se/docs/role-contracts.md" target="_blank">
+      <rect x="930" y="0" width="440" height="72" rx="10" fill="#FFFFFF" stroke="#7C3AED" stroke-width="2" filter="url(#shadowLightCard)"/>
+      <text x="955" y="22" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#6D28D9">Agent Roles</text>
+      <text x="955" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#64748B">Specialized personas in CLI sessions</text>
+
+      <!-- Role Badges inside Agent Roles -->
+      <g transform="translate(955, 46)">
+        <rect x="0" y="0" width="54" height="18" rx="4" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1"/>
+        <text x="27" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#6D28D9" text-anchor="middle">Doer</text>
+
+        <rect x="60" y="0" width="66" height="18" rx="4" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1"/>
+        <text x="93" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#6D28D9" text-anchor="middle">Reviewer</text>
+
+        <rect x="132" y="0" width="60" height="18" rx="4" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1"/>
+        <text x="162" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#6D28D9" text-anchor="middle">Planner</text>
+
+        <rect x="198" y="0" width="64" height="18" rx="4" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1"/>
+        <text x="230" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#6D28D9" text-anchor="middle">Deployer</text>
+
+        <rect x="268" y="0" width="76" height="18" rx="4" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1"/>
+        <text x="306" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#6D28D9" text-anchor="middle">CI Watcher</text>
+      </g>
+    </a>
+  </g>
+
+  <!-- ==================== LAYER 1 (ORANGE: #EA580C) ==================== -->
+  <g transform="translate(60, 630)">
+    <rect x="0" y="8" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="23" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#C2410C" text-anchor="middle">LAYER 1</text>
+    <text x="45" y="39" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#64748B" text-anchor="middle">LLM CLIs</text>
+
+    <!-- Claude (Unlinked) -->
+    <g transform="translate(110, 0)">
+      <rect x="0" y="0" width="300" height="64" rx="10" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+      <rect x="15" y="12" width="64" height="20" rx="4" fill="#FFEDD5" stroke="#EA580C" stroke-width="1"/>
+      <text x="47" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#C2410C" text-anchor="middle">CLAUDE</text>
+      <text x="90" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#0F172A">Claude Code CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#64748B">Anthropic CLI tool interface</text>
+    </g>
+
+    <!-- AGY (Unlinked) -->
+    <g transform="translate(460, 0)">
+      <rect x="0" y="0" width="380" height="64" rx="10" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+      <rect x="15" y="12" width="50" height="20" rx="4" fill="#FFEDD5" stroke="#EA580C" stroke-width="1"/>
+      <text x="40" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#C2410C" text-anchor="middle">AGY</text>
+      <text x="76" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#0F172A">Antigravity CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#64748B">Google Antigravity agent CLI</text>
+    </g>
+
+    <!-- OpenCode (Unlinked) -->
+    <g transform="translate(890, 0)">
+      <rect x="0" y="0" width="480" height="64" rx="10" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+      <rect x="15" y="12" width="80" height="20" rx="4" fill="#FFEDD5" stroke="#EA580C" stroke-width="1"/>
+      <text x="55" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="800" fill="#C2410C" text-anchor="middle">OPENCODE</text>
+      <text x="105" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#0F172A">OpenCode CLI</text>
+      <text x="15" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#64748B">Open-source agent CLI framework</text>
+    </g>
+  </g>
+
+  <!-- ==================== LAYER 0 (EMERALD: #059669) ==================== -->
+  <g transform="translate(60, 770)">
+    <rect x="0" y="8" width="90" height="48" rx="6" fill="#FFFFFF" stroke="#059669" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+    <text x="45" y="23" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="800" fill="#047857" text-anchor="middle">LAYER 0</text>
+    <text x="45" y="39" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#64748B" text-anchor="middle">OS Base</text>
+
+    <!-- Main Container Rectangle: Operating Systems (Unlinked) -->
+    <rect x="110" y="0" width="1260" height="64" rx="10" fill="#FFFFFF" stroke="#059669" stroke-width="2" filter="url(#shadowLightCard)"/>
+    <text x="135" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#047857">Operating Systems (OS Layer)</text>
+    <text x="135" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#64748B">Host environment providing process execution, file system access, and system calls</text>
+
+    <!-- OS Badges -->
+    <g transform="translate(950, 18)">
+      <rect x="0" y="0" width="90" height="28" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+      <text x="45" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">Windows</text>
+
+      <rect x="105" y="0" width="80" height="28" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+      <text x="145" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">Linux</text>
+
+      <rect x="198" y="0" width="80" height="28" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+      <text x="238" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">macOS</text>
+
+      <rect x="290" y="0" width="70" height="28" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+      <text x="325" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">etc.</text>
+    </g>
+  </g>
+
+  <!-- ==================== BOTTOM LEGEND ROW ==================== -->
+  <g transform="translate(420, 856)">
+    <!-- Human Icon Legend -->
+    <g transform="translate(0, 0)">
+      <circle cx="12" cy="12" r="11" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+      <circle cx="12" cy="7.5" r="2.4" fill="none" stroke="#0369A1" stroke-width="1.3"/>
+      <path d="M 12 10 L 12 15 M 8.5 11.8 L 15.5 11.8 M 9 19 L 12 15 L 15 19" fill="none" stroke="#0369A1" stroke-width="1.3" stroke-linecap="round"/>
+      <text x="32" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#475569">Human User Interaction Surface</text>
+    </g>
+
+    <!-- Divider Dot -->
+    <circle cx="270" cy="12" r="2.5" fill="#94A3B8"/>
+
+    <!-- Skill Icon Legend -->
+    <g transform="translate(300, 0)">
+      <circle cx="12" cy="12" r="11" fill="#F3E8FF" stroke="#7C3AED" stroke-width="1.2"/>
+      <line x1="8.5" y1="10.5" x2="8.5" y2="18.5" stroke="#6D28D9" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 5.5 6.5 H 10 C 11.5 6.5 12.5 7.2 13 8.2 H 9.5 V 10.5 H 7.5 V 8.5 H 5.5 Z" fill="#6D28D9"/>
+      <path d="M 14.3 6 H 16.7 L 15.5 4.8 Z" fill="#6D28D9"/>
+      <line x1="15.5" y1="6" x2="15.5" y2="13" stroke="#6D28D9" stroke-width="1.2" stroke-linecap="round"/>
+      <rect x="14.2" y="13" width="2.6" height="5.5" rx="1" fill="#6D28D9"/>
+      <text x="32" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#475569">Skill Capability Surface</text>
+    </g>
+  </g>
+
+  <!-- ==================== CASCADED & DIRECT ARROW CONNECTIONS ==================== -->
+  <g fill="none" stroke-width="1.8">
+
+    <!-- 1. CASCADED VERTICAL SPINE: Layer 5 -> Layer 4 -> Layer 3 -->
+    <path d="M 800 170 L 800 214" stroke="#2563EB" stroke-width="2" marker-end="url(#arrowBlueLight)"/>
+    <path d="M 800 288 L 800 344" stroke="#0284C7" stroke-width="2" marker-end="url(#arrowCyanLight)"/>
+
+    <!-- 2. apra-fleet-client -> apra-fleet-mcp -->
+    <path d="M 580 422 L 475 484" stroke="#7C3AED" marker-end="url(#arrowPurpleLight)"/>
+
+    <!-- 3. apra-pm -> Agent Roles -->
+    <path d="M 1250 422 L 1250 484" stroke="#7C3AED" stroke-width="2" marker-end="url(#arrowPurpleLight)"/>
+
+    <!-- 4. DOTTED ARROW: apra-fleet-mcp -> OS Base PASSING BETWEEN CLAUDE AND AGY -->
+    <path d="M 475 562 L 495 580 L 495 764" stroke="#059669" stroke-dasharray="5 3" marker-end="url(#arrowEmeraldLight)"/>
+    <g transform="translate(443, 580)">
+      <rect x="0" y="0" width="104" height="20" rx="10" fill="#FFFFFF" stroke="#059669" stroke-width="1"/>
+      <text x="52" y="10" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#047857" text-anchor="middle">commands &amp; ops</text>
+    </g>
+
+    <!-- 5. THREE SEPARATE PROMPT ARROWS & BADGES TO LLM CLIs -->
+    <path d="M 360 562 L 320 624" stroke="#EA580C" marker-end="url(#arrowOrangeLight)"/>
+    <g transform="translate(305, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#FFFFFF" stroke="#EA580C" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#C2410C" text-anchor="middle">prompts</text>
+    </g>
+
+    <path d="M 475 562 L 670 624" stroke="#EA580C" marker-end="url(#arrowOrangeLight)"/>
+    <g transform="translate(540, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#FFFFFF" stroke="#EA580C" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#C2410C" text-anchor="middle">prompts</text>
+    </g>
+
+    <path d="M 590 562 L 1150 624" stroke="#EA580C" marker-end="url(#arrowOrangeLight)"/>
+    <g transform="translate(835, 586)">
+      <rect x="0" y="0" width="66" height="18" rx="9" fill="#FFFFFF" stroke="#EA580C" stroke-width="1"/>
+      <text x="33" y="9" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#C2410C" text-anchor="middle">prompts</text>
+    </g>
+
+    <!-- 6. auto-sprint.js -> Claude CLI -->
+    <path d="M 240 422 L 240 624" stroke="#EA580C" stroke-dasharray="4 2" marker-end="url(#arrowOrangeLight)"/>
+
+    <!-- 7. RIGHTMOST HIGHWAY ARROW: fleet-sprint -> Agent Roles -->
+    <path d="M 1350 135 L 1480 135 L 1480 526 L 1434 526" stroke="#7C3AED" stroke-width="2" marker-end="url(#arrowPurpleLight)"/>
+  </g>
+</svg>`;
+}
+
+const darkSvgPath = path.join(__dirname, '..', 'assets', 'marketing', 'fleet-stack-dark.svg');
+const lightSvgPath = path.join(__dirname, '..', 'assets', 'marketing', 'fleet-stack-light.svg');
+
+fs.writeFileSync(darkSvgPath, generateDarkSVG());
+fs.writeFileSync(lightSvgPath, generateLightSVG());
+console.log('Target package documentation SVG files generated successfully:');
+console.log(' - ' + darkSvgPath);
+console.log(' - ' + lightSvgPath);

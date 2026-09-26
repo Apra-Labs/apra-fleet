@@ -52,7 +52,7 @@ describe('detectSecrets', () => {
     expect(spans('password: string;', 'tool')).toEqual([]);
     expect(spans('apiKey = config.apiKey', 'tool')).toEqual([]);
     expect(spans('TOKEN=${GITHUB_TOKEN}', 'tool')).toEqual([]);
-    expect(spans('token={{secure.github_token}}', 'tool')).toEqual([]);
+    expect(spans('token={{secret.github_token}}', 'tool')).toEqual([]);
   });
 
   it('understands phrases and the explicit marker in chat only', () => {
@@ -98,7 +98,7 @@ describe('Redactor.scrubRequest', () => {
       ],
     });
     expect(JSON.stringify(out.body)).not.toContain('hunter22-long');
-    expect(out.body.messages[0].content[0].input.command).toBe('psql -p {{secure.db_pass}}');
+    expect(out.body.messages[0].content[0].input.command).toBe('psql -p {{secret.db_pass}}');
   });
 
   it('catches secrets in tool output such as a .env file', () => {
@@ -107,7 +107,7 @@ describe('Redactor.scrubRequest', () => {
     const out = r.scrubRequest({
       messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'STRIPE_KEY=sk_live_abcdefghijklmnop1234\nPORT=3000' }] }],
     });
-    expect(out.body.messages[0].content[0].content).toBe('STRIPE_KEY={{secure.stripe_key}}\nPORT=3000');
+    expect(out.body.messages[0].content[0].content).toBe('STRIPE_KEY={{secret.stripe_key}}\nPORT=3000');
   });
 
   it('applies only strict rules to injected <system-reminder> context', () => {
@@ -115,7 +115,7 @@ describe('Redactor.scrubRequest', () => {
     const reminder = '<system-reminder>\nnote Xq7vT2mK9pL4wR8zN3bY6cF1 and my password is hunter22x\n</system-reminder>';
     const out = r.scrubRequest({ messages: [{ role: 'user', content: [{ type: 'text', text: reminder }, { type: 'text', text: `and ${GH}` }] }] });
     expect(out.body.messages[0].content[0].text).toBe(reminder);
-    expect(out.body.messages[0].content[1].text).toBe('and {{secure.github_token}}');
+    expect(out.body.messages[0].content[1].text).toBe('and {{secret.github_token}}');
   });
 
   it('leaves thinking blocks and tool definitions alone', () => {
@@ -133,13 +133,13 @@ describe('Redactor.scrubRequest', () => {
     const v = new MemVault();
     const r = new Redactor(v);
     const first = r.scrubRequest({ messages: [{ role: 'user', content: `token ${GH}` }] });
-    const toolCall = { type: 'tool_use', id: 't', name: 'Bash', input: r.restoreDeep({ command: 'gh auth login --with-token {{secure.github_token}}' }) };
+    const toolCall = { type: 'tool_use', id: 't', name: 'Bash', input: r.restoreDeep({ command: 'gh auth login --with-token {{secret.github_token}}' }) };
     expect(toolCall.input.command).toContain(GH);
     const second = r.scrubRequest({
       messages: [{ role: 'user', content: `token ${GH}` }, { role: 'assistant', content: [toolCall] }],
     });
     expect(second.body.messages[0]).toEqual(first.body.messages[0]);
-    expect(second.body.messages[1].content[0].input.command).toBe('gh auth login --with-token {{secure.github_token}}');
+    expect(second.body.messages[1].content[0].input.command).toBe('gh auth login --with-token {{secret.github_token}}');
   });
 });
 
@@ -162,7 +162,7 @@ describe('SseRestorer', () => {
   const stream = [
     sse('message_start', { message: { id: 'm' } }),
     sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
-    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'using {{secure.db_pass}}' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'using {{secret.db_pass}}' } }),
     sse('content_block_stop', { index: 0 }),
     sse('content_block_start', { index: 1, content_block: { type: 'tool_use', id: 't', name: 'Bash', input: {} } }),
     sse('content_block_delta', { index: 1, delta: { type: 'input_json_delta', partial_json: '{"command": "psql -p {{sec' } }),
@@ -175,7 +175,7 @@ describe('SseRestorer', () => {
   function check(out: string) {
     const events = parseEvents(out);
     const text = events.find(e => e.delta?.type === 'text_delta');
-    expect(text.delta.text).toBe('using {{secure.db_pass}}'); // prose is left alone
+    expect(text.delta.text).toBe('using {{secret.db_pass}}'); // prose is left alone
     const deltas = events.filter(e => e.delta?.type === 'input_json_delta');
     expect(deltas).toHaveLength(1);
     expect(JSON.parse(deltas[0].delta.partial_json)).toEqual({ command: `psql -p ${secret} -h x` });
@@ -222,5 +222,15 @@ describe('lazy mode hooks', () => {
       process.env.LAZYFLEET_DIR = prev;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('token spelling', () => {
+  it('writes {{secret.NAME}} and still restores the legacy {{secure.NAME}}', () => {
+    const v = new MemVault();
+    v.items.push({ name: 'db_pass', value: 'hunter22-long' });
+    const r = new Redactor(v);
+    expect(placeholder('db_pass')).toBe('{{secret.db_pass}}');
+    expect(r.restoreDeep({ a: 'x {{secure.db_pass}} y {{secret.db_pass}}' })).toEqual({ a: 'x hunter22-long y hunter22-long' });
   });
 });

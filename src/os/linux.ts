@@ -3,7 +3,7 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA GEMINI_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
 
 /**
  * Wrap a bash command string with PID capture.
@@ -13,6 +13,21 @@ const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOUR
  */
 export function pidWrapUnix(cmd: string): string {
   return `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`;
+}
+
+/**
+ * Durable per-invocation stdout mirror for a unix dispatch (apra-fleet-6z8.1).
+ *
+ * The SSH exec channel is NOT a reliable carrier for the CLI's output: when the
+ * channel tears down without ever delivering an 'exit' event, ssh2's 'close'
+ * still fires and src/services/ssh.ts substitutes code 0, so the dispatcher sees
+ * "exit 0, empty stdout" while the remote CLI is in fact still running (live
+ * evidence: pid 89858 alive 2+ minutes after the channel resolved). Teeing the
+ * CLI's stdout to this file means the real result envelope survives the channel,
+ * and can be read back with a fresh exec once the pid actually exits.
+ */
+export function durableOutputPath(inv: string): string {
+  return `/tmp/.fleet-out-${inv.replace(/[^A-Za-z0-9._-]/g, '')}.json`;
 }
 
 /** Replace leading ~ with $HOME so paths expand correctly inside double-quoted shell strings. */
@@ -109,9 +124,22 @@ export class LinuxCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder } = opts;
+    const { folder, fork } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    const providerCmd = provider.buildPromptCommand(opts);
+    // apra-fleet-lmtg.2: fork mode seeds a NEW session from an existing one's
+    // transcript and must not also carry an ordinary resume/session-id flag
+    // (mutually exclusive intents). provider.buildPromptCommand()'s own
+    // sessionId/resuming branch predates fork descriptors, so when a fork
+    // descriptor is present and the provider supports it, build the base
+    // command with sessionId/resuming suppressed and splice in the
+    // provider's own fork invocation instead. Absent a fork descriptor (or a
+    // non-fork-capable provider), behavior is unchanged.
+    const forkFlag = (fork && provider.supportsFork?.())
+      ? provider.forkFlag?.(fork.sourceSessionId, fork.newSessionId)
+      : undefined;
+    const providerCmd = forkFlag
+      ? `${provider.buildPromptCommand({ ...opts, sessionId: undefined, resuming: undefined })} ${forkFlag}`
+      : provider.buildPromptCommand(opts);
     // Provider command starts with `cd "folder" && <cli> ...`
     // Inject PATH prepend after the cd so the binary is findable
     const cdPrefix = `cd "${escapedFolder}" && `;
@@ -120,6 +148,26 @@ export class LinuxCommands implements OsCommands {
       innerCmd = `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
     } else {
       innerCmd = `${CLI_PATH}${providerCmd}`;
+    }
+    // apra-fleet-6z8.1: mirror the CLI's stdout to a durable per-invocation file
+    // so a torn-down SSH channel cannot destroy an otherwise-complete result.
+    // `set -o pipefail` (bash and zsh both honour it) keeps the CLI's own exit
+    // code authoritative instead of tee's. Only applied when an invocation id is
+    // present -- callers without one (unit tests, ad-hoc builds) are unchanged.
+    //
+    // apra-fleet-8hb.1: `set -o pipefail` is a bash/zsh-ism. `set` is a POSIX
+    // "special built-in", so on a dash/ash login shell an unrecognised option
+    // to it is a fatal parse error that terminates the *whole* shell outright
+    // -- not just that statement -- aborting every dispatch for such members.
+    // Probe support inside a `( ... )` subshell first: on dash/ash the probe
+    // subshell dies (only that subshell, not the shell running this script)
+    // and the `&&` short-circuits, so pipefail is simply never turned on;
+    // on bash/zsh the probe succeeds and pipefail is enabled for real,
+    // keeping the CLI's own exit code authoritative over tee's exactly as
+    // before.
+    if (opts.inv) {
+      const pipefailGuard = '(set -o pipefail) 2>/dev/null && set -o pipefail; ';
+      innerCmd = `${pipefailGuard}${innerCmd} | tee "${durableOutputPath(opts.inv)}"`;
     }
     return pidWrapUnix(innerCmd);
   }
@@ -205,18 +253,57 @@ export class LinuxCommands implements OsCommands {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // $HOME (not `~`) -- `~` is only tilde-expanded by the shell in an UNQUOTED
+    // leading position; every use below is inside double quotes (needed for
+    // the other interpolated values), which suppresses that expansion. That
+    // silently stored the literal string "~/.fleet-git-credential-..." as the
+    // git config value -- git does not expand `~` itself when reading config,
+    // so it tried to exec a helper literally named
+    // `git-credential-~/.fleet-git-credential-...` ("not a git command").
+    // $HOME expands correctly even inside double quotes, so this actually
+    // resolves to an absolute path both when creating the file and when
+    // storing the git config value.
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
   }
 
+  gitCredentialHelperRemoveLegacyFile(): string {
+    // File only -- deliberately no `git config --unset-all`. $HOME (not `~`)
+    // for the same reason gitCredentialHelperWrite uses it: `~` is not
+    // tilde-expanded inside double quotes.
+    return `rm -f "$HOME/.fleet-git-credential"`;
+  }
+
+  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // Same $HOME-not-`~` reasoning as gitCredentialHelperWrite above: the path
+    // is resolved by the member's own shell from $HOME, never by a caller
+    // supplying an expansion of its own, and the label is escaped for the
+    // double-quoted context it lands in.
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
+    // The helper is an executable script that prints
+    // "protocol=/host=/username=/password=" when run with no arguments.
+    return { command: `"${credFile}"`, path: credFile };
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
-    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  }
+
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeDoubleQuoted(token);
+    const escapedHostname = escapeDoubleQuoted(hostname);
+    // gh CLI has its own credential store (~/.config/gh/hosts.yml), entirely
+    // separate from the git credential helper written above -- gh never reads
+    // that file. `gh auth login --with-token` is gh's own non-interactive
+    // enrollment path. Best-effort: if `gh` isn't installed, no-op rather than
+    // fail the whole VCS auth deployment over an optional CLI.
+    return `if command -v gh >/dev/null 2>&1; then echo "${escapedToken}" | gh auth login --hostname "${escapedHostname}" --with-token; else echo "gh CLI not installed -- skipped gh auth login" >&2; fi`;
   }
 
   // --- SSH key deployment ---
@@ -234,8 +321,15 @@ export class LinuxCommands implements OsCommands {
 
   // --- Local exec ---
 
+  // apra-fleet-byp: name bash explicitly. Without a shell here, LocalStrategy
+  // falls back to Node's `shell: true`, which is /bin/sh -- dash on Debian and
+  // Ubuntu. buildAgentPromptCommand emits `set -o pipefail` (see the comment at
+  // its `opts.inv` branch), which dash rejects outright:
+  //   /bin/sh: 1: set: Illegal option -o pipefail
+  // That aborts the command before the CLI ever runs, so every local dispatch
+  // on those distros failed with reason='nonzero_exit'.
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    return { command, env: this.getCleanEnv() };
+    return { command, env: this.getCleanEnv(), shell: '/bin/bash' };
   }
 
   // --- Shell ---
@@ -244,16 +338,37 @@ export class LinuxCommands implements OsCommands {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
   }
 
+  wrapPidCapture(command: string): string {
+    return pidWrapUnix(command);
+  }
+
   // --- Git ---
 
   gitCurrentBranch(folder: string): string {
     return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
   }
 
+  gitRemoteOrigin(folder: string): string {
+    const f = escapeDoubleQuoted(folder);
+    return `git -C "${f}" remote get-url origin 2>/dev/null || git -C "${f}" config --get remote.origin.url 2>/dev/null || true`;
+  }
+
   // --- Process management ---
 
+  // apra-fleet-eft.13.3: `kill -9 <pid>` alone only signals that single
+  // process. A backgrounded child of an abandoned CLI invocation (e.g. a
+  // fixed-port test/dev server the doer started with `&`) keeps running as
+  // an orphan holding its port across the dispatch-exception retry
+  // (apra-fleet-02s.1, src/tools/execute-prompt.ts), so the retry collides
+  // with it and times out again -- the cascade apra-fleet-eft.13 exists to
+  // fix. Recursively kill the whole descendant tree (post-order: children
+  // before the pid itself), then the pid. Every step is best-effort: pgrep
+  // failures (no such pid, pgrep missing) redirect to /dev/null so the loop
+  // just sees no children, kill failures (already-exited process) redirect
+  // to /dev/null too, and the trailing `; true` guarantees this command
+  // never reports a non-zero exit even when the whole tree is already gone.
   killPid(pid: number): string {
-    return `kill -9 ${pid}`;
+    return `_fleet_kill_tree() { for _fleet_child in $(pgrep -P "$1" 2>/dev/null); do _fleet_kill_tree "$_fleet_child"; done; kill -9 "$1" 2>/dev/null; }; _fleet_kill_tree ${pid}; true`;
   }
 
   // --- GPU activity ---
@@ -289,5 +404,11 @@ export class LinuxCommands implements OsCommands {
       return lines[1].trim();
     }
     return stdout.trim();
+  }
+
+  // --- Agent provisioning ---
+
+  hashFilesRecursive(dir: string): string {
+    return `cd "${escapeDoubleQuoted(dir)}" 2>/dev/null && find . -type f -exec sha256sum {} + 2>/dev/null || true`;
   }
 }

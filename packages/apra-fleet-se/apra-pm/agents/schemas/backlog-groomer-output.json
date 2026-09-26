@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/backlog-groomer-output@1",
+  "version": 1,
+  "title": "backlog-groomer output",
+  "description": "Canonical machine-readable output contract for the backlog-groomer role. See agents/backlog-groomer.md Step 9 for the prose contract this mirrors.",
+  "type": "object",
+  "required": ["status", "identity", "notes"],
+  "definitions": {
+    "beadRef": {
+      "type": "object",
+      "required": ["id", "rationale"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "assignee": { "type": "string" },
+        "ageDays": { "type": "number" },
+        "size": { "type": "string", "enum": ["S", "M", "L", "XL"] },
+        "rationale": { "type": "string" }
+      }
+    }
+  },
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["OK", "BLOCKED"],
+      "description": "BLOCKED means a required input was missing or unusable -- see notes."
+    },
+    "identity": {
+      "type": "string",
+      "description": "The identity actually used to scope this run, echoed back for the caller to confirm."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-text summary, or the missing-input explanation when status is BLOCKED."
+    },
+    "ready": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/beadRef" },
+      "description": "Responsibility 1a: ready/urgent/worth-pursuing, ordered by value."
+    },
+    "sprintSets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "beadIds", "reason"],
+        "properties": {
+          "label": { "type": "string" },
+          "beadIds": { "type": "array", "items": { "type": "string" } },
+          "reason": { "type": "string" }
+        }
+      },
+      "description": "Responsibility 1b: cohesive sprint-set groupings, plus standalone/collision notes folded into each entry's reason."
+    },
+    "duplicates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["survivorId", "mergedIds", "evidence"],
+        "properties": {
+          "survivorId": { "type": "string" },
+          "mergedIds": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "evidence": { "type": "string" }
+        }
+      },
+      "description": "Responsibility 2a: duplicate clusters found, with the survivor and the evidence used to pick it."
+    },
+    "needsGrooming": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "priority", "issue"],
+        "properties": {
+          "id": { "type": "string" },
+          "priority": { "type": "string" },
+          "issue": { "type": "string", "description": "The quality gap, e.g. missing repro steps, urgency/content mismatch." },
+          "evidence": { "type": "string" }
+        }
+      },
+      "description": "Responsibility 2b: high-priority/urgent-sounding beads whose content quality is too low to act on, ordered by priority x quality-gap."
+    },
+    "needsVerification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "evidence"],
+        "properties": {
+          "id": { "type": "string" },
+          "evidence": { "type": "string", "description": "Result of the landed-vs-closed corroboration check (git log hits or lack thereof)." }
+        }
+      },
+      "description": "Beads whose children are all closed but landing on this branch is unconfirmed -- never treat as done."
+    },
+    "blocked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "chain"],
+        "properties": {
+          "id": { "type": "string" },
+          "chain": { "type": "array", "items": { "type": "string" }, "description": "Resolved blocks chain, e.g. [\"X\", \"Y\"] meaning blocked by X, which is blocked by Y." }
+        }
+      }
+    },
+    "notYours": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "assignee"],
+        "properties": {
+          "id": { "type": "string" },
+          "assignee": { "type": "string" }
+        }
+      },
+      "description": "Only populated when include-others was set. Never merged into identity's own buckets."
+    },
+    "stale": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/beadRef" }
+    },
+    "structuralIssues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "description", "beadIds"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["deadlock", "duplicate-cluster", "cross-assignee-leak", "missing-repro-pattern", "missing-ac-pattern", "epic-status-misuse", "missing-test-coverage", "other"]
+          },
+          "description": { "type": "string" },
+          "beadIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["beadId", "command", "reason", "executed"],
+        "properties": {
+          "beadId": { "type": "string" },
+          "command": { "type": "string", "description": "Exact bd command, proposed or run." },
+          "reason": { "type": "string", "description": "Evidence and reasoning; mirrors the note attached to the mutation when executed=true." },
+          "executed": { "type": "boolean", "description": "true if dry-run was false and this command was actually run; false if only proposed." }
+        }
+      },
+      "description": "Responsibility 3 output: one entry per justified mutation, proposed or executed depending on the dry-run input."
+    },
+    "heuristicsRecorded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "content"],
+        "properties": {
+          "key": { "type": "string", "description": "The groomer-heuristic-<slug> key used with bd remember." },
+          "content": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,12 +1,12 @@
 /**
  * M4 tests:
  *  - credential_store_set / credential_store_list / credential_store_delete round-trip
- *  - {{secure.NAME}} token resolution in execute_command
+ *  - {{secret.NAME}} token resolution in execute_command
  *  - Output redaction
  *  - Network egress policy (allow / confirm / deny)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import {
@@ -112,10 +112,10 @@ describe('credential store round-trip', () => {
 });
 
 // ---------------------------------------------------------------------------
-// {{secure.NAME}} token resolution in execute_command
+// {{secret.NAME}} token resolution in execute_command
 // ---------------------------------------------------------------------------
 
-describe('execute_command: {{secure.NAME}} token resolution', () => {
+describe('execute_command: {{secret.NAME}} token resolution', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
@@ -125,7 +125,7 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     restoreRegistry();
   });
 
-  it('substitutes a {{secure.NAME}} token in the command', async () => {
+  it('substitutes a {{secret.NAME}} token in the command', async () => {
     const name = `tok${Date.now()}`;
     credentialSet(name, 'mypassword', false, 'allow');
 
@@ -133,30 +133,30 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('Exit code: 0');
     // The actual command sent must contain the plaintext (shell-escaped), not the token
     const calledCmd = mockExecCommand.mock.calls[0][0] as string;
     expect(calledCmd).toContain('mypassword');
-    expect(calledCmd).not.toContain(`{{secure.${name}}}`);
+    expect(calledCmd).not.toContain(`{{secret.${name}}}`);
 
     credentialDelete(name);
   });
 
-  it('returns error when {{secure.NAME}} token is not found (nonexistent_cred)', async () => {
+  it('returns error when {{secret.NAME}} token is not found (nonexistent_cred)', async () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: 'echo {{secure.nonexistent_cred}}',
+      command: 'echo {{secret.nonexistent_cred}}',
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('not found');
     expect(result).toContain('nonexistent_cred');
@@ -171,13 +171,13 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      restart_command: `python resume.py --token {{secure.${name}}}`,
+      restart_command: `python resume.py --token {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // Task should launch (not error out about missing token)
     expect(result).toContain('Task launched');
@@ -188,6 +188,59 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     expect(calledCmd).toContain('base64');
 
     credentialDelete(name);
+  });
+
+  it('resolves a legacy {{secure.NAME}} token and appends a deprecation warning', async () => {
+    const name = `legacytok${Date.now()}`;
+    credentialSet(name, 'legacypassword', false, 'allow');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: `echo {{secure.${name}}}`,
+      timeout_s: 5,
+    }));
+
+    expect(result).toContain('Exit code: 0');
+    const calledCmd = mockExecCommand.mock.calls[0][0] as string;
+    expect(calledCmd).toContain('legacypassword');
+    expect(calledCmd).not.toContain(`{{secure.${name}}}`);
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain(`secure.${name}`);
+    expect(result).toContain(`secret.${name}`);
+
+    credentialDelete(name);
+  });
+
+  it('resolves a command mixing {{secret.NAME}} and {{secure.NAME}} tokens', async () => {
+    const nameA = `mixa${Date.now()}`;
+    const nameB = `mixb${Date.now()}`;
+    credentialSet(nameA, 'valueA', false, 'allow');
+    credentialSet(nameB, 'valueB', false, 'allow');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: `echo {{secret.${nameA}}} {{secure.${nameB}}}`,
+      timeout_s: 5,
+    }));
+
+    expect(result).toContain('Exit code: 0');
+    const calledCmd = mockExecCommand.mock.calls[0][0] as string;
+    expect(calledCmd).toContain('valueA');
+    expect(calledCmd).toContain('valueB');
+    // Only the legacy token triggers the deprecation warning
+    expect(result).toContain('[deprecated]');
+    expect(result).toContain(`secure.${nameB}`);
+
+    credentialDelete(nameA);
+    credentialDelete(nameB);
   });
 });
 
@@ -215,11 +268,11 @@ describe('execute_command: output redaction', () => {
     // Simulate command that echoes the secret back
     mockExecCommand.mockResolvedValue({ stdout: `token=${secret}`, stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // Secret should be redacted in returned output
     expect(result).not.toContain(secret);
@@ -237,11 +290,11 @@ describe('execute_command: output redaction', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: `Error: bad token ${secret}`, code: 1 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `cmd {{secure.${name}}}`,
+      command: `cmd {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).not.toContain(secret);
     expect(result).toContain(`[REDACTED:${name}]`);
@@ -254,11 +307,11 @@ describe('execute_command: output redaction', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'hello world', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: 'echo hello world',
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('hello world');
     expect(result).not.toContain('REDACTED');
@@ -305,11 +358,11 @@ describe('execute_command: network egress policy', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(mockCollectOobConfirm).not.toHaveBeenCalled();
     expect(result).toContain('Exit code: 0');
@@ -324,11 +377,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('Blocked');
     expect(result).toContain(name);
@@ -347,11 +400,11 @@ describe('execute_command: network egress policy', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secure.${name}}}`,
+      command: `curl https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(mockCollectOobConfirm).toHaveBeenCalledWith(name, expect.objectContaining({ command: expect.any(String), memberName: expect.any(String) }));
     expect(result).toContain('Exit code: 0');
@@ -368,11 +421,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `wget https://example.com --header {{secure.${name}}}`,
+      command: `wget https://example.com --header {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('was not confirmed');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -389,11 +442,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `ssh user@host --key {{secure.${name}}}`,
+      command: `ssh user@host --key {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('could not be confirmed');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -410,11 +463,11 @@ describe('execute_command: network egress policy', () => {
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
     // Command does not contain any network tool pattern
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // deny only blocks when a network tool is present — pure echo is fine
     expect(result).toContain('Exit code: 0');

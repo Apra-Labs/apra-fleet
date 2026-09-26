@@ -1,6 +1,6 @@
 /**
  * The vault is the existing encrypted credential store (persistent tier), so
- * anything caught here is also usable as {{secure.NAME}} by remote helpers.
+ * anything caught here is also usable as {{secret.NAME}} by remote helpers.
  * This module adds a value cache for the proxy and a small metadata sidecar
  * (kind, where it was caught, hit counts) that the store has no room for.
  */

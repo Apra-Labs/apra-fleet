@@ -15,23 +15,8 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
-import { StallDetector, type StallEntry } from '../src/services/stall/stall-detector.js';
 import { memberDetail } from '../src/tools/member-detail.js';
 import { fleetStatus } from '../src/tools/check-status.js';
-
-function makeEntry(overrides: Partial<StallEntry> = {}): StallEntry {
-  return {
-    sessionId: null,
-    logFilePath: null,
-    lastActivityAt: Date.now(),
-    consecutiveIdleCycles: 0,
-    consecutiveReadFailures: 0,
-    memberId: 'member-1',
-    memberName: 'alice',
-    provisional: true,
-    ...overrides,
-  };
-}
 
 function setupDefaultMocks() {
   mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
@@ -44,82 +29,6 @@ function setupDefaultMocks() {
     return { stdout: 'N/A', stderr: '', code: 0 };
   });
 }
-
-describe('StallDetector lifecycle — integration (T13)', () => {
-  let detector: StallDetector;
-
-  beforeEach(() => {
-    backupAndResetRegistry();
-    vi.clearAllMocks();
-    detector = new StallDetector();
-  });
-
-  afterEach(() => {
-    detector.stop();
-    restoreRegistry();
-  });
-
-  it('provisional add at spawn → upgrade on sessionId → remove on exit', () => {
-    const entry = makeEntry({ memberId: 'member-1', provisional: true });
-    detector.add('member-1', entry);
-
-    expect(detector.getEntry('member-1')).toBeDefined();
-    expect(detector.getEntry('member-1')!.provisional).toBe(true);
-    expect(detector.getEntry('member-1')!.sessionId).toBeNull();
-
-    detector.update('member-1', {
-      sessionId: 'session-xyz',
-      logFilePath: '/home/user/.claude/projects/proj/session-xyz.jsonl',
-      provisional: false,
-    });
-
-    const upgraded = detector.getEntry('member-1')!;
-    expect(upgraded.provisional).toBe(false);
-    expect(upgraded.sessionId).toBe('session-xyz');
-    expect(upgraded.logFilePath).toContain('session-xyz.jsonl');
-
-    detector.remove('member-1');
-    expect(detector.getEntry('member-1')).toBeUndefined();
-  });
-
-  it('stop_prompt removes entry — idempotent with execute_prompt finally', () => {
-    detector.add('member-1', makeEntry({ memberId: 'member-1' }));
-    expect(detector.stallCheckList.size).toBe(1);
-
-    // stop_prompt calls remove
-    detector.remove('member-1');
-    expect(detector.stallCheckList.size).toBe(0);
-
-    // execute_prompt finally also calls remove — should not throw
-    expect(() => detector.remove('member-1')).not.toThrow();
-    expect(detector.stallCheckList.size).toBe(0);
-  });
-
-  it('member unregister removes entry', () => {
-    detector.add('member-1', makeEntry({ memberId: 'member-1' }));
-    detector.add('member-2', makeEntry({ memberId: 'member-2', memberName: 'bob' }));
-    expect(detector.stallCheckList.size).toBe(2);
-
-    // Unregister member-1
-    detector.remove('member-1');
-    expect(detector.stallCheckList.size).toBe(1);
-    expect(detector.getEntry('member-1')).toBeUndefined();
-    expect(detector.getEntry('member-2')).toBeDefined();
-  });
-
-  it('process exits before sessionId — provisional removed cleanly', () => {
-    detector.add('member-1', makeEntry({
-      memberId: 'member-1',
-      provisional: true,
-      sessionId: null,
-      logFilePath: null,
-    }));
-
-    // Process crashes before sessionId arrives → finally block calls remove
-    detector.remove('member-1');
-    expect(detector.getEntry('member-1')).toBeUndefined();
-  });
-});
 
 describe('member_detail surfaces lastLlmActivityAt and idleSecs (T13)', () => {
   beforeEach(() => {

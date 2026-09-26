@@ -34,7 +34,7 @@ Run a full sprint on the toy repo using the pm skill. Do all of it yourself in t
 
 ### T3.1 Set up the repo
 
-On alice: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
+On alice: `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
 
 Record checkpoint:
 ```bash
@@ -96,42 +96,3 @@ Then record T3-done:
 ```bash
 node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-done',status:'PASS',notes:'sprint phase finished'})+'\n')"
 ```
-
----
-
-## Collect Session Logs
-
-During this phase you dispatched `execute_prompt` calls to members. Each response gives you the session ID it used. Collect every session ID per member, from this phase and the setup phase (setup-phase session IDs are in the run directory as `raw-setup.txt`).
-
-Each member's transcript file lives in the LLM's own log directory. How you find it depends on the member's provider.
-
-**Claude member -- the path is exact:**
-
-`~/.claude/projects/<slug>/<session-id>.jsonl`
-
-`<slug>` is the member's work_folder with every `/` (or `\` on Windows) replaced by `-` and any leading slash dropped. Example: `/home/user/fleet-work` becomes `home-user-fleet-work`.
-
-**Gemini member -- match on the session ID:**
-
-`~/.gemini/tmp/*/chats/session-*-<id8>.jsonl`
-
-`<id8>` is the first 8 characters of the session ID. Gemini does not name the file by work_folder or by the full ID, so list that glob -- the 8-character ID prefix identifies the file uniquely.
-
-Use the exact path (Claude) or the glob (Gemini). Do NOT run a recursive search (`find`, `locate`) -- a single fixed-depth glob in the directory above is all that is needed.
-
-Session files live outside the member's work_folder, so `receive_files` cannot reach them directly. For each file: copy it into the member's work_folder, `receive_files` it, then delete the copy.
-
-```bash
-# Unix
-cp <transcript-path> <work-folder>/<session-id>.jsonl
-```
-```powershell
-# Windows
-Copy-Item "<transcript-path>" "<work-folder>\<session-id>.jsonl"
-```
-
-Receive into:
-- alice's sessions -> `logs/alice/<session-id>.jsonl`
-- bella's sessions -> `logs/bella/<session-id>.jsonl`
-
-Skip any session whose file does not exist on the member.

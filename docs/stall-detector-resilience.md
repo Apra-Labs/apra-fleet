@@ -1,4 +1,4 @@
-# StallDetector — Resilience & Edge Case Design
+# StallDetector -- Resilience & Edge Case Design
 
 ## Overview
 
@@ -10,7 +10,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 ### 1. Log File Not Yet Created When First Poll Fires
 
-**Scenario:** A member is added to the stall check list and poll fires before the provider (Claude/Gemini) has written the first JSONL log entry to disk.
+**Scenario:** A member is added to the stall check list and poll fires before the provider (Claude/Antigravity) has written the first JSONL log entry to disk.
 
 **Decision:** Treat as "no activity yet" and do not count as a stall cycle.
 - `readLogTail()` attempts to read the log file, gets "file not found" or similar error from `execute_command`.
@@ -55,9 +55,9 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 - If the process exits (for any reason) before `sessionId` is available, the finally block calls `stallDetector.remove(memberId)`.
 - If `sessionId` arrives before exit, call `stallDetector.update(memberId, { sessionId, logFilePath, provisional: false })` to upgrade the provisional entry.
 - Next poll iteration will see either:
-  - No entry (because the process exited) → nothing to do.
-  - A full entry (because sessionId arrived) → proceed with log reading.
-  - A provisional entry (rare, but sessionId hasn't arrived yet) → skip log reading, check baseline timeout only.
+  - No entry (because the process exited) -> nothing to do.
+  - A full entry (because sessionId arrived) -> proceed with log reading.
+  - A provisional entry (rare, but sessionId hasn't arrived yet) -> skip log reading, check baseline timeout only.
 
 **Rationale:** Two-phase add ensures no gap where active processes aren't tracked. Immediate removal on exit prevents dangling entries. The finally block is guaranteed to run on all exit paths (success, error, timeout, or explicit kill).
 
@@ -85,7 +85,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 **Decision:** Server-side guard prevents concurrent entries; stall detector maps entries by memberId (one per member).
 - The MCP `execute_prompt` handler (in `src/tools/execute-prompt.ts`) already rejects concurrent calls on the same member and returns an error to the caller.
-- The stall detector's `stallCheckList` is keyed by `memberId` — only one entry can exist per member.
+- The stall detector's `stallCheckList` is keyed by `memberId` -- only one entry can exist per member.
 - If, due to a bug, a second `stallDetector.add(memberId, entry2)` is called for an already-tracked member:
   - `add()` logs a warning: `{ event: "stall_detector_duplicate_add", memberId, memberName }`.
   - `add()` overwrites the existing entry with the new one (idempotent semantics).
@@ -101,13 +101,147 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 **Decision:** Baseline `lastActivityAt` is set at add time, not at log-file-creation time, so stale files don't trigger immediate stalls.
 - When a member is added, `lastActivityAt` is set to `Date.now()` (current timestamp).
-- The log file path is derived from the sessionId: `~/.claude/projects/<encoded>/<sessionId>.jsonl` or `~/.gemini/tmp/<project>/<sessionId>.jsonl`.
+- The log file path is derived from the sessionId: `~/.claude/projects/<encoded>/<sessionId>.jsonl` or `~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl` (AGY).
 - If the file pre-exists from a prior session with the same ID, its timestamps are old.
 - Poll loop reads the tail of the file, extracts the last entry's timestamp, and compares it to `entry.lastActivityAt` (set at add time, not read time).
-- Since the log file's timestamp is older than `entry.lastActivityAt`, the comparison detects no new activity → `lastActivityAt` is not updated.
+- Since the log file's timestamp is older than `entry.lastActivityAt`, the comparison detects no new activity -> `lastActivityAt` is not updated.
 - Stall counter advances only if the entry remains idle longer than `STALL_THRESHOLD_MS` from the `lastActivityAt` baseline.
 
 **Rationale:** By anchoring `lastActivityAt` to the add time, we avoid interpreting stale log entries as current activity. Session IDs are intended to be unique per session; if reuse happens, the stale file is irrelevant because the baseline timeout already accounts for normal startup latency.
+
+---
+
+### 7. Transcript-Mtime Cross-Check
+
+**Scenario:** The content-based timestamp extraction (edge cases 1-6 above) depends on the transcript's JSONL shape parsing correctly. Prior incidents shipped because that shape assumption was subtly wrong for a real transcript, and a content-parsing gap silently degrades to "no activity ever seen" -- indistinguishable from a genuinely dead session. Conversely, a session that WAS dead (hit `max_turns_reached` and stopped, but whose terminal-event detection missed the signal -- see the terminal-signal detection note in the provider abstraction docs) sat unkilled for tens of minutes because the only backstop was the multi-thousand-second hard dispatch ceiling.
+
+**Decision:** Every poll also fetches the transcript file's own OS last-modified time (`mtimeMs`), independent of and in addition to the content scan, and the two signals are cross-checked before the poll loop commits to either "activity happened" or "no activity happened":
+- `pollLogFile()` (`stall-poller.ts`) issues a `stat -c %Y`/`stat -f %m` (Unix) or PowerShell `LastWriteTimeUtc` (Windows) read of the transcript file alongside the existing tail read, and returns it as `mtimeMs` (epoch ms). Any failure to obtain it (file missing, stat unsupported, non-numeric output) yields `null` -- treated as "no additional signal," never as "confirmed no activity."
+- If the content scan finds a fresh timestamp, OR the file's mtime is newer than the entry's `lastActivityAt` baseline, that counts as activity (`lastActivityAt` advances to whichever signal is newer). This means a transcript whose current shape the content parser cannot yet handle still cannot manufacture a false stall as long as the file is genuinely still being written -- the mtime is ground truth, independent of any JSON/regex assumption.
+- The stall threshold (`_poll()`'s `now - entry.lastActivityAt > stallThresholdMs` check) only fires once BOTH signals agree there has been no advancement -- i.e. the threshold check is genuinely mtime-corroborated, not a pure content-parsing artifact. This is what lets a dead session (mtime frozen, no content advancing) be caught within the configured window instead of only at the 3630s ceiling, while a long silent tool call whose transcript is still being appended to (by either signal) is never falsely killed.
+- Every existing caller/test that mocks `pollLogFile()`'s return value without an `mtimeMs` field gets `undefined`, which is treated identically to `null` -- this is a pure superset of the prior content-only behavior; it can only convert what would have been a false stall into recognized activity, never the reverse.
+
+**Configuration:** `STALL_THRESHOLD_MS` (default 150000 = 2.5 minutes) is the single configurable inactivity window used for both the content-based and mtime-based signals -- there is no separate mtime threshold. `STALL_POLL_INTERVAL_MS` (default 30000) governs how often both signals are re-checked. This process-wide default is superseded per dispatch by the `timeout_s` parameter (300s / 5 minutes when omitted) -- see "Per-Dispatch Stall Threshold" below.
+
+### Per-Dispatch Stall Threshold
+
+Each `execute_prompt` dispatch carries its own per-dispatch stall threshold, sourced from the `timeout_s` parameter (which defaults to 300 seconds when omitted). This per-dispatch value overrides the process-wide `STALL_THRESHOLD_MS` default for that dispatch only: if `timeout_s` is explicitly set on the dispatch, the stall detector uses that value as the baseline threshold for the entry's stall detection gate. Additionally, `timeout_s` drives the exec-channel rolling timer for Codex, Copilot, and OpenCode, while Claude and AGY instead take their exec-level ceiling from `max_total_s` (falling back to a never-binds constant if absent), allowing them to avoid falsely killing a dispatch while a long silent tool call is legitimately processing. The orchestrator-authored per-dispatch baseline (derived from timeout_s or a fallback default) is **deliberately NOT capped** by `STALL_MAX_THRESHOLD_MS` -- a trusted baseline can exceed that ceiling, ensuring legitimate long-running dispatches are never prematurely killed by the stall detector. By contrast, the model-authored `pendingToolTimeoutMs` (extracted from a tool_use's own declared `input.timeout` inside the transcript) is **capped** at `STALL_MAX_THRESHOLD_MS` to prevent an extraordinarily large timeout declaration from disabling stall detection entirely. The per-dispatch baseline and the pending-tool override compete via `max(baseline, min(pendingToolTimeout, ceiling))`, so the ceiling only constrains the untrusted contribution, never the trusted baseline.
+
+**Rationale:** Content parsing and OS mtime are two independent observations of the same underlying fact ("did this file change"). Requiring stall-only-if-neither-agrees strictly reduces false positives versus content-parsing alone (it is a superset check), while requiring an mtime-confirmed freeze before treating a missing/unparseable terminal signal (e.g. a missed `max_turns_reached` event) as fatal is exactly the defense-in-depth this design needs: even if the terminal-event detection is wrong again, a genuinely dead session (frozen mtime) still dies within the configured window rather than the multi-thousand-second ceiling.
+
+---
+
+### 8. Confirmed Stall Must Cancel the In-Flight Dispatch, Not Just the Remote Process
+
+**Scenario:** The poller confirms a stall (edge cases 1-7 above all agree there has been no activity past the threshold) and needs to actually end the hung dispatch.
+
+**Decision:** Killing the remote pid is necessary but not sufficient. The `onStall` callback also carries an `AbortController` wired into the same `execCommand()` abort-signal path remote strategies already accept, so a confirmed stall rejects the pending MCP `tools/call` immediately with a typed `stalled` error -- it does not leave the client waiting out its own independent hard deadline for a server-side process that is already dead. See `docs/architecture.md`'s "Terminal-Signal and Dead-Session Detection Invariants" section for how this fits alongside the other dispatch-termination invariants (max-turns detection, busy-lock liveness checks) as defense-in-depth against a hung dispatch surviving past its detection.
+
+**Rationale:** Without this, a confirmed stall detection (which exists specifically to catch a hang within a bounded window) degraded back into the exact multi-thousand-second wait it was built to avoid, because the detector and the dispatch's own promise were two independent things and only one of them knew the session was dead.
+
+---
+
+### 9. Windows Remote-Exec Command Strings Must Avoid Intermediate `$variable` Tokens
+
+**Scenario:** The Windows mtime-probe commands (both the directory-scan probe
+and the single-log-file probe) are PowerShell one-liners sent to a remote
+member over the same shell/SSH execution path every other remote command
+uses. On at least one real Windows member, that execution path was found to
+silently strip bare `$name` tokens (e.g. an intermediate `$i = ...`
+assignment) out of the command string before the nested `powershell -c`
+invocation ever parses it -- turning a working one-liner into a parse error
+on every single poll and killing the mtime signal for that member entirely.
+
+**Decision:** Write these one-liners with **no intermediate `$variable`
+assignment at all** -- pipe straight through to a terminal stage instead of
+assigning an intermediate result and testing it. For the directory-scan
+probe, a `Test-Path` guard (itself effectively instant either way) skips the
+file scan entirely when the directory doesn't exist yet (the common case,
+since this polls the log directory before a session's first turn creates
+it), and the pipeline's final stage formats an ISO-8601 timestamp directly
+rather than constructing a value from an intermediate variable -- a
+zero-object pipeline simply produces no output, not an error. The read side
+correspondingly parses an ISO-8601 string (`Date.parse`) for the Windows
+path, vs. whole epoch seconds for the POSIX path, since the two platforms'
+one-liners now emit different timestamp representations by construction.
+
+**Rationale:** Two variable-based rewrites were tried first and both hung
+(and leaked an unkillable remote PowerShell process, since this probe path
+carries no PID marker for the remote-process-kill machinery to act on) --
+live reproduction traced the hang specifically to a directory-scan pipeline
+run against a **nonexistent** path with errors suppressed, not to anything
+downstream of it or to an existing-but-empty directory. Avoiding the
+intermediate variable end to end, rather than patching only the specific
+hang, is what closes off the class of failure (both the parse-strip issue
+and the hang) at once.
+
+**Invariant to preserve if this code is touched again:** neither Windows
+one-liner may reintroduce an intermediate `$variable` assignment. If a
+null/missing-file guard is needed, it must be expressed as a guard *stage in
+the pipeline* (e.g. `Test-Path`, or a pipeline that naturally produces no
+output on an empty result) rather than as a `$var = ...; if ($var) { ... }`
+pattern -- the latter is exactly the shape that triggered the token-stripping
+failure mode above. Note this also means a single-file mtime probe that
+drops such a guard has no explicit "does the file exist" branch of its own;
+it relies on the pipeline naturally producing nothing (or an error this
+module already treats as "no signal") when the target is absent -- verify
+that behavior with a real test whenever this command string changes, since
+there is currently a known gap: this exact command string was changed
+without new test coverage for either the new command output shape or its
+null/missing-file behavior.
+
+---
+
+### 10. A Byte-Capped Tail Read Can Truncate the Last Dated Entry -- Scan Backwards, and Treat "No Timestamp But Mtime Unchanged" as Staleness, Not Silence
+
+**Scenario:** The tail read is capped to a fixed byte/line window (`tail -c 512` on
+POSIX, `Get-Content -Tail 5` on Windows) for cost reasons. On a real frozen
+transcript, the last line inside that window can be an untimestamped record
+(an attachment, a last-prompt record) sitting below the actual last dated
+entry, which the byte cap pushed just outside the window -- or the window can
+otherwise contain no line that parses as JSON with a `timestamp` field at
+all. Before this fix, the content scan looked only at the very last line,
+found nothing usable, and the poll loop's `lastTimestamp === null` branch
+fell straight through a bare `continue` with no log line and no threshold
+check ever running -- a transcript frozen well past its stall threshold
+produced no stall event at all, because the code path that would have
+evaluated it was simply never reached.
+
+**Decision:** Two independent changes close this gap:
+- `readLogTail()` scans the tail window **backwards** from the last line,
+  looking for the most recent line that parses as JSON with a string
+  `timestamp` field, instead of inspecting only the final line. A trailing
+  untimestamped record no longer hides a dated entry sitting one line above
+  it within the same capped window.
+- If no line in the window carries a parseable timestamp at all (`lastTimestamp
+  === null`), the poll loop no longer treats that as pure absence of
+  evidence on its own. It falls back to the transcript file's own OS mtime
+  (already fetched every poll as the cross-check described in edge case 7
+  above): if the mtime is unavailable, this genuinely is absence of evidence
+  (the file may not exist yet) and the poll still does not count as a stall
+  cycle. But if the mtime IS known and has NOT advanced past the entry's
+  `lastActivityAt` baseline, that is now evaluated as a stale, unadvanced tail
+  -- the same idle-cycle/threshold check used for a stale *content*
+  timestamp -- anchored on the entry's existing `lastActivityAt` (the last
+  dated entry, wherever it was found, still decides staleness; only the
+  *evaluation* of that staleness no longer silently skips).
+
+**Rationale:** Mtime is already trusted elsewhere in this design as a
+format-agnostic corroborating signal (edge case 7); using it here closes the
+exact class of gap that motivated edge case 7 in the first place, but for the
+"tail read found nothing at all" case rather than the "content parser doesn't
+understand this shape" case. The two are different failure modes (a byte cap
+truncating a well-formed entry vs. a parser not recognizing a well-formed
+entry) but the fix is the same: don't let an unparseable/truncated content
+scan silently disable the threshold check when a strictly-more-reliable
+signal (the file's own mtime) is available and agrees the transcript is
+frozen.
+
+**Invariant to preserve if this code is touched again:** a `null` result from
+the content-timestamp scan must never, on its own, short-circuit the stall
+threshold evaluation when the transcript file's mtime is known. The only
+legitimate silent-`continue` case is "mtime itself is also unavailable" --
+i.e. genuine absence of evidence that the file exists at all.
 
 ---
 
@@ -121,9 +255,9 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 5. **Stall events are emitted only after `STALL_THRESHOLD_MS` elapses** without a successful log read that finds new activity.
 
 ### Cross-Case Scenarios
-- **Spawn → quick exit (before sessionId):** Two-phase add + immediate remove. Entry never reaches poll phase.
-- **Spawn → sessionId arrives → stale log file:**  Entry is upgraded to non-provisional. Log is read; stale timestamp is ignored because `lastActivityAt` is newer. No false stall.
-- **Spawn → poll (no log yet) → log created → poll again:** First poll: provisional, no log read, baseline timeout check. Log file created. Second poll: entry is upgraded (if sessionId arrived), log is read, real timestamp extracted.
+- **Spawn -> quick exit (before sessionId):** Two-phase add + immediate remove. Entry never reaches poll phase.
+- **Spawn -> sessionId arrives -> stale log file:**  Entry is upgraded to non-provisional. Log is read; stale timestamp is ignored because `lastActivityAt` is newer. No false stall.
+- **Spawn -> poll (no log yet) -> log created -> poll again:** First poll: provisional, no log read, baseline timeout check. Log file created. Second poll: entry is upgraded (if sessionId arrived), log is read, real timestamp extracted.
 - **Concurrent adds (rare bug):** Warning logged, new entry overwrites old. Safe recovery.
 
 ---
@@ -133,8 +267,8 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 1. **Use structured logging** for all stall detector events (reads, failures, stalls, debug). Event names: `stall_poll`, `stall_log_read`, `stall_log_read_failure`, `stall_log_read_warning`, `stall_detected`.
 2. **Idempotent operations:** `remove()` is a no-op if entry doesn't exist; `update()` merges fields; `add()` overwrites with a warning.
 3. **Environment variables:**
-   - `STALL_POLL_INTERVAL_MS` (default 15000): Polling frequency.
-   - `STALL_THRESHOLD_MS` (default 120000): Idle threshold before stall event is emitted.
+   - `STALL_POLL_INTERVAL_MS` (default 30000): Polling frequency.
+   - `STALL_THRESHOLD_MS` (default 150000): Idle threshold before stall event is emitted.
 4. **Timeout for log reads:** `readLogTail()` uses 5000ms timeout for the tail command. This is short enough to avoid blocking the poll loop but long enough for most file reads.
 5. **No direct filesystem access:** All log file reads go through `execute_command` via the strategy abstraction. This ensures the same code path works for local and remote members.
 
@@ -150,3 +284,5 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 | Gap (provisional entry timeout) | Check baseline timeout, detect stall | Incremented if timeout exceeded | Not updated (no log) | `stall_detected` (provisional) |
 | Concurrent add (rare) | Warn and overwrite | Depends on new entry | Depends on new entry | `stall_detector_duplicate_add` |
 | Stale pre-existing log | Ignore stale timestamp (newer baseline) | Not incremented | Not updated | `stall_poll` (status: idle) |
+| Mtime advanced but content unparseable | Treat as activity (mtime is ground truth) | Not incremented | Updated to mtime | `stall_poll` (status: idle) |
+| Content stale AND mtime stale | Confirmed frozen -- eligible for stall | Incremented | Not updated | `stall_detected` |

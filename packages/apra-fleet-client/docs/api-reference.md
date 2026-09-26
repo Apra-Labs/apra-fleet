@@ -1,0 +1,692 @@
+# apra-fleet-client -- API Reference
+
+All modules are ES modules (`"type": "module"` in `package.json`); import
+with `import { ... } from '@apralabs/apra-fleet-client'` (or one of the
+subpath exports below).
+
+## `src/client/transport.mjs`
+
+A transport is an `EventEmitter` that knows how to move raw JSON-RPC
+messages to and from the fleet server. Both transports emit:
+
+- `'message'` -- with a parsed JSON-RPC message object, whenever one arrives.
+- `'error'` -- with an `Error`, on a transport-level failure.
+- `'close'` -- when the underlying connection/process ends.
+
+`StreamableHttpTransport` additionally emits `'ready'` once its SSE stream
+is open (see below).
+
+Neither transport does JSON-RPC ID bookkeeping, timeouts, or
+request/response correlation itself -- that's `McpClient`'s job.
+
+### `class StdioTransport extends EventEmitter`
+
+Spawns a child process and speaks newline-delimited JSON over its stdin/stdout.
+
+- **`new StdioTransport(command, args, options = {})`**
+  - `command: string` -- executable to spawn.
+  - `args: string[]` -- arguments.
+  - `options: object` -- passed through to Node's `child_process.spawn()`.
+- **`start()`** -- spawns the process and wires up stdout/stderr/close/error
+  handlers. Not async (does not await process startup); it returns
+  immediately after calling `spawn()`. stderr output from the child is
+  currently discarded silently (no `'error'`/log emission for it).
+- **`async send(message)`** -- JSON-stringifies `message`, appends `\n`,
+  writes it to the child's stdin. Throws a plain `Error('Transport not
+  started')` if `start()` hasn't been called yet (i.e. `this.process` is
+  null).
+- **`stop()`** -- kills the child process (`SIGTERM` via `.kill()`) and
+  clears the internal process handle. Safe to call even if not started.
+
+Incoming stdout data is buffered and split on `\r?\n`; each complete line is
+`JSON.parse`d and emitted as `'message'`. A line that fails to parse is
+logged to `console.error` and dropped (not emitted, not thrown).
+
+### `class StreamableHttpTransport extends EventEmitter`
+
+Implements the MCP "Streamable HTTP" transport: an initial POST to obtain a
+session ID, a long-lived GET that opens a Server-Sent-Events stream for
+server-to-client messages, and subsequent POSTs (also answered via SSE) to
+send client-to-server messages.
+
+- **`new StreamableHttpTransport(url, options = {})`**
+  - `url: string` -- the MCP endpoint URL.
+  - `options.headers: object` -- extra HTTP headers merged into every
+    request (e.g. for auth).
+- **`async start()`**
+  1. POSTs a JSON-RPC `initialize` request to `url`.
+  2. Reads the `mcp-session-id` response header; throws if it's missing.
+  3. Starts a self-reconnecting background loop (`_runPersistentStream()`)
+     that opens a GET request to the same `url` with that session ID and
+     reads it as an SSE stream.
+  4. Emits `'ready'` once the loop has been started.
+  - Any failure during this sequence is caught and re-emitted as an
+    `'error'` event (this method does not throw/reject -- callers must
+    listen for `'error'` and/or `'ready'`, not `await` a resolved value
+    that indicates failure).
+- **`async send(message)`** -- POSTs `message` as JSON to `url` with the
+  session ID header, then reads the response body as an SSE stream for the
+  reply (the server answers each POST with its own SSE payload rather than
+  a plain JSON body). Throws if `start()` hasn't produced a session ID yet,
+  or if the POST response is not `ok`. Connection-level rejections where no
+  response was produced at all (`ECONNRESET`, `ECONNREFUSED`, `EPIPE`,
+  `UND_ERR_SOCKET`, `UND_ERR_CLOSED`, or a bare `fetch failed`) are retried
+  twice, after 500 ms and 2000 ms; a non-`ok` status or any other error is
+  never retried.
+- **`stop()`** -- aborts the internal `AbortController`, tearing down both
+  the open GET stream and any in-flight POST.
+
+Both fetches go through `undici`'s own `fetch` with a dedicated `Agent`
+(`headersTimeout: 0`, `bodyTimeout: 0`, `keepAliveTimeout: 4000`) rather
+than Node's built-in `fetch`. The disabled idle timeouts matter because MCP
+streamable-HTTP responses arrive over SSE streams that legitimately stay
+silent far longer than Node's ~300 s default body timeout (a long
+`execute_prompt` dispatch prints nothing until the member CLI finishes).
+`undici` is this package's only runtime dependency.
+
+The persistent GET stream is normally silent -- JSON-RPC replies arrive on
+each POST's own SSE response, not here -- so its loop treats a stream end
+as an expected, recoverable event: it reopens the stream after an
+exponential backoff (capped at 15 s) and only emits `'error'` + `'close'`
+after 5 consecutive reconnect failures, or `'close'` alone on a deliberate
+`stop()`.
+
+Note: `StreamableHttpTransport` generates its own JSON-RPC id for the
+`initialize` call internally (via `crypto.randomUUID()`); this happens
+before an `McpClient` is attached, so that particular request/response pair
+is not visible through `McpClient`.
+
+## `src/client/client.mjs`
+
+### `export const DEFAULT_REQUEST_TIMEOUT_MS`
+
+`15 * 60 * 1000` (15 minutes). The timeout used by `McpClient.request()`
+when no `timeoutMs` is given and none can be derived. Documented as
+intentionally finite: a server that accepts a request and never replies
+(without closing the transport) must not hang the caller forever.
+
+### `class McpClient`
+
+Adds JSON-RPC 2.0 request/response correlation, per-request timeouts, and
+abort support on top of a transport.
+
+- **`new McpClient(transport)`** -- subscribes to the transport's
+  `'message'`, `'close'`, and `'error'` events. On `'close'` or
+  `'error'`, every currently-pending request is rejected (with a
+  `TransportClosedError` or the emitted error, respectively) and the
+  pending-request map is cleared.
+
+- **`async request(method, params, opts = {})`** -- sends
+  `{ jsonrpc: '2.0', id, method, params }` over the transport and returns a
+  `Promise` that resolves with `message.result` when a matching JSON-RPC
+  response arrives, or rejects if the response is an error, the request
+  times out, or the given signal aborts.
+  - `method: string`
+  - `params: object`
+  - `opts.timeoutMs?: number` -- reject with a `TimeoutError`
+    (`.code === 'TIMEOUT'`) if no response arrives in this window. Defaults
+    to `DEFAULT_REQUEST_TIMEOUT_MS` when omitted. Passing `Infinity`
+    (or `null`) disables the timer.
+  - `opts.signal?: AbortSignal` -- if provided and already aborted, rejects
+    immediately with an `AbortError` (`.code === 'ABORTED'`); if aborted
+    later, rejects the same way and cleans up the pending-request entry.
+  - This is a **client-side-only** timeout/abort: it stops the local
+    `Promise` from waiting forever and frees local bookkeeping, but it
+    cannot cancel work already accepted by the remote fleet-server process.
+    A response that arrives after the client has already timed out/aborted
+    is silently discarded (no unhandled rejection, no effect on other
+    pending requests).
+  - Request IDs are simple incrementing integers (`this.nextId++`), unique
+    per `McpClient` instance, not globally.
+
+- **`async callTool(name, args, opts = {})`** -- convenience wrapper:
+  `request('tools/call', { name, arguments: args }, opts)`. This is what
+  `ApraFleet`'s methods call under the hood.
+
+## `src/client/errors.mjs`
+
+- **`class ClientError extends Error`** -- `new ClientError(message, {
+  code, details, cause })`. Sets `this.name` to the concrete subclass name,
+  `this.code` (defaults to `'CLIENT_ERROR'`), and `this.details`. `cause`
+  is passed through to the native `Error` cause chain when provided.
+- **`class TimeoutError extends ClientError`** -- always has
+  `code === 'TIMEOUT'`. Thrown by `McpClient.request()` on a client-side
+  timeout.
+- **`class AbortError extends ClientError`** -- always has
+  `code === 'ABORTED'`. Thrown by `McpClient.request()` when the caller's
+  `AbortSignal` fires before a response arrives.
+- **`class TransportClosedError extends ClientError`** -- always has
+  `code === 'TRANSPORT_CLOSED'`. The rejection raised for every in-flight
+  request when the underlying transport closes: a deliberate `stop()`, or
+  the persistent SSE stream dying past its reconnect budget. Typed
+  deliberately so callers can classify it as a connectivity event
+  (retryable at their discretion) rather than a request-level failure.
+
+`errors.mjs` is not listed in `package.json#exports`; callers reach these
+values as rejections rather than by importing the classes.
+
+Convention: when `execute_prompt`/`execute_command` surface a new kind of
+failure that downstream code must branch on, add a typed class here
+(transport/request-level failures) or a `reason` code on the workflow
+layer's `AgentDispatchError` (dispatch-level failures reported via
+`structuredContent.isError`) -- never a bare `Error` whose message has to
+be sniffed.
+
+Callers generally check `err.code` rather than `instanceof`, since a
+sibling package (`apra-fleet-workflow`) intentionally recognizes these
+codes to re-wrap them into its own error taxonomy (see "Known issues"
+below).
+
+## `src/client/api.mjs`
+
+### `export function deriveTimeoutMs(payload = {})`
+
+Derives a client-side `McpClient.request()` timeout, in milliseconds, from
+a tool-call payload's own timeout hints, so the client doesn't give up
+before the server's own deadline has a chance to fire.
+
+- Looks at `payload.max_total_s` first, falling back to `payload.timeout_s`
+  if `max_total_s` is absent (`??`, so `0` in `max_total_s` would NOT fall
+  through, but `undefined`/`null` would).
+- If the chosen value isn't a finite positive number, returns `undefined`
+  (letting `McpClient` fall back to its own `DEFAULT_REQUEST_TIMEOUT_MS`).
+- Otherwise returns `hintSeconds * 1000 + 30_000` -- a 30-second grace
+  margin (`TIMEOUT_GRACE_MS`) added on top of the server-facing hint.
+- This single-budget shape (rather than `max_total_s * 2`) relies on the
+  server sharing ONE `max_total_s` deadline across an original dispatch
+  attempt and any single retry it runs internally (e.g. a fresh-session
+  retry after an SSH inactivity exception) -- a retry's own budget is capped
+  to whatever remains of `max_total_s` since the dispatch started, and
+  skipped once that remainder is exhausted (`src/tools/execute-prompt.ts`,
+  apra-fleet-y8q.1). Without that server-side sharing, a retry could burn a
+  second full budget and this client timeout would fire before the server's
+  own clean retry-and-report path ever got a chance.
+
+### `export function parseToolJson(result)`
+
+Extracts the JSON payload from a raw MCP tool-call result. Every
+`ApraFleet` wrapper returns the raw `callTool()` result --
+`{ content: [{ type: 'text', text }, ...] }` -- not a JSON string, so
+`JSON.parse(result)` on it throws. Tool results can also carry
+display-only items ahead of the payload, so `content[0]` is not reliable
+either. This helper returns the first content item that parses as JSON,
+and throws `Error('No JSON payload in tool result')` when none does.
+
+### `class ApraFleet`
+
+Thin, typed wrapper over an MCP-capable client's `callTool(name, args,
+opts)` method (normally an `McpClient` instance, but any object with a
+compatible `callTool` works -- this is how the unit tests mock it).
+
+- **`new ApraFleet(mcpClient)`** -- stores the client on `this.mcpClient`.
+
+All methods below are `async` and return whatever `mcpClient.callTool()`
+resolves to (i.e. the MCP tool's `result`), or reject with whatever it
+rejects with (a `TimeoutError`/`AbortError`/`TransportClosedError` from
+`McpClient`, or a plain `Error` wrapping the server's JSON-RPC error
+message). None of the methods validate their arguments locally; validation
+is the server's job, and an invalid call surfaces as a rejected promise
+carrying the server's error message. The `result` is the raw MCP shape
+(`{ content: [...] }`); use `parseToolJson()` above to get at the JSON
+payload of tools that return one.
+
+**Only `executePrompt()` and `executeCommand()` accept the client-side
+`timeoutMs`/`signal` options.** They strip both from the options object
+before sending the rest as the tool payload. Every other method forwards
+its whole `options` object to the server verbatim, so a `timeoutMs` or
+`signal` key passed to e.g. `listMembers()` would be sent as a tool
+argument rather than consumed locally. Those calls use `McpClient`'s
+`DEFAULT_REQUEST_TIMEOUT_MS`, except `shutdownServer()`, which sets its own
+(see below).
+
+#### `executePrompt(options: ExecutePromptOptions)`
+
+Calls the `execute_prompt` MCP tool -- runs an AI prompt on a fleet member.
+`timeoutMs` and `signal` are stripped from `options` before the remaining
+fields are sent as the tool payload; `timeoutMs` is passed to
+`mcpClient.callTool` as `opts.timeoutMs` (defaulting to
+`deriveTimeoutMs(payload)` when not given explicitly), and `signal` as
+`opts.signal`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `prompt` | `string` | The prompt to send to the LLM on the remote member. |
+| `agent` | `string?` | Optional agent name to activate. |
+| `max_total_s` | `number?` | Hard ceiling in seconds. |
+| `max_turns` | `number?` | Max turns for `claude -p` (default: 50). |
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `model` | `string?` | Model tier (`"cheap"`, `"standard"`, `"premium"`) or a specific model ID. |
+| `resume` | `(boolean \| string)?` | Resume the previous session if one exists, or pass a session ID string directly. At this client/transport layer, an omitted field defaults to `true` server-side. `apra-fleet-workflow`'s `FleetWorkflow.agent()` always sends this field explicitly (defaulting it to `false` for workflow-authored prompts), so workflow callers effectively opt out of this client-level default unless they ask for it. |
+| `session_id` | `string?` | Optional explicit session ID to resume (shorthand alias for `resume: "<sessionId>"`). |
+| `fork` | `(boolean \| string)?` | Branch a NEW session seeded from an existing one instead of continuing it in place. `true` = fork from the member's stored last session. A session-id STRING = fork from exactly that session. Mutually exclusive with `resume` (any non-default value) and with `session_id`. |
+| `substitutions` | `Record<string,string>?` | Token-name -> replacement-value map. |
+| `timeout_s` | `number?` | Inactivity timeout in seconds -- always drives the stall detector's per-dispatch baseline threshold (default: 300). Per-provider, it ALSO arms the exec-level rolling timer against this dispatch's stdout/stderr channel for Codex and Copilot (no pollable transcript); Claude and AGY take that exec-channel ceiling from `max_total_s` instead; OpenCode keeps BOTH signals armed at once (exec-channel timer plus coarse log-directory-mtime polling, OR semantics), since its transcript signal is directory-level only. |
+| `expected_context_tokens` | `number?` | Estimate of how many tokens this dispatch adds to the target session's context. When set (or `context_size` is set), the server compares it against the session's remaining context-window headroom BEFORE invoking the LLM: too little headroom rejects the call with `{reason: "insufficient_context_headroom", detail: {demand, headroom, window}}` and no spawn; a fit that lands inside the safety margin still proceeds but attaches a structured `contextWarning`. Wins over `context_size` when both are set. |
+| `context_size` | `("S" \| "M" \| "L")?` | Size-bucket shorthand for `expected_context_tokens`, mapping to configured token estimates (fleet defaults, overridable via `config.json`'s `contextAdmission.sizeBucketTokens`). Ignored when `expected_context_tokens` is also set. Omitting both fields disables the headroom check entirely. |
+| `timeoutMs` | `number?` | Client-side request timeout override (ms); not sent to the server. |
+| `signal` | `AbortSignal?` | Cancels the client-side wait only; cannot cancel a job already accepted by the server. |
+
+#### `executeCommand(options: ExecuteCommandOptions)`
+
+Calls `execute_command` -- runs a shell command on a member. Same
+`timeoutMs`/`signal` handling as `executePrompt`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | `string` | The shell command to execute. |
+| `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
+| `max_retries` | `number?` | Max crash retries (long-running only). |
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `restart_command` | `string?` | Command for retry runs, e.g. checkpoint resume. |
+| `run_from` | `string?` | Override directory to run from. |
+| `timeout_s` | `number?` | Timeout in seconds (default: 120). |
+| `timeoutMs` | `number?` | Client-side request timeout override (ms). |
+| `signal` | `AbortSignal?` | Client-side cancellation only. |
+
+#### `listMembers(options: ListMembersOptions = {})`
+
+Calls `list_members`. `options` defaults to `{}` if omitted (verified by
+the unit tests -- calling with no arguments sends an empty object, not
+`undefined`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `format` | `"compact" \| "json"?` | Output format. |
+| `tags` | `string[]?` | Filter members by tags (AND semantics). |
+
+#### `fleetStatus(options: FleetStatusOptions = {})`
+
+Calls `fleet_status` -- status of all fleet members.
+
+| Field | Type | Notes |
+|---|---|---|
+| `format` | `"compact" \| "json"?` | Output format. |
+
+#### `memberDetail(options)`
+
+Calls `member_detail` -- detailed status for one member: connectivity,
+session (`session.id`, the current session ID or `null`), work folder
+(`folder`), shell (Windows members only), and LLM provider.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
+
+Returns a plain multi-line text summary for `"compact"`, or the structured
+`MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
+`id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
+`repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
+`llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
+`branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
+`UpdateMemberOptions`, is pinned against the server by
+`test/client-server-typedef-parity.test.mjs`, which parses the real
+`src/tools/*.ts` sources; the typedefs for the other tools are
+hand-maintained.
+
+#### `sendFiles(options: SendFilesOptions)`
+
+Calls `send_files` -- uploads local files to a member.
+
+| Field | Type | Notes |
+|---|---|---|
+| `local_paths` | `string[]` | Local file paths to upload. |
+| `dest_subdir` | `string?` | Destination subdirectory relative to the member's work folder. |
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `substitutions` | `Record<string,string>?` | Token-name -> replacement-value map. |
+
+#### `receiveFiles(options: ReceiveFilesOptions)`
+
+Calls `receive_files` -- downloads files from a member.
+
+| Field | Type | Notes |
+|---|---|---|
+| `remote_paths` | `string[]` | Paths on the member to download. |
+| `local_dest_dir` | `string` | Local directory to write downloaded files into. |
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+
+#### `registerMember(options: RegisterMemberOptions)`
+
+Calls `register_member` -- adds a machine to the fleet.
+
+| Field | Type | Notes |
+|---|---|---|
+| `friendly_name` | `string` | Required. Human-friendly name for this member (1-64 chars, alphanumeric, dots, dashes, underscores only). |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `member_type` | `"local" \| "remote"?` | Member type (default: `"remote"`). |
+| `host` | `string?` | IP address or hostname of the remote machine. |
+| `port` | `number?` | SSH port (default: 22). |
+| `username` | `string?` | SSH username. |
+| `auth_type` | `"password" \| "key"?` | SSH authentication method. |
+| `password` | `string?` | SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
+| `key_path` | `string?` | Path to SSH private key file. |
+| `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
+| `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | VCS provider this member pushes to / opens PRs against. Omit to auto-detect from the member's git `origin` remote (registration warns loudly if detection fails); `"none"` declares the member deliberately has no VCS provider. |
+| `cloud_provider` | `"aws"?` | Cloud provider name (e.g. "aws"). When set, `cloud_instance_id` and `key_path` are required. |
+| `cloud_instance_id` | `string?` | EC2 instance ID (e.g. "i-0abc123def456789a"). Required when `cloud_provider` is set. |
+| `cloud_region` | `string?` | AWS region (default: "us-east-1"). |
+| `cloud_profile` | `string?` | AWS CLI profile name for cloud instance access. |
+| `cloud_idle_timeout_min` | `number?` | Minutes of inactivity before auto-stop (default: 30, min: 1, max: 1440). |
+| `cloud_activity_command` | `string?` | Custom shell command for workload detection. Must output "busy" or "idle". Checked after GPU, before process check. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode" \| "none"?` | LLM provider for this member (default: `"claude"`). Use `"none"` for a plain command executor with no LLM. |
+| `model_cheap` | `string?` | Custom cheap model choice from configured curated list. |
+| `model_standard` | `string?` | Custom standard model choice from configured curated list. |
+| `model_premium` | `string?` | Custom premium model choice from configured curated list. |
+| `model_tiers` | `{cheap?: string, standard?: string, premium?: string}?` | Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. |
+| `unattended` | `"false" \| "auto" \| "dangerous" \| false?` | Permission mode for unattended execution. Omit or pass `false` for interactive (default); `"auto"` for auto-approve safe operations; `"dangerous"` to skip all permission checks. |
+| `category` | `string?` | Optional group label (max 64 chars). Used to group members in fleet status output. |
+| `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
+| `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
+| `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
+| `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+
+
+#### `updateMember(options: UpdateMemberOptions)`
+
+Calls `update_member` -- changes a member's settings. Every field is optional
+and means "new value for this field". Identifies the target member via
+`member_id` or `member_name`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `friendly_name` | `string?` | New friendly name. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `host` | `string?` | New host (remote members only). |
+| `port` | `number?` | New SSH port (remote members only). |
+| `username` | `string?` | New SSH username (remote members only). |
+| `auth_type` | `"password" \| "key"?` | New SSH authentication method (remote members only). |
+| `password` | `string?` | New SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
+| `rotate_password` | `boolean?` | Trigger secure out-of-band password re-entry for a member already using password auth. Ignored if `auth_type` is not password. |
+| `key_path` | `string?` | New SSH private key path. Used for both regular SSH connections and cloud instance lifecycle. |
+| `git_access` | `"read" \| "push" \| "admin" \| "issues" \| "full"?` | Git access level for this member. |
+| `git_repos` | `string[]?` | Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"]). |
+| `icon` | `string?` | Override the auto-assigned emoji icon. Use named aliases (blue-circle, green-square, red-circle, etc.) or pass raw emoji. |
+| `cloud_region` | `string?` | New AWS region for the cloud instance. |
+| `cloud_profile` | `string?` | New AWS CLI profile name. |
+| `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop. |
+| `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. |
+| `model_cheap` | `string?` | Change custom cheap model. |
+| `model_standard` | `string?` | Change custom standard model. |
+| `model_premium` | `string?` | Change custom premium model. |
+| `model_tiers` | `{cheap?: string, standard?: string, premium?: string}?` | Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. |
+| `unattended` | `"false" \| "auto" \| "dangerous" \| false?` | Permission mode for unattended execution. Pass `false` to reset to interactive (default); `"auto"` for auto-approve safe operations; `"dangerous"` to skip all permission checks. |
+| `category` | `string?` | Group label for this member. Pass empty string to clear. |
+| `tags` | `string[]?` | Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags. |
+| `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Change the code-intelligence provider for this member. |
+| `unreservable` | `boolean?` | Mark/unmark this member as shared or never exclusively reservable. |
+| `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
+| `vcs_provider` | `"github" \| "bitbucket" \| "azure-devops" \| "none"?` | Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use to correct a wrong auto-detect from `register_member`, or to set the provider without provisioning credentials. `"none"` clears it. |
+
+#### `removeMember(options: RemoveMemberOptions)`
+
+Calls `remove_member` -- removes a member from the fleet.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `force` | `boolean?` | Remove even if the member is currently busy. |
+
+#### `getMemberModelPricing(options)`
+
+Calls `get_member_model_pricing` -- returns a member's cheap/standard/premium
+tier resolved to a concrete model plus its real per-1M-token price, so a
+client-side cost tracker can price a dispatch. Options: `member_id?`,
+`member_name?`.
+
+#### `provisionLlmAuth(options: ProvisionLlmAuthOptions)`
+
+Calls `provision_llm_auth` -- puts LLM auth on a member. Options:
+`member_id?`, `member_name?`, and `api_key?`. Omitting `api_key` copies the
+local OAuth session to the member instead. `api_key` supports a
+`{{secret.NAME}}` token, resolved from the credential store server-side.
+
+#### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
+
+Calls `provision_vcs_auth` -- configures git-host auth (GitHub App token or
+PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
+(`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
+optional and provider-specific: `member_id`, `member_name`, `label`,
+`scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
+`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
+`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
+token. `pat_expires_at` must be parseable by `Date.parse` -- the server
+rejects an unparseable value rather than storing it, because a `NaN` expiry
+silences the near-expiry warning and makes the credential-cleanup timer
+fall back to its default.
+
+#### `composePermissions(options: ComposePermissionsOptions)`
+
+Calls `compose_permissions` -- composes and delivers a scoped permission
+profile to a member. On the server host, complete profile directories (with
+both `base-dev.json` and `base-reviewer.json`) are checked by most recent
+installation date, then by the remaining supported providers in deterministic
+order. Options: `member_id?`, `member_name?`, `role?`
+(`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
+`grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
+`"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
+`grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
+wildcard-matched (not exact-matched) against a normalized form of the
+request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
+`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, and any payload
+containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
+-- rejected outright, for every caller.
+
+#### `setupSshKey(options: SetupSshKeyOptions)`
+
+Calls `setup_ssh_key` -- converts a remote member from password to SSH key
+authentication. Options: `member_id?`, `member_name?`.
+
+#### `sendEmail(options: SendEmailOptions)`
+
+Calls `send_email`. Provider config is passed inline; secrets resolve
+server-side from the credential store (`sendgrid_api_key` /
+`smtp_password`) and never travel through the caller. Required: `from`,
+`to` (address or array), `subject`, `body`. Optional: `provider`
+(`"sendgrid" | "smtp"`, default `"sendgrid"`), `host`, `port` (default 587,
+or 465 when `secure` is true), `user`, `secure` (implicit TLS; when false,
+STARTTLS is required and plaintext AUTH is refused), `html`, `cc`, `bcc`,
+and `attachments` (`{ filename, content, contentType? }[]`, base64 content).
+`host`/`user` are required for the `smtp` provider.
+
+#### `credentialStoreSet(options)` / `credentialStoreList()` / `credentialStoreDelete(options)` / `credentialStoreUpdate(options)`
+
+The fleet credential store. `credentialStoreSet({ name, prompt, persist?,
+network_policy?, members?, ttl_seconds? })` collects a secret from the user
+out-of-band and stores it -- the value never passes through the caller.
+`credentialStoreList()` takes no arguments and returns names and metadata
+only, never values (a JSON array of `{ name, scope, ... }` entries; extract
+it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
+`credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
+changes metadata without re-entering the secret.
+
+#### `doltPushMutex(options)`
+
+Calls `dolt_push_mutex` -- the fleet-server-hosted global dolt push mutex
+that serializes cross-sprint `bd dolt push` for sprints launched without a
+supervisor to coordinate through. `action` is one of `'acquire'`, `'poll'`,
+`'release'`, `'renew'`, `'cancel'`, `'status'`; the rest are optional:
+`sprint_id`, `ticket`, `token`, `pid`, `wait_ms`.
+
+`acquire` is ticketed, because an MCP call cannot long-poll: it returns
+`{ granted, ticket, token? }` after a bounded wait, and the caller re-`poll`s
+the SAME ticket until granted. Polling never dequeues the waiter, so FIFO
+order is preserved. Pass the caller's real `pid` so a crashed holder is
+reclaimed by the dead-pid probe.
+
+#### `childIdAllocator(options)`
+
+Calls `child_id_allocator` -- the fleet-server-hosted global child-bead-id
+allocator. Mints globally-distinct child ids under a shared parent for
+sprints launched without a supervisor, so two sprints creating children
+under the same parent never derive the same id. `action` is one of
+`'allocate'`, `'confirm'`, `'release'`, `'status'`; the rest are optional:
+`parent_id`, `token`, `sprint_id`, `pid`, `floor`.
+
+#### `shutdownServer(opts = {})`
+
+Calls `shutdown_server` with an empty payload -- gracefully shuts down the
+fleet server this client is connected to. The server self-terminates
+(deletes the singleton pointer, closes the HTTP transport and all SSH
+connections); it does not touch the OS service-manager layer at all, so
+this works even when service registration (systemd/schtasks) never
+succeeded.
+
+The server closing its own transport as part of shutting down can race this
+very request's response, so callers should treat ANY outcome (resolve,
+reject, or timeout) as inconclusive on its own and verify with a direct
+status check instead. `opts.timeoutMs` (default `5000`) keeps a lost
+response from hanging the caller for the full
+`DEFAULT_REQUEST_TIMEOUT_MS`. This is the only method that sets a
+client-side timeout itself.
+
+## `src/client/server-resolution.mjs`
+
+The single, shared implementation of "how does a client process reach the
+apra-fleet MCP server." Both `src/cli/workflow.ts` (the `apra-fleet
+workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (auto-sprint)
+depend on this module rather than duplicating the resolution logic.
+Binding design doc: `docs/adr-workflow-server-resolution.md`.
+
+Resolution order:
+
+1. **Forced transport / explicit stdio request.** `APRA_FLEET_TRANSPORT`
+   (`'http'` or `'stdio'`) overrides everything. `'stdio'` (or
+   `APRA_FLEET_SERVER_CMD`/`APRA_FLEET_SERVER_BIN` being set while transport
+   isn't forced to `'http'`) resolves a stdio command directly, no probe.
+   `'http'` probes only -- it never silently falls back to stdio.
+2. **HTTP singleton probe** (the product default when unset) --
+   `checkRunningInstance()` reads `~/.apra-fleet/data/server.json`
+   (`{pid, url}`), checks the pid is alive, then `GET`s a `/health`
+   endpoint derived from `url` (2s timeout). A stale/dead entry causes
+   `server.json` to be deleted (self-healing). On success, attaches over
+   `StreamableHttpTransport` and spawns nothing.
+3. **Stdio self-spawn fallback** -- `resolveFleetServerCommand()`'s four
+   tiers: `APRA_FLEET_SERVER_CMD` (a full `"<command> <args...>"` string),
+   `APRA_FLEET_SERVER_BIN` (resolved via `PATH`, run with `run --transport
+   stdio`), a bundled sibling `index.js` next to this module, or (dev
+   monorepo layout) `../../../dist/index.js` relative to it.
+
+The launcher/auto-sprint client and the MCP server are always separate
+processes; this module only decides the transport, it never merges them.
+Every branch takes an injectable `deps` bag (`env`, `readFile`, `unlink`,
+`pidAlive`, `health`, `dirname`, `exists`, `checkRunningInstance`) so each
+step is independently unit-testable without touching the real
+filesystem/network.
+
+#### `getFleetDataDir(env = process.env)`
+
+Returns `~/.apra-fleet/data`, honoring `APRA_FLEET_DATA_DIR` if set (mirrors
+`src/paths.ts`).
+
+#### `getServerInfoPath(env = process.env)`
+
+Returns `path.join(getFleetDataDir(env), 'server.json')`.
+
+#### `async checkRunningInstance(deps = {})`
+
+The HTTP-singleton probe (step 2 above). Reads and parses `server.json` via
+`deps.readFile`; on any parse failure, or a missing `pid`/`url`, returns
+`{ running: false }`. If `deps.pidAlive` (default: a `process.kill(pid, 0)`
+liveness check treating `EPERM` as alive) says the pid is dead, deletes
+`server.json` via `deps.unlink` and returns `{ running: false }`. If
+`deps.health` (default: `GET <url with /mcp replaced by /health>`, 2s
+timeout) fails, does the same. Otherwise returns
+`{ running: true, url, pid }`. Same semantics as
+`src/services/singleton.ts`'s `checkRunningInstance()`, so the client's
+probe and the server's own startup dedup never disagree.
+
+#### `resolveFleetServerCommand(deps = {})`
+
+Step 3's stdio command resolution, as a pure function (nothing is spawned).
+Returns `{ command: string, args: string[] }`. Throws if
+`APRA_FLEET_SERVER_CMD` is set but empty, or if none of the fallback
+entry-point tiers exist on disk (`deps.exists`, default `fs.existsSync`) and
+neither `APRA_FLEET_SERVER_CMD` nor `APRA_FLEET_SERVER_BIN` is set.
+
+#### `async resolveFleetServerConnection(deps = {})`
+
+The full resolution order above, as a pure descriptor -- nothing is spawned
+or connected. Returns either `{ mode: 'http', url, pid, reason }` or
+`{ mode: 'stdio', command, args, reason }`. Throws if `APRA_FLEET_TRANSPORT`
+is set to anything other than `'http'`/`'stdio'`, or if it's set to
+`'http'` and no healthy singleton is found (this case deliberately does not
+fall back to stdio).
+
+#### `async connectFleet(deps = {})`
+
+Resolves + connects in one call. Builds a `StreamableHttpTransport` or
+`StdioTransport` per `resolveFleetServerConnection`'s result, starts it,
+wraps it in `McpClient`, performs the `initialize`/`notifications/initialized`
+handshake for stdio connections (the HTTP transport already does its own
+`initialize` POST inside `start()`), and returns
+`{ transport, mcpClient, fleetApi, mode }` where `fleetApi` is a
+`new ApraFleet(mcpClient)`.
+
+`deps.options`, if given, is forwarded to the transport constructor (e.g.
+HTTP headers or child-process spawn options).
+
+## `src/client/factory.mjs`
+
+### `async function createWorkflowEngine(config)`
+
+Convenience factory that builds a transport, connects it, wraps it in an
+`McpClient` and `ApraFleet`, and (per its current implementation) also
+constructs a `FleetWorkflow` and `WorkflowEngine` around that `ApraFleet`.
+
+```
+config: {
+  transport: 'stdio' | 'http',
+  command?: string,     // required if transport === 'stdio'
+  args?: string[],      // optional, stdio only
+  url?: string,          // required if transport === 'http'
+  options?: object,      // transport options (e.g. HTTP headers, spawn options)
+  workflowArgs?: object  // passed through as the workflow's initial args
+}
+```
+
+Behavior:
+
+1. Constructs a `StdioTransport` or `StreamableHttpTransport` per
+   `config.transport`; throws a plain `Error` if the required
+   `command`/`url` is missing, or if `config.transport` is neither
+   `'stdio'` nor `'http'`.
+2. `await transport.start()`.
+3. Wraps it in `new McpClient(transport)`.
+4. For the `stdio` transport only, performs the MCP handshake explicitly:
+   sends an `initialize` request (protocol version `'2024-11-05'`) and then
+   a `notifications/initialized` notification. (The HTTP transport already
+   performs its own `initialize` POST internally inside `start()`, so this
+   step is skipped for `'http'`.)
+5. Builds `new ApraFleet(mcpClient)`, `new FleetWorkflow(apraFleet,
+   config.workflowArgs || {})`, and `new WorkflowEngine(fleetWorkflow)`.
+6. Resolves with `{ transport, mcpClient, apraFleet, fleetWorkflow, engine }`.
+
+**Known issue.** Steps 4-5 import `FleetWorkflow` from
+`'../workflow/index.mjs'` and `WorkflowEngine` from
+`'../workflow/engine.mjs'` -- paths relative to
+`packages/apra-fleet-client/src/client/`, which would resolve to
+`packages/apra-fleet-client/src/workflow/*`. That directory does not exist
+in this package; the real `FleetWorkflow`/`WorkflowEngine` implementation
+lives in the separate `@apralabs/apra-fleet-workflow` package
+(`packages/apra-fleet-workflow/src/workflow/index.mjs` and `engine.mjs`).
+`apra-fleet-workflow` depends on `apra-fleet-client` (see its
+`package.json`), not the reverse, so an import in the other direction from
+inside `apra-fleet-client` would in any case create a circular package
+dependency. As written, calling `createWorkflowEngine()` (or importing
+`./factory` at all) will fail to resolve these two imports. There is no
+test file covering `factory.mjs` (the suite under `test/` covers `api.mjs`,
+`client.mjs`, `transport.mjs`, and the api.mjs/server-schema typedef
+parity), which is consistent with this path being unexercised. The `.`,
+`./client`,
+and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
+the transports can be used standalone without going through this factory.

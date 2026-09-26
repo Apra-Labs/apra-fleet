@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -11,6 +11,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
+import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
   ...memberIdentifier,
@@ -25,7 +26,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const agent = agentOrError as Agent;
 
   const os = getAgentOS(agent);
-  const cmds = getOsCommands(os);
+  const cmds = getOsCommands(os, getAgentShell(agent));
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 
@@ -38,7 +39,29 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
     username: agent.username ?? undefined,
     os,
+    shell: agent.shell ?? undefined,
     folder: agent.workFolder,
+    // The origin URL of the repo `folder` is a clone of, when the registration
+    // record proves it (knownRepoRemoteUrl's single-genuine-URL rule). This is
+    // the fleet-sprint engine's ONLY source for it: runner.js has no registry
+    // and reads member facts exclusively through this tool, so without this
+    // field its kb_* calls carry repo_path alone and every remote member's
+    // knowledge collapses into the shared 'default' KB.
+    repo_remote_url: knownRepoRemoteUrl(agent),
+    vcsProvider: agent.vcsProvider ?? undefined,
+    // The git access level this member's VCS credentials are minted at
+    // (register_member/update_member's git_access, stored as Agent.gitAccess).
+    // Surfaced for the same reason as repo_remote_url above: the fleet-sprint
+    // engine has no registry of its own, so member_detail is its ONLY source
+    // for member facts. Its Sync-step workflows-permission preflight needs the
+    // level ACTUALLY registered for this member -- a member registered 'read'
+    // or 'issues' gets a token with no 'workflows' permission (see
+    // mapAccessLevel in src/services/github-app.ts) and every push touching
+    // .github/workflows/** will be rejected by GitHub. Without this field the
+    // engine can only assume its own default level and the warning is
+    // unreachable. Absent when the member was registered without an explicit
+    // git_access (the engine then falls back to its provisioning default).
+    gitAccess: agent.gitAccess ?? undefined,
   };
 
   // -- Cloud Info (parallel with connectivity check) --
@@ -147,7 +170,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
   result.llmProvider = agent.llmProvider ?? 'claude';
   result.llm_cli = cli;
-  if (agent.tokenUsage) {
+  if (agent.llmProvider === 'none') {
+    result.tokenUsage = 'compute only';
+  } else if (agent.tokenUsage) {
     result.tokenUsage = agent.tokenUsage;
   }
 
@@ -257,8 +282,11 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
-  const tokenStr = agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
+  const shellStr = agent.shell ? ` | shell=${agent.shell}` : '';
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os}${shellStr} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
+  const tokenStr = agent.llmProvider === 'none'
+    ? ' | compute only'
+    : agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;

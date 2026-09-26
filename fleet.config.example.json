@@ -10,7 +10,7 @@
       "agent_type": "remote",
       "host": "192.168.1.102",
       "port": 22,
-      "username": "akhil",
+      "username": "your-username",
       "auth_type": "key",
       "key_path": "USE_EXISTING_OR_PATH_TO_KEY",
       "work_folder": "/tmp/fake-project-test"
@@ -20,20 +20,20 @@
       "agent_type": "remote",
       "host": "192.168.1.13",
       "port": 22,
-      "username": "akhil",
+      "username": "your-username",
       "auth_type": "key",
       "key_path": "USE_EXISTING_OR_PATH_TO_KEY",
-      "work_folder": "/tmp/akhil-fake-test"
+      "work_folder": "/tmp/fake-test"
     },
     {
       "friendly_name": "agent-win-remote-admin",
       "agent_type": "remote",
       "host": "192.168.1.20",
       "port": 22,
-      "username": "akhil",
+      "username": "your-username",
       "auth_type": "password",
       "password": "REPLACE_WITH_REAL_PASSWORD",
-      "work_folder": "C:\\Temp\\akhil-fake-project"
+      "work_folder": "C:\\Temp\\fake-project"
     },
     {
       "friendly_name": "agent-win-remote-1",

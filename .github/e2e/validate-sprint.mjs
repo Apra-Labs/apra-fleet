@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Post-sprint validation gates for fleet e2e.
 //
-// Mirrors the gates from vendor/apra-pm/e2e/validate-sprint.mjs:
+// Mirrors the gates from packages/apra-fleet-se/apra-pm/e2e/validate-sprint.mjs:
 //   1. pr-exists           a PR was raised for the branch
 //   2. commits>=N          the work landed as N+ commits (not one dump)
 //   3. final-changeset-clean  the PR's net diff carries NO process scaffolding

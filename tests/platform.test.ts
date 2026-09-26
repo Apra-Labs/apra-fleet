@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'child_process';
 import { detectOS, isContainedInWorkFolder } from '../src/utils/platform.js';
 import { getSSHConfig } from '../src/services/ssh.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { OsCommands } from '../src/os/index.js';
+import type { ForkDescriptor } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 
 describe('detectOS', () => {
@@ -65,7 +67,7 @@ describe('OsCommands via getOsCommands', () => {
 
   describe('generic member CLI commands', () => {
     const claudeProvider = getProvider('claude');
-    const geminiProvider = getProvider('gemini');
+    const agyProvider = getProvider('agy');
 
     for (const [name, cmds] of all) {
       it(`${name}: agentVersion includes --version for claude provider`, () => {
@@ -73,9 +75,9 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmds.agentVersion(claudeProvider)).toContain('claude');
       });
 
-      it(`${name}: agentVersion includes --version for gemini provider`, () => {
-        expect(cmds.agentVersion(geminiProvider)).toContain('--version');
-        expect(cmds.agentVersion(geminiProvider)).toContain('gemini');
+      it(`${name}: agentVersion includes --version for agy provider`, () => {
+        expect(cmds.agentVersion(agyProvider)).toContain('--version');
+        expect(cmds.agentVersion(agyProvider)).toContain('agy');
       });
 
       it(`${name}: agentCommand prepends PATH for claude`, () => {
@@ -87,15 +89,14 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmds.installAgent(claudeProvider).length).toBeGreaterThan(10);
       });
 
-      it(`${name}: installAgent uses macos install for gemini on macos`, () => {
-        // macOS uses provider.installCommand('macos')
+      it(`${name}: installAgent uses provider's own OS-specific install command for agy`, () => {
+        // installAgent delegates to provider.installCommand(os)
         const isWindows = name === 'windows';
-        const isLinux = name === 'linux';
-        const cmd = cmds.installAgent(geminiProvider);
-        expect(cmd).toContain('gemini-cli');
-        if (!isWindows && !isLinux) {
-          // macOS: same npm command
-          expect(cmd).toContain('npm');
+        const cmd = cmds.installAgent(agyProvider);
+        if (isWindows) {
+          expect(cmd).toContain('antigravity.google/cli/install.ps1');
+        } else {
+          expect(cmd).toContain('antigravity.google/cli/install.sh');
         }
       });
 
@@ -116,20 +117,20 @@ describe('OsCommands via getOsCommands', () => {
           expect(generic).toContain('--max-turns 50');
         });
 
-        it(`${name}: gemini provider uses gemini binary`, () => {
-          const cmd = cmds.buildAgentPromptCommand(geminiProvider, opts);
-          expect(cmd).toContain('gemini');
+        it(`${name}: agy provider uses agy binary`, () => {
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, opts);
+          expect(cmd).toContain('agy');
           expect(cmd).toContain('.fleet-task.md');
           expect(cmd).toContain('--output-format json');
-          expect(cmd).not.toContain('--max-turns'); // gemini doesn't support max-turns
+          expect(cmd).not.toContain('--max-turns'); // agy doesn't support max-turns
         });
       }
 
-      it('windows: gemini prompt command uses PowerShell syntax', () => {
-        const cmd = windows.buildAgentPromptCommand(geminiProvider, opts);
+      it('windows: agy prompt command uses PowerShell syntax', () => {
+        const cmd = windows.buildAgentPromptCommand(agyProvider, opts);
         expect(cmd).toContain('Set-Location');
         expect(cmd).toContain('.fleet-task.md');
-        expect(cmd).toContain('gemini');
+        expect(cmd).toContain('agy');
       });
 
       it('windows: claude prompt command includes max-turns', () => {
@@ -137,10 +138,75 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmd).toContain('--max-turns 50');
       });
 
+      // apra-fleet-eft.65.1: a headless dispatch with no explicit unattended mode
+      // must grant the dispatched agent Edit/Write parity for its own work folder
+      // (--permission-mode acceptEdits) so a brand-new file is not hard-blocked --
+      // WITHOUT the broad --dangerously-skip-permissions bypass.
+      for (const [name, cmds] of all) {
+        it(`${name}: claude default dispatch grants work-folder edit parity, not the broad bypass`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).toContain('--permission-mode acceptEdits');
+          expect(cmd).not.toContain('--dangerously-skip-permissions');
+        });
+
+        it(`${name}: unattended=dangerous keeps the broad bypass, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'dangerous' });
+          expect(cmd).toContain('--dangerously-skip-permissions');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+
+        it(`${name}: unattended=auto keeps --permission-mode auto, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'auto' });
+          expect(cmd).toContain('--permission-mode auto');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+      }
+
       for (const [name, cmds] of all) {
         it(`${name}: buildAgentPromptCommand wraps command with PID-capture shell wrapper`, () => {
           const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
           expect(cmd).toContain('FLEET_PID:');
+        });
+      }
+    });
+
+    // apra-fleet-lmtg.3: fork descriptor threaded through buildAgentPromptCommand
+    // (apra-fleet-lmtg.2). Covers both the linux/macos and windows builders via
+    // the shared `all` fixture -- the two paths must not diverge.
+    describe('buildAgentPromptCommand with fork descriptor', () => {
+      const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
+      const fork: ForkDescriptor = { sourceSessionId: 'src-sess-1', newSessionId: 'new-sess-2' };
+
+      for (const [name, cmds] of all) {
+        it(`${name}: emits the provider's fork invocation (--resume <source> --fork-session) when a fork descriptor is supplied`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: emits --session-id with the pre-minted forked output id -- the caller controls the forked id, not the CLI`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).toContain(`--session-id "${fork.newSessionId}"`);
+          // the emitted new id must be distinct from the source id
+          expect(fork.newSessionId).not.toBe(fork.sourceSessionId);
+        });
+
+        it(`${name}: suppresses the ordinary sessionId/resuming flags when a fork descriptor is present (mutually exclusive intents)`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork, sessionId: 'should-be-ignored', resuming: true });
+          expect(cmd).not.toContain('should-be-ignored');
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: is unchanged (no fork flags) when the fork descriptor is absent`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).not.toContain('--fork-session');
+        });
+
+        it(`${name}: a non-fork-capable provider ignores a supplied fork descriptor rather than crashing or leaking it`, () => {
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, { ...opts, fork });
+          expect(cmd).not.toContain('--fork-session');
+          expect(cmd).not.toContain('src-sess-1');
         });
       }
     });
@@ -325,6 +391,29 @@ describe('OsCommands via getOsCommands', () => {
       expect(cmd).toContain('chmod');
     });
 
+    // Regression: `~` is only tilde-expanded by the shell in an UNQUOTED
+    // leading position. Every use here is inside double quotes (needed for
+    // the other interpolated values), which suppresses that expansion --
+    // the literal string "~/.fleet-git-credential-..." then got stored as
+    // the git config value, and git does not expand `~` itself when reading
+    // config, so it tried to exec a helper literally named
+    // "git-credential-~/.fleet-git-credential-..." ("not a git command").
+    // $HOME expands correctly even inside double quotes. macOS inherits
+    // these methods from LinuxCommands unmodified, so it shares the fix.
+    for (const [name, cmds] of [['linux', linux], ['macos', macos]] as const) {
+      it(`${name}: gitCredentialHelperWrite uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+
+      it(`${name}: gitCredentialHelperRemove uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperRemove('github.com');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+    }
+
     it('windows: writes a batch script credential helper', () => {
       const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
       expect(cmd).toContain('@echo off');
@@ -353,10 +442,23 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'linux')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBeUndefined();
+      expect(shell).toBe('/bin/bash');
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
       expect(env!['PATH']).toBeTruthy();
+    });
+
+    // apra-fleet-byp: buildAgentPromptCommand emits `set -o pipefail` to keep the
+    // CLI's exit code authoritative through the `| tee` durable mirror. Node's
+    // `shell: true` fallback is /bin/sh, which on Debian/Ubuntu is dash and has
+    // no pipefail -- every local dispatch died with "Illegal option -o pipefail".
+    // cleanExec must therefore name a shell that actually supports it.
+    it.skipIf(process.platform !== 'linux')('linux: the chosen shell supports `set -o pipefail`', () => {
+      const { shell } = linux.cleanExec('echo hello');
+      expect(shell).toBeTruthy();
+      const probe = spawnSync(shell!, ['-c', 'set -o pipefail; false | true'], { encoding: 'utf-8' });
+      expect(probe.stderr).not.toMatch(/pipefail/i);
+      expect(probe.status).toBe(1); // pipefail honoured: `false`'s code wins over `true`'s
     });
 
     it.skipIf(process.platform !== 'linux')('linux: env excludes process-only vars', () => {
@@ -372,7 +474,7 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'darwin')('macos: inherits linux cleanExec', () => {
       const { command, env, shell } = macos.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBeUndefined();
+      expect(shell).toBe('/bin/bash');
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
     });
@@ -466,6 +568,45 @@ describe('SSH username with spaces (#144)', () => {
     };
     const config = getSSHConfig(member);
     expect(config.username).toBe('normaluser');
+  });
+});
+
+describe('SSH keepalive configuration', () => {
+  it('getSSHConfig sets keepaliveInterval to approximately 15000ms', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config.keepaliveInterval).toBe(15000);
+  });
+
+  it('getSSHConfig sets keepaliveCountMax to a value >= 1', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config.keepaliveCountMax).toBeGreaterThanOrEqual(1);
+  });
+
+  it('getSSHConfig includes both keepaliveInterval and keepaliveCountMax properties', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config).toHaveProperty('keepaliveInterval');
+    expect(config).toHaveProperty('keepaliveCountMax');
   });
 });
 

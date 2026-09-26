@@ -37,6 +37,15 @@ async function sftpMkdirRecursive(sftp: import('ssh2').SFTPWrapper, remotePath: 
   }
 }
 
+function sftpWriteFile(sftp: import('ssh2').SFTPWrapper, remotePath: string, data: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    sftp.writeFile(remotePath, data, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 function sftpPut(sftp: import('ssh2').SFTPWrapper, localPath: string, remotePath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     sftp.fastPut(localPath, remotePath, (err) => {
@@ -82,6 +91,37 @@ export async function uploadViaSFTP(
       success.push(fileName);
     } catch (err: any) {
       failed.push({ path: fileName, error: err.message });
+    }
+  }
+
+  return { success, failed };
+}
+
+/**
+ * Write in-memory file contents directly to home-relative paths on the remote
+ * machine -- no local temp files. baseDir + relPath is resolved by the SFTP
+ * server relative to the connecting user's home directory.
+ */
+export async function uploadContentToHome(
+  agent: Agent,
+  files: Array<{ relPath: string; content: string }>,
+  baseDir: string
+): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
+  const client = await getConnection(agent);
+  const sftp = await getSFTP(client);
+
+  const base = baseDir.replace(/\\/g, '/').replace(/\/$/, '');
+  const success: string[] = [];
+  const failed: { path: string; error: string }[] = [];
+
+  for (const file of files) {
+    const remotePath = `${base}/${file.relPath}`;
+    try {
+      await sftpMkdirRecursive(sftp, path.posix.dirname(remotePath));
+      await sftpWriteFile(sftp, remotePath, Buffer.from(file.content, 'utf-8'));
+      success.push(file.relPath);
+    } catch (err: any) {
+      failed.push({ path: file.relPath, error: err.message });
     }
   }
 

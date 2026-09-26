@@ -6,7 +6,9 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
-import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getOsCommands } from '../os/index.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -14,6 +16,14 @@ interface PoolEntry {
   client: Client;
   lastUsed: number;
   timer: ReturnType<typeof setTimeout>;
+  // apra-fleet-9zz.1: count of execCommand() calls currently in flight on
+  // this connection (incremented before client.exec() is issued, decremented
+  // when that call's promise settles -- see execCommand below). A provisional
+  // stall-detector entry (stall-detector.ts) only refreshes the idle timer
+  // incidentally via the poller's own tail probes, not via this activity
+  // directly, so a long-running exec could otherwise sit through an idle-timer
+  // fire with no other signal that the connection is still genuinely in use.
+  activeChannels: number;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -26,6 +36,20 @@ function poolKey(agent: Agent): string {
 function cleanupEntry(key: string): void {
   const entry = pool.get(key);
   if (entry) {
+    if (entry.activeChannels > 0) {
+      // apra-fleet-9zz.1: a channel opened by execCommand (or an exec call
+      // about to open one) is still live on this connection -- ending it here
+      // would reap a genuinely active command out from under a caller that is
+      // still waiting on its result. Re-arm the idle timer instead of
+      // reaping; execCommand decrements activeChannels when the in-flight
+      // call actually settles, so a later idle-timer fire with no active
+      // channels left reaps normally.
+      clearTimeout(entry.timer);
+      const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
+      timer.unref();
+      entry.timer = timer;
+      return;
+    }
     try { entry.client.end(); } catch {}
     clearTimeout(entry.timer);
     pool.delete(key);
@@ -49,6 +73,8 @@ export function getSSHConfig(agent: Agent): ConnectConfig {
     port: agent.port,
     username: agent.username,
     readyTimeout: 15000,
+    keepaliveInterval: 15000,
+    keepaliveCountMax: 3,
     hostVerifier: (key: Buffer) => {
       return verifyHostKey(agent.host!, agent.port!, key);
     },
@@ -70,7 +96,7 @@ function connectClient(config: ConnectConfig, key: string): Promise<Client> {
     client.on('ready', () => {
       const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
       timer.unref();
-      pool.set(key, { client, lastUsed: Date.now(), timer });
+      pool.set(key, { client, lastUsed: Date.now(), timer, activeChannels: 0 });
 
       client.on('close', () => {
         pool.delete(key);
@@ -130,15 +156,59 @@ export async function execCommand(
   abortSignal?: AbortSignal,
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
-  resetIdleTimer(poolKey(agent));
+  const key = poolKey(agent);
+  resetIdleTimer(key);
+
+  // apra-fleet-9zz.1: mark this call as an active channel on the pool entry
+  // BEFORE issuing client.exec() -- covers both the in-flight exec request
+  // and the channel it opens -- so cleanupEntry's idle-timer reap can see it
+  // and never end the connection out from under it (see cleanupEntry above).
+  // connectWithTOFU/connectClient always populates the pool entry before
+  // returning (pool.set() runs before the 'ready' promise resolves), so this
+  // entry is guaranteed to exist here.
+  const poolEntry = pool.get(key);
+  if (poolEntry) poolEntry.activeChannels += 1;
+  let channelReleased = false;
+  function releaseChannel(): void {
+    if (channelReleased) return;
+    channelReleased = true;
+    const entry = pool.get(key);
+    if (entry) entry.activeChannels = Math.max(0, entry.activeChannels - 1);
+  }
+
+  // Remote PID captured from the FLEET_PID marker (see execute-command.ts's
+  // wrapPidCapture), if the wrapped command emits one. A closed/rejected SSH
+  // channel does NOT kill the remote process it started (unlike a local
+  // child_process, an ssh2 exec channel closing has no effect on the far
+  // side) -- apra-fleet-kwx fixed this for LocalStrategy via a local
+  // child.pid tree-kill; killRemoteTree below is the same fix for the SSH
+  // path, using the marker PID instead of a local handle.
+  let capturedPid: number | undefined;
+  function killRemoteTree() {
+    if (capturedPid === undefined) return;
+    try {
+      const killCmd = getOsCommands(getAgentOS(agent), getAgentShell(agent)).killPid(capturedPid);
+      // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
+      // command's own channel may itself be wedged and must not be relied
+      // on to carry the kill.
+      client.exec(killCmd, (err, killStream) => {
+        if (err) return;
+        killStream.on('data', () => {});
+        killStream.stderr?.on('data', () => {});
+      });
+    } catch { /* best-effort; connection may already be gone */ }
+  }
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
+    let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
     function settle(fn: () => void) {
       if (settled) return;
       settled = true;
       clearTimeout(inactivityTimer);
       if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
+      releaseChannel();
       fn();
     }
 
@@ -147,6 +217,7 @@ export async function execCommand(
     function resetInactivityTimer() {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
       }, timeoutMs);
       inactivityTimer.unref();
@@ -157,6 +228,7 @@ export async function execCommand(
     let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
     if (maxTotalMs !== undefined) {
       maxTotalTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
       }, maxTotalMs);
       maxTotalTimer.unref();
@@ -188,6 +260,7 @@ export async function execCommand(
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
             const pid = parseInt(m[1], 10);
+            capturedPid = pid;
             setStoredPid(agent.id, pid);
             onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
@@ -222,7 +295,7 @@ export async function execCommand(
         }
       });
 
-      stream.on('close', (code: number) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
@@ -236,7 +309,57 @@ export async function execCommand(
           stderr = `Warning: ${warning}\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      stream.on('close', (code: number) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; rationale in
+      // src/services/exit-drain.ts). The SSH twin of the LocalStrategy change in
+      // strategy.ts: sshd sends `exit-status` when the command process itself
+      // exits, but only closes the channel once every inherited handle on the
+      // far side is released -- so one surviving grandchild (sandbox server,
+      // orphaned find.exe) holds the channel open indefinitely. On Windows
+      // members, treat the remote process exit as completion, drain briefly, then
+      // settle; the remote grandchild is left running on purpose.
+      if (completesOnProcessExit(getAgentOS(agent))) {
+        stream.on('exit', (code: number | null) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
+            finalize(code);
+            // Release our end of the wedged channel; the remote grandchild is
+            // unaffected (closing an ssh2 channel never signals the far side's
+            // processes -- see killRemoteTree above for why that is deliberate).
+            try { stream.close(); } catch { /* best-effort */ }
+          }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // The handle that always outlives the drain window here is the ssh2
+          // Client's TCP socket: the channel is still open (that is why the
+          // drain is running at all), so its connection socket is live, and
+          // ssh2 never unrefs it -- `unref` appears nowhere in
+          // node_modules/ssh2/lib/client.js (only in http-agents.js and
+          // server.js). Measured standalone that this is sufficient: a
+          // connected, reading net.Socket with the helper listener process
+          // unref-ed gave getActiveResourcesInfo() = [TCPSocketWrap] and an
+          // unref-ed 3000 ms timer still fired at 3014 ms -- i.e. the socket
+          // alone kept the loop alive with no ref-ed timer present. If the
+          // channel had already closed instead, `close` would have settled the
+          // promise without this timer. The connection-pool idle timers
+          // (resetIdleTimer above) are all unref-ed and are deliberately NOT
+          // part of this argument. Caller paths enumerated as for the
+          // strategy.ts twin: every execCommand() call site runs inside the
+          // long-lived MCP server, except src/cli/watch.ts, which holds a
+          // ref-ed setInterval for its watch loop.
+          // Residual risk: if the TCP socket dies during the drain window the
+          // callback is skipped -- but that path emits 'error', which settles
+          // via reject(), so the promise still settles. The narrow uncovered
+          // case is a socket destroyed with no 'error' and no 'close'.
+          exitDrainTimer.unref();
+        });
+      }
+
       stream.on('error', (err: Error) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
@@ -246,12 +369,54 @@ export async function execCommand(
 
       if (abortSignal) {
         const onAbort = () => {
+          killRemoteTree();
           try { stream.close(); } catch { /* best-effort */ }
           settle(() => reject(new Error('Command aborted by client')));
         };
         if (abortSignal.aborted) onAbort();
         else abortSignal.addEventListener('abort', onAbort, { once: true });
       }
+    });
+  });
+}
+
+export interface SSHStream {
+  /** Close the streaming channel and its dedicated connection. */
+  close: () => void;
+}
+
+/**
+ * Open a dedicated (non-pooled) SSH channel for a long-lived streaming command
+ * such as `tail -F`. stdout chunks are delivered to onData as they arrive; the
+ * channel stays open until close() is called or the remote command exits
+ * (onEnd). It uses its own connection so a long-lived tail is never blocked by,
+ * or torn down by the idle timer of, the request/response pool. Fails soft: the
+ * returned promise rejects on connect/exec error so callers can retry later.
+ */
+export async function execStream(
+  agent: Agent,
+  command: string,
+  onData: (chunk: string) => void,
+  onEnd?: () => void,
+): Promise<SSHStream> {
+  const config = getSSHConfig(agent);
+  const client = await new Promise<Client>((resolve, reject) => {
+    const c = new Client();
+    c.on('ready', () => resolve(c));
+    c.on('error', reject);
+    c.connect(config);
+  });
+
+  return new Promise<SSHStream>((resolve, reject) => {
+    client.exec(command, (err, stream) => {
+      if (err) { try { client.end(); } catch {} reject(err); return; }
+      let ended = false;
+      const done = () => { if (ended) return; ended = true; onEnd?.(); try { client.end(); } catch {} };
+      stream.on('data', (d: Buffer) => onData(d.toString()));
+      stream.stderr.on('data', () => { /* ignore tail's stderr */ });
+      stream.on('close', done);
+      stream.on('error', done);
+      resolve({ close: () => { try { stream.close(); } catch {} try { client.end(); } catch {} } });
     });
   });
 }

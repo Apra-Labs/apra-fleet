@@ -1,0 +1,2172 @@
+import Ajv from 'ajv';
+import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
+import { calculateCost } from './pricing.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+import { hashText, computeActivityKey } from './journal.mjs';
+
+export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+
+const ajv = new Ajv({ strict: false });
+
+// --- Per-run execution context (apra-fleet-unw.9, F11) --------------------
+//
+// Before this change, `FleetWorkflow` kept its "current run" state --
+// `args`, `currentPhase`, `currentGroup`, `budget` -- as plain mutable
+// instance fields. `WorkflowEngine.executeFile()` mutated `this.wf.args` on
+// every call, and `phase()`/`group()` mutated a single shared
+// `currentPhase`/`currentGroup`. That's fine for exactly one execution at a
+// time, but breaks as soon as:
+//   (a) two concurrent `executeFile()` calls run on the same `FleetWorkflow`
+//       instance -- their `args` and phase attribution stomp on each other, or
+//   (b) a single run's `parallel()` branches each call `phase()` with a
+//       different value -- every branch (and every activity emitted from any
+//       branch, including ones dispatched before the racing `phase()` call
+//       resolves) ends up labeled with whichever branch's `phase()` call
+//       happened to run last, not its own.
+//
+// `runStorage` (an AsyncLocalStorage) holds a small per-run store --
+// `{ runId, args, phase, group, budget }` -- that is threaded automatically
+// through the async call graph of a single `executeFile()` invocation:
+//   - `WorkflowEngine.executeFile()` creates a fresh store via
+//     `FleetWorkflow.runWithContext(args, entryFn)` and runs the whole script
+//     inside `runStorage.run(store, ...)`. Every `agent()`/`command()`/
+//     `phase()`/etc. call made anywhere inside that script -- including
+//     across `await` boundaries -- automatically sees that run's store via
+//     `runStorage.getStore()`, with no explicit threading required in the
+//     workflow script itself.
+//   - `parallel()` forks a *shallow copy* of the current store for each
+//     branch before invoking its processor. `phase`/`group` are copied by
+//     value, so a `phase()` call inside one branch only mutates that
+//     branch's own copy and can never leak into a sibling branch or the
+//     parent. `args`/`budget` are copied by reference, so budget spend is
+//     still aggregated for the whole run and `args` stays consistent.
+//   - Every activity/log/state event still carries the store's `runId`, so
+//     even though the shared `EventEmitter` on `FleetWorkflow` fans events
+//     out to a single global listener (the dashboard viewer subscribes
+//     once), events from concurrent runs remain distinguishable.
+//
+// Direct, non-`executeFile()` usage (e.g. calling `wf.agent()`/`wf.phase()`
+// straight off a `FleetWorkflow` instance, as several unit tests do) is
+// preserved unchanged: when there is no active `runStorage` store (i.e.
+// `runStorage.getStore()` returns `undefined`), every primitive falls back
+// to the legacy instance-level fields (`this.args`, `this.currentPhase`,
+// `this.currentGroup`, `this.budget`), exactly as before this change.
+const runStorage = new AsyncLocalStorage();
+
+// --- Structured-output extraction (apra-fleet-unw.8) ---------------------
+//
+// The old extraction path used a single greedy regex,
+// /\{[\s\S]*\}|\[[\s\S]*\]/, which grabs from the FIRST `{`/`[` to the LAST
+// `}`/`]` in the whole reply. That fails as soon as a reply contains more
+// than one JSON block, or trailing prose that happens to contain a brace --
+// the regex swallows everything in between as one "candidate" and JSON.parse
+// then throws on it. The functions below replace that with real bracket
+// matching plus schema-directed candidate selection: prefer fenced ```json
+// blocks; otherwise scan the raw text for every balanced top-level
+// {...}/[...] span (tracking string state so braces inside string literals
+// don't confuse the matcher); validate each candidate against the schema in
+// the order found and return the first one that both parses and validates.
+//
+// NOTE (descoped, see agent() below for the full note): this is a
+// client-side mitigation. The more robust fix -- enforcing the schema at the
+// member/harness tool-call layer -- requires fleet-server changes.
+
+const FENCED_JSON_RE = /```(?:json)?\s*\n([\s\S]*?)```/gi;
+
+/**
+ * Extracts the contents of every fenced ```json (or bare ```) code block in
+ * `text`, in the order they appear.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractFencedJsonBlocks(text) {
+    const blocks = [];
+    let match;
+    FENCED_JSON_RE.lastIndex = 0;
+    while ((match = FENCED_JSON_RE.exec(text)) !== null) {
+        blocks.push(match[1].trim());
+    }
+    return blocks;
+}
+
+/**
+ * Given `text[start]` is `{` or `[`, scans forward tracking bracket nesting
+ * and JSON string state (so braces/brackets inside string literals are
+ * ignored) to find the index of the matching closing bracket. Returns -1 if
+ * the span never closes or the brackets are mismatched.
+ * @param {string} text
+ * @param {number} start
+ * @returns {number}
+ */
+function findBalancedEnd(text, start) {
+    const closerFor = { '{': '}', '[': ']' };
+    const stack = [closerFor[text[start]]];
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start + 1; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === '{' || ch === '[') {
+            stack.push(closerFor[ch]);
+            continue;
+        }
+        if (ch === '}' || ch === ']') {
+            if (stack.length === 0) return -1;
+            const expected = stack.pop();
+            if (expected !== ch) return -1;
+            if (stack.length === 0) return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Scans `text` for every balanced top-level JSON object/array span, using
+ * real bracket matching (not a greedy regex), in the order they appear.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractBalancedJsonCandidates(text) {
+    const candidates = [];
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '{' || ch === '[') {
+            const end = findBalancedEnd(text, i);
+            if (end !== -1) {
+                candidates.push(text.slice(i, end + 1));
+                i = end + 1;
+                continue;
+            }
+        }
+        i++;
+    }
+    return candidates;
+}
+
+/**
+ * Attempts to find a schema-valid JSON candidate in `text`. Prefers fenced
+ * ```json blocks; falls back to a balanced top-level bracket scan of the raw
+ * text. Every candidate found is parsed and validated in order; the first
+ * one that both parses and validates against `compiledSchema` wins. Returns
+ * `{ ok: true, parsed, raw }` on success, or `{ ok: false, attempts }` where
+ * `attempts` records why every candidate was rejected (parse error or ajv
+ * validation errors) for repair-prompt / error-reporting purposes.
+ * @param {string} text
+ * @param {import('ajv').ValidateFunction} compiledSchema
+ */
+function extractStructuredOutput(text, compiledSchema) {
+    const fenced = extractFencedJsonBlocks(text);
+
+    const attempts = [];
+    const tryCandidate = (raw) => {
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (parseError) {
+            attempts.push({ raw, parseError });
+            return null;
+        }
+        if (compiledSchema(parsed)) {
+            return { ok: true, parsed, raw };
+        }
+        attempts.push({ raw, parsed, validationErrors: compiledSchema.errors ? [...compiledSchema.errors] : [] });
+        return null;
+    };
+
+    // Prefer fenced ```json blocks: try every fenced candidate first so the
+    // common case (a well-behaved reply whose only JSON lives in a fenced
+    // block) keeps picking the fenced block exactly as before.
+    for (const raw of fenced) {
+        const result = tryCandidate(raw);
+        if (result) return result;
+    }
+
+    // Fall through to a balanced-bracket scan when no fenced candidate
+    // parsed and validated -- either because there were no fenced blocks at
+    // all, or because every fenced block was something else entirely (e.g.
+    // a shell command the reply quotes for illustration) and the real
+    // schema-satisfying JSON lives outside the fences. Scan the text with
+    // the fenced spans blanked out so we don't re-try content already
+    // rejected above, and so a stray brace inside a non-JSON fenced block
+    // can't be mistaken for a balanced candidate.
+    const unfencedText = text.replace(FENCED_JSON_RE, (match) => ' '.repeat(match.length));
+    const balanced = extractBalancedJsonCandidates(unfencedText);
+    for (const raw of balanced) {
+        const result = tryCandidate(raw);
+        if (result) return result;
+    }
+
+    // Last-resort fallback: no bracketed candidate was found at all (e.g. a
+    // reply that is itself plain JSON with stray leading/trailing
+    // whitespace but somehow no `{`/`[` was detected as an opener -- should
+    // be rare given the scan above, but keeps behavior at least as good as
+    // the old single-shot JSON.parse(text) path).
+    if (fenced.length === 0 && balanced.length === 0) {
+        const result = tryCandidate(text.trim());
+        if (result) return result;
+    }
+
+    return { ok: false, attempts };
+}
+
+/**
+ * Summarizes why every extraction attempt failed, for both the repair-prompt
+ * re-ask and the final AgentOutputError message.
+ * @param {Array<{raw: string, parseError?: Error, validationErrors?: object[]}>} attempts
+ */
+function summarizeExtractionAttempts(attempts) {
+    if (attempts.length === 0) {
+        return 'No JSON object or array was found in the response.';
+    }
+    return attempts
+        .map((a, idx) => {
+            if (a.parseError) {
+                return `Candidate ${idx + 1}: JSON parse error: ${a.parseError.message}`;
+            }
+            return `Candidate ${idx + 1}: schema validation failed: ${ajv.errorsText(a.validationErrors)}`;
+        })
+        .join('\n');
+}
+
+/**
+ * Builds the repair re-ask prompt sent to the SAME member after an invalid
+ * structured-output attempt.
+ *
+ * HISTORY -- this deliberately REVERSES apra-fleet-02s.3, which shrank this
+ * to a lean reminder (validation errors only) on the theory that the forced
+ * `resume: true` on repair (see the payload construction below) guarantees
+ * the member's session still holds the original prompt and schema.
+ * apra-fleet-dnri: that assumption does not always hold. Observed live on
+ * 2026-08-20, a reviewer dispatch that failed schema validation twice was
+ * re-asked with only the validator text; the resumed session did not carry
+ * the task inputs, so the agent had no base branch, no branch and no work
+ * ids, correctly refused to guess, and its refusal was read as a real
+ * verdict -- aborting the whole sprint. Resume is an optimization, not a
+ * guarantee, so the re-ask must be self-contained on its own.
+ *
+ * BOUNDED ON PURPOSE (the original token-cost decision still stands): only
+ * `initialPrompt` is reattached -- the caller's original prompt plus the same
+ * schema instruction the initial dispatch appended. The invalid response
+ * text, the session transcript and any per-attempt accumulated history are
+ * NOT re-embedded, and callers must always pass the ORIGINAL `initialPrompt`
+ * (never the previous round's repair prompt), so the reattached portion is
+ * byte-identical on every repair round and the prompt does not grow.
+ *
+ * The reattachment is framed as REFERENCE material, not as a fresh order:
+ * when the repair re-ask resumes the failed attempt's own session (see the
+ * resume disposition at the dispatch payload below) the member may have
+ * already done the underlying work, and a prompt that restates the task can
+ * read as an instruction to redo it.
+ *
+ * @param {string} errorsText - Summary of every failed extraction attempt.
+ * @param {string} initialPrompt - The fully-resolved original dispatch prompt
+ *   (caller prompt + appended schema instruction), unchanged.
+ */
+function buildRepairPrompt(errorsText, initialPrompt) {
+    return `Your previous response could not be used.\n\n` +
+        `Validation errors:\n${errorsText}\n\n` +
+        `For reference, the original request and the required JSON schema were:\n` +
+        `--- BEGIN ORIGINAL REQUEST ---\n${initialPrompt}\n--- END ORIGINAL REQUEST ---\n\n` +
+        `Do NOT redo any work you have already completed for this request -- report the ` +
+        `result you already determined. Respond again with corrected JSON only, strictly ` +
+        `conforming to the schema above. Do not include any commentary, explanation, or ` +
+        `text outside the JSON.`;
+}
+
+/**
+ * @typedef {Object} AgentOptions
+ * @property {string} [label] - UI label for this run
+ * @property {string} [phase] - Workflow phase grouping
+ * @property {object} [schema] - JSON Schema for structured output. The dispatch-time
+ *   `schema` passed here is the one actually ajv-validated against the member's
+ *   response (see the compile/append/validate logic in agent() below) -- it is
+ *   therefore authoritative at the member, per each persona's precedence clause
+ *   ("if your dispatch prompt includes a JSON schema instruction, that schema is
+ *   authoritative"). When `agentType` names a role that publishes its own output
+ *   contract (apra-pm's role-owned schema design), callers MUST source this value
+ *   from that role's published schema via their application-layer adapter (e.g.
+ *   `contracts.mjs`'s `SCHEMAS.<name>` for auto-sprint) rather than authoring an
+ *   independent, parallel definition here. Two independently-authored schemas for
+ *   the same role is the double-specification hazard this single-source rule
+ *   exists to prevent; the workflow layer itself stays generic and does not (and
+ *   cannot) resolve or detect such drift -- see
+ *   `docs/agent-schema-layering-proposal.md` (section 4, recommendation item 4;
+ *   section 5.3) for the full rationale, and `docs/structured-errors-proposal.md`
+ *   for the sibling design-doc pattern this cross-reference follows.
+ * @property {string} [model] - Overrides model for this call
+ * @property {string} [member_name] - Apra-fleet member to dispatch to
+ * @property {string} [member_id] - Specific member UUID
+ * @property {Record<string, string>} [substitutions] - Template substitutions for prompt
+ * @property {number} [timeout_s] - Execution timeout (server-side INACTIVITY timeout:
+ *   resets on every output chunk from the member CLI)
+ * @property {number} [max_total_s] - Server-side HARD wall-clock ceiling for the dispatch,
+ *   independent of activity. Also drives the derived client-side request timeout:
+ *   deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) prefers max_total_s
+ *   over timeout_s, so omitting it here caps the whole dispatch at timeout_s+grace
+ *   client-side even when the caller intended a much larger total budget. Observed live
+ *   (stabilization log Issue 10): this option was silently DROPPED from the payload, so a
+ *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
+ *   session kept running.
+ * @property {number} [max_turns] - Max turns for conversational tools
+ * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
+ * @property {string} [agentType] - Agent persona to activate on the member
+ * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
+ *   A boolean `true` resumes the member's stored last session; a non-empty STRING resumes
+ *   EXACTLY that session id (apra-fleet-eft.78.1 widened execute_prompt's resume input to
+ *   boolean|session-id and made an explicit-id resume that cannot be resumed a TERMINAL
+ *   error). The value is passed straight through to executePrompt's payload.resume.
+ *   NOTE: the underlying ApraFleet client (packages/apra-fleet-client/src/client/api.mjs)
+ *   defaults `resume` to `true` when omitted. The WORKFLOW layer overrides that: agent()
+ *   explicitly sends `resume: false` unless the caller sets this option, so that
+ *   workflow-authored prompts are self-contained by default and don't silently inherit
+ *   state from a prior session. (F10 / apra-fleet-unw.3)
+ * @property {(sessionId: string, meta: { member?: string, agent?: string, usage?: object }) => void} [onSessionId]
+ *   Optional best-effort callback invoked with the resumable session id that execute_prompt
+ *   promoted into structuredContent.sessionId (apra-fleet-eft.78.1), on a non-error dispatch
+ *   that actually produced one. Lets a caller (the auto-sprint engine's per-role round-resume
+ *   registry, apra-fleet-eft.78.3) record each dispatch's session id per (role, cycle) so it
+ *   can resume the same role's session across rounds via `resume: <id>`. Never fires when the
+ *   provider returns no session id (a capability signal, not a provider-name check); a throwing
+ *   callback is caught and never breaks the dispatch. (apra-fleet-eft.78.3)
+ * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
+ *   passed through to ApraFleet.executePrompt. Not sent to the server. When omitted, a
+ *   default is derived from timeout_s/max_total_s (see deriveTimeoutMs in
+ *   packages/apra-fleet-client/src/client/api.mjs). (apra-fleet-unw.5)
+ * @property {AbortSignal} [signal] - Optional AbortSignal, passed through to
+ *   ApraFleet.executePrompt / McpClient.request. Aborting rejects the pending client-side
+ *   wait for a response; it cannot cancel a job already accepted by the remote fleet-server.
+ *   Groundwork for the cooperative-stop work in apra-fleet-unw.10 -- no /stop UI wiring here.
+ *   (apra-fleet-unw.5)
+ * @property {number} [schemaRetries] - Only meaningful when `schema` is set. Bounded number
+ *   of repair re-asks to the SAME member after a parse/validation failure, before giving up
+ *   and throwing AgentOutputError. Defaults to 2 (so up to 3 total dispatches: 1 original +
+ *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so any real work
+ *   the member already performed for this request is preserved rather than redone -- but the
+ *   re-ask is SELF-CONTAINED and does not depend on that resume carrying context
+ *   (apra-fleet-dnri): it reattaches the original prompt plus the schema instruction as
+ *   reference, alongside the ajv validation/parse errors and a corrected-JSON instruction.
+ *   The reattached portion is identical on every repair round (the invalid output, the
+ *   session transcript and per-attempt history are never embedded), so repairs do not grow.
+ *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
+ *   individually. (apra-fleet-unw.8)
+ * @property {number} [busyWaitMs] - How long (ms) to keep waiting-and-retrying when the
+ *   fleet server reports the member is busy ("execute_prompt is already running") before
+ *   surfacing the busy AgentDispatchError. Defaults to 10 minutes. A busy member is
+ *   almost always TRANSIENT-but-slow: observed live, a client-side transport drop
+ *   orphans the in-flight remote session, which keeps running (and holding the member's
+ *   one-dispatch-at-a-time lock) for however long its work takes -- minutes, not
+ *   seconds -- then completes and releases the lock. A blind fixed backoff loses that
+ *   race; polling until the lock actually frees wins it. Set 0 to disable (immediate
+ *   throw, the pre-existing behavior). Each poll is a cheap re-dispatch attempt (the
+ *   server rejects busy calls in milliseconds with no side effects).
+ * @property {number} [busyPollMs] - Poll interval (ms) for the busy-wait above. Default 15s.
+ * @property {string} [sprint_id] - Opaque sprint identity to pass straight through to
+ *   execute_prompt's server-side reservation check (apra-fleet-eft.29.1). Callers that
+ *   also reserve members via member_reservation (e.g. auto-sprint's
+ *   createMemberReservationClient) should pass the SAME token here so a dispatch from
+ *   the owning sprint is recognized as such even when the fleet server this call
+ *   dispatches through is a pre-existing shared singleton with no per-sprint
+ *   APRA_FLEET_SPRINT_ID of its own. Omit to preserve prior (env-var-only) behavior.
+ */
+
+/**
+ * @typedef {Object} CommandOptions
+ * @property {string} [label] - UI label for this run
+ * @property {string} [phase] - Workflow phase grouping
+ * @property {string} [member_name] - Apra-fleet member to dispatch to
+ * @property {string} [member_id] - Specific member UUID
+ * @property {Record<string, string>} [substitutions] - Template substitutions for command
+ * @property {number} [timeout_s] - Execution timeout
+ * @property {boolean} [long_running] - Run as background task
+ * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
+ *   passed through to ApraFleet.executeCommand. Not sent to the server. See AgentOptions
+ *   .timeoutMs above for details. (apra-fleet-unw.5)
+ * @property {AbortSignal} [signal] - Optional AbortSignal, passed through to
+ *   ApraFleet.executeCommand / McpClient.request. See AgentOptions.signal above for details.
+ *   (apra-fleet-unw.5)
+ * @property {boolean} [failSoft] - When true, command() never throws for a
+ *   command-level failure (CommandError / MemberNotFoundError /
+ *   FleetTransportError); it instead resolves to
+ *   `{ ok: boolean, output: string, error: string|null }`. A success also
+ *   resolves to that shape (`{ ok: true, output: <text>, error: null }`)
+ *   instead of the bare string, so callers don't have to branch on the
+ *   return type. `CancelledError` (cooperative `requestStop()`) is never
+ *   soft-caught -- it always throws, regardless of this option.
+ *   (apra-fleet-unw.17)
+ */
+
+export class FleetWorkflow extends EventEmitter {
+    /**
+     * @param {import('../fleet-client/api.mjs').ApraFleet} fleetApi 
+     * @param {any} args 
+     */
+    constructor(fleetApi, args = {}, logPrefix = '') {
+        super();
+        this.fleetApi = fleetApi;
+        this.args = args;
+        // (apra-fleet-20i.1.1) Optional per-run scenario label prepended to
+        // the [Workflow Log]/[Dispatch]/[Command] console.log lines below.
+        // Defaults to '' so existing callers get byte-identical output.
+        this.logPrefix = logPrefix;
+        this.currentPhase = null;
+        this.budget = {
+            total: null,
+            _spent: 0,
+            // apra-fleet-dv5.6: counts of dispatches priced via real
+            // per-member rates (get_member_model_pricing) vs. the
+            // tier-band/concrete-model fallback (pricing.mjs) -- see
+            // pricingSummary() and buildCostAnalysis() in runner.js.
+            _pricedReal: 0,
+            _pricedFallback: 0,
+            spent: () => this.budget._spent,
+            remaining: () => this.budget.total === null ? Infinity : (this.budget.total - this.budget._spent),
+            pricingSummary: () => ({ real: this.budget._pricedReal, fallback: this.budget._pricedFallback })
+        };
+        // apra-fleet-dv5.6: member_id/member_name -> MemberModelPricing (or
+        // `null` when real pricing is unavailable for that member), cached
+        // for the lifetime of a run (fresh per runWithContext() call, see
+        // `store.memberPricingCache` below) -- tier->model resolution is
+        // static for a run's duration, so this is a plain cache, not a TTL.
+        this._memberPricingCache = new Map();
+        // member_id/member_name we've already logged a "pricing unavailable"
+        // warning for (apra-fleet-dv5.6 acceptance criteria: log ONCE per
+        // member, not once per dispatch).
+        this._warnedPricingMembers = new Set();
+        // (apra-fleet-unw.10) runId -> AbortController for every currently
+        // active runWithContext() run. requestStop() aborts every entry in
+        // this map; agent()/command() default to the current run's
+        // controller.signal (via _currentSignal()) when the caller doesn't
+        // pass its own opts.signal. See runWithContext()/requestStop() below.
+        this._activeControllers = new Map();
+
+        // (apra-fleet-p2to.1) Cooperative pause/resume gate. This is the
+        // GENERIC engine primitive -- a soft, deferred barrier at every
+        // agent()/command() entry -- NOT a journaled interrupt(). See
+        // requestPause()/requestResume()/setPauseGuard() and _pauseGate()
+        // below for the full semantics. All state is instance-level (like
+        // requestStop()'s _activeControllers), so a single pause quiesces
+        // every run sharing this FleetWorkflow instance.
+        //
+        //   _pauseRequested : a pause has been asked for but has not yet
+        //                     "taken effect" (still draining in-flight work
+        //                     and/or waiting on the pause guard).
+        //   _paused         : the pause has taken effect at a clean-state
+        //                     boundary -- zero in-flight activities and the
+        //                     guard (if any) permitted it. New agent()/
+        //                     command() calls block at the gate while true.
+        //   _pauseGuard     : optional predicate (set via setPauseGuard) that
+        //                     defers a requested pause until it returns truthy
+        //                     -- i.e. lets the workflow script declare where a
+        //                     clean-state boundary actually is. Null means
+        //                     "any zero-in-flight point is a boundary".
+        //   _inFlight       : count of agent()/command() dispatches that have
+        //                     passed the gate and not yet completed. 'paused'
+        //                     is only declared when this reaches zero.
+        //   _pauseWaiters   : { resolve, reject } for every call currently
+        //                     blocked at the gate. requestResume() resolves
+        //                     them (they re-check and proceed); requestStop()
+        //                     rejects them with a CancelledError so a paused
+        //                     run tears down instead of hanging.
+        //   _preResumeHook  : optional async hook (set via setPreResumeHook)
+        //                     that requestResume() awaits as a HARD BARRIER
+        //                     before it clears pause state, releases any gate
+        //                     waiter, or emits 'resumed' -- so a caller's
+        //                     re-reserve/resync completes strictly ahead of the
+        //                     first post-resume dispatch. A hook rejection
+        //                     rejects requestResume() (the run stays paused)
+        //                     rather than being swallowed. Null means no
+        //                     barrier -- resume proceeds immediately.
+        this._pauseRequested = false;
+        this._paused = false;
+        this._pauseGuard = null;
+        this._preResumeHook = null;
+        this._inFlight = 0;
+        this._pauseWaiters = [];
+    }
+
+    // Returns the active per-run store (see runStorage above), or
+    // `undefined` when called outside of `WorkflowEngine.executeFile()` /
+    // `runWithContext()` -- e.g. direct `wf.method()` calls in unit tests.
+    _store() {
+        return runStorage.getStore();
+    }
+
+    // Effective phase: the current run's store.phase if one is active,
+    // otherwise the legacy instance-level `this.currentPhase`.
+    _currentPhase() {
+        const store = this._store();
+        return store ? store.phase : this.currentPhase;
+    }
+
+    _currentGroup() {
+        const store = this._store();
+        return store ? store.group : this.currentGroup;
+    }
+
+    _currentArgs() {
+        const store = this._store();
+        return store ? store.args : this.args;
+    }
+
+    _currentBudget() {
+        const store = this._store();
+        return store ? store.budget : this.budget;
+    }
+
+    // apra-fleet-dv5.6: same store-or-legacy-field pattern as the other
+    // _current*() accessors -- a fresh Map per run (see runWithContext()),
+    // or the legacy instance-level field for direct non-executeFile() usage.
+    _currentMemberPricingCache() {
+        const store = this._store();
+        return store ? store.memberPricingCache : this._memberPricingCache;
+    }
+
+    _currentRunId() {
+        const store = this._store();
+        return store ? store.runId : null;
+    }
+
+    // The active run's cooperative-cancellation AbortSignal (apra-fleet-
+    // unw.10), or `undefined` outside of a runWithContext() run / when the
+    // run's controller has no signal for some reason. agent()/command()
+    // fall back to this when the caller doesn't pass its own opts.signal.
+    _currentSignal() {
+        const store = this._store();
+        return store ? store.signal : undefined;
+    }
+
+    /**
+     * Cooperatively requests cancellation of every currently active run
+     * (every `runWithContext()` invocation -- i.e. every in-flight
+     * `WorkflowEngine.executeFile()` call -- on this `FleetWorkflow`
+     * instance). Aborts each run's `AbortController`, which rejects any
+     * in-flight `agent()`/`command()` dispatch that is using that run's
+     * signal (either implicitly, via `_currentSignal()`, or because the
+     * script never overrode `opts.signal`) with a client-side `AbortError`;
+     * `agent()`/`command()` re-wrap that as a typed `CancelledError` (see
+     * errors.mjs) so the run unwinds as a cancellation failure rather than a
+     * generic transport error.
+     *
+     * This is the mechanism the dashboard viewer's `/stop` endpoint uses
+     * (packages/apra-fleet-workflow/src/viewer/index.mjs) instead of the old
+     * `process.exit(1)` -- no state flush, mid-dispatch agents orphaned.
+     *
+     * NOTE: local/client-side cancellation only. A remote fleet member that
+     * already accepted a job may keep running to completion even after this
+     * run unwinds -- true server-side cancellation would require changes to
+     * the external apra-fleet MCP server and is out of scope here.
+     *
+     * @param {string} [reason]
+     */
+    requestStop(reason = 'Workflow run cancelled via requestStop()') {
+        // (apra-fleet-p2to.1) A stop supersedes any pause: reject every call
+        // blocked at the pause gate with a CancelledError so a paused run
+        // unwinds instead of hanging forever, and clear the pause state so a
+        // late-arriving activity doesn't re-block. The gate promise rejecting
+        // is what makes "requestStop() while paused tears down" work -- the
+        // blocked agent()/command() re-throws the CancelledError, which
+        // unwinds the run exactly like an aborted in-flight dispatch does.
+        this._pauseRequested = false;
+        this._paused = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.reject(new CancelledError(`[Workflow Error] ${reason}`));
+        }
+        for (const controller of this._activeControllers.values()) {
+            controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
+        }
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Registers (or clears, with `null`) the pause guard:
+     * a predicate consulted whenever a requested-but-not-yet-engaged pause is
+     * about to take effect. A pause only engages -- transitions to `_paused`
+     * and fires 'paused' -- when in-flight work has drained to zero AND this
+     * guard returns truthy. That lets a workflow script defer a mid-run pause
+     * to a boundary IT considers clean (e.g. "between phases", "not inside a
+     * transaction") rather than the mere between-activities gaps the engine
+     * can see on its own. A null guard (the default) treats every
+     * zero-in-flight point as an acceptable boundary. The guard is called with
+     * no arguments; a throwing guard is treated as "not at a boundary yet"
+     * (fail-closed: keep deferring rather than pause at a point the script
+     * couldn't vouch for) and logged.
+     *
+     * Generic engine hook only -- it carries no fleet-sprint (or any other
+     * caller's) semantics; the meaning of "clean" is entirely the guard's.
+     *
+     * @param {(() => boolean) | null} fn
+     */
+    setPauseGuard(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPauseGuard() requires a function or null');
+        }
+        this._pauseGuard = fn;
+        // Setting the guard at what the script now considers a clean boundary
+        // may be exactly the moment a deferred pause can finally engage.
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1.3) Registers (or clears, with null) an async
+     * pre-resume hook that requestResume() awaits as a HARD BARRIER before it
+     * clears pause state, releases any gate waiter, or emits 'resumed'. This is
+     * the point at which a caller re-grabs/re-syncs whatever it released at
+     * pause (fleet-sprint's member re-reserve/resync) with the guarantee that
+     * the work completes strictly BEFORE the first post-resume agent()/
+     * command() dispatch -- no race with the resumed sprint loop.
+     *
+     * The hook is awaited; if it rejects, requestResume() rejects too and the
+     * run stays paused (pause state is never cleared on the reject path), so a
+     * failure surfaces to the caller instead of being silently swallowed --
+     * consistent with reReserveOnResume()'s rethrow contract.
+     *
+     * Generic engine hook only -- it carries no caller-specific semantics.
+     *
+     * @param {((reason: string) => (void | Promise<void>)) | null} fn
+     */
+    setPreResumeHook(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPreResumeHook() requires a function or null');
+        }
+        this._preResumeHook = fn;
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Requests a cooperative pause of every run sharing
+     * this instance. Fires 'pause:requested' immediately, but the pause is
+     * DEFERRED: it only takes effect ('paused' fires, new dispatches block) at
+     * a clean-state boundary -- zero in-flight activities and, if a pause
+     * guard is set, that guard returning truthy. Calling it while already
+     * paused or pause-requested is a no-op.
+     *
+     * (apra-fleet-hzeb.3) Also exposed on the script context (see
+     * _bindPrimitives), so a running workflow script can initiate a pause
+     * for a condition only IT can detect (e.g. a provider usage/rate limit
+     * signal) -- not just the dashboard/operator via requestStop()'s sibling
+     * instance-level API. A script-initiated pause is indistinguishable from
+     * an operator-initiated one downstream: it fires the exact same
+     * 'pause:requested'/'paused'/'resumed' events, so any existing listener
+     * (the dashboard viewer's state.pause wiring, fleet-sprint's
+     * cli.mjs `on('paused', releaseForPause)` /
+     * `setPreResumeHook(reReserveForResume)`) engages for it unchanged.
+     *
+     * @param {string} [reason]
+     * @param {{ resumeAt?: string, source?: string }} [opts] - Optional
+     *   metadata carried on the 'pause:requested' payload (apra-fleet-hzeb.3):
+     *   `resumeAt` is an ISO-8601 timestamp (or any caller-defined string) the
+     *   caller expects the condition to clear by -- e.g. a provider's
+     *   usage-limit reset time -- surfaced by the dashboard viewer in the
+     *   paused banner. `source` identifies what requested the pause (e.g.
+     *   `'usage_limit'`) for the same display purpose. Both are purely
+     *   informational to the engine, which does not interpret or act on
+     *   them. Omitting `opts` is fully backwards compatible with existing
+     *   single-arg callers.
+     */
+    requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
+        if (this._paused || this._pauseRequested) return;
+        this._pauseRequested = true;
+        this.emit('pause:requested', this._pauseEventPayload({
+            reason,
+            resumeAt: opts.resumeAt ?? null,
+            source: opts.source ?? null
+        }));
+        // If we're already quiescent (nothing in flight, guard permits), the
+        // pause engages right now; otherwise it engages later as in-flight
+        // work drains (_exitActivity) or the guard opens (setPauseGuard).
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Resumes a paused (or merely pause-requested) run.
+     * Clears the pause state and releases every call blocked at the gate so
+     * they proceed. Fires 'resumed'. No-op if not paused/pause-requested.
+     *
+     * (apra-fleet-p2to.1.3) When a pre-resume hook is registered (see
+     * setPreResumeHook), it is awaited as a HARD BARRIER FIRST -- while the run
+     * is still paused, so no gate waiter is released and no new dispatch slips
+     * through -- and only once it resolves are the waiters released and
+     * 'resumed' emitted. This guarantees the caller's re-reserve/resync
+     * completes strictly ahead of the first post-resume dispatch. A hook
+     * rejection propagates out of requestResume() with the pause state left
+     * intact (run stays paused), rather than being swallowed.
+     *
+     * @param {string} [reason]
+     * @returns {Promise<void>}
+     */
+    async requestResume(reason = 'Workflow run resumed via requestResume()') {
+        if (!this._paused && !this._pauseRequested) return;
+        // Barrier: drain the pre-resume hook BEFORE touching pause state. The
+        // run is still paused here, so waiters remain blocked and any fresh
+        // agent()/command() dispatch blocks at the gate -- the hook's work
+        // (e.g. member re-reserve/resync) cannot race the resumed loop. A
+        // rejection here surfaces to the caller with pause state untouched, so
+        // the run stays parked instead of resuming on a half-restored state.
+        if (this._preResumeHook) {
+            await this._preResumeHook(reason);
+        }
+        this._paused = false;
+        this._pauseRequested = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.resolve();
+        }
+        this.emit('resumed', this._pauseEventPayload({ reason }));
+    }
+
+    // (apra-fleet-p2to.1) Phase/group (and runId) labels for pause lifecycle
+    // events, read from the active run store when there is one (falling back
+    // to the legacy instance-level fields), so subscribers can attribute a
+    // pause to where the run actually was -- exactly like log()/phase() do.
+    _pauseEventPayload(extra = {}) {
+        return {
+            phase: this._currentPhase(),
+            group: this._currentGroup(),
+            runId: this._currentRunId(),
+            ...extra
+        };
+    }
+
+    // (apra-fleet-p2to.1) True when a requested pause is allowed to take
+    // effect right now: null guard means "any zero-in-flight point is clean";
+    // otherwise the script's guard decides. A throwing guard fails closed
+    // (keep deferring) rather than pausing at an unvouched-for point.
+    _guardPermitsPause() {
+        if (!this._pauseGuard) return true;
+        try {
+            return !!this._pauseGuard();
+        } catch (err) {
+            console.error(`[Workflow] pause guard threw (deferring pause): ${err && err.message ? err.message : err}`);
+            return false;
+        }
+    }
+
+    // (apra-fleet-p2to.1) Engage a requested pause iff we're at a clean-state
+    // boundary: pause requested, not already paused, zero in-flight activities
+    // and the guard permits. Idempotent and cheap -- called from every point
+    // that can move us toward quiescence (requestPause, _exitActivity when the
+    // last activity drains, setPauseGuard opening the boundary, and the gate
+    // itself). This is the ONLY place 'paused' is emitted, which guarantees
+    // 'paused' can never fire while activities are still in flight.
+    _maybeEngagePause() {
+        if (!this._pauseRequested || this._paused) return;
+        if (this._inFlight > 0) return;
+        if (!this._guardPermitsPause()) return;
+        this._paused = true;
+        this.emit('paused', this._pauseEventPayload());
+    }
+
+    // (apra-fleet-p2to.1) The pause gate, awaited at the very start of every
+    // agent()/command() call (before it becomes in-flight). If a pause is
+    // engaged the call blocks here until requestResume() releases it (the
+    // awaited promise resolves) or requestStop() tears it down (the promise
+    // rejects with a CancelledError, which propagates out of agent()/command()
+    // and unwinds the run). A requested-but-not-yet-engaged pause is given a
+    // chance to engage first (this arrival at a gate is itself a between-
+    // activities boundary), so a pause requested while the run is idle takes
+    // effect on the next dispatch rather than slipping one through.
+    async _pauseGate() {
+        this._maybeEngagePause();
+        while (this._paused) {
+            await new Promise((resolve, reject) => {
+                this._pauseWaiters.push({ resolve, reject });
+            });
+            // Released by requestResume(); re-check in case another pause was
+            // requested in the meantime before we fall through to dispatch.
+            this._maybeEngagePause();
+        }
+    }
+
+    // (apra-fleet-p2to.1) In-flight bookkeeping bracketing the actual dispatch
+    // in agent()/command(). A call is "in flight" from the moment it clears
+    // the gate until it fully settles; 'paused' is withheld until this count
+    // returns to zero (see _maybeEngagePause), which is what "paused only at
+    // zero in-flight activities" means.
+    _enterActivity() {
+        this._inFlight += 1;
+    }
+
+    _exitActivity() {
+        this._inFlight = Math.max(0, this._inFlight - 1);
+        // Draining the last in-flight activity may complete a deferred pause.
+        this._maybeEngagePause();
+    }
+
+    log(msg) {
+        console.log(`${this.logPrefix}[Workflow Log] ${msg}`);
+        this.emit('log', { phase: this._currentPhase(), msg, runId: this._currentRunId() });
+    }
+
+    group(title) {
+        const store = this._store();
+        if (store) {
+            store.group = title;
+        } else {
+            this.currentGroup = title;
+        }
+        console.log(`\n=== Group: ${title} ===`);
+        this.emit('group:start', { title, runId: this._currentRunId() });
+    }
+
+    endGroup() {
+        this.emit('group:end', { title: this._currentGroup(), runId: this._currentRunId() });
+        const store = this._store();
+        if (store) {
+            store.group = null;
+        } else {
+            this.currentGroup = null;
+        }
+    }
+
+    // NOTE: `title` set inside a `parallel()` branch only mutates that
+    // branch's own forked store copy (see `parallel()` below and the
+    // runStorage comment above this class) -- it never leaks to sibling
+    // branches or the parent run.
+    phase(title) {
+        const store = this._store();
+        if (store) {
+            store.phase = title;
+        } else {
+            this.currentPhase = title;
+        }
+        console.log(`--- Phase: ${title} ---`);
+        // Event payload deliberately kept as the bare `title` string (not an
+        // object) -- the dashboard viewer subscribes to this event and
+        // single-run rendering must stay byte-identical (apra-fleet-unw.9
+        // acceptance criteria #3). Concurrent-run disambiguation is carried
+        // on activity/log/state events instead, which already have an
+        // object payload.
+        this.emit('phase', title);
+    }
+
+
+    publishState(namespace, data) {
+        this.emit('state', { namespace, data, phase: this._currentPhase(), runId: this._currentRunId() });
+    }
+
+    // apra-fleet-dv5.6: fetches (and caches for the run) a member's real
+    // per-tier pricing via the get_member_model_pricing MCP tool. Never
+    // throws -- any failure (older fleet server without the tool,
+    // network/hub-relay error, member not found) degrades to `null`
+    // (meaning "use the tier-band/concrete-model fallback for this
+    // member"), logged ONCE per member rather than once per dispatch.
+    async _getMemberPricing(memberKey, opts) {
+        const cache = this._currentMemberPricingCache();
+        if (cache.has(memberKey)) return cache.get(memberKey);
+
+        const warnUnavailable = (reason) => {
+            if (!this._warnedPricingMembers.has(memberKey)) {
+                this._warnedPricingMembers.add(memberKey);
+                console.warn(`[Workflow] Real per-member pricing unavailable for member "${memberKey}" (${reason}) -- falling back to tier-band cost estimates for this member's dispatches.`);
+            }
+        };
+
+        try {
+            const res = await this.fleetApi.getMemberModelPricing({ member_id: opts.member_id, member_name: opts.member_name });
+            const text = res && res.content && res.content[0] ? res.content[0].text : null;
+            const parsed = text ? JSON.parse(text) : null;
+            if (!parsed || parsed.error || !parsed.pricing) {
+                warnUnavailable(parsed && parsed.error ? parsed.error : 'no pricing data returned');
+                cache.set(memberKey, null);
+                return null;
+            }
+            cache.set(memberKey, parsed.pricing);
+            return parsed.pricing;
+        } catch (err) {
+            warnUnavailable(err && err.message ? err.message : String(err));
+            cache.set(memberKey, null);
+            return null;
+        }
+    }
+
+    // apra-fleet-dv5.6: resolves the cost of one dispatch, preferring real
+    // per-member pricing over the pricing.mjs tier-band/concrete-model
+    // fallback whenever `opts.model` is a tier keyword AND real pricing is
+    // available for that member and tier. Falls back to calculateCost()
+    // (unchanged behavior) for: a literal (non-tier-keyword) model id, a
+    // dispatch with no member_id/member_name (shouldn't happen -- agent()
+    // requires one), or when real pricing is unavailable/doesn't cover this
+    // tier. Increments budget._pricedReal/_pricedFallback so
+    // buildCostAnalysis() (runner.js) can honestly report which source
+    // priced a run's total.
+    async _resolveCost(opts, usage, budget) {
+        const tier = opts.model;
+        if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
+            const memberKey = opts.member_id || opts.member_name;
+            if (memberKey) {
+                const realPricing = await this._getMemberPricing(memberKey, opts);
+                const entry = realPricing && realPricing[tier];
+                if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
+                    const pTokens = usage.input_tokens || 0;
+                    const cTokens = usage.output_tokens || 0;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    budget._pricedReal++;
+                    return cost;
+                }
+            }
+        }
+        const cost = calculateCost(opts.model, usage);
+        if (cost !== null) budget._pricedFallback++;
+        return cost;
+    }
+
+    /**
+     * @param {string} prompt
+     * @param {AgentOptions} [opts]
+     */
+    // (apra-fleet-p2to.1) Public entry: passes through the cooperative pause
+    // gate, then brackets the real dispatch with in-flight bookkeeping so a
+    // pause only declares 'paused' once every such dispatch has settled. The
+    // try/finally guarantees the in-flight count is balanced on every exit
+    // path (success, throw, or a gate-rejecting requestStop()).
+    async agent(prompt, opts = {}) {
+        if (!opts.member_name && !opts.member_id) {
+            throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
+        }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._agentDispatch(prompt, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
+
+    async _agentDispatch(prompt, opts = {}) {
+        const effectivePhase = opts.phase || this._currentPhase();
+        const runId = this._currentRunId();
+        if (effectivePhase) {
+            console.log(`${this.logPrefix}[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+        }
+
+        let compiledSchema = null;
+        if (opts.schema) {
+            try {
+                compiledSchema = ajv.compile(opts.schema);
+            } catch (err) {
+                throw new Error(`[Workflow Error] Invalid JSON Schema provided to agent(): ${err.message}`);
+            }
+        }
+
+        const initialPrompt = opts.schema
+            ? `${prompt}\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(opts.schema, null, 2)}`
+            : prompt;
+
+        // Bounded schema-repair loop (apra-fleet-unw.8, F5). Non-schema
+        // calls always run exactly one iteration (maxRepairs = 0). For
+        // schema calls, a parse/validation failure re-dispatches to the SAME
+        // member with a self-contained repair prompt (see buildRepairPrompt
+        // above) instead of hard-throwing on the first bad reply -- one
+        // malformed JSON reply used to kill a whole multi-cycle sprint.
+        //
+        // DESCOPED: the more robust fix is enforcing the schema at the
+        // member/harness tool-call layer (e.g. a Claude-CLI-style structured
+        // tool call) so the member literally cannot emit non-conforming
+        // output. That requires fleet-server changes and is out of scope
+        // here; this client-side repair loop is the best available
+        // mitigation until that lands.
+        const maxRepairs = opts.schema ? (opts.schemaRetries ?? 2) : 0;
+
+        let currentPrompt = initialPrompt;
+        let lastActivityMeta = null;
+        // apra-fleet-dnri: the session id reported by the attempt that just
+        // failed, used as an EXPLICIT resume target by the repair dispatch of
+        // the NEXT iteration (see the resume disposition comment on the
+        // payload below). Declared outside the loop because the capture site
+        // sits after the payload is built within the same iteration. It is
+        // re-assigned (or cleared) on every turn, so a repair round never
+        // reuses an older round's id.
+        let failedAttemptSessionId = null;
+        const budget = this._currentBudget();
+
+        // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
+        // ONCE per logical agent() call (not per schema-repair attempt) from
+        // this run's monotonic activity sequence counter + call type +
+        // member + a hash of the fully-resolved initial prompt (including
+        // any appended schema instructions), so it's stable across repair
+        // attempts and deterministic across an uninterrupted-vs-resumed run
+        // of the SAME script with the SAME args. `store.activitySeq` is only
+        // non-null when the caller opted into journaling at all (see
+        // runWithContext()); a normal call with no journal/resumeJournal
+        // option never enters this block and never attaches
+        // sequence/replayKey to its activity events, so behavior/output are
+        // unchanged from before this feature existed.
+        const store = this._store();
+        let sequence = null;
+        let replayKey = null;
+        if (store && store.activitySeq) {
+            // (apra-fleet-unw2.14, N6) `sequence` is numeric at the top level
+            // and a hierarchical, scheduler-independent string inside a
+            // parallel() branch -- see _nextSequence()/parallel().
+            sequence = this._nextSequence(store);
+            replayKey = computeActivityKey({
+                sequence,
+                type: 'agent',
+                member: opts.member_name || opts.member_id,
+                textHash: hashText(initialPrompt)
+            });
+        }
+
+        const replay = store && store.replay;
+        if (replay && !replay.diverged && replayKey) {
+            const cached = replay.completedByKey.get(replayKey);
+            if (cached && cached.success) {
+                // Cache hit: return the journaled result WITHOUT dispatching
+                // to the fleet at all. Still emit activity:start/activity:end
+                // (marked `replayed: true`) so a listening dashboard/journal
+                // writer sees this step as part of the run.
+                const cachedActivityMeta = {
+                    id: randomUUID(),
+                    type: 'agent',
+                    phase: effectivePhase,
+                    runId,
+                    label: (opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : '')),
+                    member: opts.member_name || opts.member_id,
+                    model: opts.model || 'default',
+                    repairAttempt: 0,
+                    startTime: Date.now(),
+                    sequence,
+                    replayKey,
+                    replayed: true
+                };
+                this.emit('activity:start', cachedActivityMeta);
+                // (apra-fleet-unw2.14, N18) INTENTIONAL: a replayed agent
+                // activity re-debits the run's budget using the journaled
+                // (cached) cost of the ORIGINAL dispatch. This is
+                // "total-spend-view" semantics: `budget.spent()` on a resumed
+                // run reflects the cumulative real cost of the whole logical
+                // run (original + resumed portions), NOT just what the resumed
+                // process dispatched live. That is deliberate -- a resume is a
+                // continuation of one run, and its budget ceiling must still
+                // account for money already spent before the crash, otherwise
+                // a run that crashed near its budget limit could resume and
+                // massively overspend. It is NOT the "fresh run starts at $0"
+                // model some callers might naively assume; that expectation is
+                // explicitly wrong here. (See the resumed-budget test in
+                // apra-fleet-workflow-journal.test.mjs.)
+                if (typeof cached.cost === 'number') {
+                    budget._spent += cached.cost;
+                }
+                const cachedOutput = opts.schema ? JSON.parse(cached.output) : cached.output;
+                this.emit('activity:end', {
+                    ...cachedActivityMeta,
+                    duration: 0,
+                    success: true,
+                    usage: cached.usage ?? null,
+                    cost: cached.cost ?? null,
+                    output: cached.output,
+                    replayed: true
+                });
+                return cachedOutput;
+            }
+            // First mismatch or first missing entry for this run: stop
+            // replay and switch to live execution from here onward (partial
+            // replay, not all-or-nothing).
+            replay.diverged = true;
+            const inParallel = !!(store && store.seqPrefix);
+            console.warn(this._divergenceWarning({ sequence, type: 'agent', member: opts.member_name || opts.member_id, inParallel }));
+            this.emit('journal:diverged', { runId, sequence, type: 'agent', replayKey, inParallel });
+        }
+
+        for (let attempt = 0; attempt <= maxRepairs; attempt++) {
+            if (budget.total !== null && budget.remaining() <= 0) {
+                throw new BudgetExceededError(
+                    `[Workflow Error] Budget exceeded: spent $${budget._spent.toFixed(4)} of $${budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
+                    { details: { spent: budget._spent, total: budget.total, member: opts.member_name || opts.member_id } }
+                );
+            }
+
+            const isRepair = attempt > 0;
+            const activityMeta = {
+                id: randomUUID(),
+                type: 'agent',
+                phase: effectivePhase,
+                runId,
+                label: (opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : ''))
+                    + (isRepair ? ` [schema repair ${attempt}/${maxRepairs}]` : ''),
+                member: opts.member_name || opts.member_id,
+                model: opts.model || 'default',
+                repairAttempt: attempt,
+                startTime: Date.now(),
+                ...(replayKey !== null ? { sequence, replayKey } : {})
+            };
+            lastActivityMeta = activityMeta;
+            this.emit('activity:start', activityMeta);
+
+            // apra-fleet-dnri -- RESUME DISPOSITION for a schema-repair
+            // re-ask, corrected after a live reproduction:
+            //
+            // A repair dispatch SHOULD continue the session that produced the
+            // invalid output -- by repair time the member may already have
+            // done real, side-effecting work for this request (files edited,
+            // commits made, tracker items claimed), and a fresh session with
+            // the task restated invites it to redo that work. But the naive
+            // way of asking for that -- a bare boolean `true` -- does NOT
+            // mean "the session that just failed". execute_prompt resolves
+            // `resume: true` to `explicitResumeId ?? agent.sessionId`, i.e.
+            // the member's single globally-stored LAST session, shared across
+            // every role with no task scoping. Observed live: a doer's repair
+            // retry landed in the immediately-prior plan-reviewer session and
+            // came back with reviewer-shaped output carrying a field that is
+            // not in the doer schema at all.
+            //
+            // So the repair dispatch names the session EXPLICITLY, by id
+            // (execute_prompt's resume accepts a session-id string for
+            // exactly this). When no id was reported for the failed attempt
+            // (a provider without resume support, or a dispatch that returned
+            // none), we degrade LOUDLY to a fresh, self-contained session and
+            // pass the boolean `false` EXPLICITLY -- never `undefined`, since
+            // execute_prompt's schema declares `.default(true)` on this field
+            // and an omitted key would silently restore the exact
+            // wrong-session bug above.
+            //
+            // Correctness does not depend on the resume landing: the repair
+            // prompt reattaches the original prompt and schema itself (see
+            // buildRepairPrompt), so the re-ask works whether or not the
+            // resumed session still carries the original context.
+            let repairResume = false;
+            if (isRepair) {
+                if (typeof failedAttemptSessionId === 'string' && failedAttemptSessionId) {
+                    repairResume = failedAttemptSessionId;
+                } else {
+                    console.error(`[Agent Schema Repair] DEGRADED: no session id was reported for the attempt that just failed on member '${opts.member_name || opts.member_id}', so this repair re-ask CANNOT target that session and is being dispatched in a FRESH session (resume: false). Any side-effecting work the member already did for this request is not visible to it; the repair prompt is self-contained, so the re-ask is still answerable.`);
+                    repairResume = false;
+                }
+            }
+
+            const payload = {
+                prompt: currentPrompt,
+                model: opts.model,
+                member_name: opts.member_name,
+                member_id: opts.member_id,
+                substitutions: opts.substitutions,
+                timeout_s: opts.timeout_s,
+                max_total_s: opts.max_total_s,
+                max_turns: opts.max_turns,
+                effort: opts.effort,
+                agent: opts.agentType,
+                // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
+                sprint_id: opts.sprint_id,
+                // F10: default to a self-contained (non-resumed) session for
+                // the INITIAL dispatch of a workflow-authored prompt. See
+                // AgentOptions.resume above and apra-fleet-unw.3. The
+                // non-repair value is unchanged; the repair value is resolved
+                // above (apra-fleet-dnri).
+                resume: isRepair ? repairResume : (opts.resume ?? false),
+                // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
+                timeoutMs: opts.timeoutMs,
+                // apra-fleet-unw.10: defaults to the active run's cooperative
+                // -cancellation signal (set up by runWithContext()/
+                // requestStop()) when the caller doesn't supply its own.
+                signal: opts.signal ?? this._currentSignal()
+            };
+
+            try {
+                let result = await this.fleetApi.executePrompt(payload);
+
+                // Busy-wait (see AgentOptions.busyWaitMs): a busy member is
+                // transient-but-slow -- an orphaned prior session can hold
+                // the per-member dispatch lock for minutes before finishing.
+                // Poll (cheap, side-effect-free re-dispatch) until the lock
+                // frees or the budget runs out, instead of failing the whole
+                // step on the first busy rejection.
+                const busyWaitMs = opts.busyWaitMs ?? 600000;
+                const busyPollMs = opts.busyPollMs ?? 15000;
+                if (busyWaitMs > 0) {
+                    const busyDeadline = Date.now() + busyWaitMs;
+                    while (
+                        result && result.structuredContent && result.structuredContent.isError
+                        && result.structuredContent.reason === 'busy'
+                        && Date.now() < busyDeadline
+                        && !(payload.signal && payload.signal.aborted)
+                    ) {
+                        console.error(`[Agent Busy-Wait] member '${opts.member_name || opts.member_id}' is busy (a prior dispatch still holds its lock); retrying in ${Math.round(busyPollMs / 1000)}s (up to ${Math.round((busyDeadline - Date.now()) / 1000)}s left)...`);
+                        await new Promise((resolve) => setTimeout(resolve, busyPollMs));
+                        result = await this.fleetApi.executePrompt(payload);
+                    }
+                }
+
+                // apra-fleet-dnri: naming the failed attempt's session id
+                // explicitly (above) converts one previously self-healing
+                // case into a hard failure. execute_prompt rejects an
+                // unknown/expired EXPLICIT id up front with
+                // {isError, reason: 'session_not_found'}, making no LLM call,
+                // and its transparent retry-in-a-fresh-session recovery is
+                // gated on `resume === true`, so it does not apply here. Left
+                // alone, the dispatch-error branch below would turn that into
+                // an AgentDispatchError and abort the whole step -- worse
+                // than the boolean behaviour this replaced.
+                // Scope is deliberately narrow: for REPAIR dispatches only,
+                // for that ONE reason, re-dispatch exactly once with the SAME
+                // repair prompt in a fresh self-contained session, inside the
+                // existing maxRepairs budget. No new retry framework, no new
+                // budget, no broader error taxonomy.
+                if (
+                    isRepair
+                    && result && result.structuredContent && result.structuredContent.isError
+                    && result.structuredContent.reason === 'session_not_found'
+                ) {
+                    console.error(`[Agent Schema Repair] the session targeted by this repair re-ask (${payload.resume}) is gone or expired on member '${opts.member_name || opts.member_id}'; re-dispatching the same repair prompt once in a fresh self-contained session (resume: false).`);
+                    payload.resume = false;
+                    result = await this.fleetApi.executePrompt(payload);
+                }
+
+                // execute_prompt's dispatch-level structuredContent (added
+                // alongside the display text -- see src/tools/execute-prompt.ts)
+                // reports real per-call token usage AND classifies dispatch
+                // failures (busy member, non-zero CLI exit, transport
+                // exception) distinctly from a genuine LLM response. Prefer it;
+                // fall back to result.usage directly for older servers that
+                // predate this field.
+                const structured = result && result.structuredContent;
+                const reportedUsage = (structured && structured.usage) || result.usage;
+
+                // apra-fleet-unw.4: never fabricate usage. If the fleet result
+                // didn't report real token usage, both usage and cost are
+                // explicitly null -- the viewer renders "n/a" and excludes the
+                // activity from cost totals rather than showing fiction. This
+                // applies per-attempt: every repair dispatch is accounted
+                // individually, exactly like the original attempt.
+                const hasRealUsage = !!(reportedUsage && typeof reportedUsage.total_tokens === 'number');
+                result.usage = hasRealUsage ? reportedUsage : null;
+
+                const cost = hasRealUsage ? await this._resolveCost(opts, result.usage, budget) : null;
+                if (cost !== null) {
+                    budget._spent += cost;
+                }
+                const duration = Date.now() - activityMeta.startTime;
+
+                // Dispatch-level failure (busy member, non-zero exit, transport
+                // exception): the text is never the LLM's actual answer, so
+                // feeding it to the schema/JSON extractor below would always
+                // fail and misreport as "LLM failed to return parseable JSON".
+                // Surface it as a typed, distinctly-classified error instead,
+                // and never retry it through the bounded schema-repair loop --
+                // repair re-asks the SAME prompt with "here's why your JSON was
+                // invalid" framing, which cannot fix a dispatch failure and
+                // both wastes attempts and produces a misleading error message.
+                // The caller's own top-level retry (e.g. the streak-dispatch
+                // "retrying once" wrapper in apra-fleet-se's runner.js) still
+                // applies on top of this.
+                if (structured && structured.isError) {
+                    const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
+                    console.error(`[Agent API Error]`, text);
+                    // apra-fleet-202.3: a dispatch that FAILED (isError) but still
+                    // reported real input/output tokens really did consume that
+                    // spend -- carry its usage/cost onto the activity record (as
+                    // the empty-response failure path below already does) so the
+                    // dashboard's per-activity totalTokens/totalCost tally
+                    // includes it instead of silently dropping it. budget._spent
+                    // was already bumped above (drives the harvester cost-
+                    // analysis via spent()), and this failed activity was never
+                    // previously recorded with a cost, so neither total is
+                    // double-counted. When the provider reported no usage at all,
+                    // result.usage is null and cost is null -- the viewer then
+                    // tallies it as an unknown-cost activity rather than fiction.
+                    this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
+                    // apra-fleet-hzeb.2: pure pass-through, no policy decisions here --
+                    // when execute_prompt relayed a provider usage-limit signal
+                    // (reason: 'usage_limit'), forward its usageLimit block and the
+                    // in-flight sessionId onto AgentDispatchError.details unchanged, so
+                    // the fleet-sprint pause/resume policy can read
+                    // err.details.usageLimit.resumeAt / err.details.sessionId directly
+                    // instead of re-parsing the failure text.
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
+                }
+
+                // apra-fleet-eft.78.3: surface the resumable session id
+                // (promoted into structuredContent.sessionId by execute_prompt
+                // in apra-fleet-eft.78.1) to the caller via an optional callback,
+                // WITHOUT changing agent()'s string/parsed return contract. The
+                // auto-sprint engine uses this to record each dispatch's session
+                // per (role, cycle) so it can resume the same role's session
+                // across rounds within a cycle (runner.js's round-session
+                // registry). Fired only on a non-error dispatch that actually
+                // produced a session id; a provider that does not support resume
+                // returns no sessionId, so the callback never fires and the
+                // engine falls back to a fresh session (a capability signal, not
+                // a provider-name check). Best-effort: a throwing callback must
+                // never break the dispatch.
+                // apra-fleet-dnri: record THIS attempt's session id so that,
+                // if its output turns out to be schema-invalid, the repair
+                // dispatch of the next iteration can resume exactly this
+                // session by id rather than whatever session the member
+                // happens to have stored last. Assigned unconditionally (to
+                // null when the provider reported none) so a later round can
+                // never silently reuse an earlier round's id -- a provider may
+                // mint a new id per turn. Deliberately NOT nested inside the
+                // opts.onSessionId gate below: most callers pass no callback,
+                // and gating the capture on it would mean the explicit-id
+                // path never runs for them.
+                failedAttemptSessionId = (structured && typeof structured.sessionId === 'string' && structured.sessionId)
+                    ? structured.sessionId
+                    : null;
+
+                if (
+                    structured
+                    && typeof structured.sessionId === 'string'
+                    && structured.sessionId
+                    && typeof opts.onSessionId === 'function'
+                ) {
+                    try {
+                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage });
+                    } catch (cbErr) {
+                        console.error(`[Agent onSessionId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
+                }
+
+                if (result && result.content && result.content.length > 0) {
+                    const text = result.content[0].text;
+
+                    // STOPGAP: the apra-fleet MCP server currently reports a
+                    // missing member as a normal-looking success payload whose
+                    // text happens to match this pattern, instead of a
+                    // structured error (see docs/structured-errors-proposal.md).
+                    // Until the server ships Option 1 (JSON-RPC error) or
+                    // Option 2 (isError payload), this string-sniff is the only
+                    // classifier available; keep it, but always surface it as a
+                    // typed error rather than a silent `null` return. A missing
+                    // member is not a schema problem, so it is never retried
+                    // through the repair loop.
+                    if (text.startsWith('Member "') && text.includes('" not found.')) {
+                        console.error(`[Agent API Error]`, text);
+                        this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
+                        throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                    }
+
+                    // Empty-response detection (observed live, apra-fleet-eft.14):
+                    // the fleet server can return success (exit 0, isError
+                    // absent) whose text is ONLY the display wrapper -- e.g.
+                    // exactly "\u{1F4CB} Response from <member>:\n\n" with an empty
+                    // parsed result (the member CLI produced no parseable
+                    // output; the server-side log line for such a dispatch
+                    // also lacks its usual in=/out= token counts). Feeding
+                    // that to schema extraction misclassifies it as "LLM
+                    // returned invalid JSON" (and its repair re-ask wastes a
+                    // dispatch); for no-schema calls it silently becomes a
+                    // garbage "successful" result. It is a DISPATCH-level
+                    // failure: surface it typed so callers' existing
+                    // AgentDispatchError handling (retry / degrade the
+                    // round) applies.
+                    //
+                    // structuredContent.response (added alongside this text --
+                    // see src/tools/execute-prompt.ts) carries the exact reply
+                    // the server parsed, with no display wrapper to strip --
+                    // prefer it when present (upgraded server) as a direct,
+                    // reliable emptiness check and as the clean value to hand
+                    // back to callers, instead of text-scraping the wrapper.
+                    // Fall back to the wrapper-stripping regex for an
+                    // older/not-yet-rebuilt server that predates this field.
+                    const hasStructuredResponse = !!structured && typeof structured.response === 'string';
+                    const cleanText = hasStructuredResponse
+                        ? structured.response
+                        : text
+                            .replace(/^\u{1F4CB} Response from [^\n:]+:\s*/u, '')
+                            .replace(/^Tokens: input=\d+ output=\d+\s*$/mu, '')
+                            .replace(/^---\s*$/mu, '')
+                            .replace(/^session: \S+\s*$/mu, '');
+                    if (cleanText.trim() === '') {
+                        const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
+                        console.error(`[Agent API Error]`, emptyMsg);
+                        this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
+                        throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
+                    }
+
+                    if (!opts.schema) {
+                        this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: text });
+                        return hasStructuredResponse ? structured.response : text;
+                    }
+
+                    const extraction = extractStructuredOutput(hasStructuredResponse ? structured.response : text, compiledSchema);
+                    if (extraction.ok) {
+                        this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(extraction.parsed, null, 2) });
+                        return extraction.parsed;
+                    }
+
+                    const errorsText = summarizeExtractionAttempts(extraction.attempts);
+
+                    if (attempt < maxRepairs) {
+                        // Bounded repair: re-dispatch to the SAME member with
+                        // a self-contained prompt (ajv errors + the original
+                        // prompt/schema reattached as reference, but NOT the
+                        // invalid output). This attempt is still
+                        // recorded as its own activity:end (success: false)
+                        // so the journal/dashboard show it as a distinct step
+                        // before the repair attempt that follows.
+                        const repairMsg = `Schema-invalid output, retrying (repair ${attempt + 1}/${maxRepairs}): ${errorsText}`;
+                        // apra-fleet-wei: this branch used to ONLY emit
+                        // activity:end (visible via /state, i.e. the
+                        // dashboard) with no console/text-log line at all --
+                        // only the terminal failure paths (member-not-found,
+                        // repairs-exhausted, dispatch errors) call
+                        // console.error. A caller watching just the workflow
+                        // log stream had no way to see an intermediate repair
+                        // attempt fail, even when it eventually recovers on a
+                        // later repair (as most of these do) -- the failure
+                        // was only ever visible by separately querying the
+                        // dashboard's structured activity data.
+                        console.error(`[Agent API Error]`, repairMsg);
+                        this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
+                        // apra-fleet-dnri: always re-derive from
+                        // `initialPrompt`, never from `currentPrompt` --
+                        // otherwise repair round 2 would nest round 1's
+                        // prompt and the re-ask would grow per attempt.
+                        currentPrompt = buildRepairPrompt(errorsText, initialPrompt);
+                        continue;
+                    }
+
+                    // Repairs exhausted -- surface a typed AgentOutputError.
+                    // Classify the message the same way the old single-shot
+                    // code did (parseable-JSON vs schema-compliance failure)
+                    // based on the final attempt, so existing callers keyed
+                    // off either phrase keep working.
+                    const allUnparseable = extraction.attempts.length === 0 || extraction.attempts.every((a) => a.parseError);
+                    const attemptCount = attempt + 1;
+                    const message = allUnparseable
+                        ? `[Workflow Error] LLM failed to return parseable JSON for structured output after ${attemptCount} attempt(s) (${maxRepairs} repair(s) exhausted).`
+                        : `[Workflow Error] LLM returned non-compliant JSON. Validation failed after ${attemptCount} attempt(s) (${maxRepairs} repair(s) exhausted): ${errorsText}`;
+                    const validationErrors = extraction.attempts
+                        .filter((a) => a.validationErrors)
+                        .flatMap((a) => a.validationErrors);
+                    // Preserve the underlying JSON.parse error on `.cause`
+                    // when the final attempt was unparseable, matching the
+                    // original single-shot contract that callers can inspect
+                    // `.cause` for the raw parse failure.
+                    const lastParseError = [...extraction.attempts].reverse().find((a) => a.parseError)?.parseError;
+
+                    const err = new AgentOutputError(message, {
+                        details: {
+                            text,
+                            attempts: attemptCount,
+                            repairs: maxRepairs,
+                            errorsText,
+                            validationErrors: validationErrors.length > 0 ? validationErrors : undefined
+                        },
+                        cause: lastParseError
+                    });
+                    this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost, success: false });
+                    throw err;
+                }
+
+                this.emit('activity:end', { ...activityMeta, duration, success: false });
+                throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
+            } catch (error) {
+                console.error(`[Agent API Error]`, error.message || error);
+                if (error instanceof WorkflowError) {
+                    // activity:end for typed errors was already emitted at
+                    // the throw site above (with the richer, attempt-scoped
+                    // metadata); don't double-emit here.
+                    throw error;
+                }
+                const duration = Date.now() - activityMeta.startTime;
+                // apra-fleet-unw.10: a client-side AbortError (.code ===
+                // 'ABORTED', from McpClient.request() reacting to the
+                // signal above) means this dispatch was cooperatively
+                // cancelled via requestStop() -- surface it as a typed
+                // CancelledError, not a generic transport failure.
+                if (error && error.code === 'ABORTED') {
+                    const cancelErr = new CancelledError(`[Workflow Error] agent() dispatch cancelled: ${error.message || error}`, { details: { payload }, cause: error });
+                    this.emit('activity:end', { ...activityMeta, error: cancelErr.message, duration, success: false, cancelled: true });
+                    throw cancelErr;
+                }
+                this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
+                throw new FleetTransportError(`[Workflow Error] Transport failure while executing agent prompt: ${error.message || error}`, { details: { payload }, cause: error });
+            }
+        }
+
+        // Unreachable: the loop above always returns or throws. Kept as a
+        // defensive guard in case maxRepairs computation is ever negative.
+        throw new AgentOutputError(`[Workflow Error] agent() exhausted its dispatch loop without a result.`, { details: { activity: lastActivityMeta } });
+    }
+
+    /**
+     * @param {string} cmd
+     * @param {CommandOptions} [opts]
+     */
+    // (apra-fleet-p2to.1) Public entry: same pause-gate + in-flight bracketing
+    // as agent() above. The member-argument guard runs before the gate so a
+    // malformed call fails fast rather than blocking on a pause.
+    async command(cmd, opts = {}) {
+        if (!opts.member_name && !opts.member_id) {
+            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
+        }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._commandDispatch(cmd, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
+
+    async _commandDispatch(cmd, opts = {}) {
+        // (apra-fleet-unw.17, A4) `opts.failSoft`: when set, a command
+        // failure that would otherwise throw (a well-formed `isError`
+        // result -> CommandError, a "Member not found" text sniff ->
+        // MemberNotFoundError, or a transport-level rejection ->
+        // FleetTransportError) is instead returned to the caller as
+        // `{ ok: false, output: '', error: <message> }` -- and a success is
+        // returned as `{ ok: true, output: <text>, error: null }` instead of
+        // the bare string. This exists for callers like runner.js's
+        // deploy.md/integ-test-playbook.md file-existence probes, which must
+        // never let a transient/portability probe failure (e.g. a
+        // node-not-on-PATH quirk on some member) kill the whole sprint --
+        // the probe is best-effort; a failure just means "treat as not
+        // found" (skip the dependent phase), not "abort everything".
+        // Deliberately does NOT catch CancelledError (cooperative
+        // requestStop() cancellation must still unwind the run even for a
+        // failSoft caller -- swallowing that would defeat requestStop()).
+        const failSoft = !!opts.failSoft;
+        const softFail = (err) => {
+            if (err instanceof CancelledError) throw err;
+            if (!failSoft) throw err;
+            return { ok: false, output: '', error: err.message };
+        };
+        // (apra-fleet-p2to.2.3) The member-argument guard lives solely in the
+        // public command() entrypoint above; _commandDispatch() is only ever
+        // reached through it, so a second copy here was dead code. Removed.
+
+        const effectivePhase = opts.phase || this._currentPhase();
+        const runId = this._currentRunId();
+        if (!opts.silent) {
+            console.log(`${this.logPrefix}[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+        }
+
+        let finalCmd = cmd;
+        if (opts.substitutions) {
+            for (const [key, value] of Object.entries(opts.substitutions)) {
+                finalCmd = finalCmd.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+            }
+        }
+
+        // (apra-fleet-unw.11, F6) Journal replay -- see the matching, more
+        // detailed comment in agent() above. `command()`'s activity events
+        // already carry the raw, substituted command text (the `command`
+        // field above), so the replay key hashes that same text rather than
+        // requiring a second copy.
+        const store = this._store();
+        let sequence = null;
+        let replayKey = null;
+        if (store && store.activitySeq) {
+            // (apra-fleet-unw2.14, N6) See agent()/_nextSequence(): numeric at
+            // the top level, hierarchical/order-independent inside parallel().
+            sequence = this._nextSequence(store);
+            replayKey = computeActivityKey({
+                sequence,
+                type: 'command',
+                member: opts.member_name || opts.member_id,
+                textHash: hashText(finalCmd)
+            });
+        }
+
+        const replay = store && store.replay;
+        if (replay && !replay.diverged && replayKey) {
+            const cached = replay.completedByKey.get(replayKey);
+            if (cached && cached.success) {
+                // apra-fleet-unw2.13 (N5): reconstruct the shape the CURRENT
+                // call would have gotten live -- a failSoft caller expects
+                // `{ ok, output, error }`, a plain caller expects the raw
+                // string. `cached.failSoft` is read from the journaled
+                // `activity:end` record (see the `failSoft` field added to
+                // `activityMeta` below), which reflects how the ORIGINAL run
+                // shaped this same call. Since a resumed run replays the
+                // same script in the same order with the same opts, this
+                // should always agree with the current call's `failSoft`.
+                //
+                // OLD-FORMAT journals (written before this fix) have no
+                // `failSoft` field at all -- `cached.failSoft` is then
+                // `undefined`, and we cannot know how the original call was
+                // shaped. We fall back to the pre-fix behavior of returning
+                // the raw string (best-effort; a failSoft caller resuming
+                // from an old journal will see `res.ok === undefined` exactly
+                // as it did before this fix, until the journal is
+                // regenerated by a fresh, non-resumed run).
+                const cachedFailSoft = !!cached.failSoft;
+                const cachedActivityMeta = {
+                    id: randomUUID(),
+                    type: 'command',
+                    phase: effectivePhase,
+                    runId,
+                    label: opts.label || finalCmd.substring(0, 60),
+                    member: opts.member_name || opts.member_id,
+                    command: finalCmd,
+                    startTime: Date.now(),
+                    sequence,
+                    replayKey,
+                    replayed: true,
+                    failSoft: cachedFailSoft
+                };
+                this.emit('activity:start', cachedActivityMeta);
+                this.emit('activity:end', {
+                    ...cachedActivityMeta,
+                    duration: 0,
+                    success: true,
+                    output: cached.output,
+                    replayed: true
+                });
+                return cachedFailSoft ? { ok: true, output: cached.output, error: null } : cached.output;
+            }
+            replay.diverged = true;
+            const inParallel = !!(store && store.seqPrefix);
+            console.warn(this._divergenceWarning({ sequence, type: 'command', member: opts.member_name || opts.member_id, inParallel }));
+            this.emit('journal:diverged', { runId, sequence, type: 'command', replayKey, inParallel });
+        }
+
+        const activityMeta = {
+            id: randomUUID(),
+            type: 'command',
+            phase: effectivePhase,
+            runId,
+            label: opts.label || finalCmd.substring(0, 60),
+            member: opts.member_name || opts.member_id,
+            command: finalCmd,
+            startTime: Date.now(),
+            // apra-fleet-unw2.13 (N5): journal the failSoft flag as part of
+            // every activity:start/activity:end record for this call, so a
+            // FUTURE resume of this journal can reconstruct the right return
+            // shape from `cached.failSoft` above, instead of unconditionally
+            // returning the raw string regardless of how the original call
+            // was made.
+            failSoft,
+            ...(replayKey !== null ? { sequence, replayKey } : {})
+        };
+        this.emit('activity:start', activityMeta);
+
+        const payload = {
+            command: finalCmd,
+            member_name: opts.member_name,
+            member_id: opts.member_id,
+            timeout_s: opts.timeout_s,
+            long_running: opts.long_running,
+            // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
+            timeoutMs: opts.timeoutMs,
+            // apra-fleet-unw.10: see the matching comment in agent() above.
+            signal: opts.signal ?? this._currentSignal()
+        };
+
+        try {
+            const result = await this.fleetApi.executeCommand(payload);
+            const outText = result.content && result.content.length > 0 ? result.content[0].text : '';
+            // Servers new enough to send structuredContent give clean stdout
+            // directly -- no "Exit code: N\n" prefix to strip, no risk of a
+            // caller (e.g. parseBdJson() in fleet-sprint/runner.js) choking on
+            // display formatting mixed into what should be raw command
+            // output. Older servers (no structuredContent) fall back to the
+            // legacy text field as-is, preserving prior behavior exactly.
+            const cleanOutput = (result.structuredContent && typeof result.structuredContent.stdout === 'string')
+                ? result.structuredContent.stdout
+                : outText;
+            const duration = Date.now() - activityMeta.startTime;
+
+            // STOPGAP: see the matching comment in agent() above and
+            // docs/structured-errors-proposal.md -- the server currently
+            // signals a missing member via plain response text rather than a
+            // structured error. Surface it as a typed error, never `null`.
+            if (outText.startsWith('Member "') && outText.includes('" not found.')) {
+                console.error(`[Command API Error]`, outText);
+                this.emit('activity:end', { ...activityMeta, error: outText, duration, success: false });
+                throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
+            }
+
+            if (result.isError) {
+                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
+                this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
+                throw err;
+            }
+
+            // `result.isError` is an MCP-transport-level flag only -- it does
+            // NOT reflect the exit code of the underlying process the server
+            // ran. A `bd`/git/etc. invocation that exits non-zero (e.g. a
+            // malformed argument) still comes back with isError unset, so
+            // without this check it was reported as success:true both to
+            // callers and to the dashboard viewer's activity badge. Older
+            // servers with no structuredContent.exitCode are left exactly as
+            // before (exitCode undefined skips this branch).
+            const exitCode = result.structuredContent && typeof result.structuredContent.exitCode === 'number'
+                ? result.structuredContent.exitCode
+                : null;
+            if (exitCode !== null && exitCode !== 0) {
+                const err = new CommandError(`[Command Failed] Exit code ${exitCode}: ${outText}`, { details: { text: outText, command: finalCmd, exitCode } });
+                this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
+                throw err;
+            }
+
+            this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
+            return failSoft ? { ok: true, output: cleanOutput, error: null } : cleanOutput;
+        } catch (error) {
+            console.error(`[Command API Error]`, error.message || error);
+            if (error instanceof WorkflowError) {
+                // activity:end for typed errors was already emitted at the
+                // throw site above (see the matching comment in agent()'s
+                // catch); don't double-emit here.
+                return softFail(error);
+            }
+            const duration = Date.now() - activityMeta.startTime;
+            // apra-fleet-unw.10: see the matching comment in agent() above.
+            if (error && error.code === 'ABORTED') {
+                const cancelErr = new CancelledError(`[Workflow Error] command() dispatch cancelled: ${error.message || error}`, { details: { payload }, cause: error });
+                this.emit('activity:end', { ...activityMeta, error: cancelErr.message, duration, success: false, cancelled: true });
+                throw cancelErr;
+            }
+            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
+            return softFail(new FleetTransportError(`[Workflow Error] Transport failure while executing command: ${error.message || error}`, { details: { payload }, cause: error }));
+        }
+    }
+
+    /**
+     * Executes the given async processor function for each item sequentially.
+     *
+     * `sequential(items, processor, opts)` is the single-processor primitive:
+     * exactly one `processor(item, index, items)` function is applied to every
+     * item, in order. It does NOT accept a variadic list of per-stage
+     * processors -- that old `sequential(items, ...stages)` form silently
+     * dropped every stage after the first (F7). Extra positional arguments
+     * now throw a TypeError instead of being swallowed. For a genuine
+     * multi-stage pipeline where each stage's output feeds the next, use
+     * `pipeline(items, ...stages)`.
+     */
+    async sequential(items, processor, opts = {}, ...rest) {
+        if (rest.length > 0) {
+            throw new TypeError(
+                `sequential(items, processor, opts) accepts at most 3 arguments, got ${3 + rest.length}. ` +
+                `sequential() no longer accepts a variadic list of per-stage processors -- use pipeline(items, ...stages) for multi-stage flows.`
+            );
+        }
+        if (typeof processor !== 'function') {
+            throw new TypeError(
+                `sequential(items, processor, opts): the 2nd argument must be a single processor function, got ${processor === null ? 'null' : typeof processor}. ` +
+                `The old sequential(items, ...stages) multi-stage form is no longer supported -- use pipeline(items, ...stages) instead.`
+            );
+        }
+        if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+            throw new TypeError(`sequential(items, processor, opts): the 3rd argument must be a plain options object, got ${opts === null ? 'null' : typeof opts}.`);
+        }
+
+        const results = [];
+        for (let i = 0; i < items.length; i++) {
+            try {
+                const res = await processor(items[i], i, items);
+                results.push(res);
+            } catch (err) {
+                this.log(`[Sequential Error] item ${i} failed at a stage: ${err.message}`);
+                if (!opts.continueOnError) {
+                    // Fail-fast: rethrow without discarding results already
+                    // collected for prior items. Attach them to the error so
+                    // callers can recover partial progress.
+                    err.partialResults = results.slice();
+                    throw err;
+                }
+                results.push(null);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Executes a chain of stage functions for each item, sequentially, where
+     * each stage receives the previous stage's result for that item (the
+     * first stage receives the raw item). This is the documented multi-stage
+     * form that `sequential(items, ...stages)` used to provide before it was
+     * narrowed to a single-processor primitive (see `sequential()` above).
+     *
+     * Failure semantics mirror `sequential()`: by default a stage error
+     * aborts the whole pipeline run and rethrows with `err.partialResults`
+     * populated; pass `{ continueOnError: true }` as a trailing plain-object
+     * argument to instead record `null` for the failed item and continue
+     * with the rest.
+     */
+    async pipeline(items, ...stagesAndOpts) {
+        let opts = {};
+        let stages = stagesAndOpts;
+        if (stagesAndOpts.length > 0 && typeof stagesAndOpts[stagesAndOpts.length - 1] !== 'function') {
+            opts = stagesAndOpts[stagesAndOpts.length - 1];
+            stages = stagesAndOpts.slice(0, -1);
+            if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+                throw new TypeError(`pipeline(items, ...stages, [opts]): the trailing non-function argument must be a plain options object, got ${opts === null ? 'null' : typeof opts}.`);
+            }
+        }
+        if (stages.length === 0) {
+            throw new TypeError('pipeline(items, ...stages): at least one stage function is required.');
+        }
+        stages.forEach((stage, idx) => {
+            if (typeof stage !== 'function') {
+                throw new TypeError(`pipeline(items, ...stages): stage ${idx + 1} must be a function, got ${stage === null ? 'null' : typeof stage}.`);
+            }
+        });
+
+        const results = [];
+        for (let i = 0; i < items.length; i++) {
+            try {
+                let value = items[i];
+                for (const stage of stages) {
+                    value = await stage(value, i, items);
+                }
+                results.push(value);
+            } catch (err) {
+                this.log(`[Pipeline Error] item ${i} failed at a stage: ${err.message}`);
+                if (!opts.continueOnError) {
+                    err.partialResults = results.slice();
+                    throw err;
+                }
+                results.push(null);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Executes the given async processor function for each item in parallel.
+     *
+     * (apra-fleet-unw.9, F11) Each branch runs against its own shallow-copied
+     * fork of the current run's store (see runStorage comment above): `phase`
+     * and `group` are copied by value, so a `phase()` call made inside one
+     * branch's processor mutates only that branch's copy and can never leak
+     * into a sibling branch (or into activities dispatched from a sibling
+     * branch that happens to still be in flight) -- this is the exact F11
+     * "concurrent branches inherit whichever phase() was called last" bug.
+     * `args`/`budget`/`runId` are copied by reference so they stay shared and
+     * consistent across every branch of the same run. When `parallel()` is
+     * called outside of any active run store (legacy direct-call usage),
+     * branches simply run without forking anything, matching prior behavior.
+     *
+     * (apra-fleet-unw2.14, N6) When journaling is active, each branch fork
+     * ALSO gets its OWN activity sub-sequence rooted at a deterministic,
+     * scheduler-independent prefix. Before this, every branch shared the
+     * run's single `activitySeq` counter, so the sequence number a given
+     * agent()/command() call received depended on which branch's call
+     * happened to increment the shared counter next -- non-deterministic
+     * across runs. A resumed multi-streak run then computed different
+     * sequence numbers than the journaled run, missed the replay cache, and
+     * re-executed everything live (re-dispatching doers whose work already
+     * happened). Now the prefix is `<parentPrefix><barrierIndex>:<i>:` where
+     * `barrierIndex` numbers this parallel() barrier at the parent level (in
+     * program order, assigned SYNCHRONOUSLY before any branch runs) and `i`
+     * is the branch's STATIC index in `items` -- neither depends on runtime
+     * completion/scheduling order. Each branch's own fresh `activitySeq`
+     * then counts only that branch's calls, in the branch's own program
+     * order. The result: identical replay keys for a given logical call site
+     * regardless of how branches interleave. See journal.mjs
+     * computeActivityKey for the full semantics.
+     */
+    async parallel(items, processor, opts = {}) {
+        const parentStore = this._store();
+        // Assign this barrier's index SYNCHRONOUSLY, in program order, before
+        // any branch is scheduled -- so it can never race with a sibling
+        // parallel() call at the same store level. Only meaningful when
+        // journaling is active (parallelSeq is null otherwise).
+        const barrierIndex = (parentStore && parentStore.parallelSeq)
+            ? parentStore.parallelSeq.value++
+            : null;
+        return Promise.all(items.map((item, i) => {
+            const runBranch = async () => {
+                try {
+                    return await processor(item, i, items);
+                } catch (err) {
+                    this.log(`[Parallel Error] item ${i} failed: ${err.message}`);
+                    if (!opts.continueOnError) {
+                        throw err;
+                    }
+                    return null;
+                }
+            };
+            if (parentStore) {
+                const branchStore = { ...parentStore };
+                // Journaling active: give this branch its OWN hierarchical
+                // sub-sequence so its replay keys are order-independent. The
+                // prefix is fixed by the branch's static array index `i` and
+                // the barrier index computed above -- not by scheduling.
+                if (parentStore.activitySeq) {
+                    branchStore.seqPrefix = `${parentStore.seqPrefix || ''}${barrierIndex}:${i}:`;
+                    branchStore.activitySeq = { value: 0 };
+                    branchStore.parallelSeq = { value: 0 };
+                }
+                return runStorage.run(branchStore, runBranch);
+            }
+            return runBranch();
+        }));
+    }
+
+    /**
+     * (apra-fleet-unw2.14, N6) Computes the replay `sequence` component for
+     * the next agent()/command() call in the current store, advancing the
+     * store's local activity counter. At the top level this returns a plain
+     * number (`0`,`1`,...); inside a `parallel()` branch it returns the
+     * hierarchical, scheduler-independent string
+     * `<seqPrefix><localSeq>` (e.g. `0:1:0`). Returns `null` when journaling
+     * is not active for this run (so no replay-key machinery runs at all).
+     * @param {object|undefined} store
+     * @returns {number|string|null}
+     */
+    _nextSequence(store) {
+        if (!store || !store.activitySeq) return null;
+        const local = store.activitySeq.value++;
+        return store.seqPrefix ? `${store.seqPrefix}${local}` : local;
+    }
+
+    /**
+     * (apra-fleet-unw2.14, N6) Builds the human-facing replay-divergence
+     * warning, distinguishing a divergence detected INSIDE a `parallel()`
+     * region from a sequential one. The two carry very different severity for
+     * a human debugging a resume:
+     *
+     *   - A SEQUENTIAL divergence is the suspicious case: the run's top-level
+     *     flow no longer matches the journal, which almost always means the
+     *     workflow script itself changed (a call added/removed/reordered, a
+     *     prompt/command edited, non-deterministic args) between the recording
+     *     and the resume. Everything from here on re-runs live.
+     *
+     *   - A PARALLEL-region divergence is (post-N6) far less alarming: keys
+     *     inside `parallel()` are now scheduler-independent, so a divergence
+     *     here is NOT caused by branch interleaving. It usually means either
+     *     (a) the journal was written by a pre-N6 build (old shared global
+     *     counter -- see computeActivityKey's OLD-FORMAT note; regenerate the
+     *     journal to fix), or (b) a branch is internally non-deterministic
+     *     (dispatches a different number/order of calls across runs) or the
+     *     set/order of parallel branches changed.
+     * @param {{ sequence: number|string, type: string, member?: string, inParallel: boolean }} parts
+     * @returns {string}
+     */
+    _divergenceWarning({ sequence, type, member, inParallel }) {
+        const base = `[Journal] Replay divergence at sequence ${sequence} (${type}, member: ${member}) -- switching to live execution from this point onward.`;
+        if (inParallel) {
+            return base + ' This divergence is INSIDE a parallel() region; branch interleaving is NOT the cause (replay keys are order-independent since apra-fleet-unw2.14/N6). Likely a pre-N6 (old-format) journal, an internally non-deterministic branch, or a changed set/order of parallel branches -- regenerate the journal from a fresh run if it predates N6.';
+        }
+        return base + ' This is a SEQUENTIAL (top-level) divergence: the run no longer matches the journal, most likely because the workflow script or its args changed between recording and resume.';
+    }
+
+    async transform(label, func, context) {
+        const id = randomUUID();
+        const activityMeta = {
+            id, type: 'transform', label, phase: this._currentPhase(), runId: this._currentRunId(), startTime: Date.now()
+        };
+        this.emit('activity:start', activityMeta);
+
+        const transformationFn = func || ((data) => data); // pass as-is default
+
+        try {
+            let result = await transformationFn(context);
+            const duration = Date.now() - activityMeta.startTime;
+            
+            let stringifiedOutput = result;
+            if (typeof result !== 'string' && result !== undefined && result !== null) {
+                try { stringifiedOutput = JSON.stringify(result, null, 2); } catch(e) {}
+            }
+
+            let stringifiedInput = context;
+            if (typeof context !== 'string' && context !== undefined && context !== null) {
+                try { stringifiedInput = JSON.stringify(context, null, 2); } catch(e) {}
+            }
+
+            this.emit('activity:end', { ...activityMeta, duration, success: true, input: stringifiedInput, output: stringifiedOutput });
+            return result;
+        } catch (e) {
+            const duration = Date.now() - activityMeta.startTime;
+            let stringifiedInput = context;
+            if (typeof context !== 'string' && context !== undefined && context !== null) {
+                try { stringifiedInput = JSON.stringify(context, null, 2); } catch(e) {}
+            }
+
+            this.emit('activity:end', { ...activityMeta, duration, success: false, error: e.message, input: stringifiedInput });
+            const err = new Error(`[Workflow Error] Transform failed: ${e.message}`);
+            throw err;
+        }
+    }
+
+    async workflow(nameOrRef, args = {}) {
+        // Run another script inline. Needs script runner logic.
+        throw new Error("Nested workflows not yet implemented");
+    }
+
+    // Shared primitive bindings (agent/command/parallel/etc.) used by both
+    // the legacy `createContext()` and the per-run `runWithContext()` below.
+    // The primitives themselves are always bound to `this` -- they don't
+    // capture `args`/`phase`/`budget` directly; instead they look those up
+    // dynamically via `this._store()`/`this._current*()` at call time (see
+    // the runStorage comment above this class), so the SAME bound functions
+    // correctly resolve to whichever run (or the legacy instance-level
+    // fields) is active when they're actually invoked.
+    _bindPrimitives() {
+        return {
+            agent: this.agent.bind(this),
+            command: this.command.bind(this),
+            sequential: this.sequential.bind(this),
+            pipeline: this.pipeline.bind(this),
+            parallel: this.parallel.bind(this),
+            transform: this.transform.bind(this),
+            nullTransform: () => null,
+            log: this.log.bind(this),
+            phase: this.phase.bind(this),
+            publishState: this.publishState.bind(this),
+            workflow: this.workflow.bind(this),
+            group: this.group.bind(this),
+            endGroup: this.endGroup.bind(this),
+            // (apra-fleet-p2to.1) Script-facing: lets the workflow declare
+            // where a clean-state boundary is so a deferred pause engages
+            // there.
+            setPauseGuard: this.setPauseGuard.bind(this),
+            // (apra-fleet-hzeb.3) Script-facing pause/resume: a running
+            // script may PARK ITSELF on a condition only it can detect (a
+            // provider usage/rate limit, an external gate) by calling these
+            // directly -- they are the exact same requestPause()/
+            // requestResume() the dashboard/operator use, so a
+            // script-initiated pause fires the identical 'pause:requested'/
+            // 'paused'/'resumed' lifecycle events as an operator-initiated
+            // one. requestStop() remains instance-only/operator-only -- a
+            // script has no business tearing down its own run.
+            requestPause: this.requestPause.bind(this),
+            requestResume: this.requestResume.bind(this)
+        };
+    }
+
+    // A helper to inject the workflow globals into a user script context.
+    //
+    // Legacy / direct-call form: NOT run-scoped. `args`/`budget` here are the
+    // legacy instance-level fields (`this.args`/`this.budget`), exactly as
+    // before apra-fleet-unw.9 -- preserved for existing direct `wf.method()`
+    // callers and tests that never go through `WorkflowEngine.executeFile()`.
+    // For per-run isolation (the fix for the concurrent-execution bug this
+    // context object exists to prevent), use `runWithContext()` instead,
+    // which `WorkflowEngine.executeFile()` calls internally.
+    createContext(args = this.args) {
+        return {
+            ...this._bindPrimitives(),
+            args,
+            budget: this.budget
+        };
+    }
+
+    /**
+     * Runs `entryFn(context)` inside a fresh, isolated per-run store (see the
+     * runStorage comment above this class): its own `args`, `phase`, `group`,
+     * and `budget` accounting, plus a unique `runId` carried on every
+     * activity/log/state event emitted during the run. Concurrent calls to
+     * `runWithContext()` (e.g. two overlapping `WorkflowEngine.executeFile()`
+     * calls) on the SAME `FleetWorkflow` instance no longer corrupt each
+     * other's `args` or phase attribution -- each gets its own store, and
+     * `runStorage` (an `AsyncLocalStorage`) threads it automatically through
+     * every `await` inside `entryFn`.
+     *
+     * The `FleetWorkflow`'s `EventEmitter` remains shared (a dashboard viewer
+     * subscribes to it once, globally); every event carries the originating
+     * run's `runId` so concurrent runs' events stay distinguishable there.
+     *
+     * @param {any} args - Arguments for this run, exposed as `context.args`.
+     * @param {(context: object) => Promise<any>} entryFn - The workflow
+     *   script's entry point (`main`/`run`/`default`), called with this run's
+     *   context object.
+     * @param {{ runId?: string, journalEnabled?: boolean, replay?: {completedByKey: Map<string,object>, diverged: boolean} }} [opts] -
+     *   (apra-fleet-unw.10) `runId`: optional caller-supplied run id, so
+     *   `WorkflowEngine.executeFile()` can know the run's id up front (to
+     *   attach it to the `end` event it emits from its own try/finally)
+     *   without this method having to report it back out-of-band. Defaults
+     *   to a fresh UUID when omitted, matching the pre-unw.10 behavior for
+     *   any other/legacy caller.
+     *   (apra-fleet-unw.11, F6) `journalEnabled`/`replay`: journal/resume
+     *   wiring from `WorkflowEngine.executeFile()`. `journalEnabled` gates
+     *   the per-run activity sequence counter (`store.activitySeq`) that
+     *   `agent()`/`command()` use to compute deterministic replay keys --
+     *   when omitted/false, that counter is never created and
+     *   `agent()`/`command()` never compute or attach replay-related fields
+     *   to their activity events, so behavior/output is unchanged from
+     *   before this feature existed. `replay` (only meaningful when
+     *   `journalEnabled` is true) is the loaded journal's
+     *   `completedByKey`/`diverged` state (see journal.mjs `loadJournal()`);
+     *   `diverged` is mutated in place by `agent()`/`command()` the first
+     *   time a call's replay key isn't found as a completed/successful
+     *   record in the journal, permanently switching the rest of the run to
+     *   live execution (partial replay, Claude-CLI style).
+     */
+    async runWithContext(args, entryFn, opts = {}) {
+        const runId = opts.runId || randomUUID();
+        const budget = {
+            total: null,
+            _spent: 0,
+            _pricedReal: 0,
+            _pricedFallback: 0,
+            spent: () => budget._spent,
+            remaining: () => budget.total === null ? Infinity : (budget.total - budget._spent),
+            pricingSummary: () => ({ real: budget._pricedReal, fallback: budget._pricedFallback })
+        };
+        // (apra-fleet-unw.10) Per-run AbortController backing cooperative
+        // cancellation: agent()/command() default to `store.signal` (via
+        // _currentSignal()) so requestStop() can abort every in-flight and
+        // future dispatch of THIS run without the workflow script having to
+        // thread a signal through itself. Tracked in `_activeControllers` for
+        // the lifetime of the run only -- removed in `finally` below so a
+        // late requestStop() call after the run has already finished is a
+        // no-op instead of leaking controllers across runs.
+        const controller = new AbortController();
+        this._activeControllers.set(runId, controller);
+        const store = {
+            runId,
+            args,
+            phase: null,
+            group: null,
+            budget,
+            signal: controller.signal,
+            // (apra-fleet-unw.11, F6 / apra-fleet-unw2.14, N6) Per-run
+            // activity sequencing for deterministic replay keys.
+            //
+            // `activitySeq` is a monotonic counter scoped to THIS store level
+            // (the run's top-level flow, or -- after a `parallel()` fork -- a
+            // single branch). At the top level it produces plain numeric
+            // sequences 0,1,2,... in program order, exactly as before N6.
+            //
+            // `seqPrefix` is the hierarchical path prefix prepended to a
+            // call's local sequence to form its replay key's `sequence`
+            // component. It is empty ('') at the top level -- so top-level
+            // keys stay numeric and backward-compatible -- and is extended by
+            // `parallel()` per branch (see parallel() below) to
+            // `<barrierIndex>:<branchIndex>:`, making every in-branch key
+            // scheduler-INDEPENDENT (order of branch interleaving no longer
+            // affects the key). See journal.mjs computeActivityKey for the
+            // full semantics/limitations.
+            //
+            // `parallelSeq` numbers the `parallel()` barriers entered AT this
+            // store level, in program order, so two sequential parallel()
+            // calls at the same level get distinct barrier prefixes even if
+            // no agent()/command() ran between them.
+            //
+            // All three are `null` unless journaling was requested for this
+            // run at all (a normal, non-journaled run never enters any of the
+            // replay-key code paths).
+            activitySeq: opts.journalEnabled ? { value: 0 } : null,
+            seqPrefix: '',
+            parallelSeq: opts.journalEnabled ? { value: 0 } : null,
+            replay: opts.journalEnabled ? (opts.replay || null) : null,
+            // apra-fleet-dv5.6: fresh per run, shared by reference across
+            // parallel() branches (like `budget` above) so a member's
+            // pricing is only fetched once per run regardless of how many
+            // branches dispatch to it.
+            memberPricingCache: new Map()
+        };
+        const context = {
+            ...this._bindPrimitives(),
+            args,
+            budget
+        };
+        try {
+            return await runStorage.run(store, () => entryFn(context));
+        } finally {
+            this._activeControllers.delete(runId);
+        }
+    }
+}
