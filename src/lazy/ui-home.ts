@@ -304,7 +304,7 @@ export const HOME_JS = String.raw`
     var next = d.next[0];
     homeRoot.appendChild(el('div', { cls: 'tiles' }, [
       el('div', { cls: 'tile' }, [el('small', { text: 'Running now' }), el('b', { text: String(d.running.length) }), el('span', { text: d.running.length ? d.running.map(function (x) { return x.title; }).join(', ') : 'Nothing running' })]),
-      el('div', { cls: 'tile' }, [el('small', { text: 'Next scheduled' }), el('b', { text: next ? until(next.nextAt) : '-' }), el('span', { text: next ? next.name + ' - ' + next.whenText : 'No schedules yet' })]),
+      el('div', { cls: 'tile' }, [el('small', { text: 'Next scheduled' }), el('b', { text: next ? until(next.nextAt) : '-' }), el('span', { title: next && next.retryReason ? 'Waiting: ' + next.retryReason : '', text: next ? next.name + (next.retryAt ? ' - trying again (waiting for a free project)' : ' - ' + next.whenText) : 'No schedules yet' })]),
       el('div', { cls: 'tile' }, [el('small', { text: 'This week' }), el('b', { text: d.week.sprints + ' sprint' + (d.week.sprints === 1 ? '' : 's') }), el('span', { text: d.week.sprints ? d.week.passed + ' passed' : 'None finished yet' })]),
       el('div', { cls: 'tile', title: 'An estimate from token prices. With a Claude subscription this is plan usage, not money.' }, [el('small', { text: 'Usage this week' }), el('b', { text: money(d.week.cost) }), el('span', { text: 'estimated' })])
     ]));
@@ -335,7 +335,7 @@ export const HOME_JS = String.raw`
     var up = el('div', { cls: 'panel' }, [el('h3', {}, ['Coming up', el('button', { cls: 'linkish', type: 'button', text: 'Schedules ->', onclick: function () { goTab('schedules'); } })])]);
     if (!d.next.length) up.appendChild(el('div', { cls: 'note', style: 'margin:0', text: 'Nothing scheduled.' }));
     d.next.forEach(function (s) {
-      up.appendChild(el('div', { cls: 'item', onclick: function () { goTab('schedules'); } }, [el('div', { cls: 'grow' }, [el('span', { cls: 't', text: s.name }), el('span', { cls: 'm' }, [el('span', { text: s.whenText }), el('span', { text: clock(s.nextAt) })])]), el('span', { cls: 'chip', text: until(s.nextAt) })]));
+      up.appendChild(el('div', { cls: 'item', onclick: function () { goTab('schedules'); } }, [el('div', { cls: 'grow' }, [el('span', { cls: 't', text: s.name }), el('span', { cls: 'm' }, s.retryAt ? [el('span', { title: s.retryReason || '', text: 'Trying again: ' + (s.retryReason || 'waiting') })] : [el('span', { text: s.whenText }), el('span', { text: clock(s.nextAt) })])]), el('span', { cls: 'chip', text: until(s.nextAt) })]));
     });
     right.appendChild(up);
     var learned = el('div', { cls: 'panel' }, [el('h3', {}, ['Learned designs', el('button', { cls: 'linkish', type: 'button', text: 'Designs ->', onclick: function () { goTab('sprints', 'designs'); } })])]);
