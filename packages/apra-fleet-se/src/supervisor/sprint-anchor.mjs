@@ -23,6 +23,19 @@
 //   - needs NO further percent-encoding to appear in a URL fragment
 //     ('#' + id) -- it contains no character a fragment would otherwise
 //     require escaping.
+//
+// INJECTIVITY (apra-fleet-i9ag.3.5): '_' is the escape sequence's own
+// delimiter (`_<hex>_`), so it must NOT also be a literal pass-through
+// character -- otherwise a literal '_' in the input is indistinguishable
+// from a delimiter, and two different sprint ids can collide on the same
+// anchor id (e.g. 'a b' and 'a_20_b' both rendered as '..._a_20_b'). '_' is
+// therefore excluded from `safeChar` and falls through to the same
+// `_<hex>_` escape as any other unsafe character (escapes to '_5f_'), so
+// '_' NEVER appears in the output except as an escape delimiter, and the
+// escaped form is unambiguously decodable (hence injective): scanning
+// left-to-right, every '_' opens an escape that runs to the very next '_'
+// (hex digits themselves never contain '_'), and every other character is a
+// literal pass-through.
 // =============================================================================
 
 /**
@@ -42,7 +55,8 @@
  */
 export function sprintCardAnchorId(sprintId) {
     const prefix = 'sprint-card-';
-    const safeChar = /^[A-Za-z0-9_-]$/;
+    // '_' deliberately excluded -- see this module's INJECTIVITY note above.
+    const safeChar = /^[A-Za-z0-9-]$/;
     const raw = typeof sprintId === 'string' ? sprintId : String(sprintId == null ? '' : sprintId);
     let out = prefix;
     for (const ch of raw) {

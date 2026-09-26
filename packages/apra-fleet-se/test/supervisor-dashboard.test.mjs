@@ -253,6 +253,19 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(weirdHtml.includes('id="' + weirdAnchorId + '"'), weirdHtml);
     });
 
+    // (apra-fleet-i9ag.3.5) The escaping must be INJECTIVE: a literal '_' in
+    // the sprint id must never be indistinguishable from the escape
+    // sequence's own '_<hex>_' delimiter. Before the fix, 'a b' (space
+    // escaped to '_20_') and the literal string 'a_20_b' both rendered as
+    // the same anchor id -- two concurrently running sprints with those ids
+    // would collide on one dashboard card anchor / live-view back-link
+    // target.
+    test('apra-fleet-i9ag.3.5: anchor id escaping is injective -- distinct sprint ids never collide', () => {
+        const escapedSpace = sprintCardAnchorId('a b');
+        const literalEscapeLookalike = sprintCardAnchorId('a_20_b');
+        assert.notEqual(escapedSpace, literalEscapeLookalike);
+    });
+
     test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',
