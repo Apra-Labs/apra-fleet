@@ -8,7 +8,12 @@
  *   tasks-remote/   a local folder the helpers' task databases sync through
  *
  * The sprint engine runs in "synced" mode, which is what makes separate
- * checkouts safe: git and task state are reconciled around every hand-off.
+ * checkouts safe: git and task state are reconciled around every hand-off,
+ * and in pipeline mode (docs/lazy-parallel-sprints.md): every ready task is
+ * built at once on its own branch and landed one at a time. The sprint
+ * starts with two helpers (the one that lands work, plus one builder); a
+ * watcher adds builders whenever the engine reports tasks waiting for one,
+ * up to the optional limit the user set.
  */
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -17,6 +22,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lazyDir } from '../config.js';
+import { findRun } from './board.js';
 
 export type SprintGoal = 'P1' | 'P1/P2' | 'P1/P2/P3';
 
@@ -40,13 +46,23 @@ export interface SprintRecord {
   setup: { state: 'preparing' | 'started' | 'failed'; steps: Array<{ at: string; text: string; ok: boolean }>; error?: string };
   publish: boolean;
   budget?: number;
+  /** Most builders at once; unset means no limit. */
+  maxHelpers?: number;
+  /** Check run after each merge before it lands (e.g. "npm test"). */
+  gateCommand?: string;
+  /** Where helper clones push to (the user's repo, or its remote when publishing). */
+  originUrl?: string;
+  /** JSON list of builders the engine re-reads, so helpers added mid-sprint start work. */
+  poolFile?: string;
 }
 
 export interface LaunchInput {
   repo: string;
   ask: string;
   title?: string;
-  helpers?: number;
+  /** Most helpers building at once; omitted for no limit. */
+  maxHelpers?: number;
+  gateCommand?: string;
   goal?: SprintGoal;
   base?: string;
   publish?: boolean;
@@ -64,7 +80,12 @@ export interface LauncherDeps {
 }
 
 const GOALS = new Set(['P1', 'P1/P2', 'P1/P2/P3']);
-export const MAX_HELPERS = 6;
+/** Upper bound for the optional limit field, not a default. */
+export const MAX_HELPERS_LIMIT = 64;
+/** Relative to each helper clone; the engine appends landing notes here. */
+export const INBOX_FILE = '.lazyfleet/inbox.txt';
+/** Most helpers added in one growth step, so a burst of ready tasks ramps up rather than stampedes. */
+const GROW_STEP = 4;
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -290,19 +311,37 @@ export const realDeps: LauncherDeps = {
 // Launch
 // ---------------------------------------------------------------------------
 
-export function validateLaunch(input: LaunchInput): Required<Pick<LaunchInput, 'repo' | 'ask'>> & { helpers: number; goal: SprintGoal } {
+export function validateLaunch(input: LaunchInput): Required<Pick<LaunchInput, 'repo' | 'ask'>> & { maxHelpers?: number; gateCommand?: string; goal: SprintGoal } {
   const repo = String(input.repo ?? '').trim();
   const ask = String(input.ask ?? '').trim();
   if (!repo || !path.isAbsolute(repo)) throw new Error('Pick a project folder (full path)');
   if (!fs.existsSync(repo)) throw new Error(`Folder not found: ${repo}`);
   if (ask.length < 8) throw new Error('Say what you want done, in a sentence or two');
   if (ask.length > 8000) throw new Error('Keep the ask under 8000 characters');
-  const helpers = Math.round(Number(input.helpers ?? 2));
-  if (!Number.isFinite(helpers) || helpers < 1 || helpers > MAX_HELPERS) throw new Error(`Helpers must be 1-${MAX_HELPERS}`);
+  let maxHelpers: number | undefined;
+  if (input.maxHelpers !== undefined && input.maxHelpers !== null && String(input.maxHelpers) !== '') {
+    maxHelpers = Number(input.maxHelpers);
+    if (!Number.isInteger(maxHelpers) || maxHelpers < 1 || maxHelpers > MAX_HELPERS_LIMIT) {
+      throw new Error(`The helper limit must be a whole number from 1 to ${MAX_HELPERS_LIMIT}, or empty for no limit`);
+    }
+  }
+  const gateCommand = input.gateCommand ? String(input.gateCommand).trim() : '';
+  if (gateCommand && (gateCommand.length > 300 || /[\r\n]/.test(gateCommand))) {
+    throw new Error('The check after each merge must be one line (300 characters at most)');
+  }
   const goal = (input.goal ?? 'P1/P2') as SprintGoal;
   if (!GOALS.has(goal)) throw new Error('Goal must be P1, P1/P2 or P1/P2/P3');
   if (input.budget !== undefined && (!Number.isFinite(Number(input.budget)) || Number(input.budget) < 0)) throw new Error('Budget must be a positive number');
-  return { repo, ask, helpers, goal };
+  return { repo, ask, goal, ...(maxHelpers !== undefined ? { maxHelpers } : {}), ...(gateCommand ? { gateCommand } : {}) };
+}
+
+/**
+ * How many builders to add now. `waitingForMember` is the engine's own count
+ * of ready tasks with no free member; builders exclude the helper that lands.
+ */
+export function helpersToAdd({ waitingForMember, builders, maxHelpers }: { waitingForMember: number; builders: number; maxHelpers?: number }): number {
+  const room = maxHelpers === undefined ? Infinity : Math.max(0, maxHelpers - builders);
+  return Math.max(0, Math.min(waitingForMember, room, GROW_STEP));
 }
 
 /**
@@ -324,7 +363,7 @@ async function hideLocalConfig(deps: LauncherDeps, dir: string): Promise<void> {
   fs.mkdirSync(path.dirname(exclude), { recursive: true });
   const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf-8') : '';
   const lines = cur.split('\n');
-  const want = [...(trackedFiles.length ? [] : ['.beads/']), 'sprint-logs/'].filter(l => !lines.includes(l));
+  const want = [...(trackedFiles.length ? [] : ['.beads/']), 'sprint-logs/', '.lazyfleet/'].filter(l => !lines.includes(l));
   if (want.length) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}${want.join('\n')}\n`);
 
   try {
@@ -380,6 +419,96 @@ async function ensureClone(deps: LauncherDeps, rec: SprintRecord, dir: string, o
 }
 
 /**
+ * The landing-note hook: after each tool call in a helper's Claude session,
+ * hand over any note the engine left in the clone's inbox, exactly once.
+ * The inbox is renamed before reading, so a note the engine appends mid-read
+ * lands in a fresh file and is delivered next time instead of being lost.
+ */
+export const INBOX_HOOK_SCRIPT = `#!/usr/bin/env node
+// Written by lazyfleet. Delivers sprint landing notes into this Claude session.
+const fs = require('fs');
+const path = require('path');
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  let dir = process.cwd();
+  try { const j = JSON.parse(input); if (j && j.cwd) dir = j.cwd; } catch (e) {}
+  for (let i = 0; i < 20; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) break;
+    const up = path.dirname(dir);
+    if (up === dir) return;
+    dir = up;
+  }
+  const inbox = path.join(dir, '.lazyfleet', 'inbox.txt');
+  const taken = inbox + '.' + process.pid;
+  try { fs.renameSync(inbox, taken); } catch (e) { return; }
+  let text = '';
+  try { text = fs.readFileSync(taken, 'utf-8'); fs.unlinkSync(taken); } catch (e) { return; }
+  if (!text.trim()) return;
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text.trim() } }));
+});
+`;
+
+function hookScriptPath(rec: SprintRecord): string {
+  return path.join(rec.workspace, 'inbox-hook.cjs');
+}
+
+/**
+ * Put the landing-note hook in a clone's project settings (.claude/settings.json).
+ * Not settings.local.json: the fleet rewrites that file whole whenever it
+ * composes a helper's permissions, which would drop the hook.
+ */
+async function installInboxHook(deps: LauncherDeps, rec: SprintRecord, dir: string): Promise<void> {
+  const script = hookScriptPath(rec);
+  if (!fs.existsSync(script)) fs.writeFileSync(script, INBOX_HOOK_SCRIPT, { mode: 0o755 });
+  const rel = path.join('.claude', 'settings.json');
+  const file = path.join(dir, rel);
+  const tracked = (await deps.run('git', ['ls-tree', '--name-only', 'HEAD', '--', '.claude/settings.json'], dir)).trim().length > 0;
+  let settings: any = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch {
+    settings = {};
+  }
+  const command = `node "${script}"`;
+  const post = Array.isArray(settings.hooks?.PostToolUse) ? settings.hooks.PostToolUse : [];
+  if (!post.some((m: any) => (m.hooks || []).some((h: any) => h.command === command))) {
+    post.push({ matcher: '', hooks: [{ type: 'command', command }] });
+  }
+  settings.hooks = { ...(settings.hooks || {}), PostToolUse: post };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
+  if (tracked) {
+    await deps.run('git', ['update-index', '--skip-worktree', '--', '.claude/settings.json'], dir);
+  } else {
+    const exclude = path.join(dir, '.git', 'info', 'exclude');
+    const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf-8') : '';
+    if (!cur.split('\n').includes('.claude/settings.json')) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}.claude/settings.json\n`);
+  }
+}
+
+/** Clone, join the shared task database, install the hook, and check the copy is clean. */
+async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, originUrl: string, remoteUrl: string): Promise<string> {
+  const dir = path.join(rec.workspace, `h${i}`);
+  await ensureClone(deps, rec, dir, originUrl);
+  await hideLocalConfig(deps, dir);
+  setSyncRemote(dir, remoteUrl);
+  const joined = fs.existsSync(path.join(dir, '.beads', 'embeddeddolt')) || fs.existsSync(path.join(dir, '.beads', 'dolt'));
+  await deps.run('bd', joined ? ['dolt', 'pull'] : ['bootstrap', '--yes'], dir);
+  await hideLocalConfig(deps, dir);
+  await installInboxHook(deps, rec, dir);
+  await assertClean(deps, dir, `Helper ${i + 1}`);
+  return dir;
+}
+
+function writePool(rec: SprintRecord): void {
+  if (!rec.poolFile) return;
+  const tmp = rec.poolFile + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(rec.helpers.slice(1)));
+  fs.renameSync(tmp, rec.poolFile);
+}
+
+/**
  * Prepare everything and start the engine. Returns as soon as the record
  * exists; progress lands in rec.setup, which the board shows live.
  */
@@ -406,7 +535,11 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
     branch: `feat/${slugify(title, 40)}-${runId.slice(0, 6)}`,
     base,
     goal: v.goal,
-    helpers: Array.from({ length: v.helpers }, (_, i) => helperName(slug, i)),
+    // The one that lands work, plus one builder; more join as tasks wait.
+    helpers: [helperName(slug, 0), helperName(slug, 1)],
+    ...(v.maxHelpers !== undefined ? { maxHelpers: v.maxHelpers } : {}),
+    ...(v.gateCommand ? { gateCommand: v.gateCommand } : {}),
+    poolFile: path.join(workspace, `pool-${runId}.json`),
     logPath: path.join(lazyDir(), 'sprints', `${runId}.log`),
     createdAt: new Date().toISOString(),
     setup: { state: 'preparing', steps: [] },
@@ -472,17 +605,12 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
     step(rec, `Created the sprint issue ${rec.rootIssue}: ${rec.title}`);
 
     // Other helpers join the same task database through the shared folder.
+    rec.originUrl = originUrl;
     for (let i = 1; i < rec.helpers.length; i++) {
-      const dir = path.join(rec.workspace, `h${i}`);
-      await ensureClone(deps, rec, dir, originUrl);
-      await hideLocalConfig(deps, dir);
-      setSyncRemote(dir, remoteUrl);
-      const joined = fs.existsSync(path.join(dir, '.beads', 'embeddeddolt')) || fs.existsSync(path.join(dir, '.beads', 'dolt'));
-      await deps.run('bd', joined ? ['dolt', 'pull'] : ['bootstrap', '--yes'], dir);
-      await hideLocalConfig(deps, dir);
-      await assertClean(deps, dir, `Helper ${i + 1}`);
+      await prepareBuilder(deps, rec, i, originUrl, remoteUrl);
       step(rec, `Prepared helper ${i + 1}`);
     }
+    writePool(rec);
 
     await deps.ensureHelpers(rec.helpers.map((name, i) => ({ name, folder: path.join(rec.workspace, `h${i}`) })));
     step(rec, `${rec.helpers.length} helper${rec.helpers.length > 1 ? 's' : ''} ready`);
@@ -498,12 +626,19 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
       '--run-id', rec.runId,
       '--role-map', JSON.stringify({ orchestrator: [rec.helpers[0]] }),
       '--sync',
+      // Every ready task at once, each on its own branch, landed one at a time.
+      '--pipeline',
+      '--member-pool-file', rec.poolFile!,
+      '--inbox-file', INBOX_FILE,
     ];
+    if (rec.maxHelpers !== undefined) args.push('--max-doers', String(rec.maxHelpers));
+    if (rec.gateCommand) args.push('--gate-command', rec.gateCommand);
     if (rec.budget !== undefined) args.push('--budget', String(rec.budget));
     const { pid } = deps.startEngine(rec, args);
     rec.pid = pid;
     rec.setup.state = 'started';
     step(rec, 'Sprint started - helpers are planning the work');
+    watchSprint(rec.runId, deps);
     return rec;
   } catch (e) {
     rec.setup.state = 'failed';
@@ -534,4 +669,81 @@ export async function stopSprint(runId: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Growing the helper pool while the sprint runs
+// ---------------------------------------------------------------------------
+
+const watchers = new Map<string, NodeJS.Timeout>();
+
+function engineAlive(rec: SprintRecord): boolean {
+  if (!rec.pid) return false;
+  try {
+    process.kill(rec.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One growth check: read the engine's own demand signal and add builders.
+ * Exported for tests; `readPipeline` defaults to the live run-state file.
+ */
+export async function growOnce(
+  runId: string,
+  deps: LauncherDeps,
+  readPipeline: (runId: string) => { waitingForMember?: number } | null = (id) => {
+    const run = findRun(id);
+    return run && run.live ? ((run.state.extensions as any)?.pipeline ?? null) : null;
+  },
+): Promise<number> {
+  const rec = getRecord(runId);
+  if (!rec || rec.setup.state !== 'started' || !rec.originUrl) return 0;
+  const p = readPipeline(runId);
+  if (!p) return 0;
+  const add = helpersToAdd({ waitingForMember: Number(p.waitingForMember) || 0, builders: rec.helpers.length - 1, maxHelpers: rec.maxHelpers });
+  if (add === 0) return 0;
+  const remoteUrl = `file://${path.join(rec.workspace, 'tasks-remote')}`;
+  const added: Array<{ name: string; folder: string }> = [];
+  for (let k = 0; k < add; k++) {
+    const i = rec.helpers.length + added.length;
+    const folder = await prepareBuilder(deps, rec, i, rec.originUrl, remoteUrl);
+    added.push({ name: helperName(rec.slug, i), folder });
+  }
+  // Registered before they are listed: the engine may dispatch as soon as it reads the pool.
+  await deps.ensureHelpers(added);
+  rec.helpers.push(...added.map((a) => a.name));
+  writePool(rec);
+  step(rec, `Added ${added.length} helper${added.length > 1 ? 's' : ''} for waiting tasks (${rec.helpers.length - 1} building now at most)`);
+  return added.length;
+}
+
+/** Keep checking a running sprint's demand; stops by itself when the engine exits. */
+export function watchSprint(runId: string, deps: LauncherDeps = realDeps, everyMs = 3000): void {
+  if (watchers.has(runId)) return;
+  let busy = false;
+  const timer = setInterval(() => {
+    if (busy) return;
+    const rec = getRecord(runId);
+    if (!rec || rec.setup.state === 'failed' || (rec.pid && !engineAlive(rec))) {
+      clearInterval(timer);
+      watchers.delete(runId);
+      return;
+    }
+    busy = true;
+    growOnce(runId, deps)
+      .catch((e) => step(getRecord(runId) ?? rec, `Could not add a helper: ${(e as Error).message}`, false))
+      .finally(() => { busy = false; });
+  }, everyMs);
+  timer.unref();
+  watchers.set(runId, timer);
+}
+
+/** After a restart of the background process, pick up sprints that are still running. */
+export function resumeSprintWatchers(deps: LauncherDeps = realDeps): void {
+  for (const rec of loadRegistry()) {
+    if (rec.setup.state === 'started' && engineAlive(rec)) watchSprint(rec.runId, deps);
+  }
 }

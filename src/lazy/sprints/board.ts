@@ -68,7 +68,24 @@ export interface RunState {
   stats?: { activitiesCount?: number; totalTokens?: number; totalCost?: number; durationMs?: number };
   pause?: { status?: string; reason?: string | null };
   tree?: Array<{ title?: string; phases?: Array<{ title?: string; phaseStartedAt?: string; phaseEndedAt?: string | null; events?: Array<{ type?: string; data?: Activity }> }> }>;
-  extensions?: { beads?: { sprintTasks?: BeadsTask[]; backlogTasks?: BeadsTask[]; goalMax?: number; decomposedParentIds?: string[] } };
+  extensions?: {
+    beads?: { sprintTasks?: BeadsTask[]; backlogTasks?: BeadsTask[]; goalMax?: number; decomposedParentIds?: string[] };
+    pipeline?: PipelineState;
+  };
+}
+
+/** What the engine's build pipeline publishes (fleet-sprint phases/develop-pipeline.mjs). */
+export interface PipelineState {
+  cycle?: number;
+  parallel?: boolean;
+  limit?: number | null;
+  builders?: string[];
+  freeBuilders?: number;
+  building?: Array<{ taskId: string; member: string; since?: number; stage?: 'building' | 'landing' | 'fixing' }>;
+  waitingForMember?: number;
+  landedIds?: string[];
+  givenUpIds?: string[];
+  events?: Array<{ at: string; kind: 'started' | 'landed' | 'bounce' | 'given-back' | 'notified'; taskId: string; member: string; detail?: string }>;
 }
 
 export interface WorkingOn {
@@ -97,6 +114,10 @@ export interface Card {
   blockedBy: string[];
   startedAt?: string;
   closedAt?: string;
+  /** Pipeline mode: where the task is between building and landing. */
+  stage?: 'building' | 'landing' | 'fixing';
+  /** Pipeline mode: times it could not land and went back to its doer. */
+  bounces: number;
 }
 
 export interface Lane {
@@ -160,6 +181,15 @@ export interface Board {
   cost: number;
   tokens: number;
   result?: unknown;
+  /** Present when the sprint runs in pipeline mode. */
+  pipeline?: {
+    building: number;
+    landing: number;
+    waitingForMember: number;
+    builders: number;
+    limit: number | null;
+    events: NonNullable<PipelineState['events']>;
+  };
 }
 
 export function fleetDataDir(): string {
@@ -300,6 +330,10 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
   // Only AI work counts as a helper working; the engine's own git/bd
   // bookkeeping steps are recorded as 'command' activities and would drown it.
   const acts = activities(state).filter(a => a.type !== 'command');
+  const pipe = state.extensions?.pipeline;
+  const stageOfTask = new Map((live ? pipe?.building ?? [] : []).map(b => [b.taskId, b.stage ?? 'building']));
+  const bounceCount = new Map<string, number>();
+  for (const e of pipe?.events ?? []) if (e.kind === 'bounce') bounceCount.set(e.taskId, (bounceCount.get(e.taskId) ?? 0) + 1);
   const running = acts.filter(a => a.isRunning);
   const workingBy = new Map<string, WorkingOn[]>();
   const lastBy = new Map<string, string>();
@@ -372,6 +406,8 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
       blockedBy,
       startedAt: t.started_at,
       closedAt: t.closed_at,
+      ...(stageOfTask.has(t.id) && column !== 'done' ? { stage: stageOfTask.get(t.id) } : {}),
+      bounces: bounceCount.get(t.id) ?? 0,
     });
   }
   cards.sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id, undefined, { numeric: true }));
@@ -454,6 +490,16 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
     cost: state.stats?.totalCost ?? 0,
     tokens: state.stats?.totalTokens ?? 0,
     result: live ? undefined : state.result,
+    ...(pipe ? {
+      pipeline: {
+        building: live ? (pipe.building ?? []).filter(b => b.stage !== 'landing').length : 0,
+        landing: live ? (pipe.building ?? []).filter(b => b.stage === 'landing').length : 0,
+        waitingForMember: live ? pipe.waitingForMember ?? 0 : 0,
+        builders: (pipe.builders ?? []).length,
+        limit: pipe.limit ?? null,
+        events: (pipe.events ?? []).slice(-60).reverse(),
+      },
+    } : {}),
   };
 }
 

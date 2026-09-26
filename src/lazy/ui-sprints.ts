@@ -68,6 +68,16 @@ body.wide .stats { display: none; }
 @keyframes ring { 0% { opacity: 1; transform: scale(.9); } 100% { opacity: 0; transform: scale(1.35); } }
 .working-strip { font-size: 12px; color: var(--ok); display: flex; gap: 6px; align-items: center; }
 .empty-col { color: var(--muted); font-size: 12px; text-align: center; padding: 10px 0; }
+.stage { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; }
+.stage.landing { background: color-mix(in srgb, #2563eb 15%, transparent); color: #2563eb; }
+.stage.fixing { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.bounce { font-size: 11px; color: var(--warn); }
+.feed { margin-top: 14px; }
+.feed .ev { display: flex; gap: 10px; font-size: 13px; padding: 7px 12px; border-bottom: 1px solid var(--line); align-items: center; }
+.feed .ev:last-child { border-bottom: 0; }
+.feed .ev .when { color: var(--muted); width: 96px; flex: none; white-space: nowrap; }
+.feed .ev.landed .what { color: var(--ok); }
+.feed .ev.bounce .what, .feed .ev.given-back .what { color: var(--warn); }
 
 /* helpers */
 .helpers-grid { display: grid; gap: 10px; }
@@ -295,7 +305,8 @@ export const SPRINTS_JS = String.raw`
     try { saved = JSON.parse(localStorage.getItem('lazy.sprintForm') || '{}'); } catch (e) {}
     var repo = el('input', { type: 'text', placeholder: '/home/you/code/my-app', required: true, value: saved.repo || '' });
     var ask = el('textarea', { placeholder: 'e.g. Add a dark mode with a toggle in settings, remember the choice, and cover it with tests.' });
-    var helpers = el('input', { type: 'number', min: '1', max: '6', value: String(saved.helpers || 3) });
+    var helpers = el('input', { type: 'number', min: '1', max: '64', placeholder: 'no limit', value: saved.maxHelpers ? String(saved.maxHelpers) : '' });
+    var gate = el('input', { type: 'text', placeholder: 'optional, e.g. npm ci && npm test', value: saved.gateCommand || '' });
     var goal = el('select', {}, [
       el('option', { value: 'P1', text: 'Must-haves only' }),
       el('option', { value: 'P1/P2', text: 'Must-haves and should-haves' }),
@@ -308,9 +319,11 @@ export const SPRINTS_JS = String.raw`
     var btn = el('button', { cls: 'act primary', type: 'submit', text: 'Start sprint' });
     var form = el('form', { cls: 'form-card', onsubmit: function (e) {
       e.preventDefault();
-      var body = { repo: repo.value.trim(), ask: ask.value, helpers: Number(helpers.value), goal: goal.value, base: base.value.trim() || undefined, publish: publish.checked };
+      var body = { repo: repo.value.trim(), ask: ask.value, goal: goal.value, base: base.value.trim() || undefined, publish: publish.checked };
+      if (helpers.value) body.maxHelpers = Number(helpers.value);
+      if (gate.value.trim()) body.gateCommand = gate.value.trim();
       if (budget.value) body.budget = Number(budget.value);
-      try { localStorage.setItem('lazy.sprintForm', JSON.stringify({ repo: body.repo, helpers: body.helpers, goal: body.goal, base: base.value.trim() })); } catch (e2) {}
+      try { localStorage.setItem('lazy.sprintForm', JSON.stringify({ repo: body.repo, maxHelpers: body.maxHelpers, gateCommand: body.gateCommand, goal: body.goal, base: base.value.trim() })); } catch (e2) {}
       btn.disabled = true; btn.textContent = 'Starting...';
       api('sprints', { method: 'POST', body: body }).then(function (r) { S.formOpen = false; toast('Sprint started'); go(r.runId); })
         .catch(function (err) { toast(err.message); btn.disabled = false; btn.textContent = 'Start sprint'; });
@@ -318,9 +331,10 @@ export const SPRINTS_JS = String.raw`
       el('label', { cls: 'wide' }, ['What should get done?', ask]),
       el('label', {}, ['Project folder', repo]),
       el('label', {}, ['Start from branch', base]),
-      el('label', {}, ['Helpers working in parallel', helpers]),
+      el('label', { title: 'Every ready task starts at once. Set a number only if you want to hold back.' }, ['Most helpers at once', helpers]),
       el('label', {}, ['How far to go', goal]),
       el('label', { title: 'An estimate from token prices. With a Claude subscription this is plan usage, not money.' }, ['Usage limit (estimated $)', budget]),
+      el('label', { cls: 'wide', title: 'Runs in a fresh copy of your project, so include any install step.' }, ['Check after each merge (a failing check sends the work back to its helper)', gate]),
       el('label', { cls: 'inline' }, [publish, 'Open a pull request when done (otherwise the work lands as a branch in your project)']),
       el('div', { cls: 'actions' }, [btn])
     ]);
@@ -339,7 +353,14 @@ export const SPRINTS_JS = String.raw`
     var stats = el('div', { cls: 'sp-stats' }, [statusPill(v.status)]);
     if (b) {
       stats.appendChild(el('span', {}, [el('b', { text: b.progress.done + '/' + b.progress.total }), ' done']));
-      stats.appendChild(el('span', {}, [el('b', { text: String(b.helpersNow.length) }), ' working now']));
+      if (b.pipeline && b.live) {
+        stats.appendChild(el('span', {}, [el('b', { text: String(b.pipeline.building) }), ' building']));
+        if (b.pipeline.landing) stats.appendChild(el('span', {}, [el('b', { text: String(b.pipeline.landing) }), ' landing']));
+        if (b.pipeline.waitingForMember) stats.appendChild(el('span', { title: 'Ready tasks waiting for a helper; more helpers are being added' }, [el('b', { text: String(b.pipeline.waitingForMember) }), ' waiting for a helper']));
+        stats.appendChild(el('span', {}, [el('b', { text: String(b.pipeline.builders) }), ' helpers' + (b.pipeline.limit ? ' (limit ' + b.pipeline.limit + ')' : '')]));
+      } else {
+        stats.appendChild(el('span', {}, [el('b', { text: String(b.helpersNow.length) }), ' working now']));
+      }
       stats.appendChild(el('span', {}, [el('b', { text: money(b.cost) }), ' spent']));
       if (b.startedAt) stats.appendChild(el('span', {}, [el('b', { text: dur((b.endedAt ? Date.parse(b.endedAt) : Date.now()) - Date.parse(b.startedAt)) }), ' elapsed']));
     }
@@ -430,6 +451,11 @@ export const SPRINTS_JS = String.raw`
       el('div', { cls: 't', text: c.title }),
       live ? el('div', { cls: 'working-strip' }, [el('span', { text: helperLabel(c.working[0].member) + ' working' }), el('span', { 'data-since': c.working[0].since, text: dur(Date.now() - c.working[0].since) })]) : null,
       c.blockedBy.length && c.column === 'blocked' ? el('div', { cls: 'row', text: 'Waiting on ' + c.blockedBy.join(', ') }) : null,
+      c.stage === 'landing' || c.stage === 'fixing' || c.bounces ? el('div', { cls: 'row' }, [
+        c.stage === 'landing' ? el('span', { cls: 'stage landing', text: 'Landing' }) : null,
+        c.stage === 'fixing' ? el('span', { cls: 'stage fixing', text: 'Fixing after a failed landing' }) : null,
+        c.bounces ? el('span', { cls: 'bounce', text: 'sent back ' + c.bounces + 'x' }) : null
+      ]) : null,
       el('div', { cls: 'row' }, [typeIcon(c.type), el('span', { cls: 'mono', text: c.id }), el('span', { cls: 'grow' }), c.model ? el('span', { cls: 'chip', text: c.model }) : null, prio(c.priority), who ? avatar(who, live) : null])
     ];
     return el('div', { cls: 'tcard' + (live ? ' working' : '') + (c.inSprint ? '' : ' backlog'), title: c.inSprint ? '' : 'Below this sprint\'s goal', onclick: function () { openTask(c.id); } }, kids);
@@ -498,6 +524,27 @@ export const SPRINTS_JS = String.raw`
     });
     wrap.appendChild(grid);
     wrap.appendChild(el('div', { cls: 'axis' }, [el('span', { text: 'start' }), el('span', { text: b.endedAt ? 'end' : 'now' })]));
+    if (b.pipeline && b.pipeline.events.length) {
+      var titleOf = {};
+      b.cards.forEach(function (c) { titleOf[c.id] = c.title; });
+      var words = {
+        started: function (e) { return helperLabel(e.member) + ' started ' + (titleOf[e.taskId] || e.taskId); },
+        landed: function (e) { return 'Landed ' + (titleOf[e.taskId] || e.taskId) + (e.detail ? ' (' + e.detail + ')' : ''); },
+        bounce: function (e) { return 'Sent ' + (titleOf[e.taskId] || e.taskId) + ' back to ' + helperLabel(e.member) + ': ' + (e.detail || ''); },
+        'given-back': function (e) { return 'Gave up on ' + (titleOf[e.taskId] || e.taskId) + ' for now: ' + (e.detail || ''); },
+        notified: function (e) {
+          var d = (e.detail || '').replace(/^about /, '');
+          var overlap = d.indexOf('(overlap)') !== -1;
+          return 'Told ' + helperLabel(e.member) + ' that ' + d.replace(' (overlap)', '') + ' landed' + (overlap ? ' - it touches the same files, pulling it in now' : '');
+        }
+      };
+      var feed = el('div', { cls: 'list feed' }, [el('h4', { text: 'What happened' })]);
+      b.pipeline.events.forEach(function (e) {
+        var say = words[e.kind] ? words[e.kind](e) : e.kind + ' ' + e.taskId;
+        feed.appendChild(el('div', { cls: 'ev ' + e.kind }, [el('span', { cls: 'when', text: ago(e.at) }), el('span', { cls: 'what', text: say })]));
+      });
+      wrap.appendChild(feed);
+    }
     return wrap;
   }
 

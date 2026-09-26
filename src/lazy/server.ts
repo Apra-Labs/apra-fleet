@@ -14,7 +14,7 @@ import { Vault } from './vault.js';
 import { getAllAgents } from '../services/registry.js';
 import { isAutoMember } from '../services/member-reaper.js';
 import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
-import { launchSprint, stopSprint, type LaunchInput } from './sprints/launcher.js';
+import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
 
 export interface SprintDeps {
   launch: (input: LaunchInput) => Promise<{ runId: string }>;
@@ -300,6 +300,10 @@ export function startLazyServer(): Promise<LazyServer> {
   const s = createLazyServer();
   return new Promise((resolve, reject) => {
     s.server.once('error', reject);
-    s.server.listen(s.config().port, '127.0.0.1', () => resolve(s));
+    s.server.listen(s.config().port, '127.0.0.1', () => {
+      // Sprints that kept running while this process was down still grow their pool.
+      resumeSprintWatchers();
+      resolve(s);
+    });
   });
 }

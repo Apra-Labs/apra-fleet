@@ -63,6 +63,25 @@ export function makeRunState(now = Date.now()) {
         ],
       },
     ],
-    extensions: { beads: { sprintTasks, goalMax: 2, decomposedParentIds: ['shop-9x', 'shop-9x.1', 'shop-9x.2'] } },
+    extensions: {
+      beads: { sprintTasks, goalMax: 2, decomposedParentIds: ['shop-9x', 'shop-9x.1', 'shop-9x.2'] },
+      pipeline: {
+        cycle: 1, parallel: true, limit: null, builders: ['lz-shop-1', 'lz-shop-2', 'lz-shop-3'], freeBuilders: 1,
+        building: [
+          { taskId: 'shop-9x.1.2', member: 'lz-shop-1', since: ms(12), stage: 'fixing' },
+          { taskId: 'shop-9x.1.3', member: 'lz-shop-2', since: ms(6), stage: 'landing' },
+        ],
+        waitingForMember: 1,
+        landedIds: ['shop-9x.1.1'],
+        givenUpIds: [],
+        events: [
+          { at: t(35), kind: 'started', taskId: 'shop-9x.1.1', member: 'lz-shop-1' },
+          { at: t(30), kind: 'landed', taskId: 'shop-9x.1.1', member: 'lz-shop-1' },
+          { at: t(30), kind: 'notified', taskId: 'shop-9x.1.2', member: 'lz-shop-3', detail: 'about shop-9x.1.1 (overlap)' },
+          { at: t(12), kind: 'started', taskId: 'shop-9x.1.2', member: 'lz-shop-1' },
+          { at: t(4), kind: 'bounce', taskId: 'shop-9x.1.2', member: 'lz-shop-1', detail: 'conflict: src/components/Button.tsx' },
+        ],
+      },
+    },
   };
 }

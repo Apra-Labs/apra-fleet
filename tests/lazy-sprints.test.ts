@@ -108,6 +108,14 @@ describe('buildBoard', () => {
     expect(b.cards.find(c => c.id === 'shop-9x.2.1')!.column).toBe('progress');
   });
 
+  it('shows pipeline stages, bounces and the waiting count', () => {
+    expect(card('shop-9x.1.2')).toMatchObject({ stage: 'fixing', bounces: 1 });
+    expect(card('shop-9x.1.3').stage).toBe('landing');
+    expect(card('shop-9x.1.1').stage).toBeUndefined();
+    expect(board.pipeline).toMatchObject({ building: 1, landing: 1, waitingForMember: 1, builders: 3, limit: null });
+    expect(board.pipeline!.events[0].kind).toBe('bounce'); // newest first
+  });
+
   it('maps statuses', () => {
     expect(columnFor({ id: 'x', status: 'deferred' })).toBe('blocked');
     expect(columnFor({ id: 'x', status: 'open', ready: false })).toBe('blocked');
@@ -175,7 +183,9 @@ describe('launcher', () => {
   it('validates the ask', () => {
     expect(() => launcher.validateLaunch({ repo: 'relative/path', ask: 'do the thing please' })).toThrow(/full path/);
     expect(() => launcher.validateLaunch({ repo: tmp, ask: 'hi' })).toThrow(/sentence/);
-    expect(() => launcher.validateLaunch({ repo: tmp, ask: 'add dark mode please', helpers: 9 })).toThrow(/1-6/);
+    expect(() => launcher.validateLaunch({ repo: tmp, ask: 'add dark mode please', maxHelpers: 0 })).toThrow(/whole number/);
+    expect(() => launcher.validateLaunch({ repo: tmp, ask: 'add dark mode please', gateCommand: 'a\nb' })).toThrow(/one line/);
+    expect(launcher.validateLaunch({ repo: tmp, ask: 'add dark mode please' }).maxHelpers).toBeUndefined();
     expect(() => launcher.validateLaunch({ repo: tmp, ask: 'add dark mode please', goal: 'P9' as any })).toThrow(/Goal/);
     expect(launcher.titleFromAsk('Add dark mode. Also tests.')).toBe('Add dark mode');
     expect(launcher.helperName('shop', 2)).toBe('lz-shop-2');
@@ -204,36 +214,69 @@ describe('launcher', () => {
     return { deps, calls, get engineArgs() { return engineArgs; }, get helpers() { return helpers; } };
   }
 
-  it('sets up helpers, creates the sprint issue and starts the engine in synced mode', async () => {
+  it('starts with two helpers, installs the landing-note hook and runs the engine in pipeline mode', async () => {
     const repo = path.join(tmp, 'shop');
     fs.mkdirSync(repo, { recursive: true });
     const f = fakeDeps();
-    const rec = await launcher.launchSprint({ repo, ask: 'Add dark mode with a settings toggle', helpers: 3 }, f.deps as any);
+    const rec = await launcher.launchSprint({ repo, ask: 'Add dark mode with a settings toggle', maxHelpers: 5, gateCommand: 'npm test' }, f.deps as any);
     // launchSprint returns immediately; wait for background setup.
     for (let i = 0; i < 50 && launcher.getRecord(rec.runId)!.setup.state === 'preparing'; i++) await new Promise(r => setTimeout(r, 10));
     const done = launcher.getRecord(rec.runId)!;
     expect(done.setup.state).toBe('started');
     expect(done.rootIssue).toBe('shop-ab1');
-    expect(done.helpers).toEqual(['lz-shop-0', 'lz-shop-1', 'lz-shop-2']);
-    expect(f.helpers.map(h => path.basename(h.folder))).toEqual(['h0', 'h1', 'h2']);
+    expect(done.helpers).toEqual(['lz-shop-0', 'lz-shop-1']);
+    expect(f.helpers.map(h => path.basename(h.folder))).toEqual(['h0', 'h1']);
     const a = f.engineArgs;
-    expect(a).toEqual(expect.arrayContaining(['--sync', '--issue', 'shop-ab1', '--members', 'lz-shop-0,lz-shop-1,lz-shop-2', '--base', 'main', '--viewer-port', '45678', '--run-id', rec.runId]));
+    expect(a).toEqual(expect.arrayContaining([
+      '--sync', '--pipeline', '--issue', 'shop-ab1', '--members', 'lz-shop-0,lz-shop-1', '--base', 'main',
+      '--viewer-port', '45678', '--run-id', rec.runId, '--inbox-file', '.lazyfleet/inbox.txt',
+      '--member-pool-file', done.poolFile!, '--max-doers', '5', '--gate-command', 'npm test',
+    ]));
     expect(JSON.parse(a[a.indexOf('--role-map') + 1])).toEqual({ orchestrator: ['lz-shop-0'] });
+    expect(JSON.parse(fs.readFileSync(done.poolFile!, 'utf-8'))).toEqual(['lz-shop-1']);
     // The user's own checkout is only ever read (cloned from), never written.
     const writes = f.calls.filter(c => c.cwd === repo && !(c.cmd === 'git' && ['rev-parse', 'remote'].includes(c.args[0])));
     expect(writes).toEqual([]);
     // Every clone shares one local task database folder.
-    const remotes = new Set(['h0', 'h1', 'h2'].map(h => fs.readFileSync(path.join(done.workspace, h, '.beads', 'config.yaml'), 'utf-8').trim()));
+    const remotes = new Set(['h0', 'h1'].map(h => fs.readFileSync(path.join(done.workspace, h, '.beads', 'config.yaml'), 'utf-8').trim()));
     expect(remotes.size).toBe(1);
     expect([...remotes][0]).toContain('tasks-remote');
+    // The builder's clone carries the landing-note hook, hidden from git.
+    const settings = JSON.parse(fs.readFileSync(path.join(done.workspace, 'h1', '.claude', 'settings.json'), 'utf-8'));
+    expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(`node "${path.join(done.workspace, 'inbox-hook.cjs')}"`);
+    const exclude = fs.readFileSync(path.join(done.workspace, 'h1', '.git', 'info', 'exclude'), 'utf-8').split('\n');
+    expect(exclude).toEqual(expect.arrayContaining(['.beads/', '.lazyfleet/', '.claude/settings.json']));
     expect(listSprints().find(s => s.runId === rec.runId)).toMatchObject({ status: 'stopped' }); // fake pid is not alive
+  });
+
+  it('adds builders when the engine reports tasks waiting, within the limit', async () => {
+    const repo = path.join(tmp, 'grow');
+    fs.mkdirSync(repo, { recursive: true });
+    const f = fakeDeps();
+    const rec = await launcher.launchSprint({ repo, ask: 'Split this into many small tasks', maxHelpers: 3 }, f.deps as any);
+    for (let i = 0; i < 50 && launcher.getRecord(rec.runId)!.setup.state === 'preparing'; i++) await new Promise(r => setTimeout(r, 10));
+    const added = await launcher.growOnce(rec.runId, f.deps as any, () => ({ waitingForMember: 5 }));
+    expect(added).toBe(2); // limit 3 builders, one already there
+    const done = launcher.getRecord(rec.runId)!;
+    expect(done.helpers).toEqual(['lz-grow-0', 'lz-grow-1', 'lz-grow-2', 'lz-grow-3']);
+    expect(JSON.parse(fs.readFileSync(done.poolFile!, 'utf-8'))).toEqual(['lz-grow-1', 'lz-grow-2', 'lz-grow-3']);
+    expect(f.helpers.map(h => h.name)).toEqual(['lz-grow-2', 'lz-grow-3']);
+    expect(await launcher.growOnce(rec.runId, f.deps as any, () => ({ waitingForMember: 5 }))).toBe(0);
+    expect(await launcher.growOnce(rec.runId, f.deps as any, () => ({ waitingForMember: 0 }))).toBe(0);
+  });
+
+  it('grows without a ceiling by default, a few at a time', () => {
+    expect(launcher.helpersToAdd({ waitingForMember: 12, builders: 1 })).toBe(4);
+    expect(launcher.helpersToAdd({ waitingForMember: 2, builders: 30 })).toBe(2);
+    expect(launcher.helpersToAdd({ waitingForMember: 9, builders: 4, maxHelpers: 5 })).toBe(1);
+    expect(launcher.helpersToAdd({ waitingForMember: 0, builders: 1 })).toBe(0);
   });
 
   it('records a readable failure and never starts the engine', async () => {
     const repo = path.join(tmp, 'shop2');
     fs.mkdirSync(repo, { recursive: true });
     const f = fakeDeps({ failOn: 'bd create' });
-    const rec = await launcher.launchSprint({ repo, ask: 'Add dark mode with a settings toggle', helpers: 1 }, f.deps as any);
+    const rec = await launcher.launchSprint({ repo, ask: 'Add dark mode with a settings toggle' }, f.deps as any);
     for (let i = 0; i < 50 && launcher.getRecord(rec.runId)!.setup.state === 'preparing'; i++) await new Promise(r => setTimeout(r, 10));
     const done = launcher.getRecord(rec.runId)!;
     expect(done.setup.state).toBe('failed');
@@ -297,5 +340,27 @@ describe('plain-language activity', () => {
     expect(describeActivity('Review a.2', ['a.2'], title)).toBe('Reviewing: Persist it');
     expect(describeActivity('Planner: root', [], title)).toBe('Planning the work and creating issues');
     expect(describeActivity('Plan review', [], title)).toBe('Checking the plan');
+  });
+});
+
+describe('landing-note hook script', () => {
+  it('hands the inbox over once and says nothing when it is empty', async () => {
+    const { INBOX_HOOK_SCRIPT } = await import('../src/lazy/sprints/launcher.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lazy-hook-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.git'));
+      fs.mkdirSync(path.join(dir, 'src', 'deep'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.lazyfleet'));
+      const script = path.join(dir, 'hook.cjs');
+      fs.writeFileSync(script, INBOX_HOOK_SCRIPT);
+      fs.writeFileSync(path.join(dir, '.lazyfleet', 'inbox.txt'), '[landing note for h2] Task a landed.\n');
+      const run = (cwd: string) => execFileSync(process.execPath, [script], { input: JSON.stringify({ cwd }), encoding: 'utf-8' });
+      const out = JSON.parse(run(path.join(dir, 'src', 'deep')));
+      expect(out.hookSpecificOutput).toEqual({ hookEventName: 'PostToolUse', additionalContext: '[landing note for h2] Task a landed.' });
+      expect(fs.existsSync(path.join(dir, '.lazyfleet', 'inbox.txt'))).toBe(false);
+      expect(run(dir)).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
