@@ -681,6 +681,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // return immediately following) must release this lock explicitly, since
   // it now returns AFTER the lock is claimed instead of before.
   inFlightAgents.add(agent.id);
+  // apra-fleet-c98q: if anything between this claim and a try/finally that
+  // owns the release throws (e.g. an SSH drop in writePromptFile), release
+  // the lock and stall entry here and rethrow. Body deliberately not
+  // reindented to keep this release fix minimal.
+  let claimGuardActive = true;
+  try {
 
   // Peek at session state early so the preflight check can skip interactive
   // members whose dispatch routes through a live MCP push channel, not SSH.
@@ -833,6 +839,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // re-add here (Set.add would be a harmless no-op, but keeping a second
     // add site invites the lock and its release to drift out of sync).
     writeStatusline(new Map([[agent.id, 'busy']]));
+    claimGuardActive = false;
     try {
       return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
     } finally {
@@ -898,6 +905,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
+      claimGuardActive = false;
       // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
       // progress of any kind for the whole threshold. Clearing bookkeeping
       // alone left that wedged process running indefinitely on the member --
@@ -1404,6 +1412,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       },
     };
   };
+  claimGuardActive = false;
   try {
     let result;
     try {
@@ -1883,5 +1892,12 @@ session: ${parsed.sessionId}`;
     }
     stallDetector.remove(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+  }
+  } catch (err) {
+    if (claimGuardActive) {
+      inFlightAgents.delete(agent.id);
+      getStallDetector().remove(agent.id);
+    }
+    throw err;
   }
 }

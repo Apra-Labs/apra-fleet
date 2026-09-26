@@ -200,6 +200,17 @@ interface ProvisionVcsAuthFields {
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
   memberName: string | null;
+  /**
+   * The human-readable cause of a non-ok outcome (e.g. "No repos specified
+   * and none on agent config.", "Member \"x\" is offline: ..."), or null for
+   * an ok result. Previously this text only ever reached the caller inside
+   * `text`, so a structured-content-only caller saw nothing but the bare
+   * `reason` code (e.g. 'deploy_failed') and lost the actual cause. Derived
+   * from the same sanitized strings already rendered into `text` -- never a
+   * new source of information -- so it carries no plaintext secret that
+   * wasn't already caller-visible.
+   */
+  message: string | null;
 }
 
 export interface ProvisionVcsAuthStructured extends ProvisionVcsAuthFields {
@@ -213,28 +224,43 @@ export interface ProvisionVcsAuthResult {
 
 const VCS_OK_REASONS: ProvisionVcsAuthReason[] = ['ok', 'deployed_unverified', 'deployed_verification_skipped'];
 
+/**
+ * `text` is always a human-readable summary prefixed with a `[TAG]` marker
+ * (`[FAIL]`, `[WARN]`, `[OK]`, `[SKIP]`) -- see every vcsResult() call site
+ * below. Stripping the marker yields the plain cause string, which is the
+ * same text already used to build `text` itself, so this introduces no new
+ * information (and no new secret exposure) beyond what already rendered.
+ */
+function stripResultMarker(text: string): string {
+  return text.replace(/^\[[A-Z]+\]\s*/, '');
+}
+
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<ProvisionVcsAuthResult> {
   const label = input.label ?? input.provider;
   const vcsResult = (
     text: string,
     fields: Partial<ProvisionVcsAuthFields> & { reason: ProvisionVcsAuthReason },
-  ): ProvisionVcsAuthResult => ({
-    text,
-    structuredContent: {
-      ok: fields.ok ?? VCS_OK_REASONS.includes(fields.reason),
-      reason: fields.reason,
-      provider: input.provider,
-      credentialLabel: label,
-      scopeUrl: fields.scopeUrl ?? null,
-      expiresAt: fields.expiresAt ?? null,
-      verified: fields.verified ?? false,
-      verificationSkipped: fields.verificationSkipped ?? false,
-      metadata: fields.metadata ?? null,
-      expiryWarning: fields.expiryWarning ?? null,
-      memberId: fields.memberId ?? null,
-      memberName: fields.memberName ?? null,
-    },
-  });
+  ): ProvisionVcsAuthResult => {
+    const ok = fields.ok ?? VCS_OK_REASONS.includes(fields.reason);
+    return {
+      text,
+      structuredContent: {
+        ok,
+        reason: fields.reason,
+        provider: input.provider,
+        credentialLabel: label,
+        scopeUrl: fields.scopeUrl ?? null,
+        expiresAt: fields.expiresAt ?? null,
+        verified: fields.verified ?? false,
+        verificationSkipped: fields.verificationSkipped ?? false,
+        metadata: fields.metadata ?? null,
+        expiryWarning: fields.expiryWarning ?? null,
+        memberId: fields.memberId ?? null,
+        memberName: fields.memberName ?? null,
+        message: fields.message ?? (ok ? null : stripResultMarker(text)),
+      },
+    };
+  };
 
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') {

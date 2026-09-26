@@ -81,12 +81,18 @@ describe('provisionVcsAuth', () => {
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Timeout' });
 
-    const { text: result } = await provisionVcsAuth({
+    const { text: result, structuredContent } = await provisionVcsAuth({
       member_id: member.id, provider: 'bitbucket',
       email: 'a@b.com', api_token: 'tok', workspace: 'ws',
     });
     expect(result).toContain('[FAIL]');
     expect(result).toContain('offline');
+    // apra-fleet-e7qd split: the human-readable cause must also reach the
+    // structured result, not only the rendered text -- a caller reading only
+    // structuredContent previously saw nothing but reason: 'member_offline'.
+    expect(structuredContent.reason).toBe('member_offline');
+    expect(structuredContent.message).toContain('offline');
+    expect(structuredContent.message).not.toContain('[FAIL]');
   });
 
   // --- Bitbucket ---
@@ -244,6 +250,26 @@ describe('provisionVcsAuth', () => {
     expect(result).toContain('[FAIL]');
   });
 
+  it('github: github-app mode deploy failure (no repos) surfaces the cause in structuredContent.message', async () => {
+    // apra-fleet-e7qd split: previously the caller only got reason:
+    // 'deploy_failed' in structuredContent -- the actual cause
+    // ("No repos specified and none on agent config.", from
+    // src/services/vcs/github.ts) reached only the rendered `text`.
+    const member = makeTestAgent({ friendlyName: 'gh-app-norepos', gitAccess: 'push' });
+    addAgent(member);
+    setGitHubAppConfig();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const { text: result, structuredContent } = await provisionVcsAuth({
+      member_id: member.id, provider: 'github',
+    });
+    expect(result).toContain('[FAIL]');
+    expect(structuredContent.ok).toBe(false);
+    expect(structuredContent.reason).toBe('deploy_failed');
+    expect(structuredContent.message).toBe('No repos specified and none on agent config.');
+  });
+
   it('github: github-app mode deploys successfully', async () => {
     const member = makeTestAgent({ friendlyName: 'gh-app', gitAccess: 'push', gitRepos: ['Org/Repo'] });
     addAgent(member);
@@ -252,11 +278,14 @@ describe('provisionVcsAuth', () => {
     mockMint.mockResolvedValue({ token: 'ghs_minted123', expiresAt: '2026-03-04T12:00:00Z' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const { text: result } = await provisionVcsAuth({
+    const { text: result, structuredContent } = await provisionVcsAuth({
       member_id: member.id, provider: 'github',
     });
     expect(result).toContain('[OK]');
     expect(result).toContain('GitHub App');
+    // An ok result carries no message -- the field is reserved for the
+    // failure cause (structuredContent.reason already covers success detail).
+    expect(structuredContent.message).toBeNull();
     expect(result).toContain('ghs_****');
     expect(result).not.toContain('ghs_minted123');
   });
