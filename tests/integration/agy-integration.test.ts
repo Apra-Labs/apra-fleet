@@ -3,7 +3,7 @@ import path from 'node:path';
 import { makeTestAgent, backupAndResetRegistry } from '../test-helpers.js';
 import { addAgent, getAgent } from '../../src/services/registry.js';
 import { getProvider } from '../../src/providers/index.js';
-import { AgyProvider, convertClaudeAllowToAgyPermissions } from '../../src/providers/agy.js';
+import { AgyProvider, convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../../src/providers/agy.js';
 import { resolveSessionLogPath, resolveSessionLogDir } from '../../src/services/stall/log-path-resolver.js';
 import { classifyPromptError } from '../../src/utils/prompt-errors.js';
 
@@ -41,10 +41,11 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/workspace',
         promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
         model: 'Gemini 3.5 Flash',
         unattended: 'dangerous',
       });
-      expect(cmd).toContain('agy --model');
+      expect(cmd).toContain('agy --add-dir "/home/user/workspace" --project "1afd6dbb-498f-4918-a9d9-6da64b75a204" --model');
       expect(cmd).toContain('--output-format json');
       expect(cmd).toContain('--dangerously-skip-permissions');
       expect(cmd).toContain('Your task is described in /home/user/workspace/.fleet-task.md');
@@ -54,16 +55,43 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/workspace',
         promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
         sessionId: 'sess-agy-12345',
         resuming: true,
       });
       expect(cmd).toContain('--conversation "sess-agy-12345"');
     });
 
-    it('maps tier preferences seamlessly across cheap, standard, and premium', () => {
-      expect(provider.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-      expect(provider.modelForTier('standard')).toBe('gemini-3.5-flash');
-      expect(provider.modelForTier('premium')).toBe('claude-sonnet-4.6');
+    it('maps tier preferences to model ids AGY actually offers', () => {
+      // Pinned against `agy models` (1.2.8). A slug AGY does not recognize is
+      // NOT a soft fallback -- the dispatch returns
+      //   "invalid model selection (--model ...): model ... is not recognized"
+      // as its entire response, which the engine surfaces as unparseable
+      // structured output. The cheap tier is what doers run on, so a stale
+      // cheap slug silently costs a sprint every line of code it would write.
+      expect(provider.modelForTier('cheap')).toBe('gemini-3.8-flash-low');
+      expect(provider.modelForTier('standard')).toBe('gemini-3.8-flash-high');
+      expect(provider.modelForTier('premium')).toBe('gemini-3.1-pro-high');
+    });
+
+    it('dispatches the SAME model id it reports for a tier (the two catalogs cannot drift)', () => {
+      // The original defect was two parallel maps: display names for dispatch,
+      // slugs for modelForTier(). They drifted, and only the dispatch one was
+      // load-bearing, so nothing caught it.
+      for (const tier of ['cheap', 'standard', 'premium'] as const) {
+        const cmd = provider.buildPromptCommand({
+          folder: '/home/user/project',
+          promptFile: '.fleet-task.md',
+          projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
+          tier,
+        });
+        expect(cmd).toContain(`--model "${provider.modelForTier(tier)}"`);
+      }
+      expect(provider.modelTiers()).toEqual({
+        cheap: provider.modelForTier('cheap'),
+        standard: provider.modelForTier('standard'),
+        premium: provider.modelForTier('premium'),
+      });
     });
 
     it('handles supportsResume and supportsMaxTurns capabilities', () => {
@@ -88,13 +116,12 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ]);
     });
 
-    it('refuses to auto-collapse mcp__<server>__<tool> entries into a broad server-level mcp rule', () => {
-      // AGY's permission model is server-granular, and 'apra-fleet' colocates safe
-      // KB tools with destructive fleet-admin tools (remove_member, shutdown_server,
-      // credential_store_*) on the same server -- collapsing a narrow per-tool grant
-      // like kb_query into { action: 'mcp', target: 'apra-fleet' } would silently
-      // hand out access to all of them. This must fall through to an explicit
-      // 'custom' rule (surfaced for manual escalation) instead of a 'mcp' rule.
+    it('maps mcp__<server>__<tool> to AGY\'s equally narrow per-tool mcp(server/tool) rule', () => {
+      // AGY expresses per-tool MCP grants as mcp(<server>/<tool>) -- the exact
+      // granularity Claude's mcp__<server>__<tool> carries, so the mapping
+      // widens nothing. Before this, the tokens were dropped and the
+      // deployer's Step 0 kb_session_prime was auto-denied in headless mode,
+      // failing the whole Deploy phase.
       const claudeAllow = [
         'mcp__apra-fleet__kb_session_prime',
         'mcp__apra-fleet__kb_query',
@@ -102,25 +129,112 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       ];
       const rules = convertClaudeAllowToAgyPermissions(claudeAllow);
 
-      expect(rules.some((r) => r.action === 'mcp')).toBe(false);
-      expect(rules).toEqual(
-        claudeAllow.map((item) => ({ action: 'custom', target: item })),
-      );
+      expect(rules).toEqual([
+        { action: 'mcp', target: 'apra-fleet/kb_session_prime' },
+        { action: 'mcp', target: 'apra-fleet/kb_query' },
+        { action: 'mcp', target: 'apra-fleet/kb_capture' },
+      ]);
+      expect(formatAgyPermissionRules(rules)).toEqual([
+        'mcp(apra-fleet/kb_session_prime)',
+        'mcp(apra-fleet/kb_query)',
+        'mcp(apra-fleet/kb_capture)',
+      ]);
     });
 
-    it('delivers native AGY permissions to .gemini/antigravity-cli/settings.json', () => {
-      const provider = new AgyProvider();
-      expect(provider.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
+    it('never widens a per-tool grant into blanket server-level MCP access', () => {
+      // 'apra-fleet' colocates safe read-only KB tools with destructive
+      // fleet-admin ones (remove_member, shutdown_server, credential_store_*),
+      // so a bare mcp(apra-fleet) rule would hand out all of them.
+      const allow = formatAgyPermissionRules(
+        convertClaudeAllowToAgyPermissions(['mcp__apra-fleet__kb_query']),
+      );
+      expect(allow).not.toContain('mcp(apra-fleet)');
+      expect(allow).not.toContain('mcp(*)');
+      expect(allow).toEqual(['mcp(apra-fleet/kb_query)']);
+    });
 
-      const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken']);
+    it('delivers native AGY permissions to the HOME-anchored project config, not settings.json', () => {
+      const provider = new AgyProvider();
+      const mockAgent = {
+        id: 'agent-123',
+        friendlyName: 'agy-doer',
+        llmProvider: 'agy',
+        workFolder: '/home/user/my-project',
+        agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
+      } as any;
+      expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
+      expect(() => provider.permissionConfigPaths()).toThrow();
+
+      const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken'], mockAgent);
       expect(configs).toHaveLength(1);
       const cfg = configs[0] as Record<string, any>;
-      expect(cfg.permissions).toBeDefined();
-      expect(cfg.permissions.allow).toContainEqual({ action: 'read_file', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'write_file', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'command', target: 'git' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'read_url', target: '*' });
-      expect(cfg.permissions.allow).toContainEqual({ action: 'custom', target: 'CustomToken' });
+      // Only the grants block: agy's own id/name/projectResources are kept on disk.
+      expect(Object.keys(cfg)).toEqual(['permissionGrants']);
+      // Strings in AGY's own `action(target)` syntax -- NOT {action,target}
+      // objects, which AGY's settings parser silently ignores.
+      const allowList = cfg.permissionGrants.permissionGrants.allow;
+      expect(allowList).toContain('read_file(*)');
+      expect(allowList).toContain('write_file(*)');
+      expect(allowList).toContain('command(git)');
+      expect(allowList).toContain('read_url(*)');
+      // 'custom' is not in AGY's action vocabulary -- it must not be written.
+      expect(allowList.some((e: string) => e.includes('CustomToken'))).toBe(false);
+    });
+
+    it('serializes every rule as a string matching AGY\'s own settings.json validation regex', () => {
+      // Verbatim from the agy CLI binary (1.2.8): any entry in permissions.allow
+      // that fails this regex is rejected by AGY.
+      const AGY_RULE_RE = /^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$/;
+      const allow = formatAgyPermissionRules(
+        convertClaudeAllowToAgyPermissions(['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'WebSearch', 'Mcp(some-server)']),
+      );
+      expect(allow.length).toBeGreaterThan(0);
+      for (const entry of allow) {
+        expect(typeof entry).toBe('string');
+        expect(entry).toMatch(AGY_RULE_RE);
+      }
+      expect(allow).toEqual([
+        'read_file(*)',
+        'write_file(*)',
+        'command(git)',
+        'command(npm)',
+        'command(bd)',
+        'read_url(*)',
+        'mcp(some-server)',
+      ]);
+    });
+
+    it('drops rules whose action is outside AGY\'s vocabulary instead of writing entries AGY rejects', () => {
+      // 'Agent' maps to invoke_subagent/send_message and an unmapped token maps
+      // to 'custom' -- none of which are AGY permission actions (they are tool
+      // names, or a fleet-internal marker). Writing them into the MACHINE-GLOBAL
+      // settings.json the human user also owns is not a harmless no-op.
+      const rules = convertClaudeAllowToAgyPermissions(['Agent', 'NotAToolToken', 'Bash(git:*)']);
+      expect(rules.some(r => r.action === 'invoke_subagent')).toBe(true);
+      expect(rules.some(r => r.action === 'custom')).toBe(true);
+      expect(formatAgyPermissionRules(rules)).toEqual(['command(git)']);
+    });
+
+    it('de-duplicates identical rules produced by different Claude tokens', () => {
+      // Read + Glob + Grep all collapse to read_file(*); the file must not carry
+      // the same rule three times.
+      expect(formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(['Read', 'Glob', 'Grep']))).toEqual(['read_file(*)']);
+    });
+
+    it('names the dispatched work folder as the AGY workspace via --add-dir', () => {
+      const provider = new AgyProvider();
+      // AGY does NOT adopt the process cwd as its workspace: without --add-dir
+      // it runs with no workspace, shells out from its own scratch dir, and
+      // dies on the first auto-denied run_command in headless mode.
+      expect(provider.workspaceDirFlag('/home/user/workspace')).toBe('--add-dir "/home/user/workspace"');
+      const cmd = provider.buildPromptCommand({
+        folder: '/home/user/my repo',
+        promptFile: '.fleet-task.md',
+        projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
+      });
+      expect(cmd).toContain('--add-dir "/home/user/my repo"');
+      // The cd is retained so relative paths the agent builds still resolve.
+      expect(cmd.startsWith('cd "/home/user/my repo" && agy ')).toBe(true);
     });
   });
 

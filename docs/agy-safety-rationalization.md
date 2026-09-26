@@ -56,11 +56,18 @@ Antigravity utilizes the "ANTIGRAVITY_API_KEY" environment variable to authentic
 When a member executes a task, it must run under a strictly bounded execution profile to prevent privilege escalation or recursive loops (e.g. the member invoking the fleet server recursively).
 
 ### Safety Mechanisms
-- Localized Directory Config: "permissionConfigPaths()" returns ".gemini/antigravity-cli/settings.json". This writes permission settings relative to the workspace folder of the active task, confining the member's sandbox to that repository.
-- Loop Prevention: "composePermissionConfig" generates the following configuration:
-  - Disables the "apra-fleet" MCP server on the member: "mcpServers: { 'apra-fleet': { disabled: true } }".
-  - Disables fleet orchestration skills: "skillOverrides: { pm: 'off', fleet: 'off' }".
-  This completely prevents recursive prompt dispatch loops where the agent could attempt to orchestrate itself.
+- Localized Project Config: `permissionConfigPaths()` returns `~/.gemini/config/projects/fleet-${agent.id}.json`. This writes permission settings specific to each member and workspace.
+- Loop Prevention & Isolation:
+  - Antigravity project JSON files strictly enforce Protobuf unmarshaling (`protojson.Unmarshal`), so extra fields such as `mcpServers` or `skillOverrides` are prohibited in project files.
+  - Member tool isolation is enforced via explicit `permissionGrants.permissionGrants.deny` rules in `fleet-${agent.id}.json` for all registered apra-fleet tools NOT in the member allow-set (denying orchestrator administrative tools such as `remove_member`, `execute_prompt`, `credential_store_*`, `shutdown_server`, as well as administrative KB tools like `kb_promote`, `kb_import`, `kb_export`, etc.), while member-needed tools (such as `kb_query`, `kb_stats`, and `code_*`) remain allowed.
+  - Member skill isolation: AGY has no per-member, per-project, per-workspace, or per-session skill isolation mechanism. Investigation of candidate mechanisms confirms:
+    1. `permissionGrants.deny` in project JSON: AGY's permission parser (`agy 1.2.8`) strictly only accepts actions matching `^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$`. Skills have no permission action in AGY; deny rules referencing skills are ignored.
+    2. Workspace `.agents/skills.json` exclude patterns: per AGY specification, exclude patterns apply only across explicitly configured paths and never filter customizations inherited from the user environment (`~/.gemini/antigravity-cli/skills/`).
+    3. CLI flags: only `--disable-slash-commands` exists, which merely suppresses slash-command prompt expansion in `-p` print mode; skills remain in agent prompt context.
+    4. Environment variables: no `ANTIGRAVITY_*` or `GEMINI_*` environment variables exist to disable or isolate skills.
+    5. `skillOverrides` key in project JSON: rejected by Protobuf unmarshaling (`protojson.Unmarshal`).
+    Because global skills (`pm`, `fleet`) installed under `~/.gemini/antigravity-cli/skills/` remain visible to AGY members, member isolation is enforced at the MCP tool boundary via the explicit `permissionGrants.deny` rules above (blocking administrative tools such as `remove_member`, `execute_prompt`, and `shutdown_server`). During permission delivery, Fleet probes the member via `execCommand` for global skills: if present, `compose_permissions` succeeds and returns a clearly visible warning line naming the installed global skills. If the probe fails (missing node, timeout, unparseable output), a visible warning is emitted indicating the check could not run.
+  - Idempotent migration (`cleanGlobalAgySettings`) removes legacy fleet-authored entries from global `~/.gemini/antigravity-cli/settings.json`.
 
 ---
 
@@ -92,3 +99,31 @@ Agy supports session resumption via the "--conversation <sessionId>" flag. Howev
 
 - The full vitest suite ("npm test") must pass, confirming the "agy" adapter introduces no regressions to Claude, Codex, Copilot, or OpenCode.
 - The single-executable installer build ("npm run build:binary") must compile with all multi-provider config modifications packaged.
+
+---
+
+## 8. Role-prompt body text, not just frontmatter (agent-transform.ts)
+
+### Change Rationalization
+Dropping an unmapped tool from an agent's frontmatter `tools:` list is only half
+a fix if the role prompt's own prose still instructs the agent to call that tool
+by name. A provider-conditional marker mechanism in the agent transform pipeline
+(`<!-- if-tool: X --> ... <!-- else-tool: X --> ... <!-- end-tool: X -->`) resolves
+body prose against the same tool-availability decision that drives the
+frontmatter rewrite, so a tool dropped from `tools:` has its instructions dropped
+(or swapped for provider-neutral prose) too. See
+[docs/features/agent-transform-provider-conditionals.md](features/agent-transform-provider-conditionals.md)
+for the full mechanism, including why `packages/apra-fleet-se/apra-pm/install.mjs`
+carries a second, hand-synced copy of it.
+
+### Safety Mechanisms
+- Malformed markers (unclosed, unmatched, mismatched, duplicated) are a hard
+  install-time error naming the offending file, never a silent pass-through.
+- The Claude/raw install path also resolves and strips markers, even though it
+  changes no tool mapping -- an unfiltered passthrough on that path is exactly
+  what let provider-specific prose leak into every downstream provider before
+  this mechanism existed.
+- Static tests prove the transform drops the right prose for a given tool set;
+  they do not by themselves prove a live sprint on Antigravity completes a
+  review cycle without a tool-not-found error. Both are required evidence when
+  extending this mechanism, not just the static half.

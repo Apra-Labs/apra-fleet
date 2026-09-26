@@ -3230,7 +3230,7 @@ Examples:
 - **Formatting:** No enforced formatter currently -- keep indentation and style consistent with existing files.
 - **No unnecessary abstractions:** Prefer simple, direct code over premature generalization.
 - **Error handling:** Only handle errors at real system boundaries (user input, SSH, external APIs). Don't add fallbacks for scenarios that can't happen.
-- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks.
+- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks. Enforced automatically by `npm test` (`scripts/check-ascii-only.mjs`) against a checked-in baseline of pre-existing violations -- a new file must have zero, and a baselined file must not exceed (or silently drop below) its recorded count.
 
 ## For AI Agents
 

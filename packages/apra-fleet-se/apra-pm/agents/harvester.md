@@ -33,7 +33,13 @@ a missing `base-branch`/`branch`: do not guess which branch to diff.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
    and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
@@ -45,7 +51,12 @@ a missing `base-branch`/`branch`: do not guess which branch to diff.
 4. If a retrieved KB entry proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
    with the entry id and what was wrong.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 

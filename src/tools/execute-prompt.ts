@@ -39,13 +39,14 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse, UsageLimitSignal } from '../providers/provider.js';
+import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -69,6 +70,11 @@ export interface ExecutePromptStructured {
    *  detectUsageLimit() signal verbatim, so a caller (notably fleet-sprint) can
    *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
   usageLimit?: UsageLimitSignal;
+  /** Present on a 'permission_denied' failure: the member CLI refused tool
+   *  calls for lack of a grant (actions, concrete targets, the
+   *  compose_permissions grants that would allow them, and a hint). Any
+   *  partial reply is in `response`. */
+  permissionDenied?: PermissionDenial;
   [key: string]: unknown;
 }
 
@@ -844,6 +850,25 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Lock already claimed above, before the preflight await.
 
+  // AGY: every dispatch is bound to the member's own agy project with
+  // --project; without it agy silently runs under the machine-wide
+  // default-cli-project. A member without a verified project (registered
+  // before project binding, or whose project file is gone/corrupt) gets one
+  // here. Failure is terminal -- never a dispatch without --project.
+  let agyProjectId: string | undefined;
+  if (agent.llmProvider === 'agy') {
+    try {
+      agyProjectId = (await ensureAgyProject(agent)).projectId;
+    } catch (e: any) {
+      inFlightAgents.delete(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- the member's agy project could not be provisioned: ${e?.message ?? String(e)}. No LLM call was made.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
+  }
+
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
@@ -1078,6 +1103,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     inv: scope.getInv(),
     agentName: input.agent,
     fork: forkDescriptor,
+    projectId: agyProjectId,
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
@@ -1358,6 +1384,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // orphan recovery, trust-heal retry) -- and regardless of result.code,
   // since a 0-exit result event whose text carries the limit message must not
   // be returned as a success response either.
+  // The member's OS reaches the parser (agy's permission-denial hint differs on Windows).
+  const parseCtx = { agentOs: agent.os };
   const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
     const signal = provider.detectUsageLimit(r, p);
     if (!signal) return null;
@@ -1422,7 +1450,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
-    let parsed = provider.parseResponse(result);
+    let parsed = provider.parseResponse(result, parseCtx);
     if (parsed.usage) _epUsage = parsed.usage;
     {
       const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1465,7 +1493,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1486,7 +1514,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1494,6 +1522,28 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     _epExitCode = result.code;
+
+    // The member CLI refused tool calls for lack of a grant (AGY headless mode
+    // auto-denies them and still exits 0 with status SUCCESS). Report that as
+    // a permission failure the caller can heal via compose_permissions, not
+    // as an empty response. Only providers whose parser sets
+    // permissionDenial reach this; any partial reply is kept.
+    if (parsed.permissionDenial) {
+      const denial = parsed.permissionDenial;
+      const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
+        structuredContent: {
+          isError: true,
+          reason: 'permission_denied',
+          permissionDenied: denial,
+          ...(partial ? { response: partial } : {}),
+          ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        },
+      };
+    }
+
     if (result.code !== 0) {
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
@@ -1585,7 +1635,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
         const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
-        const recoveredParsed = provider.parseResponse(recoveredResult);
+        const recoveredParsed = provider.parseResponse(recoveredResult, parseCtx);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
@@ -1620,7 +1670,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-          parsed = provider.parseResponse(result);
+          parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
           if (usageLimitResult) return usageLimitResult;

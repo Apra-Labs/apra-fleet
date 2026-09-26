@@ -33,8 +33,8 @@ test('install.mjs copies agents/schemas/ into <configDir>/agents/schemas (source
   );
   assert.match(
     src,
-    /copyDir\(schemasSrc,\s*schemasDest\)/,
-    'install.mjs must copy schemasSrc into schemasDest'
+    /copyDirResolved\(schemasSrc,\s*schemasDest,\s*args\.llm\)/,
+    'install.mjs must copy schemasSrc into schemasDest through the marker-resolving copy (apra-fleet-oomh.4)'
   );
 });
 

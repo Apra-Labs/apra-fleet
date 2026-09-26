@@ -61,6 +61,26 @@
  */
 
 /**
+ * One tool call the member CLI refused, mirroring src/providers/provider.ts's PermissionDenialItem.
+ * @typedef {Object} PermissionDenialItem
+ * @property {string} action - Provider permission action, e.g. 'command', 'read_file', 'mcp'.
+ * @property {string} [target] - The concrete target when the CLI named it, e.g. 'git status --short --branch'.
+ */
+
+/**
+ * execute_prompt's `permissionDenied` block, mirroring src/providers/provider.ts's PermissionDenial.
+ * @typedef {Object} PermissionDenied
+ * @property {string[]} actions - Unique denied actions, in first-seen order.
+ * @property {PermissionDenialItem[]} denials - Each refused call, with its target when known.
+ * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
+ *   denied calls, primary first (for an agy command or unsandboxed denial, on any OS, a
+ *   `Bash(<cmd>:*)` prefix grant, then the exact command as the narrow alternative); empty when no
+ *   canonical mapping exists.
+ * @property {string} hint - One-line remediation.
+ * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
+ */
+
+/**
  * Result-side shape of execute_prompt's `structuredContent` -- the single place callers
  * should read the outcome of a dispatch rather than re-parsing the display text. This is
  * NOT exhaustive of every `reason` value (see src/tools/execute-prompt.ts's
@@ -69,7 +89,12 @@
  * @property {boolean} [isError] - true on any failure path; absent/false on success.
  * @property {string} [reason] - Machine-readable failure/status classification, e.g.
  *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
- *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | ...
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' | ...
+ * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
+ *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
+ *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
+ *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
+ *   reply is in `response`.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
@@ -156,9 +181,9 @@
  * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop (default: 30)
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle" on stdout.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode" | "none"} [llm_provider] - LLM provider for this member (default: "claude")
- * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Custom cheap model choice from a curated list
- * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
- * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Custom premium model choice from a curated list
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.8-flash-low" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Custom cheap model choice from a curated list
+ * @property {"gemini-3.8-flash-high" | "gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Custom standard model choice from a curated list
+ * @property {"sonnet" | "opus" | "gemini-3.1-pro-high" | "claude-opus-4-6-thinking" | "gpt-oss-120b"} [model_premium] - Custom premium model choice from a curated list
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Code-intelligence provider for this member (default: fleet-wide config)
  * @property {string} [category] - Optional group label
@@ -189,9 +214,9 @@
  * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode"} [llm_provider] - Change the LLM provider
- * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.5-flash-lite" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model
- * @property {"gemini-3.5-flash" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
- * @property {"sonnet" | "opus" | "gpt-oss-120b"} [model_premium] - Change custom premium model
+ * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.8-flash-low" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model
+ * @property {"gemini-3.8-flash-high" | "gemini-3.8-flash-medium" | "gemini-3.1-pro-low" | "gpt-oss-120b" | "gpt-120" | "sonnet" | "gpt-5.4"} [model_standard] - Change custom standard model
+ * @property {"sonnet" | "opus" | "gemini-3.1-pro-high" | "claude-opus-4-6-thinking" | "gpt-oss-120b"} [model_premium] - Change custom premium model
  * @property {{cheap?: string, standard?: string, premium?: string}} [model_tiers] - Per-member model tier map with free-form model IDs. A single model fills all tiers.
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
@@ -228,6 +253,9 @@
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project
+ *   (~/.gemini/config/projects/<id>.json), passed as `--project <id>` on every dispatch; null until
+ *   provisioned (compose_permissions/execute_prompt provision it on first use)
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -545,6 +573,32 @@ export function parseToolJson(result) {
         try { return JSON.parse(item.text); } catch { /* not the payload */ }
     }
     throw new Error('No JSON payload in tool result');
+}
+
+const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+/**
+ * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
+ * result or its `structuredContent`; returns the {@link PermissionDenied} block when
+ * `reason === 'permission_denied'` and the block is well-formed, else null.
+ *
+ * @param {{structuredContent?: ExecutePromptStructured} | ExecutePromptStructured | null | undefined} result
+ * @returns {PermissionDenied | null}
+ */
+export function permissionDenialOf(result) {
+    const sc = result && typeof result === 'object' && 'structuredContent' in result ? result.structuredContent : result;
+    if (!sc || sc.reason !== 'permission_denied') return null;
+    const d = sc.permissionDenied;
+    if (!d || typeof d !== 'object') return null;
+    if (!isStringArray(d.actions) || !isStringArray(d.suggestedGrants) || typeof d.hint !== 'string') return null;
+    if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
+    return {
+        actions: [...d.actions],
+        denials: d.denials.map((x) => (x.target === undefined ? { action: x.action } : { action: x.action, target: x.target })),
+        suggestedGrants: [...d.suggestedGrants],
+        hint: d.hint,
+        signals: isStringArray(d.signals) ? [...d.signals] : [],
+    };
 }
 
 export class ApraFleet {

@@ -159,6 +159,15 @@ export class WindowsCommands implements OsCommands {
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
+    // Providers whose CLI ignores the process cwd need the workspace named
+    // explicitly (AGY: --add-dir). Set-Location alone leaves them with no
+    // workspace at all, which on AGY means every tool call is auto-denied in
+    // headless mode. Providers without the hook are unchanged.
+    const wsFlag = provider.workspaceDirFlag?.(escapedFolder);
+    if (wsFlag) argList = `${wsFlag} ${argList}`;
+    // Providers with a project binding (AGY: --project <id>) get it on every
+    // dispatch; projectFlag throws for a missing id. Others are unchanged.
+    if (provider.projectFlag) argList = `${provider.projectFlag(opts.projectId)} ${argList}`;
     if (nameFlag && !nameFlag.startsWith('@')) {
       argList = `${nameFlag} ${argList}`;
     }

@@ -12,7 +12,13 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any grooming decision)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose backlog
    you are grooming, and `hint_modules` naming the subsystems the assigned beads touch.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. This matters
@@ -22,7 +28,12 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
    items land unactionable -- call `mcp__apra-fleet__kb_capture` with type "knowledge".
    Do not capture per-sprint churn; capture what stays true.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Usage modes
 

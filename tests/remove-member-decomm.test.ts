@@ -183,3 +183,88 @@ describe('removeMember - decommissioning', () => {
     expect(result).toContain('✅');
   });
 });
+
+describe('removeMember - agy project cleanup', () => {
+  const PROJECT_ID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+  const isDeleteCmd = (cmd: string) => cmd.includes('FLEET_AGY_PROJECT_DELETE_EOF');
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockReadMemberStatus.mockReturnValue('idle');
+  });
+
+  afterEach(() => restoreRegistry());
+
+  it('deletes the agy project file for an agy member', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-worker', llmProvider: 'agy', agyProjectId: PROJECT_ID });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (isDeleteCmd(cmd)) {
+        return { stdout: `FLEET_AGY_PROJECT_DELETE:${JSON.stringify({ deleted: [`${PROJECT_ID}.json`], errors: [] })}`, stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('✅');
+    expect(result).not.toContain('agy project');
+    expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(true);
+  });
+
+  it('is fine when the agy project file is already missing', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-worker', llmProvider: 'agy', agyProjectId: PROJECT_ID });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (isDeleteCmd(cmd)) {
+        return { stdout: `FLEET_AGY_PROJECT_DELETE:${JSON.stringify({ deleted: [], errors: [] })}`, stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('✅');
+    expect(result).not.toContain('agy project');
+  });
+
+  it('warns but still removes the member when the agy project delete fails/times out', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-worker', llmProvider: 'agy', agyProjectId: PROJECT_ID });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (isDeleteCmd(cmd)) throw new Error('timed out');
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('✅');
+    expect(result).toContain('⚠️');
+    expect(result).toContain('agy project');
+  });
+
+  it('skips the delete when another member shares the same agyProjectId', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-worker-1', llmProvider: 'agy', agyProjectId: PROJECT_ID });
+    const sibling = makeTestAgent({ friendlyName: 'agy-worker-2', llmProvider: 'agy', agyProjectId: PROJECT_ID });
+    addAgent(member);
+    addAgent(sibling);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('✅');
+    expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(false);
+  });
+
+  it('issues no agy project exec for a non-agy member', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-worker', llmProvider: 'claude' });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('✅');
+    expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(false);
+  });
+});

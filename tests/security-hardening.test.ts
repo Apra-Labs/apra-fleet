@@ -193,22 +193,24 @@ describe('curated model tier validations', () => {
     // cheap
     expect(registerMemberSchema.shape.model_cheap.safeParse(undefined).success).toBe(true);
     expect(registerMemberSchema.shape.model_cheap.safeParse('gpt-oss-120b').success).toBe(true);
-    expect(registerMemberSchema.shape.model_cheap.safeParse('gemini-3.5-flash-lite').success).toBe(true);
+    expect(registerMemberSchema.shape.model_cheap.safeParse('gemini-3.8-flash-low').success).toBe(true);
     expect(registerMemberSchema.shape.model_cheap.safeParse('claude-opus-4.6').success).toBe(false);
 
     expect(updateMemberSchema.shape.model_cheap.safeParse(undefined).success).toBe(true);
     expect(updateMemberSchema.shape.model_cheap.safeParse('gpt-oss-120b').success).toBe(true);
-    expect(updateMemberSchema.shape.model_cheap.safeParse('gemini-3.5-flash-lite').success).toBe(true);
+    expect(updateMemberSchema.shape.model_cheap.safeParse('gemini-3.8-flash-low').success).toBe(true);
     expect(updateMemberSchema.shape.model_cheap.safeParse('claude-opus-4.6').success).toBe(false);
 
     // standard
     expect(registerMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
-    expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.8-flash-high').success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.1-pro-low').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
 
     expect(updateMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
-    expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.8-flash-high').success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.1-pro-low').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
 

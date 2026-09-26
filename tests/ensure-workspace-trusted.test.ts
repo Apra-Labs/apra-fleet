@@ -209,6 +209,27 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(result.seeded).toBe(true);
     expect(JSON.parse(getFileContent()!).projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
   });
+
+  it('proves claude trust write stages to a temp file and moves it into place (atomic pattern)', async () => {
+    const provider = new ClaudeProvider();
+    const transport = {
+      writeHomeFile: vi.fn().mockResolvedValue(undefined),
+    };
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, transport as any);
+
+    // Transport writes to temp file first (e.g. .claude.json.fleet-trust-*.tmp), NOT .claude.json directly
+    expect(transport.writeHomeFile).toHaveBeenCalledTimes(1);
+    const targetRel = transport.writeHomeFile.mock.calls[0][0];
+    expect(targetRel).not.toBe('.claude.json');
+    expect(targetRel).toMatch(/\.claude\.json\.fleet-trust-.*\.tmp/);
+
+    // Exec moves temp file into place (.claude.json)
+    expect(exec).toHaveBeenCalledTimes(2); // 1 read, 1 move
+    const moveCmd = exec.mock.calls[1][0];
+    expect(moveCmd).toMatch(/mv ".*\.tmp" ".*\.claude\.json"/);
+  });
 });
 
 describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding (apra-fleet-9oo.2, regression for apra-fleet-9oo.1)', () => {
@@ -335,9 +356,8 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
   });
 });
 
-describe('ensureWorkspaceTrusted no-ops for non-Claude providers (apra-fleet-eft.40 provider trust matrix)', () => {
+describe('ensureWorkspaceTrusted no-ops for providers without trust requirements (apra-fleet-eft.40 provider trust matrix)', () => {
   const cases: Array<[string, () => { ensureWorkspaceTrusted: any }]> = [
-    ['agy', () => new AgyProvider()],
     ['opencode', () => new OpenCodeProvider()],
     ['codex', () => new CodexProvider()],
     ['copilot', () => new CopilotProvider()],
