@@ -445,3 +445,46 @@ export function normalizePath(urlPath) {
         return null;
     }
 }
+
+// =============================================================================
+// Per-package upstream credential.
+//
+// Lifted here from src/console/proxy.ts so BOTH sides of a workflow-package
+// hop can derive the same value from the shared fleet key without importing
+// the console proxy: the console attaches it on the /ext proxy hop and on the
+// registry health probe, and a package's own supervisor accepts it. The
+// derivation is byte-for-byte the one the proxy already shipped -- same label,
+// same length-prefixed input, same hex sha256 HMAC -- because rotating it
+// would invalidate every already-registered package's credential.
+//
+// The label MUST stay different from any cookie/session label a caller signs
+// with the same fleet key (the console's own cookie label in
+// src/console/server.ts): equal labels would let a package replay its
+// upstream credential as a console credential. That domain separation is the
+// entire reason the label is part of the HMAC input.
+// =============================================================================
+
+/**
+ * Fixed label HMAC'd (together with the package id) under the fleet key to
+ * derive a package's upstream credential. Changing this string rotates every
+ * package's credential.
+ */
+export const UPSTREAM_CREDENTIAL_LABEL = 'apra-fleet-ext-upstream-v1';
+
+/**
+ * Per-package upstream credential. Keyed digest over a length-prefixed label
+ * and package id, so it is (a) not reversible into `fleetKey`, and (b)
+ * unambiguously bound to exactly one package id.
+ *
+ * The length prefix is what removes the id/label ambiguity: without it the
+ * ids `"a:b"` and `"a"` + a label ending in `":b"` could produce the same
+ * HMAC input, so one package could derive another's credential.
+ *
+ * @param {string} fleetKey shared fleet key (never included in the output)
+ * @param {string} packageId workflow-package id the credential is bound to
+ * @returns {string} hex-encoded sha256 HMAC
+ */
+export function deriveUpstreamCredential(fleetKey, packageId) {
+    const input = `${UPSTREAM_CREDENTIAL_LABEL}:${packageId.length}:${packageId}`;
+    return crypto.createHmac('sha256', fleetKey).update(input).digest('hex');
+}

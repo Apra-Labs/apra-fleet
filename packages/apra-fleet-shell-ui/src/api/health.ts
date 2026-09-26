@@ -1,5 +1,4 @@
-// Thin fetch wrapper over the /api/fleet/status route plus the (sibling-
-// sprint-owned) GET /api/workflow-packages registry, for the Health screen
+// Thin fetch wrapper over the /api/fleet/status route, for the Health screen
 // (S3, apra-fleet-9h9j.3.1). Its own module, separate from secrets.ts and
 // members.ts, per this lane's file-ownership rule.
 
@@ -57,22 +56,16 @@ export async function fetchFleetStatus(): Promise<FleetStatusPayload> {
   return (await response.json()) as FleetStatusPayload;
 }
 
-/** The workflow-packages registry lands from a sibling sprint -- until then
- *  a 404 (or any network-level failure) from this GET is the EXPECTED
- *  response on this branch and must read as "no packages", not an error. */
-export async function fetchWorkflowPackages(): Promise<string[] | null> {
-  let response: Response;
-  try {
-    response = await fetch("/api/workflow-packages");
-  } catch {
-    return null;
-  }
-  if (response.status === 404) return null;
-  if (!response.ok) return null;
-  try {
-    const data = (await response.json()) as { packages?: unknown };
-    return Array.isArray(data.packages) ? data.packages.filter((p): p is string => typeof p === "string") : null;
-  } catch {
-    return null;
-  }
-}
+/** The workflow-packages registry now answers with the OBJECT shape
+ *  ({packages: WorkflowPackageView[]}), not the string[] this module used to
+ *  filter for -- that filter silently yielded "no packages" for every real
+ *  registry. The reader moved to ./workflow-packages, which owns the view
+ *  type; it is re-exported here so the Health screen (and any other
+ *  consumer) keeps a single stable import for everything it fetches. */
+export {
+  fetchWorkflowPackages,
+  isPackageOffline,
+  packageLabel,
+  type WorkflowPackageView,
+  type WorkflowPackagesResult
+} from "./workflow-packages";

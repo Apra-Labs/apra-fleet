@@ -24,7 +24,10 @@ kb_capture tool handler (which surfaces the user-facing flag) AND
 SqliteProvider.capture(), the choke point the HTTP route also passes through.
 The downgrade is never silent: the result carries `confidence_clamped: true`
 and a short note is appended to the entry content
-("[confidence clamped: CONFIRMED requires kb_promote]").
+("[confidence clamped: CONFIRMED requires kb_promote]"). The flag is derived
+from stored-vs-requested confidence, so a user-directive -- stored UNVERIFIED
+as a pending proposal -- also reports `confidence_clamped: true` (without the
+note, since kb_promote is not its remedy).
 
 ## kb_promote is the sole path to CONFIRMED
 

@@ -6,6 +6,14 @@
 // createFinishedRunsIndex() (history-view.mjs) and createDashboard()
 // (dashboard.mjs), then asserted on the rendered GET / page, the GET /state
 // payload, and a finished card rendered by renderSprintSection().
+//
+// MOUNT CONTRACT (apra-fleet-i9ag.3.2): every app-path this feature emits is
+// ROOT-ABSOLUTE and passed through mountHref() against the prefix
+// resolveMountPrefix() derives from the console proxy's MOUNT_PATH_HEADER --
+// never a relative './sprints/...'. The two shapes are asserted side by side
+// below: with no header the page is bit-for-bit the serve-direct render
+// ('/sprints/<id>/history'), and with the header every app-path (and only the
+// app-paths -- an external PR URL stays untouched) carries the prefix.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -23,6 +31,7 @@ import {
     prLink,
 } from '../src/supervisor/dashboard.mjs';
 import { createFinishedRunsIndex, summarizeFinishedRun } from '../src/supervisor/history-view.mjs';
+import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 
@@ -62,10 +71,13 @@ function finishedCard(html, id) {
     return html.slice(start, end);
 }
 
-/** Minimal in-process request driver (no socket) against a supervisor. */
-function request(supervisor, method, urlPath) {
+/**
+ * Minimal in-process request driver (no socket) against a supervisor.
+ * `headers` is how a test plays the console proxy and sends MOUNT_PATH_HEADER.
+ */
+function request(supervisor, method, urlPath, headers = {}) {
     return new Promise((resolve, reject) => {
-        const req = { method, url: urlPath, headers: {}, on() {} };
+        const req = { method, url: urlPath, headers, on() {} };
         const chunks = [];
         const res = {
             statusCode: 0,
@@ -173,8 +185,10 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.ok(passCard && failCard, 'both finished runs must render in the history list');
         assert.ok(html.indexOf('data-finished-sprint-id="sprint-fail"') < html.indexOf('data-finished-sprint-id="sprint-pass"'), 'newest first');
 
-        assert.ok(hrefs(passCard).includes('./sprints/sprint-pass/history'));
-        assert.ok(hrefs(failCard).includes('./sprints/sprint-fail/history'));
+        // No MOUNT_PATH_HEADER on this request -> the serve-direct render:
+        // every app-path stays ROOT-ABSOLUTE, exactly as it was pre-i9ag.3.2.
+        assert.ok(hrefs(passCard).includes('/sprints/sprint-pass/history'));
+        assert.ok(hrefs(failCard).includes('/sprints/sprint-fail/history'));
         assert.ok(passCard.includes('>PASS</span>'));
         assert.ok(failCard.includes('>FAIL</span>'));
         assert.ok(hrefs(passCard).includes(PR_URL), 'PASS run must carry its PR anchor');
@@ -183,13 +197,70 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         // Finished runs never masquerade as live Sprint Stack rows.
         assert.ok(!html.includes('data-sprint-id="sprint-pass"'));
 
-        // No rendered link may start with an absolute root path: under the
-        // console's /ext/se/ mount a '/...' href escapes the mount.
-        const rootAbsolute = hrefs(html).filter((h) => h.startsWith('/'));
-        assert.deepEqual(rootAbsolute, [], 'root-absolute hrefs break under /ext/se/');
-        // Same for the client scripts' own request URLs.
-        assert.ok(!/fetch\('\//.test(html), 'client fetch() URLs must be relative');
-        assert.ok(!/EventSource\('\//.test(html), 'EventSource URL must be relative');
+        // No app-path may be written RELATIVE: the mount-prefix contract is
+        // what makes the embedded render work, and a './...' href would
+        // silently opt this feature out of it.
+        assert.ok(!hrefs(html).some((h) => h.startsWith('./')), 'no relative hrefs -- app-paths go through mountHref()');
+        assert.ok(!/fetch\('(?!\/)[a-zA-Z.]/.test(html), 'client fetch() URLs must be root-absolute app-paths');
+        assert.equal(html.includes("EventSource('/events')"), true, 'EventSource target is the root-absolute /events');
+    });
+
+    test('with MOUNT_PATH_HEADER set, every finished-list app-path carries the mount prefix and the external PR URL does not', async () => {
+        for (const mount of ['/ext/se', '/ui/sprints']) {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: { classifySprint: async () => ({ status: WATCHDOG_STATUS.RUNNING_HEALTHY }) },
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+                finishedRuns: createFinishedRunsIndex({ env, logger: { error() {} } }),
+                logger: { log() {}, error() {} },
+            });
+            const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
+            registerDashboardRoutes(supervisor, dashboard);
+            const res = await request(supervisor, 'GET', '/', { [MOUNT_PATH_HEADER]: mount });
+            assert.equal(res.statusCode, 200);
+            const html = res.body;
+
+            const passCard = finishedCard(html, 'sprint-pass');
+            const failCard = finishedCard(html, 'sprint-fail');
+            assert.ok(passCard && failCard, mount + ': both finished runs must still render');
+            assert.ok(hrefs(passCard).includes(mount + '/sprints/sprint-pass/history'), mount + ': History link is prefixed');
+            assert.ok(hrefs(failCard).includes(mount + '/sprints/sprint-fail/history'), mount + ': History link is prefixed');
+
+            // The PR link is EXTERNAL -- it must survive verbatim, never
+            // rewritten into '<mount>https://...' or otherwise prefixed.
+            assert.ok(hrefs(passCard).includes(PR_URL), mount + ': external PR URL stays absolute');
+            assert.ok(!html.includes(mount + PR_URL), mount + ': external PR URL is never prefixed');
+            assert.ok(!html.includes(mount + 'https://'), mount + ': no https URL was prefixed');
+
+            // The client poll that re-renders this list must reach the mounted
+            // routes too -- a bare '/state' there hits the CONSOLE root.
+            assert.ok(html.includes("fetch('" + mount + "/state?_t="), mount + ': /state poll is prefixed');
+            assert.ok(html.includes("EventSource('" + mount + "/events')"), mount + ': /events source is prefixed');
+            // MOUNT_PREFIX is shipped into the page so the live-refreshed
+            // finished list rebuilds its History links with the same prefix.
+            assert.ok(html.includes("var MOUNT_PREFIX = '" + mount + "'"), mount + ': prefix is shipped to the client');
+            assert.ok(html.includes('renderFinishedRunsHtml(data.finished, MOUNT_PREFIX)'), mount + ': live refresh re-prefixes the list');
+        }
+    });
+
+    test('a hostile or malformed mount header fails closed to the serve-direct render', async () => {
+        for (const hostile of ['//evil.example', 'http://evil.example', '/ext/../admin', 'ext/se', "/ext/'+alert(1)+'"]) {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: { classifySprint: async () => ({ status: WATCHDOG_STATUS.RUNNING_HEALTHY }) },
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+                finishedRuns: createFinishedRunsIndex({ env, logger: { error() {} } }),
+                logger: { log() {}, error() {} },
+            });
+            const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
+            registerDashboardRoutes(supervisor, dashboard);
+            const html = (await request(supervisor, 'GET', '/', { [MOUNT_PATH_HEADER]: hostile })).body;
+            const passCard = finishedCard(html, 'sprint-pass');
+            assert.ok(hrefs(passCard).includes('/sprints/sprint-pass/history'), hostile + ': falls back to the root-absolute path');
+            assert.ok(!html.includes(hostile), hostile + ': the rejected value is never interpolated into the page');
+        }
     });
 
     test('GET /state carries the finished list and per-card verdict/prUrl', async () => {
@@ -224,6 +295,10 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.ok(card.includes(prLink(PR_URL)));
         const listCard = renderFinishedRunsHtml([{ sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL }]);
         assert.ok(listCard.includes(verdictBadge('PASS')) && listCard.includes(prLink(PR_URL)));
+        // Same rows, rendered under a mount prefix: only the History app-path moves.
+        const mounted = renderFinishedRunsHtml([{ sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL }], '/ui/sprints');
+        assert.ok(hrefs(mounted).includes('/ui/sprints/sprints/sprint-pass/history'));
+        assert.ok(hrefs(mounted).includes(PR_URL));
 
         const failCard = renderSprintSection({ ...base, sprintId: 'sprint-fail', verdict: 'FAIL', prUrl: null });
         assert.ok(failCard.includes('>FAIL</span>'));
@@ -233,7 +308,13 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         const live = renderSprintSection({ ...base, status: WATCHDOG_STATUS.RUNNING_HEALTHY, verdict: null, prUrl: null });
         assert.ok(!live.includes('verdict-badge'));
         assert.ok(!live.includes('class="pr-link"'));
-        assert.deepEqual(hrefs(live).filter((h) => h.startsWith('/')), []);
+        // Serve-direct: root-absolute app-paths, exactly as pre-i9ag.4.
+        assert.ok(hrefs(live).includes('/sprints/sprint-pass/live'));
+        assert.ok(!hrefs(live).some((h) => h.startsWith('./')));
+        // Under a prefix the same card's links move with it.
+        const liveMounted = renderSprintSection({ ...base, status: WATCHDOG_STATUS.RUNNING_HEALTHY, verdict: null, prUrl: null }, '/ext/se');
+        assert.ok(hrefs(liveMounted).includes('/ext/se/sprints/sprint-pass/live'));
+        assert.ok(hrefs(liveMounted).includes('/ext/se/sprints/sprint-pass/log'));
     });
 
     test('verdict badge covers PASS / FAIL / ABORTED / unknown and the empty history state renders', () => {

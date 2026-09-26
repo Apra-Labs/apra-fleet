@@ -544,6 +544,90 @@ and descope Codebase Plane to v2.
 
 ---
 
+## Client-side provider selection
+
+`getKbProviders` (the single accessor every KB tool goes through) reads
+`FLEET_DIR/knowledge/config.json` and decides between `SqliteProvider` and
+`HttpKbProvider` for the **project** provider on every call. Each call hashes
+the config file's content; while the hash is unchanged the cached providers
+for that (slug, repo path) are returned as-is, and once it changes -- e.g.
+`kb_setup` just ran, in this process or any other -- the next call selects
+again, reusing the already-open `SqliteProvider`s and disposing any
+`HttpKbProvider` it replaces. A long-lived fleet server therefore needs no
+restart after `kb_setup`. The config file is one per fleet install, not per
+repo: the selection it makes applies to every repo the install serves, and
+`kb_setup`'s `repo_path` only places the git hook. `global` is never
+selected this way -- there is exactly one shared global KB and no remote story
+for it, so it always stays `SqliteProvider`.
+
+Selection rule:
+- No config file, or `provider` absent/`"sqlite"` -> the already-built
+  `SqliteProvider`, unchanged. The config reader never touches the encrypted
+  token on this path, so a corrupt or missing token cannot break the stock
+  sqlite flow.
+- `provider: "http"` with both `url` and an encrypted token present and
+  decryptable -> an `HttpKbProvider` constructed with that `url`/token, with
+  the **already-built project `SqliteProvider` passed as its explicit
+  fallback**. This is a hard invariant: `HttpKbProvider`'s own default
+  fallback is a no-arg `new SqliteProvider()`, which resolves its database
+  from `process.cwd()` rather than the calling repo's path -- silently wrong
+  for anything but a single-repo CLI invocation. Every call site that
+  constructs an `HttpKbProvider` must pass the caller's real project
+  provider as the fallback instead of relying on the default.
+- A config file that exists but is malformed (bad JSON, `http` without
+  `url`/token, an undecryptable token) degrades to the same `SqliteProvider`
+  after logging a loud warning (via `logWarn`, so it also lands in the fleet
+  log) -- never a silent downgrade, and never a hard failure of every KB tool
+  over one bad config file. The warning fires once per distinct config
+  content (keyed by config path plus a content hash), not once per process:
+  the same broken file does not warn on every provider build, but a file
+  that is edited and still broken warns again. The
+  provider-build promise itself is never cached when it rejects, so a
+  transient failure (e.g. a disk error) can recover on the next call without
+  a full process restart.
+
+Because `project` is typed as the `MemoryProvider` interface (not
+`SqliteProvider`) to allow this widening, any call site that needs
+`SqliteProvider`-only capabilities (list, feedback, freshness sweep,
+reconcile/resolve-contradiction, the DirectiveProvider methods, capture's
+second options argument) must narrow explicitly and fail loudly, rather than
+casting, when the resolved provider is remote. `requireSqliteProject` is that
+narrowing point: it throws naming the caller when the project provider is an
+`HttpKbProvider`, so those operations refuse cleanly instead of behaving
+unpredictably against a remote provider that does not support them.
+
+There are nine such call sites, with two distinct behaviours. Eight fail fast
+through `requireSqliteProject`: `kb_list`, `kb_feedback`,
+`kb_freshness_sweep`, `kb_reconcile_prefilter`, `kb_resolve_contradiction`,
+`kb_import`, `kb_export` (project scope), and the `kb directives` CLI.
+`kb_stats` is the ninth and deliberately DEGRADES instead: it asks the type
+question with the non-throwing `isSqliteProject` guard and, over a remote
+provider, reports its bible block as `{ computable: false, reason }` rather
+than failing the whole stats call. It must not catch `requireSqliteProject`'s
+throw as a type test, since that would also swallow any unrelated error.
+
+**Known gap left open:** the `kb_stats` "bible" response is now a union of
+the sqlite and remote-provider shapes, and not every consumer has been audited
+for which shape it actually needs. Tracked as follow-up work, not part of the
+provider-selection contract above.
+
+Two gaps previously listed here are now closed. The user-directive
+pending-proposal clamp IS enforced over a remote provider: such a capture is
+quarantined on the HTTP path, and a CONFIRMED user-directive no longer receives
+an INFERRED clamp note while being stored UNVERIFIED (`src/tools/kb-capture.ts`).
+And `kb serve`'s behaviour is decided: it refuses to bind when the project
+provider is remote, rather than silently becoming a self-proxy
+(`src/commands/kb-server.ts`). The refusal names the config file that caused
+it and both remedies: set that file's provider to `sqlite`, or pass
+`--db <path>`. `--db` is a deliberate escape hatch, not a bypass: an explicit
+`--db` names the local database to serve, so no self-proxy can arise, and the
+check therefore only refuses when `--db` is absent. In both cases the
+`HttpKbProvider` built during provider selection is disposed before the server
+continues or throws, so a refused start does not leak its `beforeExit`
+listener.
+
+---
+
 ## Known Limitations (v1)
 
 - **FTS5 dedup gap:** two entries that cover the same topic with zero keyword

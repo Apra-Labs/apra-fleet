@@ -3,9 +3,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startKbServer } from '../../src/commands/kb-server.js';
+import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
+import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 
 const TEST_PORT = 17878;
 const TOKEN_DIR = path.join(FLEET_DIR, 'knowledge');
@@ -170,5 +171,44 @@ describe('kb-server', () => {
     const results = await Promise.all(promises);
     const got429 = results.some(r => r.status === 429);
     expect(got429).toBe(true);
+  });
+});
+
+// my-beads-db-0cd.15 (reopened): the http-provider refusal used to call
+// process.exit(1) from inside startKbServer, which -- called in-process, as
+// this whole file already does in beforeAll -- would kill the vitest worker
+// on any host whose KB config selects provider=http rather than fail a test.
+// It now throws KbServerHttpProviderRefusedError instead, which this test
+// pins directly: no mock, a real KB config file on disk selecting http.
+describe('kb-server refuses an http project provider (my-beads-db-0cd.15)', () => {
+  const KB_CONFIG_DIR = path.join(FLEET_DIR, 'knowledge');
+  const KB_CONFIG_PATH = path.join(KB_CONFIG_DIR, 'config.json');
+  const REFUSAL_PORT = 17879;
+
+  beforeEach(() => {
+    fs.rmSync(KB_CONFIG_PATH, { force: true });
+    resetKbProviders();
+  });
+
+  afterEach(() => {
+    fs.rmSync(KB_CONFIG_PATH, { force: true });
+    resetKbProviders();
+  });
+
+  it('rejects with a named error before binding when the KB config selects http', async () => {
+    fs.mkdirSync(KB_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(
+      KB_CONFIG_PATH,
+      JSON.stringify({
+        provider: 'http',
+        // Deliberately unreachable + obviously fake: this test never issues a
+        // request, so no HTTP timeout is ever paid.
+        url: 'http://kb.invalid:7878',
+        token_encrypted: encryptPassword('NOT_A_REAL_KEY'),
+      }, null, 2),
+    );
+
+    await expect(startKbServer(REFUSAL_PORT, false)).rejects.toThrow(KbServerHttpProviderRefusedError);
+    await expect(startKbServer(REFUSAL_PORT, false)).rejects.toThrow('KB server refuses an http project provider');
   });
 });

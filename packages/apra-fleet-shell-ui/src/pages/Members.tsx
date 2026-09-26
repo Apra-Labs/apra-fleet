@@ -49,6 +49,20 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
     try {
       const members = await fetchMembers();
       setState({ kind: "loaded", members });
+      // Re-point the open drawer's `selected` at its fresh row from THIS
+      // refresh (apra-fleet-i9ag.6.4): MemberDrawer is keyed on `selected?.id`
+      // (below), so it never remounts across a refresh -- but it still reads
+      // whatever `member` object it is passed. Left unrefreshed, the drawer's
+      // title/read-only dl and its buildUpdateBody dirty-diff baseline
+      // (re-derived from `member` on every save) would keep working off the
+      // pre-save snapshot: the title/dl would look like a save did nothing,
+      // and a second save would re-send fields the first save already
+      // persisted. Cleared to null (closing the drawer) when the member is
+      // gone from the new list, e.g. removed by another operator.
+      setSelected((prevSelected) => {
+        if (!prevSelected) return null;
+        return members.find((m) => m.id === prevSelected.id) ?? null;
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "unknown error";
       // A background refresh failure never replaces already-rendered rows
@@ -93,7 +107,12 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
 
       {/* keyed per member so action results / loaded detail never carry over
           from a previously opened member */}
-      <MemberDrawer key={selected?.id ?? "none"} member={selected} onClose={() => setSelected(null)} />
+      <MemberDrawer
+        key={selected?.id ?? "none"}
+        member={selected}
+        onClose={() => setSelected(null)}
+        onUpdated={() => void load(false)}
+      />
       <AddMemberWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onRegistered={() => void load(false)} />
     </Page>
   );

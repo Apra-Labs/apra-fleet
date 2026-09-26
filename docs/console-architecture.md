@@ -284,6 +284,80 @@ render-time exception degrades to a visible error message instead of a blank
 screen. Treat "the client type still compiles" as no evidence of shape
 agreement across this boundary.
 
+### Member edit and compose-permissions: dirty-field-only submission
+
+The member drawer's "Edit member" and "Compose permissions" sections both
+submit against a deliberately narrow field set, not the full server schema:
+
+- **Edit member** exposes only `friendly_name`, `category`, `tags`, `icon`,
+  `unattended`, `llm_provider`, and (for remote members only) `host`/`port`/
+  `username`. Password, key-path, cloud-provisioning and model-selection
+  fields are intentionally out of scope for this form -- they carry
+  different risk/side-effect profiles (secret rotation, provisioning calls)
+  that deserve their own dedicated flow rather than living in a generic
+  field-diff form.
+- **Every submit body is built by diffing the form's current values against
+  a baseline snapshot of the member, and only the fields that actually
+  differ are included.** This is not a minor optimization: `tags` is a
+  *replace* semantics field server-side (an empty array clears the existing
+  tag list), so sending an untouched field back on every save would
+  silently rewrite or wipe it. The same dirty-diff shape is used for
+  compose-permissions, where the server schema has no built-in "at least one
+  of role/tags" validation -- that rule is enforced client-side before any
+  request is issued, because a bodyless compose-permissions call answers
+  HTTP 200 with a prose refusal string rather than a thrown error (a bare
+  string response is not treated as a tool failure), so skipping the guard
+  would look like a false "success" to a caller that only checks for
+  thrown errors.
+- **`unattended` has an asymmetric read/write encoding that is easy to get
+  wrong.** The server always emits a concrete boolean-or-string read value
+  (`false`, `"auto"`, or `"dangerous"`) once a member has been registered,
+  but the write side (`update_member`) accepts `"false"` as a *string*
+  sentinel to distinguish "explicitly reset to interactive" from "field
+  omitted, leave unattended mode alone." A form or client that reuses the
+  same type for both directions will either be unable to express "reset to
+  interactive" or will accidentally coerce an omitted field into an
+  explicit reset -- these two must be modeled as distinct read and write
+  types even though they describe the same underlying value.
+
+**Invariant: a dirty-diff baseline must never be allowed to move
+independently of the form state it is diffed against, once the form has
+captured its own initial values.** The member drawer's edit form snapshots
+its baseline once, at mount, from the member object handed to it as a prop.
+If the surrounding page later re-fetches that member (e.g. on a background
+poll) and passes a *newer* member object into the same still-mounted
+drawer without also resetting the form's own captured state, the dirty-diff
+comparison silently starts comparing the operator's (unchanged, stale-by-
+now) form values against a moved baseline. Every field the operator did not
+touch then reads as "dirty" relative to the new baseline and gets included
+in the next submit body -- overwriting whatever changed server-side in the
+interim. This is worse than doing nothing: the entire reason to diff against
+a baseline rather than always sending every field is to avoid clobbering a
+concurrent change, and a baseline that moves out from under a frozen form
+reintroduces exactly that clobber, but only for fields the operator never
+touched (making it look like an unrelated, unedited field was the one that
+reverted). The durable fix pattern for this shape of bug is to track
+per-field "has the operator touched this" flags recorded independently of
+any snapshot comparison, rather than diffing two ever-changing objects
+against each other -- a touched-flags model cannot be invalidated by a
+background refresh because it never re-derives dirtiness from object
+identity or a recomputed baseline.
+
+### Shell-ui tests must resolve form fields by section, not label alone
+
+The member drawer intentionally reuses the same field label (e.g. "Tags") in
+more than one section -- the edit form's tags and the compose-permissions
+form's tags are different fields with different semantics (replace-the-list
+vs. an input to the permission-compose call), and duplicating the label is
+the correct, readable UI choice. A test helper that queries by label text
+alone is therefore ambiguous the moment a second section reuses a label; the
+shared shell-ui test harness resolves this by scoping the field lookup to
+a named section (matching the section's `aria-label`) first, then finding
+the labeled field within that scope. Any new drawer section that reuses an
+existing label anywhere else in the same drawer needs to go through this
+section-scoped lookup, not a bare "find by label" query, or the test will
+silently bind to the wrong instance of the field.
+
 ### Drawer detail actions must actually call their detail route
 
 A drawer or page that exposes a "detail" action (e.g. reading richer
@@ -382,6 +456,71 @@ package ids exist and what their upstream `baseUrl` is:
   service and the proxy, deliberately -- collapsing them would make it
   impossible for an operator to tell "typo'd package id" from "package
   crashed" from the response alone.
+
+## The fleet-supervisor as a self-registering workflow package
+
+The fleet-supervisor (the always-on sprint-launching process described in
+`packages/apra-fleet-se/docs/architecture.md`) is the first real, non-test
+workflow package the registry above serves: it registers itself as package id
+`se` on boot (manifest built from its own `baseUrl`, health path, and a `nav`
+entry labelled "Sprints") and unregisters on a clean shutdown. Its `nav` entry
+is deliberately unscoped (no `scope: 'project'`), because the Sprint Stack has
+no project-context dependency the way the KB/Code panels do -- the shell's
+nav-visibility rule drops `scope: 'project'` entries until a project is known,
+so an unscoped entry is what lets "Sprints" render in the header immediately,
+before any project is selected.
+
+A defect this closed along the way is worth naming because the failure mode
+is generic to any self-registering client: registration was originally built
+from the MCP connection's own URL (which points at `/mcp`), so the register
+POST landed on `<origin>/mcp/api/workflow-packages/register` -- a path that
+404s -- and the client silently retried forever with the whole registration
+hop permanently dead. The fix is to derive the target purely from the
+connection URL's *origin* (`new URL(...).origin`), resolved once per process
+and reused for both the registration call and any self-referential link the
+package renders back to the console (e.g. a dashboard's "back to console"
+link) -- a single resolved origin cannot let those two consumers disagree
+about what the console's address is, where two independent derivations could
+drift.
+
+### The mount-path header: how an embedded package learns its own mount point
+
+A workflow package's pages are served two ways -- directly, at the package's
+own origin, and embedded, reverse-proxied under `/ext/<id>/*`. A page that
+emits an absolute app-path (e.g. `/state`, `/api/health`) resolves correctly
+against the package's own root in the direct case, but resolves against the
+*console's* root when embedded, silently 404ing every such link or fetch. The
+proxy closes this gap by setting a request header
+(`x-apra-fleet-mount-path`, exported as `MOUNT_PATH_HEADER` from
+`src/console/proxy.ts`) on every hop, carrying the exact `/ext/<id>` mount
+path it computed for that request -- so a package that reads this header knows,
+per request, which of the two rendering contexts it is in and can prefix its
+own app-paths accordingly.
+
+This header is added to `DROPPED_REQUEST_HEADERS` (stripped from the inbound
+request before the proxy's own header-copy loop runs), so a browser can never
+supply its own value and spoof a different mount point than the one the
+proxy actually resolved. A workflow package MUST still treat the header's
+value as untrusted network input on its own side, not merely trust the
+strip-on-inbound protection -- the same package binary may also be reachable
+directly (not only through this proxy) by anything that can talk to its port,
+and blindly interpolating an attacker-controlled string into every href/fetch
+target on a rendered page is an open-redirect / script-injection primitive.
+The consuming package's own sanitizer must independently fail closed to "no
+prefix" (equivalent to the direct-serve case) on anything that is not an
+obviously safe, single-rooted, dot-segment-free path -- see
+`packages/apra-fleet-se/docs/architecture.md`'s mount-prefix section for one
+concrete, hardened implementation of that contract and why its allowlist is
+narrower than what a URL path technically permits.
+
+Because `x-apra-fleet-mount-path` is a wire contract between two independently
+deployable pieces of software (the console server, and any workflow package
+that might not even live in this repository), the constant name is
+intentionally duplicated on each side rather than shared via import -- a
+workflow package must not depend on the console's TypeScript internals, since
+it has to keep working against whatever console version happens to be
+deployed. The string itself, asserted identically in tests on both sides, IS
+the contract, in the same sense an HTTP status code is.
 
 ## compose_permissions denylist for console and supervisor endpoints
 

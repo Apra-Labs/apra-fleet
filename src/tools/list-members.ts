@@ -136,6 +136,14 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         vcsTokenExpiresAt: a.vcsTokenExpiresAt ?? undefined,
         owner: a.owner ?? undefined,
         env: a.env ?? undefined,
+        // Permission mode for unattended execution (apra-fleet-i9ag.6.3): settable
+        // via update_member/register_member but previously never surfaced back, so a
+        // console/UI edit form could not distinguish a member running with all
+        // permission checks skipped ('dangerous') from one prompting interactively
+        // (false). Coerced to an explicit false rather than left undefined -- every
+        // registered member has a concrete mode (register_member defaults it), so a
+        // legacy record predating this field reads the same as one explicitly set false.
+        unattended: a.unattended ?? false,
       })),
     });
   }

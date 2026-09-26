@@ -78,7 +78,10 @@ Two concrete implementations exist:
 `getKbProviders(repoPath)` (`src/services/knowledge/kb-providers.ts`) is the
 single accessor every KB tool goes through to reach a provider. It is the only
 place in the codebase that resolves a repo to its database -- there is no
-second entry point. Run `kb_setup` to write the local config.
+second entry point. Run `kb_setup` to write the local config. That config is
+install-wide: one `FLEET_DIR/knowledge/config.json` selects the provider for
+every repo this fleet install serves (`kb_setup`'s `repo_path` only places the
+git hook), even though each repo's entries stay in their own KB -- see below.
 
 ---
 
@@ -226,7 +229,9 @@ UNVERIFIED  ->  INFERRED  ->  CONFIRMED
 **The clamp is enforced at two layers.** `kb_capture` clamps any incoming
 `CONFIRMED` down to `INFERRED` in the tool handler (returning
 `confidence_clamped: true` and appending a note to content -- the user-facing
-signal). But the HTTP route `POST /api/kb/capture` calls `provider.capture()`
+signal; the flag is also true for a user-directive, which is stored UNVERIFIED
+as a pending proposal, and in general whenever stored confidence differs from
+requested). But the HTTP route `POST /api/kb/capture` calls `provider.capture()`
 directly and bypasses the handler, so the same clamp is ALSO enforced inside
 `SqliteProvider.capture()` -- the choke point every route shares. The handler
 clamp is UX; the provider clamp is enforcement. No route can mint `CONFIRMED`
@@ -399,7 +404,8 @@ node dist/index.js kb-server
 # Prints: KB server listening on port 7878
 ```
 
-On each client machine, configure the provider:
+On each client machine, configure the provider. This is per fleet install,
+not per repo: every repo that install serves switches to the central server.
 
 ```
 kb_setup with provider=http, remote=http://<host>:7878, token=<token>
@@ -539,7 +545,8 @@ large or after a major refactor.
 
 ## Provider Swap
 
-Switch providers without code changes by rewriting config.json.
+Switch providers without code changes by rewriting config.json. The switch
+applies to every repo the fleet install serves; there is no per-repo provider.
 
 ### SQLite (default)
 

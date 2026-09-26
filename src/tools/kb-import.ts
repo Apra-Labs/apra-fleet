@@ -5,6 +5,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../services/knowledge/types.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
 // warm local KB absorb a merged-in bible (.fleet/kb-canonical.json). The
@@ -171,7 +172,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
   const providers = await getKbProviders(repoAnchor, input.repo_remote_url);
-  const provider = providers.project;
+  const provider = requireSqliteProject(providers.project, 'kb_import');
 
   let imported = 0;
   let skipped = 0;
