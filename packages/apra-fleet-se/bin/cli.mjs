@@ -180,6 +180,8 @@ export function buildOptionsSpec() {
         pipeline: { type: 'boolean' },
         'max-doers': { type: 'string' },
         'gate-command': { type: 'string' },
+        'member-pool-file': { type: 'string' },
+        'inbox-file': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -237,6 +239,10 @@ Options:
       --gate-command <cmd>     (pipeline) Command run on the orchestrator after each merge (e.g.
                                 the project's unit tests). Non-zero exit sends the task back to
                                 its doer instead of landing it.
+      --member-pool-file <p>   (pipeline) JSON array of extra member names, re-read while the
+                                sprint runs, so members added mid-sprint start building too.
+      --inbox-file <rel-path>  (pipeline) Inbox file, relative to each member's work folder, that
+                                landing notes are appended to while a member is building.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -337,7 +343,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, pipeline, pipelineParallel, maxDoers, gateCommand }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, pipeline, pipelineParallel, maxDoers, gateCommand, memberPoolFile, inboxFile }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -376,6 +382,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
         args.pipeline_parallel = Boolean(pipelineParallel);
         if (maxDoers !== undefined) args.max_doers = maxDoers;
         if (gateCommand !== undefined) args.gate_command = gateCommand;
+        if (memberPoolFile !== undefined) args.pipeline_member_pool = memberPoolFile;
+        if (inboxFile !== undefined) args.pipeline_inbox = inboxFile;
     }
     return args;
 }
@@ -633,8 +641,8 @@ async function main() {
         console.error(`Error: --max-doers must be a positive integer, got "${values['max-doers']}".`);
         process.exit(1);
     }
-    if (!values.pipeline && (values['max-doers'] !== undefined || values['gate-command'] !== undefined)) {
-        console.error('Error: --max-doers and --gate-command only apply with --pipeline.');
+    if (!values.pipeline && (values['max-doers'] !== undefined || values['gate-command'] !== undefined || values['member-pool-file'] !== undefined || values['inbox-file'] !== undefined)) {
+        console.error('Error: --max-doers, --gate-command, --member-pool-file and --inbox-file only apply with --pipeline.');
         process.exit(1);
     }
     // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
@@ -1065,6 +1073,8 @@ async function main() {
                 pipelineParallel: Boolean(values.sync),
                 maxDoers,
                 gateCommand: values['gate-command'],
+                memberPoolFile: values['member-pool-file'],
+                inboxFile: values['inbox-file'],
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

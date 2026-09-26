@@ -162,6 +162,13 @@ const KNOWN_ARG_KEYS = new Set([
     // mode (e.g. the project's unit tests); a non-zero exit bounces the task
     // back to its doer instead of landing it.
     'gate_command',
+    // Optional path to a JSON array of extra builder member names, re-read
+    // before every pipeline scheduling pass, so a launcher can add members
+    // while the sprint runs (it registers them first, then lists them here).
+    'pipeline_member_pool',
+    // Optional path, relative to each member's work folder, of the inbox file
+    // the pipeline appends landing notes to (see develop-pipeline.mjs).
+    'pipeline_inbox',
 ]);
 
 /**
@@ -416,8 +423,14 @@ export function validateArgs(args) {
     if (args.gate_command !== undefined && (typeof args.gate_command !== 'string' || args.gate_command.trim() === '' || /[\r\n]/.test(args.gate_command))) {
         throw new Error('[Arg Contract] Invalid gate_command: must be a single-line, non-empty command string.');
     }
-    if (!pipeline && (args.pipeline_parallel !== undefined || args.max_doers !== undefined || args.gate_command !== undefined)) {
-        throw new Error('[Arg Contract] pipeline_parallel, max_doers and gate_command only apply with pipeline: true.');
+    if (args.pipeline_member_pool !== undefined && (typeof args.pipeline_member_pool !== 'string' || args.pipeline_member_pool.trim() === '')) {
+        throw new Error('[Arg Contract] Invalid pipeline_member_pool: must be a non-empty file path.');
+    }
+    if (args.pipeline_inbox !== undefined && (typeof args.pipeline_inbox !== 'string' || !/^[A-Za-z0-9._/-]{1,200}$/.test(args.pipeline_inbox) || args.pipeline_inbox.includes('..') || args.pipeline_inbox.startsWith('/'))) {
+        throw new Error('[Arg Contract] Invalid pipeline_inbox: must be a relative path of letters, digits, ".", "_", "-" and "/".');
+    }
+    if (!pipeline && (args.pipeline_parallel !== undefined || args.max_doers !== undefined || args.gate_command !== undefined || args.pipeline_member_pool !== undefined || args.pipeline_inbox !== undefined)) {
+        throw new Error('[Arg Contract] pipeline_parallel, max_doers, gate_command, pipeline_member_pool and pipeline_inbox only apply with pipeline: true.');
     }
 
     // --- worklist_effort_budget (optional) ---------------------------------
@@ -489,5 +502,7 @@ export function validateArgs(args) {
         pipelineParallel,
         maxDoers: args.max_doers,
         gateCommand: args.gate_command === undefined ? undefined : args.gate_command.trim(),
+        pipelineMemberPool: args.pipeline_member_pool,
+        pipelineInbox: args.pipeline_inbox,
     };
 }

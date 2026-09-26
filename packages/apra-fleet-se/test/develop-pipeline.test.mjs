@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-    runBuildPipelinePhase, selectTasksToStart, taskBranchName, predictedFiles, filesOverlap, MAX_LANDING_BOUNCES,
+    runBuildPipelinePhase, selectTasksToStart, taskBranchName, predictedFiles, filesOverlap, MAX_LANDING_BOUNCES, landingNote,
 } from '../fleet-sprint/phases/develop-pipeline.mjs';
 
 const SPRINT = 'feat/sprint';
@@ -37,6 +37,7 @@ function makeFleet(members) {
         sh(`git clone -q "${origin}" "${m}"`, root);
         sh('git config user.email t@example.com && git config user.name Tester', dir);
         sh(`git checkout -q -B ${SPRINT} origin/main`, dir);
+        fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), '.inbox/\n');
         dirs[m] = dir;
     }
     return { root, origin, dirs, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
@@ -376,4 +377,81 @@ test('shared workspace (no --sync): one task at a time in the one checkout', asy
     } finally {
         fleet.cleanup();
     }
+});
+
+test('members added while the sprint runs join the pool, driven by the published demand', async () => {
+    const fleet = makeFleet(['orch', 'd1', 'd2', 'd3']);
+    try {
+        const beads = makeBeads(['a', 'b', 'c'].map((id) => ({ id, title: id })));
+        const engine = makeEngine(fleet, beads);
+        const states = [];
+        let pool = [];
+        const doer = makeDoer(fleet, async ({ dir, taskId }) => {
+            // The launcher sees the demand and adds two members mid-run.
+            const demand = states.filter((s) => s.name === 'pipeline').map((s) => s.data.waitingForMember);
+            if (Math.max(0, ...demand) > 0) pool = ['d2', 'd3'];
+            await new Promise((r) => setTimeout(r, 150));
+            writeFile(dir, `${taskId}.txt`, taskId);
+        });
+        const res = await runBuildPipelinePhase({
+            ...engine.deps, validated: { branch: SPRINT, pipelineParallel: true }, orchestratorMember: 'orch',
+            doerPool: ['orch', 'd1'], dispatchDoer: doer.dispatchDoer,
+            publishState: (name, data) => states.push({ name, data: JSON.parse(JSON.stringify(data)) }),
+            readMemberPool: async () => pool,
+            poolPollMs: 20,
+        });
+        assert.deepEqual(res.landedIds.sort(), ['a', 'b', 'c']);
+        assert.ok(states.some((s) => s.name === 'pipeline' && s.data.waitingForMember === 2), 'demand for two more members was published');
+        assert.deepEqual([...new Set(doer.stats.prompts.map((p) => p.member))].sort(), ['d1', 'd2', 'd3'], 'the new members built tasks');
+        assert.ok(doer.stats.max >= 2, 'new members started while the first task was still building');
+        assert.ok(engine.logs.some((l) => l.includes("new builder member 'd2' joined")));
+        const last = states.filter((s) => s.name === 'pipeline').at(-1).data;
+        assert.deepEqual(last.landedIds.sort(), ['a', 'b', 'c']);
+        assert.ok(last.events.some((e) => e.kind === 'landed'));
+    } finally {
+        fleet.cleanup();
+    }
+});
+
+test('landing notes reach every member still building, worded by overlap', async () => {
+    const fleet = makeFleet(['orch', 'd1', 'd2', 'd3']);
+    try {
+        const beads = makeBeads([
+            { id: 'fast', title: 'Fast one', metadata: { files: ['fast.txt'] } },
+            { id: 'near', title: 'Touches fast too', metadata: { files: ['near.txt', 'shared.txt'] } },
+            { id: 'far', title: 'Unrelated', metadata: { files: ['far.txt'] } },
+        ]);
+        const engine = makeEngine(fleet, beads);
+        const inboxes = {};
+        const doer = makeDoer(fleet, async ({ dir, member, taskId }) => {
+            if (taskId === 'fast') {
+                writeFile(dir, 'fast.txt', 'x');
+                writeFile(dir, 'shared.txt', 'x');
+                return;
+            }
+            // Keep building until the fast task has landed and notes arrived.
+            const inbox = path.join(dir, '.inbox', 'notes.txt');
+            for (let i = 0; i < 200 && !fs.existsSync(inbox); i++) await new Promise((r) => setTimeout(r, 25));
+            inboxes[taskId] = fs.existsSync(inbox) ? fs.readFileSync(inbox, 'utf-8') : '';
+            writeFile(dir, `${taskId}.txt`, 'y');
+        });
+        await runBuildPipelinePhase({
+            ...engine.deps,
+            validated: { branch: SPRINT, pipelineParallel: true, pipelineInbox: '.inbox/notes.txt' },
+            orchestratorMember: 'orch', doerPool: ['orch', 'd1', 'd2', 'd3'], dispatchDoer: doer.dispatchDoer,
+        });
+        assert.match(inboxes.near, /Task fast \(Fast one\) just landed on feat\/sprint and touched: .*shared\.txt/);
+        assert.match(inboxes.near, /bring it in NOW/, 'overlapping member is told to pull now');
+        assert.match(inboxes.far, /Bring it in before your next commit/, 'others pull before their next commit');
+        assert.match(inboxes.far, /git fetch origin feat\/sprint" and then "git merge origin\/feat\/sprint/);
+        for (const id of ['fast', 'near', 'far']) assert.equal(beads.byId.get(id).status, 'closed');
+    } finally {
+        fleet.cleanup();
+    }
+});
+
+test('landing note wording', () => {
+    const n = landingNote({ landedTask: { id: 't', title: 'T' }, landedFiles: ['a.js'], sprintBranch: 's', member: 'm', memberFiles: ['a.js'], sameCheckout: true });
+    assert.equal(n.overlap, true);
+    assert.match(n.text, /run "git merge s"/);
 });

@@ -51,6 +51,31 @@ export function predictedFiles(task) {
     return [];
 }
 
+/**
+ * The landing note for one still-building member: what landed, what it
+ * touched, and whether this member should pull now (its predicted files
+ * overlap) or before its next commit.
+ */
+export function landingNote({ landedTask, landedFiles, sprintBranch, member, memberFiles, sameCheckout }) {
+    const overlap = filesOverlap(landedFiles, memberFiles);
+    const mergeRef = sameCheckout ? sprintBranch : 'origin/' + sprintBranch;
+    const touched = landedFiles.length ? landedFiles.slice(0, 20).join(', ') + (landedFiles.length > 20 ? ', ...' : '') : 'no files';
+    const when = overlap
+        ? 'It touches files your task also changes, so bring it in NOW, before you continue'
+        : 'Bring it in before your next commit';
+    const how = sameCheckout
+        ? 'run "git merge ' + mergeRef + '"'
+        : 'run "git fetch origin ' + sprintBranch + '" and then "git merge ' + mergeRef + '"';
+    return {
+        overlap,
+        text: '[landing note for ' + member + '] Task ' + landedTask.id + ' (' + (landedTask.title || '') + ') just landed on ' +
+            sprintBranch + ' and touched: ' + touched + '. ' + when + ': ' + how + ', resolve any conflict, re-run your unit tests, ' +
+            'then carry on with your own task.',
+    };
+}
+
+const INBOX_PATH_RE = /^[A-Za-z0-9._/-]{1,200}$/;
+
 /** True when two predicted-file lists share a file (unknown lists never overlap). */
 export function filesOverlap(a, b) {
     if (a.length === 0 || b.length === 0) return false;
@@ -107,6 +132,16 @@ export async function runBuildPipelinePhase({
     // Test seam: how one doer dispatch is issued. Production uses the
     // role table's 'doer' row; tests substitute a doer that edits real files.
     dispatchDoer = (ctx, opts) => dispatchRole(ctx, 'doer', opts),
+    // Dashboard channel (the engine's publishState); optional.
+    publishState = null,
+    // Extra builder members added while the sprint runs (a launcher that
+    // grows the pool on demand writes them); read before every scheduling
+    // pass. Optional -- without it the pool is the sprint's member list.
+    readMemberPool = async () => [],
+    // While tasks wait for a member, re-check the pool this often, so a
+    // member added mid-sprint starts work without waiting for a landing.
+    poolPollMs = 5000,
+    now = () => Date.now(),
 }) {
     phase(`Build C${cycle}`);
     const sprintBranch = validated.branch;
@@ -121,7 +156,32 @@ export async function runBuildPipelinePhase({
     const limit = parallel ? (validated.maxDoers || Infinity) : 1;
     const free = [...(builders.length ? builders : [orchestratorMember])];
 
-    const inFlight = new Map();   // taskId -> { member, files, promise }
+    const inFlight = new Map();   // taskId -> { member, files, promise, since }
+    const known = new Set([...free, orchestratorMember]);
+    const events = [];
+    let waiting = 0;
+    // What a dashboard (or a launcher growing the pool) needs to see: who is
+    // building what, how many ready tasks are waiting for a member, and the
+    // recent landings and bounces.
+    const publish = () => {
+        if (typeof publishState !== 'function') return;
+        publishState('pipeline', {
+            cycle,
+            parallel,
+            limit: limit === Infinity ? null : limit,
+            builders: [...known].filter((m) => !(parallel && builders.length > 0 && m === orchestratorMember)),
+            freeBuilders: free.length,
+            building: [...inFlight.entries()].map(([taskId, f]) => ({ taskId, member: f.member, since: f.since, stage: f.stage })),
+            waitingForMember: waiting,
+            landedIds: [...landedIds],
+            givenUpIds: [...givenUp],
+            events: events.slice(-100),
+        });
+    };
+    const note = (kind, taskId, member, detail) => {
+        events.push({ at: new Date(now()).toISOString(), kind, taskId, member, ...(detail ? { detail } : {}) });
+        publish();
+    };
     const givenUp = new Set();
     const streakOutcomes = [];
     const landedIds = [];
@@ -210,13 +270,17 @@ export async function runBuildPipelinePhase({
                         return { landed: false, reason: 'gate', output: out, ref };
                     }
                 }
+                const changed = await command('git diff --name-only HEAD^1 HEAD', {
+                    member_name: orchestratorMember, silent: true, failSoft: true, label: `Pipeline: files landed by '${task.id}'`,
+                });
+                const landedFiles = changed.ok ? String(changed.output).split('\n').map((s) => s.trim()).filter(Boolean) : [];
                 const close = await command(`bd close ${task.id} --reason landed`, {
                     member_name: orchestratorMember, silent: true, failSoft: true, label: `Pipeline: close '${task.id}'`,
                 });
                 if (!close.ok && !/already closed/i.test(String(close.error))) {
                     log(`Build C${cycle}: '${task.id}' landed on '${sprintBranch}' but closing it failed (${close.error}); it will read as open until fixed.`);
                 }
-                return { landed: true };
+                return { landed: true, landedFiles };
             }, { pushBeads: true });
         };
         return onOrchestrator(run);
@@ -278,14 +342,19 @@ export async function runBuildPipelinePhase({
                 return { task, member, landed: false, reason: 'doer-failed', detail: why };
             }
 
+            const entry = inFlight.get(task.id);
+            if (entry) entry.stage = 'landing';
+            publish();
             const result = await land(task, member, taskBranch);
-            if (result.landed) return { task, member, landed: true, bounces: bounce };
+            if (result.landed) return { task, member, landed: true, bounces: bounce, landedFiles: result.landedFiles || [] };
             if (result.reason === 'no-commits') {
                 return { task, member, landed: false, reason: 'no-commits', detail: 'the doer finished without committing anything' };
             }
             if (bounce + 1 >= MAX_LANDING_BOUNCES) {
                 return { task, member, landed: false, reason: result.reason, detail: `bounced ${MAX_LANDING_BOUNCES} times` };
             }
+            if (entry) entry.stage = 'fixing';
+            note('bounce', task.id, member, result.reason + (result.files && result.files.length ? ': ' + result.files.join(', ') : ''));
             log(
                 `Build C${cycle}: '${task.id}' could not land (${result.reason}` +
                 `${result.files && result.files.length ? `: ${result.files.join(', ')}` : ''}) -- handing it back to '${member}' to merge the latest '${sprintBranch}' and fix.`
@@ -307,6 +376,31 @@ export async function runBuildPipelinePhase({
         }
     };
 
+    // Landing notes (docs/lazy-parallel-sprints.md section 7): tell every
+    // member still building what just landed. Written to an inbox file in the
+    // member's checkout; delivering it into the running session is the
+    // launcher's job (e.g. a hook that reads the file). Best effort: a note
+    // that fails to write only costs a later, bigger merge.
+    const sendLandingNotes = async (landedTask, landedBy, landedFiles) => {
+        const inbox = validated.pipelineInbox;
+        if (!inbox || !INBOX_PATH_RE.test(inbox) || inbox.includes('..')) return;
+        for (const [taskId, f] of inFlight.entries()) {
+            if (taskId === landedTask.id || f.member === landedBy) continue;
+            const { text, overlap } = landingNote({
+                landedTask, landedFiles, sprintBranch, member: f.member, memberFiles: f.files,
+                sameCheckout: f.member === orchestratorMember,
+            });
+            const b64 = Buffer.from(text + '\n', 'utf-8').toString('base64');
+            const js = "const fs=require('fs'),p=require('path'),f='" + inbox + "';fs.mkdirSync(p.dirname(f),{recursive:true});" +
+                "fs.appendFileSync(f,Buffer.from('" + b64 + "','base64'))";
+            const res = await command('node -e "' + js + '"', {
+                member_name: f.member, silent: true, failSoft: true, label: `Pipeline: landing note to '${f.member}'`,
+            });
+            if (res.ok) note('notified', taskId, f.member, 'about ' + landedTask.id + (overlap ? ' (overlap)' : ''));
+            else log(`Build C${cycle}: could not leave a landing note for '${f.member}' (${res.error}); it will merge at landing instead.`);
+        }
+    };
+
     const start = async (task) => {
         const member = free.shift();
         const claim = await beadsWrite(`bd update ${task.id} --status in_progress`, `Pipeline: claim '${task.id}'`);
@@ -317,8 +411,9 @@ export async function runBuildPipelinePhase({
             return;
         }
         log(`Build C${cycle}: '${task.id}' (${task.title}) -> '${member}'.`);
-        const entry = { member, files: predictedFiles(task), promise: null };
+        const entry = { member, files: predictedFiles(task), promise: null, since: now(), stage: 'building' };
         inFlight.set(task.id, entry);
+        note('started', task.id, member);
         entry.promise = (async () => {
             let r;
             try {
@@ -330,6 +425,8 @@ export async function runBuildPipelinePhase({
                 landedIds.push(task.id);
                 streakOutcomes.push({ beadIds: [task.id], doerMember: member, outcome: r.bounces ? 'retried' : 'success', closedIds: [task.id], unclosedIds: [] });
                 log(`Build C${cycle}: landed '${task.id}' on '${sprintBranch}'${r.bounces ? ` after ${r.bounces} fix round(s)` : ''}.`);
+                note('landed', task.id, member, r.bounces ? r.bounces + ' fix round(s)' : undefined);
+                await sendLandingNotes(task, member, r.landedFiles || []);
                 try {
                     await onLanded({ task, member, cycle });
                 } catch (err) {
@@ -340,9 +437,11 @@ export async function runBuildPipelinePhase({
                 await beadsWrite(`bd update ${task.id} --status open`, `Pipeline: give back '${task.id}'`);
                 streakOutcomes.push({ beadIds: [task.id], doerMember: member, outcome: 'failed', closedIds: [], unclosedIds: [task.id], error: `${r.reason}: ${r.detail}` });
                 log(`Build C${cycle}: gave '${task.id}' back (${r.reason}: ${r.detail}); the next cycle can pick it up again.`);
+                note('given-back', task.id, member, r.reason + ': ' + r.detail);
             }
             inFlight.delete(task.id);
             free.push(member);
+            publish();
             await updateDashboard();
             signal();
         })();
@@ -361,11 +460,28 @@ export async function runBuildPipelinePhase({
     // --- scheduler ----------------------------------------------------------
     for (;;) {
         pending = false;
+        // Members a launcher added since the last pass join the free pool.
+        for (const m of (await readMemberPool()) || []) {
+            if (typeof m === 'string' && m && !known.has(m) && !(parallel && m === orchestratorMember)) {
+                known.add(m);
+                free.push(m);
+                log(`Build C${cycle}: new builder member '${m}' joined the pool.`);
+            }
+        }
         const ready = await listReady();
         const picks = selectTasksToStart({ ready, inFlight, givenUp, freeMembers: free.length, limit });
         for (const task of picks) await start(task);
+        // Ready tasks that would start right now if there were more members
+        // (tasks held back by a file overlap are waiting on a landing, not a member).
+        waiting = selectTasksToStart({ ready, inFlight, givenUp, freeMembers: Infinity, limit }).length;
+        publish();
         if (inFlight.size === 0) break;
-        if (!pending) await new Promise((resolve) => { wake = resolve; });
+        if (!pending) {
+            await new Promise((resolve) => {
+                wake = resolve;
+                if (waiting > 0) setTimeout(signal, poolPollMs).unref?.();
+            });
+        }
     }
     await orchestratorQueue;
 

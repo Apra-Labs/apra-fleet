@@ -2540,6 +2540,18 @@ async function runSprintCycle(context) {
                 gitSync, makeBranchGitSync, updateDashboard,
                 kbPriming, kbWork, kbQueryTerms, normalizeTierToken,
                 doerPool,
+                publishState,
+                // Members a launcher added mid-sprint (JSON array of names).
+                // A missing or unreadable file just means no extra members yet.
+                readMemberPool: async () => {
+                    if (!validated.pipelineMemberPool) return [];
+                    try {
+                        const names = JSON.parse(await fs.readFile(validated.pipelineMemberPool, 'utf-8'));
+                        return Array.isArray(names) ? names.filter((n) => typeof n === 'string') : [];
+                    } catch {
+                        return [];
+                    }
+                },
                 listReady: async () => (await readyLeafBeads())
                     .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                     .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
