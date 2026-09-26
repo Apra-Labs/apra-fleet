@@ -212,6 +212,21 @@ MCP tools that ship with the KB:
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
+`kb_setup --remote <url> --token <key>` takes effect immediately: the next
+KB tool call resolves its project provider from this config, so a stock build
+points at a remote KB server by configuration alone, with no code change and
+no separate "server mode" build. A config with no remote, or any config the
+reader cannot parse, always falls back to the local SQLite provider -- see
+[Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
+for the exact selection rule and its fallback-construction invariant.
+
+**The provider config is install-wide, not per repo.** There is one
+`knowledge/config.json` per fleet install, so pointing it at a remote KB
+points EVERY repo that install serves -- every member, every project -- at
+that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
+post-commit hook; it does not scope the config. On a shared fleet server,
+treat `kb_setup --remote` as a change for all of its users.
+
 Every KB tool call is scoped to the repo it is about -- a fleet server
 handling many members across many repos never lets one repo's learnings land
 in another repo's KB. Scope is normally derived from the caller's repo path;
@@ -3135,7 +3150,8 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
 
 - **Knowledge Bank MCP tools** -- `kb_session_prime`, `kb_capture`,
   `kb_query`, `kb_harvest`, `kb_promote`, `kb_export` and the rest of the
-  `kb_*` family, scoped per repo and opt-in per repo (`kb_setup`). See
+  `kb_*` family, with entries scoped per repo and the provider (local
+  SQLite or a remote KB, set by `kb_setup`) chosen per fleet install. See
   [docs/knowledge-layer.md](docs/knowledge-layer.md).
 - **Code-intelligence provider abstraction** -- `code_graph`,
   `code_impact`, `code_query`, `code_context` route through a pluggable

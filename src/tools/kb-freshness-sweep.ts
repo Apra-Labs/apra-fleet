@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T1.3 (F2/D2 HARDENED, resolution R2): kb_freshness_sweep -- a bounded,
 // full-KB BIDIRECTIONAL freshness sweep. Re-hashes the stored per-file basis of
@@ -27,6 +28,7 @@ export async function kbFreshnessSweep(input: KbFreshnessSweepInput): Promise<st
   // would only re-state providers.project.repoPath. Before that default existed,
   // this call re-hashed against the fleet server's process.cwd() while
   // checkFreshness used repoPath, so prime and sweep could contradict each other.
-  const result = await providers.project.freshnessSweep();
+  const sqliteProvider = requireSqliteProject(providers.project, 'kb_freshness_sweep');
+  const result = await sqliteProvider.freshnessSweep();
   return JSON.stringify(result);
 }

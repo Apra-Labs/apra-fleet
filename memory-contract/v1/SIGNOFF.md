@@ -139,6 +139,11 @@ independently of the directive path at
 `src/services/knowledge/sqlite-provider.ts:806-818`, which mutates the input and
 continues without throwing. `kb_import` surfaces only
 `imported/skipped/linked/flagged/rejected/sweep`. The capture SUCCEEDS.
+(Later change: `confidence_clamped` is now derived as "stored confidence
+differs from requested" at `src/tools/kb-capture.ts:127-133`, so a directive
+quarantined to UNVERIFIED reports `true`. The reclassification below still
+holds: the flag names neither the quarantine nor the forced tag, flag or scope
+-- see `taxonomy.json` `E-DIRECTIVE-QUARANTINE`.)
 
 **Why it mattered.** An implementation built from that projection would REFUSE a
 directive capture (403) that this kernel ACCEPTS and stores as a pending
