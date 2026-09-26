@@ -67,6 +67,12 @@ export interface SprintRecord {
   designName?: string;
   /** The design's engine recipe, written for --recipe-file. */
   recipeFile?: string;
+  /** The GitHub issue this sprint works on, when it came from one. */
+  issue?: { repo: string; number: number; title: string; url: string };
+  /** The schedule that started it, if any. */
+  scheduleId?: string;
+  /** Set once the result was reported back to the issue. */
+  issueReported?: boolean;
 }
 
 export interface LaunchInput {
@@ -80,8 +86,11 @@ export interface LaunchInput {
   base?: string;
   publish?: boolean;
   budget?: number;
-  /** Which sprint design to follow (an id from listDesigns); default "pipeline". */
+  /** Which sprint design to follow (an id from listDesigns); default "fast-pipeline". */
   design?: string;
+  /** The GitHub issue it works on (Issues page, or a schedule). */
+  issue?: { repo: string; number: number; title: string; url: string };
+  scheduleId?: string;
   /** Benchmarks, older callers: 'classic' or 'pipeline' pick that built-in design. */
   mode?: 'pipeline' | 'classic';
   /** Classic mode only: how many helpers (default 3). */
@@ -133,6 +142,12 @@ function saveRegistry(list: SprintRecord[]): void {
 
 export function getRecord(runId: string): SprintRecord | undefined {
   return loadRegistry().find(r => r.runId === runId);
+}
+
+/** Mark a finished sprint's result as reported to its issue. */
+export function markIssueReported(runId: string): void {
+  const rec = getRecord(runId);
+  if (rec) upsert({ ...rec, issueReported: true });
 }
 
 function upsert(rec: SprintRecord): void {
@@ -634,6 +649,8 @@ export async function launchSprint(input: LaunchInput, deps: LauncherDeps = real
     mode: plan.mode,
     designId: design.id,
     designName: design.name,
+    ...(input.issue ? { issue: { repo: String(input.issue.repo), number: Math.floor(Number(input.issue.number)), title: String(input.issue.title).slice(0, 200), url: String(input.issue.url) } } : {}),
+    ...(input.scheduleId ? { scheduleId: String(input.scheduleId) } : {}),
     recipeFile: path.join(workspace, `design-${runId}.json`),
     ...(plan.maxCycles ? { maxCycles: plan.maxCycles } : {}),
     ...(input.dispatchTimeoutS ? { dispatchTimeoutS: Math.round(Number(input.dispatchTimeoutS)) } : {}),

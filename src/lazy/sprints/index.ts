@@ -28,6 +28,8 @@ export interface SprintSummary {
   design?: string;
   /** The final reviewer's PASS/FAIL once the sprint has finished. */
   verdict?: string;
+  issue?: SprintRecord['issue'];
+  scheduleId?: string;
 }
 
 function engineGone(rec: SprintRecord): boolean {
@@ -84,6 +86,8 @@ export function listSprints(): SprintSummary[] {
       setup: rec?.setup,
       design: rec?.designName,
       verdict: verdictOf(b.result),
+      issue: rec?.issue,
+      scheduleId: rec?.scheduleId,
     });
   }
 
@@ -104,6 +108,9 @@ export function listSprints(): SprintSummary[] {
       branch: rec.branch,
       repo: rec.repo,
       setup: rec.setup,
+      design: rec.designName,
+      issue: rec.issue,
+      scheduleId: rec.scheduleId,
     });
   }
   out.sort((a, b) => Number(b.live) - Number(a.live) || (b.startedAt ?? '').localeCompare(a.startedAt ?? ''));

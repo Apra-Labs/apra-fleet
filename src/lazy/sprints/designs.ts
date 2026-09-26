@@ -44,6 +44,8 @@ export interface Design {
   test?: { run?: 'auto' | 'off' };
   blocks?: DesignBlock[];
   finish?: { finalReview?: boolean; harvest?: boolean };
+  /** Set on designs the advisor wrote from your sprint history (advisor.ts). */
+  auto?: { basedOn: string; evidence: string[]; runs: number; updatedAt: string; locked?: boolean };
 }
 
 // Chosen by the design benchmarks (docs/lazy-sprint-designs.md): as correct as
@@ -201,6 +203,16 @@ export async function saveDesign(input: Design): Promise<Design> {
   fs.mkdirSync(myDir(), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(myDir(), `${id}.json`), JSON.stringify(design, null, 2) + '\n');
   return { ...design, source: 'mine' };
+}
+
+/** Write one of your designs as it is (the advisor's own, already derived from valid designs). */
+export function saveDesignRaw(design: Design): void {
+  const id = designId(design.id || design.name);
+  if (BUILT_IN_DESIGNS.some(b => b.id === id)) throw new Error('Built-in designs cannot be replaced');
+  const clean: Design = { ...design, id };
+  delete clean.source;
+  fs.mkdirSync(myDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(myDir(), `${id}.json`), JSON.stringify(clean, null, 2) + '\n');
 }
 
 export function deleteDesign(id: string): void {

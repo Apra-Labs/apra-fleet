@@ -16,6 +16,7 @@ import { isAutoMember } from '../services/member-reaper.js';
 import { listSprints, sprintCode, sprintCommitDiff, sprintFileDiff, sprintLog, sprintTask, sprintView } from './sprints/index.js';
 import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
 import { checkDesign, deleteDesign, designSteps, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
+import { handleFleet, startScheduler, type FleetDeps } from './api-fleet.js';
 
 export interface SprintDeps {
   launch: (input: LaunchInput) => Promise<{ runId: string }>;
@@ -196,11 +197,12 @@ async function handleSprints(req: http.IncomingMessage, res: http.ServerResponse
   return false;
 }
 
-export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<SprintDeps> } = {}): LazyServer {
+export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<SprintDeps>; now?: () => Date } = {}): LazyServer {
   const sprintDeps: SprintDeps = { launch: launchSprint, stop: stopSprint, ...opts.sprints };
   let config = opts.config ?? loadConfig();
   const vault = new Vault();
   const activity = new Activity();
+  const fleetDeps: FleetDeps = { vault, launch: input => sprintDeps.launch(input), ...(opts.now ? { now: opts.now } : {}) };
   const startedAt = new Date().toISOString();
 
   const proxy = createProxyHandler({
@@ -297,6 +299,7 @@ export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<
         json(res, value === undefined ? 404 : 200, { value });
         return;
       }
+      if (await handleFleet(req, res, url, fleetDeps)) return;
       if (await handleSprints(req, res, url, sprintDeps)) return;
       json(res, 404, { error: 'not found' });
     } catch (e) {
@@ -330,6 +333,8 @@ export function startLazyServer(): Promise<LazyServer> {
     s.server.listen(s.config().port, '127.0.0.1', () => {
       // Sprints that kept running while this process was down still grow their pool.
       resumeSprintWatchers();
+      // Scheduled sprints start themselves, and designs learn from finished ones.
+      startScheduler({ vault: s.vault, launch: launchSprint });
       resolve(s);
     });
   });
