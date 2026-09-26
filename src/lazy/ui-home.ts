@@ -98,7 +98,7 @@ export const HOME_CSS = String.raw`
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .seg button { background: var(--bg); border: 0; padding: 6px 12px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
-.days { display: flex; gap: 4px; flex-wrap: wrap; }
+.days { display: flex; gap: 4px; flex-wrap: nowrap; overflow-x: auto; }
 .days button { width: 38px; padding: 5px 0; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .days button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .preview-line { font-size: 14px; background: var(--chip); border-radius: 10px; padding: 10px 12px; }
@@ -501,7 +501,7 @@ export const HOME_JS = String.raw`
   // =========================================================================
   // Schedules
   // =========================================================================
-  var S2 = { list: null, editing: null, prefill: null, previewTimer: null };
+  var S2 = { list: null, editing: null, prefill: null, previewTimer: null, openLogs: {} };
   var schedRoot = document.getElementById('sched-root');
   var DAYNAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   function loadSchedules() {
@@ -516,8 +516,13 @@ export const HOME_JS = String.raw`
     var sw = el('input', { type: 'checkbox', 'aria-label': 'Schedule on' });
     sw.checked = s.enabled;
     sw.addEventListener('change', function () { api('schedules/' + s.id + '/enable', { method: 'POST', body: { enabled: sw.checked } }).then(loadSchedules).catch(function (e) { toast(e.message); }); });
-    var logList = el('ul', { cls: 'log' }, s.log.slice(0, 6).map(function (e) {
-      return el('li', { cls: e.action }, [el('span', { cls: 'w', text: ago(e.at) }), el('span', {}, [e.text, ' ', e.runId && e.action === 'started' ? el('button', { cls: 'linkish', type: 'button', text: 'board', onclick: function () { openSprint(e.runId); } }) : null, e.issue ? el('a', { cls: 'linkish', href: e.issue.url, target: '_blank', rel: 'noopener', text: e.issue.repo + '#' + e.issue.number }) : null])]);
+    var logList = el('ul', { cls: 'log' }, s.log.map(function (e) {
+      var links = [];
+      if (e.runId && e.action === 'started') links.push(el('button', { cls: 'linkish', type: 'button', text: 'open the board', onclick: function () { openSprint(e.runId); } }));
+      if (e.issue) links.push(el('a', { cls: 'linkish', href: e.issue.url, target: '_blank', rel: 'noopener', text: e.action === 'commented' ? 'see the comment' : 'see the issue' }));
+      var tail = [];
+      links.forEach(function (l, i) { tail.push(i ? ' - ' : '  '); tail.push(l); });
+      return el('li', { cls: e.action }, [el('span', { cls: 'w', text: ago(e.at) }), el('span', {}, [e.text].concat(tail))]);
     }));
     return el('div', { cls: 'sched' + (s.enabled ? '' : ' off') }, [
       el('div', { cls: 'head' }, [
@@ -540,9 +545,13 @@ export const HOME_JS = String.raw`
         ])
       ]),
       el('div', { cls: 'sentence', text: sentence(s) }),
-      el('div', { cls: 'next' }, ['In ', el('code', { title: s.repo, text: s.repo })]),
-      el('div', { cls: 'next', text: s.enabled ? (s.nextAt ? 'Next: ' + clock(s.nextAt) + ' (' + until(s.nextAt) + ')' + (s.retryAt ? ' - retrying after a skip' : '') : '') : 'Off' }),
-      s.log.length ? el('details', {}, [el('summary', { style: 'cursor:pointer; color:var(--muted); font-size:13px', text: 'What it did (' + s.log.length + ')' }), logList]) : el('div', { cls: 'next', text: 'Has not run yet.' })
+      el('div', { cls: 'next' }, ['In ', el('code', { title: s.repo, text: s.repo }), ' ', s.folder === 'ready' ? el('span', { cls: 'ok-chip', text: 'folder ready' }) : el('span', { cls: 'warn-chip', text: { dirty: 'uncommitted changes' + (s.requireClean ? ': runs wait' : ''), missing: 'folder missing', 'not-git': 'not a git checkout' }[s.folder] || s.folder })]),
+      el('div', { cls: 'next', text: s.enabled ? (s.nextAt ? (s.retryAt ? 'Trying again every 10 minutes while ' + (s.retryReason || 'the last skip reason holds') + '. Next try ' + clock(s.nextAt) + '.' : 'Next: ' + clock(s.nextAt) + ' (' + until(s.nextAt) + ')') : '') : 'Off' }),
+      s.log.length ? (function () {
+        var det = el('details', S2.openLogs[s.id] ? { open: true } : {}, [el('summary', { style: 'cursor:pointer; color:var(--muted); font-size:13px', text: 'What it did (' + s.log.length + ')' }), el('div', { style: 'max-height: 240px; overflow: auto' }, [logList])]);
+        det.addEventListener('toggle', function () { S2.openLogs[s.id] = det.open; });
+        return det;
+      })() : el('div', { cls: 'next', text: 'Has not run yet.' })
     ]);
   }
 
@@ -564,7 +573,7 @@ export const HOME_JS = String.raw`
         api('schedules/preview', { method: 'POST', body: d }).then(function (r) {
           if (!r.ok && !touched) return;
           preview.className = 'preview-line' + (r.ok ? '' : ' bad');
-          preview.textContent = r.ok ? r.whenText + '. First run ' + clock(r.nextAt) + ' (' + until(r.nextAt) + ').' : r.error;
+          preview.textContent = r.ok ? (r.schedule ? sentence(Object.assign({}, r.schedule, { whenText: r.whenText })) + ' ' : r.whenText + '. ') + (d.id ? 'Next run ' : 'First run ') + clock(r.nextAt) + ' (' + until(r.nextAt) + ').' + (r.schedule && r.schedule.comment ? ' It comments the result on each issue.' : '') : r.error;
         });
       }, 250);
     }
@@ -603,6 +612,7 @@ export const HOME_JS = String.raw`
         what.appendChild(trust);
         if (d.source.trustedOnly === false) what.appendChild(el('div', { cls: 'wide warn-chip', style: 'border-radius:8px; padding:8px 10px; font-size:13px', text: 'Anyone who can open an issue with these labels can now start a sprint, and the issue text becomes the helpers\' job description. Keep this on unless only your team can add these labels.' }));
         what.appendChild(check('Comment on the issue when the sprint finishes', d, 'comment'));
+        what.appendChild(el('div', { cls: 'wide note', style: 'margin:0', text: 'Each issue is picked up once, oldest first. If its sprint does not pass, the issue stays open with a comment saying so; sprint it again from the Issues tab when you are ready.' }));
       } else {
         what.appendChild(el('label', { cls: 'wide' }, ['The job', text(d.source, 'ask', 'e.g. Update dependencies, fix anything that breaks, and keep the tests green.', true)]));
       }
@@ -623,7 +633,8 @@ export const HOME_JS = String.raw`
       } else {
         when.appendChild(el('label', {}, ['Every how many hours', num(d.when, 'hours', 1, 168, '6')]));
       }
-      when.appendChild(el('label', {}, ['Only between (optional)', text(d, 'window', '22:00-07:00')]));
+      when.appendChild(el('label', {}, ['Only between (optional)', text(d, 'window', 'optional, e.g. 22:00-07:00')]));
+      when.appendChild(el('div', { cls: 'wide note', style: 'margin:0', text: d.when.type === 'daily' ? 'It starts once at that time. If it has to wait (a sprint already running, uncommitted changes), it tries again every 10 minutes. The daily limit counts those and Run now too. 02:00 on Mon-Fri means early Monday to Friday mornings.' : 'It starts once per interval, counted from the last start.' }));
       box.appendChild(when);
       var design = designSelect(d.design, true);
       design.addEventListener('change', function () { d.design = design.value; changed(); });

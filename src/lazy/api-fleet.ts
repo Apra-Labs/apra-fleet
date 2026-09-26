@@ -136,10 +136,25 @@ async function signIn(vault: Vault, token: string, source: 'stored' | 'gh') {
   return me;
 }
 
+function folderState(folder: string): 'ready' | 'dirty' | 'missing' | 'not-git' {
+  if (!fs.existsSync(folder)) return 'missing';
+  try {
+    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: folder, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 });
+    return out.trim() ? 'dirty' : 'ready';
+  } catch {
+    return 'not-git';
+  }
+}
+
 function scheduleView(s: sched.Schedule, now: Date) {
   const due = sched.isDue(s, now);
   const next = !s.enabled ? null : s.retryAt ? s.retryAt : due ? now.toISOString() : sched.nextRun(s, new Date(Math.max(now.getTime(), Date.parse(s.lastFiredAt ?? s.createdAt)))).toISOString();
-  return { ...s, whenText: sched.describeWhen(s), nextAt: next, log: s.log.slice(-20).reverse() };
+  const lastSkip = [...s.log].reverse().find(e => e.action === 'skipped' || e.action === 'error');
+  return {
+    ...s, whenText: sched.describeWhen(s), nextAt: next, log: s.log.slice(-40).reverse(),
+    folder: folderState(s.repo),
+    retryReason: s.retryAt && lastSkip ? lastSkip.text.replace(/^Not started: /, '').replace(/\.$/, '') : null,
+  };
 }
 
 /** A project folder has to be a git checkout; the path alone is not enough. */
@@ -374,7 +389,7 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
     try {
       const s = sched.normalizeSchedule(await body(req));
       s.lastFiredAt = now.toISOString();
-      send(res, 200, { ok: true, whenText: sched.describeWhen(s), nextAt: sched.nextRun(s, now).toISOString() });
+      send(res, 200, { ok: true, whenText: sched.describeWhen(s), nextAt: sched.nextRun(s, now).toISOString(), schedule: s });
     } catch (e) {
       send(res, 200, { ok: false, error: (e as Error).message });
     }
@@ -397,7 +412,7 @@ export async function handleFleet(req: http.IncomingMessage, res: http.ServerRes
         const warnings = await sched.runNowWarnings(s, schedulerDeps(deps));
         if (warnings.length) { send(res, 200, { needsConfirm: true, warnings }); return true; }
       }
-      const runId = await sched.fire(s, schedulerDeps(deps), { override });
+      const runId = await sched.fire(s, schedulerDeps(deps), { override, manual: true });
       const after = sched.loadSchedules().find(x => x.id === id);
       send(res, 200, { ok: true, runId, last: after?.log.slice(-1)[0] ?? null });
       return true;

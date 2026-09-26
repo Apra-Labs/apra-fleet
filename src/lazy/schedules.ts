@@ -334,7 +334,7 @@ export async function runNowWarnings(s: Schedule, deps: TickDeps): Promise<strin
  * limits and the clean-folder check, but never starts a second sprint in a
  * folder that already has one running or starting.
  */
-export async function fire(s: Schedule, deps: TickDeps, { override = false } = {}): Promise<string | null> {
+export async function fire(s: Schedule, deps: TickDeps, { override = false, manual = false } = {}): Promise<string | null> {
   const now = deps.now();
   const key = path.resolve(s.repo);
   if (starting.has(key)) {
@@ -349,13 +349,13 @@ export async function fire(s: Schedule, deps: TickDeps, { override = false } = {
   }
   starting.add(key);
   try {
-    return await start(s, deps, now);
+    return await start(s, deps, now, manual ? (block ? `Run now by you, overriding: ${block.text}` : 'Run now by you') : '');
   } finally {
     starting.delete(key);
   }
 }
 
-async function start(s: Schedule, deps: TickDeps, now: Date): Promise<string | null> {
+async function start(s: Schedule, deps: TickDeps, now: Date, how: string): Promise<string | null> {
   let ask: string, title: string | undefined, issue: Issue | undefined;
   if (s.source.type === 'issues') {
     const token = await deps.githubToken();
@@ -375,7 +375,9 @@ async function start(s: Schedule, deps: TickDeps, now: Date): Promise<string | n
     const eligible = s.source.trustedOnly ? fresh.filter(i => TRUSTED_ASSOCIATIONS.has(i.association)) : fresh;
     if (!eligible.length) {
       const labeled = s.source.labels.join(' and ');
-    const why = fresh.length && s.source.trustedOnly ? `${fresh.length} open issue${fresh.length === 1 ? '' : 's'} labeled ${labeled}, but none from the repo's owners, members or collaborators` : `no open issues labeled ${labeled} that have not been sprinted yet`;
+      // Say what happened to each issue, so "why not #15?" has an answer.
+      const each = issues.slice(0, 8).map(i => done.has(`${i.repo}#${i.number}`) ? `#${i.number} already has a sprint` : `#${i.number} is from ${i.author}, not a repo member`);
+      const why = issues.length ? `${issues.length} open issue${issues.length === 1 ? '' : 's'} labeled ${labeled}, none to pick up (${each.join('; ')}${issues.length > 8 ? '; ...' : ''})` : `no open issues labeled ${labeled}`;
       log(s.id, { action: 'skipped', text: `Nothing to do: ${why}.` }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
       return null;
     }
@@ -388,7 +390,7 @@ async function start(s: Schedule, deps: TickDeps, now: Date): Promise<string | n
   const design = s.design === 'auto' ? deps.recommend(ask, s.repo).designId : s.design;
   try {
     const { runId } = await deps.launch({ repo: s.repo, ask, title, design, issue, scheduleId: s.id });
-    log(s.id, { action: 'started', text: `Started "${title ?? ask.slice(0, 60)}" with the ${design} design.`, runId, ...(issue ? { issue: { repo: issue.repo, number: issue.number, title: issue.title, url: issue.url } } : {}) }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
+    log(s.id, { action: 'started', text: `${how ? how + '. S' : 'S'}tarted "${title ?? ask.slice(0, 60)}" with the ${design} design.`, runId, ...(issue ? { issue: { repo: issue.repo, number: issue.number, title: issue.title, url: issue.url } } : {}) }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
     return runId;
   } catch (e) {
     log(s.id, { action: 'error', text: `Could not start: ${(e as Error).message}.` }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
@@ -436,7 +438,7 @@ export async function tick(deps: TickDeps): Promise<void> {
     try {
       const url = await deps.comment(token, x.issue.repo, x.issue.number, resultComment(x));
       deps.markReported(x.runId);
-      log(s.id, { action: 'commented', text: `Reported the result on ${x.issue.repo}#${x.issue.number}.`, runId: x.runId, issue: { repo: x.issue.repo, number: x.issue.number, title: x.title, url } }, now);
+      log(s.id, { action: 'commented', text: `Commented on ${x.issue.repo}#${x.issue.number}: "${resultComment(x).split('\n')[0]}"`, runId: x.runId, issue: { repo: x.issue.repo, number: x.issue.number, title: x.title, url } }, now);
     } catch (e) {
       log(s.id, { action: 'error', text: `Could not comment on ${x.issue.repo}#${x.issue.number}: ${(e as Error).message}.` }, now);
       deps.markReported(x.runId);

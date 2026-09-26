@@ -212,7 +212,7 @@ describe('schedules', () => {
     // An untrusted author is never picked when trustedOnly is on.
     const only18 = deps({ sprintedIssues: () => new Set(['octo-dev/shop#12', 'octo-dev/shop#15']) });
     expect(await sched.fire(s, only18.d)).toBeNull();
-    expect(sched.loadSchedules()[0].log.at(-1)!.text).toMatch(/none from the repo's owners, members or collaborators/);
+    expect(sched.loadSchedules()[0].log.at(-1)!.text).toBe('Nothing to do: 3 open issues labeled lazyfleet, none to pick up (#12 already has a sprint; #15 already has a sprint; #18 is from stranger, not a repo member).');
     // The finished sprint is reported on its issue, once.
     const reported = new Set<string>();
     const finished = { runId: 'run-1', repo, live: false, status: 'success', verdict: 'PASS', title: '#15 Checkout crashes', cost: 1.2, branch: 'feat/x', scheduleId: s.id, issue: { repo: 'octo-dev/shop', number: 15 } };
