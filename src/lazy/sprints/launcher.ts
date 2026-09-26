@@ -497,6 +497,31 @@ async function installInboxHook(deps: LauncherDeps, rec: SprintRecord, dir: stri
   }
 }
 
+/**
+ * Give a clone the role contracts (planner.md, plan-reviewer.md, ...) that
+ * match this engine. Helpers are local, so otherwise Claude falls back to
+ * ~/.claude/agents, which is only as new as the last install and can
+ * disagree with the engine's prompts. Project agents win over home ones.
+ * A repo that tracks its own .claude/agents is left alone.
+ */
+async function installAgentContracts(deps: LauncherDeps, dir: string): Promise<void> {
+  const tracked = (await deps.run('git', ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.claude/agents'], dir)).trim().length > 0;
+  if (tracked) return;
+  const { loadAgentAssets } = await import('../../cli/install.js');
+  const assets = loadAgentAssets();
+  if (assets.length === 0) return;
+  const base = path.join(dir, '.claude', 'agents');
+  fs.rmSync(base, { recursive: true, force: true });
+  for (const { relPath, content } of assets) {
+    const file = path.join(base, relPath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content.replace(/\r\n/g, '\n'));
+  }
+  const exclude = path.join(dir, '.git', 'info', 'exclude');
+  const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf-8') : '';
+  if (!cur.split('\n').includes('/.claude/agents/')) fs.appendFileSync(exclude, `${cur.endsWith('\n') || !cur ? '' : '\n'}/.claude/agents/\n`);
+}
+
 /** Clone, join the shared task database, install the hook, and check the copy is clean. */
 async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, originUrl: string, remoteUrl: string): Promise<string> {
   const dir = path.join(rec.workspace, `h${i}`);
@@ -507,6 +532,7 @@ async function prepareBuilder(deps: LauncherDeps, rec: SprintRecord, i: number, 
   await deps.run('bd', joined ? ['dolt', 'pull'] : ['bootstrap', '--yes'], dir);
   await hideLocalConfig(deps, dir);
   await installInboxHook(deps, rec, dir);
+  await installAgentContracts(deps, dir);
   await assertClean(deps, dir, `Helper ${i + 1}`);
   return dir;
 }
@@ -617,6 +643,7 @@ export async function prepareAndStart(rec: SprintRecord, deps: LauncherDeps): Pr
     }
     await deps.run('bd', ['dolt', 'push'], h0);
     await hideLocalConfig(deps, h0);
+    await installAgentContracts(deps, h0);
     await assertClean(deps, h0, 'Helper 1');
     step(rec, `Created the sprint issue ${rec.rootIssue}: ${rec.title}`);
 
