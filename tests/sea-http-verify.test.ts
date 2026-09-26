@@ -19,6 +19,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
+import { resolveSeaBinaryStaleness } from './helpers/sea-binary-staleness.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -147,6 +148,15 @@ describe('SEA binary smoke: GET /ui and GET /api/fleet/members (apra-fleet-v6t7.
   }
 
   it.skipIf(!binaryExists)('serves the shell at GET /ui, and gates GET /api/fleet/members on the fleet key', async () => {
+    // apra-fleet-v6t7.17.1: fail LOUDLY (not a bare functional-looking
+    // assertion mismatch) when the binary predates a SEA-relevant change,
+    // before spawning it or asserting anything about GET /ui. See
+    // tests/helpers/sea-binary-staleness.ts's header for the full rationale.
+    const staleness = resolveSeaBinaryStaleness({ binaryPath, root });
+    if (staleness.stale) {
+      throw new Error(staleness.message);
+    }
+
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sea-binary-smoke-'));
     let child: ChildProcess | undefined;
 
