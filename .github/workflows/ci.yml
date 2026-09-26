@@ -31,11 +31,8 @@ jobs:
             runner: ubuntu-latest
           - os: macos-latest
             runner: macos-latest
-          # Pinned to windows-2022, not windows-latest: windows-latest migrated
-          # to windows-2025-vs2026 (Visual Studio 18), and node-gyp 11.5.0 fails
-          # VS detection against VS 18 with a maxBuffer error, breaking native
-          # module compilation. windows-2022 ships VS 17, which node-gyp fully
-          # supports. Revisit when node-gyp supports VS 18 (commit 2ff1a5a).
+          # Pinned to windows-2022 (VS 17): node-gyp 11.5.0 can't detect
+          # VS 18 on windows-latest, breaking native module builds.
           - os: windows-latest
             runner: windows-2022
 
@@ -65,53 +62,12 @@ jobs:
       - name: Verify build output
         run: node -e "require('fs').existsSync('dist/index.js') || (console.error('Build output dist/index.js not found'), process.exit(1))"
 
-      # apra-fleet-se's test/advanced-mock-runner-test.mjs shells out to a
-      # real `bd` (beads) CLI binary via child_process -- it was never
-      # available in CI because apra-fleet-3ns.3's step below is the first
-      # time this package's tests have ever run here. Install it globally
-      # (matches how every call site in this repo invokes `bd` as a bare
-      # PATH command, not a project-local dependency). @beads/bd's
-      # postinstall script downloads a platform-specific native binary; that
-      # download can fail silently (npm still reports install success) --
-      # --foreground-scripts surfaces postinstall output/failures instead of
-      # swallowing them, and the version check below fails this step
-      # immediately and clearly rather than deferring to a confusing crash
-      # two steps later in the apra-fleet-se test suite.
-      #
-      # @beads/bd's postinstall.js has a hardcoded `if (!process.env.CI)
-      # { install() } else { skip }` guard with no override flag/env var --
-      # it assumes CI environments never need the bd binary, which is wrong
-      # for this repo (apra-fleet-se's tests genuinely need a working `bd`).
-      # GitHub Actions sets CI=true globally for every step; overriding it
-      # to empty string for just this step (via the step-level `env:` block)
-      # makes `!process.env.CI` true again, so postinstall actually runs its
-      # download instead of silently no-op'ing.
-      #
-      # Runs BEFORE "Run tests": apra-fleet-2cc.1/.3's tests/exec-bd.test.ts
-      # and tests/2cc-win-bd-invocation-integ.test.ts (picked up by the root
-      # `npm test` / vitest run below, not the workspace node:test step) spawn
-      # a REAL `bd --version`/`bd list`/etc via scripts/lib/exec-bd.mjs, with
-      # no CI-skip guard -- they need `bd` on PATH by the time "Run tests"
-      # starts, not just by the later workspace-tests step.
-      # Pinned to 1.3.0 (2026-09-18), matching src/cli/install.ts's own
-      # installer pin (bumped together from 1.1.2 -> 1.3.0; apra-fleet-4ipl):
-      # this repo's own .beads Dolt database has been migrated forward to
-      # schema v66 by newer local `bd` clients, and 1.1.2 only understands up
-      # to v53 -- every `bd list`/`bd show` call in CI failed outright with a
-      # schema-mismatch error, which serve-wiring-integration.test.mjs's
-      # real dashboard-boot test surfaced as a 90s GET / timeout (the
-      # backlog render silently failed on every retry, so the page it waited
-      # on could never appear). 1.3.0 is the first tested release that reads
-      # this schema (confirmed empirically, not from changelog text alone).
-      #
-      # NOTE: 1.3.0 still carries the dolt-remote-history-probe regression
-      # first introduced in 1.2.1 (treats a fresh/never-`git init`'d local
-      # directory's failed `git ls-remote` as "remote has Dolt history", so
-      # `bd init --from-jsonl --remote <fresh-dir>` refuses) --
-      # tests/2cc-win-bd-invocation-integ.test.ts's sandbox-seed scenario is
-      # expected to fail until that's fixed upstream or worked around here;
-      # tracked separately from apra-fleet-4ipl, do not treat as a new
-      # regression when it turns red.
+      # bd CLI, needed on PATH before "Run tests" (apra-fleet-se + exec-bd
+      # tests shell out to it). CI='' defeats @beads/bd's postinstall guard
+      # that otherwise skips the download in CI.
+      # Pinned to 1.3.0: this repo's Dolt DB is schema v66; older bd can't
+      # read it. Known regression: 1.3.0 still misreads a fresh dir's failed
+      # `git ls-remote` (apra-fleet-4ipl, upstream not fixed yet).
       - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
         env:
           CI: ''
@@ -119,96 +75,27 @@ jobs:
           npm install -g @beads/bd@1.3.0 --foreground-scripts
           bd --version
 
-      # serve-wiring-integration.test.mjs and supervisor-dashboard-
-      # integration.test.mjs boot the real supervisor against THIS repo
-      # checkout and render the real backlog dashboard, which shells out to
-      # `bd list`/`bd show` against this repo's own beads DB. Only
-      # .beads/issues.jsonl is git-tracked (the Dolt DB itself is
-      # gitignored), so a fresh CI checkout has no queryable DB yet -- `bd
-      # list` fails, buildBacklogTasks() throws, and dashboard.mjs's catch
-      # silently falls back to an empty-backlog placeholder page, which
-      # fails the "rich beads-tree table container" assertion even though
-      # the route still answers 200. `bd bootstrap` is non-destructive and
-      # auto-detects the git-tracked JSONL to import from.
+      # Non-destructive; imports git-tracked .beads/issues.jsonl so dashboard/
+      # backlog integration tests have a queryable DB (Dolt DB is gitignored).
       - name: Bootstrap this repo's own beads DB (required by dashboard/backlog integration tests)
         run: bd bootstrap --yes
 
+      # scripts/run-all-tests.mjs is the single source of truth: runs vitest,
+      # every workspace suite, and apra-pm, each exactly once.
       - name: Run tests
         run: npm test
 
-      # apra-fleet-3ns.3: apra-fleet-se, apra-fleet-workflow, and
-      # apra-fleet-client each keep their tests in test/ (singular) as
-      # *.test.mjs run via `node --test`, NOT vitest.config.ts's
-      # 'packages/*/tests/**/*.test.ts' include (that pattern is real and
-      # still needed -- it's what picks up packages/fleet-api-contract/tests/,
-      # the one workspace package that DOES use vitest). --if-present skips
-      # fleet-api-contract (already covered above, no "test" script of its
-      # own) without failing.
-      #
-      # apra-fleet-oomh.9: `npm test` above (scripts/run-all-tests.mjs) now
-      # also runs the apra-fleet-se node:test suite directly, so THIS step's
-      # apra-fleet-se coverage is a deliberate, harmless duplicate -- kept as
-      # defence-in-depth so a future edit that drops apra-fleet-se from
-      # run-all-tests.mjs's suites array does not silently lose CI coverage.
-      # This step is still the ONLY CI path for the apra-fleet-workflow and
-      # apra-fleet-client node:test suites, which run-all-tests.mjs does not
-      # enumerate -- it cannot be dropped.
-      - name: Run workspace package test suites (node:test)
-        run: npm test --workspaces --if-present
-
-      # packages/apra-fleet-se/apra-pm is NOT an npm workspace: the root
-      # `workspaces` array lists packages/apra-fleet-se, and apra-fleet-se's
-      # own package.json declares no nested `workspaces`, so apra-pm is a
-      # workspace of nothing and the `--workspaces` step above never reaches
-      # it. Run them explicitly rather than adding apra-pm to the root
-      # `workspaces` array, which would churn package-lock.json (`npm ci`
-      # above would then fail on an out-of-sync lock) for no packaging
-      # benefit -- apra-pm is private, and its only devDependency (ajv) is
-      # already hoisted into the root node_modules by apra-fleet-se.
-      #
-      # apra-fleet-oomh.9: `npm test` above (scripts/run-all-tests.mjs) now
-      # also runs this exact command as its "apra-pm" suite entry, so this
-      # step is a deliberate, harmless duplicate of that coverage -- kept as
-      # defence-in-depth against a future edit that drops the apra-pm entry
-      # from run-all-tests.mjs's suites array (see the regression guard for
-      # that array in tests/).
-      - name: Run apra-pm test suite (node:test; not an npm workspace)
-        run: npm test --prefix packages/apra-fleet-se/apra-pm
-
-      # apra-fleet-j918.8.19: test/f34-concurrent-launch-engagement-
-      # integration.test.mjs's two topology subtests (f34.1/f34.2, gated by
-      # the file's own REPLAY_SKIP) only run under real bd/dolt engagement --
-      # under the default replay mode exercised by "Run workspace package
-      # test suites" above they report "# SKIP ... skipping under bd mode
-      # replay" and assert nothing. `npm run test:integration` (the real-bd
-      # lane, scripts/run-tests.mjs real) is never otherwise invoked by any
-      # workflow in this repo, so before this step neither subtest had ANY
-      # CI coverage (apra-fleet-j918.8.5 closed intending this but never
-      # wired it up). Scoped to just this one file rather than the whole
-      # ~129-file real-bd suite (`npm run test:integration` with no file
-      # arg) for two reasons: (1) that full suite takes ~4h and is meant to
-      # run once per sprint/CI per apra-fleet-040, not on every PR; (2) it
-      # would surface the unrelated, deliberately out-of-scope real-bd
-      # carry-over regressions tracked at apra-fleet-g541/apra-fleet-4rjy
-      # across the rest of the workspace. Verified immediately before wiring
-      # this step (2026-09-15, branch chore/j918-test-suite-cleanup, commit
-      # 2092137e): a fresh standalone real-bd run of this exact file passed
-      # both subtests with zero skips ("# pass 2 / # fail 0 / # skipped 0",
-      # ~364s) -- neither g541's "No ready beads found ... deadlocked" nor
-      # 4rjy's "unexpected tool member_detail" failure signature reproduced,
-      # so nothing needs excluding from this step. Ubuntu-only: matches this
-      # job's other single-run checks (llms-full.txt below) and keeps this
-      # ~6min real bd/dolt/supervisor-subprocess run from tripling across the
-      # OS matrix.
-      - name: Run f34 real-bd concurrency-topology subtests (apra-fleet-se)
+      # Real-bd coverage for f34's topology subtests, which no-op under the
+      # default replay mode "Run tests" uses. Scoped to this file, not the
+      # full real-bd suite (~4h, once-per-sprint per apra-fleet-040).
+      # Ubuntu-only: avoids tripling this ~6min run across the OS matrix.
+      - name: Run real-bd concurrent sprint launch topology tests (apra-fleet-se, ubuntu)
         if: matrix.os == 'ubuntu-latest'
         working-directory: packages/apra-fleet-se
         run: node scripts/run-tests.mjs real test/f34-concurrent-launch-engagement-integration.test.mjs
 
-      # llms-full.txt is regenerated by the pre-commit hook when docs change.
-      # This check fails if a dev bypassed the hook (--no-verify, missing hook
-      # install). Only runs once -- on ubuntu-latest -- since the generator is
-      # OS-agnostic.
+      # Catches a dev bypassing the pre-commit hook that regenerates
+      # llms-full.txt when docs change. OS-agnostic generator -> ubuntu-only.
       - name: Verify llms-full.txt is up to date
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -221,18 +108,9 @@ jobs:
             exit 1
           fi
 
-      # my-beads-db-27m.10 (T1.5.1): memory-contract drift guard, disk-
-      # mutating half. tests/memory-contract-drift-guard.test.ts (run above by
-      # "npm test") already covers the same content via contract:generate
-      # --check's in-memory compare; that mode deliberately writes nothing.
-      # This step instead runs the real write path (`npm run contract:generate`,
-      # no --check) and diffs the result against what is committed, so an
-      # actual dirty-tree regression -- e.g. a --check-mode bug that agrees
-      # with a stale file it should not -- is still caught. Same
-      # regenerate-then-diff shape as "Verify llms-full.txt is up to date"
-      # above, and the same reason it only runs once, on ubuntu-latest: the
-      # generator's output (zod schemas + response-schemas.mjs + taxonomy.json,
-      # all static, no Date/Math.random/env reads) is OS-agnostic.
+      # Runs the real contract:generate write path (not --check) and diffs
+      # against committed output, catching drift a --check-mode bug might
+      # miss. OS-agnostic generator -> ubuntu-only, same as llms-full.txt above.
       - name: Verify memory-contract generated files are up to date
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -310,10 +188,8 @@ jobs:
             binary: apra-fleet-installer-linux-x64
           - os: macos-latest
             binary: apra-fleet-installer-darwin-arm64
-          # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp 11.5.0
-          # cannot detect VS 18, which breaks the native-module build behind the
-          # single-executable binary. See the build-and-test matrix above and
-          # commit 2ff1a5a.
+          # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp can't
+          # detect VS 18. See the build-and-test matrix above.
           - os: windows-2022
             binary: apra-fleet-installer-win-x64.exe
     runs-on: ${{ matrix.os }}
@@ -379,13 +255,8 @@ jobs:
         run: ./dist/${{ matrix.binary }} --help
         shell: bash
 
-      # apra-fleet-7pm.13: proves the workflow subsystem's "no system Node
-      # required" claim -- run the launcher with Node stripped from PATH and
-      # an isolated HOME, so the binary can only use its own embedded
-      # runtime (self-heal extraction from apra-fleet-7pm.8) and any
-      # accidental spawn('node') fails loudly. Scope: hello-world +
-      # arg/error-surface only -- the fleet-sprint launcher path is verified
-      # separately by apra-fleet-7pm.15, which depends on this task.
+      # Proves "no system Node required": Node stripped from PATH, isolated
+      # HOME, so only the binary's embedded runtime can work (apra-fleet-7pm.13).
       - name: Smoke test - workflow hello-world (no system Node)
         if: runner.os != 'Windows'
         shell: bash
@@ -402,10 +273,7 @@ jobs:
           echo "$OUT" | grep -qF '[OK] hello-world: args=one,two engine=resolved'
           test -f "$FAKEHOME/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js"
           test -f "$FAKEHOME/.apra-fleet/schemas/reviewer-output.json"
-          # Persist FAKEHOME so the arg/error-surface step below runs against
-          # this SAME already-self-healed HOME instead of a fresh/empty one --
-          # step-local `export` does not survive to the next step, so it has
-          # to be handed off explicitly via GITHUB_ENV.
+          # Hand off via GITHUB_ENV so the next step reuses this self-healed HOME.
           echo "FAKEHOME=$FAKEHOME" >> "$GITHUB_ENV"
 
       - name: Smoke test - workflow hello-world (no system Node) (Windows)
@@ -448,17 +316,11 @@ jobs:
             exit 1
           }
 
-          # Persist FAKEHOME so the arg/error-surface step below runs against
-          # this SAME already-self-healed HOME instead of a fresh/empty one --
-          # step-local $env: assignments do not survive to the next step, so
-          # it has to be handed off explicitly via GITHUB_ENV.
+          # Hand off via GITHUB_ENV so the next step reuses this self-healed HOME.
           Add-Content -Path $env:GITHUB_ENV -Value "FAKEHOME=$FAKEHOME"
 
-      # `workflow --list` never self-heals by design (it only reports what's
-      # already on disk) -- so this step MUST reuse the FAKEHOME that the
-      # hello-world step above already self-healed via a real built-in
-      # invocation. Reusing a fresh/different HOME here reproduces
-      # "No workflows installed" even though self-heal is working correctly.
+      # `workflow --list` never self-heals, so this must reuse the FAKEHOME
+      # the hello-world step above already self-healed.
       - name: Smoke test - workflow arg/error surface
         if: runner.os != 'Windows'
         shell: bash
@@ -517,27 +379,11 @@ jobs:
             exit 1
           }
 
-      # apra-fleet-7pm.15: hello-world (above) only proves the launcher's OWN
-      # import-trampoline mechanics. fleet-sprint is the only built-in that
-      # exercises the full runtime tree the launcher installs: the workflow
-      # engine + apra-fleet-client + ajv + the vendored agent-role schemas
-      # (packages/apra-fleet-se/fleet-sprint/contracts.mjs). `--help` short-
-      # circuits before any fleet-server dial (bin/cli.mjs's main() checks
-      # values.help immediately after parseCliArgs()), so this needs no
-      # server/network -- but contracts.mjs is a static import of cli.mjs's
-      # own import chain (cli.mjs -> fleet-sprint/runner.js -> contracts.mjs),
-      # so by the time --help prints, module load has ALREADY (a) resolved
-      # every bare-specifier import from ~/.apra-fleet/node_modules/ and (b)
-      # ajv-compiled a validator for every role's output schema loaded from
-      # ~/.apra-fleet/schemas/ (contracts.mjs's top-level `VALIDATORS =
-      # ...ajv.compile(schema)`). A broken module resolution or an invalid
-      # vendored schema would throw during that import, before --help ever
-      # gets to print anything -- so a clean exit 0 with fleet-sprint's own
-      # usage text on stdout is proof both succeeded. The absent dev-fallback
-      # warning proves APRA_FLEET_SE_SCHEMAS_DIR (set by the launcher's
-      # applyEnvDefaults) pointed contracts.mjs's resolveSchemasDir() at the
-      # installed ~/.apra-fleet/schemas/ tree rather than the (nonexistent in
-      # this packaged-binary context) monorepo packages/apra-fleet-se/apra-pm/ tree.
+      # Unlike hello-world above, --help here statically imports the full
+      # runtime (workflow engine, apra-fleet-client, ajv, vendored role
+      # schemas), so a clean exit + usage text with no dev-fallback warning
+      # proves module resolution and schema loading both work from the
+      # packaged binary (apra-fleet-7pm.15).
       - name: Smoke test - workflow fleet-sprint --help (no system Node)
         if: runner.os != 'Windows'
         shell: bash
@@ -771,17 +617,9 @@ jobs:
           fi
 
       - name: Build
-        # Same sequence as prepublishOnly (which npm only fires automatically
-        # on `npm publish`, not `npm pack`) -- run it explicitly here so this
-        # job's dry-run pack verification sees the same artifacts a real
-        # publish would produce: dist/agents/schemas (scripts/dist-pm.mjs),
-        # apra-fleet-se's package-local schema copy (apra-fleet-bun), and
-        # dist/index.js (tsc). apra-fleet-fyc.2: kuh.5 retired the
-        # scripts/bundle-se.mjs esbuild step (and its dist/-relative bundle
-        # output, formerly named fleet-sprint.mjs + fleet-sprint-runner.mjs)
-        # -- the unified `apra-fleet workflow fleet-sprint` entry point ships
-        # as source under packages/apra-fleet-se/ instead (package.json
-        # `files`).
+        # Explicit prepublishOnly: npm only fires it on `npm publish`, not
+        # `npm pack`, and the dry-run pack check below needs the same
+        # artifacts a real publish would produce.
         run: npm run prepublishOnly
 
       - name: Verify shebang
@@ -814,58 +652,13 @@ jobs:
           echo "Clean-pack guard passed"
 
       - name: Pack + install into a clean temp prefix (fleet-sprint smoke test)
-        # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2, updated by apra-fleet-
-        # fyc.2.1 for the post-kuh.5 source-shipped packaging model: proves a
-        # real packed tarball, npm-installed into a fresh non-workspace
-        # prefix (no monorepo ancestor, no pre-existing node_modules), exposes
-        # a working `apra-fleet workflow fleet-sprint` entry point whose
-        # schema resolution finds the co-packaged dist/agents/schemas/ -- not
-        # the apra-fleet-bun.1 monorepo dev-fallback (which would warn) or the
-        # last-resort hand-written literals.
-        #
-        # kuh.5 retired the esbuild bundle (scripts/bundle-se.mjs -> its
-        # retired dist/ bundle output, formerly named fleet-sprint.mjs and
-        # fleet-sprint-runner.mjs); the unified entry point now ships as
-        # source under packages/apra-fleet-se/ (named by packages/apra-fleet-
-        # se/workflow.json's "entry": bin/cli.mjs) and is reached via the
-        # `apra-fleet workflow fleet-sprint` launcher
-        # (src/cli/workflow.ts), the same command path apra-fleet-kuh.4's real
-        # npm-pack verification exercised end to end. This mirrors that exact
-        # sequence: npm pack -> npm install the tarball into a fresh prefix ->
-        # `apra-fleet install` (extracts ~/.apra-fleet/{node_modules,schemas,
-        # workflows/fleet-sprint} from the installed package's own
-        # packages/apra-fleet-se and packages/apra-fleet-workflow/apra-fleet-
-        # client trees) -> `apra-fleet workflow fleet-sprint --help`.
-        #
-        # Directly `node`-invoking packages/apra-fleet-se/bin/cli.mjs from the
-        # raw extracted tarball (without the install step) does NOT work: its
-        # bare-specifier imports ('@apralabs/apra-fleet-workflow',
-        # '@apralabs/apra-fleet-client') are not real npm dependencies of the
-        # root package (verified locally: `npm install` never places them
-        # under node_modules), they only land on disk via `apra-fleet
-        # install`'s extraction step, at a location (~/.apra-fleet/node_modules,
-        # a sibling of ~/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs) that
-        # Node's module resolution walks up to find. Hence the explicit
-        # install step below is required, not optional.
-        #
-        # apra-fleet-7pm.12's separate scripts/smoke-test-runner-import.mjs
-        # (deleted by fyc.2.1) existed only because the OLD bundled entry
-        # (formerly fleet-sprint.mjs) esbuild-inlined just its OWN imports,
-        # and the OLD bundled runner (formerly fleet-sprint-runner.mjs) was a
-        # second, separately-bundled artifact never statically imported by
-        # the --help path -- only reached dynamically via
-        # engine.executeFile(), so --help alone never
-        # exercised its import graph. That split no longer exists: cli.mjs
-        # has a top-level `import '../fleet-sprint/runner.js'` (see
-        # packages/apra-fleet-se/bin/cli.mjs), and ESM resolves+evaluates a
-        # module's entire static import graph -- runner.js and everything it
-        # imports (@apralabs/apra-fleet-workflow, @apralabs/apra-fleet-client,
-        # ./errors.mjs, ./conflict-ladder.mjs, ./sprint-lock.mjs, ajv, etc) --
-        # before cli.mjs's own top-level code (including the --help
-        # short-circuit) ever runs. So the `apra-fleet workflow fleet-sprint
-        # --help` smoke test below already proves the full runtime import
-        # graph resolves; a separate engine.executeFile()-driven script would
-        # be redundant.
+        # Proves a real packed tarball, installed into a fresh non-monorepo
+        # prefix, gives `apra-fleet workflow fleet-sprint --help` a working
+        # entry point resolving schemas from the co-packaged
+        # dist/agents/schemas/ (not the monorepo dev-fallback, which warns).
+        # Requires the explicit `apra-fleet install` step first: cli.mjs's
+        # bare-specifier imports only land on disk via that extraction step,
+        # not via plain `npm install`.
         run: |
           TMP_INSTALL=$(mktemp -d)
           npm pack --pack-destination "$TMP_INSTALL"

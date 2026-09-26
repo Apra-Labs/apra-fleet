@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Runs vitest, the apra-fleet-se workspace's own test suite, and the apra-pm
-// suite unconditionally -- unlike chaining them with `&&`, a failure
-// (including a flaky, unrelated one) in an earlier suite no longer silently
-// skips the later ones. Exits non-zero if any suite failed. This is the one
-// place that enumerates suites; .github/workflows/ci.yml's own
-// apra-fleet-se/apra-pm steps are deliberate, commented duplicates kept as
-// defence-in-depth (apra-fleet-oomh.9), not the primary coverage path.
+// Single source of truth for `npm test`: runs vitest plus every workspace
+// package's own test suite (apra-fleet-client, apra-fleet-workflow,
+// apra-fleet-se) and apra-pm (not an npm workspace) unconditionally, each
+// exactly once -- unlike `vitest run && npm test --workspace=...`, a failure
+// (including a flaky, unrelated one) in one suite no longer silently skips
+// the rest. CI's "Run tests" step is just `npm test`; do not add separate
+// workflow steps that re-run any of these suites. Exits non-zero if any
+// suite failed.
 //
 // apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 15
 // minutes, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
@@ -41,11 +42,11 @@ const timeoutMs = (() => {
 
 const defaultSuites = [
     { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
+    { name: 'apra-fleet-client', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-client'] },
+    { name: 'apra-fleet-workflow', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-workflow'] },
     { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
-    // packages/apra-fleet-se/apra-pm is NOT an npm workspace (see ci.yml's
-    // "Run apra-pm test suite (node:test; not an npm workspace)" step), so
-    // it is otherwise reached only by CI's explicit --prefix invocation.
-    // Mirror that here so local runs get the same signal as CI.
+    // packages/apra-fleet-se/apra-pm is NOT an npm workspace, so it is
+    // otherwise unreached by any --workspace(s) invocation above.
     { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
 ];
 
