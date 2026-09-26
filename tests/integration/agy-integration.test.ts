@@ -108,9 +108,14 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       expect(rules).toEqual([
         { action: 'read_file', target: '*' },
         { action: 'write_file', target: '*' },
+        // A Bash(<bin>:*) prefix grant becomes the bare command plus a regex
+        // rule for full command lines agy cannot split into words.
         { action: 'command', target: 'git' },
+        { action: 'command', target: 'regex:git .*' },
         { action: 'command', target: 'npm' },
+        { action: 'command', target: 'regex:npm .*' },
         { action: 'command', target: 'bd' },
+        { action: 'command', target: 'regex:bd .*' },
         { action: 'invoke_subagent', target: '*' },
         { action: 'send_message', target: '*' },
       ]);
@@ -197,8 +202,11 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         'read_file(*)',
         'write_file(*)',
         'command(git)',
+        'command(regex:git .*)',
         'command(npm)',
+        'command(regex:npm .*)',
         'command(bd)',
+        'command(regex:bd .*)',
         'read_url(*)',
         'mcp(some-server)',
       ]);
@@ -212,7 +220,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
       const rules = convertClaudeAllowToAgyPermissions(['Agent', 'NotAToolToken', 'Bash(git:*)']);
       expect(rules.some(r => r.action === 'invoke_subagent')).toBe(true);
       expect(rules.some(r => r.action === 'custom')).toBe(true);
-      expect(formatAgyPermissionRules(rules)).toEqual(['command(git)']);
+      expect(formatAgyPermissionRules(rules)).toEqual(['command(git)', 'command(regex:git .*)']);
     });
 
     it('de-duplicates identical rules produced by different Claude tokens', () => {
