@@ -10,6 +10,7 @@ import { runDeployPhase } from '../fleet-sprint/phases/deploy.mjs';
 import { runIntegTestPhase } from '../fleet-sprint/phases/integ-test.mjs';
 import { runRegressionTestPhase } from '../fleet-sprint/phases/regression-test.mjs';
 import { findShellCommandViolations } from '../fleet-sprint/shell-command-guard.mjs';
+import { CancelledError, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
 // apra-fleet-v6t7.12 -- the runbook-permissions provisioner. Before each
 // deployer / integ-test-runner / regression-test-runner dispatch the engine
@@ -256,35 +257,107 @@ describe('createDeployPermissionsProvisioner -- loud failure', () => {
 
 // The phase modules must each hand the provisioner their OWN role, so a phase
 // wired to the wrong runbook goes red here rather than only in a live sprint.
-// The fake provisioner records the call and then throws a sentinel: that both
-// stops the phase before any dispatch and proves a provisioning failure
-// propagates out of the phase instead of being swallowed there.
+// The fake provisioner records the call and then throws a sentinel, which both
+// stops the phase before any dispatch and shows what the phase does with a
+// provisioning failure. Deploy and integ let it propagate (loud, pre-dispatch).
+// Regression must NOT: it runs after the verdict is decided and must never
+// abort the sprint, so it degrades to a FAILED report instead -- see below.
+function phaseState(extra, { dispatched, calls, ensureDeployPermissions, dashboards = [] }) {
+    return {
+        ...extra,
+        phase: () => {},
+        log: () => {},
+        command: async () => { dispatched.push('command'); return { ok: true, output: '' }; },
+        dispatchCtx: new Proxy({}, { get: () => () => { dispatched.push('dispatch'); } }),
+        getMemberForRole: (r) => `member-for-${r}`,
+        ensureUnattendedAuto: async () => {},
+        ensureDeployPermissions: async (member, r) => { calls.push([member, r]); return ensureDeployPermissions(member, r); },
+        updateDashboard: async () => { dashboards.push('update'); },
+    };
+}
+
 describe('phase wiring -- each runbook-driven phase provisions its own role before dispatch', () => {
     const SENTINEL = new Error('provisioning sentinel');
     const cases = [
         ['deployer', runDeployPhase, { cycle: 1, deployFailures: [], deployedThisCycle: false }],
         ['integ-test-runner', runIntegTestPhase, { cycle: 1 }],
-        ['regression-test-runner', runRegressionTestPhase, { finalCycleLabel: '1' }],
     ];
     for (const [role, runPhase, extra] of cases) {
         test(`${role} phase`, async () => {
             const calls = [];
             const dispatched = [];
             await assert.rejects(
-                () => runPhase({
-                    ...extra,
-                    phase: () => {},
-                    log: () => {},
-                    command: async () => { dispatched.push('command'); return { ok: true, output: '' }; },
-                    dispatchCtx: new Proxy({}, { get: () => () => { dispatched.push('dispatch'); } }),
-                    getMemberForRole: (r) => `member-for-${r}`,
-                    ensureUnattendedAuto: async () => {},
-                    ensureDeployPermissions: async (member, r) => { calls.push([member, r]); throw SENTINEL; },
-                }),
+                () => runPhase(phaseState(extra, { dispatched, calls, ensureDeployPermissions: async () => { throw SENTINEL; } })),
                 (err) => err === SENTINEL,
             );
             assert.deepStrictEqual(calls, [[`member-for-${role}`, role]]);
             assert.deepStrictEqual(dispatched, [], 'nothing dispatched after a provisioning failure');
         });
     }
+
+    test('regression-test-runner phase provisions its own role and DEGRADES on failure, never propagating', async () => {
+        const calls = [];
+        const dispatched = [];
+        const dashboards = [];
+        const { regressionResult } = await runRegressionTestPhase(phaseState(
+            { finalCycleLabel: '1', regressionResult: null },
+            { dispatched, calls, dashboards, ensureDeployPermissions: async () => { throw SENTINEL; } },
+        ));
+        assert.deepStrictEqual(calls, [['member-for-regression-test-runner', 'regression-test-runner']]);
+        assert.deepStrictEqual(dispatched, [], 'nothing dispatched after a provisioning failure');
+        assert.strictEqual(regressionResult.passed, false);
+        assert.match(regressionResult.summary, /provisioning sentinel/);
+        assert.deepStrictEqual(dashboards, ['update']);
+    });
+});
+
+// A provisioning failure in the regression phase must surface loudly (a FAILED
+// report naming the runbook and the refused entry) without aborting a sprint
+// whose verdict is already decided. Driven through the REAL provisioner with a
+// compose_permissions fake that refuses one entry.
+describe('regression phase -- a runbook-permissions refusal degrades, it does not abort', () => {
+    test('a refused regression-playbook entry yields a FAILED, schema-shaped report naming runbook and entry', async () => {
+        const refused = 'Bash(kill:*)';
+        const fakes = makeFakes({
+            composeReply: (name, args) => ({
+                content: [{ type: 'text', text: args.grant.includes(refused)
+                    ? `${FAIL_MARK} Refused to auto-grant ${refused} on "${args.member_name}": matches the never-auto-grant list`
+                    : `${OK_MARK} Granted ${args.grant.length} permissions on "${args.member_name}" (claude)` }],
+            }),
+        });
+        const ensure = createDeployPermissionsProvisioner({ callTool: fakes.callTool, command: fakes.command });
+        const calls = [];
+        const dispatched = [];
+        const logs = [];
+        const state = phaseState({ finalCycleLabel: '1', regressionResult: null }, { dispatched, calls, ensureDeployPermissions: ensure });
+        state.log = (m) => logs.push(m);
+
+        const { regressionResult } = await runRegressionTestPhase(state);
+
+        assert.deepStrictEqual(dispatched, [], 'the runner is not dispatched onto a member missing its grants');
+        for (const field of ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary']) {
+            assert.ok(Object.prototype.hasOwnProperty.call(regressionResult, field), `regressionReport field ${field}`);
+        }
+        assert.strictEqual(regressionResult.passed, false);
+        assert.match(regressionResult.summary, /regression-test-playbook\.md/);
+        assert.ok(regressionResult.summary.includes(refused), regressionResult.summary);
+        assert.match(regressionResult.summary, /NOT RUN/);
+        assert.ok(logs.some((l) => l.includes('Regression pass reported FAILURES') && l.includes(refused)),
+            `the failure must be logged loudly, got: ${JSON.stringify(logs)}`);
+    });
+
+    test('run-level control signals still propagate out of the regression provisioning step', async () => {
+        for (const err of [new CancelledError('operator cancelled'), new BudgetExceededError('spend ceiling reached')]) {
+            const calls = [];
+            const dispatched = [];
+            await assert.rejects(
+                () => runRegressionTestPhase(phaseState(
+                    { finalCycleLabel: '1', regressionResult: null },
+                    { dispatched, calls, ensureDeployPermissions: async () => { throw err; } },
+                )),
+                (thrown) => thrown === err,
+            );
+            assert.deepStrictEqual(dispatched, []);
+        }
+    });
 });

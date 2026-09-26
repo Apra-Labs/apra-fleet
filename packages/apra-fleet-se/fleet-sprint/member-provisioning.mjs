@@ -312,6 +312,12 @@ export function createDeployPermissionsProvisioner(opts = {}) {
             // one entry is refused, so re-grant each entry on its own to name
             // exactly the entries that cannot be granted -- decided from each
             // call's success status alone, never by reading its message.
+            // Side effect, accepted: each SUCCESSFUL single-entry call persists
+            // that entry (plus `prior`). Where grant mode replaces the allow
+            // list, each call overwrites the last, so the member ends holding
+            // prior plus the last grantable entry. Harmless: this path always
+            // throws below, the key is not cached, and the next attempt re-sends
+            // the full cumulative set.
             const failures = [];
             for (const entry of entries) {
                 const single = await tryGrant(member, withPrior([entry]), grantReason);

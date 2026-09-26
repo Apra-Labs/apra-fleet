@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // =============================================================================
 // apra-fleet-3swo.6.6: the Regression Test phase cannot change the sprint
@@ -147,4 +149,66 @@ test('mock sprint: a FAILING regression pass leaves the sprint verdict byte-iden
         red.result.verdict, 'ABORTED',
         'a regression failure must never reach the terminal ABORTED path',
     );
+});
+
+// -----------------------------------------------------------------------------
+// The regression phase's PRE-DISPATCH step -- provisioning the Permissions
+// section of regression-test-playbook.md onto the runner's member -- fails
+// loudly when compose_permissions refuses an entry. That loud failure must not
+// become a terminal ABORTED: the verdict is already decided, and Harvest and
+// Publish PR must still run. Driven through the real runner and the real
+// provisioner; only compose_permissions is faked, to refuse one entry.
+// -----------------------------------------------------------------------------
+const REFUSED_ENTRY = 'Bash(kill:*)';
+const FAIL_MARK = String.fromCodePoint(0x274c);
+
+test('mock sprint: a refused regression-playbook permission degrades the regression pass and still reaches Harvest', { timeout: 300000 }, async () => {
+    const composeCalls = [];
+    const sc = await withScenarioMarkers('regressionperms', async () => runDevelopLoopScenario('regressionperms', {
+        ...SCENARIO,
+        regressionHandler: PASSING_REGRESSION,
+        beforeSprint: async ({ tempDir }) => {
+            await fs.writeFile(path.join(tempDir, 'regression-test-playbook.md'), [
+                '# Regression',
+                '',
+                '## Permissions',
+                '',
+                `- \`${REFUSED_ENTRY}\` -- stop steps.`,
+                '',
+                '## Run',
+                'Run the full suite, then the sandbox smoke test, then Teardown.',
+            ].join('\n'));
+        },
+        callToolFactory: (executeCommand) => {
+            const base = defaultMockCallTool({ executeCommand });
+            return async (name, toolArgs) => {
+                if (name === 'compose_permissions') {
+                    composeCalls.push(toolArgs);
+                    return { content: [{ type: 'text', text: `${FAIL_MARK} Refused to auto-grant ${REFUSED_ENTRY}: matches the never-auto-grant list` }] };
+                }
+                return base(name, toolArgs);
+            };
+        },
+    }));
+
+    // Non-vacuity: the real provisioner really read the playbook and really asked for the entry.
+    assert.ok(
+        composeCalls.some((a) => Array.isArray(a.grant) && a.grant.includes(REFUSED_ENTRY)),
+        `the provisioner must have asked compose_permissions for ${REFUSED_ENTRY}; calls: ${JSON.stringify(composeCalls)}`,
+    );
+    // Loud: the failure is logged, naming the runbook and the entry.
+    assert.ok(
+        sc.logs.some((l) => l.includes('Regression pass reported FAILURES') && l.includes('regression-test-playbook.md') && l.includes(REFUSED_ENTRY)),
+        `the regression provisioning failure must be logged naming runbook and entry; got: ${JSON.stringify(sc.logs.filter((l) => l.includes('Regression')))}`,
+    );
+    // The runner was not dispatched onto a member missing its grants.
+    assert.ok(!sc.dispatched.some((d) => d.agent === 'regression-test-runner'),
+        `the regression runner must not be dispatched; dispatched: ${JSON.stringify(sc.dispatched.map((d) => d.agent))}`);
+    // Not an abort: the sprint completed, reached Harvest, and kept its verdict.
+    assert.ok(!sc.error, `the sprint must not abort: ${sc.error && sc.error.message}`);
+    assert.ok(sc.dispatched.some((d) => d.agent === 'harvester'),
+        `Harvest must still run; dispatched: ${JSON.stringify(sc.dispatched.map((d) => d.agent))}`);
+    assert.ok(sc.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')),
+        'Publish PR must still run (its create-pull-request command must be issued)');
+    assert.equal(sc.result.verdict, 'PASS', `the already-decided verdict must stand, got: ${JSON.stringify(sc.result)}`);
 });

@@ -44,15 +44,29 @@
 // finalOpenAtGoal, and a regression failure therefore carries over to a future
 // sprint instead of retroactively blocking the sprint that happened to find it.
 //
-// NO CATCH BLOCK HERE, BY DESIGN. This phase is informational and must never
-// abort the sprint, but the soft-fail that guarantees it is NOT a try/catch in
-// this file -- it is the 'regression-test-runner' row's catch-all degrade in
-// ../role-policies.mjs, executed by ../dispatch-role.mjs (apra-fleet-3swo.5.7).
-// Do not reintroduce a local catch: the row already enumerates every class it
+// NO CATCH AROUND THE DISPATCH, BY DESIGN. This phase is informational and must
+// never abort the sprint, but the soft-fail that guarantees it for the dispatch
+// is NOT a try/catch in this file -- it is the 'regression-test-runner' row's
+// catch-all degrade in ../role-policies.mjs, executed by ../dispatch-role.mjs
+// (apra-fleet-3swo.5.7). The only local catch is the pre-dispatch provisioning
+// one described under "THE ONE LOCAL CATCH" below. Do not add a catch around
+// the dispatch: the row already enumerates every class it
 // fabricates a summary for, states that unrecognised classes degrade too, and
 // names the only two signals it deliberately rethrows (an operator cancellation
 // and a blown spend ceiling, both RUN-level control signals rather than "the
 // regression phase failed"). See the comment kept at the dispatch below.
+//
+// THE ONE LOCAL CATCH, AND WHY IT IS NOT THE DISPATCH CATCH. The pre-dispatch
+// runbook-permissions provisioning runs BEFORE dispatchRole, so the row's
+// degrade cannot see it. That provisioner fails loudly (it throws, naming the
+// runbook and the entries it could not grant) rather than logging and
+// continuing -- and left uncaught that loud failure would escape this phase
+// and turn an already-decided sprint into a terminal ABORTED, skipping Harvest
+// and Publish PR. So provisioning alone is wrapped: any failure there becomes
+// a FAILED, schema-shaped regressionResult whose summary names the runbook and
+// the entries, logged loudly, with no dispatch (the runner would only stop on
+// the same missing grants). The same two run-level control signals the row
+// rethrows (degrade.rethrowsRunControlSignals) still propagate here.
 //
 // WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. dispatchCtx,
 // getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
@@ -69,7 +83,32 @@
 // baselines are pinned rather than assumed.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, errorClassNames } from '../dispatch-role.mjs';
+import { policyFor } from '../role-policies.mjs';
+
+/**
+ * Builds the FAILED regression report for a pass that never dispatched because
+ * the runner's runbook Permissions could not be provisioned. Carries every
+ * regressionReport required field, so the sprint analysis document reports it
+ * like any other failed pass.
+ */
+function provisioningFailureReport(err) {
+    const runbook = err && err.runbook ? err.runbook : 'the regression runbook';
+    const entries = Array.isArray(err && err.entries) && err.entries.length > 0
+        ? ` Entries not granted: ${err.entries.join(', ')}.`
+        : '';
+    return {
+        passed: false,
+        suitePassed: false,
+        smokePassed: false,
+        bugsFiled: [],
+        summary:
+            `Regression pass NOT RUN: provisioning the Permissions section of ${runbook} onto the ` +
+            `regression runner's member failed before dispatch.${entries} ` +
+            `Cause: ${err && err.message ? err.message : String(err)} ` +
+            `Fix the runbook's Permissions section or the member's grants, then re-run the regression pass.`,
+    };
+}
 
 /**
  * Runs the once-per-sprint Regression Test phase. Informational: its result
@@ -99,7 +138,17 @@ export async function runRegressionTestPhase({
 }) {
     phase(`Regression Test C${finalCycleLabel}`);
     await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
-    await ensureDeployPermissions(getMemberForRole('regression-test-runner'), 'regression-test-runner');
+    // Loud but non-aborting: see "THE ONE LOCAL CATCH" in this file's header.
+    try {
+        await ensureDeployPermissions(getMemberForRole('regression-test-runner'), 'regression-test-runner');
+    } catch (err) {
+        const controlSignals = policyFor('regression-test-runner').degrade.rethrowsRunControlSignals;
+        if (controlSignals.some((name) => errorClassNames(err).includes(name))) throw err;
+        regressionResult = provisioningFailureReport(err);
+        log(`Regression pass reported FAILURES (not dispatched -- runbook permissions provisioning failed): ${regressionResult.summary}`);
+        await updateDashboard();
+        return { regressionResult };
+    }
     // The real functional suite alone spends roughly one turn per liveness
     // poll for the better part of an hour, and this single dispatch carries
     // both it and the sandbox smoke sprint -- hence the large turn budget
