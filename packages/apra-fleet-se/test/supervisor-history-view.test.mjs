@@ -256,3 +256,56 @@ describe('history-view -- wired as the /sprints/:id/live fallthrough renderer', 
         assert.strictEqual(res.status, 404);
     });
 });
+
+describe('history-view -- GET /sprints/:id/history resolves the mount prefix itself', () => {
+    // (apra-fleet-i9ag.3.9) The DEDICATED History route is entered directly --
+    // nothing threads a mount prefix into it the way bin/serve.mjs threads the
+    // live proxy's resolved value into the /sprints/:id/live fallthrough tested
+    // above. It therefore calls resolveMountPrefix(req) itself, so the SAME
+    // page carries a correct back-link whether it was opened on the
+    // supervisor's own port or through the console's /ext/<id> iframe hop.
+    // Previously handleGet dropped the prefix entirely, so the History page's
+    // back-link left the console's mount point behind when embedded.
+    let dir;
+    let sup;
+    let port;
+    const anchorSuffix = '/#' + sprintCardAnchorId('finished-1');
+
+    before(async () => {
+        dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-history-view-mount-'));
+        await fs.mkdir(path.join(dir, 'old_sprints'), { recursive: true });
+        await fs.writeFile(path.join(dir, 'old_sprints', 'finished-1.json'), JSON.stringify(SAMPLE_STATE));
+
+        const view = createHistoryView({ env: { APRA_FLEET_DATA_DIR: dir } });
+        sup = createSupervisor({ port: 0 });
+        registerHistoryViewRoutes(sup, view);
+        await sup.start();
+        port = sup.server.address().port;
+    });
+
+    after(async () => {
+        await sup.stop('test');
+        await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    test('back-link is prefixed exactly once, with target="_top", when the console mount-path header is set', async () => {
+        const res = await getText(port, '/sprints/finished-1/history', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="/ext/se' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('/ext/se/ext/se'), 'the prefix must be applied exactly once, never doubled');
+    });
+
+    test('back-link stays rooted at / when no mount-path header is set (serve-direct is unchanged)', async () => {
+        const res = await getText(port, '/sprints/finished-1/history');
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('href="/ext/'), 'no prefix may appear when none was sent');
+    });
+
+    test('a hostile mount-path header fails closed to the unprefixed back-link', async () => {
+        const res = await getText(port, '/sprints/finished-1/history', { headers: { [MOUNT_PATH_HEADER]: '//evil.example' } });
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('evil.example'), 'a protocol-relative header value must never reach the rendered page');
+    });
+});
