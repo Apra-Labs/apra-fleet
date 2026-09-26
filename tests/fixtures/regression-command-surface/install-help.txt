@@ -27,3 +27,8 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
+
+Services (SEA + --transport http):
+  Two OS services are registered, each with its own unit/task and its own
+  start/stop/status reporting: the apra-fleet MCP server, and the fleet-sprint
+  supervisor (workflows/fleet-sprint/bin/serve.mjs, skipped with --workflows none).

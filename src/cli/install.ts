@@ -6,6 +6,7 @@ import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
+import { registerSupervisorService } from '../services/supervisor-service.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
@@ -950,7 +951,12 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+
+Services (SEA + --transport http):
+  Two OS services are registered, each with its own unit/task and its own
+  start/stop/status reporting: the apra-fleet MCP server, and the fleet-sprint
+  supervisor (workflows/fleet-sprint/bin/serve.mjs, skipped with --workflows none).`);
     process.exit(0);
     return;
   }
@@ -1689,10 +1695,20 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode, workflowsMode);
 
-  // --- Step N: Register and start service (SEA + HTTP mode only) ---
+  // --- Step N: Register and start services (SEA + HTTP mode only) ---
+  //
+  // TWO independent OS-level services are registered here (see
+  // src/services/service-manager/types.ts's ServiceId):
+  //   1. 'mcp-server'       -- the apra-fleet MCP server binary (unchanged).
+  //   2. 'fleet-supervisor' -- the fleet-sprint supervisor (bin/serve.mjs),
+  //      only when the workflow assets that contain it were installed.
+  // Each has its own unit/plist/task, so one can be stopped, restarted or
+  // uninstalled without touching the other.
   let serviceRegistered = false;
+  let supervisorServiceRegistered = false;
+  let supervisorServiceAttempted = false;
   if (serviceStep) {
-    console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    console.log(`  [${totalSteps}/${totalSteps}] Registering and starting services...`);
     const svcMgr = await getServiceManager();
     try {
       await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
@@ -1705,6 +1721,38 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+    }
+
+    // The supervisor lives inside the installed fleet-sprint workflow tree, so
+    // it can only be registered when that tree was just installed.
+    //
+    // Unlike the MCP server step above, a supervisor registration failure is
+    // FATAL. An install that reports success while the always-on supervisor was
+    // silently skipped is a false success: nothing restarts it after a reboot
+    // and the operator has no way to notice until a sprint silently stops
+    // running. The one legitimate non-registration -- `--workflows none`, where
+    // the supervisor was never installed to begin with -- is reported explicitly
+    // and leaves the install successful.
+    if (installWorkflows) {
+      supervisorServiceAttempted = true;
+      const result = await registerSupervisorService(binaryPath);
+      supervisorServiceRegistered = result.registered;
+      if (result.registered) {
+        console.log('    [OK] fleet-supervisor service registered and started');
+      } else {
+        console.error(
+          `\nError: the fleet-supervisor service could not be registered: ${result.reason}\n` +
+            `       The always-on fleet-sprint supervisor would not survive a reboot, so this\n` +
+            `       install is incomplete. Resolve the reason above and re-run 'apra-fleet install'\n` +
+            `       (or install with --workflows none if you do not want the supervisor at all).`,
+        );
+        process.exit(1);
+      }
+    } else {
+      console.log(
+        '    fleet-supervisor service NOT registered: installed with --workflows none, so the ' +
+          'workflow assets that contain the supervisor are absent.',
+      );
     }
   }
 
@@ -1721,6 +1769,9 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
+  const supervisorLine = supervisorServiceAttempted
+    ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and running' : 'registration skipped'}`
+    : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
@@ -1728,7 +1779,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
-  Dolt:        ${doltVersion}${serviceLine}
+  Dolt:        ${doltVersion}${serviceLine}${supervisorLine}
 
 ${instructions}${forceNote}
 `);

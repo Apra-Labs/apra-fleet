@@ -2,13 +2,11 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { ServiceManager, ServiceStatus } from './types.js';
-import { LINUX_UNIT_NAME } from './types.js';
+import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
+import { DEFAULT_SERVICE_ID, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
-const UNIT_PATH = path.join(UNIT_DIR, LINUX_UNIT_NAME);
-const SERVICE_NAME = LINUX_UNIT_NAME.replace(/\.service$/, '');
 
 function checkSystemd(): void {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
@@ -19,16 +17,39 @@ function checkSystemd(): void {
 }
 
 export class LinuxServiceManager implements ServiceManager {
-  async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
+  readonly serviceId: ServiceId;
+  private readonly descriptor: ServiceDescriptor;
+  /** Absolute path of this service's unit file under ~/.config/systemd/user. */
+  private readonly unitPath: string;
+  /** Unit name without the .service suffix, as systemctl takes it. */
+  private readonly unitName: string;
+
+  constructor(serviceId: ServiceId = DEFAULT_SERVICE_ID) {
+    this.serviceId = serviceId;
+    this.descriptor = getServiceDescriptor(serviceId);
+    this.unitPath = path.join(UNIT_DIR, this.descriptor.linuxUnitName);
+    this.unitName = this.descriptor.linuxUnitName.replace(/\.service$/, '');
+  }
+
+  async register(
+    binaryPath: string, args: string[], logPath: string, options: RegisterOptions = {},
+  ): Promise<void> {
     checkSystemd();
     const unit = [
       '[Unit]',
-      'Description=Apra Fleet MCP Server',
+      `Description=${this.descriptor.description}`,
       '',
       '[Service]',
       'Type=simple',
-      `ExecStart=${binaryPath} ${args.join(' ')}`,
-      'Restart=on-failure',
+      // The executable is quoted because it now lives under the operator's home
+      // directory (<BIN_DIR>/apra-fleet), and systemd splits ExecStart on
+      // whitespace -- an unquoted path containing a space would silently produce
+      // a broken unit. systemd honours double quotes here. macos.ts passes a
+      // ProgramArguments array and windows.ts quotes inside the wrapper .bat, so
+      // only this systemd line needs it.
+      `ExecStart="${binaryPath}" ${args.join(' ')}`,
+      ...(options.workingDirectory ? [`WorkingDirectory=${options.workingDirectory}`] : []),
+      `Restart=${this.descriptor.restartOnFailure ? 'on-failure' : 'no'}`,
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',
@@ -37,9 +58,9 @@ export class LinuxServiceManager implements ServiceManager {
       '',
     ].join('\n');
     fs.mkdirSync(UNIT_DIR, { recursive: true });
-    fs.writeFileSync(UNIT_PATH, unit, 'utf8');
+    fs.writeFileSync(this.unitPath, unit, 'utf8');
     execFileSync('systemctl', ['--user', 'daemon-reload']);
-    execFileSync('systemctl', ['--user', 'enable', SERVICE_NAME]);
+    execFileSync('systemctl', ['--user', 'enable', this.unitName]);
     try {
       execFileSync('loginctl', ['enable-linger', os.userInfo().username]);
     } catch (err) {
@@ -48,40 +69,48 @@ export class LinuxServiceManager implements ServiceManager {
   }
 
   async unregister(): Promise<void> {
-    await gracefulStopByServerJson();
+    if (this.descriptor.gracefulStopViaServerJson) {
+      await gracefulStopByServerJson();
+    }
     checkSystemd();
-    try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME]); } catch {}
-    try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME]); } catch {}
-    try { fs.unlinkSync(UNIT_PATH); } catch {}
+    try { execFileSync('systemctl', ['--user', 'disable', this.unitName]); } catch {}
+    try { execFileSync('systemctl', ['--user', 'stop', this.unitName]); } catch {}
+    try { fs.unlinkSync(this.unitPath); } catch {}
     try { execFileSync('systemctl', ['--user', 'daemon-reload']); } catch {}
   }
 
   async start(): Promise<void> {
     checkSystemd();
-    execFileSync('systemctl', ['--user', 'start', SERVICE_NAME]);
+    execFileSync('systemctl', ['--user', 'start', this.unitName]);
   }
 
   async stop(): Promise<void> {
     checkSystemd();
-    await gracefulStopByServerJson();
+    if (this.descriptor.gracefulStopViaServerJson) {
+      await gracefulStopByServerJson();
+      return;
+    }
+    // Services other than the MCP server never write server.json -- stop them
+    // through systemd itself.
+    execFileSync('systemctl', ['--user', 'stop', this.unitName]);
   }
 
   async query(): Promise<ServiceStatus> {
     checkSystemd();
-    if (!fs.existsSync(UNIT_PATH)) {
+    if (!fs.existsSync(this.unitPath)) {
       return { installed: false, running: false };
     }
     let running = false;
     let enabled: boolean | undefined;
     try {
       const active = execFileSync(
-        'systemctl', ['--user', 'is-active', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-active', this.unitName], { encoding: 'utf8' },
       ).trim();
       running = active === 'active';
     } catch {}
     try {
       const enabledOut = execFileSync(
-        'systemctl', ['--user', 'is-enabled', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-enabled', this.unitName], { encoding: 'utf8' },
       ).trim();
       enabled = enabledOut === 'enabled';
     } catch {}
@@ -89,6 +118,6 @@ export class LinuxServiceManager implements ServiceManager {
   }
 
   async isInstalled(): Promise<boolean> {
-    return fs.existsSync(UNIT_PATH);
+    return fs.existsSync(this.unitPath);
   }
 }

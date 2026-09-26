@@ -6,7 +6,30 @@ import { SERVER_INFO_PATH, FLEET_DIR } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isPidAlive, postShutdown } from '../utils/process-utils.js';
 
+/**
+ * Stop the fleet-supervisor service when it is registered. Best-effort and
+ * independent of the MCP server's own stop path -- the supervisor never writes
+ * server.json, so its manager stops it through the platform supervisor
+ * (systemctl stop / launchctl bootout on Unix; a process-tree kill on
+ * Windows). Best-effort means tolerating "not registered"/"already stopped",
+ * NOT reporting a failed termination as success: the manager throws when it
+ * cannot confirm the process is gone, and that lands in the catch below as a
+ * warning instead of "Fleet supervisor service stopped."
+ */
+async function stopSupervisorServiceIfInstalled(): Promise<void> {
+  try {
+    const supervisorMgr = await getServiceManager('fleet-supervisor');
+    if (!(await supervisorMgr.isInstalled())) return;
+    await supervisorMgr.stop();
+    console.log('Fleet supervisor service stopped.');
+  } catch (err: any) {
+    console.warn(`Fleet supervisor service stop failed (${err?.message ?? err}).`);
+  }
+}
+
 export async function runStop(_args: string[]): Promise<void> {
+  await stopSupervisorServiceIfInstalled();
+
   const svcMgr = await getServiceManager();
   if (await svcMgr.isInstalled()) {
     await svcMgr.stop();

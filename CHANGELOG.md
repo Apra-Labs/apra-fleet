@@ -2,6 +2,91 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
+
+Sprint goal: let the fleet-supervisor OS service start on a machine that has
+only the released `apra-fleet` binary and no separate `node` install, ship the
+supervisor's source inside the published npm package so an npm-installed
+`serve.mjs` can actually resolve its imports, and make a supervisor
+registration failure a loud, non-zero install error instead of a silent
+advisory. All of the code and test work landed and is independently verified
+(build green, full `npm test` green, pack-size gate green, zero remaining
+references to the deleted node-path-resolution helper, `npm pack --dry-run`
+confirms the supervisor source ships). The sprint verdict is nonetheless FAIL:
+a documentation page added by this same sprint (`docs/install.md`) still
+describes the OLD behaviour it replaced -- a node-path unit, a
+resolved-at-install-time node executable, and a non-fatal registration
+failure -- which is the exact inversion of what shipped and is left open as a
+reopened, unclosed issue for a follow-up sprint to fix (`llms-full.txt` is
+generated from README/docs and will need regenerating once that page is
+corrected).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $28.7711.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.8045 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **`apra-fleet supervisor`**: a new foreground subcommand that boots the
+  installed fleet-sprint supervisor (`bin/serve.mjs`) on the running
+  binary's own embedded runtime -- no separate `node` on PATH required.
+  Arguments after `supervisor` pass through verbatim. See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md)
+  for the no-double-boot design this relies on.
+- **The fleet-supervisor OS service now runs `<installed apra-fleet binary>
+  supervisor`**, not a resolved node path -- the dead-code
+  node-executable-resolution helper this replaces is gone entirely
+  (zero references left in the tree).
+- **Supervisor registration failing at install time is now a loud, non-zero
+  install failure** naming the reason, replacing the previous silent
+  advisory-and-continue behaviour. `install --workflows none` (which never
+  installs the supervisor's source to begin with) remains the one
+  legitimate non-registration and is reported as such.
+- **The OS service manager is generalized to multiple named services**
+  (`mcp-server`, `fleet-supervisor`), each with its own unit/plist/scheduled
+  task so either can be stopped, restarted, or removed independently of the
+  other; per-service restart policy and stop mechanism live on a shared
+  descriptor table instead of being duplicated per platform.
+- **`packages/apra-fleet-se/src/` now ships inside the published npm
+  package's `files` array**, closing the gap where an npm-installed
+  `bin/serve.mjs` could not resolve its own `../src/supervisor/*.mjs`
+  imports; a new test walks every import reachable from `serve.mjs` and
+  guards that all of it is published.
+- **Windows service teardown terminates the whole process tree**, not just
+  the scheduled task's own wrapper process, on both `stop` and `unregister` --
+  closing an orphaned-process gap where the supervisor could survive a
+  stop/uninstall still bound to its port.
+- See
+  [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md)
+  for the formal schema this sprint also wrote down: how a project, its one
+  beads database, its members, and the supervisor relate.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open for a future sprint):
+- **Reopened, blocking**: `docs/install.md`'s "Two OS-level services" section
+  still documents the pre-sprint behaviour (node-path unit, resolved node
+  executable, non-fatal registration) that this sprint replaced -- an agent
+  or operator reading it will misdiagnose a failed install. Needs a doc-only
+  fix plus an `llms-full.txt` regeneration.
+- On macOS, `apra-fleet stop` then `apra-fleet start` cannot restart the
+  supervisor service -- `stop` unloads the launchd job entirely and `start`
+  only attempts a `kickstart`, which fails for a job that is no longer
+  bootstrapped; currently downgraded to a warning rather than fixed.
+- `apra-fleet stop` is missing the non-default-instance guard that
+  `apra-fleet start` already has, so running `stop` under an overridden
+  `APRA_FLEET_DATA_DIR`/`APRA_FLEET_PORT` stops the machine-global
+  supervisor belonging to the default instance instead of leaving it alone.
+- Pack-size headroom dropped to about 12.5% after shipping the supervisor
+  source; still under the gate but worth a deliberate decision (raise the
+  threshold, or ship only the subtree reachable from `serve.mjs`) before the
+  next moderate asset addition trips it.
+- The supervisor's registered `WorkingDirectory` still does not point at the
+  project it supervises (a pre-existing, separately tracked gap -- see
+  `docs/project-model.md`).
+
 ## [Unreleased] -- Member edit and compose-permissions inputs in the console drawer
 
 Sprint goal: give the console's member drawer an in-place edit form for the
@@ -51,7 +136,6 @@ reverting a concurrent change made by someone else while the drawer was
 open. This is being reopened rather than shipped as-is. See
 [docs/console-architecture.md](docs/console-architecture.md) for the
 dirty-diff design and the invariant this defect violates.
-
 ## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
 
 Sprint goal: make the member registry's `env` name-value map actually reach

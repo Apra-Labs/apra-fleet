@@ -123,7 +123,22 @@ defeats the point of this setup. Double-check your launch payload.
 
 ## Step 4 -- Launch the supervisor
 
-From INSIDE the target project (its root, or any folder under it):
+If you installed a released `apra-fleet` binary, `apra-fleet install` has
+already registered the `fleet-supervisor` OS service and started it, so
+there is normally nothing to do here -- check with `apra-fleet status`,
+which reports a `Service (fleet supervisor):` line. To run it in the
+foreground instead (on the binary's own embedded runtime, no separate `node`
+needed), from INSIDE the target project:
+```bash
+apra-fleet supervisor          # detached/background; runs indefinitely
+```
+That launches the copy staged by the installer at
+`~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs`, using the binary at
+`~/.apra-fleet/bin/apra-fleet`. Every option below works unchanged after
+`apra-fleet supervisor`, which passes its arguments through verbatim.
+
+In a source checkout (Step 1's copied tree), launch it with your own `node`
+from INSIDE the target project (its root, or any folder under it):
 ```bash
 node packages/apra-fleet-se/bin/serve.mjs   # detached/background; runs indefinitely
 ```
@@ -196,7 +211,7 @@ describes.
 | Dev member checkout(s) | Full git clone of the target project | `doer`/`reviewer`/`planner`/`plan-reviewer` dispatches -- actual code changes |
 | Deploy member checkout (optional) | Full git clone, independent of dev members | `deployer`/`integ-test-runner`/`regression-test-runner` dispatches |
 | Orchestrator folder | `.git/` (Dolt refs only) + `.beads/` -- no source at all | bd/dolt sync brackets, PR-raise REST calls |
-| Supervisor process folder | The copied `apra-fleet-se` source | Running `bin/serve.mjs` itself -- this is a plain Node process launch location, not a registered member |
+| Supervisor process folder | The copied `apra-fleet-se` source, or the installer-staged `~/.apra-fleet/workflows/fleet-sprint` | Running the supervisor itself -- `apra-fleet supervisor` (or the registered `fleet-supervisor` service) for an installed binary, `node bin/serve.mjs` in a source checkout. Either way a process launch location, not a registered member |
 
 The last row is worth calling out: the supervisor *process* needs the real
 `.mjs` source present somewhere to run at all (it is not bundled into any

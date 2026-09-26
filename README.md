@@ -501,7 +501,8 @@ for the dirty-diff design and the invariant this defect violates.
 | Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
 | Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
-| Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| Auto-sprint internals (cycle loop, stall detection, budget, topology; supervisor OS-service registration and binary-subcommand launcher) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| The fleet project model (supervisor, members, beads, and how they relate) | [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | fleet-integrator merge gate (read-only PR status script + agent merge/repair/wait/skip loop for an integration branch) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md) |

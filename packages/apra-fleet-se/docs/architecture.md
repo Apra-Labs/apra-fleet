@@ -1370,6 +1370,78 @@ builds a real installed tree and walks the full static import graph from the
 installed `bin/serve.mjs`, so it is also the authoritative, always-current
 enumeration of which modules the supervisor reaches.
 
+## Supervisor: OS service registration and the binary-subcommand launcher
+
+The supervisor's auto-start-on-boot registration is a second, independent OS
+service alongside the MCP server's, and it is started by the installed
+`apra-fleet` binary's own `supervisor` subcommand rather than by spawning a
+separate `node` process. Both properties are load-bearing, not incidental:
+
+- **Why not `<node> <installed>/bin/serve.mjs`.** A unit file has no shell rc
+  and no PATH the way an interactive session does, so registering a bare
+  `node` command never resolves under nvm/fnm/volta, and under the released
+  SEA binary `node` may not exist on the machine at all --
+  `process.execPath` there IS the `apra-fleet` binary, not a node runtime.
+  Resolving an absolute node path at install time and baking it into the unit
+  used to paper over the PATH problem, but it fails outright on a fresh
+  machine that only has the released binary: there is no node to resolve, the
+  service is never registered, and (before this fix) install still reported
+  success. The durable fix is to never depend on an external node at all --
+  point the unit at `<installed apra-fleet binary> supervisor` and let the
+  binary's own embedded runtime boot the supervisor in-process.
+- **The launcher's double-boot trap.** `bin/serve.mjs` self-executes when
+  `import.meta.url` matches `pathToFileURL(process.argv[1]).href` (its own
+  `isMainModule()` guard). The generic SEA workflow trampoline
+  (`apra-fleet workflow <name>`) runs an installed entry point by rewriting
+  `process.argv[1]` to point at that entry and letting the module's own
+  self-execution guard fire -- but `serve.mjs` cannot be launched that way
+  from the `supervisor` subcommand, because the subcommand also needs the
+  `{ exitCode }` that `serveMain()` returns, which a self-executing module
+  cannot hand back through an argv rewrite. The subcommand launcher
+  (`src/cli/supervisor.ts`) therefore does the opposite: it deliberately never
+  touches `process.argv`, and instead imports `serve.mjs` and calls its
+  exported `serveMain(argv)` directly. Combining both mechanisms (an argv
+  rewrite AND an explicit `serveMain()` call) would boot the supervisor
+  twice and the second HTTP listener would fail on the port -- exactly one
+  boot mechanism must be chosen per entry point, and the subcommand's choice
+  is the explicit call.
+- **Registration is one of two failure classes, and the supervisor's is
+  fatal.** The MCP server's own service registration failing at install time
+  is non-fatal (it warns and continues) because the MCP server can still be
+  reached over stdio. The fleet-supervisor's registration failing is treated
+  as a hard install failure (non-zero exit, reason printed) because a
+  silently-unregistered supervisor is a false success: nothing restarts it
+  after a reboot and there is no other way to reach it. The one legitimate
+  non-registration is `install --workflows none`, which never installs the
+  supervisor's source tree in the first place and reports that explicitly
+  rather than attempting registration and failing.
+- **Two independent services, one registration mechanism.** Each OS-level
+  service (`mcp-server`, `fleet-supervisor`) gets its own unit/plist/scheduled
+  task name so either can be stopped, restarted, or removed without touching
+  the other; the platform-specific managers (`src/services/service-manager/`)
+  are parameterized by a `ServiceId` rather than duplicated per service.
+  `restartOnFailure` and `gracefulStopViaServerJson` are per-service flags on
+  the descriptor, not per-platform: the fleet-supervisor is `Restart=no`
+  (started at boot/login; an exit is treated as intentional) and never writes
+  a `server.json`, so its `stop()` cannot use the MCP server's graceful
+  HTTP-handshake path and instead goes through the platform's own
+  process-tree termination (`taskkill /F /T` on Windows, since the scheduled
+  task's own process is only a wrapper `cmd.exe` and the actual supervisor is
+  its child -- discovery of the wrapper's live pids must happen *before*
+  ending the task, or the parent link the tree-kill needs is gone).
+- **Known gaps, deliberately not closed by this design:** on macOS,
+  `stop()` unloads the launchd job (`launchctl bootout`), but `start()` only
+  `kickstart`s it, which fails for a job no longer bootstrapped -- a
+  stop-then-start cycle currently cannot bring the supervisor back without a
+  full reinstall. `apra-fleet start`'s guard against acting on a
+  non-default instance (`isNonDefaultInstance()`, checked because the
+  registered unit is always machine-global and would otherwise silently run
+  against the wrong instance) does not yet have a matching guard on
+  `apra-fleet stop`. Both are tracked as open follow-up work, not fixed here.
+- **Also still open:** the registered service's `WorkingDirectory` is the
+  installed engine's own path, not the supervised project's -- see
+  `docs/project-model.md`'s rule 1 for that gap and its tracked fix.
+
 ## Supervisor: project store (fleet-supervisor console)
 
 Alongside the reservation ledger described above, the supervisor is gaining
