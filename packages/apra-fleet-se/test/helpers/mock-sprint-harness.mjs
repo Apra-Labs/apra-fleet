@@ -2027,6 +2027,9 @@ export async function runDevelopLoopScenario(tag, {
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
     // string or record) the supervisor would pass as `--expect-beads`.
     beadsIdentity, expectBeads,
+    // Build pipeline mode tests (develop-pipeline.mjs): extra runner args
+    // spread verbatim into executeFile(), e.g. { pipeline: true }.
+    extraRunnerArgs,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2134,6 +2137,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(extraRunnerArgs || {}),
             }, true);
         } catch (err) {
             error = err;

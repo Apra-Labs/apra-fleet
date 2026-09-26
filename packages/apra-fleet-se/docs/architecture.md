@@ -546,6 +546,43 @@ VCSModule replaces that with a provider-agnostic seam:
   changes or is retired, letting the sprint proceed to retry a push against
   a credential that never actually got fixed.
 
+## Build pipeline mode (`--pipeline`)
+
+Opt-in replacement for the Develop & Review loop above (design:
+`docs/lazy-parallel-sprints.md` at the repo root). Implemented in
+`fleet-sprint/phases/develop-pipeline.mjs`; off by default, and with it off
+the round loop runs exactly as before.
+
+- **Scheduling.** Every ready task starts as soon as a builder member is free
+  (optionally capped by `--max-doers`); a task whose planner-predicted files
+  (`metadata.files`) overlap one already building waits for it to land. When a
+  landing unblocks more tasks they start immediately -- there are no rounds.
+- **Isolation.** Each task is built on its own branch,
+  `<sprint-branch>--task-<id>`, cut from the current sprint branch. The doer is
+  dispatched through the same `doer` role row as the round loop, but its
+  git-sync bracket is bound to the task branch with a per-branch code-write key
+  (`git-sync.mjs` `branchCodeWriteKey`), so doers on different task branches
+  may push concurrently while two on the same branch still raise
+  `ConcurrentSyncBracketError`.
+- **Task state.** The doer prompt uses `doer.md`'s externally-managed bead
+  state mode: the doer runs no `bd` command. The orchestrator claims a task
+  when it starts, closes it when it lands, and reopens it if it is given back.
+- **Landing.** One landing at a time, inside the sprint branch's own
+  code-write bracket on the orchestrator: merge the task branch (`--no-ff`),
+  run `--gate-command` if set, `bd close`, then the bracket's G-push/D-push. A
+  conflict (merge aborted) or a gate failure (merge undone) hands the task back
+  to its doer, which merges the latest sprint branch into its task branch and
+  fixes it; after three bounces the task is given back for the next cycle.
+- **Review.** No per-round review runs. Cycle Evaluation's existing Re-Review
+  runs once every task has landed, after Deploy/Integ Test.
+
+This relaxes "Serialized writers are load-bearing"
+(`docs/fleet-sprint-phase-routing-design.md`) only for doers: the sprint
+branch and the task database still have exactly one writer each, the
+orchestrator, and only for the seconds a landing takes. In a shared-workspace
+fleet (no `--sync`) members share one checkout, so the pipeline runs one task
+at a time there.
+
 ## Orchestrator-bracketed git sync (`synced` mode)
 
 In `synced` mode, every dispatch that reads or writes git-tracked state is

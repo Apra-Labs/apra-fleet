@@ -121,6 +121,7 @@ export const GUARDED_MODULES = [
     // whole instead of quietly shrinking runner.js's scanned surface.
     'phases/replan.mjs',
     'phases/develop.mjs',
+    'phases/develop-pipeline.mjs',
     // apra-fleet-3swo.6.5: the per-round Review and the per-cycle Deploy
     // phases. Same nested-entry reporting caveat as the four above (they are
     // always REPORTED as 'review.mjs' and 'deploy.mjs'), so the same rule

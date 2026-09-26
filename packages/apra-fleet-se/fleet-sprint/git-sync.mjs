@@ -477,7 +477,24 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
         }
         if (dispatchThrew) throw dispatchThrew;
         return dispatchResult;
-    }, pushCode ? { exclusiveKey: CODE_WRITE_BRACKET_KEY, label: `withGitSync(${member})` } : undefined);
+    }, pushCode ? { exclusiveKey: ctx.codeWriteKey || CODE_WRITE_BRACKET_KEY, label: `withGitSync(${member})` } : undefined);
+}
+
+/**
+ * The code-write exclusion key for a createGitSync() bound to its OWN branch.
+ *
+ * Build pipeline mode (phases/develop-pipeline.mjs) gives every task its own
+ * branch, and each doer's bracket pushes only to that branch. The protected
+ * resource is still "one writer per branch", so the key is keyed by branch:
+ * two task brackets on DIFFERENT branches may overlap (that is the point of
+ * the pipeline), while two on the SAME branch still raise
+ * ConcurrentSyncBracketError. The shared sprint branch keeps the plain
+ * CODE_WRITE_BRACKET_KEY, so this does not weaken the 3swo.4.12 decision
+ * above: that reasoning is about brackets that all push to the one sprint
+ * branch, and none of those change.
+ */
+export function branchCodeWriteKey(branch) {
+    return `${CODE_WRITE_BRACKET_KEY}:${branch}`;
 }
 
 /**

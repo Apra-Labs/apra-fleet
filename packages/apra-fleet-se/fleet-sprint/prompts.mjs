@@ -351,6 +351,76 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
     return lines.join('\n\n');
 }
 
+// Shared by both pipeline doer prompts: the doer.md "externally-managed bead
+// state" switch, stated in the words that contract keys on, plus the
+// permission-block rule every doer prompt carries.
+const PIPELINE_DOER_RULES = [
+    'BEAD STATE IS MANAGED BY THE ORCHESTRATOR: the orchestrator manages claim/close for your ' +
+    'assigned bead ids, and you must NOT run any `bd` command (no claim, no close, no update, no ' +
+    'show). Everything you need about the work is in this prompt. Work only inside your current ' +
+    'checkout, on the task branch named above, and commit your work there. Do not push; the ' +
+    'orchestrator publishes the branch and merges it. When done, stop at the VERIFY checkpoint and ' +
+    'list the bead ids you completed in `closedIds`.',
+    'PERMISSION BLOCKS MUST BE SURFACED, NOT ROUTED AROUND: if any tool or git invocation is blocked ' +
+    'by the permission layer, STOP and report the block in your notes with status "BLOCKED" -- do ' +
+    'NOT substitute a wrapper script, an alternate binary, or any other workaround whose purpose is ' +
+    'to bypass the block, even if you judge the underlying operation safe.',
+];
+
+/**
+ * Pipeline-mode doer prompt (docs/lazy-parallel-sprints.md): one task on its
+ * own branch, full task details inlined because the doer runs no `bd`.
+ * `task` is a bd JSON row (id, title, description, acceptance_criteria, notes).
+ */
+export function buildPipelineDoerPrompt({ task, taskBranch, sprintBranch, kbKnowledge }) {
+    const details = {
+        id: task.id,
+        title: task.title,
+        description: task.description || '',
+        acceptance_criteria: task.acceptance_criteria || '',
+        notes: task.notes || '',
+    };
+    return [
+        `Sprint track branch to work on: ${taskBranch}. It is a task branch cut from the sprint branch ${sprintBranch}; ` +
+        'work on it only and never switch to or push another branch.',
+        `Assigned bead ids (comma-separated): ${task.id}`,
+        'GOAL FOR THIS TASK: the code for this one task is done and the unit tests you touched or added pass. ' +
+        'You do not need to make a whole feature work end to end -- other tasks cover the rest, and the ' +
+        'feature is tested once every task has landed. Keep the change focused on this task.',
+        'Before finishing, check your own work the way a reviewer will: it meets every acceptance ' +
+        'criterion below, follows the conventions already used in this repository, has no leftover ' +
+        'debug code, and the relevant unit tests pass.',
+        wrapUntrustedBlock('task', JSON.stringify(details, null, 2)),
+        ...PIPELINE_DOER_RULES,
+        ...kbKnowledgeBlock(kbKnowledge),
+    ].join('\n\n');
+}
+
+/**
+ * Pipeline-mode fix prompt: the task's branch could not land. `reason` is
+ * 'conflict' (merge conflict with what already landed) or 'gate' (the
+ * orchestrator's check failed after merging). The doer MERGES the latest
+ * sprint branch rather than rebasing, so its branch only ever moves forward.
+ */
+export function buildPipelineFixPrompt({ task, taskBranch, sprintBranch, mergeRef, reason, conflictFiles = [], gateOutput = '' }) {
+    const why = reason === 'conflict'
+        ? `Your branch conflicts with work that already landed on ${sprintBranch}` +
+          (conflictFiles.length ? ` (conflicting files: ${conflictFiles.join(', ')})` : '') + '.'
+        : `After merging your branch onto ${sprintBranch}, the project check failed.`;
+    const lines = [
+        `Sprint track branch to work on: ${taskBranch}. It is a task branch cut from the sprint branch ${sprintBranch}; ` +
+        'work on it only and never switch to or push another branch.',
+        `Assigned bead ids (comma-separated): ${task.id}`,
+        `Your earlier work on this task could not land yet. ${why}`,
+        `Bring your branch up to date by MERGING (not rebasing) the latest sprint work: run "git merge ${mergeRef}", ` +
+        'resolve any conflicts so both your change and the already-landed work keep working, re-run the ' +
+        'unit tests, and commit the result on your task branch.',
+    ];
+    if (gateOutput) lines.push(wrapUntrustedBlock('check.output', gateOutput));
+    lines.push(...PIPELINE_DOER_RULES);
+    return lines.join('\n\n');
+}
+
 export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge }) {
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;

@@ -146,6 +146,22 @@ const KNOWN_ARG_KEYS = new Set([
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
     // orchestrator member's own probed identity becomes the expectation.
     'expect_beads',
+    // Build pipeline mode (docs/lazy-parallel-sprints.md): replaces the
+    // Develop/Review round loop with an event-driven pipeline -- every ready
+    // task is built on its own branch and landed one at a time by the
+    // orchestrator. Off by default; `--pipeline` on the CLI sets it.
+    'pipeline',
+    // True only when every member has its OWN checkout (bin/cli.mjs sets it
+    // from --sync). In a shared-workspace fleet the pipeline still runs, but
+    // one task at a time, since concurrent doers would share one working tree.
+    'pipeline_parallel',
+    // Optional ceiling on concurrently building tasks in pipeline mode.
+    // Absent means no ceiling: every ready task with a free member starts.
+    'max_doers',
+    // Optional command run on the orchestrator after each merge in pipeline
+    // mode (e.g. the project's unit tests); a non-zero exit bounces the task
+    // back to its doer instead of landing it.
+    'gate_command',
 ]);
 
 /**
@@ -385,6 +401,25 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid resume_model_switch "${resumeModelSwitch}": must be a boolean.`);
     }
 
+    // --- pipeline mode (optional, default off) ------------------------------
+    const pipeline = args.pipeline === undefined ? false : args.pipeline;
+    if (typeof pipeline !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid pipeline "${pipeline}": must be a boolean.`);
+    }
+    const pipelineParallel = args.pipeline_parallel === undefined ? false : args.pipeline_parallel;
+    if (typeof pipelineParallel !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid pipeline_parallel "${pipelineParallel}": must be a boolean.`);
+    }
+    if (args.max_doers !== undefined && (!Number.isInteger(args.max_doers) || args.max_doers < 1)) {
+        throw new Error(`[Arg Contract] Invalid max_doers "${args.max_doers}": must be a positive integer.`);
+    }
+    if (args.gate_command !== undefined && (typeof args.gate_command !== 'string' || args.gate_command.trim() === '' || /[\r\n]/.test(args.gate_command))) {
+        throw new Error('[Arg Contract] Invalid gate_command: must be a single-line, non-empty command string.');
+    }
+    if (!pipeline && (args.pipeline_parallel !== undefined || args.max_doers !== undefined || args.gate_command !== undefined)) {
+        throw new Error('[Arg Contract] pipeline_parallel, max_doers and gate_command only apply with pipeline: true.');
+    }
+
     // --- worklist_effort_budget (optional) ---------------------------------
     if (args.worklist_effort_budget !== undefined
         && (typeof args.worklist_effort_budget !== 'number'
@@ -450,5 +485,9 @@ export function validateArgs(args) {
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
+        pipeline,
+        pipelineParallel,
+        maxDoers: args.max_doers,
+        gateCommand: args.gate_command === undefined ? undefined : args.gate_command.trim(),
     };
 }

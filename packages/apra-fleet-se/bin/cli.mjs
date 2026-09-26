@@ -174,6 +174,12 @@ export function buildOptionsSpec() {
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
         // shared-workspace mode (same-HEAD). Mode is never inferred silently.
         sync: { type: 'boolean' },
+        // Build pipeline mode (docs/lazy-parallel-sprints.md): every ready
+        // task builds on its own branch and lands one at a time. Parallel
+        // only with --sync (each member has its own checkout).
+        pipeline: { type: 'boolean' },
+        'max-doers': { type: 'string' },
+        'gate-command': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -223,6 +229,14 @@ Options:
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
                                 uses legacy shared-workspace mode (all members on the same HEAD).
+      --pipeline               Build pipeline mode: every ready task is built on its own branch
+                                and landed onto the sprint branch one at a time; review runs at
+                                the end of each cycle instead of after every round. Tasks build in
+                                parallel only with --sync (each member has its own checkout).
+      --max-doers <n>          (pipeline) Most tasks building at once. Omitted: no limit.
+      --gate-command <cmd>     (pipeline) Command run on the orchestrator after each merge (e.g.
+                                the project's unit tests). Non-zero exit sends the task back to
+                                its doer instead of landing it.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -323,7 +337,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, pipeline, pipelineParallel, maxDoers, gateCommand }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -355,6 +369,14 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    // Build pipeline mode: only forwarded when on, so every non-pipeline
+    // launch hands the runner exactly the args it always did.
+    if (pipeline) {
+        args.pipeline = true;
+        args.pipeline_parallel = Boolean(pipelineParallel);
+        if (maxDoers !== undefined) args.max_doers = maxDoers;
+        if (gateCommand !== undefined) args.gate_command = gateCommand;
+    }
     return args;
 }
 
@@ -606,6 +628,15 @@ async function main() {
     // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
     const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
     const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
+    const maxDoers = values['max-doers'] !== undefined ? Number(values['max-doers']) : undefined;
+    if (maxDoers !== undefined && (!Number.isInteger(maxDoers) || maxDoers < 1)) {
+        console.error(`Error: --max-doers must be a positive integer, got "${values['max-doers']}".`);
+        process.exit(1);
+    }
+    if (!values.pipeline && (values['max-doers'] !== undefined || values['gate-command'] !== undefined)) {
+        console.error('Error: --max-doers and --gate-command only apply with --pipeline.');
+        process.exit(1);
+    }
     // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
     // so malformed JSON fails before any fleet connection; the runner's
     // validateArgs() re-validates the raw string it is handed.
@@ -1030,6 +1061,10 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                pipeline: Boolean(values.pipeline),
+                pipelineParallel: Boolean(values.sync),
+                maxDoers,
+                gateCommand: values['gate-command'],
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

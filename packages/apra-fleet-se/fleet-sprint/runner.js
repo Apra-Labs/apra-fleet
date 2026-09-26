@@ -114,7 +114,7 @@ import { decideEnsureBranchAction } from './branch-ensure.mjs';
 // and the openSyncBracketCount clean-state pause-guard counter they share.
 // POST_DISPATCH_SYNC_RETRY_DELAYS_MS and the mock instant-backoff switch
 // moved with them (apra-fleet-3swo.4.1).
-import { createSyncBrackets, createGitSync } from './git-sync.mjs';
+import { createSyncBrackets, createGitSync, branchCodeWriteKey } from './git-sync.mjs';
 // The ONE dispatch engine (apra-fleet-3swo.5.3). It executes a role's ladder
 // out of role-policies.mjs's data table; TURN_BASES is imported alongside it
 // because the turn-budget constants moved there with the dispatch that
@@ -144,6 +144,9 @@ import { runPlanPhase } from './phases/plan.mjs';
 // drawn and why the loop control around it stayed here.
 import { runReplanPhase } from './phases/replan.mjs';
 import { runDevelopPhase } from './phases/develop.mjs';
+// Build pipeline mode (docs/lazy-parallel-sprints.md): replaces the
+// Develop/Review round loop when validated.pipeline is set.
+import { runBuildPipelinePhase } from './phases/develop-pipeline.mjs';
 // apra-fleet-3swo.6.5: the next two phase() boundaries -- the per-round Review
 // and the per-cycle Deploy. Review still runs inside the Develop/Review round
 // loop (so it too takes `devRounds` already incremented) and hands back the
@@ -1425,6 +1428,20 @@ async function runSprintCycle(context) {
         warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
     });
+    // Build pipeline mode: a git-sync bound to one TASK branch, sharing this
+    // sprint's bracket counter (so the pause guard still sees every open
+    // bracket) but with a per-branch code-write key (branchCodeWriteKey), so
+    // doers on different task branches may push at the same time while the
+    // sprint branch keeps its single-writer key.
+    const makeBranchGitSync = (taskBranch) => createGitSync({
+        brackets: syncBrackets,
+        command, log, branch: taskBranch, baseBranch: validated.baseBranch, args, agent,
+        doltPushMutex, sprintId: sprintMutexId,
+        onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
+        warnWorkflowsPermissionMissing,
+        syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+        codeWriteKey: branchCodeWriteKey(taskBranch),
+    });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
     const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
@@ -2513,7 +2530,24 @@ async function runSprintCycle(context) {
 
         const doerPool = getMembersForRole(ROLE_DOER);
 
-        while (devRounds < 3) {
+        if (validated.pipeline) {
+            // Build pipeline mode: every ready task on its own branch, landed
+            // one at a time; no per-round review (Cycle Evaluation's
+            // Re-Review covers the cycle once everything has landed).
+            await runBuildPipelinePhase({
+                phase, log, command, dispatchCtx,
+                cycle, validated, orchestratorMember,
+                gitSync, makeBranchGitSync, updateDashboard,
+                kbPriming, kbWork, kbQueryTerms, normalizeTierToken,
+                doerPool,
+                listReady: async () => (await readyLeafBeads())
+                    .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
+                    .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
+            });
+            await updateDashboard();
+        }
+
+        while (!validated.pipeline && devRounds < 3) {
             // Same stable ordering and doer-dispatchability filter as
             // `readyBeads` above, and both must apply HERE too: this in-loop
             // list is the one that actually feeds the streak-assignment prompt
