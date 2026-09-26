@@ -43,7 +43,10 @@ export interface ServiceDescriptor {
    * Whether stop() should go through the MCP server's graceful
    * server.json/HTTP shutdown handshake. Only the MCP server writes
    * server.json, so any other service must be stopped through the platform
-   * supervisor instead (systemctl stop / launchctl bootout / schtasks /end).
+   * supervisor instead (systemctl stop / launchctl bootout on Unix; on
+   * Windows a taskkill /F /T of the wrapper's process tree, because the
+   * scheduled task's own process is only the wrapper -- see the mechanism
+   * comment in windows.ts stop()).
    */
   gracefulStopViaServerJson: boolean;
 }
