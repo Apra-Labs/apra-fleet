@@ -71,6 +71,36 @@ export function resolveConsoleBaseUrl(): { ok: true; baseUrl: string } | { ok: f
   return { ok: true, baseUrl: `http://${DEFAULT_HOST}:${DEFAULT_PORT}` };
 }
 
+/**
+ * Join a console base URL (from resolveConsoleBaseUrl(), which may include a
+ * reverse-proxy sub-path such as 'https://fleet.example.com/fleet') with a
+ * console-relative path (e.g. '/ui/#/secret-entry/<token>') into one absolute
+ * URL. Plain `new URL(relativePath, baseUrl)` cannot be used for this: per
+ * RFC 3986/WHATWG URL resolution, a root-relative path (one starting with
+ * '/') REPLACES the base's entire path rather than appending to it, so any
+ * sub-path segment in baseUrl (e.g. '/fleet') is silently discarded --
+ * 'https://fleet.example.com/fleet' + '/ui/#/x' would resolve to
+ * 'https://fleet.example.com/ui/#/x', losing '/fleet'. A reverse proxy
+ * mounting the console under a sub-path is an explicitly supported,
+ * documented deployment (docs/console-architecture.md's 'Console-hosted
+ * secret entry' section), so this join preserves the base's path instead
+ * (apra-fleet-i9ag.11.18). Sole caller: src/tools/credential-store-set.ts.
+ *
+ * If relativePath is already an absolute http(s) URL (defensive: callers are
+ * documented to always hand back a console-relative path, but a future
+ * regression here should still resolve to something sane rather than
+ * double-origin garbage), it is returned as-is.
+ */
+export function joinConsoleUrl(baseUrl: string, relativePath: string): string {
+  if (/^https?:\/\//i.test(relativePath)) {
+    return new URL(relativePath).toString();
+  }
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.replace(/\/+$/, '');
+  const rel = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+  return `${base.origin}${basePath}${rel}`;
+}
+
 export const SERVER_INFO_PATH = path.join(FLEET_DIR, 'server.json');
 
 export const LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet.log');

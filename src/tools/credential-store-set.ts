@@ -3,7 +3,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { credentialSet } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
-import { resolveConsoleBaseUrl } from '../paths.js';
+import { resolveConsoleBaseUrl, joinConsoleUrl } from '../paths.js';
 
 export const credentialStoreSetSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Credential name (alphanumeric, underscores, hyphens, max 64 chars)'),
@@ -90,14 +90,16 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     });
 
     if (result.url && result.expiresAt) {
-      // new URL(relative, base) rather than a naked string concat: result.url
-      // is documented (src/services/secret-entry.ts) to always be a
-      // console-relative path, but resolving it through the URL constructor
-      // means a future regression that hands back something already
-      // absolute (or missing its leading slash) still resolves to a valid,
-      // sane URL per RFC 3986 rather than the double-origin garbage a plain
-      // `${base}${result.url}` concat would silently produce.
-      const absoluteUrl = new URL(result.url, baseUrlResult.baseUrl).toString();
+      // joinConsoleUrl() rather than `new URL(relative, base)` or a naked
+      // string concat: result.url is documented (src/services/secret-entry.ts)
+      // to always be a console-relative path, but a plain URL-constructor
+      // resolve would silently drop any sub-path segment of baseUrlResult.baseUrl
+      // (a reverse-proxy mount, e.g. '/fleet') since a root-relative path
+      // replaces the base's whole path per RFC 3986/WHATWG. joinConsoleUrl()
+      // preserves that sub-path while still resolving to something sane if a
+      // future regression hands back something already absolute or missing
+      // its leading slash (apra-fleet-i9ag.11.18).
+      const absoluteUrl = joinConsoleUrl(baseUrlResult.baseUrl, result.url);
       return {
         text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${absoluteUrl}\n\n` +
           `If the console is reached on a different host or port (a LAN address, an SSH tunnel, or a reverse ` +
