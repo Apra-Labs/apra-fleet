@@ -170,8 +170,13 @@ export const secretEntryRoutes: ConsoleRoute[] = [
 
       const { token, value } = validated.data;
       const result = submitSecretEntry(token, value);
-      // Metadata only -- never the token, never the value.
-      logLine('secret_entry', `submit token=<redacted> ok=${result.status === 'ok'}`);
+      // Metadata only -- never the token, never the value, and never a
+      // thrown onSubmit's message (result.status is one of a closed set
+      // of enum literals, never caller-derived text).
+      logLine(
+        'secret_entry',
+        `submit token=<redacted> ok=${result.status === 'ok'} status=${result.status}`,
+      );
 
       if (result.status === 'ok') {
         sendJson(res, 200, { ok: true });
@@ -179,6 +184,14 @@ export const secretEntryRoutes: ConsoleRoute[] = [
       }
       if (result.status === 'not_found') {
         sendError(res, 404, 'not found');
+        return;
+      }
+      if (result.status === 'error') {
+        // A throwing onSubmit (credential_store_set's credentialSet
+        // wrapper, or submitPassword) already had its message discarded
+        // by submitSecretEntry -- answer a fixed, non-caller-derived
+        // 500 here too, never err.message.
+        sendError(res, 500, 'submit failed');
         return;
       }
       sendError(res, 422, result.error);

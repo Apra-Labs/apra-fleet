@@ -89,6 +89,25 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
       expect(onSubmit).not.toHaveBeenCalled();
     });
 
+    it('a throwing onSubmit returns { status: "error" } with no derived message, and the token survives for a retry', () => {
+      const onSubmit = vi.fn()
+        .mockImplementationOnce(() => {
+          throw new Error('SENTINEL-THROWN-MESSAGE');
+        })
+        .mockReturnValueOnce({ ok: true });
+      const entry = createSecretEntry({ name: 'm1', prompt: 'p', onSubmit });
+
+      const first = submitSecretEntry(entry.token, 'wrong');
+      expect(first).toEqual({ status: 'error' });
+      expect(JSON.stringify(first)).not.toContain('SENTINEL-THROWN-MESSAGE');
+
+      // Token still works on a subsequent successful submit -- a throw does
+      // not consume the one-time entry.
+      const second = submitSecretEntry(entry.token, 'right');
+      expect(second).toEqual({ status: 'ok' });
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+    });
+
     it('a rejected submission returns { status: "rejected", error } and the token survives for a retry', () => {
       const onSubmit = vi.fn()
         .mockReturnValueOnce({ ok: false, error: 'bad value' })
@@ -150,6 +169,32 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
         JSON.stringify(entry),
         JSON.stringify(submitResult),
         JSON.stringify(promptResult),
+        ...logLineSpy.mock.calls.flat().map((a) => JSON.stringify(a)),
+        ...logErrorSpy.mock.calls.flat().map((a) => JSON.stringify(a)),
+        ...logWarnSpy.mock.calls.flat().map((a) => JSON.stringify(a)),
+      ];
+
+      for (const haystack of haystacks) {
+        expect(haystack ?? '').not.toContain(SENTINEL);
+      }
+    });
+
+    it('never returns or logs a thrown onSubmit error message', () => {
+      const logLineSpy = vi.spyOn(logHelpers, 'logLine');
+      const logErrorSpy = vi.spyOn(logHelpers, 'logError');
+      const logWarnSpy = vi.spyOn(logHelpers, 'logWarn');
+
+      const onSubmit = vi.fn(() => {
+        throw new Error(SENTINEL);
+      });
+      const entry = createSecretEntry({ name: 'm1', prompt: 'p', onSubmit });
+
+      const submitResult = submitSecretEntry(entry.token, 'value');
+      expect(submitResult).toEqual({ status: 'error' });
+
+      const haystacks = [
+        JSON.stringify(entry),
+        JSON.stringify(submitResult),
         ...logLineSpy.mock.calls.flat().map((a) => JSON.stringify(a)),
         ...logErrorSpy.mock.calls.flat().map((a) => JSON.stringify(a)),
         ...logWarnSpy.mock.calls.flat().map((a) => JSON.stringify(a)),

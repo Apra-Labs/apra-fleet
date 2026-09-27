@@ -113,13 +113,23 @@ export function getSecretEntryPrompt(token: string): { name: string; prompt: str
 export function submitSecretEntry(
   token: string,
   value: string,
-): { status: 'ok' } | { status: 'not_found' } | { status: 'rejected'; error: string } {
+): { status: 'ok' } | { status: 'not_found' } | { status: 'rejected'; error: string } | { status: 'error' } {
   const key = findToken(token);
   if (!key) return { status: 'not_found' };
   const entry = registry.get(key);
   if (!entry) return { status: 'not_found' };
 
-  const result = entry.onSubmit(value);
+  let result: { ok: boolean; error?: string };
+  try {
+    result = entry.onSubmit(value);
+  } catch {
+    // A caller-supplied onSubmit (credential_store_set's credentialSet
+    // wrapper, or submitPassword) that throws must never surface its
+    // message here: the message could be derived from the submitted
+    // secret value. Answer a fixed, generic outcome instead. The entry
+    // survives (same as a `rejected` outcome) so the caller can retry.
+    return { status: 'error' };
+  }
   if (result.ok) {
     clearTimeout(entry.timer);
     registry.delete(key);
