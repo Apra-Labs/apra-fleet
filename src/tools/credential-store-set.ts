@@ -3,6 +3,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { credentialSet } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
+import { resolveConsoleBaseUrl } from '../paths.js';
 
 export const credentialStoreSetSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Credential name (alphanumeric, underscores, hyphens, max 64 chars)'),
@@ -28,10 +29,16 @@ export const credentialStoreSetSchema = z.object({
 
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
-/** structuredContent shape when return_url collection is used (apra-fleet-972p.2.1, F3). */
+/** structuredContent shape when return_url collection is used (apra-fleet-972p.2.1, F3).
+ *  `url` stays console-relative (the console route -- src/console/routes/fleet.ts --
+ *  reads this and hands it to the browser, which resolves it against its own
+ *  origin). `absoluteUrl` (apra-fleet-i9ag.11.9) is the same path resolved
+ *  against the operator-declared or bound console origin, for callers that
+ *  want the rendered link without doing that resolution themselves. */
 export interface CredentialStoreSetUrlResult {
   url: string;
   expiresAt: string;
+  absoluteUrl: string;
   [key: string]: unknown;
 }
 
@@ -53,6 +60,15 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   const useReturnUrl = input.return_url === true || !process.stdin.isTTY;
 
   if (useReturnUrl) {
+    // Resolve the printable origin BEFORE doing anything else: a malformed
+    // APRA_FLEET_CONSOLE_BASE_URL is an operator config error that should
+    // fail loudly and immediately, not after a secret-entry registration
+    // that nobody will ever be able to open.
+    const baseUrlResult = resolveConsoleBaseUrl();
+    if (!baseUrlResult.ok) {
+      return `[FAIL] ${baseUrlResult.error}`;
+    }
+
     const result = await collectOobApiKey(input.name, 'credential_store_set', {
       prompt: input.prompt,
       returnUrl: true,
@@ -74,10 +90,14 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     });
 
     if (result.url && result.expiresAt) {
+      const absoluteUrl = `${baseUrlResult.baseUrl}${result.url}`;
       return {
-        text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${result.url}\n\n` +
+        text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${absoluteUrl}\n\n` +
+          `If the console is reached on a different host or port (a LAN address, an SSH tunnel, or a reverse ` +
+          `proxy), the same page is at ${result.url} on that origin instead. Set APRA_FLEET_CONSOLE_BASE_URL ` +
+          `to change the origin printed above.\n\n` +
           `The secret is encrypted and stored automatically once the form is submitted -- no further tool call is needed.`,
-        structuredContent: { url: result.url, expiresAt: result.expiresAt },
+        structuredContent: { url: result.url, expiresAt: result.expiresAt, absoluteUrl },
       };
     }
     return result.fallback ?? `[FAIL] Could not start out-of-band credential entry for ${input.name}.`;

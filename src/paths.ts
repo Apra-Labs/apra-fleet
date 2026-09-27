@@ -35,6 +35,42 @@ export function isNonDefaultInstance(): boolean {
  */
 export const DEFAULT_HOST = process.env.APRA_FLEET_HOST?.trim() || '127.0.0.1';
 
+/**
+ * Resolve the absolute origin a human should open to reach this server's
+ * console (apra-fleet-i9ag.11.9). The server binds to DEFAULT_HOST, which is
+ * frequently 0.0.0.0 or a LAN interface -- not something a browser can be
+ * pointed at directly -- so an out-of-band collection link (credential_store_set
+ * return_url) needs an EXPLICIT, operator-declared origin rather than a
+ * guess. APRA_FLEET_CONSOLE_BASE_URL is that explicit opt-in; unset, this
+ * falls back to the server's own bound origin (DEFAULT_HOST:DEFAULT_PORT),
+ * which is at least correct for an on-box/loopback reader even if it is not
+ * reachable off-box.
+ *
+ * A SET-BUT-INVALID value fails loudly (ok: false) rather than silently
+ * falling back -- an operator who mistyped the variable needs to know their
+ * printed URL is wrong, not receive a URL that quietly points somewhere else.
+ */
+export function resolveConsoleBaseUrl(): { ok: true; baseUrl: string } | { ok: false; error: string } {
+  const raw = process.env.APRA_FLEET_CONSOLE_BASE_URL?.trim();
+  if (raw) {
+    const stripped = raw.replace(/\/+$/, '');
+    let parsed: URL;
+    try {
+      parsed = new URL(stripped);
+    } catch {
+      return { ok: false, error: `APRA_FLEET_CONSOLE_BASE_URL "${raw}" is not a valid URL` };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return {
+        ok: false,
+        error: `APRA_FLEET_CONSOLE_BASE_URL "${raw}" has unsupported scheme "${parsed.protocol}" (only http: and https: are supported)`,
+      };
+    }
+    return { ok: true, baseUrl: stripped };
+  }
+  return { ok: true, baseUrl: `http://${DEFAULT_HOST}:${DEFAULT_PORT}` };
+}
+
 export const SERVER_INFO_PATH = path.join(FLEET_DIR, 'server.json');
 
 export const LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet.log');

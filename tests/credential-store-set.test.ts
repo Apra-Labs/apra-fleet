@@ -171,9 +171,14 @@ describe('credentialStoreSet', () => {
 
       expect(typeof result).toBe('object');
       if (typeof result === 'object') {
+        // apra-fleet-i9ag.11.9: structuredContent.url stays exactly what
+        // collectOobApiKey returned; absoluteUrl is that same value resolved
+        // against the (here, default) console base origin -- see
+        // resolveConsoleBaseUrl in src/paths.ts.
         expect(result.structuredContent).toEqual({
           url: 'http://127.0.0.1:54321/abc123',
           expiresAt: '2026-01-01T00:02:00.000Z',
+          absoluteUrl: 'http://127.0.0.1:7523http://127.0.0.1:54321/abc123',
         });
         expect(result.text).toContain('http://127.0.0.1:54321/abc123');
       }
