@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Page } from "@apralabs/apra-fleet-ui-kit";
+import { Page, TextField } from "@apralabs/apra-fleet-ui-kit";
 import { fetchSecretEntryPrompt, submitSecretEntry, type SecretEntryPrompt } from "../api/secret-entry";
 
 type ViewState =
@@ -50,6 +50,12 @@ export function SecretEntry(props: { token: string }) {
   }, [token]);
 
   async function handleSubmit(prompt: SecretEntryPrompt) {
+    // Client-side guard: an empty value must never reach the server. Without
+    // this, pressing Submit on an empty field round-trips to
+    // POST /api/secret-entry/submit and renders the server's raw zod message
+    // ("invalid request body: value: must be a non-empty string") in the
+    // retry alert instead of failing fast in the browser.
+    if (value.trim().length === 0) return;
     setState({ kind: "submitting", prompt });
     const result = await submitSecretEntry(token, value);
     if (result.status === "ok") {
@@ -97,18 +103,21 @@ export function SecretEntry(props: { token: string }) {
               void handleSubmit(formState.prompt);
             }}
           >
-            <label htmlFor="secret-entry-value">Secret value</label>
-            <input
-              id="secret-entry-value"
+            <TextField
+              label="Secret value"
               name="secretEntryValue"
               type="password"
+              value={value}
+              onChange={setValue}
+              required
               autoComplete="off"
               autoFocus
-              value={value}
               disabled={formState.kind === "submitting"}
-              onChange={(event) => setValue(event.target.value)}
             />
-            <button type="submit" disabled={formState.kind === "submitting"}>
+            <button
+              type="submit"
+              disabled={formState.kind === "submitting" || value.trim().length === 0}
+            >
               Submit
             </button>
           </form>
