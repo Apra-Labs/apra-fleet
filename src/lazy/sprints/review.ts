@@ -13,7 +13,7 @@ import { lazyDir } from '../config.js';
 import type { BeadsTask } from './board.js';
 import { codeChanges, fileLines } from './code.js';
 import type { SprintRecord } from './launcher.js';
-import { createTask } from './tasks.js';
+import { addDependency, commentTask, createTask } from './tasks.js';
 
 export interface ReviewComment {
   id: string;
@@ -332,7 +332,8 @@ export function taskText(file: string, threads: Array<Thread & { lineNow?: numbe
 
 export interface SendResult {
   mode: 'tasks' | 'follow-up';
-  tasks?: Array<{ id: string; file: string; threads: number }>;
+  /** added: joined a task that was already waiting; after: queued behind one a helper is on. */
+  tasks?: Array<{ id: string; file: string; threads: number; added?: boolean; after?: string }>;
   followUp?: string;
   notified?: number;
 }
@@ -354,7 +355,19 @@ export async function sendThreads(ctx: ReviewContext, ids?: string[]): Promise<S
 
   if (ctx.live) {
     const tasks: NonNullable<SendResult['tasks']> = [];
+    const statusOf = new Map((ctx.tasks ?? []).map(t => [t.id, t.status]));
     for (const [file, list] of byFile) {
+      // Comments sent earlier on this file: add to that task while nobody has
+      // started it, or queue the new task behind it so two helpers never
+      // change the same file at once.
+      const earlier = [...new Set(view.threads.filter(t => t.file === file && t.sent?.taskId).map(t => t.sent!.taskId!))];
+      const waiting = earlier.find(id => statusOf.get(id) === 'open');
+      if (waiting) {
+        await commentTask(ctx.rec, waiting, `More review comments on this file:\n\n${taskText(file, list)}`);
+        tasks.push({ id: waiting, file, threads: list.length, added: true });
+        for (const t of list) sent.set(t.id, { at: now, taskId: waiting });
+        continue;
+      }
       const created = await createTask(ctx.rec, {
         title: `Address review comments on ${file}`.slice(0, 200),
         description: taskText(file, list),
@@ -363,7 +376,9 @@ export async function sendThreads(ctx: ReviewContext, ids?: string[]): Promise<S
         priority: 1,
         labels: ['review'],
       });
-      tasks.push({ id: created.id, file, threads: list.length });
+      const busy = earlier.find(id => statusOf.get(id) === 'in_progress');
+      if (busy) await addDependency(ctx.rec, created.id, busy).catch(() => {});
+      tasks.push({ id: created.id, file, threads: list.length, ...(busy ? { after: busy } : {}) });
       for (const t of list) sent.set(t.id, { at: now, taskId: created.id });
     }
     result = { mode: 'tasks', tasks, notified: notifyBuilders(ctx, tasks) };

@@ -125,6 +125,8 @@ export interface Card {
   labels?: string[];
   /** Notes on the task in the task list. */
   comments?: number;
+  /** Closed as "won't do" from the dashboard; not counted as finished work. */
+  skipped?: boolean;
 }
 
 export interface Lane {
@@ -413,10 +415,13 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
       .filter(d => d.type === 'blocks' && d.issue_id === t.id)
       .map(d => d.depends_on_id)
       .filter(id => byId.get(id)?.status !== 'closed');
-    const working = workingBy.get(t.id) ?? [];
     let column = columnFor(t);
+    // Nobody works on closed tasks or in a sprint that has ended, whatever the last activity said.
+    const working = column === 'done' || !live ? [] : workingBy.get(t.id) ?? [];
     // A helper on it is the truth, even before the task's status catches up.
-    if (working.length && column !== 'done') column = 'progress';
+    if (working.length) column = 'progress';
+    // Taken off the sprint from the dashboard: done, but not work that was finished.
+    const skipped = column === 'done' && /^Skipped/i.test(t.close_reason ?? '');
     cards.push({
       id: t.id,
       title: t.title ?? t.id,
@@ -435,6 +440,7 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
       closedAt: t.closed_at,
       ...(stageOfTask.has(t.id) && column !== 'done' ? { stage: stageOfTask.get(t.id) } : {}),
       bounces: bounceCount.get(t.id) ?? 0,
+      ...(skipped ? { skipped: true } : {}),
       ...(t.updated_at ? { updatedAt: t.updated_at } : {}),
       ...(t.labels?.length ? { labels: t.labels } : {}),
       ...(t.comment_count ? { comments: t.comment_count } : {}),
@@ -453,11 +459,13 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
       title: id && !(state.args?.targetIssues ?? []).includes(id) ? t?.title ?? id : 'Other work',
       type: id ? t?.issue_type ?? 'epic' : 'none',
       status: id ? t?.status ?? 'open' : 'open',
-      total: members.length,
-      done: members.filter(c => c.column === 'done').length,
+      total: members.filter(c => !c.skipped).length,
+      done: members.filter(c => c.column === 'done' && !c.skipped).length,
     });
   }
-  lanes.sort((a, b) => (a.id === '' ? 1 : b.id === '' ? -1 : a.id.localeCompare(b.id, undefined, { numeric: true })));
+  // Loose work ("Other work": no lane, or straight under the sprint's own issue) goes last, as Jira does.
+  const loose = (id: string) => id === '' || (state.args?.targetIssues ?? []).includes(id);
+  lanes.sort((a, b) => (loose(a.id) !== loose(b.id) ? (loose(a.id) ? 1 : -1) : a.id.localeCompare(b.id, undefined, { numeric: true })));
 
   const phases: Board['phases'] = [];
   for (const g of state.tree ?? []) {
@@ -497,7 +505,7 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
     .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
     .slice(0, 40);
 
-  const inSprintCards = cards.filter(c => c.inSprint);
+  const inSprintCards = cards.filter(c => c.inSprint && !c.skipped);
   return {
     runId: state.runId,
     title: opts.title ?? runTitle(state),

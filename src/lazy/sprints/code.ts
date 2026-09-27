@@ -56,8 +56,9 @@ export interface CodeChanges {
   head?: string;
   /** Where the sprint branch left its base. */
   mergeBase?: string;
-  /** With `since`: files that changed between that commit and head. */
+  /** With `since`: files that changed between that commit and head, and by how much. */
   changedSince?: string[];
+  sinceStats?: Record<string, { added: number; removed: number }>;
   commits: Commit[];
   files: FileChange[];
   totals: { added: number; removed: number; files: number };
@@ -136,12 +137,18 @@ export async function codeChanges(repo: string, branch: string, base: string, op
   }
   const totals = files.reduce((t, f) => ({ added: t.added + f.added, removed: t.removed + f.removed, files: t.files + 1 }), { added: 0, removed: 0, files: 0 });
   let changedSince: string[] | undefined;
+  let sinceStats: CodeChanges['sinceStats'];
   if (opts.since && SHA_RE.test(opts.since) && opts.since !== headSha) {
     if (opts.since === mergeBase || commits.some(c => c.sha === opts.since)) {
-      changedSince = (await git(repo, ['diff', '--no-color', '--name-only', opts.since, headSha])).split('\n').filter(Boolean);
+      sinceStats = {};
+      for (const line of (await git(repo, ['diff', '--no-color', '--numstat', opts.since, headSha])).split('\n').filter(Boolean)) {
+        const [a, r, ...rest] = line.split('\t');
+        sinceStats[rest.join('\t')] = { added: a === '-' ? 0 : Number(a), removed: r === '-' ? 0 : Number(r) };
+      }
+      changedSince = Object.keys(sinceStats);
     }
   }
-  return changesMemo.set(key, { available: true, branch, base, head: headSha, mergeBase, commits, files, totals, ...(changedSince ? { changedSince } : {}) });
+  return changesMemo.set(key, { available: true, branch, base, head: headSha, mergeBase, commits, files, totals, ...(changedSince ? { changedSince, sinceStats } : {}) });
 }
 
 export interface DiffRow {
@@ -201,7 +208,7 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
  */
 export async function fileDiff(
   repo: string, branch: string, base: string, file: string, opts: { since?: string; context?: number } = {},
-): Promise<{ diff: string; truncated: boolean; head: string; from: string; parsed: ParsedDiff }> {
+): Promise<{ diff: string; truncated: boolean; head: string; from: string; parsed: ParsedDiff; newLines: number }> {
   const changes = await codeChanges(repo, branch, base);
   if (!changes.available) throw new Error(changes.reason ?? 'no changes');
   if (!changes.files.some(f => f.path === file)) throw new Error('file is not part of this sprint');
@@ -214,7 +221,9 @@ export async function fileDiff(
   const out = await git(repo, ['diff', '--no-color', '-M', `-U${ctx}`, from, changes.head!, '--', file], MAX_DIFF_BYTES * 4);
   const truncated = out.length > MAX_DIFF_BYTES;
   const diff = truncated ? out.slice(0, out.lastIndexOf('\n', MAX_DIFF_BYTES)) : out;
-  return { diff, truncated, head: changes.head!, from, parsed: parseUnifiedDiff(diff) };
+  // How long the file is now, so the view offers more context only when there is some.
+  const newLines = (await fileLines(repo, branch, base, file, 'new')).lines.length;
+  return { diff, truncated, head: changes.head!, from, parsed: parseUnifiedDiff(diff), newLines };
 }
 
 const MAX_FILE_LINES = 20000;

@@ -354,3 +354,50 @@ describe('review and board API', () => {
     expect((await fetch(base + 'api-done/code/lines?path=../../etc/passwd', { headers: h })).status).toBe(400);
   });
 });
+
+describe('sending again for the same file', () => {
+  it('adds to the task nobody has started, and queues behind one a helper is on', async () => {
+    const s = makeSprint('rv6');
+    const st = { tasks: [{ id: 'p-1', status: 'open', issue_type: 'epic', priority: 1 }] as any[], calls: [] as BdCall[] };
+    fakeBd(st);
+    const ctx: any = { rec: s.rec, repo: s.h0, tasks: st.tasks, live: true };
+    await review.addThread(ctx, { file: 'a.js', line: 3, body: 'first' });
+    const one = await review.sendThreads(ctx);
+    const taskId = one.tasks![0].id;
+    await review.addThread(ctx, { file: 'a.js', line: 4, body: 'second' });
+    const two = await review.sendThreads(ctx);
+    expect(two.tasks).toEqual([{ id: taskId, file: 'a.js', threads: 1, added: true }]);
+    expect(st.calls.filter(c => c.args[0] === 'create')).toHaveLength(1);
+    const note = st.calls.find(c => c.args[0] === 'comments' && c.args[1] === 'add')!;
+    expect(note.args[2]).toBe(taskId);
+    expect(note.args[3]).toContain('second');
+
+    st.tasks.find(t => t.id === taskId).status = 'in_progress';
+    await review.addThread(ctx, { file: 'a.js', line: 1, body: 'third' });
+    const three = await review.sendThreads(ctx);
+    expect(three.tasks![0]).toMatchObject({ file: 'a.js', after: taskId });
+    expect(three.tasks![0].id).not.toBe(taskId);
+    expect(st.calls.some(c => c.args.join(' ') === `dep add ${three.tasks![0].id} ${taskId}`)).toBe(true);
+  });
+});
+
+describe('board cards for skipped work', () => {
+  it('marks a task skipped from the dashboard, keeps it out of the done counts, and clears stale helpers', async () => {
+    const { buildBoard } = await import('../src/lazy/sprints/board.js');
+    const state: any = {
+      runId: 'b1', args: { targetIssues: ['r'], goal: 'P1/P2' },
+      tree: [{ phases: [{ title: 'Develop C1', events: [{ type: 'activity', data: { id: 'x', label: 'Build r.2', member: 'lz-p-1', isRunning: true, startTime: 1 } }] }] }],
+      extensions: { beads: { sprintTasks: [
+        { id: 'r', status: 'open', issue_type: 'epic' },
+        { id: 'r.1', parent: 'r', status: 'closed', close_reason: 'Skipped from the board', priority: 1 },
+        { id: 'r.2', parent: 'r', status: 'closed', close_reason: 'Done', priority: 1 },
+        { id: 'r.3', parent: 'r', status: 'open', priority: 1 },
+      ] } },
+    };
+    const b = buildBoard({ state, live: true, file: '' });
+    expect(b.cards.find(c => c.id === 'r.1')!.skipped).toBe(true);
+    expect(b.cards.find(c => c.id === 'r.2')!.working).toEqual([]);
+    expect(b.progress).toEqual({ done: 1, total: 2 });
+    expect(b.lanes[0]).toMatchObject({ title: 'Other work', total: 2, done: 1 });
+  });
+});

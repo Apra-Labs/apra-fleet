@@ -275,6 +275,8 @@ export const SPRINTS_JS = String.raw`
     S.runId = parts[1] || null;
     S.view = S.runId ? 'sprint' : 'list';
     S.sub = parts[2] || 'board';
+    // A deep link to one file (code) or one issue (board).
+    try { S.hashArg = parts[3] ? decodeURIComponent(parts.slice(3).join('/')) : null; } catch (e) { S.hashArg = null; }
     return true;
   }
   function go(runId, sub) {
@@ -494,7 +496,8 @@ export const SPRINTS_JS = String.raw`
     if (b.progress.total) head.appendChild(el('div', { style: 'margin: -6px 0 12px' }, [bar(b.progress.done, b.progress.total)]));
     if (!live && rec) head.appendChild(resultPanel(v, b, rec));
 
-    var tabs = [['board', 'Board', b.cards.length], ['helpers', 'Helpers', b.helpersNow.length], ['code', 'Code changes', S.code && S.code.available ? S.code.totals.files : null], ['log', 'Log', null]];
+    // The same numbers the header shows: issues in this sprint, and helpers on it.
+    var tabs = [['board', 'Board', b.progress.total], ['helpers', 'Helpers', b.pipeline ? b.pipeline.builders : b.members.length], ['code', 'Code changes', S.code && S.code.available ? S.code.totals.files : null], ['log', 'Log', null]];
     var nav = el('div', { cls: 'subnav', role: 'tablist' });
     tabs.forEach(function (t) {
       nav.appendChild(el('button', { type: 'button', role: 'tab', 'aria-selected': S.sub === t[0] ? 'true' : 'false', onclick: function () { if (S.sub !== t[0]) go(S.runId, t[0]); } }, [t[1], t[2] !== null && t[2] !== undefined ? el('span', { cls: 'count', text: String(t[2]) }) : null]));

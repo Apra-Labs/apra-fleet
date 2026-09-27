@@ -41,7 +41,8 @@ export const BOARD_CSS = String.raw`
 .lz.blocked { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
 .lz.epic { color: #fff; text-transform: none; font-weight: 600; letter-spacing: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
 
-.jb-board { overflow-x: auto; padding-bottom: 8px; }
+.jb-board { overflow: auto; padding-bottom: 8px; max-height: calc(100vh - 150px); }
+@media (max-width: 700px) { .jb-board { max-height: none; } }
 .jb-grid { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); column-gap: 8px; min-width: 1000px; }
 .jb-colhead { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--chip) 70%, var(--bg)); border-radius: 8px 8px 0 0; padding: 10px 10px 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); display: flex; gap: 6px; align-items: center; }
 .jb-colhead .n { font-weight: 600; letter-spacing: 0; }
@@ -60,6 +61,9 @@ export const BOARD_CSS = String.raw`
 .jc:hover { background: color-mix(in srgb, var(--chip) 45%, var(--panel)); }
 .jc:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .jc.backlog { opacity: .62; }
+.jc.skipped { opacity: .55; background: color-mix(in srgb, var(--chip) 60%, var(--panel)); }
+.jc.skipped .t { text-decoration: line-through; }
+.lz.wont { background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--muted); }
 .jc.working::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 0 3px 3px 0; background: var(--ok); }
 .jc.dragging { opacity: .4; }
 .jc .t { font-size: 13.5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
@@ -71,8 +75,9 @@ export const BOARD_CSS = String.raw`
 .jc .foot .cm { display: inline-flex; gap: 3px; align-items: center; }
 .jc .foot .cm .svg-i { width: 14px; height: 14px; }
 .jc .foot .av { width: 24px; height: 24px; font-size: 10px; }
-.jc .live { font-size: 12px; color: var(--ok); display: flex; gap: 6px; align-items: center; font-weight: 600; }
-.jc .live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.4s infinite; }
+.svg-i.nobody { width: 24px; height: 24px; color: var(--muted); }
+.jc .live-line { font-size: 12px; color: var(--ok); display: flex; gap: 6px; align-items: center; font-weight: 600; }
+.jc .live-line .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.4s infinite; }
 .jc .wait { font-size: 12px; color: var(--bad); display: flex; gap: 5px; align-items: center; }
 .jb-empty-cell { color: var(--muted); font-size: 12px; text-align: center; padding: 12px 0 6px; opacity: .7; }
 
@@ -131,6 +136,8 @@ export const BOARD_CSS = String.raw`
 .iv-det select { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 13px; }
 .iv-link { color: var(--accent); cursor: pointer; font-family: var(--mono); font-size: 12px; background: none; border: 0; padding: 0; }
 .iv-link:hover { text-decoration: underline; }
+.iv-dep { display: flex; gap: 6px; align-items: center; width: 100%; min-width: 0; }
+.iv-dep .iv-link { font-family: inherit; font-size: 13px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iv-rv { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
 .iv-rv .mono { font-size: 12px; color: var(--muted); }
 .iv-foot { color: var(--muted); font-size: 12px; }
@@ -163,6 +170,7 @@ export const BOARD_JS = String.raw`
     comment: '<svg viewBox="0 0 16 16"><path d="M2.5 3.2h11v7.3H7.6L4.6 13v-2.5H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
     flag: '<svg viewBox="0 0 16 16"><path d="M4 14.5V2.5" stroke="#e5493a" stroke-width="1.5" stroke-linecap="round"/><path d="M4.6 3h7.6l-2 3 2 3H4.6z" fill="#e5493a"/></svg>',
     check: '<svg viewBox="0 0 16 16"><path d="M3.3 8.6l3 3 6.4-7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    person: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="currentColor" opacity=".18"/><circle cx="12" cy="9.5" r="4" fill="currentColor" opacity=".55"/><path d="M4.8 19.5c1.4-3.2 4-4.8 7.2-4.8s5.8 1.6 7.2 4.8" fill="currentColor" opacity=".55"/></svg>',
     down: '<svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     right: '<svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     review: '<svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="3" fill="#ff8b00"/><path d="M4.5 5.5h7M4.5 8h7M4.5 10.5h4" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>'
@@ -179,7 +187,7 @@ export const BOARD_JS = String.raw`
     return svgIcon(t, { bug: 'Bug', epic: 'Epic', feature: 'Feature', chore: 'Chore', task: 'Task' }[t]);
   }
   function prio(p) { var n = Math.min(4, Math.max(0, Number(p) || 0)); return svgIcon('p' + n, 'Priority: ' + PRIO_NAME[n] + ' (P' + n + ')'); }
-  function lozenge(col) { return el('span', { cls: 'lz ' + col, text: COL_LZ[col] || col }); }
+  function lozenge(col, skipped) { return skipped ? el('span', { cls: 'lz wont', title: 'Taken off the sprint; nobody built it', text: 'Won\'t do' }) : el('span', { cls: 'lz ' + col, text: COL_LZ[col] || col }); }
   function laneChip(lane) { return el('span', { cls: 'lz epic', title: lane.title, style: 'background: hsl(' + hue(lane.id || '') + ' 48% 46%)', text: lane.title }); }
   function isRoot(id) { var r = S.sprint && S.sprint.record; return !!r && r.rootIssue === id; }
   function whoOf(c) { return c.working.length ? c.working[0].member : c.lastHelper; }
@@ -237,6 +245,7 @@ export const BOARD_JS = String.raw`
       var names = [];
       b.cards.forEach(function (c) { var w = whoOf(c); if (w && names.indexOf(w) === -1) names.push(w); });
       (b.members || []).forEach(function (m) { if (names.indexOf(m) === -1) names.push(m); });
+      names.sort(function (x, y) { return helperLabel(x).localeCompare(helperLabel(y), undefined, { numeric: true }); });
       avs.textContent = '';
       names.slice(0, 12).forEach(function (n) {
         var live = b.cards.some(function (c) { return c.working.some(function (w) { return w.member === n; }); });
@@ -260,7 +269,7 @@ export const BOARD_JS = String.raw`
       count.textContent = '';
       if (anyFilter(F)) {
         count.appendChild(el('span', { text: 'Showing ' + shown.length + ' of ' + b.cards.length + ' issues' }));
-        count.appendChild(el('button', { type: 'button', text: 'Clear filters', onclick: function () { F.q = ''; search.value = ''; F.who = null; F.quick = {}; drawBar(); draw(); } }));
+        count.appendChild(el('button', { type: 'button', text: 'Clear filters', onclick: function () { F.q = ''; search.value = ''; search.blur(); F.who = null; F.quick = {}; drawBar(); draw(); } }));
       }
       var keepX = body.firstChild ? body.firstChild.scrollLeft : 0;
       body.textContent = '';
@@ -268,6 +277,7 @@ export const BOARD_JS = String.raw`
         body.appendChild(el('div', { cls: 'empty', text: b.live ? 'Helpers are planning - issues appear here as they are created.' : 'This sprint has no issues.' }));
         return;
       }
+      if (!shown.length) { body.appendChild(el('div', { cls: 'empty', text: 'No issues match these filters.' })); return; }
       body.appendChild(F.view === 'list' ? listView(b, shown) : boardView(b, shown));
       if (body.firstChild) body.firstChild.scrollLeft = keepX;
     }
@@ -280,6 +290,8 @@ export const BOARD_JS = String.raw`
       sig = s;
       drawBar();
       draw();
+      // A link straight to one issue (#sprints/<run>/board/<issue>).
+      if (fresh && S.hashArg) { var want = S.hashArg; S.hashArg = null; openTask(want); }
     }
     return { el: wrap, update: update, focusSearch: function () { search.focus(); search.select(); } };
   }
@@ -310,15 +322,21 @@ export const BOARD_JS = String.raw`
       var collapsed = S.collapsed[g.id];
       var laneLike = S.bf.group !== 'none' && (groups.length > 1 || (g.lane && g.lane.id));
       if (laneLike) {
-        var done = g.cards.filter(function (c) { return c.column === 'done'; }).length;
-        grid.appendChild(el('div', { cls: 'jb-lane', role: 'button', tabindex: '0', 'aria-expanded': collapsed ? 'false' : 'true', onclick: function () { S.collapsed[g.id] = !collapsed; S.shell && S.shell.comp && S.shell.comp.update(S.sprint, true); }, onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } } }, [
+        // Won't-do cards are neither finished work nor work left.
+        var counted = g.cards.filter(function (c) { return !c.skipped; });
+        var done = counted.filter(function (c) { return c.column === 'done'; }).length;
+        grid.appendChild(el('div', { cls: 'jb-lane', role: 'button', tabindex: '0', 'data-g': g.id, 'aria-expanded': collapsed ? 'false' : 'true', onclick: function () {
+          S.collapsed[g.id] = !collapsed; S.shell && S.shell.comp && S.shell.comp.update(S.sprint, true);
+          var again = [].slice.call(document.querySelectorAll('.jb-lane')).filter(function (n) { return n.getAttribute('data-g') === g.id; })[0];
+          if (again) again.focus();
+        }, onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } } }, [
           svgIcon(collapsed ? 'right' : 'down', null, 'caret'),
           g.lane && g.lane.id && !isRoot(g.lane.id) ? typeIcon(g.lane.type) : g.who ? avatar(g.who, g.cards.some(function (c) { return c.working.length; })) : null,
           el('b', { text: g.title }),
           g.lane && g.lane.id && !isRoot(g.lane.id) ? el('small', { cls: 'mono', text: g.lane.id }) : null,
           el('small', { text: '(' + g.cards.length + ' issue' + (g.cards.length === 1 ? '' : 's') + ')' }),
-          el('div', { cls: 'bar lane-bar' }, [el('i', { style: 'width:' + (g.cards.length ? Math.round(done * 100 / g.cards.length) : 0) + '%' })]),
-          el('small', { text: done + ' of ' + g.cards.length + ' done' }),
+          el('div', { cls: 'bar lane-bar' }, [el('i', { style: 'width:' + (counted.length ? Math.round(done * 100 / counted.length) : 0) + '%' })]),
+          el('small', { text: done + ' of ' + counted.length + ' done' }),
           g.lane && g.lane.id && g.lane.status === 'closed' ? el('span', { cls: 'lz done', text: 'Done' }) : null
         ]));
       }
@@ -346,10 +364,11 @@ export const BOARD_JS = String.raw`
     if (c.stage === 'landing') tags.push(el('span', { cls: 'stage landing', text: 'Landing' }));
     if (c.stage === 'fixing') tags.push(el('span', { cls: 'stage fixing', text: 'Fixing after a failed landing' }));
     if (c.bounces) tags.push(el('span', { cls: 'bounce', text: 'sent back ' + c.bounces + 'x' }));
+    if (c.skipped) tags.push(lozenge('done', true));
     if (!c.inSprint) tags.push(el('span', { cls: 'chip', title: 'Below this sprint\'s goal; helpers only get to it if everything else is done', text: 'Later' }));
     var kids = [
       el('div', { cls: 't', text: c.title }),
-      live ? el('div', { cls: 'live' }, [el('span', { cls: 'dot' }), el('span', { text: helperLabel(c.working[0].member) + ' is on it' }), el('span', { 'data-since': c.working[0].since, text: dur(Date.now() - c.working[0].since) })]) : null,
+      live ? el('div', { cls: 'live-line' }, [el('span', { cls: 'dot' }), el('span', { text: helperLabel(c.working[0].member) + ' is on it' }), el('span', { 'data-since': c.working[0].since, text: dur(Date.now() - c.working[0].since) })]) : null,
       c.blockedBy.length && c.column === 'blocked' ? el('div', { cls: 'wait' }, [svgIcon('flag', 'Blocked'), el('span', { text: 'Waiting on ' + c.blockedBy.join(', ') })]) : null,
       tags.length ? el('div', { cls: 'tags' }, tags) : null,
       el('div', { cls: 'foot' }, [
@@ -359,11 +378,11 @@ export const BOARD_JS = String.raw`
         c.model ? el('span', { cls: 'chip', title: 'Model tier', text: c.model }) : null,
         c.comments ? el('span', { cls: 'cm', title: c.comments + ' note' + (c.comments === 1 ? '' : 's') }, [svgIcon('comment'), String(c.comments)]) : null,
         prio(c.priority),
-        who ? avatar(who, live) : el('span', { cls: 'av', style: 'background: var(--chip); color: var(--muted)', title: 'Nobody yet', text: '-' })
+        who ? avatar(who, live) : svgIcon('person', 'Nobody yet', 'nobody')
       ])
     ];
     var draggable = S.sprint && S.sprint.canEdit && c.column !== 'progress';
-    var card = el('div', { cls: 'jc' + (live ? ' working' : '') + (c.inSprint ? '' : ' backlog') + (c.column === 'done' ? ' done' : ''), tabindex: '0', role: 'button', 'aria-label': c.id + ': ' + c.title, draggable: draggable ? 'true' : null, onclick: function () { openTask(c.id); }, onkeydown: function (e) { if (e.key === 'Enter') openTask(c.id); } }, kids);
+    var card = el('div', { cls: 'jc' + (live ? ' working' : '') + (c.inSprint ? '' : ' backlog') + (c.column === 'done' ? ' done' : '') + (c.skipped ? ' skipped' : ''), tabindex: '0', role: 'button', 'aria-label': c.id + ': ' + c.title, draggable: draggable ? 'true' : null, onclick: function () { openTask(c.id); }, onkeydown: function (e) { if (e.key === 'Enter') openTask(c.id); } }, kids);
     if (draggable) {
       card.addEventListener('dragstart', function (e) { S.dragCard = c; card.classList.add('dragging'); try { e.dataTransfer.setData('text/plain', c.id); e.dataTransfer.effectAllowed = 'move'; } catch (x) {} });
       card.addEventListener('dragend', function () { S.dragCard = null; card.classList.remove('dragging'); document.querySelectorAll('.jb-cell.drop').forEach(function (n) { n.classList.remove('drop'); }); });
@@ -387,8 +406,8 @@ export const BOARD_JS = String.raw`
       var c = S.dragCard; S.dragCard = null;
       if (!dropAllowed(c, col)) return;
       if (col === 'done') {
-        if (!confirm('Skip "' + c.title + '"? Helpers will not build it. You can drag it back to To do.')) return;
-        taskOp(c.id, 'skip', { reason: 'Skipped from the board' }, 'Skipped');
+        if (!confirm('Mark "' + c.title + '" as won\'t do? Helpers will not build it; it shows in Done, crossed out. You can drag it back to To do.')) return;
+        taskOp(c.id, 'skip', { reason: 'Skipped from the board' }, 'Marked won\'t do');
       } else taskOp(c.id, 'reopen', {}, 'Back in To do');
     });
   }
@@ -421,16 +440,17 @@ export const BOARD_JS = String.raw`
     });
     var head = el('tr', {});
     cols.forEach(function (col) {
-      head.appendChild(el('th', { cls: (F.sort === col[0] ? 'on' : '') + (F.sort === col[0] && !F.up ? ' up' : ''), onclick: function () { if (F.sort === col[0]) F.up = !F.up; else { F.sort = col[0]; F.up = true; } S.shell.comp.update(S.sprint, true); } , text: col[1] }));
+      var sortBy = function () { if (F.sort === col[0]) F.up = !F.up; else { F.sort = col[0]; F.up = true; } S.shell.comp.update(S.sprint, true); var h = document.querySelector('.jl th[data-k="' + col[0] + '"]'); if (h) h.focus(); };
+      head.appendChild(el('th', { cls: (F.sort === col[0] ? 'on' : '') + (F.sort === col[0] && !F.up ? ' up' : ''), 'data-k': col[0], tabindex: '0', 'aria-sort': F.sort === col[0] ? (F.up ? 'ascending' : 'descending') : null, onclick: sortBy, onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sortBy(); } }, text: col[1] }));
     });
     var tb = el('tbody', {});
     rows.forEach(function (c) {
       var w = whoOf(c);
-      tb.appendChild(el('tr', { onclick: function () { openTask(c.id); } }, [
+      tb.appendChild(el('tr', { tabindex: '0', onclick: function () { openTask(c.id); }, onkeydown: function (e) { if (e.key === 'Enter') openTask(c.id); } }, [
         el('td', {}, [typeIcon(c.type)]),
         el('td', { cls: 'key', text: c.id }),
         el('td', { cls: 'sum', text: c.title }),
-        el('td', {}, [lozenge(c.column)]),
+        el('td', {}, [lozenge(c.column, c.skipped), c.inSprint ? null : el('span', { cls: 'chip', style: 'margin-left:6px', title: 'Below this sprint\'s goal', text: 'Later' })]),
         el('td', {}, [el('span', { style: 'display:inline-flex; gap:5px; align-items:center' }, [prio(c.priority), PRIO_NAME[Math.min(4, Math.max(0, c.priority))]])]),
         el('td', {}, [w ? el('span', { cls: 'who' }, [avatar(w, c.working.length > 0), helperLabel(w)]) : el('span', { cls: 'muted', text: 'Nobody yet' })]),
         el('td', { text: laneTitle[c.lane] || '' }),
@@ -442,12 +462,32 @@ export const BOARD_JS = String.raw`
   }
 
   // ---- issue view ------------------------------------------------------------
-  function closeDrawer() { document.querySelectorAll('.drawer, .drawer-bg, .iv-bg').forEach(function (n) { n.remove(); }); S.openTaskId = null; }
+  var returnFocus = null;
+  function closeDrawer() {
+    var had = document.querySelector('.iv-bg');
+    document.querySelectorAll('.drawer, .drawer-bg, .iv-bg').forEach(function (n) { n.remove(); });
+    if (S.openTaskId && S.view === 'sprint' && S.sub === 'board') history.replaceState(null, '', '#sprints/' + S.runId);
+    S.openTaskId = null;
+    if (had && returnFocus && returnFocus.isConnected) returnFocus.focus();
+    returnFocus = null;
+  }
   function overlay(inner) {
+    var from = document.activeElement;
     closeDrawer();
+    if (!returnFocus) returnFocus = from && from !== document.body ? from : null;
     var bg = el('div', { cls: 'iv-bg', role: 'dialog', 'aria-modal': 'true' }, [inner]);
     bg.addEventListener('mousedown', function (e) { if (e.target === bg) closeDrawer(); });
+    // Keep Tab inside the dialog.
+    bg.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab') return;
+      var f = [].slice.call(bg.querySelectorAll('button, input, select, textarea, [tabindex="0"]')).filter(function (n) { return !n.disabled && n.offsetParent !== null; });
+      if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    });
     document.body.appendChild(bg);
+    var first = bg.querySelector('input, textarea, h2, button');
+    if (first) { if (first.tagName === 'H2') first.setAttribute('tabindex', '-1'); first.focus(); }
     return bg;
   }
   function openTask(id, tab) {
@@ -466,6 +506,7 @@ export const BOARD_JS = String.raw`
       var kind = card ? card.type : (t.issue_type || 'task');
       var working = card && card.working.length;
       S.openTaskId = id;
+      if (S.sub === 'board') history.replaceState(null, '', '#sprints/' + S.runId + '/board/' + encodeURIComponent(id));
 
       var main = el('div', {});
       var title = el('h2', { cls: canEdit ? 'editable' : '', title: canEdit ? 'Click to rename' : null, text: t.title || t.id });
@@ -549,10 +590,10 @@ export const BOARD_JS = String.raw`
       showTab(which);
 
       var side = el('div', { cls: 'iv-side' });
-      var status = el('div', { cls: 'iv-status' }, [lozenge(col)]);
-      if (canEdit && (col === 'todo' || col === 'blocked')) status.appendChild(el('button', { cls: 'act', type: 'button', text: 'Skip it', title: 'Take it off the sprint; helpers will not build it', onclick: function () {
-        if (!confirm('Skip this issue? Helpers will not build it. You can reopen it later.')) return;
-        taskOp(id, 'skip', { reason: 'Skipped from the dashboard' }, 'Skipped').then(function () { openTask(id); });
+      var status = el('div', { cls: 'iv-status' }, [lozenge(col, card && card.skipped)]);
+      if (canEdit && (col === 'todo' || col === 'blocked')) status.appendChild(el('button', { cls: 'act', type: 'button', text: 'Won\'t do', title: 'Take it off the sprint; helpers will not build it', onclick: function () {
+        if (!confirm('Take this issue off the sprint? Helpers will not build it. You can reopen it later.')) return;
+        taskOp(id, 'skip', { reason: 'Skipped from the dashboard' }, 'Marked won\'t do').then(function () { openTask(id); });
       } }));
       if (canEdit && col === 'done') status.appendChild(el('button', { cls: 'act', type: 'button', text: 'Reopen', title: 'Put it back in To do so a helper picks it up again', onclick: function () {
         taskOp(id, 'reopen', {}, 'Reopened').then(function () { openTask(id); });
@@ -576,9 +617,13 @@ export const BOARD_JS = String.raw`
       if (lane) row('Feature', [laneChip(lane)]);
       if (t.metadata && t.metadata.model) row('Model tier', String(t.metadata.model));
       var deps = (t.dependencies || []).filter(function (x) { return x.issue_id === t.id && x.type === 'blocks'; });
-      if (deps.length) row('Waits on', deps.map(function (x) { return el('button', { cls: 'iv-link', type: 'button', text: x.depends_on_id, onclick: function () { openTask(x.depends_on_id); } }); }));
+      function linkTo(otherId) {
+        var o = b ? b.cards.filter(function (c) { return c.id === otherId; })[0] : null;
+        return el('span', { cls: 'iv-dep' }, [o ? lozenge(o.column, o.skipped) : null, el('button', { cls: 'iv-link', type: 'button', title: otherId, text: o ? o.title : otherId, onclick: function () { openTask(otherId); } })]);
+      }
+      if (deps.length) row('Waits on', deps.map(function (x) { return linkTo(x.depends_on_id); }));
       var blocks = b ? b.cards.filter(function (c) { return c.blockedBy.indexOf(id) !== -1; }) : [];
-      if (blocks.length) row('Holds up', blocks.map(function (c) { return el('button', { cls: 'iv-link', type: 'button', text: c.id, onclick: function () { openTask(c.id); } }); }));
+      if (blocks.length) row('Holds up', blocks.map(function (c) { return linkTo(c.id); }));
       var labels = (t.labels || []).filter(function (l) { return l.indexOf('kind:') !== 0; });
       if (labels.length) row('Labels', labels.map(function (l) { return el('span', { cls: 'chip', text: l }); }));
       if (card && !card.inSprint) row('Goal', 'Below this sprint\'s goal');
@@ -609,7 +654,7 @@ export const BOARD_JS = String.raw`
     PRIO_NAME.forEach(function (n, i) { pr.appendChild(el('option', { value: String(i), text: n + ' (P' + i + ')' })); });
     pr.value = '1';
     var parent = el('select', {}, [el('option', { value: '', text: 'The sprint itself' })]);
-    b.lanes.forEach(function (l) { if (l.id) parent.appendChild(el('option', { value: l.id, text: l.title })); });
+    b.lanes.forEach(function (l) { if (l.id && !isRoot(l.id)) parent.appendChild(el('option', { value: l.id, text: l.title })); });
     var desc = el('textarea', { placeholder: 'Details a helper needs: where, what, why.' });
     var acc = el('textarea', { placeholder: 'Optional: how to tell it is done.' });
     var btn = el('button', { cls: 'act primary', type: 'submit', text: 'Create' });

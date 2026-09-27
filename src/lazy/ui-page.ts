@@ -23,10 +23,16 @@ const PAGE = `<!doctype html>
   --chip: #f1ece2; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #15130f; --panel: #1e1b16; --ink: #f1ece2; --muted: #a39d90; --line: #332e26;
     --accent: #fb923c; --accent-ink: #1d1b16; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #2a261f;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15130f; --panel: #1e1b16; --ink: #f1ece2; --muted: #a39d90; --line: #332e26;
+  --accent: #fb923c; --accent-ink: #1d1b16; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #2a261f;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }

@@ -195,6 +195,13 @@ export async function skipTask(rec: SprintRecord, id: string, reason?: string): 
   forget(rec.runId);
 }
 
+/** `id` waits for `dependsOn` to be done (so two helpers never edit the same file at once). */
+export async function addDependency(rec: SprintRecord, id: string, dependsOn: string): Promise<void> {
+  const dir = needDir(rec);
+  await bd(['dep', 'add', checkId(id), checkId(dependsOn)], dir);
+  forget(rec.runId);
+}
+
 export async function reopenTask(rec: SprintRecord, id: string): Promise<void> {
   const dir = needDir(rec);
   const t = await mustBeInSprint(rec, id);

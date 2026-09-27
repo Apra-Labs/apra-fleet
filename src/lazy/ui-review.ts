@@ -158,6 +158,9 @@ export const REVIEW_CSS = String.raw`
 .rv-chead { padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
 .rv-chead .mono { color: var(--muted); font-size: 12px; }
 .rv .muted { color: var(--muted); }
+.chg { font-size: 10.5px; font-weight: 700; color: #2270e0; background: color-mix(in srgb, #2684ff 12%, transparent); border-radius: 4px; padding: 0 5px; }
+.rv-cm.on { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.jb-seg button:disabled { opacity: .45; cursor: default; }
 `;
 
 export const REVIEW_JS = String.raw`
@@ -225,6 +228,11 @@ export const REVIEW_JS = String.raw`
     var s = 0;
     while (s < max - p && a.charAt(a.length - 1 - s) === b.charAt(b.length - 1 - s)) s++;
     if (p + s < Math.max(a.length, b.length) * 0.3) return null;
+    // Snap to whole words, so a change never starts or ends mid-word.
+    var w = /[A-Za-z0-9_$]/;
+    while (p > 0 && w.test(a.charAt(p - 1)) && w.test(a.charAt(p))) p--;
+    while (s > 0 && w.test(a.charAt(a.length - s)) && w.test(a.charAt(a.length - s - 1))) s--;
+    while (s > 0 && w.test(b.charAt(b.length - s)) && w.test(b.charAt(b.length - s - 1))) s--;
     return [[p, a.length - s], [p, b.length - s]];
   }
   function pairWords(rows) {
@@ -289,6 +297,8 @@ export const REVIEW_JS = String.raw`
     var wrap = el('div', { cls: 'rv' }, [top, banner, el('div', { cls: 'rv-grid' }, [side, pane]), floatBtn]);
 
     function fileByPath(p) { return R.code && R.code.files ? R.code.files.filter(function (f) { return f.path === p; })[0] : null; }
+    // In "since" mode the numbers are for that range only.
+    function statOf(f) { var st = R.mode === 'since' && R.code.sinceStats ? R.code.sinceStats[f.path] : null; return st || f; }
     function threadsFor(file) { return R.rv ? R.rv.threads.filter(function (t) { return t.file === file; }) : []; }
     function openCount(file) { return threadsFor(file).filter(function (t) { return t.status === 'open'; }).length; }
     function validSince(sha) { var c = R.code; return !!(sha && c && c.available && (sha === c.mergeBase || c.commits.some(function (x) { return x.sha === sha; }))); }
@@ -329,6 +339,7 @@ export const REVIEW_JS = String.raw`
         return api(P + 'code/commit/' + sha).then(function (d) { if (R.commit === sha) { R.cdiff = d; drawPane(); } }).catch(function (e) { R.err = e.message; drawPane(); });
       }
       if (!R.file) { R.diff = null; drawPane(); return Promise.resolve(); }
+      linkFile();
       var f = R.file, key = f + '|' + R.mode + '|' + (R.since || '') + '|' + (R.code && R.code.head);
       R.loading = key;
       if (!R.diff || R.diff.file !== f) { R.diff = null; drawPane(); }
@@ -348,6 +359,7 @@ export const REVIEW_JS = String.raw`
     function reloadReview() { return api(P + 'review').then(function (rv) { R.rv = rv; drawTop(); drawSide(); drawPane(); }); }
     function start() {
       R.started = true;
+      if (S.hashArg) { R.file = S.hashArg; S.hashArg = null; }
       api(P + 'review').catch(function (e) {
         return { threads: [], counts: { open: 0, resolved: 0, outdated: 0, unsent: 0 }, rev: 0, err: e.message };
       }).then(function (rv) {
@@ -389,6 +401,8 @@ export const REVIEW_JS = String.raw`
       if (mode === 'all') R.since = null;
       (mode === 'commit' ? Promise.resolve() : loadCode()).then(function () { drawAll(); loadDiff(); });
     }
+    function narrow() { return window.innerWidth < 760; }
+    function layout() { return narrow() ? 'unified' : R.layout; }
     function drawTop() {
       top.textContent = '';
       var c = R.code;
@@ -414,16 +428,21 @@ export const REVIEW_JS = String.raw`
       });
       var seg = el('div', { cls: 'jb-seg' });
       [['unified', 'Unified'], ['split', 'Split']].forEach(function (o) {
-        seg.appendChild(el('button', { type: 'button', cls: R.layout === o[0] ? 'on' : '', text: o[1], onclick: function () { R.layout = o[0]; try { localStorage.setItem('lazy.diffLayout', o[0]); } catch (e) {} drawTop(); drawPane(); } }));
+        seg.appendChild(el('button', { type: 'button', cls: layout() === o[0] ? 'on' : '', disabled: narrow() && o[0] === 'split' ? true : null, title: narrow() && o[0] === 'split' ? 'Needs a wider window' : null, text: o[1], onclick: function () { R.layout = o[0]; try { localStorage.setItem('lazy.diffLayout', o[0]); } catch (e) {} drawTop(); drawPane(); } }));
       });
       top.appendChild(modeSel);
       top.appendChild(seg);
-      top.appendChild(el('span', { cls: 'sum' }, [el('span', { cls: 'plus', text: '+' + c.totals.added }), el('span', { cls: 'minus', text: '-' + c.totals.removed }), el('span', { text: c.commits.length + ' commit' + (c.commits.length === 1 ? '' : 's') })]));
+      var tot = c.totals;
+      if (R.mode === 'since' && c.sinceStats) tot = Object.keys(c.sinceStats).reduce(function (a, k) { return { added: a.added + c.sinceStats[k].added, removed: a.removed + c.sinceStats[k].removed }; }, { added: 0, removed: 0 });
+      top.appendChild(el('span', { cls: 'sum' }, [el('span', { cls: 'plus', text: '+' + tot.added }), el('span', { cls: 'minus', text: '-' + tot.removed }), el('span', { text: c.commits.length + ' commit' + (c.commits.length === 1 ? '' : 's') })]));
       if (R.live) top.appendChild(el('span', { cls: 'rv-live', title: 'New commits show up here as helpers land them' }, [el('i'), 'Live']));
       top.appendChild(el('span', { cls: 'grow' }));
       var cnt = R.rv ? R.rv.counts : null;
       if (cnt && (cnt.open || cnt.resolved)) {
-        top.appendChild(el('span', { cls: 'sum' }, [el('b', { text: String(cnt.open) }), ' open', cnt.unsent ? el('span', { text: '(' + cnt.unsent + ' not sent)' }) : null, cnt.resolved ? el('span', { text: '- ' + cnt.resolved + ' resolved' }) : null]));
+        var bits = [];
+        if (cnt.open) bits.push(cnt.open + ' open' + (cnt.unsent ? ' (' + cnt.unsent + ' not sent)' : ''));
+        if (cnt.resolved) bits.push(cnt.resolved + ' resolved');
+        top.appendChild(el('span', { cls: 'sum', text: 'Comments: ' + bits.join(', ') }));
       }
       if (cnt && cnt.unsent) {
         top.appendChild(el('button', { cls: 'act primary', type: 'button', text: R.live ? 'Send ' + cnt.unsent + ' to helpers' : 'Fix ' + cnt.unsent + ' in a follow-up sprint', title: R.live ? 'Each file with comments becomes a task in this sprint; a free helper picks it up' : 'Starts a new sprint from this sprint\'s branch that works on your comments', onclick: function () { sendThreads(); } }));
@@ -436,7 +455,7 @@ export const REVIEW_JS = String.raw`
         : 'This sprint has finished. Start a follow-up sprint that works on ' + n + ' comment' + (n === 1 ? '' : 's') + '? It starts from this sprint\'s branch.';
       if (!confirm(msg)) return;
       api(P + 'review/send', { method: 'POST', body: ids ? { ids: ids } : {} }).then(function (r) {
-        if (r.mode === 'tasks') { toast('Filed ' + r.tasks.map(function (t) { return t.id; }).join(', ')); R.banner = { kind: 'sent', tasks: r.tasks, notified: r.notified }; }
+        if (r.mode === 'tasks') { toast('Sent to the helpers'); R.banner = { kind: 'sent', tasks: r.tasks, notified: r.notified }; }
         else { toast('Follow-up sprint started'); R.banner = { kind: 'follow', runId: r.followUp }; }
         drawBanner();
         return reloadReview();
@@ -452,7 +471,12 @@ export const REVIEW_JS = String.raw`
         banner.appendChild(el('span', { cls: 'grow' }, [el('b', { text: 'New changes landed' }), ': ' + (n ? n + ' commit' + (n === 1 ? '' : 's') + (b.commits[0] ? ' - ' + b.commits[0].subject : '') : 'the branch moved') + '. The diff is up to date.']));
         if (validSince(b.from)) banner.appendChild(el('button', { cls: 'act', type: 'button', text: 'Show only these', onclick: function () { R.banner = null; drawBanner(); setMode('since', b.from); } }));
       } else if (b.kind === 'sent') {
-        banner.appendChild(el('span', { cls: 'grow' }, ['Sent. Filed as ', b.tasks.map(function (t) { return t.id + ' (' + t.file + ')'; }).join(', '), '. A free helper picks ' + (b.tasks.length === 1 ? 'it' : 'them') + ' up' + (b.notified ? '; the ' + b.notified + ' helper' + (b.notified === 1 ? '' : 's') + ' building now got a heads-up' : '') + '.']));
+        var made = b.tasks.filter(function (t) { return !t.added; }), joined = b.tasks.filter(function (t) { return t.added; });
+        var say = [];
+        if (made.length) say.push('New task' + (made.length === 1 ? '' : 's') + ' for ' + made.map(function (t) { return t.file + (t.after ? ' (starts when the helper already on that file is done)' : ''); }).join(', ') + '.');
+        if (joined.length) say.push('Added to the waiting task' + (joined.length === 1 ? '' : 's') + ' for ' + joined.map(function (t) { return t.file; }).join(', ') + '.');
+        say.push('A free helper picks ' + (b.tasks.length === 1 ? 'it' : 'them') + ' up' + (b.notified ? '; the ' + b.notified + ' helper' + (b.notified === 1 ? '' : 's') + ' building now got a heads-up' : '') + '.');
+        banner.appendChild(el('span', { cls: 'grow' }, [el('b', { text: 'Sent to the helpers. ' }), say.join(' ')]));
         banner.appendChild(el('button', { cls: 'act', type: 'button', text: 'See on the board', onclick: function () { go(S.runId, 'board'); } }));
       } else {
         banner.appendChild(el('span', { cls: 'grow', text: 'A follow-up sprint is working on your comments, starting from this sprint\'s branch.' }));
@@ -503,8 +527,8 @@ export const REVIEW_JS = String.raw`
         });
         list.forEach(function (t) {
           var first = t.comments[0];
-          body.appendChild(el('button', { type: 'button', cls: 'rv-cm', onclick: function () { jump(t.id); } }, [
-            el('span', { cls: 'loc' }, [el('span', { text: base(t.file) + ':' + t.lineNow }), badges(t)]),
+          body.appendChild(el('button', { type: 'button', cls: 'rv-cm' + (R.active === t.id ? ' on' : ''), onclick: function () { jump(t.id); } }, [
+            el('span', { cls: 'loc' }, [el('span', { title: t.file, text: t.file + ':' + t.lineNow + (t.side === 'old' ? ' (old version)' : '') }), badges(t)]),
             el('span', { cls: 'ex', text: first ? first.body : '' }),
             t.comments.length > 1 ? el('span', { cls: 'loc', text: (t.comments.length - 1) + ' repl' + (t.comments.length === 2 ? 'y' : 'ies') }) : null
           ]));
@@ -539,26 +563,31 @@ export const REVIEW_JS = String.raw`
           }
         }
         if (dir && R.closedDirs[dir]) return;
-        var v = isViewed(f), oc = openCount(f.path);
+        var v = isViewed(f), oc = openCount(f.path), vm = viewedMap();
         var st = f.blob === 'deleted' ? 'D' : f.removed === 0 && f.added > 0 ? 'A' : 'M';
         tree.appendChild(el('button', { type: 'button', cls: 'rv-f' + (R.mode !== 'commit' && R.file === f.path ? ' on' : '') + (v ? ' viewed' : ''), title: f.path, style: dir ? 'padding-left: 22px' : null, onclick: function () { pickFile(f.path); } }, [
           el('span', { cls: 'st ' + st, title: { D: 'Deleted', A: 'Added', M: 'Changed' }[st], text: st }),
           el('span', { cls: 'nm', text: base(f.path) }),
           R.mode !== 'since' && changed.indexOf(f.path) !== -1 ? el('span', { cls: 'dot', title: 'Changed since your last visit' }) : null,
           oc ? el('span', { cls: 'cb', title: oc + ' open comment' + (oc === 1 ? '' : 's'), text: String(oc) }) : null,
-          f.binary ? el('span', { cls: 'chip', text: 'bin' }) : el('span', { cls: 'plus', text: '+' + f.added }),
-          f.binary ? null : el('span', { cls: 'minus', text: '-' + f.removed }),
-          v ? el('span', { cls: 'ck', title: 'Viewed', text: 'OK' }) : null
+          f.binary ? el('span', { cls: 'chip', text: 'bin' }) : el('span', { cls: 'plus', text: '+' + statOf(f).added }),
+          f.binary ? null : el('span', { cls: 'minus', text: '-' + statOf(f).removed }),
+          v ? el('span', { cls: 'ck', title: 'Viewed', text: 'OK' }) : vm[f.path] ? el('span', { cls: 'chg', title: 'Changed since you marked it viewed', text: 'changed' }) : null
         ]));
       });
       return tree;
     }
+    function linkFile() { if (R.file && S.runId === runId && S.sub === 'code') history.replaceState(null, '', '#sprints/' + runId + '/code/' + encodeURIComponent(R.file)); }
     function pickFile(p) {
       if (R.mode === 'commit') { R.mode = R.since ? 'since' : 'all'; drawTop(); }
-      R.file = p; R.sel = null; R.comp = null; R.diff = null;
+      R.file = p; linkFile(); R.sel = null; R.comp = null; R.diff = null;
       drawSide(); loadDiff();
       var sc = pane.querySelector('.rv-scroll'); if (sc) sc.scrollTop = 0;
       if (window.innerWidth < 960) pane.scrollIntoView({ block: 'start' });
+    }
+    function markViewed(f, on) {
+      setViewed(f, on); drawSide(); drawPane();
+      if (on) { var next = visibleFiles().filter(function (x) { return !isViewed(x); })[0]; if (next) pickFile(next.path); }
     }
     function step(dir) {
       var list = visibleFiles(); if (!list.length) return;
@@ -569,6 +598,7 @@ export const REVIEW_JS = String.raw`
     function jump(id) {
       var t = R.rv && R.rv.threads.filter(function (x) { return x.id === id; })[0];
       if (!t) return;
+      R.active = id; if (R.tab === 'comments') drawSide();
       if (t.status === 'resolved') R.showRes[id] = true;
       var need = R.mode === 'commit' || (R.mode === 'since' && t.side === 'old');
       if (need) { R.mode = 'all'; R.since = null; }
@@ -586,7 +616,7 @@ export const REVIEW_JS = String.raw`
     // Diff rows plus any context lines the reader asked to see.
     function rowsWithContext(d) {
       var rows = d.parsed.rows, out = [];
-      var f = d.file, exp = R.exp[f] || {}, lines = R.lines[f + '@' + d.head];
+      var f = d.file, exp = R.exp[f] || {}, lines = R.lines[f + '@' + d.head], total = d.newLines;
       var lastN = 0, lastO = 0;
       function gap(gs, ge, delta, key, dir) {
         var size = ge === null ? null : ge - gs + 1;
@@ -601,11 +631,13 @@ export const REVIEW_JS = String.raw`
         var gapRow = hidden === null || hidden > 0 ? { k: 'gap', key: key, hidden: hidden } : null;
         if (dir === 'up') { if (gapRow) out.push(gapRow); out.push.apply(out, ctx); }
         else { out.push.apply(out, ctx); if (gapRow) out.push(gapRow); }
+        return hidden;
       }
       rows.forEach(function (r) {
         if (r.k === 'hunk') {
-          gap(lastN + 1, r.n - 1, r.o - r.n, 'u' + r.n, 'up');
-          out.push(r);
+          var left = gap(lastN + 1, r.n - 1, r.o - r.n, 'u' + r.n, 'up');
+          // The @@ line only marks a jump; once nothing above it is hidden it is noise.
+          if (left) out.push(r);
           lastN = r.n - 1; lastO = r.o - 1;
           return;
         }
@@ -613,7 +645,10 @@ export const REVIEW_JS = String.raw`
         if (r.n) lastN = r.n;
         if (r.o) lastO = r.o;
       });
-      if (rows.length && !d.truncated && d.parsed.newPath) gap(lastN + 1, lines ? lines.length : null, lastO - lastN, 'end', 'down');
+      if (rows.length && !d.truncated && d.parsed.newPath) {
+        var end = lines ? lines.length : typeof total === 'number' ? total : null;
+        if (end === null || end > lastN) gap(lastN + 1, end, lastO - lastN, 'end', 'down');
+      }
       return pairWords(out.map(function (r) { return Object.assign({}, r); }));
     }
     function expand(key, all) {
@@ -645,8 +680,8 @@ export const REVIEW_JS = String.raw`
     }
     function gapRow(r, cls, lead) {
       var btns = el('span', { cls: 'code' });
-      btns.appendChild(el('button', { type: 'button', text: r.key.charAt(0) === 'u' ? 'Show 20 more lines above' : 'Show 20 more lines', onclick: function () { expand(r.key, false); } }));
-      btns.appendChild(el('button', { type: 'button', text: r.hidden === null ? 'Show the rest of the file' : 'Show all ' + r.hidden + ' hidden line' + (r.hidden === 1 ? '' : 's'), onclick: function () { expand(r.key, true); } }));
+      if (r.hidden === null || r.hidden > 20) btns.appendChild(el('button', { type: 'button', text: r.key.charAt(0) === 'u' ? 'Show 20 more lines above' : 'Show 20 more lines', onclick: function () { expand(r.key, false); } }));
+      btns.appendChild(el('button', { type: 'button', text: r.hidden === null ? 'Show the rest of the file' : 'Show ' + (r.hidden > 20 ? 'all ' : '') + r.hidden + ' hidden line' + (r.hidden === 1 ? '' : 's'), onclick: function () { expand(r.key, true); } }));
       return el('div', { cls: cls }, lead.concat([btns]));
     }
     function half(r, sd, lang, idx) {
@@ -720,7 +755,7 @@ export const REVIEW_JS = String.raw`
         var box = el('div', { cls: 'rv-cfile' }, [el('div', { cls: 'rv-fh' }, [el('span', { cls: 'path', text: p })])]);
         var rows = el('div', { cls: 'rv-rows' }), lang = langOf(p), idx = {};
         var list = pairWords(fd.rows.map(function (r) { return Object.assign({}, r); }));
-        if (R.layout === 'split') { var out = []; splitRows(list, lang, idx, out); out.forEach(function (n) { rows.appendChild(n); }); }
+        if (layout() === 'split') { var out = []; splitRows(list, lang, idx, out); out.forEach(function (n) { rows.appendChild(n); }); }
         else list.forEach(function (r) { rows.appendChild(uniRow(r, lang, idx)); });
         if (fd.binary) rows.appendChild(el('div', { cls: 'rv-note', text: 'Binary file, not shown.' }));
         box.appendChild(rows);
@@ -733,13 +768,14 @@ export const REVIEW_JS = String.raw`
       if (!f) { scroll.appendChild(el('div', { cls: 'rv-ph', text: visibleFiles().length ? 'Pick a file.' : (R.mode === 'since' ? 'Nothing changed since then.' : 'No file changes yet.') })); return; }
       var v = isViewed(f);
       var vc = el('input', { type: 'checkbox' }); vc.checked = v;
-      vc.addEventListener('change', function () { setViewed(f, vc.checked); drawSide(); drawPane(); if (vc.checked) { var next = visibleFiles().filter(function (x) { return !isViewed(x); })[0]; if (next) pickFile(next.path); } });
+      vc.addEventListener('change', function () { markViewed(f, vc.checked); });
       var oc = openCount(f.path);
       scroll.appendChild(el('div', { cls: 'rv-fh' }, [
         el('span', { cls: 'path', text: f.path }),
-        f.binary ? el('span', { cls: 'chip', text: 'binary' }) : el('span', { cls: 'plus', text: '+' + f.added }),
-        f.binary ? null : el('span', { cls: 'minus', text: '-' + f.removed }),
+        f.binary ? el('span', { cls: 'chip', text: 'binary' }) : el('span', { cls: 'plus', text: '+' + statOf(f).added }),
+        f.binary ? null : el('span', { cls: 'minus', text: '-' + statOf(f).removed }),
         oc ? el('span', { cls: 'chip', text: oc + ' open comment' + (oc === 1 ? '' : 's') }) : null,
+        !v && viewedMap()[f.path] ? el('span', { cls: 'chg', text: 'changed since you viewed it' }) : null,
         el('span', { cls: 'grow' }),
         el('button', { cls: 'act', type: 'button', title: 'Previous file (p)', text: 'Prev', onclick: function () { step(-1); } }),
         el('button', { cls: 'act', type: 'button', title: 'Next file (n)', text: 'Next', onclick: function () { step(1); } }),
@@ -754,7 +790,7 @@ export const REVIEW_JS = String.raw`
       var lang = langOf(f.path), idx = {};
       var list = rowsWithContext(d);
       var nodes = [];
-      if (R.layout === 'split') splitRows(list, lang, idx, nodes);
+      if (layout() === 'split') splitRows(list, lang, idx, nodes);
       else list.forEach(function (r) { nodes.push(uniRow(r, lang, idx)); });
       nodes.forEach(function (n) { rowsBox.appendChild(n); });
       if (!d.parsed.rows.length) rowsBox.appendChild(el('div', { cls: 'rv-ph', text: 'No line changes (renamed, or only its permissions changed).' }));
@@ -805,7 +841,7 @@ export const REVIEW_JS = String.raw`
         el('span', { cls: 'mono', text: (t.state === 'outdated' ? 'Was ' + (t.line === t.endLine ? 'line ' + t.line : 'lines ' + t.line + '-' + t.endLine) : t.lineNow === t.endLineNow ? 'Line ' + t.lineNow : 'Lines ' + t.lineNow + '-' + t.endLineNow) + (t.side === 'old' ? ' (old version)' : '') }),
         badges(t),
         t.state === 'moved' ? el('span', { cls: 'muted', style: 'font-size:12px', text: 'was line ' + t.line }) : null,
-        t.task ? el('button', { cls: 'iv-link', type: 'button', title: 'Open the task', text: t.task.id, onclick: function () { openTask(t.task.id); } }) : null,
+        t.task ? el('button', { cls: 'iv-link', type: 'button', title: 'Open the task this comment was sent as (' + t.task.id + ')', text: t.task.status === 'closed' ? 'See the task' : t.task.status === 'in_progress' ? 'A helper is on it' : 'Waiting for a helper', onclick: function () { openTask(t.task.id); } }) : null,
         el('span', { cls: 'grow' }),
         t.status === 'open' && !t.sent ? el('button', { cls: 'act', type: 'button', title: R.live ? 'File just this thread as a task now' : 'Work on just this thread in a follow-up sprint', text: 'Send', onclick: function () { sendThreads([t.id]); } }) : null,
         el('button', { cls: 'act', type: 'button', text: res ? 'Reopen' : 'Resolve', onclick: function () { threadOp(t.id, res ? 'reopen' : 'resolve'); } }),
@@ -828,7 +864,7 @@ export const REVIEW_JS = String.raw`
           var ta = draftArea(ek, '');
           bd.appendChild(ta);
           bd.appendChild(el('div', { cls: 'rv-bar' }, [el('span', { cls: 'grow' }),
-            el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: function () { delete R.editing[ek]; delete R.drafts[ek]; drawPane(); } }),
+            el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: function () { if (R.drafts[ek] !== c.body && !confirm('Discard your changes?')) return; delete R.editing[ek]; delete R.drafts[ek]; drawPane(); } }),
             el('button', { cls: 'act primary', type: 'button', text: 'Save', onclick: function () { saveEdit(); } })]));
           var saveEdit = function () { threadOp(t.id, 'edit', { commentId: c.id, body: R.drafts[ek] }).then(function () { delete R.editing[ek]; delete R.drafts[ek]; }); };
           ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveEdit(); if (e.key === 'Escape') { e.stopPropagation(); delete R.editing[ek]; drawPane(); } });
@@ -846,10 +882,10 @@ export const REVIEW_JS = String.raw`
             if (resolve) return threadOp(t.id, 'resolve');
           });
         };
-        ra.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendReply(false); if (e.key === 'Escape') { e.stopPropagation(); delete R.replying[rk]; delete R.drafts[rk]; drawPane(); } });
+        ra.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendReply(false); if (e.key === 'Escape') { e.stopPropagation(); delete R.replying[rk]; drawPane(); } });
         reply.appendChild(ra);
         reply.appendChild(el('div', { cls: 'rv-bar' }, [el('span', { cls: 'grow' }),
-          el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: function () { delete R.replying[rk]; delete R.drafts[rk]; drawPane(); } }),
+          el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: function () { if ((R.drafts[rk] || '').trim() && !confirm('Discard this reply?')) return; delete R.replying[rk]; delete R.drafts[rk]; drawPane(); } }),
           res ? null : el('button', { cls: 'act', type: 'button', text: 'Reply and resolve', onclick: function () { sendReply(true); } }),
           el('button', { cls: 'act primary', type: 'button', text: 'Reply', onclick: function () { sendReply(false); } })]));
       } else {
@@ -878,7 +914,9 @@ export const REVIEW_JS = String.raw`
       var ta = draftArea(key, 'What should change? ' + BT + 'code' + BT + ' and **bold** work; "Suggest a change" proposes new code.');
       box.appendChild(ta);
       var submit = el('button', { cls: 'act primary', type: 'button', text: 'Comment' });
-      var cancel = function () { delete R.drafts[key]; R.comp = null; R.sel = null; drawPane(); };
+      // Esc just closes the box and keeps what was typed for next time; Cancel asks first.
+      var close = function () { R.comp = null; R.sel = null; drawPane(); if ((R.drafts[key] || '').trim()) toast('Draft kept; select the same lines to finish it'); };
+      var cancel = function () { if ((R.drafts[key] || '').trim() && !confirm('Discard this comment?')) return; delete R.drafts[key]; R.comp = null; R.sel = null; drawPane(); };
       var save = function () {
         var text = (R.drafts[key] || '').trim();
         if (!text) { ta.focus(); return; }
@@ -889,7 +927,7 @@ export const REVIEW_JS = String.raw`
         }).catch(function (e) { submit.disabled = false; toast(e.message); });
       };
       submit.addEventListener('click', save);
-      ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') { e.stopPropagation(); cancel(); } });
+      ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') { e.stopPropagation(); close(); } });
       var suggest = el('button', { cls: 'act', type: 'button', title: 'Propose replacement code for these lines', text: 'Suggest a change', onclick: function () {
         var lines = [];
         for (var n = a; n <= b; n++) lines.push(R.rowText[cm.side + ':' + n] || '');
@@ -898,7 +936,7 @@ export const REVIEW_JS = String.raw`
         R.drafts[key] = ta.value;
         ta.focus();
       } });
-      box.appendChild(el('div', { cls: 'rv-bar' }, [cm.side === 'new' ? suggest : null, el('span', { cls: 'hint', text: 'Ctrl+Enter to comment, Esc to cancel' }), el('span', { cls: 'grow' }), el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: cancel }), submit]));
+      box.appendChild(el('div', { cls: 'rv-bar' }, [cm.side === 'new' ? suggest : null, el('span', { cls: 'hint', text: 'Ctrl+Enter to comment, Esc to close (keeps the draft)' }), el('span', { cls: 'grow' }), el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: cancel }), submit]));
       return box;
     }
     function openComposer() {
@@ -956,7 +994,7 @@ export const REVIEW_JS = String.raw`
         var lo = Math.min(a.num, b.num), hi = Math.max(a.num, b.num);
         floatBtn.textContent = 'Comment on ' + (lo === hi ? 'line ' + lo : 'lines ' + lo + '-' + hi);
         floatBtn.style.left = Math.min(e.clientX + 8, window.innerWidth - 220) + 'px';
-        floatBtn.style.top = Math.min(e.clientY + 12, window.innerHeight - 50) + 'px';
+        floatBtn.style.top = Math.max(8, e.clientY - 44) + 'px';
         floatBtn.hidden = false;
         floatBtn.onclick = function () { R.sel = { side: sd, a: lo, b: hi }; s.removeAllRanges(); openComposer(); };
       }, 0);
@@ -968,7 +1006,7 @@ export const REVIEW_JS = String.raw`
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'n' || e.key === 'j') { e.preventDefault(); step(1); }
       else if (e.key === 'p' || e.key === 'k') { e.preventDefault(); step(-1); }
-      else if (e.key === 'v') { var f = fileByPath(R.file); if (f && R.mode !== 'commit') { e.preventDefault(); setViewed(f, !isViewed(f)); drawSide(); drawPane(); } }
+      else if (e.key === 'v') { var f = fileByPath(R.file); if (f && R.mode !== 'commit') { e.preventDefault(); markViewed(f, !isViewed(f)); } }
       else if (e.key === 'Escape' && R.sel && !R.comp) { R.sel = null; paintSel(); }
     });
 

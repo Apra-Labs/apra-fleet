@@ -54,7 +54,8 @@ describe('buildBoard', () => {
     expect(card('shop-9x.2.2').column).toBe('blocked');
     expect(card('shop-9x.2.2').blockedBy).toEqual(['shop-9x.2.1']);
     expect(board.cards.some(c => c.id === 'shop-9x' || c.id === 'shop-9x.1')).toBe(false);
-    expect(board.lanes.map(l => l.id)).toEqual(['shop-9x', 'shop-9x.1', 'shop-9x.2']);
+    // Loose work under the sprint's own issue comes last, as Jira puts "everything else" last.
+    expect(board.lanes.map(l => l.id)).toEqual(['shop-9x.1', 'shop-9x.2', 'shop-9x']);
     expect(board.lanes.find(l => l.id === 'shop-9x.1')).toMatchObject({ title: 'Theme foundation', total: 3, done: 1 });
     expect(card('shop-9x.3').lane).toBe('shop-9x');
   });
