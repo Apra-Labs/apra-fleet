@@ -87,12 +87,14 @@ function probeVersion(cmd: string, shell: boolean): string | null {
   }
 }
 // System node from PATH, NOT process.version (in SEA mode that is the embedded runtime).
-// npm is a .cmd shim on Windows, so it needs shell:true.
+// node/npm can be .cmd shims on Windows (nvm-windows, corporate wrappers), so both need shell:true.
 const realFleetSePrereqProbes: FleetSePrereqProbes = {
-  nodeVersion: () => probeVersion('node', false),
+  nodeVersion: () => probeVersion('node', true),
   npmVersion: () => probeVersion('npm', true),
 };
 let fleetSePrereqProbes: FleetSePrereqProbes = realFleetSePrereqProbes;
+/** Test-only: the real (non-overridden) probes, to assert their exec options. */
+export const _realFleetSePrereqProbes = realFleetSePrereqProbes;
 /** Test-only: inject fake probes for the fleet-se prerequisite check. */
 export function _setFleetSePrereqProbes(overrides: Partial<FleetSePrereqProbes>): void {
   fleetSePrereqProbes = { ...realFleetSePrereqProbes, ...overrides };
@@ -1047,6 +1049,7 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
+                          fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;

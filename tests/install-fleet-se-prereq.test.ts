@@ -9,6 +9,7 @@ import {
   _setManifestOverride,
   _setFleetSePrereqProbes,
   _resetFleetSePrereqProbes,
+  _realFleetSePrereqProbes,
 } from '../src/cli/install.js';
 
 // apra-fleet-i9ag.13 -- fleet-se (fleet-sprint, supervisor, bd) requires a
@@ -85,6 +86,22 @@ describe('checkFleetSePrereqs', () => {
 
   it('message is ASCII only', () => {
     expect(/^[\x00-\x7F]*$/.test(checkFleetSePrereqs(probes('v20.0.0', null)).message)).toBe(true);
+  });
+});
+
+describe('real fleet-se prereq probes', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('probes node with shell:true, same as npm (node/npm may be .cmd shims on Windows)', () => {
+    vi.mocked(execFileSync).mockReturnValue('v22.16.0\n' as any);
+
+    _realFleetSePrereqProbes.nodeVersion();
+    _realFleetSePrereqProbes.npmVersion();
+
+    expect(execFileSync).toHaveBeenCalledWith('node', ['--version'], expect.objectContaining({ shell: true }));
+    expect(execFileSync).toHaveBeenCalledWith('npm', ['--version'], expect.objectContaining({ shell: true }));
   });
 });
 
