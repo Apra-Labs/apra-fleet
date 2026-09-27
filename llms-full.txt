@@ -1076,6 +1076,29 @@ which skills are installed, uninstalling, and self-updating.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
+## Prerequisites
+
+Apra Fleet core -- the console, the MCP server, and Dolt -- needs no Node.js
+at all; it runs from the installed binary alone.
+
+fleet-se (the fleet-sprint engine, the fleet supervisor, and `bd`) is
+different: it requires **Node.js 22.16.0 or newer, plus npm**, by design. `bd`
+is installed as an npm global package pinned to `@beads/bd@1.3.0` -- it does
+not ship as a standalone binary, and installing does not skip it silently.
+
+If Node.js or npm is missing (or Node.js is older than 22.16.0) when you run
+`install` with the default `--workflows all`, the installer stops with a
+non-zero exit and prints:
+
+```
+fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only
+```
+
+To install only the core console -- no Node.js/npm requirement at all -- pass
+`--workflows none`. This skips the fleet-se workflow assets, the fleet
+supervisor, and the `bd` install entirely; the installer reports fleet-se as
+`NOT INSTALLED` in its summary and exits 0.
+
 ## Quick install
 
 Installation is the default action -- just run the binary with no arguments (or double-click it
