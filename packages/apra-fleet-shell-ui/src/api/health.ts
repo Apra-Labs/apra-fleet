@@ -19,11 +19,15 @@ export interface FleetStatusPayload {
   version: string;
   summary: FleetStatusSummary;
   updateAvailable?: UpdateAvailable;
+  /** Resolved absolute fleet data directory, always present on the server
+   *  payload (see src/tools/check-status.ts) -- the authoritative source for
+   *  the Health page's "Data dir" row. Optional here only so this type still
+   *  accepts a payload from an older server that predates the field. */
+  dataDir?: string;
   /** Active server log file path, e.g. "<dataDir>/logs/fleet-1234.log".
-   *  There is no dedicated "data dir" field on this payload -- deriveDataDir
-   *  below strips the trailing "logs/fleet-<pid>.log" segments off this to
-   *  recover it, since src/tools/ is off-limits to this lane and no other
-   *  console route exposes it directly. */
+   *  deriveDataDir below strips the trailing "logs/fleet-<pid>.log" segments
+   *  off this to recover the data dir; kept only as a legacy fallback for a
+   *  console talking to an older server whose payload has no dataDir. */
   logFile?: string;
 }
 
