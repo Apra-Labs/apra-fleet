@@ -26,6 +26,47 @@ import {
 // option). The cases below cover each of those instead, and the last one
 // spawns the flag for real to prove it isolates rather than merely parses.
 
+/**
+ * Resolves a path into the one spelling both sides of a comparison can agree
+ * on, across every platform in the CI matrix.
+ *
+ * fs.realpathSync.native rather than fs.realpathSync: the JS implementation
+ * only walks symlinks, so on win32 it leaves an 8.3 short name intact --
+ * os.tmpdir() reads TEMP, which on a GitHub Windows runner is
+ * C:\Users\RUNNER~1\AppData\Local\Temp, while the child below reports the
+ * long C:\Users\runneradmin\... form. Only the native binding expands the
+ * short name, and it also handles macOS's /var -> /private/var symlink.
+ * Lowercasing on win32 then absorbs drive-letter and component case (c:\ vs
+ * C:\), which are the same path there.
+ *
+ * The fallback matters: isolated-home-setup.mjs removes its temp home in a
+ * process 'exit' handler, so the directory the child printed is already gone
+ * by the time this process looks at it and .native would throw ENOENT. That
+ * string is safe to use unresolved -- applyIsolatedHome() built it by passing
+ * the freshly created dir through fs/promises realpath (the native binding)
+ * inside the child, so it is already in long, symlink-free form.
+ */
+function normalizeForCompare(p: string): string {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync.native(p);
+  } catch {
+    resolved = path.resolve(p);
+  }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/** True when `child` is a strict descendant of `parent`. */
+function isInside(parent: string, child: string): boolean {
+  // path.relative, not startsWith: a raw prefix test also accepts a sibling
+  // that merely shares the prefix (/tmp/foo-bar under a /tmp/foo parent) and
+  // is sensitive to separator spelling. Checking the first segment rather
+  // than rel.startsWith('..') keeps a legitimately '..'-prefixed directory
+  // name from reading as an escape.
+  const rel = path.relative(normalizeForCompare(parent), normalizeForCompare(child));
+  return rel !== '' && !path.isAbsolute(rel) && rel.split(path.sep)[0] !== '..';
+}
+
 const MAIN_LANE_CONCURRENCY = 8;
 const ISOLATED_LANE_CONCURRENCY = 1;
 const FILES = ['alpha.test.mjs', 'beta.test.mjs'];
@@ -101,9 +142,14 @@ describe('buildLaneArgs (scripts/run-integ-suites.mjs real-bd lane argv)', () =>
       { encoding: 'utf8' },
     ).trim();
 
-    expect(isolated).not.toBe(os.homedir());
-    // realpath: the helper resolves its temp dir (macOS /var -> /private/var),
-    // so compare against the resolved tmpdir rather than os.tmpdir() raw.
-    expect(isolated.startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
+    // Both comparisons go through normalizeForCompare(), so a respelling of
+    // the same directory cannot make an UNisolated home look isolated (real
+    // home reported in a different case on win32) nor an isolated one look
+    // like an escape (8.3 temp root, macOS /var symlink).
+    expect(normalizeForCompare(isolated)).not.toBe(normalizeForCompare(os.homedir()));
+    expect(
+      isInside(os.tmpdir(), isolated),
+      `isolated home ${isolated} is not inside the temp dir ${os.tmpdir()}`,
+    ).toBe(true);
   }, 30_000);
 });
