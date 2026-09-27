@@ -27,6 +27,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
+import { sweepStaleTempHomes } from './stale-temp-home-sweep.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.join(__dirname, '..');
@@ -63,44 +64,12 @@ const timeoutMs = (() => {
 // node --test run below, rather than from inside isolated-home-setup.mjs
 // itself: that module is imported by every test-file process via --import,
 // so a sweep there would race with and delete a SIBLING file's still-live
-// temp home in the same concurrent run.
-//
-// Age-gated by this run's own wall-clock bound (timeoutMs) so a temp home
-// belonging to a DIFFERENT, still-running concurrent invocation of this
-// script (e.g. two suites launched in parallel by an outer runner) is never
-// mistaken for stale and deleted out from under it -- only a dir older than
-// the longest any single run of this script is allowed to take could
-// possibly be an orphan.
-const STALE_TEMP_HOME_PREFIX = 'apra-fleet-se-test-run-';
-
-function sweepStaleTempHomes() {
-    let entries;
-    try {
-        entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true });
-    } catch {
-        return; // best effort -- an unreadable tmpdir is not this script's problem to fix
-    }
-    const now = Date.now();
-    for (const entry of entries) {
-        if (!entry.isDirectory() || !entry.name.startsWith(STALE_TEMP_HOME_PREFIX)) continue;
-        const fullPath = path.join(os.tmpdir(), entry.name);
-        let stat;
-        try {
-            stat = fs.statSync(fullPath);
-        } catch {
-            continue; // already gone, or a race with something else cleaning it up
-        }
-        const ageMs = now - stat.mtimeMs;
-        if (ageMs <= timeoutMs) continue; // could still belong to a live, concurrent run
-        try {
-            fs.rmSync(fullPath, { recursive: true, force: true, maxRetries: 5 });
-        } catch {
-            // best effort -- leave it for the next sweep rather than fail this run over it
-        }
-    }
-}
-
-sweepStaleTempHomes();
+// temp home in the same concurrent run. See scripts/stale-temp-home-sweep.mjs
+// (extracted so it is independently unit-testable) for the liveness-marker
+// rework this does: the sweep never deletes a dir whose owning pid is still
+// alive, regardless of age, and only falls back to age-gating by this run's
+// own timeoutMs for dirs with no live-owner marker.
+sweepStaleTempHomes(timeoutMs);
 
 // TEST_CONCURRENCY (test/helpers/test-concurrency.mjs) is exported into the
 // test workers' env below so test/helpers/scaled-timeout.mjs can derive

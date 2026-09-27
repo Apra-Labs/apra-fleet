@@ -34,6 +34,18 @@ import { applyIsolatedHome } from '../../../tests/helpers/isolated-home.mjs';
 
 const home = await applyIsolatedHome('apra-fleet-se-test-run-');
 
+// apra-fleet-v6t7.16 (review rework): stamp the owning process's pid into the
+// temp home so scripts/run-tests.mjs's parent-side sweepStaleTempHomes() can
+// tell a still-live sibling test-file process's home apart from a genuinely
+// orphaned one, instead of relying solely on an age threshold. The prior
+// age-only gate compared a dir's mtime against the SWEEPING run's own
+// timeoutMs, not the OWNING run's -- so a short-bound invocation (e.g.
+// tests/run-all-tests-timeout.test.ts's APRA_TEST_TIMEOUT_MS=1500 child)
+// could delete a concurrent, still-running normal-bound run's live temp
+// home. A liveness check has no such cross-run timing dependency: the sweep
+// only ever deletes a dir once the pid that created it is actually gone.
+fs.writeFileSync(path.join(home.tempHome, '.owner-pid'), String(process.pid), 'utf-8');
+
 // AppData/Roaming and AppData/Local leftovers were observed under the real
 // home during a sentinel-home run (see this lane's tracking bead). Nothing
 // under packages/apra-fleet-se/src reads APPDATA/LOCALAPPDATA today (only
