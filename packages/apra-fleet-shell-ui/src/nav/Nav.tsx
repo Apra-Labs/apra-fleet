@@ -9,10 +9,14 @@ export type StaticScreen = "members" | "secrets" | "health";
 
 /** The active screen. The three static screens carry no parameters; an
  *  `ext` screen names the workflow package and the path INSIDE that package
- *  (e.g. packageId "se", path "/ui/projects"). */
+ *  (e.g. packageId "se", path "/ui/projects"). `secret-entry` is a one-time
+ *  deep link (apra-fleet-i9ag.11.6): it carries the entry token and is
+ *  deliberately not one of the three static screens, so it never appears in
+ *  NAV_ITEMS and never activates a nav link. */
 export type Screen =
   | { kind: StaticScreen }
-  | { kind: "ext"; packageId: string; path: string };
+  | { kind: "ext"; packageId: string; path: string }
+  | { kind: "secret-entry"; token: string };
 
 export interface NavItem {
   screen: StaticScreen;
@@ -35,14 +39,26 @@ const SCREEN_FROM_HASH: Record<string, StaticScreen> = Object.fromEntries(
  *  slashes and a query string) belongs to the package path. */
 const EXT_HASH_RE = /^#\/ext\/([^/]+)(\/.*)?$/;
 
+/** "#/secret-entry/<token>" -- exactly one remaining segment. Anchored so a
+ *  missing token ("#/secret-entry") or extra segments after it
+ *  ("#/secret-entry/<token>/extra") do not match and fall back to Members
+ *  instead of rendering the entry page with a garbage or empty token. */
+const SECRET_ENTRY_HASH_RE = /^#\/secret-entry\/([^/]+)$/;
+
 /** Members is the shell's default screen -- an empty, unknown, or missing
  *  hash (including a bare "/ui" load) resolves to it. A "#/ext/<id><path>"
- *  hash resolves to that package's iframe page. */
+ *  hash resolves to that package's iframe page. A "#/secret-entry/<token>"
+ *  hash resolves to the one-time secret-entry page. */
 export function resolveScreen(hash: string): Screen {
   const ext = EXT_HASH_RE.exec(hash);
   if (ext) {
     const packageId = safeDecode(ext[1]);
     if (packageId) return { kind: "ext", packageId, path: ext[2] ?? "" };
+  }
+  const secretEntry = SECRET_ENTRY_HASH_RE.exec(hash);
+  if (secretEntry) {
+    const token = safeDecode(secretEntry[1]);
+    if (token) return { kind: "secret-entry", token };
   }
   return { kind: SCREEN_FROM_HASH[hash] ?? "members" };
 }
@@ -60,9 +76,14 @@ function safeDecode(raw: string): string | null {
 /** Remount key for the screen's error boundary. Deliberately does NOT include
  *  an ext screen's path: remounting on every deep-link change would reload
  *  the package iframe on each in-package navigation, which is exactly what
- *  the postMessage mirroring exists to avoid. */
+ *  the postMessage mirroring exists to avoid. A secret-entry screen's key
+ *  DOES include its token, unlike ext's path -- each token is a distinct
+ *  one-time link, so a new token must remount the page rather than reuse
+ *  stale form state from a previous link. */
 export function screenKey(screen: Screen): string {
-  return screen.kind === "ext" ? `ext:${screen.packageId}` : screen.kind;
+  if (screen.kind === "ext") return `ext:${screen.packageId}`;
+  if (screen.kind === "secret-entry") return `secret-entry:${screen.token}`;
+  return screen.kind;
 }
 
 interface NavProps {
