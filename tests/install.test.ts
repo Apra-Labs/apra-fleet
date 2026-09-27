@@ -441,21 +441,51 @@ describe('install step 8 — Beads task tracker', () => {
     logSpy.mockRestore();
   });
 
-  it('warns non-fatally when npm install fails', async () => {
+  it('fails fatally when npm install fails (apra-fleet-i9ag.13.7.2 -- bd is part of fleet-se, a silent skip is the fixed defect)', async () => {
     // bd --version throws, then npm install also throws
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error('npm: not found'); });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.mocked(console.error);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): never => {
+      throw new Error('exit');
+    }) as any);
 
-    // Should not throw
-    await expect(runInstall([])).resolves.toBeUndefined();
+    await expect(runInstall([])).rejects.toThrow('exit');
 
-    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).toContain('Beads install skipped');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('npm: not found');
 
     logSpy.mockRestore();
-    warnSpy.mockRestore();
+    exitSpy.mockRestore();
+    // execFileSync is an automock (vi.mock('node:child_process')), not a
+    // vi.spyOn -- clearAllMocks() (run in every describe's beforeEach in this
+    // file) clears call history but NOT a custom .mockImplementation() set
+    // here, so a throwing implementation would otherwise leak into every
+    // later test in this file that calls runInstall(). Reset it back to the
+    // default automock behavior (returns undefined, never throws).
+    vi.mocked(execFileSync).mockReset();
+  });
+
+  it('never prints the old non-fatal "Beads install skipped" wording anywhere', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('npm: not found'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall([])).rejects.toThrow('exit');
+
+    const warns = vi.mocked(console.warn).mock.calls.map(c => c.join(' ')).join('\n');
+    const errors = vi.mocked(console.error).mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).not.toContain('Beads install skipped');
+    expect(errors).not.toContain('Beads install skipped');
+
+    logSpy.mockRestore();
+    exitSpy.mockRestore();
+    // See the reset comment in the previous test -- same automock leak risk.
+    vi.mocked(execFileSync).mockReset();
   });
 });
 
