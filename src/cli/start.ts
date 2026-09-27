@@ -52,9 +52,36 @@ function directSpawn(): void {
   console.log('Server starting...');
 }
 
+/**
+ * Start the fleet-supervisor service when (and only when) it is registered.
+ * Independent of the MCP server: the supervisor has its own unit/plist/task,
+ * so `apra-fleet start` brings it up even if the MCP server was already
+ * running. Best-effort -- a supervisor failure never fails `start`.
+ *
+ * Skipped for sandboxed instances for the same reason the MCP service is
+ * (a non-default port/data dir must not touch machine-global registrations).
+ */
+async function startSupervisorServiceIfInstalled(): Promise<void> {
+  if (isNonDefaultInstance()) return;
+  try {
+    const supervisorMgr = await getServiceManager('fleet-supervisor');
+    if (!(await supervisorMgr.isInstalled())) return;
+    const status = await supervisorMgr.query().catch(() => ({ installed: true, running: false }));
+    if (status.running) {
+      console.log('Fleet supervisor service already running.');
+      return;
+    }
+    await supervisorMgr.start();
+    console.log('Fleet supervisor service starting...');
+  } catch (err: any) {
+    console.warn(`Fleet supervisor service start failed (${err?.message ?? err}).`);
+  }
+}
+
 export async function runStart(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   if (instance.running) {
+    await startSupervisorServiceIfInstalled();
     if (instance.version && instance.version !== serverVersion) {
       console.error(
         `Server already running at ${instance.url} pid=${instance.pid} is version ${instance.version}, `
@@ -90,6 +117,8 @@ export async function runStart(_args: string[]): Promise<void> {
   } else {
     directSpawn();
   }
+
+  await startSupervisorServiceIfInstalled();
 
   await new Promise<void>(resolve => setTimeout(resolve, 2000));
   const result = await checkRunningInstance();

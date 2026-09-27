@@ -33,6 +33,7 @@ Usage:
   apra-fleet watch            Stream live member logs (see 'watch --help')
   apra-fleet workflow <name> [args...]  Run an installed workflow (see 'workflow --help')
   apra-fleet workflow --list            List installed workflows
+  apra-fleet supervisor [options]       Run the installed fleet-sprint supervisor in the foreground (see 'supervisor --help')
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
@@ -181,6 +182,16 @@ Usage:
     .then(m => m.runWorkflow(process.argv.slice(3)))
     .then(code => { if (code !== 0) process.exit(code); })
     .catch(err => { logError('cli', `Workflow failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'supervisor') {
+  // Foreground launcher for the installed fleet-sprint supervisor. Everything after
+  // 'supervisor' reaches serve.mjs verbatim -- the launcher never re-parses it.
+  // process.exit() is unconditional (even on 0), mirroring serve.mjs's own
+  // isMainModule() branch: the supervisor's shutdown path can leave handles open, so
+  // returning normally would hang the process after POST /api/shutdown.
+  import('./cli/supervisor.js')
+    .then(m => m.runSupervisor(process.argv.slice(3)))
+    .then(code => { process.exit(code); })
+    .catch(err => { logError('cli', `Supervisor failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'run' || arg === '--stdio' || arg === '--transport') {
   // Start MCP server -- invoked by LLM providers via their MCP config, or manually.
   // 'run' takes optional --transport http|stdio (default http); bare --stdio /

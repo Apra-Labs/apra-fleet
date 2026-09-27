@@ -38,6 +38,7 @@
     "packages/apra-fleet-se/package.json",
     "packages/apra-fleet-se/fleet-sprint/",
     "packages/apra-fleet-se/bin/",
+    "packages/apra-fleet-se/src/",
     "packages/apra-fleet-se/apra-pm/agents/",
     "packages/apra-fleet-se/apra-pm/skills/",
     "packages/apra-fleet-workflow/src/",
