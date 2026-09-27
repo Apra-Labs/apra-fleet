@@ -18,19 +18,19 @@ provider tables below because none of the columns are meaningful for it.
 
 | Feature | Claude Code | Google Antigravity CLI (agy) | OpenAI Codex CLI | GitHub Copilot CLI |
 |---------|-------------|------------------------------|------------------|-------------------|
-| **Install** | Native binary / `curl \| bash` | `npm install -g @google/antigravity-cli` | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet |
-| **Headless prompt** | `claude -p "..."` | `agy -p "..."` | `codex exec "..."` | `copilot -p "..."` |
+| **Install** | Native binary / `curl \| bash` | Install script (`install.sh` / `install.ps1`) | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet |
+| **Headless prompt** | `claude -p "..."` | `agy --add-dir <folder> --project <id> -p "..."` | `codex exec "..."` | `copilot -p "..."` |
 | **Session resume** | `--resume <session_id>` | `--conversation "<session_id>"` | `codex exec resume` (positional) | `--continue` / `--resume` |
-| **JSON output** | `--output-format json` | **Not available** | `--json` (NDJSON -- one event per state change) | `--format json` |
-| **Model selection** | `--model opus/sonnet/haiku` | **Not available** (custom models configured in apra-fleet registry) | `--model` / `-m` | `--model <name>` or `/model` interactive |
+| **JSON output** | `--output-format json` | `--output-format json` | `--json` (NDJSON -- one event per state change) | `--format json` |
+| **Model selection** | `--model opus/sonnet/haiku` | `--model <slug>` (slug ids from `agy models`) | `--model` / `-m` | `--model <name>` or `/model` interactive |
 | **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
 | **Skip permissions** | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
 | **Auth env var** | `ANTHROPIC_API_KEY` | `ANTIGRAVITY_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
 | **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Browser OAuth / settings.json | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
 | **Version check** | `claude --version` | `agy --version 2>&1` | `codex --version` | `copilot --version` |
-| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm install -g @google/antigravity-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
-| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm install -g @google/antigravity-cli` | `brew install --cask codex` | `brew install --cask copilot` |
-| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `npm install -g @google/antigravity-cli` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` |
+| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
+| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `brew install --cask codex` | `brew install --cask copilot` |
+| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `irm https://antigravity.google/cli/install.ps1 \| iex` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` |
 | **Update command** | `claude update` | `agy update` | `npm update -g @openai/codex` | `copilot update` |
 | **Process name** | `claude` | `agy` | `codex` | `copilot` |
 | **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/antigravity-cli/settings.json` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
@@ -113,7 +113,7 @@ Known limitations when using non-Claude providers in a fleet.
 | **Copilot 64K context limit** | Copilot | Smallest context window -- may struggle with large PLAN.md + codebase | Recommend Copilot for smaller, focused tasks. Auto-compaction helps but summarization loses detail. |
 | **Copilot requires paid subscription** | Copilot | Not free-tier friendly | Copilot requires GitHub Copilot Pro/Business/Enterprise. No free API key path. |
 | **Codex message quotas** | Codex | Rolling 5-hour message windows instead of token budgets | Long sprints may hit quota limits. Spread work across time or use API key tier. |
-| **Permission model differences** | All | Claude uses `settings.local.json`. Others use CLI flags only. | For Claude members: continue using `compose_permissions` + `settings.local.json`. For others: use `update_member(unattended='dangerous')` to pass the provider's skip-permissions flag. No fine-grained per-tool permissions outside Claude. |
+| **Permission model differences** | All | Claude uses `settings.local.json`; AGY uses the member's own agy project (`--project`); others use CLI flags only. | Claude and AGY members: use `compose_permissions` for per-tool grants (AGY details: [agy-provider.md](agy-provider.md)). For others: use `update_member(unattended='dangerous')` to pass the provider's skip-permissions flag. |
 
 ---
 

@@ -212,6 +212,18 @@ display-only items ahead of the payload, so `content[0]` is not reliable
 either. This helper returns the first content item that parses as JSON,
 and throws `Error('No JSON payload in tool result')` when none does.
 
+### `export function permissionDenialOf(result)`
+
+Typed read of an `execute_prompt` permission denial. Accepts the raw
+`executePrompt()` result or its `structuredContent`; returns the
+`PermissionDenied` block -- `actions`, `denials` (`{ action, target? }`),
+`suggestedGrants` (compose_permissions `grant` values, primary first), `hint`,
+`signals` -- when `reason === "permission_denied"` and the block is
+well-formed, else `null`. Only agy members report this today: agy's headless
+mode refuses an ungranted tool call and exits 0. Heal by passing the reviewed
+`suggestedGrants` to `composePermissions({ grant })` and re-dispatching; see
+`docs/agy-provider.md` in the apra-fleet repo.
+
 ### `class ApraFleet`
 
 Thin, typed wrapper over an MCP-capable client's `callTool(name, args,
@@ -320,7 +332,8 @@ Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,
 `repo_remote_url?`, `vcsProvider?`, `gitAccess?`, `connectivity`, `offline?`,
-`llmProvider`, `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
+`llmProvider`, `agyProjectId?` (agy members: their own agy project id, null until
+provisioned), `llm_cli?`, `tokenUsage?`, `session?`, `resources?`,
 `branch?`, `cloud?`. `MemberDetailResult`, like `RegisterMemberOptions` and
 `UpdateMemberOptions`, is pinned against the server by
 `test/client-server-typedef-parity.test.mjs`, which parses the real

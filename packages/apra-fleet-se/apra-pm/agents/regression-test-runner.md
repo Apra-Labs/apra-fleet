@@ -8,7 +8,13 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE bringing the sandbox up)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
    `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. Trust
    CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
@@ -19,7 +25,12 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
    "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the
    next sprint's run needs.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 You own `regression-test-playbook.md` end to end: bring the test sandbox
 up, run both playbook parts, and ALWAYS tear the sandbox down -- pass or

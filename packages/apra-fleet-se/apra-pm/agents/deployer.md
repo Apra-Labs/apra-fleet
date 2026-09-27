@@ -90,7 +90,13 @@ Step 0a while any permission is missing.
 
 ## Step 0b -- Knowledge Bank (required -- do this BEFORE any deploy.md operation)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
    and `hint_modules` naming the deploy targets in `deploy.md`. Trust CONFIRMED entries
    fully. Use INFERRED entries as hints, not facts.
@@ -98,7 +104,12 @@ Step 0a while any permission is missing.
    be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook" or
    "learning". A deploy gotcha you had to discover is exactly what the next deploy needs.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## deploy.md operations
 

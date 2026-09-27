@@ -144,6 +144,9 @@ export interface PromptOptions {
   maxTurns?: number;
   inv?: string;
   agentName?: string;
+  /** Provider project the run is bound to (AGY: `--project <id>`, from
+   *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
+  projectId?: string;
 }
 
 /**
@@ -220,6 +223,49 @@ export interface ParsedResponse {
   /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
    *  dispatch was terminated by a provider usage/quota limit. */
   usageLimit?: UsageLimitSignal;
+  /** Set by a provider parser when the CLI refused one or more tool calls for
+   *  lack of a permission grant (AGY headless mode auto-denies them). */
+  permissionDenial?: PermissionDenial;
+}
+
+/** A tool call the member CLI refused because no grant allowed it. */
+export interface PermissionDenialItem {
+  /** Provider permission action, e.g. 'command', 'read_file', 'mcp'. */
+  action: string;
+  /** The concrete target, when the CLI named it, e.g. 'git status --short --branch'. */
+  target?: string;
+}
+
+/** Structured permission denial surfaced by execute_prompt as
+ *  `reason: 'permission_denied'`. */
+export interface PermissionDenial {
+  /** Unique denied actions, in first-seen order. */
+  actions: string[];
+  denials: PermissionDenialItem[];
+  /** compose_permissions `grant` values that would allow the denied calls
+   *  (empty when there is no canonical mapping for an action). The primary
+   *  suggestion comes first; a narrower alternative may follow it. */
+  suggestedGrants: string[];
+  /** One-line remediation for a human or an orchestrator. */
+  hint: string;
+  /** Which of the CLI's signals reported the denial. */
+  signals: Array<'result_json' | 'stderr' | 'transcript'>;
+}
+
+/** Context parseResponse may use; providers that do not need it ignore it. */
+export interface ParseResponseContext {
+  /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */
+  agentOs?: 'linux' | 'macos' | 'windows';
+}
+
+/** Extra inputs to composePermissionConfig; providers that do not need them
+ *  ignore them. */
+export interface ComposePermissionOptions {
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir). */
+  memberHomeDir?: string | null;
+  /** Receives lines for grants that could not be expressed and were dropped;
+   *  compose_permissions shows them in its result. */
+  warnings?: string[];
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -264,9 +310,11 @@ export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Prom
  *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
  *  failure so the adapter can fall back. */
 export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
 
 export interface WorkspaceTrustTransport {
   writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+  readHomeFile?: WorkspaceTrustReadHomeFileFn;
 }
 
 export interface EnsureWorkspaceTrustedResult {
@@ -327,7 +375,7 @@ export interface ProviderAdapter {
   resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
 
   // Response parsing
-  parseResponse(result: SSHExecResult): ParsedResponse;
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse;
 
   /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
    *  usage/quota limit (as opposed to a transient overload). Returns a
@@ -366,6 +414,24 @@ export interface ProviderAdapter {
    *  session id NOT derived from source context, same as a fresh dispatch),
    *  omit both this and {@link supportsFork} rather than faking support. */
   forkFlag?(sourceSessionId: string, newSessionId: string): string;
+  /** Builds the CLI flag that makes a folder the dispatched session's WORKSPACE,
+   *  for providers whose CLI does not adopt the process working directory as
+   *  its workspace (AGY: `--add-dir <folder>`). Optional -- omit it for any
+   *  provider where `cd <folder>` already establishes the workspace (claude,
+   *  codex, copilot, opencode), and callers MUST treat a missing
+   *  implementation as "nothing to add" rather than assuming a default flag.
+   *  @param escapedFolder  the work folder ALREADY escaped for the caller's own
+   *    target shell (same contract as {@link modelFlag}) -- a POSIX caller
+   *    passes escapeDoubleQuoted(folder), a Windows caller escapeWindowsArg(folder).
+   *    Escaping cannot be done here: this method does not know the member's shell,
+   *    and escapeDoubleQuoted would mangle the backslashes in a Windows path. */
+  workspaceDirFlag?(escapedFolder: string): string | null;
+  /** Builds the CLI flag that binds the run to the member's provider project
+   *  (AGY: `--project <id>`), whose permission grants are the member's own.
+   *  Optional -- omit it for providers with no project binding. An
+   *  implementation must throw for a missing id rather than return '', so a
+   *  dispatch can never silently run under a shared default project. */
+  projectFlag?(projectId?: string): string;
   /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
    *  ON THE MEMBER'S MACHINE.
    *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this
@@ -405,14 +471,29 @@ export interface ProviderAdapter {
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
+  /** Optional hook called during compose_permissions before config delivery; returns
+   *  warnings to surface in the tool result (e.g. AGY's global-skills check). */
+  preparePermissionsDelivery?(
+    agent: import('../types.js').Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+    agentOs?: 'linux' | 'macos' | 'windows',
+    shell?: MemberShell,
+  ): Promise<string[] | void>;
+
   // Permission configuration
-  /** Returns the config file path(s) for this provider's permission config (relative to repo root).
+  /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
    *  Parallel to the array returned by composePermissionConfig(). */
-  permissionConfigPaths(): string[];
+  permissionConfigPaths(agent?: import('../types.js').Agent): string[];
   /** Returns provider-native permission config for the given role.
    *  Each element corresponds to the path at the same index in permissionConfigPaths().
    *  JSON providers return Record<string, unknown>; TOML providers return a string. */
-  composePermissionConfig(role: 'doer' | 'reviewer', allow?: string[]): Array<Record<string, unknown> | string>;
+  composePermissionConfig(
+    role: 'doer' | 'reviewer',
+    allow?: string[],
+    agent?: import('../types.js').Agent,
+    opts?: ComposePermissionOptions,
+  ): Array<Record<string, unknown> | string>;
 
   // Auth capabilities
   supportsOAuthCopy(): boolean;
@@ -468,7 +549,7 @@ export interface ProviderAdapter {
    *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
    *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
    *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport): Promise<EnsureWorkspaceTrustedResult>;
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

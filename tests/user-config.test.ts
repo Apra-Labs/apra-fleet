@@ -214,10 +214,11 @@ describe('agy provider uses user-config for display name', () => {
     const cmd = p.buildPromptCommand({
       folder: '/home/user/project',
       promptFile: '.fleet-task.md',
+      projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       tier: 'cheap',
     });
-    // Default cheap display name
-    expect(cmd).toContain('Gemini 3.5 Flash (Medium)');
+    // Default cheap model id (AGY's stable slug, not a display name)
+    expect(cmd).toContain('gemini-3.8-flash-low');
   });
 
   it('uses user-config override when config is present', async () => {
@@ -230,6 +231,7 @@ describe('agy provider uses user-config for display name', () => {
     const cmd = p.buildPromptCommand({
       folder: '/home/user/project',
       promptFile: '.fleet-task.md',
+      projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       tier: 'cheap',
     });
     expect(cmd).toContain('Custom Cheap Model');
@@ -246,9 +248,10 @@ describe('agy provider uses user-config for display name', () => {
     const cmd = p.buildPromptCommand({
       folder: '/home/user/project',
       promptFile: '.fleet-task.md',
+      projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       tier: 'standard',
     });
     // standard not overridden -- should use hardcoded default
-    expect(cmd).toContain('Gemini 3.1 Pro (Low)');
+    expect(cmd).toContain('gemini-3.8-flash-high');
   });
 });

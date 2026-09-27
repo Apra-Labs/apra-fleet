@@ -31,11 +31,20 @@ yourself via `kb_query`/`kb_list`.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query
    `"select:mcp__apra-fleet__code_context,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query,mcp__apra-fleet__kb_resolve_contradiction,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_export"`
 2. If ToolSearch returns no KB tools (MCP server not running), stop and report that
    reconciliation cannot proceed -- do not guess winners without `kb_resolve_contradiction`
    available.
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: the steps below name the tools
+   they want directly. Confirm your environment exposes `kb_resolve_contradiction`,
+   `kb_query`, `kb_list`, `kb_export`, and the code-reading tools.
+2. If those tools are not available (MCP server not running), stop and report that
+   reconciliation cannot proceed -- do not guess winners without `kb_resolve_contradiction`
+   available.
+<!-- end-tool: ToolSearch -->
 
 ## The single write path (binding -- read this before resolving anything)
 
