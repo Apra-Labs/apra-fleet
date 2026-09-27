@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { credentialStoreSet } from '../src/tools/credential-store-set.js';
 import * as authSocket from '../src/services/auth-socket.js';
 import * as logHelpers from '../src/utils/log-helpers.js';
@@ -16,6 +17,7 @@ vi.mock('../src/services/auth-socket.js', () => ({
 
 vi.mock('../src/utils/log-helpers.js', () => ({
   logLine: vi.fn(),
+  logError: vi.fn(),
 }));
 
 describe('credentialStoreSet', () => {
@@ -197,6 +199,84 @@ describe('credentialStoreSet', () => {
       // No credential should be stored yet -- only onOobSubmit (invoked by
       // the real auth-web.ts POST handler, not exercised by this mock) stores it.
       expect(credentialResolve('oob_cred')).toBeNull();
+    });
+
+    // apra-fleet-i9ag.11.11: pin the actual token shape createSecretEntry()
+    // hands out (src/services/secret-entry.ts: crypto.randomBytes(32).toString
+    // ('hex')) end to end through the tool, not just a short placeholder
+    // string -- and confirm the relative path never carries a scheme/host/port.
+    it('structuredContent.url matches the real 64-hex-char secret-entry token shape and carries no scheme/host/port', async () => {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      const realToken = crypto.randomBytes(32).toString('hex');
+      const relativeUrl = `/ui/#/secret-entry/${realToken}`;
+      vi.mocked(authSocket.collectOobApiKey).mockResolvedValue({
+        url: relativeUrl,
+        expiresAt: '2026-01-01T00:02:00.000Z',
+      });
+
+      const result = await credentialStoreSet({
+        name: 'shape_cred',
+        prompt: 'Enter key:',
+        persist: false,
+        network_policy: 'confirm',
+        members: '*',
+        return_url: true,
+      });
+
+      expect(typeof result).toBe('object');
+      if (typeof result === 'object') {
+        expect(result.structuredContent.url).toMatch(/^\/ui\/#\/secret-entry\/[0-9a-f]{64}$/);
+        expect(result.structuredContent.url).toBe(relativeUrl);
+        // No scheme/host/port anywhere in the relative path itself.
+        expect(result.structuredContent.url).not.toContain('://');
+        expect(result.structuredContent.url.startsWith('/')).toBe(true);
+        // The result text carries BOTH the resolved absolute URL and the
+        // expiry, and tells the reader the relative path works on whatever
+        // origin they reach the console on.
+        expect(result.text).toContain(result.structuredContent.absoluteUrl);
+        expect(result.text).toContain(result.structuredContent.expiresAt);
+        expect(result.text).toContain(relativeUrl);
+        expect(result.text.toLowerCase()).toContain('different host or port');
+      }
+    });
+
+    // apra-fleet-i9ag.11.11 NON-LEAKAGE: a sentinel secret value submitted
+    // through the onOobSubmit callback must never surface in the tool's own
+    // result (text or structuredContent -- both already returned to the
+    // caller before the browser ever submits anything) nor in any logged
+    // line, including a hypothetical logError call.
+    it('never leaks the submitted secret value into the tool result or any log line', async () => {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      const SENTINEL = 'sentinel-secret-value-does-not-leak-9f3c';
+      let capturedSubmit: ((value: string) => { ok: boolean; error?: string }) | undefined;
+      vi.mocked(authSocket.collectOobApiKey).mockImplementation(async (_name, _tool, opts: any) => {
+        capturedSubmit = opts?.onOobSubmit;
+        return { url: '/ui/#/secret-entry/leaktest', expiresAt: '2026-01-01T00:02:00.000Z' };
+      });
+
+      const result = await credentialStoreSet({
+        name: 'leak_cred',
+        prompt: 'Enter key:',
+        persist: false,
+        network_policy: 'confirm',
+        members: '*',
+      });
+
+      expect(typeof result).toBe('object');
+      if (typeof result === 'object') {
+        expect(result.text).not.toContain(SENTINEL);
+        expect(JSON.stringify(result.structuredContent)).not.toContain(SENTINEL);
+      }
+
+      expect(capturedSubmit).toBeTypeOf('function');
+      capturedSubmit!(SENTINEL);
+
+      for (const call of vi.mocked(logHelpers.logLine).mock.calls) {
+        expect(JSON.stringify(call)).not.toContain(SENTINEL);
+      }
+      expect(logHelpers.logError).not.toHaveBeenCalled();
+
+      credentialDelete('leak_cred');
     });
 
     it('returns {url, expiresAt} when return_url: true is passed explicitly, even with a TTY attached', async () => {
