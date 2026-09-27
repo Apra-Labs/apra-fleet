@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
+
+Sprint goal: finish shipping the `/ui` console shell that a prior sprint
+introduced -- the npm-installed package and the SEA binary must both serve
+`GET /ui` and `/api/fleet/*`, not only a dev checkout -- and fix a Windows
+test-isolation bug where `HOME`-only overrides silently left tests reading
+and writing the real developer's fleet home.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $34.8815.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.9912 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 43 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The console shell now ships in both distribution channels.** The npm
+  package's `files` allowlist includes the built shell `dist/`, and the SEA
+  manifest generator embeds it under a dedicated `ui/` asset section;
+  `build:ui` is chained into every release build path (`build:binary`,
+  `prepublishOnly`) so a release build with a missing shell dist fails
+  loudly instead of silently shipping a `/ui` that 404s. See
+  [docs/npm-packaging.md](docs/npm-packaging.md).
+- **The console cookie is now loopback-only.** `GET /ui` only issues the
+  `apra_console_token` cookie to a caller whose socket peer address is
+  loopback, failing closed on a missing or unparseable peer address, so a
+  non-loopback bind (`APRA_FLEET_HOST`) can no longer let an off-machine
+  caller turn a plain `GET /ui` into an authenticated `/api/*` session. See
+  [docs/console-architecture.md](docs/console-architecture.md).
+- **A shared `isolated-home` test helper replaces every ad hoc `HOME`-only
+  override.** Overriding `process.env.HOME` alone is a silent no-op on
+  Windows (`os.homedir()` reads `USERPROFILE` there), so affected tests were
+  quietly reading/writing the real fleet home. The shared helper sets
+  `HOME`, `USERPROFILE`, `HOMEDRIVE`/`HOMEPATH` and the project's data-dir
+  overrides together and asserts `os.homedir()` actually resolved to the
+  temp directory; a guard test fails the suite if a new test file
+  reintroduces a bare `HOME` assignment. See
+  [docs/architecture.md](docs/architecture.md) (Cross-Platform Support).
+- **`dist-pm`'s vendoring copy is now atomic** (stage-then-rename) and no
+  longer mutates the live `dist/` tree under test.
+- **A regression-phase runbook-permissions provisioning failure now
+  degrades to a `FAILED` regression result instead of aborting the whole
+  sprint** (skipping Harvest and Publish PR). See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+
+Carried forward / still open:
+
+- The SEA binary's staleness guard (`tests/sea-http-verify.test.ts`) compares
+  file mtimes, not content, so rebuilding the shell UI with byte-identical
+  output still trips it -- any deploy-then-test workflow must rebuild the
+  SEA binary for the deployed commit first. Tracked as an open P2 issue
+  against the console epic; see
+  [docs/npm-packaging.md](docs/npm-packaging.md) for the generic fix
+  direction (content-hash comparison instead of mtime).
+- A carried-over regression: `scripts/run-integ-suites.mjs`'s real-bd test
+  lane does not apply the same home-isolation `--import` flag the bounded
+  `npm test` runner does, so that lane can still run against the operator's
+  real home directory.
+
 ## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
 
 Sprint goal: make the member registry's `env` name-value map actually reach
