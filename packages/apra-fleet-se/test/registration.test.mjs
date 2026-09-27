@@ -13,7 +13,7 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 import { buildManifest, PACKAGE_ID, APRA_FLEET_API_RANGE, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
-import { createRegistration, UNREGISTER_TIMEOUT_MS } from '../src/registration/register.mjs';
+import { createRegistration, UNREGISTER_TIMEOUT_MS, startRegistrationConvergence } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -381,6 +381,212 @@ describe('createRegistration', () => {
 });
 
 // -----------------------------------------------------------------------------
+// 5b. startRegistrationConvergence -- apra-fleet-i9ag.12.2.
+//
+// Unit-level coverage of the outer convergence loop with all three of its
+// resolution seams injected, so each former one-shot skip branch can be driven
+// deterministically and the "everything is RE-resolved, never re-read" property
+// can be asserted directly. The equivalent end-to-end proof through the real
+// bin/serve.mjs subprocess lives in registration-convergence.test.mjs.
+// -----------------------------------------------------------------------------
+
+describe('startRegistrationConvergence', () => {
+    const FLEET_KEY = 'ab'.repeat(32);
+
+    /** A resolveToken seam that reports private-token for the first N calls and
+     *  a real fleet.key afterwards -- i.e. the key appearing on disk. */
+    function tokenAppearingAfter(n) {
+        let calls = 0;
+        return () => {
+            calls += 1;
+            return calls <= n
+                ? { token: 'private-fallback-token', source: 'private-token' }
+                : { token: FLEET_KEY, source: 'fleet-key' };
+        };
+    }
+
+    test('former branch (a): no fleet.key -> retries, logs RETRYING (never "skipping"), makes NO request until the key appears', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const warns = [];
+        const conv = startRegistrationConvergence({
+            resolveToken: tokenAppearingAfter(2),
+            resolveConnection: async () => ({ mode: 'http', url: `${serverUrl}/mcp` }),
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 2, factor: 2 },
+            sleepImpl: async () => {}, // no real waiting
+            logger: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
+        });
+        const result = await conv.done;
+
+        assert.equal(result.registered, true);
+        assert.equal(state.registerCalls.length, 1, 'exactly one register POST, after the key appeared');
+        // The two pre-key passes must not have produced any HTTP call at all.
+        assert.ok(warns.length >= 2, `expected a warning per waiting pass, got: ${JSON.stringify(warns)}`);
+        assert.ok(warns.some((l) => /RETRYING/.test(l)), `expected RETRYING, got: ${JSON.stringify(warns)}`);
+        assert.ok(warns.some((l) => l.includes('fleet.key')), `expected the reason to name fleet.key, got: ${JSON.stringify(warns)}`);
+        assert.ok(!warns.some((l) => /skipping/i.test(l)), `must never say skipping, got: ${JSON.stringify(warns)}`);
+    });
+
+    test('former branch (b): connection resolution THROWS -> retries and names the error, then converges', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const warns = [];
+        let connCalls = 0;
+        const conv = startRegistrationConvergence({
+            resolveToken: () => ({ token: FLEET_KEY, source: 'fleet-key' }),
+            resolveConnection: async () => {
+                connCalls += 1;
+                if (connCalls <= 2) throw new Error('boom-resolving-connection');
+                return { mode: 'http', url: `${serverUrl}/mcp` };
+            },
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 2, factor: 2 },
+            sleepImpl: async () => {},
+            logger: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
+        });
+        const result = await conv.done;
+
+        assert.equal(result.registered, true);
+        assert.equal(state.registerCalls.length, 1);
+        assert.ok(warns.some((l) => l.includes('boom-resolving-connection')),
+            `expected the resolution error text in the log, got: ${JSON.stringify(warns)}`);
+        assert.ok(!warns.some((l) => /skipping/i.test(l)));
+    });
+
+    test('former branch (c): connection resolves to mode stdio -> retries, and consoleOrigin is RECOMPUTED once it turns http', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const warns = [];
+        let connCalls = 0;
+        const conv = startRegistrationConvergence({
+            resolveToken: () => ({ token: FLEET_KEY, source: 'fleet-key' }),
+            // The real fresh-machine default: resolveFleetServerConnection()
+            // does NOT throw with APRA_FLEET_TRANSPORT unset -- it falls through
+            // to the stdio self-spawn descriptor, which leaves consoleOrigin null.
+            resolveConnection: async () => {
+                connCalls += 1;
+                return connCalls <= 2
+                    ? { mode: 'stdio', command: 'node', args: ['x'] }
+                    : { mode: 'http', url: `${serverUrl}/mcp` };
+            },
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 2, factor: 2 },
+            sleepImpl: async () => {},
+            logger: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
+        });
+        const result = await conv.done;
+
+        assert.equal(result.registered, true);
+        assert.equal(state.registerCalls.length, 1);
+        assert.ok(warns.some((l) => /stdio/.test(l) && /RETRYING/.test(l)),
+            `expected a RETRYING log naming the stdio mode, got: ${JSON.stringify(warns)}`);
+        // A startup-captured null consoleOrigin could never have produced this.
+        assert.ok(!warns.some((l) => /skipping/i.test(l)));
+    });
+
+    test('the register POST targets consoleOrigin + /api/workflow-packages/register with the RAW fleet key as bearer', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const conv = startRegistrationConvergence({
+            resolveToken: tokenAppearingAfter(1),
+            // `url` is the MCP endpoint; the registry hangs off the ORIGIN. If
+            // the loop forwarded the url unchanged this POST would 404.
+            resolveConnection: async () => ({ mode: 'http', url: `${serverUrl}/mcp` }),
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 2, factor: 2 },
+            sleepImpl: async () => {},
+            logger: { log() {}, warn() {}, error() {} },
+        });
+        await conv.done;
+
+        assert.equal(state.registerCalls.length, 1);
+        assert.equal(state.registerCalls[0].headers.authorization, `Bearer ${FLEET_KEY}`);
+    });
+
+    test('NEVER attempts registration with a private-token-sourced credential', async () => {
+        const { state, serverUrl } = await startStubServer();
+        // Pass-counted rather than wall-clock bounded: the loop is stopped from
+        // inside its own sleep seam after a fixed number of waiting passes, so
+        // the test is deterministic and needs no real timer. (A sleepImpl that
+        // resolves immediately AND a loop that never terminates would otherwise
+        // starve the macrotask queue -- an await-resolved-promise chain only ever
+        // schedules microtasks, so a setTimeout-based bound would never fire.)
+        const ctl = { passes: 0, conv: null };
+        ctl.conv = startRegistrationConvergence({
+            // Always the fallback source -- the fleet key never appears.
+            resolveToken: () => ({ token: 'private-fallback-token', source: 'private-token' }),
+            resolveConnection: async () => ({ mode: 'http', url: `${serverUrl}/mcp` }),
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 1, factor: 1 },
+            sleepImpl: async () => {
+                ctl.passes += 1;
+                if (ctl.passes >= 5) ctl.conv.stop();
+            },
+            logger: { log() {}, warn() {}, error() {} },
+        });
+        const result = await ctl.conv.done;
+
+        assert.ok(ctl.passes >= 5, `expected the loop to keep retrying, got ${ctl.passes} passes`);
+        assert.equal(result.registered, false);
+        assert.equal(state.registerCalls.length, 0, 'the fallback credential must never be sent to the server');
+        assert.equal(ctl.conv.currentRegistration(), null, 'no registration may be constructed without a fleet-key token');
+    });
+
+    test('a shutdown while waiting releases the loop without waiting out the backoff, and no token value is logged', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const lines = [];
+        const push = (...a) => lines.push(a.join(' '));
+        let resolveShutdown;
+        const shutdownRequested = new Promise((r) => { resolveShutdown = r; });
+
+        const conv = startRegistrationConvergence({
+            resolveToken: () => ({ token: FLEET_KEY, source: 'fleet-key' }),
+            resolveConnection: async () => ({ mode: 'stdio' }), // never becomes registerable
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            shutdownRequested,
+            // A backoff far longer than the shutdown this test performs. If the
+            // loop did not RACE its sleep against shutdownRequested, done could
+            // not settle until this whole interval elapsed. Deliberately the
+            // REAL setTimeout-based sleep (no sleepImpl): the point is that the
+            // production wait is interruptible. Kept to 3s rather than 60s only
+            // so the timer left pending after the race does not hold the test
+            // file's event loop open for a minute.
+            backoff: { initialMs: 3000, maxMs: 3000, factor: 1 },
+            logger: { log: push, warn: push, error: push },
+        });
+
+        await sleep(20); // let it reach its first backoff sleep
+        resolveShutdown();
+        const started = Date.now();
+        const result = await conv.done;
+        const elapsed = Date.now() - started;
+
+        assert.equal(result.registered, false);
+        assert.ok(elapsed < 1500, `shutdown must not wait out the remaining backoff (took ${elapsed}ms)`);
+        assert.equal(state.registerCalls.length, 0);
+        assert.equal(conv.currentRegistration(), null);
+        // The token value must never appear in any log line.
+        assert.ok(!lines.some((l) => l.includes(FLEET_KEY)), 'the token value must never be logged');
+    });
+
+    test('currentRegistration() exposes the instance that succeeded, so shutdown can unregister it', async () => {
+        const { state, serverUrl } = await startStubServer();
+        const conv = startRegistrationConvergence({
+            resolveToken: tokenAppearingAfter(1),
+            resolveConnection: async () => ({ mode: 'http', url: `${serverUrl}/mcp` }),
+            buildManifest: () => buildManifest({ baseUrl: 'http://127.0.0.1:9' }),
+            backoff: { initialMs: 1, maxMs: 2, factor: 2 },
+            sleepImpl: async () => {},
+            logger: { log() {}, warn() {}, error() {} },
+        });
+        await conv.done;
+
+        const reg = conv.currentRegistration();
+        assert.ok(reg, 'expected the successful registration instance to be exposed');
+        await reg.unregister();
+        assert.equal(state.deleteCalls.length, 1, 'unregister() must reach the server');
+        assert.equal(state.deleteCalls[0].headers.authorization, `Bearer ${FLEET_KEY}`);
+    });
+});
+
+// -----------------------------------------------------------------------------
 // 7. supervisor guard: raw token AND the derived 'se' credential
 // -----------------------------------------------------------------------------
 
@@ -539,19 +745,35 @@ async function bootServe(extraEnv) {
     };
 }
 
-describe('registration skip paths (real bin/serve.mjs subprocess)', () => {
-    test('no fleet.key (private-token source) -> registration skipped with a log line, supervisor still starts', async () => {
+// UPDATED for apra-fleet-i9ag.12.2 (NOT deleted -- the properties these two
+// cases pin are still worth pinning through the real subprocess). They used to
+// assert that registration was SKIPPED once and abandoned for the life of the
+// process, which is the exact bug apra-fleet-i9ag.12 reports: the supervisor
+// never came back to it, so Sprints never appeared in the console. The
+// supervisor now CONVERGES, so each case asserts the same state is reported as
+// something being RETRIED, and explicitly asserts the word "skipping" no longer
+// describes it. Convergence itself (the key/server appearing and registration
+// then succeeding with no restart) is covered in registration-convergence.test.mjs.
+describe('registration waits and retries instead of skipping (real bin/serve.mjs subprocess)', () => {
+    test('no fleet.key (private-token source) -> logs that registration is being RETRIED, supervisor still starts', async () => {
         const serve = await bootServe({});
         try {
             const stdout = serve.getStdout();
-            assert.ok(stdout.includes('[registration] WARNING'), `expected a loud registration skip warning, got:\n${stdout}`);
-            assert.ok(stdout.toLowerCase().includes('fleet.key'), `expected the warning to name the missing fleet.key, got:\n${stdout}`);
+            assert.ok(stdout.includes('[registration]'), `expected a loud registration log line, got:\n${stdout}`);
+            assert.ok(/RETRYING/.test(stdout), `expected the log to say it is RETRYING, got:\n${stdout}`);
+            assert.ok(stdout.toLowerCase().includes('fleet.key'), `expected the log to name the missing fleet.key, got:\n${stdout}`);
+            // The regression this lane fixes: this state must no longer be
+            // described as skipping, because it is no longer abandoned.
+            assert.ok(
+                !/skipping workflow-package registration/i.test(stdout),
+                `registration must no longer be described as skipped, got:\n${stdout}`,
+            );
         } finally {
             await serve.stop();
         }
     });
 
-    test('no apra-fleet HTTP server URL configured -> registration skipped with a log line, supervisor still starts', async () => {
+    test('no apra-fleet HTTP server URL yet -> logs that registration is being RETRIED, supervisor still starts', async () => {
         const homeDir = await mkTmp('g6ap23-home-fleetkey-');
         await fsp.mkdir(path.join(homeDir, '.apra-fleet'), { recursive: true });
         await fsp.writeFile(path.join(homeDir, '.apra-fleet', 'fleet.key'), crypto.randomBytes(32).toString('hex'), 'utf-8');
@@ -559,8 +781,13 @@ describe('registration skip paths (real bin/serve.mjs subprocess)', () => {
         const serve = await bootServe({ HOME: homeDir, USERPROFILE: homeDir, APRA_FLEET_TRANSPORT: 'stdio' });
         try {
             const stdout = serve.getStdout();
-            assert.ok(stdout.includes('[registration] WARNING'), `expected a loud registration skip warning, got:\n${stdout}`);
-            assert.ok(stdout.toLowerCase().includes('http server url'), `expected the warning to name the missing HTTP server URL, got:\n${stdout}`);
+            assert.ok(stdout.includes('[registration]'), `expected a loud registration log line, got:\n${stdout}`);
+            assert.ok(/RETRYING/.test(stdout), `expected the log to say it is RETRYING, got:\n${stdout}`);
+            assert.ok(stdout.toLowerCase().includes('http server url'), `expected the log to name the missing HTTP server URL, got:\n${stdout}`);
+            assert.ok(
+                !/skipping workflow-package registration/i.test(stdout),
+                `registration must no longer be described as skipped, got:\n${stdout}`,
+            );
         } finally {
             await serve.stop();
         }
