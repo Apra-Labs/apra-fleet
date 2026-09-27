@@ -366,6 +366,13 @@ describe('console secret-entry routes: non-leakage', () => {
     }
 
     const loggedText = logLineSpy.mock.calls.flat().map((a) => JSON.stringify(a)).join('\n');
+    // Anti-vacuity: prove the spy actually captured something from the real
+    // submit route (src/console/routes/secret-entry.ts's logLine call), so
+    // this sweep cannot pass vacuously if that log call is ever removed and
+    // there is nothing left to sweep for a leak in the first place.
+    expect(logLineSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(loggedText).toContain('secret_entry');
+    expect(loggedText).toContain('submit');
     expect(loggedText).not.toContain(SENTINEL);
     expect(loggedText).not.toContain(happyEntry.token);
     expect(loggedText).not.toContain(rejectedEntry.token);

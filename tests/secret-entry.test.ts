@@ -165,6 +165,16 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
       const submitResult = submitSecretEntry(entry.token, SENTINEL);
       const promptResult = getSecretEntryPrompt(entry.token);
 
+      // Anti-vacuity: this module (unlike the console route layer) never
+      // calls logLine/logError/logWarn at all -- see the module header --
+      // so the leak risk a log-content check would catch elsewhere cannot
+      // arise here. The equivalent proof that the exercised path actually
+      // ran with the sentinel (rather than this sweep passing vacuously on a
+      // submitSecretEntry that silently no-ops) is that onSubmit was really
+      // invoked with SENTINEL and the call reported success.
+      expect(onSubmit).toHaveBeenCalledWith(SENTINEL);
+      expect(submitResult).toEqual({ status: 'ok' });
+
       const haystacks = [
         JSON.stringify(entry),
         JSON.stringify(submitResult),
@@ -191,6 +201,10 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
 
       const submitResult = submitSecretEntry(entry.token, 'value');
       expect(submitResult).toEqual({ status: 'error' });
+      // Anti-vacuity: prove onSubmit was actually invoked (and threw), the
+      // equivalent proof-of-exercise this module's non-logging design needs
+      // -- see the first non-leakage test's comment above.
+      expect(onSubmit).toHaveBeenCalledTimes(1);
 
       const haystacks = [
         JSON.stringify(entry),
@@ -214,6 +228,12 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
       const entry = createSecretEntry({ name: 'm1', prompt: 'p', onSubmit });
 
       const submitResult = submitSecretEntry(entry.token, SENTINEL);
+
+      // Anti-vacuity: prove the rejection path actually ran with SENTINEL --
+      // the equivalent proof-of-exercise this module's non-logging design
+      // needs -- see the first non-leakage test's comment above.
+      expect(onSubmit).toHaveBeenCalledWith(SENTINEL);
+      expect(submitResult).toEqual({ status: 'rejected', error: 'nope' });
 
       const haystacks = [
         JSON.stringify(entry),

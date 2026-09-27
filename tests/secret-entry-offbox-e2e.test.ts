@@ -66,6 +66,7 @@ interface RawResponse {
 let realHome: string | undefined;
 let realUserProfile: string | undefined;
 let realDataDir: string | undefined;
+let realConsoleBaseUrl: string | undefined;
 let tempHome: string;
 let tempDataDir: string;
 let tempDistDir: string;
@@ -84,6 +85,7 @@ beforeEach(async () => {
   realHome = process.env.HOME;
   realUserProfile = process.env.USERPROFILE;
   realDataDir = process.env.APRA_FLEET_DATA_DIR;
+  realConsoleBaseUrl = process.env.APRA_FLEET_CONSOLE_BASE_URL;
 
   tempHome = await mkTmp('secret-entry-offbox-home-');
   tempDataDir = await mkTmp('secret-entry-offbox-data-');
@@ -93,6 +95,15 @@ beforeEach(async () => {
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
   process.env.APRA_FLEET_DATA_DIR = tempDataDir;
+  // Neutralize the ambient environment: credential-store-set.ts's return_url
+  // branch reads APRA_FLEET_CONSOLE_BASE_URL through resolveConsoleBaseUrl()
+  // (src/paths.ts) and fails loudly with [FAIL] text if it happens to be set
+  // to a malformed value on the machine running this suite. Without this,
+  // that implicit environment state would decide this test's outcome and the
+  // failure would point at the wrong assertion entirely -- delete it so this
+  // test always exercises the documented bound-origin fallback, exactly like
+  // APRA_FLEET_DATA_DIR above.
+  delete process.env.APRA_FLEET_CONSOLE_BASE_URL;
 
   server = http.createServer((req, res) => {
     handleConsoleRequest(req, res, { shellDistDir: tempDistDir })
@@ -127,6 +138,8 @@ afterEach(async () => {
   process.env.USERPROFILE = realUserProfile;
   if (realDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
   else process.env.APRA_FLEET_DATA_DIR = realDataDir;
+  if (realConsoleBaseUrl === undefined) delete process.env.APRA_FLEET_CONSOLE_BASE_URL;
+  else process.env.APRA_FLEET_CONSOLE_BASE_URL = realConsoleBaseUrl;
 
   for (const dir of [tempHome, tempDataDir, tempDistDir]) {
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -211,10 +224,14 @@ describe('apra-fleet-i9ag.11.13: off-box console credential entry, end to end', 
 
     // The assertion the bug is actually about: no scheme, no loopback
     // address, no localhost, and no ':<port>' anywhere in the collection URL.
+    // The port check is a REGEX for "a colon followed by digits" rather than
+    // excluding only this server's own serverPort -- a regression that
+    // stamped some OTHER port into the URL would slip past a check that only
+    // knew to exclude the one port this test happens to be bound to.
     expect(url).not.toContain('://');
     expect(url).not.toContain('127.0.0.1');
     expect(url.toLowerCase()).not.toContain('localhost');
-    expect(url).not.toContain(`:${serverPort}`);
+    expect(url).not.toMatch(/:\d+/);
     expect(url.startsWith('/')).toBe(true);
 
     // --- (4) Extract the token from the url fragment ------------------------
@@ -273,6 +290,13 @@ describe('apra-fleet-i9ag.11.13: off-box console credential entry, end to end', 
     const loggedText = [...logLineSpy.mock.calls, ...logErrorSpy.mock.calls]
       .map((call) => JSON.stringify(call))
       .join('\n');
+    // Anti-vacuity: prove the spies actually captured something from the
+    // real submit route (src/console/routes/secret-entry.ts's logLine call),
+    // so this sweep cannot pass vacuously if that log call is ever removed
+    // and there is nothing left to sweep for a leak in the first place.
+    expect(logLineSpy.mock.calls.length + logErrorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(loggedText).toContain('secret_entry');
+    expect(loggedText).toContain('submit');
     expect(loggedText).not.toContain(SENTINEL);
     expect(loggedText).not.toContain(token);
 
