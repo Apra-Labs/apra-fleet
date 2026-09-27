@@ -1737,12 +1737,13 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
+        const restartHint = guardStoppedService
+          ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
+          : 'Start it with:\n    apra-fleet start';
         console.error(`
 Error: install --force stopped the running apra-fleet server, but the service
 could not be registered/started, so the server is NOT running.
-Start it with:
-    ${serviceRestartCommand()}
-or re-run the install from an elevated prompt.
+${restartHint}
 `);
         process.exit(1);
       }

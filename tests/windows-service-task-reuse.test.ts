@@ -173,6 +173,33 @@ describe('runInstall --force service step never leaves the server stopped', () =
     expect(logLines.join('\n')).not.toContain('installed successfully');
   });
 
+  it('--force stopped a manual (non-service) run + registration failure -> suggests apra-fleet start, not the service restart command', async () => {
+    let stopped = false;
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (stopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      if (c === 'pkill -x apra-fleet') {
+        stopped = true;
+        return '' as any;
+      }
+      if (c.startsWith('readlink -f /proc/')) return `${runningExe}\n` as any;
+      return '' as any;
+    });
+    const svc = fakeSvc({
+      isInstalled: vi.fn().mockResolvedValue(false),
+      register: vi.fn().mockRejectedValue(new Error('Access is denied')),
+    });
+    vi.mocked(getServiceManager).mockResolvedValue(svc);
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
+    expect(process.exit).toHaveBeenCalledWith(1);
+    const err = errLines.join('\n');
+    expect(err).toContain('apra-fleet start');
+    expect(err).not.toContain(serviceRestartCommand());
+  });
+
   it('reused task + start ok -> success summary notes reuse, no exit', async () => {
     const svc = fakeSvc({ register: vi.fn().mockResolvedValue('reused') });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
