@@ -428,6 +428,12 @@ describe('runStatus', () => {
   // these assertions depend on the host's real node/npm -- the detector is
   // supplied directly, so the suite's outcome cannot change on a machine
   // with no npm on PATH.
+  //
+  // REVERT CHECK (criterion 8): deleting the fleet-se line from
+  // src/cli/status.ts makes the canary case "stopped branch: injected
+  // detector reporting node missing shows NOT INSTALLED and the fix line"
+  // (below) FAIL, along with the other three cases in this block -- verified
+  // via git stash and restored.
   const NODE_MISSING: FleetSePrereqResult = {
     node: { present: false, version: null, satisfiesMin: false },
     npm: { present: true, version: '10.5.0' },

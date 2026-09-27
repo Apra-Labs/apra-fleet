@@ -197,6 +197,13 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
   // behaviour this case used to pin) collapses those two states into one.
   // The row is now always rendered, with an explicit unknown value when the
   // server omits the field.
+  //
+  // REVERT CHECK (apra-fleet-i9ag.13.10 criterion 8): reverting Health.tsx's
+  // unknown branch back to the old status.payload.fleetSePrereqs ? ... : null
+  // guard makes this canary case -- "shows an explicit unknown fleet-se row
+  // when the server omits the field (older server / probe failed)" (below) --
+  // FAIL, because the fixture omits the field so no fleet-se dt would render.
+  // Verified via git stash and restored.
   it("shows an explicit unknown fleet-se row when the server omits the field (older server / probe failed)", async () => {
     vi.stubGlobal(
       "fetch",
