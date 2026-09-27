@@ -85,7 +85,7 @@ describe('mapAccessLevel', () => {
   it('maps all access levels correctly', () => {
     expect(mapAccessLevel('read')).toEqual({ contents: 'read', metadata: 'read' });
     expect(mapAccessLevel('push')).toEqual({ contents: 'write', metadata: 'read', workflows: 'write' });
-    expect(mapAccessLevel('push+pr')).toEqual({ contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write' });
+    expect(mapAccessLevel('push+pr')).toEqual({ contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write', actions: 'write' });
     expect(mapAccessLevel('admin')).toEqual({ contents: 'write', administration: 'write', actions: 'write', metadata: 'read', workflows: 'write' });
     expect(mapAccessLevel('issues')).toEqual({ issues: 'write', pull_requests: 'write', discussions: 'write', metadata: 'read' });
     expect(mapAccessLevel('full')).toEqual({
