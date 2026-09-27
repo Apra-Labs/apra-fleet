@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App";
+import { NAV_ITEMS, resolveScreen } from "../src/nav/Nav";
 import type { WorkflowPackageView } from "../src/api/workflow-packages";
 
 // Registry-driven shell nav and the workflow-package iframe page (DQ-18 v1).
@@ -274,5 +275,27 @@ describe("Registry-driven nav (DQ-18)", () => {
 
     expect(navLabels()).toEqual(["Members", "Secrets", "Health"]);
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("resolveScreen secret-entry route (apra-fleet-i9ag.11.6/11.8)", () => {
+  it("resolves a token-bearing hash to the secret-entry screen", () => {
+    expect(resolveScreen("#/secret-entry/abc123")).toEqual({ kind: "secret-entry", token: "abc123" });
+  });
+
+  it("falls back to Members for a missing token, an extra trailing segment, or a malformed escape -- never throwing", () => {
+    expect(resolveScreen("#/secret-entry")).toEqual({ kind: "members" });
+    expect(resolveScreen("#/secret-entry/a/b")).toEqual({ kind: "members" });
+    expect(() => resolveScreen("#/secret-entry/%zz")).not.toThrow();
+    expect(resolveScreen("#/secret-entry/%zz")).toEqual({ kind: "members" });
+  });
+
+  it("adds no NAV_ITEMS entry, and Nav renders its usual items -- with none active -- while the secret-entry screen is active", async () => {
+    expect(NAV_ITEMS.map((item) => item.label)).toEqual(["Members", "Secrets", "Health"]);
+
+    await renderApp(null, "#/secret-entry/abc123");
+
+    expect(navLabels()).toEqual(["Members", "Secrets", "Health"]);
+    expect(container.querySelector('nav[aria-label="Screens"] a[aria-current="page"]')).toBeNull();
   });
 });
