@@ -550,6 +550,16 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             resolvePort,
             logger: silentLogger,
+            // apra-fleet-i9ag.12.7: this suite verifies the Stop/force-release
+            // AUTH GUARD, not watchdog reap behavior -- watchdog is only present
+            // here because createDashboard() requires it as a collaborator. The
+            // default 5s background poll is an independent source of the SAME
+            // auto-release race the force-release test's own setup below
+            // guards against (see its comment) -- a day-long interval means
+            // that background tick can never fire during this suite (only the
+            // harmless start()-time initial classify(), which runs before the
+            // sprint is even launched, ever does).
+            intervalMs: 24 * 60 * 60 * 1000,
         });
 
         backlog = createBacklog({
@@ -684,6 +694,32 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
     // route -- see dashboard.mjs's SPRINT_STOP_SCRIPT).
     // -------------------------------------------------------------------------
     test('POST /api/reservations/:sprintId/force-release: no credential -> 401; se_token cookie ALONE -> 200 and releases', async () => {
+        // apra-fleet-i9ag.12.7: the preceding tests' GET / request already
+        // exercised the REAL dashboard render, which calls
+        // watchdog.classifySprint() on every live ledger entry (dashboard.mjs's
+        // buildSprintViews()) to compute status badges -- entirely independent
+        // of watchdog's own background poll interval. On a loaded run a
+        // transient PID/port-lookup miss for the still-genuinely-alive fixture
+        // child can misclassify it as gone and auto-release its reservation
+        // via that render, well before this test ever runs (confirmed
+        // reproducible: `isChildAlive: async () => false` on this fixture
+        // makes this exact assertion fail, even with the background poll
+        // above disabled entirely). That auto-release is a real, separate
+        // code path this test is not exercising -- re-assert the reservation
+        // deterministically here so this test verifies ITS OWN claim ("an
+        // unauthenticated force-release cannot release a held reservation")
+        // rather than depending on an earlier test's launch still being live.
+        if (!ledger.get(sprintId)) {
+            await ledger.claim(sprintId, {
+                members: ['alice'],
+                issueRoots: [],
+                childPid,
+                branch: 'feat/50j6-2-2',
+                base: 'main',
+                goal: 'auth itest',
+            });
+        }
+
         const noCred = await httpPostWithHeaders(port, `/api/reservations/${sprintId}/force-release`, {});
         assert.equal(noCred.status, 401, noCred.body);
         assert.ok(ledger.get(sprintId), 'the reservation must still be held after the unauthorized attempt');
