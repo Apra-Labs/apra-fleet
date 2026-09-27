@@ -45,6 +45,8 @@ import { runStop } from '../src/cli/stop.js';
 import { runRestart } from '../src/cli/restart.js';
 import { runStatus } from '../src/cli/status.js';
 import { serverVersion } from '../src/version.js';
+import { FLEET_SE_PREREQ_FIX_LINE } from '../src/cli/fleet-se-prereqs.js';
+import type { FleetSePrereqResult } from '../src/cli/fleet-se-prereqs.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -420,5 +422,60 @@ describe('runStatus', () => {
     expect(out).not.toContain('PID');
     expect(out).not.toContain('Port');
     expect(out).not.toContain('URL');
+  });
+
+  // apra-fleet-i9ag.13.8 / .13.10: runStatus's injected-detector seam. None of
+  // these assertions depend on the host's real node/npm -- the detector is
+  // supplied directly, so the suite's outcome cannot change on a machine
+  // with no npm on PATH.
+  const NODE_MISSING: FleetSePrereqResult = {
+    node: { present: false, version: null, satisfiesMin: false },
+    npm: { present: true, version: '10.5.0' },
+    ok: false,
+    missing: ['node'],
+  };
+  const SATISFIED: FleetSePrereqResult = {
+    node: { present: true, version: '22.16.0', satisfiesMin: true },
+    npm: { present: true, version: '10.5.0' },
+    ok: true,
+    missing: [],
+  };
+
+  it('stopped branch: injected detector reporting node missing shows NOT INSTALLED and the fix line', async () => {
+    await runStatus([], { detectFleetSePrereqs: () => NODE_MISSING });
+    const out = output();
+    expect(out).toContain('NOT INSTALLED');
+    expect(out).toContain(FLEET_SE_PREREQ_FIX_LINE);
+  });
+
+  it('running branch: injected detector reporting node missing shows NOT INSTALLED and the fix line', async () => {
+    mockCheckRunning.mockResolvedValue(RUNNING);
+    await runStatus([], { detectFleetSePrereqs: () => NODE_MISSING });
+    const out = output();
+    expect(out).toContain('NOT INSTALLED');
+    expect(out).toContain(FLEET_SE_PREREQ_FIX_LINE);
+  });
+
+  it('injected detector reporting prerequisites satisfied names the node and npm versions', async () => {
+    await runStatus([], { detectFleetSePrereqs: () => SATISFIED });
+    const out = output();
+    expect(out).toContain('22.16.0');
+    expect(out).toContain('10.5.0');
+  });
+
+  it('injected detector that throws degrades to "fleet-se: unknown" without throwing, and does not drop other status lines', async () => {
+    await expect(
+      runStatus([], {
+        detectFleetSePrereqs: () => {
+          throw new Error('boom: probe failed');
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    const out = output();
+    expect(out).toContain('fleet-se: unknown');
+    expect(out).toContain('State:');
+    expect(out).toContain('Service (MCP server):');
+    expect(out).toContain('Service (fleet supervisor):');
   });
 });
