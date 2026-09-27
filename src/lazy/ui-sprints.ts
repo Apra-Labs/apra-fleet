@@ -279,9 +279,12 @@ export const SPRINTS_JS = String.raw`
   }
   function go(runId, sub) {
     var h = '#sprints' + (runId ? '/' + runId + (sub && sub !== 'board' ? '/' + sub : '') : '');
+    var sameRun = runId && runId === S.runId;
     history.replaceState(null, '', h);
     parseHash();
-    S.sprint = null; S.code = null; S.stale = null;
+    // Switching tabs within a sprint keeps what is known; a new sprint starts clean.
+    if (!sameRun) { S.sprint = null; S.code = null; }
+    S.stale = null;
     refresh(true);
   }
   function goDesigns(id) {

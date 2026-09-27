@@ -420,7 +420,8 @@ export function buildBoard(run: RunFile, opts: { title?: string } = {}): Board {
     cards.push({
       id: t.id,
       title: t.title ?? t.id,
-      type: t.issue_type ?? 'task',
+      // Board-made bugs and chores are bd tasks with a kind label (tasks.ts).
+      type: t.labels?.find(l => l.startsWith('kind:'))?.slice(5) ?? t.issue_type ?? 'task',
       priority: typeof t.priority === 'number' ? t.priority : 2,
       column,
       status: t.status ?? 'open',

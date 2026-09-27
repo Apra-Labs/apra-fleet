@@ -149,11 +149,12 @@ export async function createTask(rec: SprintRecord, input: NewTask): Promise<Bea
     const tasks = (await liveTasks(rec)) ?? [];
     if (!tasks.some(t => t.id === parent)) throw new Error('That group is not part of this sprint');
   }
-  // bd only builds task, bug and chore beads in pipeline mode; keep new work buildable.
-  const args = ['create', '--type', type, '--priority', String(priority), '--parent', parent, '--title', title, '--json'];
+  // The engine only hands 'task' issues made after planning to builders, so a
+  // bug or chore from the board is a task that carries its kind as a label.
+  const args = ['create', '--type', 'task', '--priority', String(priority), '--parent', parent, '--title', title, '--json'];
   if (input.description?.trim()) args.push('--description', cleanText(input.description, 20000, 'The description'));
   if (input.acceptance?.trim()) args.push('--acceptance', cleanText(input.acceptance, 8000, 'The acceptance criteria'));
-  const labels = (input.labels ?? []).filter(l => /^[a-z0-9:_-]{1,40}$/i.test(l));
+  const labels = [...(input.labels ?? []), ...(type === 'task' ? [] : [`kind:${type}`])].filter(l => /^[a-z0-9:_-]{1,40}$/i.test(l));
   if (labels.length) args.push('--labels', labels.join(','));
   const out = parseJson<BeadsTask | BeadsTask[]>(await bd(args, dir));
   forget(rec.runId);

@@ -225,7 +225,8 @@ describe('board changes through bd', () => {
   it('creates an issue under the sprint, in a lane that belongs to it', async () => {
     const t = await tasks.createTask(rec, { title: 'Fix the flash', type: 'bug', priority: 0 });
     expect(t.id).toBe('p-1.4');
-    expect(st.calls.find(c => c.args[0] === 'create')!.args).toEqual(expect.arrayContaining(['--type', 'bug', '--priority', '0', '--parent', 'p-1', '--title', 'Fix the flash']));
+    // The engine only builds task-type issues made after planning: a bug is a task labelled with its kind.
+    expect(st.calls.find(c => c.args[0] === 'create')!.args).toEqual(expect.arrayContaining(['--type', 'task', '--priority', '0', '--parent', 'p-1', '--title', 'Fix the flash', '--labels', 'kind:bug']));
     await expect(tasks.createTask(rec, { title: 'x', parent: 'q-9' })).rejects.toThrow(/not part of this sprint/);
     await expect(tasks.createTask(rec, { title: '  ' })).rejects.toThrow(/empty/);
   });

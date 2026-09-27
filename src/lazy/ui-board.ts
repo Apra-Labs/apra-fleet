@@ -463,6 +463,7 @@ export const BOARD_JS = String.raw`
       var lane = b && card ? b.lanes.filter(function (l) { return l.id && l.id === card.lane; })[0] : null;
       var col = card ? card.column : (t.status === 'closed' ? 'done' : t.status === 'in_progress' ? 'progress' : 'todo');
       var canEdit = !!t.canEdit;
+      var kind = card ? card.type : (t.issue_type || 'task');
       var working = card && card.working.length;
       S.openTaskId = id;
 
@@ -571,14 +572,15 @@ export const BOARD_JS = String.raw`
         ps.addEventListener('change', function () { taskOp(id, 'update', { priority: Number(ps.value) }, 'Priority changed').then(function () { openTask(id, which); }); });
         row('Priority', [prio(p), ps]);
       } else row('Priority', [prio(p), PRIO_NAME[p] + ' (P' + p + ')']);
-      row('Type', [typeIcon(t.issue_type || 'task'), (t.issue_type || 'task').replace(/^./, function (m) { return m.toUpperCase(); })]);
+      row('Type', [typeIcon(kind), kind.replace(/^./, function (m) { return m.toUpperCase(); })]);
       if (lane) row('Feature', [laneChip(lane)]);
       if (t.metadata && t.metadata.model) row('Model tier', String(t.metadata.model));
       var deps = (t.dependencies || []).filter(function (x) { return x.issue_id === t.id && x.type === 'blocks'; });
       if (deps.length) row('Waits on', deps.map(function (x) { return el('button', { cls: 'iv-link', type: 'button', text: x.depends_on_id, onclick: function () { openTask(x.depends_on_id); } }); }));
       var blocks = b ? b.cards.filter(function (c) { return c.blockedBy.indexOf(id) !== -1; }) : [];
       if (blocks.length) row('Holds up', blocks.map(function (c) { return el('button', { cls: 'iv-link', type: 'button', text: c.id, onclick: function () { openTask(c.id); } }); }));
-      if ((t.labels || []).length) row('Labels', t.labels.map(function (l) { return el('span', { cls: 'chip', text: l }); }));
+      var labels = (t.labels || []).filter(function (l) { return l.indexOf('kind:') !== 0; });
+      if (labels.length) row('Labels', labels.map(function (l) { return el('span', { cls: 'chip', text: l }); }));
       if (card && !card.inSprint) row('Goal', 'Below this sprint\'s goal');
       side.appendChild(el('div', { cls: 'iv-det' }, [el('div', { text: 'Details' }), dl]));
       var times = [];
@@ -589,7 +591,7 @@ export const BOARD_JS = String.raw`
       if (!canEdit && S.sprint && S.sprint.board && S.sprint.board.live === false) side.appendChild(el('div', { cls: 'iv-foot', text: 'This sprint has finished, so the issue is read-only. Comment on the code to ask for more work.' }));
 
       var top = el('div', { cls: 'iv-top' }, [
-        el('span', { cls: 'crumb' }, [lane ? typeIcon(lane.type) : null, lane ? el('a', { text: lane.id, onclick: function () { openTask(lane.id); } }) : null, lane ? '/' : null, typeIcon(t.issue_type || 'task'), el('span', { cls: 'mono', text: t.id })]),
+        el('span', { cls: 'crumb' }, [lane ? typeIcon(lane.type) : null, lane ? el('a', { text: lane.id, onclick: function () { openTask(lane.id); } }) : null, lane ? '/' : null, typeIcon(kind), el('span', { cls: 'mono', text: t.id })]),
         el('span', { cls: 'grow' }),
         el('button', { cls: 'act', type: 'button', text: 'Copy id', onclick: function () { navigator.clipboard.writeText(t.id).then(function () { toast('Copied ' + t.id); }, function () { toast(t.id); }); } }),
         el('button', { cls: 'act', type: 'button', 'aria-label': 'Close', text: 'Close', onclick: closeDrawer })
