@@ -5,6 +5,17 @@ import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
 import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereqs.js';
+import type { FleetSePrereqResult } from './fleet-se-prereqs.js';
+
+/**
+ * Injection seam for the fleet-se prerequisite probe (apra-fleet-i9ag.13.8).
+ * Defaults to the real, live detector so callers that pass nothing see
+ * byte-identical output to before this seam existed. Tests supply a fake
+ * here instead of relying on the host's actual node/npm.
+ */
+export interface RunStatusDeps {
+  detectFleetSePrereqs: () => FleetSePrereqResult;
+}
 
 interface HealthResponse {
   version?: string;
@@ -68,7 +79,10 @@ function runStateFor(status: ServiceStatus): string {
   return status.running ? ', running' : ', stopped';
 }
 
-export async function runStatus(_args: string[]): Promise<void> {
+export async function runStatus(
+  _args: string[],
+  deps: Partial<RunStatusDeps> = {},
+): Promise<void> {
   const instance = await checkRunningInstance();
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
@@ -79,8 +93,18 @@ export async function runStatus(_args: string[]): Promise<void> {
   // at all. This is a host-level check, independent of whether the MCP
   // server/service is currently running, so it is probed and shown
   // unconditionally, in both branches below.
-  const fleetSePrereqs = detectFleetSePrereqs();
-  const fleetSeLine = `  fleet-se: ${summarizeFleetSePrereqs(fleetSePrereqs)}`;
+  //
+  // apra-fleet-i9ag.13.8: the detector is injectable (defaults to the real,
+  // live probe) and wrapped so an unexpected throw degrades to a single
+  // "unknown" line instead of taking down the rest of `apra-fleet status`.
+  const detect = deps.detectFleetSePrereqs ?? detectFleetSePrereqs;
+  const fleetSeLine = (() => {
+    try {
+      return `  fleet-se: ${summarizeFleetSePrereqs(detect())}`;
+    } catch {
+      return '  fleet-se: unknown';
+    }
+  })();
 
   // The fleet-sprint supervisor is a SEPARATE OS service with its own
   // unit/plist/task -- reported on its own line so an operator can tell which
