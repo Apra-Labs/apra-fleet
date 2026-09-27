@@ -110,6 +110,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         os: a.os ?? 'unknown',
         folder: a.workFolder,
         llmProvider: a.llmProvider ?? 'claude',
+        agyProjectId: a.llmProvider === 'agy' ? (a.agyProjectId ?? null) : undefined,
         llm_auth: authStatuses[i],
         ssh_auth: a.agentType === 'remote' ? a.authType : undefined,
         session: a.sessionId ?? null,

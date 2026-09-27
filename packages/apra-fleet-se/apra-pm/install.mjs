@@ -66,6 +66,137 @@ const ARGS_SKILL_NAME = 'auto-sprint-args';
 function argsSkillSrc(root) { return path.join(root, '.claude', 'skills', ARGS_SKILL_NAME); }
 function argsSkillDest(cfg) { return path.join(cfg.configDir, 'skills', ARGS_SKILL_NAME); }
 
+// --- provider-conditional body blocks ---------------------------------------
+// Mirrors resolveConditionalBody in apra-fleet src/cli/agent-transform.ts -- keep
+// both in sync; the marker convention is a shared contract between the two
+// installers, and a prompt that renders correctly through one and ships raw
+// markers through the other is the bug this mechanism exists to prevent.
+//
+//   <!-- if-tool: SomeTool -->  ... <!-- else-tool: SomeTool --> ... <!-- end-tool: SomeTool -->
+//
+// Tool available -> keep the if-branch; unavailable -> keep the else-branch; either
+// way the markers go. Malformed markers are a hard error, never a silent pass-through.
+const CONDITIONAL_MARKER_RE =
+  /[ \t]*<!--[ \t]*(if-tool|else-tool|end-tool):[ \t]*([^\s>]+)[ \t]*-->[ \t]*(?:\r?\n)?/g;
+
+// OpenCode's native subagent toolset, in Claude tool names. transformAgentForOpenCode
+// emits no `tools:` line, so availability has to be stated explicitly rather than read
+// back off the emitted frontmatter. Mirrors OPENCODE_NATIVE_TOOLS in agent-transform.ts.
+const OPENCODE_NATIVE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit', 'Agent'];
+
+// File extensions copyDirResolved() will decode as utf-8 and run through
+// resolveAgentConditionals(). Anything not listed here is copied byte-for-byte:
+// the utf-8 round-trip would corrupt binary assets (images in docs, fixture
+// archives) with no error pointing at the cause. Extend this list rather than
+// re-deriving the rule inside the copy loop; entries are lowercase and include
+// the leading dot, matched against path.extname().toLowerCase().
+const RESOLVABLE_TEXT_EXTENSIONS = ['.md', '.json', '.txt'];
+
+// Tools Antigravity can express. The keys ARE the availability set for agy: a tool with
+// no mapping is dropped from the frontmatter, so its prose must go too. Mirrors
+// agyToolMap in agent-transform.ts -- keep both in sync.
+const agyToolMap = {
+  'Read': ['view_file'],
+  'Grep': ['grep_search'],
+  'Glob': ['list_dir'],
+  'Bash': ['run_command'],
+  'Write': ['write_to_file', 'replace_file_content'],
+  'Edit': ['replace_file_content'],
+  'Agent': ['invoke_subagent', 'send_message'],
+};
+
+function resolveConditionalBody(text, isAvailable, label) {
+  const re = new RegExp(CONDITIONAL_MARKER_RE.source, 'g');
+  const markers = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    markers.push({ kind: m[1], tool: m[2], start: m.index, end: m.index + m[0].length });
+  }
+  if (markers.length === 0) return text;
+
+  const stack = [];
+  let root = '';
+  const append = (chunk) => {
+    if (!chunk) return;
+    const top = stack[stack.length - 1];
+    if (!top) root += chunk;
+    else if (top.seenElse) top.elseBuf += chunk;
+    else top.ifBuf += chunk;
+  };
+  const fail = (detail) => {
+    throw new Error(`[agent-transform] ${label}: ${detail}`);
+  };
+
+  let cursor = 0;
+  for (const marker of markers) {
+    append(text.slice(cursor, marker.start));
+    cursor = marker.end;
+
+    const top = stack[stack.length - 1];
+    if (marker.kind === 'if-tool') {
+      stack.push({ tool: marker.tool, seenElse: false, ifBuf: '', elseBuf: '' });
+      continue;
+    }
+    if (!top) {
+      fail(`<!-- ${marker.kind}: ${marker.tool} --> has no matching <!-- if-tool: ${marker.tool} -->`);
+    }
+    if (top.tool !== marker.tool) {
+      fail(`<!-- ${marker.kind}: ${marker.tool} --> does not match the open <!-- if-tool: ${top.tool} -->`);
+    }
+    if (marker.kind === 'else-tool') {
+      if (top.seenElse) fail(`duplicate <!-- else-tool: ${marker.tool} --> in one conditional block`);
+      top.seenElse = true;
+      continue;
+    }
+    stack.pop();
+    append(isAvailable(top.tool) ? top.ifBuf : top.elseBuf);
+  }
+  append(text.slice(cursor));
+
+  if (stack.length > 0) {
+    const unclosed = stack[stack.length - 1];
+    fail(`unclosed <!-- if-tool: ${unclosed.tool} --> (missing <!-- end-tool: ${unclosed.tool} -->)`);
+  }
+  return root;
+}
+
+/** Source (Claude-format) frontmatter tools, or null when the file declares none. */
+function readFrontmatterTools(content) {
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!fmMatch) return null;
+  for (const line of fmMatch[1].split('\n')) {
+    const toolsMatch = line.match(/^tools:\s*(.+)/);
+    if (toolsMatch) {
+      return toolsMatch[1].trim().replace(/^\[/, '').replace(/\]$/, '')
+        .split(',').map(t => t.trim()).filter(Boolean);
+    }
+  }
+  return null;
+}
+
+function toolAvailability(declared, supported) {
+  const declaredSet = declared === null || declared.some(t => t === '*') ? null : new Set(declared);
+  const supportedSet = supported === null ? null : new Set(supported);
+  return (tool) =>
+    (declaredSet === null || declaredSet.has(tool)) &&
+    (supportedSet === null || supportedSet.has(tool));
+}
+
+/**
+ * Resolve conditional blocks for whichever provider this install is writing.
+ * Runs on EVERY provider path, including the claude/raw passthrough -- otherwise
+ * markers ship verbatim into the installed agent file (apra-fleet-oomh.1).
+ * agy resolves against agyToolMap's keys (apra-fleet-oomh.6) so the body and the
+ * now-transformed frontmatter (transformAgentForAgy, below) agree with each other.
+ */
+function resolveAgentConditionals(content, llm, label) {
+  const declared = readFrontmatterTools(content);
+  const supported = llm === 'opencode' ? OPENCODE_NATIVE_TOOLS
+    : llm === 'agy' ? Object.keys(agyToolMap)
+    : null;
+  return resolveConditionalBody(content, toolAvailability(declared, supported), label);
+}
+
 // --- opencode agent transform -----------------------------------------------
 // OpenCode uses a different agent frontmatter schema:
 //   description, mode: subagent, permission: { edit, write, bash, external_directory }
@@ -115,6 +246,104 @@ function transformAgentForOpenCode(content) {
   return opencodeFm + body;
 }
 
+// --- agy agent transform ------------------------------------------------------
+// Antigravity reads a restricted tool vocabulary and grants permissions through
+// inline XML <rule>/<auto_approve> blocks rather than frontmatter alone. This
+// mirrors transformAgentForAgy in apra-fleet src/cli/agent-transform.ts -- keep
+// both in sync (apra-fleet-oomh.6). Conditional markers are already resolved by
+// resolveAgentConditionals() earlier in the install() loop (using agyToolMap for
+// availability, same as the frontmatter rewrite below), so this function only
+// restructures frontmatter and appends the auto-approve rules.
+function transformAgentForAgy(content, filename) {
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!fmMatch) return content;
+
+  const frontmatter = fmMatch[1];
+  const body = content.slice(fmMatch[0].length);
+
+  let name = '';
+  let description = '';
+  let tools = [];
+  let hasTools = false;
+
+  for (const line of frontmatter.split('\n')) {
+    const nameMatch = line.match(/^name:\s*(.+)/);
+    if (nameMatch) name = nameMatch[1].trim();
+    const descMatch = line.match(/^description:\s*(.+)/);
+    if (descMatch) description = descMatch[1].trim();
+    const toolsMatch = line.match(/^tools:\s*(.+)/);
+    if (toolsMatch) {
+      hasTools = true;
+      tools = toolsMatch[1].replace(/^\[/, '').replace(/\]$/, '').split(',').map(t => t.trim()).filter(Boolean);
+    }
+  }
+
+  let agyFm = '---\n';
+  if (name) agyFm += `name: ${name}\n`;
+  if (description) agyFm += `description: ${description}\n`;
+
+  if (hasTools) {
+    const mappedTools = new Set();
+    const unmappedTools = [];
+    for (const tool of tools) {
+      const mapped = agyToolMap[tool];
+      if (mapped) {
+        for (const m of mapped) mappedTools.add(m);
+      } else {
+        unmappedTools.push(tool);
+      }
+    }
+
+    if (unmappedTools.length > 0) {
+      console.warn(
+        `[agy] dropping tools with no Antigravity equivalent from agent "${name || filename}": ${unmappedTools.join(', ')}`
+      );
+    }
+
+    if (mappedTools.size > 0) {
+      agyFm += `tools: [${Array.from(mappedTools).join(', ')}]\n`;
+    }
+  }
+
+  agyFm += '---\n\n';
+
+  let agyRules = '';
+  if (hasTools && tools.length > 0) {
+    agyRules += '\n<!-- AGY Sandbox Pre-approvals -->\n';
+    agyRules += '<rule>\n  <auto_approve>\n';
+
+    const toolSet = new Set(tools.map(t => t.toLowerCase()));
+
+    if (toolSet.has('read') || toolSet.has('glob') || toolSet.has('grep')) {
+      agyRules += '    <permission action="read_file" target="*" />\n';
+    }
+
+    if (toolSet.has('write') || toolSet.has('edit')) {
+      agyRules += '    <permission action="write_file" target="*" />\n';
+    }
+
+    if (toolSet.has('bash')) {
+      agyRules += '    <permission action="command" target="*" />\n';
+    }
+
+    if (toolSet.has('agent')) {
+      agyRules += '    <permission action="invoke_subagent" target="*" />\n';
+      agyRules += '    <permission action="send_message" target="*" />\n';
+    }
+
+    if (toolSet.has('mcp')) {
+      agyRules += '    <permission action="mcp" target="*" />\n';
+    }
+    if (toolSet.has('fetch') || toolSet.has('curl')) {
+      agyRules += '    <permission action="read_url" target="*" />\n';
+    }
+
+    agyRules += '  </auto_approve>\n</rule>\n';
+  }
+
+  return agyFm + body.trim() + '\n' + agyRules;
+}
+
 // --- fs helpers ------------------------------------------------------------
 function ensureDir(d) { fs.mkdirSync(d, { recursive: true }); }
 
@@ -130,6 +359,37 @@ function copyDir(src, dest) {
     const d = path.join(dest, entry.name);
     if (entry.isDirectory()) copyDir(s, d);
     else fs.copyFileSync(s, d);
+  }
+}
+
+/**
+ * Like copyDir(), but every RESOLVABLE_TEXT_EXTENSIONS file is routed through
+ * resolveAgentConditionals() first (apra-fleet-oomh.4); any other file is
+ * copied byte-for-byte. agents/*.md already gets this treatment via the
+ * loop in install() -- this covers the OTHER asset trees shipped alongside it
+ * (agents/schemas/*.json, agents/_shared/*.md) so a conditional marker added
+ * to either in the future can never ship verbatim on any --llm path. No
+ * markers exist under those trees today, so this is currently a no-op pass
+ * through resolveConditionalBody (which returns text unchanged when it finds
+ * no markers) -- see src/cli/agent-transform.ts's identical treatment of
+ * schemas/*.json and _shared/*.md via loadAgentAssets() for the main installer.
+ */
+function copyDirResolved(src, dest, llm) {
+  ensureDir(dest);
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirResolved(s, d, llm);
+    } else if (RESOLVABLE_TEXT_EXTENSIONS.includes(path.extname(entry.name).toLowerCase())) {
+      const content = fs.readFileSync(s, 'utf-8');
+      fs.writeFileSync(d, resolveAgentConditionals(content, llm, entry.name));
+    } else {
+      // Not a known text asset: copy the raw bytes. Reading it as utf-8 and
+      // writing the decoded string back would silently corrupt any binary
+      // file (lone surrogates and invalid sequences become U+FFFD).
+      fs.copyFileSync(s, d);
+    }
   }
 }
 
@@ -365,7 +625,14 @@ function main() {
   const agents = fs.readdirSync(agentsSrc).filter(f => f.endsWith('.md'));
   for (const a of agents) {
     let content = fs.readFileSync(path.join(agentsSrc, a), 'utf-8');
+    // Conditional blocks resolve FIRST, while the source frontmatter tools list is
+    // still readable -- transformAgentForOpenCode/transformAgentForAgy replace that
+    // frontmatter afterward. Runs on every --llm value, so no provider path can ship
+    // raw markers. resolveAgentConditionals() already resolves agy's body against
+    // agyToolMap (apra-fleet-oomh.6), so body and frontmatter agree with each other.
+    content = resolveAgentConditionals(content, args.llm, a);
     if (args.llm === 'opencode') content = transformAgentForOpenCode(content);
+    else if (args.llm === 'agy') content = transformAgentForAgy(content, a);
     fs.writeFileSync(path.join(agentsDest, a), content);
   }
   console.log(`  [2/4] agents  -> ${agentsDest} (${agents.length}: ${agents.map(a => a.replace('.md', '')).join(', ')})`);
@@ -376,11 +643,15 @@ function main() {
   // (e.g. an installed .claude/workflows/auto-sprint.js, see its
   // loadRoleSchema()) finds them at the same relative location regardless of
   // provider.
+  // copyDirResolved (not copyDir) so any conditional marker under these trees
+  // resolves per --llm instead of shipping verbatim (apra-fleet-oomh.4) -- the
+  // same guarantee the agents/*.md loop above already gets from
+  // resolveAgentConditionals().
   const schemasSrc = path.join(agentsSrc, 'schemas');
   if (fs.existsSync(schemasSrc)) {
     const schemasDest = path.join(agentsDest, 'schemas');
     clearDir(schemasDest);
-    copyDir(schemasSrc, schemasDest);
+    copyDirResolved(schemasSrc, schemasDest, args.llm);
     const schemaFiles = fs.readdirSync(schemasSrc).filter(f => f.endsWith('.json'));
     console.log(`  [2/4] schemas -> ${schemasDest} (${schemaFiles.length} files)`);
   }
@@ -392,7 +663,7 @@ function main() {
   if (fs.existsSync(sharedSrc)) {
     const sharedDest = path.join(agentsDest, '_shared');
     clearDir(sharedDest);
-    copyDir(sharedSrc, sharedDest);
+    copyDirResolved(sharedSrc, sharedDest, args.llm);
     const sharedFiles = fs.readdirSync(sharedSrc).filter(f => f.endsWith('.md'));
     console.log(`  [2/4] shared  -> ${sharedDest} (${sharedFiles.length} files)`);
   }
@@ -520,4 +791,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   main();
 }
 
-export { claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME };
+export { claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME, resolveAgentConditionals, copyDirResolved, transformAgentForAgy, transformAgentForOpenCode };

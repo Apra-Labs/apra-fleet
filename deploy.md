@@ -178,6 +178,9 @@ INSTALLER="dist/apra-fleet-installer-${PLATFORM}-${SEA_ARCH}"
 [ "$PLATFORM" = "win" ] && INSTALLER="${INSTALLER}.exe"
 
 "$INSTALLER" install --force
+# Agy-dedicated sprint (target issue is about the agy/Antigravity provider):
+# use `"$INSTALLER" install --force --llm agy` instead, so the agy role-prompt
+# transform built from this branch is what gets deployed.
 
 # Use `run`, not `start` -- `start`'s Windows scheduled task requires an
 # interactive logon session and silently no-ops without one. Launch detached:
