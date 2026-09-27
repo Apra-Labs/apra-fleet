@@ -156,6 +156,7 @@
 /**
  * @typedef {Object} FleetStatusOptions
  * @property {"compact" | "json"} [format] - Output format
+ * @property {string} [repo_path] - Absolute path to a repo checkout; adds that repo's code-intelligence index health and its KB scope's bible drift. The server's own cwd is never used. KB health itself always covers every project KB scope plus the global KB.
  */
 
 /**
