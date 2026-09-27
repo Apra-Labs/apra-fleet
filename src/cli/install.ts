@@ -25,6 +25,7 @@ import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transfo
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { BEADS_PACKAGE } from './beads-pin.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
 import { detectFleetSePrereqs, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
@@ -62,6 +63,27 @@ export function _resetFleetSePrereqStepDeps(): void {
 function fleetSePrereqCheckEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
   return process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK === '1';
+}
+
+/**
+ * Probes whether `bd` is actually RUNNABLE on this machine, returning its
+ * reported version string, '' when it runs but prints nothing recognizable,
+ * or null when it cannot be run at all.
+ *
+ * "npm install -g succeeded" and "bd is runnable" are two different facts: the
+ * npm global bin directory is routinely absent from PATH under nvm/volta and
+ * on Windows. The installer must never report fleet-se "ready" off the first
+ * fact alone (apra-fleet-i9ag.13.7.2) -- it probes here, once, and both the
+ * Beads step and the final summary use THIS result so the two can never
+ * disagree. shell: true because bd resolves through a shim on Windows.
+ */
+function probeBdVersion(): string | null {
+  try {
+    const out = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    return out === undefined || out === null ? '' : String(out).trim();
+  } catch {
+    return null;
+  }
 }
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
@@ -1724,19 +1746,55 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // (or was bypassed under NODE_ENV=test -- see fleetSePrereqCheckEnabled()).
   // A genuine install failure here is now FATAL (apra-fleet-i9ag.13.7.2):
   // silently skipping bd is exactly the defect apra-fleet-i9ag.13.7 fixes.
+  // beadsVersion stays null until something has actually probed bd, so the
+  // final summary can tell "the Beads step ran and this is what it found" from
+  // "the step never ran (--workflows none)" instead of re-probing and printing
+  // a version the step never saw.
+  let beadsVersion: string | null = null;
   if (installWorkflows) {
     console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
-    try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed - skip
-    } catch {
-      // not installed - install it
+    beadsVersion = probeBdVersion();
+    if (beadsVersion === null) {
+      // not installed - install it. The pin comes from BEADS_PACKAGE
+      // (src/cli/beads-pin.ts), never a literal here: a second copy of the
+      // version string in this file is how apra-fleet-i9ag.12.4's drift
+      // happened.
       try {
-        // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
-        // pin -- see that file's comment for why (schema v66 compatibility).
-        execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
+        // stdio 'pipe' + echo, NOT 'inherit': with 'inherit' npm's diagnostics
+        // go straight to the terminal and execFileSync's thrown error carries
+        // only 'Command failed: ...', so the error report below could not
+        // surface npm's own text (and could surface nothing at all when stderr
+        // is not a terminal, e.g. under a CI log capture or a wrapper script).
+        const out = execFileSync('npm', ['install', '-g', BEADS_PACKAGE], {
+          stdio: 'pipe',
+          encoding: 'utf-8',
+          shell: true,
+        });
+        if (out) process.stdout.write(String(out));
       } catch (err) {
-        console.error(`\nError: failed to install Beads (@beads/bd@1.3.0):\n${(err as Error).message}\n`);
+        const e = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
+        const npmOutput = [e.stdout, e.stderr]
+          .filter(v => v !== undefined && v !== null)
+          .map(v => String(v))
+          .join('')
+          .trim();
+        console.error(
+          `\nError: failed to install Beads (${BEADS_PACKAGE}):\n${npmOutput || e.message}\n`,
+        );
+        process.exit(1);
+      }
+      // npm exiting 0 does NOT mean bd is usable: the npm global bin directory
+      // is frequently not on PATH (nvm, volta, and most Windows setups). Left
+      // unchecked, the installer would go on to print 'fleet-se: ready (... bd
+      // not available)' and exit 0 -- a false success of exactly the shape
+      // apra-fleet-i9ag.13.7 exists to remove. Fail loudly instead.
+      beadsVersion = probeBdVersion();
+      if (beadsVersion === null) {
+        console.error(
+          `\nError: ${BEADS_PACKAGE} was installed but 'bd' cannot be run.\n` +
+            `       This usually means npm's global bin directory is not on PATH.\n` +
+            `       Add it (npm prefix -g) to PATH and re-run 'apra-fleet install'.\n`,
+        );
         process.exit(1);
       }
     }
@@ -1870,13 +1928,15 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // --- Done ---
-  let beadsVersion = 'installed';
-  try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
-    beadsVersion = (versionOut as string).trim() || 'installed';
-  } catch {
-    beadsVersion = 'not available';
-  }
+  // When the Beads step ran (--workflows all) it has ALREADY probed bd and
+  // exited non-zero if bd was not runnable, so beadsVersion is a fact this
+  // install established, not a fresh guess -- 'ready ... bd not available' is
+  // therefore unreachable rather than merely unlikely (apra-fleet-i9ag.13.7.2).
+  // Only the --workflows none path, where the step was skipped by design,
+  // probes here -- and reports honestly, without failing, because bd is part
+  // of the fleet-se the user explicitly opted out of.
+  if (beadsVersion === null) beadsVersion = probeBdVersion();
+  const beadsSummary = beadsVersion === null ? 'not available' : beadsVersion || 'installed';
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
@@ -1892,7 +1952,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // without the opt-in env var), fleetSePrereqs is null and node/npm versions
   // are reported as 'n/a' rather than fabricated.
   const fleetSeLine = installWorkflows
-    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${beadsVersion})`
+    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${beadsSummary})`
     : `\n  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
@@ -1900,7 +1960,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
-  Beads:       ${beadsVersion}
+  Beads:       ${beadsSummary}
   Dolt:        ${doltVersion}${serviceLine}${supervisorLine}${fleetSeLine}
 
 ${instructions}${forceNote}

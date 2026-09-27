@@ -20,7 +20,7 @@ const HOME = os.homedir();
 
 // The beads (bd) version this installer installs when bd is missing.
 //
-// MUST stay equal to BEADS_VERSION in src/cli/beads-install.ts, which is the
+// MUST stay equal to BEADS_VERSION in src/cli/beads-pin.ts, which is the
 // product's authority for which bd it ships against. It is duplicated here only
 // because this installer is deliberately dependency-free plain Node (no build
 // step, no imports outside node: builtins) and so cannot import a TypeScript
