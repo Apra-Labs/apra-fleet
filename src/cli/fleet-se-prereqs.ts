@@ -118,6 +118,32 @@ function probeNpm(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSePr
 }
 
 /**
+ * Human-readable one-line summary of a FleetSePrereqResult, shared by every
+ * fleet-se prerequisite consumer OTHER than the installer (which has its own
+ * bd-inclusive format in src/cli/install.ts) -- currently `apra-fleet status`
+ * (src/cli/status.ts) and the console Health page's server-side status route
+ * (src/tools/check-status.ts). Never restates MIN_NODE_VERSION or
+ * FLEET_SE_PREREQ_FIX_LINE as its own literal (apra-fleet-i9ag.12.9) -- both
+ * are always sourced from this module's own constants, so there is exactly
+ * one operator-facing fix message no matter which surface renders it.
+ */
+export function summarizeFleetSePrereqs(result: FleetSePrereqResult): string {
+  if (result.ok) {
+    return `ready (node ${result.node.version}, npm ${result.npm.version})`;
+  }
+  const reasons: string[] = [];
+  if (!result.node.present) {
+    reasons.push('node: NOT INSTALLED');
+  } else if (!result.node.satisfiesMin) {
+    reasons.push(`node: ${result.node.version} (requires ${MIN_NODE_VERSION}+)`);
+  }
+  if (!result.npm.present) {
+    reasons.push('npm: NOT INSTALLED');
+  }
+  return `NOT INSTALLED (${reasons.join(', ')}) -- ${FLEET_SE_PREREQ_FIX_LINE}`;
+}
+
+/**
  * Detects whether the current host satisfies fleet-se's prerequisites
  * (Node.js >= MIN_NODE_VERSION and a working npm). Never rely on shell-level
  * variable expansion in the invoked command (CLAUDE.md rule) -- the exec

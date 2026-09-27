@@ -160,4 +160,51 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     expect(items[1]).toContain("1.2.3");
     expect(container.textContent ?? "").not.toContain("no workflow packages registered");
   });
+
+  // apra-fleet-i9ag.12.9: the server pre-renders this text from
+  // src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- the Health
+  // screen must render it VERBATIM (it cannot import that module itself; see
+  // FleetStatusPayload.fleetSePrereqs's doc comment in api/health.ts) and
+  // must never show a "fleet-se" row at all when the field is absent.
+  it("renders the server-provided fleet-se prerequisite summary verbatim", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") {
+          return jsonResponse(200, {
+            ...STATUS_FIXTURE,
+            fleetSePrereqs: "NOT INSTALLED (npm: NOT INSTALLED) -- fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only"
+          });
+        }
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("fleet-se");
+    expect(text).toContain(
+      "NOT INSTALLED (npm: NOT INSTALLED) -- fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only"
+    );
+  });
+
+  it("shows no fleet-se row when the server omits the field (older server / probe failed)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    expect(container.querySelector("dt")?.textContent).not.toBe("fleet-se");
+    expect(Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent)).not.toContain("fleet-se");
+  });
 });

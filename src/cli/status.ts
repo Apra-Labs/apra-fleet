@@ -4,6 +4,7 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereqs.js';
 
 interface HealthResponse {
   version?: string;
@@ -72,6 +73,15 @@ export async function runStatus(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
+  // apra-fleet-i9ag.12.9: fleet-se's prerequisite (Node.js 22.16+ and npm) is
+  // otherwise only ever checked once, at install time (src/cli/install.ts) --
+  // an operator whose Node.js is later downgraded or removed gets no signal
+  // at all. This is a host-level check, independent of whether the MCP
+  // server/service is currently running, so it is probed and shown
+  // unconditionally, in both branches below.
+  const fleetSePrereqs = detectFleetSePrereqs();
+  const fleetSeLine = `  fleet-se: ${summarizeFleetSePrereqs(fleetSePrereqs)}`;
+
   // The fleet-sprint supervisor is a SEPARATE OS service with its own
   // unit/plist/task -- reported on its own line so an operator can tell which
   // of the two is down.
@@ -87,6 +97,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log(`  State:    stopped`);
     console.log(`  Service (MCP server):       ${serviceLabel}`);
     console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
+    console.log(fleetSeLine);
     return;
   }
 
@@ -103,4 +114,5 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (health?.sessions !== undefined) console.log(`  Sessions: ${health.sessions}`);
   console.log(`  Service (MCP server):       ${serviceLabel}`);
   console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
+  console.log(fleetSeLine);
 }

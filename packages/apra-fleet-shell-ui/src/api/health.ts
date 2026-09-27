@@ -25,6 +25,15 @@ export interface FleetStatusPayload {
    *  recover it, since src/tools/ is off-limits to this lane and no other
    *  console route exposes it directly. */
   logFile?: string;
+  /** apra-fleet-i9ag.12.9: pre-rendered by the server from
+   *  src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- e.g.
+   *  "ready (node 22.16.0, npm 10.5.0)" or "NOT INSTALLED (node: NOT
+   *  INSTALLED) -- <fix line>". Rendered here VERBATIM: the browser bundle
+   *  cannot import that module itself (it shells out via node:child_process,
+   *  which has no browser build), so the server is the single place that
+   *  computes this text -- this lane must never restate the minimum version
+   *  or the fix line as its own literal. */
+  fleetSePrereqs?: string;
 }
 
 /** Recovers the fleet data directory from the active log file path

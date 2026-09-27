@@ -85,6 +85,12 @@ export function Health() {
             {status.payload.summary.total} member(s): {status.payload.summary.online} online,{" "}
             {status.payload.summary.offline} offline
           </dd>
+          {status.payload.fleetSePrereqs ? (
+            <>
+              <dt>fleet-se</dt>
+              <dd>{status.payload.fleetSePrereqs}</dd>
+            </>
+          ) : null}
         </dl>
       ) : null}
 
