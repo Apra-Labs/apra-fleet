@@ -17,9 +17,8 @@ type ViewState =
  *  never the server's loopback-bound ephemeral port that was the bug this
  *  lane fixes.
  *
- *  Not yet reachable from the running shell: the next task in this lane
- *  (apra-fleet-i9ag.11.6) wires the #/secret-entry/<token> route in
- *  Nav/App.tsx and renders <SecretEntry token={...} />. */
+ *  The page is reached via the #/secret-entry/<token> hash route,
+ *  resolved by src/nav/Nav.tsx and rendered by src/App.tsx. */
 export function SecretEntry(props: { token: string }) {
   const { token } = props;
   const [state, setState] = useState<ViewState>({ kind: "loading" });
