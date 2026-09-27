@@ -173,6 +173,92 @@ export function statusBadge(status) {
 }
 
 /**
+ * (apra-fleet-i9ag.4) Verdict badge colors -- the same outcome register as
+ * fleet-sprint's renderResultExtrasHtml() (viewer-extensions.mjs), so a
+ * verdict reads identically on the dashboard and in the History view.
+ */
+const VERDICT_BADGE_COLORS = Object.freeze({
+    PASS: 'var(--success)',
+    MERGED: 'var(--success)',
+    APPROVED: 'var(--success)',
+    FAIL: 'var(--danger)',
+    CHANGES_NEEDED: 'var(--danger)',
+    ABORTED: 'var(--danger)',
+});
+
+/**
+ * (apra-fleet-i9ag.4) Renders a sprint's terminal verdict as a badge: the
+ * verdict string verbatim (PASS / FAIL / ABORTED / ...), or 'unknown' when
+ * no verdict was recorded.
+ * @param {string|null|undefined} verdict
+ * @returns {string}
+ */
+export function verdictBadge(verdict) {
+    const known = typeof verdict === 'string' && verdict.length > 0;
+    const label = known ? verdict : 'unknown';
+    const color = (known && VERDICT_BADGE_COLORS[verdict.toUpperCase()]) || '#a1a1aa';
+    return '<span class="verdict-badge" style="color: ' + color + '; font-weight: bold; font-size: 11px; ' +
+        'border: 1px solid ' + color + '; border-radius: 3px; padding: 2px 6px; white-space: nowrap;">' +
+        escapeHtml(label) + '</span>';
+}
+
+/**
+ * (apra-fleet-i9ag.4) The sprint's PR link, or '' when it has none. Only an
+ * http(s) URL ever becomes an href (never a `javascript:` or other scheme).
+ * @param {string|null|undefined} prUrl
+ * @returns {string}
+ */
+export function prLink(prUrl) {
+    if (typeof prUrl !== 'string' || !/^https?:\/\//i.test(prUrl)) return '';
+    return '<a class="pr-link" href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+        'style="font-size: 12px; white-space: nowrap;">PR</a>';
+}
+
+/**
+ * (apra-fleet-i9ag.4) Renders the finished-sprints (History) list: one card
+ * per finished run, newest first as supplied (history-view.mjs's
+ * createFinishedRunsIndex() already orders them), each with its verdict
+ * badge, its PR link when one exists, and a link to its
+ * GET /sprints/:id/history page. Cards carry `data-finished-sprint-id`, never
+ * `data-sprint-id` -- that attribute is the live Sprint Stack's row key
+ * (renderSprintStackFromState() reconciles on it), and a finished run must
+ * never be mistaken for a running one.
+ *
+ * (apra-fleet-i9ag.3.2 contract) The History link is an ABSOLUTE app-path run
+ * through mountHref() against the per-request prefix, exactly like
+ * renderSprintSection()'s live/log anchors -- never a relative './sprints/...'.
+ * The PR link is an EXTERNAL https URL and is deliberately NOT prefixed (see
+ * prLink(); mountHref() would leave it alone anyway, since it only rewrites
+ * root-absolute paths).
+ * @param {Array<{ sprintId: string, verdict?: string|null, prUrl?: string|null, endedAt?: string|null, goal?: string|null }>} [runs]
+ * @param {string} [mountPrefix] - mount-prefix.mjs's resolved prefix (e.g. '/ext/se'), or '' to serve direct
+ * @returns {string}
+ */
+export function renderFinishedRunsHtml(runs, mountPrefix) {
+    var list = Array.isArray(runs) ? runs : [];
+    var prefix = typeof mountPrefix === 'string' ? mountPrefix : '';
+    if (list.length === 0) {
+        return '<p style="color:#71717a; font-style: italic;">No finished sprints yet.</p>';
+    }
+    return list.map(function (run) {
+        var id = escapeHtml(run.sprintId);
+        return '<section class="finished-sprint" data-finished-sprint-id="' + id + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
+            'border-radius: 6px; padding: 8px 14px; margin-bottom: 8px;">' +
+            '<div style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">' +
+            '<strong style="font-size: 13px;">' + id + '</strong>' +
+            verdictBadge(run.verdict) +
+            prLink(run.prUrl) +
+            '<a class="history-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/history') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">History</a>' +
+            '</div>' +
+            '<div style="margin-top: 4px; font-size: 12px; color: #a1a1aa;">' +
+            'Finished: ' + (run.endedAt ? escapeHtml(run.endedAt) : 'unknown') +
+            (run.goal ? ' | Goal: ' + escapeHtml(run.goal) : '') +
+            '</div>' +
+            '</section>';
+    }).join('\n');
+}
+
+/**
  * Renders one member's chip: `name` alone, or `name (role)` when a role is
  * known for that member.
  * @param {{ name: string, role?: string|null }} member
@@ -246,6 +332,12 @@ export function renderSprintSection(view, mountPrefix) {
     // viewer above is gone/unresponsive for that status; the raw log is the
     // one remaining way to see what the child actually printed).
     const logHref = mountHref(mountPrefix, '/sprints/' + encodeURIComponent(view.sprintId) + '/log');
+    // (apra-fleet-i9ag.4) Terminal outcome, once known: verdict badge plus PR
+    // link, the same pair the finished-sprints list renders. Nothing renders
+    // while the run has produced neither (the normal case for a live sprint).
+    const hasOutcome = (typeof view.verdict === 'string' && view.verdict.length > 0) ||
+        (typeof view.prUrl === 'string' && view.prUrl.length > 0);
+    const outcomeHtml = hasOutcome ? verdictBadge(view.verdict) + prLink(view.prUrl) : '';
 
     // (apra-fleet-p2to.3.1) Pause/Resume is only meaningful for a sprint the
     // watchdog currently sees as a LIVE pid (running-healthy/running-
@@ -280,6 +372,7 @@ export function renderSprintSection(view, mountPrefix) {
         '<div style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">' +
         '<strong style="font-size: 14px;">' + sprintId + '</strong>' +
         statusBadge(view.status) +
+        outcomeHtml +
         '<a href="' + liveHref + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Open live view</a>' +
         '<a href="' + logHref + '" target="_blank" rel="noopener" style="font-size: 12px;">Raw log</a>' +
         // apra-fleet-3i3.1: kills the still-live child AND releases the
@@ -789,6 +882,10 @@ const sprintStackLiveScript = (mountPrefix) => `
     var WATCHDOG_STATUS = ${JSON.stringify(WATCHDOG_STATUS)};
     var STATUS_BADGE_COLORS = ${JSON.stringify(STATUS_BADGE_COLORS)};
     ${statusBadge.toString()}
+    var VERDICT_BADGE_COLORS = ${JSON.stringify(VERDICT_BADGE_COLORS)};
+    ${verdictBadge.toString()}
+    ${prLink.toString()}
+    ${renderFinishedRunsHtml.toString()}
     ${renderProgressBarHtml.toString()}
     ${renderSprintProgressHtml.toString()}
     // (apra-fleet-i9ag.5.2) renderSprintSection() below now calls
@@ -859,6 +956,13 @@ const sprintStackLiveScript = (mountPrefix) => `
             var res = await fetch('${mountHref(mountPrefix, '/state')}?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
             renderSprintStackFromState(data.sprints);
+            // apra-fleet-i9ag.4: the finished-sprints list rides the SAME
+            // poll, so a sprint that just left the stack above shows up
+            // below (with its verdict/PR) without a page reload.
+            var finishedEl = document.getElementById('finished-sprints');
+            if (finishedEl && Array.isArray(data.finished)) {
+                finishedEl.innerHTML = renderFinishedRunsHtml(data.finished, MOUNT_PREFIX);
+            }
         } catch (e) {
             console.error('Poll Error:', e);
         }
@@ -964,7 +1068,7 @@ export function renderBeadsHeaderHtml(beads, warning) {
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
- * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null, consoleOrigin?: string|null }} [opts]
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null, consoleOrigin?: string|null, mountPrefix?: string, finishedRuns?: Array<object> }} [opts]
  *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
  *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
  *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
@@ -975,10 +1079,14 @@ export function renderBeadsHeaderHtml(beads, warning) {
  *   `mountPrefix`: (apra-fleet-i9ag.3.2) the mount path this request arrived
  *   under, already validated by mount-prefix.mjs (resolveMountPrefix(), called
  *   in registerDashboardRoutes() below). Every absolute app-path this page
- *   emits -- the Supervisor-log link, each sprint card's live/log anchors, and
- *   all four client scripts' fetch()/EventSource targets -- is built through
- *   mountHref() against it. Absent/'' (the serve-direct case, and every
- *   pre-existing caller) leaves every one of those paths exactly as it was.
+ *   emits -- the Supervisor-log link, each sprint card's live/log anchors, the
+ *   finished-sprints list's History links, and all four client scripts'
+ *   fetch()/EventSource targets -- is built through mountHref() against it.
+ *   Absent/'' (the serve-direct case, and every pre-existing caller) leaves
+ *   every one of those paths exactly as it was.
+ *   `finishedRuns`: (apra-fleet-i9ag.4) the finished-sprints list rendered
+ *   below the Sprint Stack (history-view.mjs's createFinishedRunsIndex()
+ *   rows); absent -> the list's empty state.
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
@@ -1015,7 +1123,14 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '</div>\n' +
         '<div id="tab-sprints" class="tab-content active panel">' +
         '<div class="panel-header">Sprint Stack</div>' +
-        '<div id="sprint-stack" class="panel-body">\n' + renderSprintStackHtml(views, mountPrefix) + '\n</div>' +
+        '<div class="panel-body">' +
+        '<div id="sprint-stack">\n' + renderSprintStackHtml(views, mountPrefix) + '\n</div>' +
+        // apra-fleet-i9ag.4: finished sprints (old runs), newest first, so a
+        // sprint that leaves the live stack stays in view with its verdict,
+        // PR and History link. Same tab, below the stack.
+        '<div class="panel-header" style="margin: 16px -14px 12px; border-top: 1px solid var(--border);">Finished Sprints</div>' +
+        '<div id="finished-sprints">\n' + renderFinishedRunsHtml(opts && opts.finishedRuns, mountPrefix) + '\n</div>' +
+        '</div>' +
         '</div>\n' +
         // Backlog is its own tab (this file's tab restructuring) -- still
         // ALWAYS rendered after the sprint stack in raw document order (the
@@ -1060,6 +1175,8 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
  * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
  * @property {string|null} beadsPrefix - the beads prefix recorded on the ledger entry at launch (`beads.prefix`, beads-identity.mjs); null when absent
+ * @property {string|null} verdict - (apra-fleet-i9ag.4) terminal verdict once known (from the run's persisted terminal state); null while unknown
+ * @property {string|null} prUrl - (apra-fleet-i9ag.4) the run's PR URL once known; null when none
  */
 
 /**
@@ -1073,12 +1190,17 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * render already computes) without pulling in that module's string-dedup
  * machinery, which targets a much larger per-activity payload than this
  * small, per-sprint list ever grows to.
+ *
+ * (apra-fleet-i9ag.4) `finished` carries the finished-sprints list (the same
+ * rows the page renders below the stack) so the client poll can refresh it;
+ * it is only present when the caller supplies it.
  * @param {SprintView[]} [views]
- * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object> }}
+ * @param {Array<object>} [finishedRuns]
+ * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object>, finished?: Array<object> }}
  */
-export function buildStatePayload(views) {
+export function buildStatePayload(views, finishedRuns) {
     const list = Array.isArray(views) ? views : [];
-    return {
+    const payload = {
         generatedAt: new Date().toISOString(),
         runningCount: list.length,
         sprints: list.map((v) => ({
@@ -1093,8 +1215,20 @@ export function buildStatePayload(views) {
             base: v.base ?? null,
             baseDrift: v.baseDrift ?? null,
             beadsPrefix: v.beadsPrefix ?? null,
+            verdict: v.verdict ?? null,
+            prUrl: v.prUrl ?? null,
         })),
     };
+    if (Array.isArray(finishedRuns)) {
+        payload.finished = finishedRuns.map((r) => ({
+            sprintId: r.sprintId,
+            verdict: r.verdict ?? null,
+            prUrl: r.prUrl ?? null,
+            endedAt: r.endedAt ?? null,
+            goal: r.goal ?? null,
+        }));
+    }
+    return payload;
 }
 
 // (apra-fleet-siqi.1.1) Default interval, in ms, at which GET /events emits a
@@ -1136,12 +1270,14 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
  *   beadsIdentity?: { get: () => object|null, getWarning?: () => string|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line (or its warning form)
  *   consoleOrigin?: string|null, // (apra-fleet-i9ag.5.1) the console's own origin (e.g. 'http://127.0.0.1:7500'), resolved by bin/serve.mjs; drives the header's "Console" back-link (renderConsoleLinkHtml() above). Absent/non-string -> no link.
+ *   finishedRuns?: { list: () => Promise<Array<{ sprintId: string, verdict: string|null, prUrl: string|null, endedAt: string|null }>> }, // (apra-fleet-i9ag.4) history-view.mjs's createFinishedRunsIndex(); drives the finished-sprints list and each card's verdict/PR
  * }} [deps]
  * @returns {{
  *   name: string,
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
- *   buildSprintViews(): Promise<SprintView[]>,
+ *   buildSprintViews(finished?: Array<object>): Promise<SprintView[]>,
+ *   buildFinishedRuns(): Promise<Array<object>>,
  *   renderIndexPage(renderOpts?: { mountPrefix?: string }): Promise<string>,
  *   onChange(listener: () => void): () => void,
  * }}
@@ -1205,6 +1341,25 @@ export function createDashboard(deps = {}) {
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
     const backlog = deps.backlog ?? null;
+    // (apra-fleet-i9ag.4) Finished-sprints source (old runs). Absent -> an
+    // empty list and no card ever shows a verdict/PR.
+    const finishedRuns = deps.finishedRuns && typeof deps.finishedRuns.list === 'function' ? deps.finishedRuns : null;
+
+    /**
+     * (apra-fleet-i9ag.4) The finished-sprints rows, newest first. A read
+     * failure degrades to an empty list for this render, never a thrown page.
+     * @returns {Promise<Array<object>>}
+     */
+    async function buildFinishedRuns() {
+        if (!finishedRuns) return [];
+        try {
+            const rows = await finishedRuns.list();
+            return Array.isArray(rows) ? rows : [];
+        } catch (err) {
+            logError('[dashboard] finished-sprints read failed:', err);
+            return [];
+        }
+    }
 
     // (apra-fleet-siqi.1.1) GET /events plumbing -- see DEFAULT_EVENTS_INTERVAL_MS
     // above for why this is a periodic signal rather than a per-mutation push.
@@ -1232,8 +1387,13 @@ export function createDashboard(deps = {}) {
      * fallbacks -- rather than taking the whole page down.
      * @returns {Promise<SprintView[]>}
      */
-    async function buildSprintViews() {
+    async function buildSprintViews(finished) {
         const entries = ledger.list();
+        // (apra-fleet-i9ag.4) verdict/PR per sprint, once its terminal state
+        // exists -- looked up in the finished-runs rows (reused when the
+        // caller already fetched them for this render).
+        const finishedRows = Array.isArray(finished) ? finished : await buildFinishedRuns();
+        const outcomeById = new Map(finishedRows.map((r) => [r.sprintId, r]));
         // apra-fleet-x8r.2: fetched ONCE for the whole page render (not once
         // per sprint row) -- a failure here is isolated to "no progress bar
         // this round" for every row (each falls back to its own placeholder
@@ -1340,6 +1500,8 @@ export function createDashboard(deps = {}) {
                 base,
                 baseDrift,
                 beadsPrefix: entry.beads && entry.beads.prefix ? entry.beads.prefix : null,
+                verdict: outcomeById.get(entry.sprintId)?.verdict ?? null,
+                prUrl: outcomeById.get(entry.sprintId)?.prUrl ?? null,
             };
         }));
         return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);
@@ -1360,6 +1522,7 @@ export function createDashboard(deps = {}) {
             }
         },
         buildSprintViews,
+        buildFinishedRuns,
         /**
          * (apra-fleet-siqi.1.1) Subscribe to the periodic "state may have
          * changed, go poll /state" signal GET /events (registerDashboardRoutes
@@ -1422,7 +1585,8 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix });
+            const finished = await buildFinishedRuns();
+            return renderIndexPageHtml(await buildSprintViews(finished), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix, finishedRuns: finished });
         },
     };
 }
@@ -1496,8 +1660,11 @@ export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths
     // (src/viewer/index.mjs) being a lean transform of the same `state` its
     // GET / embeds into HTML_TEMPLATE.
     supervisor.route('GET', '/state', async (req, res) => {
-        const views = await dashboard.buildSprintViews();
-        const body = Buffer.from(JSON.stringify(buildStatePayload(views)), 'utf-8');
+        // apra-fleet-i9ag.4: the finished-sprints list rides the same poll.
+        // Optional on the seam so a minimal injected dashboard still works.
+        const finished = typeof dashboard.buildFinishedRuns === 'function' ? await dashboard.buildFinishedRuns() : undefined;
+        const views = await dashboard.buildSprintViews(finished);
+        const body = Buffer.from(JSON.stringify(buildStatePayload(views, finished)), 'utf-8');
         res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'content-length': body.length,
