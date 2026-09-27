@@ -9,6 +9,10 @@ which skills are installed, uninstalling, and self-updating.
   Antigravity (agy), Codex, Copilot, or OpenCode.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
+- **No Node.js and no npm** for a binary (SEA) install: the installer is
+  self-contained, and so are the Beads (`bd`) and Dolt binaries it downloads --
+  see [Beads and Dolt need no node or npm](#beads-and-dolt-need-no-node-or-npm).
+  Installing Fleet from npm instead does need Node.js 22+.
 
 ## Quick install
 
@@ -65,6 +69,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | Path | What it is |
 |------|-----------|
 | `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
+| `~/.apra-fleet/bin/bd[.exe]` | The Beads (`bd`) task-tracker binary, pinned to Beads **1.3.0** -- see [Beads and Dolt need no node or npm](#beads-and-dolt-need-no-node-or-npm) below |
+| `~/.apra-fleet/bin/dolt[.exe]` | The Dolt binary (Beads' storage engine), pinned to Dolt **v2.2.0** |
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
 | `~/.apra-fleet/node_modules/` | Shared on-disk workflow runtime (`@apralabs/apra-fleet-workflow`, `@apralabs/apra-fleet-client`, vendored `ajv` + deps) that `apra-fleet workflow <name>` and any user-authored workflow resolve bare specifiers against -- see `docs/authoring-workflows.md` |
@@ -84,6 +90,57 @@ This local install only covers the machine you run it on. Remote fleet members g
 
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
+
+### Beads and Dolt need no node or npm
+
+The installer downloads the **Beads 1.3.0 release binary** (and the Dolt v2.2.0
+binary it stores issues in) straight into `~/.apra-fleet/bin/`. Neither step
+needs Node.js, npm, a package manager, or administrator rights -- the installer
+binary you downloaded is entirely self-contained, and so are the binaries it
+fetches. Do **not** run `npm install -g @beads/bd` for a binary (SEA) install;
+the installer already placed `bd` for you, at the pinned version above.
+
+The Beads archive is downloaded over HTTPS and its **sha256 is verified against
+the release's `checksums.txt` before anything is written to disk**, so a
+mismatched or truncated download leaves no partial `bd` behind. (The Dolt step
+does not checksum-verify its archive today; it is the non-fatal step described
+below.)
+
+**A Beads install failure fails the whole install.** If `bd` cannot be
+downloaded, verified or run, `apra-fleet install` prints the reason and the
+asset it tried, and exits non-zero -- the console backlog and Sprints cannot
+work without `bd`, so an install that quietly skipped it would be a false
+success. The Dolt step deliberately behaves differently: it only warns and
+continues, because Dolt can be installed later. That asymmetry is intentional,
+not a bug.
+
+### Running `bd` after install
+
+`bd` is run **from its absolute installed path**, exactly like the `apra-fleet`
+binary itself:
+
+```bash
+# Linux / macOS
+~/.apra-fleet/bin/bd --version
+cd ~/.apra-fleet/bin && ./bd ready
+```
+
+```powershell
+# Windows
+& "$env:USERPROFILE\.apra-fleet\bin\bd.exe" --version
+```
+
+The installer **does not add `~/.apra-fleet/bin` to `PATH` and does not edit
+any shell profile** (no `.bashrc`, `.zshrc`, `.profile`, or `setx`). So a bare
+`bd` is *not* guaranteed to work in a fresh terminal straight after install:
+use the full path above, or add that directory to your own `PATH` if you prefer
+the short form. Fleet's own tooling never relies on `PATH` -- it resolves the
+installed binary by absolute path, and honours two overrides if you moved
+things: `APRA_FLEET_BD_PATH` (a specific `bd` executable) and
+`APRA_FLEET_BIN_DIR` (the directory to look in).
+
+Wherever this page or `docs/beads.md` shows a bare `bd <command>`, read it as
+"run `bd` from `~/.apra-fleet/bin`".
 
 ### Two OS-level services
 

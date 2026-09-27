@@ -87,6 +87,13 @@ extra server. That is where the sprint's plan gets written, where acceptance
 criteria live, and where closure evidence is recorded. For this guide, that is
 all you need to know about beads internals.
 
+`apra-fleet install` installs `bd` for you from its own release binary (no
+Node.js or npm needed) at `~/.apra-fleet/bin/bd` -- the same directory as the
+`apra-fleet` binary. The installer does not put that directory on `PATH`, so
+run the `bd` commands in this guide from there (or add it to your `PATH`
+yourself); see
+[install.md](install.md#beads-and-dolt-need-no-node-or-npm).
+
 Before a sprint can run, the work in scope must exist there: one epic bead as the
 sprint root, with the in-scope features/stories as its children (created or
 linked with `--parent` -- the engine resolves a sprint's scope by following

@@ -8,6 +8,15 @@ Beads is a bundled open-source local issue tracker installed alongside Fleet by
 `apra-fleet install`. It provides the `bd` CLI and serves as the PM skill's
 persistent task database across all sprints and sessions.
 
+`apra-fleet install` installs it from the pinned **Beads 1.3.0 release
+binary** -- no Node.js or npm prerequisite, sha256-verified against the
+release checksums, and fatal to the install if it fails. It lands at
+`~/.apra-fleet/bin/bd` (`bd.exe` on Windows) and is run from that **absolute
+path**: the installer does not add the directory to `PATH` and does not edit
+any shell profile. Every bare `bd <command>` below therefore means "run `bd`
+from `~/.apra-fleet/bin`" unless you have added that directory to your own
+`PATH`. Details: [install.md](install.md#beads-and-dolt-need-no-node-or-npm).
+
 ## What Beads Does
 
 - **One central DB** -- the PM agent runs `bd init` once in its own working

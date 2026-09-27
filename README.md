@@ -111,6 +111,16 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+`install` also places the Beads task tracker (`bd`) and Dolt next to the fleet
+binary, as self-contained release binaries -- no Node.js or npm needed for
+either, and the Beads download is sha256-verified against the release
+checksums. A Beads failure fails the install (the Dolt step only warns). Like
+`apra-fleet` itself, `bd` is run from
+`~/.apra-fleet/bin/bd` (the installer adds nothing to `PATH` and edits no shell
+profile), so do not expect a bare `bd` to work in a fresh terminal until you
+add that directory to your own `PATH`. See
+[docs/install.md](docs/install.md#beads-and-dolt-need-no-node-or-npm).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
