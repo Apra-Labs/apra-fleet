@@ -164,8 +164,9 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
   // apra-fleet-i9ag.12.9: the server pre-renders this text from
   // src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- the Health
   // screen must render it VERBATIM (it cannot import that module itself; see
-  // FleetStatusPayload.fleetSePrereqs's doc comment in api/health.ts) and
-  // must never show a "fleet-se" row at all when the field is absent.
+  // FleetStatusPayload.fleetSePrereqs's doc comment in api/health.ts). When
+  // the field is absent, see the sibling case below (apra-fleet-i9ag.13.9):
+  // an explicit "unknown" fleet-se row is shown instead of hiding the row.
   it("renders the server-provided fleet-se prerequisite summary verbatim", async () => {
     vi.stubGlobal(
       "fetch",
