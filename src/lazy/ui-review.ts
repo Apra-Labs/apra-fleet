@@ -897,7 +897,10 @@ export const REVIEW_JS = String.raw`
     function draftArea(key, placeholder) {
       var ta = el('textarea', { cls: 'rv-ta', 'data-key': key, placeholder: placeholder || null });
       ta.value = R.drafts[key] || '';
-      ta.addEventListener('input', function () { R.drafts[key] = ta.value; });
+      // Grow with the text (a suggestion is several lines) up to a limit.
+      var fit = function () { ta.style.height = 'auto'; ta.style.height = Math.min(420, Math.max(76, ta.scrollHeight + 2)) + 'px'; };
+      ta.addEventListener('input', function () { R.drafts[key] = ta.value; fit(); });
+      setTimeout(fit, 0);
       return ta;
     }
     function focusKey(key) { setTimeout(function () { var t = pane.querySelector('[data-key="' + CSS.escape(key) + '"]'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 0); }
@@ -934,6 +937,7 @@ export const REVIEW_JS = String.raw`
         var add = BT + BT + BT + 'suggestion\n' + lines.join('\n') + '\n' + BT + BT + BT + '\n';
         ta.value = (ta.value ? ta.value.replace(/\n*$/, '\n\n') : '') + add;
         R.drafts[key] = ta.value;
+        ta.dispatchEvent(new Event('input'));
         ta.focus();
       } });
       box.appendChild(el('div', { cls: 'rv-bar' }, [cm.side === 'new' ? suggest : null, el('span', { cls: 'hint', text: 'Ctrl+Enter to comment, Esc to close (keeps the draft)' }), el('span', { cls: 'grow' }), el('button', { cls: 'act', type: 'button', text: 'Cancel', onclick: cancel }), submit]));
