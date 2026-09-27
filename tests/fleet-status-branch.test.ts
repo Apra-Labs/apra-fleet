@@ -102,6 +102,38 @@ describe('fleetStatus fleetSePrereqs json payload (apra-fleet-i9ag.13.10)', () =
     const parsed = JSON.parse(result);
     expect(Object.prototype.hasOwnProperty.call(parsed, 'fleetSePrereqs')).toBe(false);
   });
+
+  // apra-fleet-i9ag.12.10: the cases above only exercise the zero-member
+  // early-return branch (src/tools/check-status.ts:486-491). The console
+  // actually hits the members branch (:580-596) whenever a fleet has at
+  // least one registered agent -- both branches call the same
+  // safeFleetSePrereqsSummary() helper, but a regression that dropped or
+  // unguarded only one of the two assignments would leave this suite green
+  // while breaking what Health.tsx receives in the normal case.
+  it('includes fleetSePrereqs in the json payload when the probe succeeds and at least one member is registered', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'members-branch-agent' }));
+    mockDetectFleetSePrereqs.mockReturnValue({
+      node: { present: true, version: '22.16.0', satisfiesMin: true },
+      npm: { present: true, version: '10.5.0' },
+      ok: true,
+      missing: [],
+    });
+
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.fleetSePrereqs).toBe('ready (node 22.16.0, npm 10.5.0)');
+  });
+
+  it('omits the fleetSePrereqs key entirely when the probe throws and at least one member is registered', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'members-branch-agent' }));
+    mockDetectFleetSePrereqs.mockImplementation(() => {
+      throw new Error('boom: probe failed');
+    });
+
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(Object.prototype.hasOwnProperty.call(parsed, 'fleetSePrereqs')).toBe(false);
+  });
 });
 
 describe('fleetStatus no-LLM member display (apra-fleet-us9.14)', () => {
