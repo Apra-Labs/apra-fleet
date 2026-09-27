@@ -227,4 +227,50 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     expect(text).toContain("Fleet status");
     expect(text).toContain("Workflow packages");
   });
+
+  // apra-fleet-i9ag.12.11: none of the cases above drive the status-fetch
+  // failure branch (Health.tsx:70). The always-render change from
+  // apra-fleet-i9ag.13.9 makes the loaded-vs-error distinction load-bearing --
+  // the fleet-se row must appear in the loaded state and must NEVER leak
+  // into the error state, since the whole <dl> (including the fleet-se dt)
+  // only renders when status.kind === "loaded".
+  it("shows the alert and no fleet-se row when the status fetch rejects at the network level", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") throw new Error("network down");
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent ?? "").toContain("Failed to load status");
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).not.toContain("fleet-se");
+  });
+
+  it("shows the alert and no fleet-se row when the status fetch resolves non-ok", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(500, { error: "boom" });
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent ?? "").toContain("Failed to load status");
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).not.toContain("fleet-se");
+  });
 });
