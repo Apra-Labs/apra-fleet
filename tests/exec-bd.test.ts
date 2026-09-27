@@ -113,6 +113,11 @@ describe('execBdSync', () => {
       { cwd: '/some/repo', encoding: 'utf-8' },
       fakeExecFileSync as never,
       fakeResolveWindowsBd,
+      // apra-fleet-i9ag.13.4: the npm shim is now the FOURTH resolution step,
+      // so the three ahead of it (APRA_FLEET_BD_PATH, the installed release
+      // binary under the fleet bin dir, a bd on PATH) must miss for this
+      // pre-existing npm-shim coverage to exercise the shim path at all.
+      { platform: 'win32', env: { PATH: '' }, existsFn: () => false },
     );
 
     expect(result).toBe('fake-output');
@@ -130,7 +135,13 @@ describe('execBdSync', () => {
       calls.push({ opts });
       return '';
     };
-    execBdSync(['--version'], { shell: true } as never, fakeExecFileSync as never, () => 'C:\\fake\\bd.js');
+    execBdSync(
+      ['--version'],
+      { shell: true } as never,
+      fakeExecFileSync as never,
+      () => 'C:\\fake\\bd.js',
+      { platform: 'win32', env: { PATH: '' }, existsFn: () => false },
+    );
     expect(calls[0].opts.shell).toBe(false);
   });
 
@@ -141,7 +152,15 @@ describe('execBdSync', () => {
       return 'fake-output';
     };
 
-    const result = execBdSync(['dolt', 'remote', 'list', '--json'], { cwd: '/some/repo', encoding: 'utf-8' }, fakeExecFileSync as never, () => null);
+    const result = execBdSync(
+      ['dolt', 'remote', 'list', '--json'],
+      { cwd: '/some/repo', encoding: 'utf-8' },
+      fakeExecFileSync as never,
+      () => null,
+      // Nothing resolves anywhere (no override, no installed binary, no bd on
+      // PATH, no npm shim) -- the last-resort fallback this test pins.
+      { env: {}, existsFn: () => false },
+    );
 
     expect(result).toBe('fake-output');
     expect(calls.length).toBe(1);
@@ -203,14 +222,29 @@ describe('execBdSync', () => {
 // rather than depending on every call site remembering to validate its own
 // caller-controlled values.
 describe('execBdAsync', () => {
-  it('invokes the injected execFileAsync as "bd" with the given args and shell: true forced on', async () => {
+  // apra-fleet-i9ag.13.4 UPDATED THIS CONTRACT. execBdAsync no longer forces
+  // shell: true on every call -- it shares resolveBdInvocation() with
+  // execBdSync, so a resolved bd (release binary, override, PATH, or the npm
+  // shim) is spawned shell-lessly, and shell: true survives only on the
+  // win32 last-resort fallback where no bd resolved at all. The two
+  // assertions below were 'shell: true forced on'; they now pin the
+  // shell-LESS resolved path plus the surviving fallback, because with bd
+  // installed as a release binary the old behaviour would have made
+  // shell: true the normal Windows path.
+  it('invokes the injected execFileAsync as "bd" with the given args, shell-less, on the resolved-binary path', async () => {
     const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = [];
     const fakeExecFileAsync = async (cmd: string, args: string[], opts: Record<string, unknown>) => {
       calls.push({ cmd, args, opts });
       return { stdout: 'fake-output', stderr: '' };
     };
 
-    const result = await execBdAsync(['list', '--parent', 'apra-fleet-xuo', '--json', '--limit', '0'], { cwd: '/some/repo', encoding: 'utf-8' }, fakeExecFileAsync as never);
+    const result = await execBdAsync(
+      ['list', '--parent', 'apra-fleet-xuo', '--json', '--limit', '0'],
+      { cwd: '/some/repo', encoding: 'utf-8' },
+      fakeExecFileAsync as never,
+      undefined,
+      { platform: 'linux', env: { PATH: '/usr/bin' }, existsFn: (p: string) => p === '/usr/bin/bd' },
+    );
 
     expect(result.stdout).toBe('fake-output');
     expect(calls.length).toBe(1);
@@ -218,19 +252,33 @@ describe('execBdAsync', () => {
     expect(calls[0].args).toEqual(['list', '--parent', 'apra-fleet-xuo', '--json', '--limit', '0']);
     expect(calls[0].opts.cwd).toBe('/some/repo');
     expect(calls[0].opts.encoding).toBe('utf-8');
-    expect(calls[0].opts.shell).toBe(true);
+    expect(calls[0].opts.shell).toBe(false);
   });
 
-  it('forces shell: true even if a caller-supplied options object tries to set shell: false', async () => {
+  it('ignores a caller-supplied shell option entirely: shell always comes from the resolved invocation', async () => {
     const calls: Array<{ opts: Record<string, unknown> }> = [];
     const fakeExecFileAsync = async (_cmd: string, _args: string[], opts: Record<string, unknown>) => {
       calls.push({ opts });
       return { stdout: '', stderr: '' };
     };
 
-    await execBdAsync(['--version'], { shell: false } as never, fakeExecFileAsync as never);
+    // A caller asking for shell: true cannot get it back on a resolved binary.
+    await execBdAsync(['--version'], { shell: true } as never, fakeExecFileAsync as never, undefined, {
+      platform: 'linux',
+      env: { PATH: '/usr/bin' },
+      existsFn: (p: string) => p === '/usr/bin/bd',
+    });
+    expect(calls[0].opts.shell).toBe(false);
 
-    expect(calls[0].opts.shell).toBe(true);
+    // ...and a caller asking for shell: false cannot switch OFF the win32
+    // last-resort fallback's shell, which Node still requires there to invoke
+    // a .cmd at all (CVE-2024-27980 fix: spawn EINVAL without it).
+    await execBdAsync(['--version'], { shell: false } as never, fakeExecFileAsync as never, undefined, {
+      platform: 'win32',
+      env: { PATH: '' },
+      existsFn: () => false,
+    });
+    expect(calls[1].opts.shell).toBe(true);
   });
 
   it('throws a TypeError when args is not an array (defensive: never silently stringify/concatenate)', () => {
