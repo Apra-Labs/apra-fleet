@@ -253,7 +253,7 @@ Per-provider flag behaviour:
 | Provider | `'auto'` flag | `'dangerous'` flag |
 |----------|--------------|-------------------|
 | Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
-| Antigravity (agy) | None (config-file only via `compose_permissions`) | `--dangerously-skip-permissions` |
+| Antigravity (agy) | `--mode accept-edits` (same as default; grants come from `compose_permissions`) | `--dangerously-skip-permissions` |
 | OpenCode | `--auto` | `--dangerously-skip-permissions` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
 | Copilot | Not supported  -  warns and runs interactively | Not supported |

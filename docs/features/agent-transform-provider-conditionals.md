@@ -1,6 +1,6 @@
 <!-- llm-context: This document describes the provider-conditional body-block mechanism in the agent transform pipeline -- how role-prompt PROSE (not just frontmatter tools:) is made provider-aware, and why two independent implementations of it exist and must be kept in sync. -->
 <!-- keywords: agent-transform, conditional markers, if-tool, else-tool, end-tool, resolveConditionalBody, transformAgentForAgy, transformAgentForOpenCode, transformAgentForClaude, agyToolMap, OPENCODE_NATIVE_TOOLS, split-brain -->
-<!-- see-also: ../generic-engine-boundary.md, ../agy-safety-rationalization.md, ./auto-sprint-install.md -->
+<!-- see-also: ../generic-engine-boundary.md, ../agy-provider.md, ./auto-sprint-install.md -->
 
 # Provider-Conditional Body Blocks in Role Prompts
 
@@ -39,6 +39,11 @@ disappears along with its nested markers.
 Markers are HTML comments so they render invisibly in plain markdown and are
 inert to any reader that ignores them. They live in the prose body only --
 frontmatter itself carries no markers.
+
+The same resolution runs wherever role-agent files are written for a provider:
+the local `apra-fleet install` and the provisioning of remote members
+(`register_member`, `update_member`, and the first `execute_prompt` to a member
+per server run) resolve markers identically, for every provider.
 
 **Malformed markers are a hard install-time error, not a warning.** Unclosed,
 unmatched (`else-tool`/`end-tool` with no open `if-tool`), mismatched (nested

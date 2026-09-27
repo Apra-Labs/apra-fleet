@@ -24,6 +24,7 @@ Fleet supports Claude, Antigravity (agy), Codex, Copilot, and OpenCode. Members 
 ## Gotchas worth knowing
 
 - **`max_turns` is Claude-only.** On Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
+- **Antigravity members run headless and cannot prompt for approval.** Grant what they need with `compose_permissions`; an ungranted tool call comes back as `execute_prompt` reason `permission_denied` with suggested grants. See [Antigravity (agy) provider](agy-provider.md).
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ## Mixing providers in one fleet

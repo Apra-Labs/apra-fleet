@@ -1,5 +1,5 @@
 /**
- * AGY explicit project binding (docs/compose-permissions-design.md section 8):
+ * AGY explicit project binding (docs/agy-provider.md section 1):
  * `agy --new-project` creates the member's project, its id is stored as
  * Agent.agyProjectId, compose_permissions writes only that project's file, and
  * every dispatch passes `--project <id>`.

@@ -5,7 +5,7 @@
  * "looked right").
  *
  * AGY enforces a project's permissionGrants only for a run that passes
- * `--project <id>` (docs/compose-permissions-design.md section 8). So:
+ * `--project <id>` (docs/agy-provider.md section 1). So:
  *   - grants go into ~/.gemini/config/projects/<agyProjectId>.json and nowhere
  *     else (never the work folder, never default-cli-project.json or another
  *     project's file, never the global settings.json);

@@ -1,6 +1,6 @@
 /**
  * Claude -> agy permission conversion per member OS
- * (docs/compose-permissions-design.md section 8.9).
+ * (docs/agy-provider.md section 3).
  *
  * A prefix grant maps to the bare command plus `command(regex:<cmd> .*)` on
  * every OS: Windows agy needs a full-line match for command lines PowerShell/cmd

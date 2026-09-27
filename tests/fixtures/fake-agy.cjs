@@ -1,6 +1,6 @@
 // Stand-in for `agy --new-project ...` used by tests/agy-project.test.ts.
-// Mimics what agy 1.2.11 was observed to do (docs/compose-permissions-design.md
-// section 8.5): create <home>/.gemini/config/projects/<uuid>.json, write
+// Mimics what agy 1.2.11 was observed to do (docs/agy-provider.md
+// section 1): create <home>/.gemini/config/projects/<uuid>.json, write
 //   project: created project "<name>" (id=<uuid>) at <path>
 // to the --log-file, and print a JSON result on stdout.
 //

@@ -1,5 +1,5 @@
 /**
- * AGY project binding (docs/compose-permissions-design.md section 8).
+ * AGY project binding (docs/agy-provider.md section 1).
  *
  * A headless `agy -p` run only enforces a project's permissionGrants when the
  * run names that project with `--project <id>`; without it every run on the
@@ -9,7 +9,7 @@
  * and every dispatch passes `--project <agyProjectId>`.
  *
  * agy silently falls back to default-cli-project when `<id>.json` is missing
- * or unparseable (live-verified, section 8.5), so the file is probed before
+ * or unparseable (docs/agy-provider.md section 1), so the file is probed before
  * it is relied on and the project is re-provisioned when the probe fails.
  */
 import os from 'node:os';
@@ -45,7 +45,7 @@ const DELETE_MARKER = 'FLEET_AGY_PROJECT_DELETE:';
 
 /** The prompt of the one model turn `agy --new-project` needs. It asks for no
  *  tool use: the id is read from the new project file and agy's own log, never
- *  from the model (the model does not know it -- see section 8.5). */
+ *  from the model (the model does not know it -- see docs/agy-provider.md section 1). */
 export const AGY_NEW_PROJECT_PROMPT = 'Reply with only the word OK. Do not use any tools.';
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -164,8 +164,7 @@ function extractMarkedJson(stdout: string, marker: string): any | undefined {
 /**
  * Member-side script for remove_member's best-effort cleanup: deletes the
  * member's own `<projectId>.json` plus, if present, the legacy
- * `fleet-<memberId>.json` from an earlier design (docs/compose-permissions-
- * design.md section 8.4), from ~/.gemini/config/projects only. A missing
+ * `fleet-<memberId>.json` from an earlier design (older fleet versions), from ~/.gemini/config/projects only. A missing
  * target is not an error (fs.rm's force:true); any other failure (e.g.
  * permission denied) is reported back per target so the caller can decide
  * whether it is warning-worthy.

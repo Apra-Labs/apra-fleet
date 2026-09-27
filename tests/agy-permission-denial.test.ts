@@ -1,5 +1,5 @@
 /**
- * AGY permission denials (docs/compose-permissions-design.md section 8.7).
+ * AGY permission denials (docs/agy-provider.md section 4).
  *
  * Recorded on fleet-agy-local (Windows, gitbash, agy 1.2.11): fleet's agy
  * command line with --project bound to a project granting only command(git),

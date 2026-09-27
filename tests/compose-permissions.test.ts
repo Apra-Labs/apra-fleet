@@ -386,7 +386,7 @@ describe('composePermissions -- Claude proactive', () => {
 describe('composePermissions -- AGY proactive', () => {
   const AGY_PID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
   const AGY_FILE = `/home/testuser/.gemini/config/projects/${AGY_PID}.json`;
-  // What agy --new-project writes (live-verified shape, docs/compose-permissions-design.md section 8).
+  // What agy --new-project writes (live-verified shape, docs/agy-provider.md section 1).
   const AGY_CREATED = JSON.stringify({
     id: AGY_PID,
     name: 'project',

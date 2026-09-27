@@ -160,8 +160,8 @@ export class AgyProvider implements ProviderAdapter {
 
   /** `--project <id>` binds the run to the member's own agy project, whose
    *  permissionGrants compose_permissions writes. Without it agy runs under the
-   *  machine-wide default-cli-project (docs/compose-permissions-design.md
-   *  section 8), so a missing id is a hard error, never an omitted flag. */
+   *  machine-wide default-cli-project (docs/agy-provider.md
+   *  section 1), so a missing id is a hard error, never an omitted flag. */
   projectFlag(projectId?: string): string {
     if (!projectId || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(projectId)) {
       throw new Error('agy: refusing to dispatch without a valid agy project id (--project); run compose_permissions to provision one');
@@ -560,7 +560,7 @@ export class AgyProvider implements ProviderAdapter {
     _agentOs?: 'linux' | 'macos' | 'windows',
     _shell?: MemberShell,
   ): Promise<EnsureWorkspaceTrustedResult> {
-    // Live-verified (docs/compose-permissions-design.md section 8.5 q6): a
+    // Live-verified (docs/agy-provider.md section 5): a
     // headless run with --project enforces the project's grants in a folder
     // fleet never seeded into trustedWorkspaces, so there is nothing to seed.
     return { seeded: false, detail: 'agy: no workspace trust needed -- grants bind via --project' };
@@ -570,7 +570,7 @@ export class AgyProvider implements ProviderAdapter {
 // --- Permission denials -----------------------------------------------------
 //
 // A headless agy run that needs a grant it does not have exits 0 and reports
-// the refusal in three places (docs/compose-permissions-design.md section 8.7):
+// the refusal in three places (docs/agy-provider.md section 4):
 //   1. the --output-format json result: "denied_actions":[{"action":"command",...}]
 //      (with "status":"SUCCESS" and usually "response":"");
 //   2. stderr: a tool required the "command" permission that headless mode
@@ -598,7 +598,7 @@ const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
 /** The compose_permissions grants that allow one denied call, primary first.
  *  The prefix grant Bash(<first word>:*) composes to command(<word>) plus
  *  command(regex:<word> .*) on every OS, and the regex matches the full raw
- *  line, including a $(...) argument (section 8.9), so it comes first and the
+ *  line, including a $(...) argument (docs/agy-provider.md section 3), so it comes first and the
  *  exact command follows as the narrow option. Linux/macOS agy reports a shell
  *  command it refuses as `unsandboxed "<command line>"` (the JSON result says
  *  `command`), so both actions are handled alike. */
@@ -935,7 +935,7 @@ export function escapeAgyRegex(s: string): string {
  *  split into words: on Windows that excludes most lines (PowerShell/cmd), and
  *  on Linux/macOS a line with command substitution, backticks, brace expansion
  *  or fd redirections disables prefix matching. A `regex:` target is matched
- *  against the full raw line (docs/compose-permissions-design.md section 8.9),
+ *  against the full raw line (docs/agy-provider.md section 3),
  *  so a prefix grant becomes the bare command plus a regex for any arguments.
  *  A command deny rule must be built here too, so it matches full lines. */
 export function agyCommandRules(cmd: string): string[] {

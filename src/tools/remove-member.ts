@@ -120,7 +120,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
   // Best-effort: delete the member's agy project file (and a legacy
   // fleet-<id>.json, if present) so its permission grants don't linger on
-  // its machine (docs/compose-permissions-design.md section 8). Skipped
+  // its machine (docs/agy-provider.md section 1). Skipped
   // entirely when another registered member still shares the id -- deleting
   // it would strip that other member's grants too.
   if (agent.llmProvider === 'agy' && agent.agyProjectId) {
