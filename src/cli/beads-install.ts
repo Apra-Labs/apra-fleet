@@ -259,11 +259,20 @@ export async function verifyBeads(
   beadsPath: string,
   deps: BeadsVerifyDeps = realVerifyDeps,
 ): Promise<string> {
-  // shell:true on Windows mirrors the convention in dolt-install.ts verifyDolt.
+  // NO `shell` flag, on any platform -- the structurally identical sibling of
+  // verifyDolt()'s version probe, fixed with it in apra-fleet-i9ag.12.5 (see
+  // dolt-install.ts for the full mechanism). This copy previously carried
+  // `shell: process.platform === 'win32'` with a comment calling it "the
+  // convention in dolt-install.ts verifyDolt", so fixing only that one would
+  // have left this one broken while deleting the convention it cited.
+  //
+  // It matters MORE here than for dolt: a beads verify failure is FATAL (the
+  // install exits non-zero), so on a Windows profile containing a space --
+  // 'C:\Users\First Last\.apra-fleet\bin\bd.exe' -- shell:true made the probe
+  // fail and took the whole install down, rather than merely warning.
   const versionOut = deps.execFileSync(beadsPath, ['--version'], {
     stdio: 'pipe',
     encoding: 'utf-8',
-    shell: process.platform === 'win32',
   }) as string;
 
   const text = (versionOut ?? '').toString();

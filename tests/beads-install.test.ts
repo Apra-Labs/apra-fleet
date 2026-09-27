@@ -465,6 +465,45 @@ describe('verifyBeads (apra-fleet-i9ag.13.3)', () => {
     expect(execFileSync.mock.calls[0][1]).toEqual(['--version']);
   });
 
+  // apra-fleet-i9ag.12.5 -- this probe used to pass
+  // `shell: process.platform === 'win32'`. With shell:true Node joins file+args
+  // into ONE UNQUOTED command string, so a bd.exe under a Windows profile
+  // containing a space ('C:\Users\First Last\.apra-fleet\bin\bd.exe') is parsed
+  // as the command 'C:\Users\First' and the probe fails -- and because a beads
+  // verify failure is FATAL, it took the whole install down.
+  it('passes NO shell flag, so a path containing a space cannot be re-split', async () => {
+    const execFileSync = vi.fn(() => 'bd version 1.3.0 (f45b249ce)\n');
+    await verifyBeads('/some bin dir/bd', verifyDeps(execFileSync));
+
+    const opts = execFileSync.mock.calls[0][2] as Record<string, unknown>;
+    // Asserted as an ABSENT/falsy key rather than via objectContaining, which
+    // would happily ignore an extra shell:true.
+    expect('shell' in opts ? opts.shell : undefined).toBeUndefined();
+    expect(opts).toEqual({ stdio: 'pipe', encoding: 'utf-8' });
+  });
+
+  it('really verifies a binary whose absolute path contains a space (real execFileSync)', async () => {
+    // The end-to-end form of the assertion above: the REAL execFileSync against
+    // a REAL executable in a directory with a space in its name. This fails if
+    // the shell flag is ever reintroduced, on any platform.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beads verify space-'));
+    try {
+      const isWin = process.platform === 'win32';
+      const binPath = path.join(dir, isWin ? 'bd.cmd' : 'bd');
+      if (isWin) {
+        fs.writeFileSync(binPath, '@echo bd version 1.3.0 (f45b249ce)\r\n');
+      } else {
+        fs.writeFileSync(binPath, '#!/bin/sh\necho "bd version 1.3.0 (f45b249ce)"\n');
+        fs.chmodSync(binPath, 0o755);
+      }
+      expect(binPath).toContain(' '); // the property under test actually holds
+
+      await expect(verifyBeads(binPath)).resolves.toBe('1.3.0');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('throws on a non-zero exit (execFileSync throwing) rather than reporting a version', async () => {
     await expect(
       verifyBeads('/some/bin/bd', verifyDeps(() => { throw new Error('bd: cannot execute binary file'); })),

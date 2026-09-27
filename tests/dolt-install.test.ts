@@ -295,6 +295,52 @@ describe('verifyDolt (apra-fleet-ire.2)', () => {
     }));
   });
 
+  // apra-fleet-i9ag.12.5 -- the version probe used to pass
+  // `shell: process.platform === 'win32'`. With shell:true Node joins file+args
+  // into ONE UNQUOTED command string, so dolt.exe under a Windows profile
+  // containing a space ('C:\Users\First Last\.apra-fleet\bin\dolt.exe') is
+  // parsed as the command 'C:\Users\First' and the probe fails -- reporting a
+  // spurious "Dolt: not available" on an otherwise good install.
+  //
+  // Asserted as an ABSENT/falsy key: the objectContaining assertion above would
+  // happily pass with an extra shell:true, which is why it did not catch this.
+  it('passes NO shell flag to the version probe, so a path with a space cannot be re-split', async () => {
+    const deps = fakeVerifyDeps();
+
+    await verifyDolt('/fake path/dolt', {}, deps);
+
+    const opts = (deps.execFileSync as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2] as Record<string, unknown>;
+    expect('shell' in opts ? opts.shell : undefined).toBeUndefined();
+    expect(opts).toEqual({ stdio: 'pipe', encoding: 'utf-8' });
+  });
+
+  it('really probes a binary whose absolute path contains a space (real execFileSync)', async () => {
+    // End-to-end form: the REAL execFileSync against a REAL executable in a
+    // directory whose name contains a space. Only the version probe uses the
+    // real binary; the sql-server smoke test keeps its injected fakes, since
+    // this test is about the probe's invocation, not about running dolt.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dolt verify space-'));
+    try {
+      const isWin = process.platform === 'win32';
+      const binPath = path.join(dir, isWin ? 'dolt.cmd' : 'dolt');
+      if (isWin) {
+        fs.writeFileSync(binPath, '@echo dolt version 2.2.0\r\n');
+      } else {
+        fs.writeFileSync(binPath, '#!/bin/sh\necho "dolt version 2.2.0"\n');
+        fs.chmodSync(binPath, 0o755);
+      }
+      expect(binPath).toContain(' ');
+
+      const { execFileSync: realExecFileSync } = await import('node:child_process');
+      const deps = fakeVerifyDeps({ execFileSync: realExecFileSync });
+
+      const result = await verifyDolt(binPath, {}, deps);
+      expect(result.version).toBe('2.2.0');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('parses the version string out of noisier `dolt version` output', async () => {
     const deps = fakeVerifyDeps({
       execFileSync: vi.fn().mockReturnValue('dolt version 2.2.0\ngo1.22\n') as any,

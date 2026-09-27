@@ -246,10 +246,10 @@ const realVerifyDeps: DoltVerifyDeps = {
 
 /**
  * Proves a downloaded dolt binary is actually usable:
- *  1. Runs `dolt version` (execFileSync, shell:true on Windows per the
- *     Beads-step convention at install.ts:1034) and parses the version
- *     string. Throws if this fails -- a broken/missing binary should fail
- *     the install outright.
+ *  1. Runs `dolt version` (execFileSync, shell-LESS on every platform -- see
+ *     the version-probe call below for why) and parses the version string.
+ *     Throws if this fails -- a broken/missing binary should fail the install
+ *     outright.
  *  2. Smoke-tests a real `dolt sql-server` against a throwaway scratch data
  *     dir on a configurable port (default 3306; falls back to an ephemeral
  *     free port if the requested one is already in use), waits (bounded,
@@ -265,10 +265,22 @@ export async function verifyDolt(
   opts: VerifyDoltOptions = {},
   deps: DoltVerifyDeps = realVerifyDeps,
 ): Promise<DoltVerifyResult> {
+  // NO `shell` flag, on any platform (apra-fleet-i9ag.12.5). It used to be
+  // `shell: process.platform === 'win32'`, which BREAKS whenever the install
+  // path contains a space: with shell:true Node joins the file and args into a
+  // single UNQUOTED command string for cmd.exe/sh, so `dolt version` under
+  // 'C:\Users\First Last\.apra-fleet\bin\dolt.exe' is parsed as the command
+  // 'C:\Users\First' with the rest as arguments and the probe fails. doltPath is
+  // always BIN_DIR/dolt[.exe] (BIN_DIR = os.homedir()/.apra-fleet/bin), and a
+  // space in a Windows user profile is entirely ordinary.
+  //
+  // shell:true was never needed here: it is only required to run a .cmd/.bat
+  // wrapper (e.g. npm's), and this is an absolute path to a real executable.
+  // Dropping it also keeps the invocation argv-array and shell-less, so no
+  // argument can be reinterpreted as shell syntax.
   const versionOut = deps.execFileSync(doltPath, ['version'], {
     stdio: 'pipe',
     encoding: 'utf-8',
-    shell: process.platform === 'win32',
   }) as string;
   const versionMatch = versionOut.match(/(\d+\.\d+\.\d+\S*)/);
   const version = versionMatch ? versionMatch[1] : versionOut.trim();
