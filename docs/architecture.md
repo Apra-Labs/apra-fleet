@@ -439,9 +439,11 @@ overriding `process.env.HOME` alone. Node's `os.homedir()` on `win32` reads
 `HOME`-only override is a silent no-op on Windows, and the test goes on to
 read/write the real developer's or CI runner's actual fleet home, only
 failing when it happens to assert against the on-disk path. The correct
-approach is a single shared helper (a `tests/helpers/isolated-home.mjs`/`.ts`
-pair, since both node's built-in test runner and the root test runner need
-one) that creates a temp directory, sets `HOME`, `USERPROFILE`,
+approach is a single shared helper (`tests/helpers/isolated-home.mjs`, a
+plain `.mjs` module imported directly by vitest `.ts` tests; a `node --test`
+package instead loads it once up front via `--import` so it applies before
+any test file's own top-level code runs) that creates a temp directory, sets
+`HOME`, `USERPROFILE`,
 `HOMEDRIVE`/`HOMEPATH`, and any project-specific data-dir override env vars
 (`APRA_FLEET_DATA_DIR`, `FLEET_SE_DATA_DIR`) together, resolves symlinks in
 the temp path up front, restores the previous values afterward, and asserts

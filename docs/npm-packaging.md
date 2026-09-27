@@ -353,8 +353,12 @@ new source directory is added under any shipped `packages/*` subtree, it must
 also be added to `files` manually or it will be silently excluded from the
 tarball.
 
-Validated tarball size (post apra-fleet-fyc.2, measured via `npm pack --dry-run`
-on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
+Tarball size is enforced by `scripts/check-pack-size.mjs` against a fixed
+threshold (10 MB by default), run against a live `npm pack --dry-run`; do not
+treat any single measurement recorded in a sprint log as current -- adding
+the shell dist to `files` measurably raised the packed size, and any future
+`files` addition will again, so re-run the check rather than trusting a
+stale number here.
 
 ### 7.1a Console shell UI: npm package and SEA binary both serve `/ui`
 
@@ -382,25 +386,30 @@ invocation of `gen-sea-config.mjs` outside those chains is the one place a
 missing shell dist is only a warning, since that path is also used for
 non-release dev iteration where the shell may not be built yet.
 
-**The SEA binary staleness guard compares mtimes, not content, and a
-same-content rebuild is enough to trip it.** `tests/sea-http-verify.test.ts`'s
-SEA-binary smoke test refuses to run against a `dist/` binary whose
-embedded-assets timestamp predates the current tree's SEA-relevant inputs
-(the shell dist among them) -- this is deliberate: an actually-stale binary
-must fail loudly and name the reason, never silently pass a smoke test
-against assets that no longer match the source tree. The known limitation is
-that the comparison is time-based: rebuilding the shell UI with byte-identical
-output still advances its mtime, so the guard trips even when nothing that
-would change the binary's served content actually changed. Do not "fix" this
-by weakening or removing the check -- its job of catching a genuinely stale
-binary (the common case: a UI change landed and nobody rebuilt the SEA
-binary) is real and still needed. The available generic fix is to key the
-comparison off shell-dist content (a hash or the binary's own embedded
-manifest) instead of filesystem mtime; until that lands, any workflow that
-deploys a commit and then runs the bounded test suite against it (sandbox
-deploy, CI, a local rebuild-then-test loop) must rebuild the SEA binary for
-that commit first, or expect this one test file to fail on a stale local
-artifact that is otherwise unrelated to the change under test.
+**The SEA binary staleness guard is a hybrid check: git-tracked inputs
+diffed against the binary's own build hash, plus an mtime proxy for the one
+gitignored input a git diff can never see.** `tests/sea-http-verify.test.ts`'s
+SEA-binary smoke test parses the short git hash `build-sea.mjs` bakes into
+the binary's own `--version` output, then diffs the tracked SEA-relevant
+paths (`scripts/gen-sea-config.mjs`, `scripts/build-sea.mjs`,
+`packages/apra-fleet-shell-ui/src`, `packages/apra-fleet-shell-ui/package.json`,
+`src`) between that hash and HEAD, including anything currently uncommitted.
+Because `packages/apra-fleet-shell-ui/dist` is gitignored, a git diff can
+never see a change there, so the check separately falls back to comparing
+that dist's `index.html` mtime against the binary's own mtime as a proxy for
+"was the shell rebuilt after the binary." A binary whose build hash cannot be
+resolved to a real commit (shallow clone, rewritten history, or a dev/npm
+build with no git info) is treated as staleness-unknown, which counts as
+stale rather than being assumed fresh. This is deliberate: an actually-stale
+binary must fail loudly and name the reason, never silently pass a smoke test
+against assets that no longer match the source tree -- do not weaken or
+remove the check, because a `packages/apra-fleet-ui-kit` change is only
+caught through it. The known limitation is specifically in the mtime-proxy
+half: rebuilding the shell UI with byte-identical output still advances the
+dist's mtime, so the guard can trip even when nothing that would change the
+binary's served content actually changed. The generic fix is to key that
+half of the check off shell-dist content (a hash, or the binary's own
+embedded manifest) instead of filesystem mtime.
 
 ### 7.2 Other package.json fields
 
@@ -411,7 +420,7 @@ artifact that is otherwise unrelated to the change under test.
 | `bin` | `{ "apra-fleet": "dist/index.js" }` | npm sets the executable bit; the fleet-sprint engine is reached via `apra-fleet workflow fleet-sprint`, not a separate bin entry |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `npm run dist-pm && npm run build` | Copies the apra-pm package content into `dist/`, then runs tsc -- no bundling step remains |
+| `prepublishOnly` | `npm run dist-pm && npm run build && npm run build:ui:checked` | Copies the apra-pm package content into `dist/`, runs tsc, then builds the console shell and fails loudly if its dist is missing (see 7.1a) -- no bundling step remains |
 | `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`) |
 
 ---
