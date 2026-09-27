@@ -163,3 +163,209 @@ export function createRegistration(deps = {}) {
 
     return { register, unregister };
 }
+
+/** Default capped-exponential schedule for the OUTER convergence loop -- the
+ *  one that waits for fleet.key and a reachable HTTP server to EXIST at all.
+ *  Starts tighter than DEFAULT_BACKOFF (a fresh machine usually converges in
+ *  seconds, and the acceptance budget is 60s) but caps lower too, so a machine
+ *  that never converges logs roughly twice a minute instead of spamming. */
+export const DEFAULT_CONVERGE_BACKOFF = Object.freeze({
+    initialMs: 1000,
+    maxMs: 15000,
+    factor: 2,
+});
+
+/**
+ * Keep re-resolving the preconditions for workflow-package registration until
+ * they are all satisfied, then register. (apra-fleet-i9ag.12.2)
+ *
+ * WHY THIS EXISTS. bin/serve.mjs used to have THREE one-shot `else` branches
+ * that each logged "skipping workflow-package registration" and gave up for the
+ * life of the process:
+ *   (a) the service token did not come from fleet.key;
+ *   (b) resolving the apra-fleet server connection threw;
+ *   (c) the connection resolved, but not to a usable http url.
+ * On a fresh machine those are not error states, they are STAGES: the machine
+ * passes through (a) then (c) and then becomes registerable. Skipping once left
+ * Sprints permanently missing from the console until someone restarted the
+ * supervisor by hand.
+ *
+ * WHY EVERYTHING IS RE-RESOLVED EACH PASS, not re-checked:
+ *   - The token must be RE-RESOLVED. readLocalToken() (apra-fleet-client
+ *     auth/local-token.mjs) never mints fleet.key -- its createIfMissing only
+ *     mints the private/token fallback -- so an absent fleet.key pins the
+ *     resolved source to 'private-token' in the value captured at startup.
+ *     Re-reading that cached value can never observe the key appearing.
+ *   - The CONNECTION must be re-resolved too, not just the token: serve.mjs
+ *     only resolves the connection at all when the token source is already
+ *     'fleet-key', so on the (a) path there is no connection value to reuse.
+ *   - consoleOrigin must be RECOMPUTED from each fresh resolution. It is null
+ *     whenever the connection is not mode 'http' with a non-empty url, which is
+ *     exactly the fresh-machine case: with APRA_FLEET_TRANSPORT unset and no
+ *     server running, resolveFleetServerConnection() does NOT throw -- it falls
+ *     through to its stdio self-spawn fallback and returns { mode: 'stdio' }.
+ *     Reusing a startup-captured null would pin the loop to an unusable
+ *     serverUrl forever.
+ *
+ * A registration is CONSTRUCTED fresh once all three are available, never
+ * reused across passes: createRegistration() takes the token as a fixed string
+ * at construction (and throws TypeError on an empty one), so an instance built
+ * during an earlier pass would hold a stale credential.
+ *
+ * Registration is only ever attempted with a 'fleet-key'-sourced token. The
+ * apra-fleet server's console guard (src/console/server.ts requiresConsoleGuard)
+ * checks the bearer against the raw fleet key and does not accept the
+ * private/token fallback, so attempting with that credential could never
+ * succeed. No token value is ever logged -- only its SOURCE.
+ *
+ * @param {{
+ *   resolveToken: () => { token?: string, source?: string } | null,
+ *   resolveConnection: () => Promise<{ mode?: string, url?: string } | null>,
+ *   buildManifest: () => { id: string, [key: string]: unknown },
+ *   shutdownRequested?: Promise<unknown>,
+ *   createRegistrationImpl?: typeof createRegistration,
+ *   registrationDeps?: object,
+ *   logger?: { log?: Function, warn?: Function, error?: Function },
+ *   backoff?: { initialMs: number, maxMs: number, factor: number },
+ *   sleepImpl?: (ms: number) => Promise<void>,
+ * }} deps
+ * @returns {{
+ *   done: Promise<{ registered: boolean, reason?: string }>,
+ *   currentRegistration: () => { register: Function, unregister: Function } | null,
+ *   stop: () => void,
+ * }}
+ */
+export function startRegistrationConvergence(deps = {}) {
+    const {
+        resolveToken,
+        resolveConnection,
+        buildManifest,
+        shutdownRequested,
+        registrationDeps = {},
+    } = deps;
+    const createRegistrationImpl = deps.createRegistrationImpl ?? createRegistration;
+    const logger = deps.logger ?? console;
+    const log = (...a) => logger.log?.(...a);
+    const warn = (...a) => (logger.warn ?? logger.log)?.(...a);
+    const backoff = { ...DEFAULT_CONVERGE_BACKOFF, ...(deps.backoff ?? {}) };
+    const sleep = deps.sleepImpl ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
+
+    let stopped = false;
+    let registration = null;
+
+    /** Set once shutdown is observed, so a pending backoff sleep can never hold
+     *  shutdown open: the loop races sleep() against shutdownRequested. */
+    let shutdownSeen = false;
+    if (shutdownRequested && typeof shutdownRequested.then === 'function') {
+        shutdownRequested.then(() => { shutdownSeen = true; }, () => { shutdownSeen = true; });
+    }
+
+    function stop() {
+        stopped = true;
+    }
+
+    /**
+     * One convergence pass. Returns either a ready-to-use registration input or
+     * the human-readable reason the machine is not registerable YET.
+     */
+    async function resolveOnce() {
+        const resolved = resolveToken();
+        const source = resolved && typeof resolved.source === 'string' ? resolved.source : 'none';
+        const token = resolved && typeof resolved.token === 'string' ? resolved.token : '';
+        if (source !== 'fleet-key' || token === '') {
+            // Former skip branch (a).
+            return {
+                waiting: `fleet.key is not available yet (service token source '${source}') -- `
+                    + 'it is minted by "apra-fleet install" and by the apra-fleet server itself',
+            };
+        }
+
+        let connection = null;
+        try {
+            connection = await resolveConnection();
+        } catch (err) {
+            // Former skip branch (b).
+            return {
+                waiting: 'could not resolve the apra-fleet server connection: '
+                    + `${err && err.message ? err.message : err}`,
+            };
+        }
+
+        const url = connection && typeof connection.url === 'string' ? connection.url : '';
+        if (!connection || connection.mode !== 'http' || url === '') {
+            // Former skip branch (c) -- the DEFAULT fresh-machine case, because
+            // with APRA_FLEET_TRANSPORT unset resolveFleetServerConnection()
+            // returns { mode: 'stdio' } rather than throwing.
+            return {
+                waiting: 'no apra-fleet HTTP server URL yet (connection mode '
+                    + `'${connection && connection.mode ? connection.mode : 'unresolved'}') -- `
+                    + 'waiting for the apra-fleet server to be up and reachable over HTTP',
+            };
+        }
+
+        // `url` is the MCP endpoint ('http://127.0.0.1:<port>/mcp'); the
+        // registry REST surface hangs off the server's ORIGIN. POSTing the
+        // registry path onto the MCP endpoint 404s, and register() treats 404
+        // as retryable, so it would retry forever (apra-fleet-i9ag.3.4).
+        return { consoleOrigin: new URL(url).origin, token };
+    }
+
+    async function run() {
+        let delay = backoff.initialMs;
+        let lastWaiting = null;
+        while (!stopped && !shutdownSeen) {
+            const pass = await resolveOnce();
+            if (stopped || shutdownSeen) break;
+
+            if (pass.waiting === undefined) {
+                log(
+                    '[registration] preconditions satisfied (fleet.key present, apra-fleet server at '
+                    + `${pass.consoleOrigin}); registering workflow package now.`,
+                );
+                registration = createRegistrationImpl({
+                    ...registrationDeps,
+                    serverUrl: pass.consoleOrigin,
+                    token: pass.token,
+                    manifest: buildManifest(),
+                });
+                // register() owns its OWN capped-backoff retry for an
+                // unreachable/5xx server and never rejects; it returns once
+                // registered or permanently refused (400/409). Either way this
+                // outer convergence loop is finished.
+                await registration.register();
+                return { registered: true };
+            }
+
+            // Say RETRYING, never "skipping", and say what is being waited for.
+            // Repeat the reason only when it CHANGES; otherwise just note the
+            // next delay, so a machine that never converges does not spam an
+            // identical paragraph at every interval.
+            if (pass.waiting !== lastWaiting) {
+                warn(
+                    `[registration] workflow-package registration not possible yet: ${pass.waiting}. `
+                    + `RETRYING in ${delay}ms (this supervisor converges on its own -- no restart needed).`,
+                );
+                lastWaiting = pass.waiting;
+            } else {
+                warn(`[registration] still waiting to register; RETRYING in ${delay}ms.`);
+            }
+
+            // Race the backoff against shutdown so a pending sleep can never
+            // hold shutdown open for the rest of the interval.
+            const waiters = [sleep(delay)];
+            if (shutdownRequested && typeof shutdownRequested.then === 'function') {
+                waiters.push(shutdownRequested);
+            }
+            await Promise.race(waiters);
+            if (stopped || shutdownSeen) break;
+            delay = Math.min(delay * backoff.factor, backoff.maxMs);
+        }
+        return { registered: false, reason: 'stopped before the preconditions were satisfied' };
+    }
+
+    return {
+        done: run(),
+        currentRegistration: () => registration,
+        stop,
+    };
+}
