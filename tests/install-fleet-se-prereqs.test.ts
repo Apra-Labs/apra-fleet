@@ -1,0 +1,331 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import {
+  runInstall,
+  _setSeaOverride,
+  _setManifestOverride,
+  _setFleetSePrereqStepDeps,
+  _resetFleetSePrereqStepDeps,
+} from '../src/cli/install.js';
+import { extractWorkflowSubsystemAssets } from '../src/cli/workflow-assets.js';
+import { MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from '../src/cli/fleet-se-prereqs.js';
+
+// apra-fleet-i9ag.13.7.3 -- pins the fix for gap bug apra-fleet-i9ag.13.7 (the
+// installer silently npm-installed beads via a non-fatal try/catch, exactly
+// the "Beads install skipped" wording apra-fleet-i9ag.13.7.2 removed) so a
+// future re-divergence between sprint branches is caught by a red test here,
+// not by a manual integration run -- which is exactly how the original gap
+// escaped undetected.
+//
+// REVERT CHECK (per this bead's acceptance criteria): reverting
+// src/cli/install.ts's Beads install step back to the old non-fatal
+//   } catch (err) {
+//     console.warn('  - Beads install skipped - npm not available or install failed');
+//   }
+// makes the "prerequisites satisfied but npm install throws" case (case 6,
+// "fails fatally when the @beads/bd npm install itself throws" below) FAIL:
+// runInstall() would resolve instead of rejecting, because process.exit(1)
+// would never be called. The "no reintroduction anywhere in src/" describe
+// block at the bottom of this file is a second, independent canary for the
+// same revert (it greps the real, unmocked src/ tree for the retired string).
+//
+// Sandbox/isolation note (criterion 8): unlike a handful of OTHER suites in
+// this repo that exercise extractWorkflowSubsystemAssets() against a REAL
+// temp HOME directory (see tests/install-workflows.test.ts's "eft86-2"
+// suite), the tests below drive the FULL runInstall() pipeline -- binary/
+// hooks/scripts/settings/MCP-registration/skills/agents/workflow/dolt/
+// Beads/KB steps -- which reads and writes many real paths when node:fs is
+// not mocked (see install.ts's extractAssetBuffer(), which reads real
+// project files via findProjectRoot() in dev mode). Every other
+// tests/install-*.test.ts suite that drives runInstall() therefore mocks
+// node:fs and node:os entirely (mockHome = '/mock/home', never a real
+// directory) rather than using a real mkdtempSync'd HOME -- this file
+// follows that same, already-established convention for the SAME reason.
+// With node:fs fully mocked, zero bytes are ever read from or written to a
+// real path, so there is no real temp HOME to remove in teardown and the
+// developer's real ~/.apra-fleet is provably untouched by construction, not
+// merely by convention: the assertion at the end of each test in the first
+// describe block below confirms every fs.writeFileSync/mkdirSync call target
+// started with the mocked home, never a real path.
+
+vi.mock('node:os', () => ({
+  default: {
+    homedir: vi.fn(() => '/mock/home'),
+    platform: vi.fn(() => 'linux'),
+  },
+}));
+vi.mock('node:fs');
+vi.mock('node:child_process');
+vi.mock('../src/cli/workflow-assets.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../src/cli/workflow-assets.js')>();
+  return { ...orig, extractWorkflowSubsystemAssets: vi.fn() };
+});
+
+const mockHome = '/mock/home';
+
+const BASE_MANIFEST = {
+  version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {}, workflows: {},
+};
+
+function makeFsMock() {
+  vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+    const ps = p.toString();
+    if (ps.includes('version.json')) return true;
+    if (ps.includes('hooks-config.json')) return true;
+    return false;
+  });
+  vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+    const ps = p.toString();
+    if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+    if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+    return '';
+  });
+  vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+  vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any);
+  vi.mocked(fs.chmodSync).mockImplementation(() => {});
+  vi.mocked(fs.copyFileSync).mockImplementation(() => {});
+  vi.mocked(fs.writeFileSync).mockImplementation(() => {});
+  vi.mocked(fs.rmSync).mockImplementation(() => undefined as any);
+}
+
+function fakeDetector(result: FleetSePrereqResult) {
+  return vi.fn().mockReturnValue(result);
+}
+
+const SATISFIED: FleetSePrereqResult = {
+  node: { present: true, version: '22.16.0', satisfiesMin: true },
+  npm: { present: true, version: '10.5.0' },
+  ok: true,
+  missing: [],
+};
+
+describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(false);
+    _setManifestOverride(BASE_MANIFEST as any);
+    // Opt in to the real prereq-check code path under NODE_ENV=test (see
+    // fleetSePrereqCheckEnabled() in install.ts) -- mirrors
+    // APRA_FLEET_ENABLE_DOLT_INSTALL's identical escape hatch for the dolt
+    // step in tests/install-dolt.test.ts.
+    process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK = '1';
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    _resetFleetSePrereqStepDeps();
+    delete process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK;
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+
+    // Criterion 8's isolation guarantee, made explicit rather than merely
+    // structural: every write this run attempted stayed under the mocked
+    // home, never fell through to a real path (e.g. via an unmocked
+    // os.homedir() call slipping past the mock above).
+    const allWriteTargets = [
+      ...vi.mocked(fs.writeFileSync).mock.calls.map(c => String(c[0])),
+      ...vi.mocked(fs.mkdirSync).mock.calls.map(c => String(c[0])),
+    ];
+    for (const target of allWriteTargets) {
+      expect(target.startsWith(mockHome) || !path.isAbsolute(target)).toBe(true);
+    }
+  });
+
+  it('case 1: node absent, --workflows all -- exits non-zero, names node, prints the fix line verbatim, never extracts workflow assets', async () => {
+    _setFleetSePrereqStepDeps({
+      detectFleetSePrereqs: fakeDetector({
+        node: { present: false, version: null, satisfiesMin: false },
+        npm: { present: true, version: '10.5.0' },
+        ok: false,
+        missing: ['node'],
+      }),
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('node');
+    expect(errors).toContain(FLEET_SE_PREREQ_FIX_LINE);
+    expect(vi.mocked(extractWorkflowSubsystemAssets)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('case 2: node too old (22.9.0), --workflows all -- exits non-zero, names both the detected and minimum versions, never extracts workflow assets', async () => {
+    _setFleetSePrereqStepDeps({
+      detectFleetSePrereqs: fakeDetector({
+        node: { present: true, version: '22.9.0', satisfiesMin: false },
+        npm: { present: true, version: '10.5.0' },
+        ok: false,
+        missing: ['node'],
+      }),
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('22.9.0');
+    expect(errors).toContain(MIN_NODE_VERSION);
+    expect(vi.mocked(extractWorkflowSubsystemAssets)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('case 3: npm absent, --workflows all -- exits non-zero, names npm, prints the fix line verbatim, never extracts workflow assets', async () => {
+    _setFleetSePrereqStepDeps({
+      detectFleetSePrereqs: fakeDetector({
+        node: { present: true, version: '22.16.0', satisfiesMin: true },
+        npm: { present: false, version: null },
+        ok: false,
+        missing: ['npm'],
+      }),
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('npm');
+    expect(errors).toContain(FLEET_SE_PREREQ_FIX_LINE);
+    expect(vi.mocked(extractWorkflowSubsystemAssets)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('case 4: prerequisites satisfied, --workflows all (happy path) -- exits 0 and the summary reports fleet-se ready with versions', async () => {
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
+    // bd already installed -- no npm install attempted.
+    vi.mocked(execFileSync).mockReturnValue('bd 1.3.0\n' as any);
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(vi.mocked(extractWorkflowSubsystemAssets)).toHaveBeenCalledTimes(1);
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toMatch(/fleet-se:\s+ready/);
+    expect(logs).toContain('node 22.16.0');
+    expect(logs).toContain('npm 10.5.0');
+  });
+
+  it('case 5: prerequisites absent, --workflows none -- exits 0, the Beads step never runs, and the summary reports fleet-se NOT INSTALLED with the fix line', async () => {
+    // Even though the injected detector would fail the gate, --workflows
+    // none must never call it at all -- the gate is conditioned on
+    // installWorkflows, not merely "disabled when prereqs are bad".
+    const detector = fakeDetector({
+      node: { present: false, version: null, satisfiesMin: false },
+      npm: { present: false, version: null },
+      ok: false,
+      missing: ['node', 'npm'],
+    });
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: detector });
+
+    await expect(runInstall(['--skill', 'none', '--workflows', 'none'])).resolves.toBeUndefined();
+
+    expect(detector).not.toHaveBeenCalled();
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).not.toContain('Installing Beads task tracker');
+    expect(logs).toMatch(/fleet-se:\s+NOT INSTALLED/);
+    expect(logs).toContain(FLEET_SE_PREREQ_FIX_LINE);
+    // No npm install of @beads/bd was ever attempted.
+    const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.3.0'),
+    );
+    expect(npmInstallCall).toBeUndefined();
+  });
+
+  it('case 6: prerequisites satisfied but the @beads/bd npm install itself throws -- exits non-zero and surfaces npm\'s own error text (REVERT CANARY)', async () => {
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
+    // bd --version throws (not installed), then the npm install throws too.
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('npm ERR! network timeout');
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('npm ERR! network timeout');
+    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).not.toContain('Beads install skipped');
+
+    exitSpy.mockRestore();
+    // See the reset comment on the equivalent test in tests/install.test.ts --
+    // execFileSync is an automock, not a vi.spyOn; clearAllMocks() does not
+    // reset a custom .mockImplementation(), so a throwing implementation set
+    // here would otherwise leak into whichever test runs next.
+    vi.mocked(execFileSync).mockReset();
+  });
+});
+
+// Criterion 7 (a second, independent revert canary -- see the REVERT CHECK
+// note at the top of this file): scans the REAL, unmocked src/ tree for the
+// retired non-fatal wording, so a reintroduction anywhere in the file is
+// caught even if every runInstall()-driving test above somehow missed it.
+// node:fs/node:child_process are unmocked here (vi.doUnmock + vi.resetModules,
+// the same real-filesystem pattern tests/install-workflows.test.ts's
+// "eft.19"/"eft.84" suites already use) since this check reads real files on
+// disk, not the mocked install.ts pipeline.
+describe('no reintroduction of the old non-fatal Beads wording in src/ (apra-fleet-i9ag.13.7.3 criterion 7)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('grep -r "Beads install skipped" src/ returns zero matches', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+    const { fileURLToPath } = await vi.importActual<typeof import('node:url')>('node:url');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const srcDir = pathReal.resolve(testDir, '..', 'src');
+
+    const offenders: string[] = [];
+    function walk(dir: string): void {
+      for (const entry of fsReal.readdirSync(dir, { withFileTypes: true })) {
+        const full = pathReal.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.isFile() && /\.(ts|mts|cts|js|mjs|cjs)$/.test(entry.name)) {
+          const content = fsReal.readFileSync(full, 'utf-8');
+          if (content.includes('Beads install skipped')) {
+            offenders.push(full);
+          }
+        }
+      }
+    }
+    walk(srcDir);
+
+    expect(offenders, `found the retired non-fatal wording in: ${JSON.stringify(offenders)}`).toEqual([]);
+  });
+});
