@@ -22,6 +22,9 @@
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/5"
     },
     {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/6"
+    },
+    {
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/admission/codes/0"
     },
     {

@@ -7,7 +7,7 @@ const L2_CONTENT_CAP = 3200;
 export const kbQuerySchema = z.object({
   ...kbScopeFields,
   repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. Required when the call is handled by the fleet server (MCP) unless repo_remote_url is given: a call with neither is refused with reason repo_scope_required -- the server never resolves a project from its own working directory. Only the in-shell CLI falls back to the current directory.'),
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),

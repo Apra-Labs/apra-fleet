@@ -10,6 +10,9 @@
   },
   "errors": [
     {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/3"
+    },
+    {
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/0"
     }
   ]

@@ -29,6 +29,10 @@ Your dispatch prompt must supply:
 nothing to reconcile -- report zero counts and stop; do not go looking for pairs
 yourself via `kb_query`/`kb_list`.
 
+**Repo scope**: pass `repo_path` set to that merged worktree path on EVERY `kb_*` call
+below, including any `kb_list` lookup. The fleet server refuses a `kb_*` call that names
+no repo rather than guessing one.
+
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 <!-- if-tool: ToolSearch -->
@@ -67,7 +71,7 @@ not re-check these, but you DO respect the directive rule below.
 For each `{ originalId, challengerId }` in your input array:
 
 ```
-kb_query({ flagged_only: true })
+kb_query({ repo_path: "<merged worktree path>", flagged_only: true })
 ```
 
 or direct `kb_list` lookups, to get both entries' full content, symbols, source_files,
@@ -99,6 +103,7 @@ file + symbol you read that settled it.
 
 ```
 kb_resolve_contradiction({
+  repo_path: "<merged worktree path>",
   winnerId: "<id the code supports>",
   loserId: "<id the code contradicts>",
   evidence: "<file path>:<symbol> -- <one-line reason the code settles this>",
@@ -116,6 +121,7 @@ tier: **CONFIRMED > INFERRED > UNVERIFIED**. The higher-tier side wins.
 
 ```
 kb_resolve_contradiction({
+  repo_path: "<merged worktree path>",
   winnerId: "<higher-tier id>",
   loserId: "<lower-tier id>",
   evidence: "trust-tier tiebreak: code silent on this claim; <tier> outranks <tier>",
@@ -158,7 +164,7 @@ is expected and correct.
 After processing every pair in your input array:
 
 ```
-kb_export()
+kb_export({ repo_path: "<merged worktree path>" })
 ```
 
 This writes every live `CONFIRMED` project entry (which now includes every winner your

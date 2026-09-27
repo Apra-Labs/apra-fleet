@@ -17,7 +17,7 @@ import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js
 export const kbStatsSchema = z.object({
   ...kbScopeFields,
   repo: z.string().optional()
-    .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to repo_path, then to the validated session working directory (same validation as kb_export/kb_session_prime); if none validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this.'),
+    .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to repo_path, then to the validated session working directory (same validation as kb_export/kb_session_prime); if none validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI.'),
   // apra-fleet-src: every other kb_* tool (kb_list, kb_capture, kb_promote,
   // kb_session_prime, kb_export) names this input `repo_path`. kb_stats alone
   // took `repo`, and zod strips unknown keys silently -- so calling it the way

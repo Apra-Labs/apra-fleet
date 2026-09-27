@@ -53,16 +53,21 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/3",
-      "title": "The resolved bible file does not exist.",
+      "title": "A kb_* call handled by the fleet server (MCP) names no repo scope: no repo_path/repo, and no repo_remote_url where the tool accepts one. The server serves every project and refuses rather than resolving a project KB from its own working directory.",
       "status": 400
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/4",
-      "title": "The bible file exists but is not valid JSON.",
+      "title": "The resolved bible file does not exist.",
       "status": 400
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/5",
+      "title": "The bible file exists but is not valid JSON.",
+      "status": 400
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/6",
       "title": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
       "status": 400
     },

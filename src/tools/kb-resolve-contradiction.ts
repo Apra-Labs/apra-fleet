@@ -26,7 +26,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 export const kbResolveContradictionSchema = z.object({
   ...kbScopeFields,
   repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. Required when the call is handled by the fleet server (MCP) unless repo_remote_url is given: a call with neither is refused with reason repo_scope_required -- the server never resolves a project from its own working directory. Only the in-shell CLI falls back to the current directory.'),
   winnerId: z.string().min(1).describe('ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear.'),
   loserId: z.string().min(1).describe('ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted.'),
   evidence: z.string().min(1).describe('Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim "hash-basis match on merged worktree" when called by kb_reconcile_prefilter.'),

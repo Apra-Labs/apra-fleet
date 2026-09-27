@@ -17,7 +17,7 @@ CLI-only resolutions, never `kb_promote`.
 
 ### Step 1: Fetch flagged entries
 
-Call `kb_query(flagged_only=true)`.
+Call `kb_query(repo_path=<repo root>, flagged_only=true)`. Pass the same `repo_path` (the root of the repo whose KB is being reviewed) on every `kb_*` call in this skill, including the `kb_promote`/`kb_capture` calls in Step 4 -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 
 - If the response says "No flagged contradictions found -- KB is clean.", report that to the user and stop.
 - Otherwise, collect all returned entries.

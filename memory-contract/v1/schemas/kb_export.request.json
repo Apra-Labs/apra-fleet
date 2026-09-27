@@ -12,7 +12,7 @@
         },
         "repo_path": {
           "type": "string",
-          "description": "Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error."
+          "description": "Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI."
         },
         "scope": {
           "type": "string",

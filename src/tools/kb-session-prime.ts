@@ -23,7 +23,7 @@ export const kbSessionPrimeSchema = z.object({
   // fail because the repo root could not be validated). There is no bare
   // process.cwd() fallback: the fallback tier is validated the same way
   // explicit input is.
-  repo_path: z.string().optional().describe('Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently.'),
+  repo_path: z.string().optional().describe('Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI.'),
 });
 
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;

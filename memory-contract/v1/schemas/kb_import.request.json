@@ -19,7 +19,7 @@
         },
         "repo": {
           "type": "string",
-          "description": "Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory."
+          "description": "Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI."
         },
         "repo_path": {
           "type": "string",

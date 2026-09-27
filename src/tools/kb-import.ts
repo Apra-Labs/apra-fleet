@@ -38,7 +38,7 @@ export const kbImportSchema = z.object({
   path: z.string().optional()
     .describe('Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
   repo: z.string().optional()
-    .describe('Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory.'),
+    .describe('Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI.'),
   // KB audit 2026-08-11: the apra-fleet-src trap again. Every other kb_* tool
   // names this input `repo_path`; kb_import alone took `repo`, and zod strips
   // unknown keys silently -- so calling it the way every sibling is called did

@@ -53,6 +53,7 @@ orchestrator that planning has no input to work from -- do not create speculativ
    - **Non-obvious constraints** in KB entries (e.g. "init() must be called before
      query", "jitter applied after maxDelayMs cap") -> copy them verbatim into the
      relevant task description so the doer does not rediscover them.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. Quantify the assignment: call `mcp__apra-fleet__kb_stats` with the key symbols the
    sprint's tasks will actually touch and use the returned `coverage.fraction` to
    sharpen the qualitative judgment above into a number (see "Model assignment rules"

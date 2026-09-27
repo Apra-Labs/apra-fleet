@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -91,7 +91,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -151,7 +151,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
-      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -181,7 +181,7 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Explicitly never bumps use_count/last_accessed.",
-      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED"],
       "see_also": ["Query modes"]
     },
@@ -233,7 +233,7 @@
       "tools_note": "kb_stats calls it for bible-drift comparison; kb_export calls it (confidence: 'CONFIRMED') to select entries to export.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export route, thrown before this member is reached.",
       "see_also": []
     },
@@ -250,7 +250,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },
@@ -269,7 +269,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": true,
       "idempotent_note": "Idempotent for a fixed worktree state.",
-      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -286,7 +286,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "A second call on the same pair REFUSES (E-RESOLVE-ALREADY-SUPERSEDED) because the loser is already superseded.",
-      "error_codes": ["E-RESOLVE-MISSING-ENTRY", "E-RESOLVE-ALREADY-SUPERSEDED", "E-RESOLVE-NOT-A-PAIR", "E-RESOLVE-DIRECTIVE-PAIR", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-RESOLVE-MISSING-ENTRY", "E-RESOLVE-ALREADY-SUPERSEDED", "E-RESOLVE-NOT-A-PAIR", "E-RESOLVE-DIRECTIVE-PAIR", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -302,7 +302,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": true,
       "idempotent_note": "Writes only via resolveContradiction (X-4); a resolved pair is no longer flagged, so re-running is a no-op on it.",
-      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-REPO-SCOPE-REQUIRED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {

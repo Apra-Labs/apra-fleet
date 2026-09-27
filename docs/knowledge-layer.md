@@ -92,8 +92,20 @@ in many different repos, so nothing about the server's own working directory
 can be trusted to identify which repo a given tool call is about. Every KB
 tool therefore takes an explicit `repo_path`, and `getKbProviders` resolves
 providers keyed by that path -- never by `process.cwd()` inside server-handled
-code. A caller that omits `repo_path` gets whatever repo the calling process
-happens to be in, which is only correct for a single-repo CLI invocation.
+code. A server-handled `kb_*` call (anything arriving over MCP) that names no
+repo -- no `repo_path`/`repo`, and no `repo_remote_url` where the tool accepts
+one -- is refused with `reason: "repo_scope_required"` (contract code
+`E-REPO-SCOPE-REQUIRED`) before any KB is opened. The guard
+(`src/services/knowledge/kb-scope-guard.ts`) is applied where the kb_* tools
+are registered on the MCP server, so only server calls pass through it.
+`kb_export`, `kb_import`, `kb_stats` and `kb_session_prime` resolve a local
+checkout and so need `repo_path` itself. `kb_setup` is exempt (its
+`repo_path` only locates `.git` for the hook). In-shell CLI entry points
+(`apra-fleet kb invalidate` from the post-commit hook, `kb commit`,
+`kb import`, `kb-server`, the directive commands) call the same code
+directly and still fall back to their own working directory, which is
+correct for a single-repo CLI invocation. `code_context`'s KB enrichment is
+likewise skipped when the call names no repo.
 
 **Scope can be supplied as a git remote URL, not just a local path.** Every
 `kb_*` tool schema also accepts an optional `repo_remote_url` (a single shared

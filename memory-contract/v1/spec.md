@@ -256,6 +256,18 @@ pass-through-and-tolerate on this field -- turning `kb_stats`/
 `repo_path` altogether, which is the one thing the passthrough design exists
 to avoid.
 
+**Server-side scope requirement.** A kb_* call handled by the fleet server
+(MCP) MUST name its repo scope: `repo_path` (or its `repo` alias), or
+`repo_remote_url` for the tools that accept it. `kb_export`, `kb_import`,
+`kb_stats` and `kb_session_prime` resolve a LOCAL checkout, so for them
+`repo_remote_url` alone does not suffice. A call with no scope is refused before
+any provider is resolved (`E-REPO-SCOPE-REQUIRED`, `taxonomy.json`
+groups.validation) rather than resolved against the server process working
+directory: one server serves every project, so its cwd is never a scope.
+`kb_setup` is not subject to this rule (its `repo_path` carries no scope,
+above). In-shell CLI entry points do not go through the MCP registration and
+keep resolving the repo from their own working directory.
+
 **THE TEST HOOK.** No assertion in the conformance list matches this
 directly. The round-trip harness exercises `kb_import`/`kb_stats`/`kb_setup`
 happy-path fixtures (`tests/roundtrip-harness.mjs`) at the request-schema

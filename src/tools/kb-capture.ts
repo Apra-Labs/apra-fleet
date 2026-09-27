@@ -23,7 +23,7 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 export const kbCaptureSchema = z.object({
   ...kbScopeFields,
   repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. Required when the call is handled by the fleet server (MCP) unless repo_remote_url is given: a call with neither is refused with reason repo_scope_required -- the server never resolves a project from its own working directory. Only the in-shell CLI falls back to the current directory.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'])
     .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction. NOTE (F1/D1): a user-directive captured here is stored as a PENDING PROPOSAL (UNVERIFIED, flagged for review, scope forced to project) -- it is NOT an active directive and does NOT gain any trust semantics until a human approves it in their own terminal via "apra-fleet kb approve-directive <id>". MCP cannot mint an active directive.'),
   title: z.string().min(1).describe('Short description (max ~80 chars)'),

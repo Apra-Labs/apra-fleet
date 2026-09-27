@@ -380,6 +380,7 @@ throw sites are not part of the `kb_*` grep set above.
 | `E-PATH-TRAVERSAL` | `validateFilePaths`, `src/services/knowledge/path-validation.ts:6` (absolute path) and `:10` (parent-directory traversal) | an absolute path, or a parent-directory traversal, in a file list |
 | `E-QUERY-NO-SELECTOR` | `src/tools/kb-query.ts:34` | none of `query`, `tag`, `flagged_only` was supplied |
 | `E-REPO-PATH-INVALID` | `src/tools/kb-export.ts:157`, `src/tools/kb-import.ts:75` | an explicitly supplied repo path does not exist or is not a directory. Both refuse rather than silently falling back to the server cwd |
+| `E-REPO-SCOPE-REQUIRED` | `src/services/knowledge/kb-scope-guard.ts` (applied at kb_* registration in `src/services/tool-registry.ts`) | a server-handled kb_* call names no repo scope (no repo_path/repo, and no repo_remote_url where accepted). Refused rather than resolved from the server cwd |
 | `E-BIBLE-NOT-FOUND` | `src/tools/kb-import.ts:143` | the resolved bible file does not exist |
 | `E-BIBLE-NOT-JSON` | `src/tools/kb-import.ts:150` | the bible file is not valid JSON |
 | `E-BIBLE-WRONG-SHAPE` | `src/tools/kb-import.ts:168` | the bible parses but is neither an entry array nor the v2 envelope |

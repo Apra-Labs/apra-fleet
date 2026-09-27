@@ -40,7 +40,7 @@ import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 export const kbExportSchema = z.object({
   ...kbScopeFields,
   repo_path: z.string().optional()
-    .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
+    .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error. Via the fleet server (MCP) this field (or its repo/repo_path alias) is required: a call without it is refused with reason repo_scope_required; the working-directory fallback applies only to the in-shell CLI.'),
   scope: z.enum(['project', 'global']).optional()
     .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the given repo path (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
 });

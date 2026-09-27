@@ -72,6 +72,32 @@
           "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed; the only thing known to be wrong is a field of the request. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by changing the request. Both tools that raise it write into repo_path, which is why they refuse where the verbatim-passthrough tools tolerate a missing anchor (_meta.anchor_policy_note)."
         },
         {
+          "code": "E-REPO-SCOPE-REQUIRED",
+          "meaning": "A kb_* call handled by the fleet server (MCP) names no repo scope: no repo_path/repo, and no repo_remote_url where the tool accepts one. The server serves every project and refuses rather than resolving a project KB from its own working directory.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-scope-guard.ts (kbScopeRefusal), applied at kb_* registration in src/services/tool-registry.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "Returned as an MCP error result (isError: true, structuredContent.reason 'repo_scope_required'). kb_export, kb_import, kb_stats and kb_session_prime need repo_path/repo itself, since they resolve a local checkout; repo_remote_url alone does not satisfy them. kb_setup is not guarded (its repo_path carries no project-KB scope, spec.md 4.1). In-shell CLI entry points never reach this guard and keep the working-directory fallback.",
+          "group_decision": "VALIDATION, for the same reason as E-REPO-PATH-INVALID: decided from the request alone, before any provider is resolved, and fixable only by changing the request."
+        },
+        {
           "code": "E-BIBLE-NOT-FOUND",
           "meaning": "The resolved bible file does not exist.",
           "raising_methods": [

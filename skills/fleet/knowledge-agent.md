@@ -10,8 +10,13 @@ codebase context. It runs in three phases per session.
 Run at the start of every session before touching any code.
 
 ```
-kb_session_prime
+kb_session_prime(repo_path=<repo root>)
 ```
+
+Pass `repo_path` (the root of the repo you are working in -- for a fleet member, its
+work folder) on EVERY kb_* call, or `repo_remote_url` for a repo that lives on another
+host. The fleet server refuses a kb_* call that names no repo rather than guessing one
+from its own working directory.
 
 - Reads the KB index for the current repo and returns stale or missing entries.
 - Returns a list of recommended code intelligence calls to refresh stale context.
@@ -27,7 +32,7 @@ kb_session_prime
 Run after significant decisions or architectural choices during the session.
 
 ```
-kb_capture
+kb_capture(repo_path=<repo root>, ...)
 ```
 
 - Writes a new KB entry summarizing the current decision or finding.

@@ -30,6 +30,10 @@ CLI-only (`apra-fleet kb approve-directive`).
 
 ## Steps
 
+Every `kb_*` call below names the merged worktree as its repo (`repo_path`, or
+`repo` for `kb_import`): the fleet server refuses a `kb_*` call that names no repo
+rather than guessing one from its own working directory.
+
 ### Step 1: Import the merged bible
 
 ```
@@ -50,7 +54,7 @@ explicitly (see its note).
 ### Step 2: Freshness sweep
 
 ```
-kb_freshness_sweep()
+kb_freshness_sweep({ repo_path: "<merged worktree path>" })
 ```
 
 Re-hashes EVERY entry in the KB that carries a stored basis against the
@@ -73,7 +77,7 @@ post-resolution sweep would be redundant.
 ### Step 3: Hash prefilter
 
 ```
-kb_reconcile_prefilter()
+kb_reconcile_prefilter({ repo_path: "<merged worktree path>" })
 ```
 
 For every remaining flagged contradiction pair (`flaggedPairs()` -- this
@@ -105,7 +109,7 @@ If `left_for_agent` is empty, skip straight to Step 5.
 ### Step 5: Export
 
 ```
-kb_export()
+kb_export({ repo_path: "<merged worktree path>" })
 ```
 
 Writes every live `CONFIRMED` project entry -- which now includes every

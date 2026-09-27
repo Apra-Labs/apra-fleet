@@ -51,6 +51,7 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
    and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts -- an INFERRED
    entry may be an unvalidated in-flight capture.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. **Capture, don't call.** Do NOT call `kb_capture` yourself -- add findings (gotchas,
    missed invariants, non-obvious constraints) to the `kb_captures` array of your
    structured output (type `knowledge`, `learning`, or `runbook`; shape in Output schema

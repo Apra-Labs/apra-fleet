@@ -51,6 +51,12 @@ this pair as "member identifier" rather than repeating it.
 `kb_session_prime`, `kb_invalidate`, `kb_harvest`, `kb_promote`, `kb_feedback`,
 `kb_freshness_sweep`, `kb_import`, `kb_export`, `kb_setup`, `kb_stats`,
 `kb_reconcile_prefilter`, `kb_resolve_contradiction`.
+Every knowledge-bank tool except `kb_setup` must name its repo when called
+through the server: pass `repo_path` (or `repo_remote_url` for a repo on a
+remote member; `kb_export`/`kb_import`/`kb_stats`/`kb_session_prime` need
+`repo_path`). A call with no repo is refused with
+`reason: "repo_scope_required"` -- the server never picks a project from its
+own working directory.
 
 The knowledge-bank family is described in
 [knowledge-layer.md](knowledge-layer.md).

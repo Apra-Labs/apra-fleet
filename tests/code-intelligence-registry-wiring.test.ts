@@ -104,18 +104,30 @@ describe('code_context registry wiring (apra-fleet-b4g.13)', () => {
     expect(handleCodeContextSpy).toHaveBeenCalledWith(input, undefined);
   });
 
-  it('normalises absent repo/repo_remote_url to undefined rather than dropping the arguments', async () => {
+  it('normalises an absent repo_remote_url to undefined rather than dropping the argument', async () => {
     const { handler } = (await recordRegisteredTools()).get('code_context')!;
 
-    await handler(codeContextSchema.parse({ name: 'validateUser' }));
+    await handler(codeContextSchema.parse({ name: 'validateUser', repo: '/some/repo' }));
 
-    expect(enrichSpy.mock.calls[0]).toEqual(['validateUser', PROVIDER_RESULT, undefined, undefined]);
+    expect(enrichSpy.mock.calls[0]).toEqual(['validateUser', PROVIDER_RESULT, '/some/repo', undefined]);
+  });
+
+  // The server serves every project: with no repo and no repo_remote_url the
+  // KB enrichment would resolve a project KB from the server's own cwd, so it
+  // is skipped and the raw provider result is returned unchanged.
+  it('skips KB enrichment entirely when the call names no repo', async () => {
+    const { handler } = (await recordRegisteredTools()).get('code_context')!;
+
+    const out = await handler(codeContextSchema.parse({ name: 'validateUser' }));
+
+    expect(enrichSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(out.content[out.content.length - 1].text)).toEqual(PROVIDER_RESULT);
   });
 
   it('returns the ENRICHED result, not the raw provider result', async () => {
     const { handler } = (await recordRegisteredTools()).get('code_context')!;
 
-    const out = await handler(codeContextSchema.parse({ name: 'validateUser' }));
+    const out = await handler(codeContextSchema.parse({ name: 'validateUser', repo: '/some/repo' }));
 
     expect(JSON.parse(out.content[out.content.length - 1].text)).toEqual(ENRICHED_RESULT);
   });

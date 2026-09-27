@@ -43,6 +43,7 @@ a missing `base-branch`/`branch`: do not guess which branch to diff.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
    and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When you extract durable knowledge during harvest -- anything non-obvious that future
    sprints should know -- add it to the `kb_captures` array of your structured output (type
    "knowledge" or "learning"; dedup against the KB with `kb_query` first). The engine makes

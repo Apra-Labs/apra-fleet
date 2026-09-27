@@ -74,8 +74,9 @@ explicitly names an already-collected evidence artifact to verify against.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
    working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
    about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. Retrieve first, then read source: before reading an unfamiliar file or function, run
-   `mcp__apra-fleet__kb_query({ query: "<name>" })`. Work from a CONFIRMED entry directly;
+   `mcp__apra-fleet__kb_query({ repo_path: "<repo root>", query: "<name>" })`. Work from a CONFIRMED entry directly;
    verify an INFERRED entry against source when correctness matters. Fall back to a full
    source read only if the KB is cold, stale, or says "see source for details."
 4. When you discover something non-obvious and durable (hidden constraint, gotcha,
