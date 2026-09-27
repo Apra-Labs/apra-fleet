@@ -116,6 +116,22 @@ COPILOT-INSTRUCTIONS.md
 .claude/agents/
 packages/apra-fleet-se/auto-sprint/logs/
 
+# apra-fleet-i9ag.12.6: GitNexus skill files in the FLATTENED layout that newer
+# GitNexus versions generate (.claude/skills/gitnexus-<topic>/SKILL.md) next to
+# the NESTED copies this repo actually tracks
+# (.claude/skills/gitnexus/gitnexus-<topic>/SKILL.md, the paths CLAUDE.md's skill
+# table points at). Regenerated tool output, so it left the worktree permanently
+# dirty -- noise for the "git status must be clean" reviewer gate, and a standing
+# chance of someone committing a second copy of all six skills.
+#
+# Deliberately ignoring rather than migrating to the flattened layout: switching
+# would mean retargeting CLAUDE.md's skill table, and CLAUDE.md is a shared file
+# owned by its own track. The rule is scoped to 'gitnexus-*' so it CANNOT match
+# the tracked 'gitnexus/' directory. If the flattened layout is ever adopted,
+# delete this rule in the same change that drops the nested copies -- never carry
+# both layouts at once.
+.claude/skills/gitnexus-*/
+
 # my-beads-db-27m.26: repo-root beads scratch export dir (all.json/open.json),
 # not referenced by any tracked file -- pollutes the clean-worktree check.
 /.rev/
