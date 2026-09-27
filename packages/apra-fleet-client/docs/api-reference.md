@@ -315,6 +315,9 @@ Calls `fleet_status` -- status of all fleet members.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
+| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
+
+KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
 #### `memberDetail(options)`
 

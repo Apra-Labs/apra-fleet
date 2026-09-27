@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { getAllAgents } from '../services/registry.js';
@@ -20,9 +20,18 @@ import { getActiveLogFile } from '../utils/log-helpers.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
 import { kbStats } from './kb-stats.js';
 import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
+import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation } from '../services/knowledge/kb-scopes.js';
+import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
+import { readKbConfigFromDisk } from '../services/knowledge/kb-config.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
+  // The fleet server is one long-lived process serving every project, so its
+  // own working directory says nothing about which repo the caller means.
+  // Repo-specific sections (code-intel index health, KB bible drift) are only
+  // computed when the caller names the repo explicitly.
+  repo_path: z.string().optional().describe("Absolute path to a repo checkout. When given, fleet_status also reports that repo's code-intelligence index health and the canonical-bible drift of its KB scope. Omit it for the fleet-wide view: KB health for every project scope, no per-repo sections. The server's own working directory is never used."),
 });
 
 interface CloudInfo {
@@ -217,6 +226,13 @@ export interface TopSymbol {
 
 export interface CodeIntelligenceHealth {
   present: boolean;
+  // false when no repo was named: the index is per-repo (<repo>/.gitnexus)
+  // and the server has no repo of its own, so presence was not checked at all
+  // -- distinct from present:false after a real check. Absent means computed.
+  computable?: boolean;
+  reason?: string;
+  // The repo this health describes (only set when computed).
+  repoPath?: string;
   nodes?: number;
   edges?: number;
   files?: number;
@@ -377,7 +393,12 @@ function topSymbolsFragment(topSymbols?: TopSymbol[]): string {
 }
 
 /** Render the one-line compact fleet_status code intelligence summary. */
+export const CODE_INTEL_NO_REPO_REASON = 'per-repo index; pass repo_path to fleet_status (or repo to code_map) to check a repo';
+
 export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): string {
+  if (health.computable === false) {
+    return `code-intel: ${health.reason ?? CODE_INTEL_NO_REPO_REASON}` + topSymbolsFragment(health.topSymbols);
+  }
   if (!health.present) {
     return "code-intel: no index (run 'npx gitnexus analyze' or /pm index)" + topSymbolsFragment(health.topSymbols);
   }
@@ -389,12 +410,21 @@ export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): str
 }
 
 // ---------------------------------------------------------------------------
-// KB health (T2.2, F5/F6, D4/D5 amended). Degraded-safe: reuses kb_stats
-// (T2.1) for the numbers rather than re-querying the DB directly, following
-// the code-intelligence health precedent (KB 4e11460c) -- wrap ALL I/O in
-// try/catch, return null on any failure, never throw, never block status.
+// KB health (T2.2, F5/F6, D4/D5 amended). Degraded-safe: wrap ALL I/O in
+// try/catch, never throw, never block status (code-intelligence health
+// precedent, KB 4e11460c).
+//
+// The fleet server is ONE long-lived process serving every project a user
+// works on, and its process cwd is arbitrary (a detached launch sits in
+// C:\Windows\System32). So this section never derives a project from
+// process.cwd(): it enumerates every KB scope on disk (kb-scopes.ts) and
+// reports each one labeled by its project slug, plus the shared global KB.
+// Previously it called kbStats({}) with no repo, which fell back to the
+// server's cwd -- reporting the empty `default` scope ("kb: 0 entries") for a
+// detached server, or silently just one project when launched inside a
+// checkout.
 // ---------------------------------------------------------------------------
-// my-beads-db-0cd.18: mirrors kb-stats.ts's own bible union verbatim (kb-stats.ts:93)
+// my-beads-db-0cd.18: mirrors kb-stats.ts's own bible union verbatim
 // -- over a remote HTTP project provider, bible drift is not computable at all,
 // so there is no `drift` field to default to 0 for. Keeping this a union (not
 // widening `computable`/`reason` onto the first branch) is what makes an
@@ -403,7 +433,8 @@ export type KbHealthBible =
   | { present: boolean; entries: number; drift: number }
   | { computable: false; reason: string };
 
-export interface KbHealth {
+/** Per-scope KB numbers (the kb_stats shape). */
+export interface KbScopeStats {
   totals: { by_confidence: Record<string, number>; by_type: Record<string, number>; total: number };
   stale: number;
   flagged: number;
@@ -413,11 +444,113 @@ export interface KbHealth {
   bible: KbHealthBible;
 }
 
-/** Read kb_stats and shape it for fleet_status. Never throws -- any failure (DB unavailable, bad JSON) yields null so the caller omits the KB section entirely. */
-export async function kbHealthSummary(): Promise<KbHealth | null> {
+export interface KbScopeHealth extends KbScopeStats {
+  /** Project slug (the scope directory name under FLEET_DIR/knowledge), or `global`. */
+  scope: string;
+}
+
+export interface KbScopeError {
+  scope: string;
+  error: string;
+}
+
+export interface KbHealth {
+  /** Which provider the KB config selects for project scopes. With `http`, the local scopes below are the offline fallback copies. */
+  projectProvider: 'sqlite' | 'http';
+  /** Every project scope found on disk (including `default`, the non-git scope), sorted by slug. */
+  scopes: KbScopeHealth[];
+  /** The single shared cross-project KB, or null when it does not exist yet. */
+  global: KbScopeHealth | null;
+  /** Scopes whose database could not be read. */
+  errors: KbScopeError[];
+  /** Sum of totals.total over scopes + global. */
+  totalEntries: number;
+}
+
+// Bible drift needs a repo checkout (.fleet/kb-canonical.json). A scope does
+// not record one and the server's cwd is not a repo, so drift is reported
+// only for the scope of an explicitly supplied repo_path.
+export const KB_BIBLE_NO_REPO_REASON = 'bible drift needs a repo checkout; pass repo_path to fleet_status (or call kb_stats with repo_path)';
+export const KB_BIBLE_GLOBAL_REASON = 'bible drift is not tracked for the global KB';
+// Expected "not computed" states; rendering them on every compact line would
+// be noise. The HTTP-provider reason is NOT here: it is a real signal.
+const SILENT_BIBLE_REASONS = new Set([KB_BIBLE_NO_REPO_REASON, KB_BIBLE_GLOBAL_REASON]);
+
+async function readScopeStats(loc: KbScopeLocation): Promise<Omit<KbScopeStats, 'bible'>> {
+  const provider = new SqliteProvider(loc.dbPath);
   try {
-    const raw = await kbStats({});
-    return JSON.parse(raw) as KbHealth;
+    await provider.init();
+    const { totals, stale, flagged, superseded, retrieval, promote_ratio } = await provider.stats();
+    return { totals, stale, flagged, superseded, retrieval, promote_ratio };
+  } finally {
+    try { provider.close(); } catch { /* best effort */ }
+  }
+}
+
+async function bibleForRepo(repoPath: string): Promise<KbHealthBible | null> {
+  try {
+    const parsed = JSON.parse(await kbStats({ repo_path: repoPath })) as { bible?: KbHealthBible };
+    return parsed.bible ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function configuredProjectProvider(): 'sqlite' | 'http' {
+  try {
+    return readKbConfigFromDisk().provider === 'http' ? 'http' : 'sqlite';
+  } catch {
+    // kb-providers degrades a broken config to the local SqliteProvider.
+    return 'sqlite';
+  }
+}
+
+export interface KbHealthOptions {
+  /** Knowledge root to enumerate; defaults to FLEET_DIR/knowledge. */
+  knowledgeDir?: string;
+  /** Validated repo checkout; its scope (only) gets a bible drift number. */
+  repoPath?: string;
+}
+
+/**
+ * Enumerate every KB scope on disk and shape per-scope health for
+ * fleet_status. Independent of process.cwd(). Never throws -- a scope that
+ * cannot be read is listed under `errors`; any unexpected failure yields null
+ * so the caller omits the KB section entirely.
+ */
+export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHealth | null> {
+  try {
+    const locations = listKbScopes(opts.knowledgeDir ?? knowledgeRootDir());
+    let repoSlug: string | null = null;
+    if (opts.repoPath) {
+      try { repoSlug = resolveProjectSlug(opts.repoPath); } catch { repoSlug = null; }
+    }
+
+    const scopes: KbScopeHealth[] = [];
+    const errors: KbScopeError[] = [];
+    let global: KbScopeHealth | null = null;
+
+    for (const loc of locations) {
+      let stats: Omit<KbScopeStats, 'bible'>;
+      try {
+        stats = await readScopeStats(loc);
+      } catch (err) {
+        errors.push({ scope: loc.slug, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+      if (loc.slug === GLOBAL_KB_SCOPE) {
+        global = { scope: loc.slug, ...stats, bible: { computable: false, reason: KB_BIBLE_GLOBAL_REASON } };
+        continue;
+      }
+      let bible: KbHealthBible = { computable: false, reason: KB_BIBLE_NO_REPO_REASON };
+      if (opts.repoPath && repoSlug === loc.slug) {
+        bible = (await bibleForRepo(opts.repoPath)) ?? bible;
+      }
+      scopes.push({ scope: loc.slug, ...stats, bible });
+    }
+
+    const totalEntries = scopes.reduce((n, s) => n + s.totals.total, 0) + (global?.totals.total ?? 0);
+    return { projectProvider: configuredProjectProvider(), scopes, global, errors, totalEntries };
   } catch {
     return null;
   }
@@ -426,19 +559,45 @@ export async function kbHealthSummary(): Promise<KbHealth | null> {
 // D5 (AMENDED): with F6a auto-commit in place inside kb_export, nonzero drift
 // is an ANOMALY signal (a failed auto-commit), not a routine reminder -- the
 // wording says so explicitly. Omitted entirely when drift is not positive
-// (nothing anomalous to report).
+// (nothing anomalous to report) or not computed for an expected reason.
 function bibleDriftFragment(bible: KbHealthBible): string {
-  if (!('drift' in bible)) return ` | bible: ${bible.reason}`;
+  if (!('drift' in bible)) return SILENT_BIBLE_REASONS.has(bible.reason) ? '' : ` | bible: ${bible.reason}`;
   if (bible.drift <= 0) return '';
   return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
 }
 
-/** Render the one-line compact fleet_status KB health summary. */
-export function kbHealthCompactLine(health: KbHealth): string {
+/** Render one compact KB health line for a single scope, labeled `kb[<scope>]` when a label is given. */
+export function kbHealthCompactLine(health: KbScopeStats, label?: string): string {
   const hitRatePct = health.retrieval.hit_rate === null ? 'n/a' : `${Math.round(health.retrieval.hit_rate * 100)}%`;
   const promotePct = health.promote_ratio === null ? 'n/a' : `${Math.round(health.promote_ratio * 100)}%`;
   const confirmed = health.totals.by_confidence.CONFIRMED ?? 0;
-  return `kb: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
+  const prefix = label ? `kb[${label}]` : 'kb';
+  return `${prefix}: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
+}
+
+/**
+ * Render the compact multi-scope KB section: one summary line, then one
+ * indented line per non-empty scope (projects first, then global). Empty
+ * scopes are collapsed into a single trailing line so an unused `default`
+ * scope never reads as "the KB is empty".
+ */
+export function kbHealthCompactLines(health: KbHealth): string {
+  if (health.scopes.length === 0 && !health.global && health.errors.length === 0) {
+    return 'kb: no knowledge bases found yet (none captured on this server)';
+  }
+  const nonEmpty = health.scopes.filter(s => s.totals.total > 0);
+  const empty = health.scopes.filter(s => s.totals.total === 0).map(s => s.scope);
+  const globalNonEmpty = health.global && health.global.totals.total > 0 ? health.global : null;
+  if (health.global && !globalNonEmpty) empty.push(health.global.scope);
+
+  const remoteNote = health.projectProvider === 'http' ? ' | project KBs served by remote http provider; local fallback copies shown' : '';
+  const lines: string[] = [];
+  lines.push(`kb: ${health.totalEntries} entries across ${nonEmpty.length} project scope(s)${globalNonEmpty ? ' + global' : ''}${remoteNote}`);
+  for (const s of nonEmpty) lines.push(`  ${kbHealthCompactLine(s, s.scope)}`);
+  if (globalNonEmpty) lines.push(`  ${kbHealthCompactLine(globalNonEmpty, globalNonEmpty.scope)}`);
+  for (const e of health.errors) lines.push(`  kb[${e.scope}]: unreadable (${e.error})`);
+  if (empty.length > 0) lines.push(`  kb: empty scope(s): ${empty.join(', ')}`);
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -508,9 +667,30 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   const updateNotice = getUpdateNotice();
   const logFile = getActiveLogFile();
+  // The server's process.cwd() is never consulted: it is one process serving
+  // every project, launched from an arbitrary directory. Repo-specific
+  // sections are computed only for an explicitly named, existing repo_path.
+  const requestedRepo = input?.repo_path;
+  let repoPath: string | undefined;
+  if (requestedRepo) {
+    try {
+      if (statSync(requestedRepo).isDirectory()) repoPath = requestedRepo;
+    } catch {
+      repoPath = undefined;
+    }
+  }
+
   let codeIntelligence: CodeIntelligenceHealth;
   try {
-    codeIntelligence = codeIntelligenceHealth(process.cwd());
+    if (repoPath) {
+      codeIntelligence = { ...codeIntelligenceHealth(repoPath), repoPath };
+    } else {
+      codeIntelligence = {
+        present: false,
+        computable: false,
+        reason: requestedRepo ? `repo_path not found: ${requestedRepo}` : CODE_INTEL_NO_REPO_REASON,
+      };
+    }
   } catch {
     // Defensive: codeIntelligenceHealth() already degrades gracefully
     // internally, but fleet_status must never fail because of this section.
@@ -535,7 +715,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   // NEVER fails because of the KB.
   let kbHealth: KbHealth | null = null;
   try {
-    kbHealth = await kbHealthSummary();
+    kbHealth = await kbHealthSummary({ repoPath });
   } catch {
     kbHealth = null;
   }
@@ -613,7 +793,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     }
   }
   t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
-  if (kbHealth) t += kbHealthCompactLine(kbHealth) + '\n';
+  if (kbHealth) t += kbHealthCompactLines(kbHealth) + '\n';
   if (versionMismatch) t += versionMismatchCompactLine(versionMismatch) + '\n';
   return t;
 }

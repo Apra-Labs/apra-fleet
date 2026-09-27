@@ -465,6 +465,7 @@ Provides a quick summary table of all fleet members.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `format` | `"compact"` \| `"json"` | no | Default `"compact"`. `"json"` returns structured data |
+| `repo_path` | string | no | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and the canonical-bible drift of its KB scope. The server's own working directory is never used. |
 
 **What it does:**
 
@@ -485,6 +486,11 @@ Provides a quick summary table of all fleet members.
 | Session | first 8 chars of session ID or `(none)` | Active conversation thread |
 | Last Activity | relative time (e.g. "5m ago", "2d ago") | When `execute_prompt` or `send_files` last touched this member |
 | Tokens | `in: N / out: N` or omitted | Accumulated token totals for this member |
+
+**Fleet-wide sections (independent of the server's working directory):** the fleet server is one long-lived process serving every project, so `fleet_status` never derives a project or repo from its own cwd.
+
+- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`.
+- **Code intelligence** indexes are per repo (`<repo>/.gitnexus`). Without `repo_path` the line reads `code-intel: per-repo index; ...` (JSON: `{ present: false, computable: false, reason }`); the 30-day top-symbols telemetry is fleet-wide and always shown.
 
 ### `member_detail`
 

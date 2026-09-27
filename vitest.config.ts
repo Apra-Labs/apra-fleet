@@ -25,6 +25,7 @@ const NODE_SQLITE_DEPENDENT_TESTS = [
   'tests/knowledge/**/*.test.ts',
   'tests/code-intelligence-registry-wiring.test.ts',
   'tests/fleet-status-code-intelligence.test.ts',
+  'tests/fleet-status-kb-health.test.ts',
   'tests/fleet-status-branch.test.ts',
   'tests/stall-detector-integration.test.ts',
   'tests/category.test.ts',
