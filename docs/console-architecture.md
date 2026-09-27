@@ -139,12 +139,20 @@ console's own port.
   a `Referer` header the way a path segment or query parameter would. The
   shell's client-side router reads the token out of `location.hash` and POSTs
   it in the request body instead.
-- The browser authenticates the `/api/secret-entry/*` POSTs with the same
+- The browser's `/api/secret-entry/*` POSTs carry the same
   `apra_console_token` cookie every other console call already uses (set on
   every `GET /ui`; see "Auth guard and console cookie" above), `SameSite=Strict`.
-  A cross-site POST -- e.g. a malicious page trying to drive the submit
+  That cookie is CSRF / same-site protection, not network authentication: a
+  cross-site POST -- e.g. a malicious page trying to drive the submit
   endpoint on someone else's behalf -- carries no cookie and is refused by the
-  guard before this route's handler ever runs.
+  guard before this route's handler ever runs. But `GET /ui` is itself
+  unguarded and hands a valid cookie to any client that can reach the console
+  port, so that reachability -- not possession of the cookie -- is the real
+  trust boundary here, exactly as for every other console route (see "Auth
+  guard and console cookie" above; this is pre-existing console behaviour,
+  not something the secret-entry routes introduced). The security these
+  routes actually rest on is the single-use, unguessable 64-hex token
+  (`src/services/secret-entry.ts`) plus its short TTL.
 - The entry is single-use: `submitSecretEntry` deletes the registry entry and
   clears its timer on a successful submit, so a second POST with the same
   token answers "not found" like any other unknown token.

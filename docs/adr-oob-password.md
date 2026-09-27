@@ -307,8 +307,14 @@ one-time entry page instead: `POST /api/secret-entry/prompt` + `/submit`
 `/ui` hash route `#/secret-entry/<token>`. The token lives in the URL
 fragment, never a path segment or query string, so it never reaches a server
 access log or a `Referer` header; the entry is single-use with a 10-minute
-TTL, and the browser authenticates with the same `apra_console_token` cookie
-(`SameSite=Strict`) every other console call already uses. Full detail:
+TTL, and the browser's POSTs carry the same `apra_console_token` cookie
+(`SameSite=Strict`) every other console call already uses. That cookie is
+CSRF / same-site protection, not network authentication: `GET /ui` is
+unguarded and hands a valid cookie to any client that can reach the console
+port, so the security these routes actually rest on is the single-use token
+itself plus its short TTL, and reaching the console port -- not holding the
+cookie -- is the real trust boundary (pre-existing console behaviour,
+unchanged by this move). Full detail:
 `docs/console-architecture.md`'s "Console-hosted secret entry" section.
 
 **This loopback server itself was not removed** -- it remains exactly as

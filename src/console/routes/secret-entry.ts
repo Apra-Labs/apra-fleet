@@ -11,9 +11,17 @@
  * '/api/secret-entry' from the paths below and requiresConsoleGuard covers
  * BOTH routes automatically -- no second guard list, no ../server.ts guard
  * edit. The browser already holds the apra_console_token cookie (set on
- * every GET /ui), so a same-origin POST from the shell page authenticates
- * with no new credential, and a cross-site POST carries no cookie and is
- * 401ed by the guard before this module ever sees the request.
+ * every GET /ui, itself unguarded), so a same-origin POST from the shell
+ * page carries it automatically, while a cross-site POST carries no cookie
+ * and is 401ed by the guard before this module ever sees the request. That
+ * is CSRF / same-site protection (SameSite=Strict), NOT authentication
+ * against a network-reachable attacker: because GET /ui is unguarded, any
+ * client that can reach the console port can fetch a valid cookie for
+ * itself, so reaching the console port -- not holding the cookie -- is the
+ * real trust boundary here (pre-existing console behaviour, unchanged by
+ * this module). What these routes actually rest on for security is the
+ * single-use, unguessable 64-hex token (src/services/secret-entry.ts) plus
+ * its short TTL.
  *
  * SECRETS: the submitted value must never appear in a response body, an
  * error message, or a log line -- see src/console/routes/fleet.ts's header
