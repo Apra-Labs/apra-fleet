@@ -32,6 +32,24 @@ interface PendingSecretEntry {
 
 const registry = new Map<string, PendingSecretEntry>();
 
+// True once this process is actually serving the console (createHttpTransport
+// in src/services/http-transport.ts wires handleConsoleRequest). A token in
+// this registry is only reachable through that console, so callers that would
+// hand out a console-relative entry path must first check isConsoleHosted():
+// under `--transport stdio` no console is mounted in this process and the
+// path would resolve to nothing (or to a different process that 404s it).
+let consoleHosted = false;
+
+/** Record that this process serves the console (and so this registry). */
+export function markConsoleHosted(): void {
+  consoleHosted = true;
+}
+
+/** Whether this process serves the console that resolves secret-entry paths. */
+export function isConsoleHosted(): boolean {
+  return consoleHosted;
+}
+
 const TOKEN_SHAPE = /^[0-9a-f]{64}$/;
 
 /**
@@ -144,4 +162,9 @@ export function __resetSecretEntriesForTest(): void {
     clearTimeout(entry.timer);
   }
   registry.clear();
+}
+
+/** Test-only: force the console-hosted flag (markConsoleHosted is one-way). */
+export function __setConsoleHostedForTest(hosted: boolean): void {
+  consoleHosted = hosted;
 }

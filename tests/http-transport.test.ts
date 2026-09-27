@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import http from 'node:http';
 import { createHttpTransport, HttpTransportHandle, isFetchBlockedPort } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
+import { isConsoleHosted, __setConsoleHostedForTest } from '../src/services/secret-entry.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
@@ -61,6 +62,25 @@ describe('(a) server binds to 127.0.0.1', () => {
     const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
     handles.push(handle);
     expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The HTTP transport serves the console, so it marks secret-entry paths as
+// resolvable -- collectOobUrl (auth-socket.ts) keys the console-relative vs
+// stdio-loopback choice off this flag.
+// ---------------------------------------------------------------------------
+describe('createHttpTransport marks the console hosted', () => {
+  afterEach(() => {
+    __setConsoleHostedForTest(false);
+  });
+
+  it('isConsoleHosted() is true once the HTTP transport is created', async () => {
+    __setConsoleHostedForTest(false);
+    expect(isConsoleHosted()).toBe(false);
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    expect(isConsoleHosted()).toBe(true);
   });
 });
 

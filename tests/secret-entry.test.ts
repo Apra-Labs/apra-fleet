@@ -6,6 +6,9 @@ import {
   submitSecretEntry,
   SECRET_ENTRY_TTL_MS,
   __resetSecretEntriesForTest,
+  markConsoleHosted,
+  isConsoleHosted,
+  __setConsoleHostedForTest,
 } from '../src/services/secret-entry.js';
 
 const TOKEN_RE = /^[0-9a-f]{64}$/;
@@ -246,6 +249,19 @@ describe('secret-entry (console-hosted one-time secret-entry registry)', () => {
       for (const haystack of haystacks) {
         expect(haystack ?? '').not.toContain(SENTINEL);
       }
+    });
+  });
+
+  describe('console-hosted flag', () => {
+    afterEach(() => {
+      __setConsoleHostedForTest(false);
+    });
+
+    it('is false by default and true after markConsoleHosted()', () => {
+      __setConsoleHostedForTest(false);
+      expect(isConsoleHosted()).toBe(false);
+      markConsoleHosted();
+      expect(isConsoleHosted()).toBe(true);
     });
   });
 });

@@ -8,13 +8,22 @@ import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
-import { launchAuthWeb } from './auth-web.js';
-import { createSecretEntry } from './secret-entry.js';
+import { launchAuthWeb, TTL_MS as AUTH_WEB_TTL_MS, type AuthWebMode } from './auth-web.js';
+import { createSecretEntry, isConsoleHosted } from './secret-entry.js';
 import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_BUFFER_SIZE = 64 * 1024; // 64KB -- reject oversized messages
+
+// Bounds how long collectOobUrl waits for launchAuthWeb's openUrl callback
+// before treating the listen as failed (apra-fleet-972p.7). launchAuthWeb
+// returns {kind:'launched'} synchronously right after calling
+// server.listen(), BEFORE listen has actually succeeded -- on a listen
+// failure server.on('error') tears the server down without ever invoking
+// openUrl. In practice a successful listen() fires within the same tick or
+// two, so this only ever trips on a genuine failure, never the happy path.
+export const OOB_URL_LISTEN_TIMEOUT_MS = 5000;
 
 interface PendingAuth {
   encryptedPassword?: string;
@@ -302,24 +311,32 @@ type OobLaunchFn = (
 
 
 /**
- * Register a console-hosted, single-use secret-entry (secret-entry.ts's
- * `createSecretEntry`) and return its console-relative URL + expiry
- * immediately, WITHOUT waiting for the user to submit. Used when the caller
- * cannot (or does not want to) block on `waitForPassword()` -- no TTY
- * attached, or `return_url: true` was passed (apra-fleet-972p.2.1, F3).
+ * Hand out a URL for single-use, out-of-band secret entry and return it +
+ * its expiry immediately, WITHOUT waiting for the user to submit. Used when
+ * the caller cannot (or does not want to) block on `waitForPassword()` -- no
+ * TTY attached, or `return_url: true` was passed (apra-fleet-972p.2.1, F3).
  *
- * The returned url is a CONSOLE-RELATIVE path (e.g. `/ui/#/secret-entry/...`)
- * that resolves wherever the caller can reach the console (LAN, an SSH
- * tunnel on the console port, a remote install) -- never a loopback-only
- * scheme/host/port. There is no server to listen on here, so there is no
- * "could not start the local web server" failure mode on this path.
+ * Two branches, chosen by whether THIS process serves the console
+ * (secret-entry.ts `isConsoleHosted()`):
  *
- * `onSubmit` is wired directly into the secret-entry's stored callback
- * (invoked when the console POSTs the submitted value) -- callers that need
- * bespoke storage logic (e.g. `credential_store_set` needs to call
- * `credentialSet()` with persist/policy/members/ttl, none of which this
- * service layer knows about) pass their own `onOobSubmit`; the default falls
- * back to the same `submitPassword()` the blocking/terminal path uses.
+ * - Console hosted (HTTP transport): register a console-hosted entry
+ *   (secret-entry.ts `createSecretEntry`) and return its CONSOLE-RELATIVE
+ *   path (e.g. `/ui/#/secret-entry/...`), which resolves wherever the caller
+ *   can reach the console (LAN, an SSH tunnel on the console port, a remote
+ *   install) -- never a loopback-only scheme/host/port. There is no server
+ *   to listen on here, so no "could not start" failure mode.
+ * - No console in this process (stdio transport): a console-relative path
+ *   would resolve to nothing, so launch the local browser credential-entry
+ *   UI (auth-web.ts's `launchAuthWeb`) and return its ABSOLUTE loopback URL
+ *   as soon as the server is listening, or a fallback string if it cannot
+ *   start (bounded by OOB_URL_LISTEN_TIMEOUT_MS).
+ *
+ * `onSubmit` is wired directly into whichever branch receives the submitted
+ * value -- callers that need bespoke storage logic (e.g.
+ * `credential_store_set` needs to call `credentialSet()` with
+ * persist/policy/members/ttl, none of which this service layer knows about)
+ * pass their own `onOobSubmit`; the default falls back to the same
+ * `submitPassword()` the blocking/terminal path uses.
  */
 function collectOobUrl(
   mode: 'password' | 'api-key' | 'confirm',
@@ -336,8 +353,46 @@ function collectOobUrl(
     ?? (mode === 'api-key' ? `Enter API key for ${memberName}` : `Enter SSH password for ${memberName}`);
   const onSubmit = _opts?.onOobSubmit ?? ((value: string) => submitPassword(memberName, value));
 
-  const entry = createSecretEntry({ name: memberName, prompt: webPrompt, onSubmit });
-  return Promise.resolve({ url: entry.path, expiresAt: entry.expiresAt });
+  if (isConsoleHosted()) {
+    const entry = createSecretEntry({ name: memberName, prompt: webPrompt, onSubmit });
+    return Promise.resolve({ url: entry.path, expiresAt: entry.expiresAt });
+  }
+
+  const webMode: AuthWebMode = mode;
+  return new Promise((resolve) => {
+    let settled = false;
+    let listenTimer: ReturnType<typeof setTimeout> | undefined;
+    const settleFallback = () => {
+      if (settled) return;
+      settled = true;
+      if (listenTimer) clearTimeout(listenTimer);
+      resolve({ fallback: `[FAIL] Could not start the local credential-entry web server for ${memberName}.` });
+    };
+
+    const outcome = launchAuthWeb(memberName, webMode, webPrompt, onSubmit, {
+      openUrl: (url) => {
+        if (settled) return;
+        settled = true;
+        if (listenTimer) clearTimeout(listenTimer);
+        resolve({ url, expiresAt: new Date(Date.now() + AUTH_WEB_TTL_MS).toISOString() });
+      },
+    });
+
+    if (outcome.kind !== 'launched') {
+      settleFallback();
+      return;
+    }
+
+    // Backstop for a listen failure that happens after launchAuthWeb already
+    // returned {kind:'launched'} synchronously (see OOB_URL_LISTEN_TIMEOUT_MS
+    // above) -- without this, a failed listen() leaves this promise unsettled
+    // forever, which is the exact blocking behaviour return_url/F3 exists to
+    // eliminate.
+    listenTimer = setTimeout(() => {
+      outcome.close();
+      settleFallback();
+    }, OOB_URL_LISTEN_TIMEOUT_MS);
+  });
 }
 
 /**
@@ -505,10 +560,11 @@ export async function collectOobPassword(
  * Collect an API key out-of-band.
  *
  * `returnUrl` (apra-fleet-972p.2.1, F3): when true, skips the terminal/socket
- * blocking flow entirely and resolves immediately with a console-relative
- * entry path, `{ url, expiresAt }`, instead of `password` -- the caller
- * resolves `url` against whatever origin the operator reaches the console
- * on. The secret itself arrives later via `onOobSubmit` (or
+ * blocking flow entirely and resolves immediately with `{ url, expiresAt }`
+ * instead of `password` -- `url` is a console-relative entry path when this
+ * process serves the console (the caller resolves it against whatever origin
+ * the operator reaches the console on), or an absolute loopback URL under
+ * stdio transport (see collectOobUrl). The secret itself arrives later via `onOobSubmit` (or
  * `submitPassword()` if no `onOobSubmit` is given) when the user submits the
  * console-hosted entry form. Callers should pass `true` here whenever they
  * cannot block on a human being present at a TTY (`credential_store_set`

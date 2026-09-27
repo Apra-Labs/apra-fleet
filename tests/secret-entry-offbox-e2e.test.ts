@@ -40,7 +40,7 @@ import path from 'node:path';
 import { handleConsoleRequest } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import * as logHelpers from '../src/utils/log-helpers.js';
-import { __resetSecretEntriesForTest } from '../src/services/secret-entry.js';
+import { __resetSecretEntriesForTest, __setConsoleHostedForTest } from '../src/services/secret-entry.js';
 
 const SENTINEL = 'OFFBOX-SENTINEL-DO-NOT-LEAK-7f2a';
 const CRED_NAME = 'offbox-console-cred';
@@ -81,6 +81,9 @@ async function mkTmp(prefix: string): Promise<string> {
 beforeEach(async () => {
   vi.clearAllMocks();
   __resetSecretEntriesForTest();
+  // These tests drive handleConsoleRequest directly rather than through
+  // createHttpTransport, so mark the console hosted the way it would.
+  __setConsoleHostedForTest(true);
 
   realHome = process.env.HOME;
   realUserProfile = process.env.USERPROFILE;
@@ -129,6 +132,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   __resetSecretEntriesForTest();
+  __setConsoleHostedForTest(false);
   vi.restoreAllMocks();
 
   for (const socket of sockets.splice(0)) socket.destroy();

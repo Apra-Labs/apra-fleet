@@ -159,8 +159,8 @@ describe('credentialStoreSet', () => {
       Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
       vi.mocked(authSocket.collectOobApiKey).mockResolvedValue({
         // Console-relative, matching what src/services/secret-entry.ts's
-        // createSecretEntry() actually hands back post apra-fleet-i9ag.11.2 --
-        // collectOobUrl can no longer return an absolute loopback URL.
+        // createSecretEntry() hands back when the console is hosted in this
+        // process (HTTP transport); the stdio loopback shape is covered below.
         url: '/ui/#/secret-entry/abc123',
         expiresAt: '2026-01-01T00:02:00.000Z',
       });
@@ -199,6 +199,42 @@ describe('credentialStoreSet', () => {
       // No credential should be stored yet -- only onOobSubmit (invoked by
       // the real auth-web.ts POST handler, not exercised by this mock) stores it.
       expect(credentialResolve('oob_cred')).toBeNull();
+    });
+
+    // Stdio transport: no console is hosted in this process, so collectOobUrl
+    // hands back the absolute loopback auth-web URL. The text must just print
+    // it -- no console-relative "same page on that origin" hint and no
+    // APRA_FLEET_CONSOLE_BASE_URL advice, neither of which applies.
+    it('prints an already-absolute (stdio loopback) url as-is, without the console-origin hint', async () => {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      vi.mocked(authSocket.collectOobApiKey).mockResolvedValue({
+        url: 'http://127.0.0.1:54321/tok3n',
+        expiresAt: '2026-01-01T00:02:00.000Z',
+      });
+
+      const result = await credentialStoreSet({
+        name: 'stdio_cred',
+        prompt: 'Enter key:',
+        persist: false,
+        network_policy: 'confirm',
+        members: '*',
+        return_url: false,
+      });
+
+      expect(typeof result).toBe('object');
+      if (typeof result === 'object') {
+        expect(result.structuredContent).toEqual({
+          url: 'http://127.0.0.1:54321/tok3n',
+          expiresAt: '2026-01-01T00:02:00.000Z',
+          absoluteUrl: 'http://127.0.0.1:54321/tok3n',
+        });
+        expect(result.text).toContain('http://127.0.0.1:54321/tok3n');
+        expect(result.text).not.toContain('on that origin instead');
+        expect(result.text).not.toContain('APRA_FLEET_CONSOLE_BASE_URL');
+        expect(result.text).not.toContain('7523');
+        expect(result.text).toContain('no further tool call is needed');
+      }
+      expect(credentialResolve('stdio_cred')).toBeNull();
     });
 
     // apra-fleet-i9ag.11.11: pin the actual token shape createSecretEntry()

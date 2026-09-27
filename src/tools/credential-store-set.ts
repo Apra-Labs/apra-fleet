@@ -30,9 +30,10 @@ export const credentialStoreSetSchema = z.object({
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 /** structuredContent shape when return_url collection is used (apra-fleet-972p.2.1, F3).
- *  `url` stays console-relative (the console route -- src/console/routes/fleet.ts --
- *  reads this and hands it to the browser, which resolves it against its own
- *  origin). `absoluteUrl` (apra-fleet-i9ag.11.9) is the same path resolved
+ *  `url` is console-relative when this process serves the console (the console
+ *  route -- src/console/routes/fleet.ts -- reads this and hands it to the
+ *  browser, which resolves it against its own origin), or an absolute loopback
+ *  URL under stdio transport, where no console is hosted. `absoluteUrl` (apra-fleet-i9ag.11.9) is the same path resolved
  *  against the operator-declared or bound console origin, for callers that
  *  want the rendered link without doing that resolution themselves. */
 export interface CredentialStoreSetUrlResult {
@@ -91,20 +92,27 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
 
     if (result.url && result.expiresAt) {
       // joinConsoleUrl() rather than `new URL(relative, base)` or a naked
-      // string concat: result.url is documented (src/services/secret-entry.ts)
-      // to always be a console-relative path, but a plain URL-constructor
-      // resolve would silently drop any sub-path segment of baseUrlResult.baseUrl
-      // (a reverse-proxy mount, e.g. '/fleet') since a root-relative path
-      // replaces the base's whole path per RFC 3986/WHATWG. joinConsoleUrl()
-      // preserves that sub-path while still resolving to something sane if a
-      // future regression hands back something already absolute or missing
-      // its leading slash (apra-fleet-i9ag.11.18).
+      // string concat: when the console is hosted, result.url is a
+      // console-relative path (src/services/secret-entry.ts), and a plain
+      // URL-constructor resolve would silently drop any sub-path segment of
+      // baseUrlResult.baseUrl (a reverse-proxy mount, e.g. '/fleet') since a
+      // root-relative path replaces the base's whole path per RFC 3986/WHATWG.
+      // joinConsoleUrl() preserves that sub-path, and returns an already
+      // absolute url (the stdio-transport loopback page) as-is
+      // (apra-fleet-i9ag.11.18).
       const absoluteUrl = joinConsoleUrl(baseUrlResult.baseUrl, result.url);
+      // Under stdio transport no console is hosted in this process, so
+      // result.url is already an absolute loopback URL (auth-web.ts) and
+      // there is no console origin to point the operator at.
+      const isAbsolute = /^https?:\/\//i.test(result.url);
+      const originHint = isAbsolute
+        ? ''
+        : `If the console is reached on a different host or port (a LAN address, an SSH tunnel, or a reverse ` +
+          `proxy), the same page is at ${result.url} on that origin instead. Set APRA_FLEET_CONSOLE_BASE_URL ` +
+          `to change the origin printed above.\n\n`;
       return {
         text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${absoluteUrl}\n\n` +
-          `If the console is reached on a different host or port (a LAN address, an SSH tunnel, or a reverse ` +
-          `proxy), the same page is at ${result.url} on that origin instead. Set APRA_FLEET_CONSOLE_BASE_URL ` +
-          `to change the origin printed above.\n\n` +
+          originHint +
           `The secret is encrypted and stored automatically once the form is submitted -- no further tool call is needed.`,
         structuredContent: { url: result.url, expiresAt: result.expiresAt, absoluteUrl },
       };

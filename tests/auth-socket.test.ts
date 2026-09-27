@@ -17,17 +17,24 @@ import {
   hasInteractiveDesktop,
   launchAuthTerminal,
   submitPassword,
+  OOB_URL_LISTEN_TIMEOUT_MS,
 } from '../src/services/auth-socket.js';
-import { submitSecretEntry, SECRET_ENTRY_TTL_MS } from '../src/services/secret-entry.js';
+import { TTL_MS as AUTH_WEB_TTL_MS } from '../src/services/auth-web.js';
+import {
+  submitSecretEntry,
+  SECRET_ENTRY_TTL_MS,
+  isConsoleHosted,
+  __setConsoleHostedForTest,
+} from '../src/services/secret-entry.js';
 
 // Hoisted so the vi.mock factory below (which runs before the rest of this
 // file, per Vitest's hoisting) can reference it. Only launchAuthWeb is
 // swapped out; everything else (TTL_MS, escapeHtml-driven HTML, etc.) is the
 // real module -- this lets the BLOCKING no-terminal fallback tests below
 // control exactly when/whether the "browser" opens, without actually
-// spawning an HTTP server or a real browser. The return_url:true path no
-// longer touches launchAuthWeb at all (it is console-hosted via
-// secret-entry.ts), so those tests assert this mock is never called.
+// spawning an HTTP server or a real browser. The return_url:true path only
+// touches launchAuthWeb when the console is NOT hosted in this process
+// (stdio transport); the console-hosted tests assert it is never called.
 // Default to 'unavailable' so any test that reaches the terminal-fallback
 // browser path (auth-socket.ts collectOobInput, which dereferences
 // web.kind) behaves like a headless environment instead of throwing a
@@ -611,13 +618,17 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('collectOobUrl (return_url:true) -- via collectOobApiKey/collectOobConfirm', () => {
+  describe('collectOobUrl (return_url:true), console hosted -- via collectOobApiKey/collectOobConfirm', () => {
     beforeEach(() => {
       mockLaunchAuthWeb.mockReset();
       mockLaunchAuthWeb.mockReturnValue({ kind: 'unavailable' as const });
+      // HTTP transport: this process serves the console, so the
+      // console-relative secret-entry path is reachable.
+      __setConsoleHostedForTest(true);
     });
 
     afterEach(async () => {
+      __setConsoleHostedForTest(false);
       await cleanupAuthSocket();
     });
 
@@ -682,6 +693,147 @@ describe('auth-socket', () => {
       expect(mockLaunchAuthWeb).not.toHaveBeenCalled();
       expect(launchFn).not.toHaveBeenCalled();
       expect(result).toEqual({ confirmed: false, terminalUnavailable: true });
+    });
+  });
+
+  // Stdio transport: no console is mounted in this process, so a
+  // console-relative secret-entry path would resolve to nothing. collectOobUrl
+  // must fall back to the in-process loopback launchAuthWeb page.
+  describe('collectOobUrl (return_url:true), console NOT hosted (stdio transport)', () => {
+    beforeEach(() => {
+      mockLaunchAuthWeb.mockReset();
+      __setConsoleHostedForTest(false);
+    });
+
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('is not console-hosted unless something marks it', () => {
+      expect(isConsoleHosted()).toBe(false);
+    });
+
+    it('resolves with {url, expiresAt} as soon as the server is listening, expiresAt derived from auth-web TTL_MS', async () => {
+      mockLaunchAuthWeb.mockImplementation((_name, _mode, _prompt, _onSubmit, opts) => {
+        opts?.openUrl?.('http://127.0.0.1:54321/tok3n');
+        return { kind: 'launched', close: vi.fn() };
+      });
+
+      const before = Date.now();
+      const result = await collectOobApiKey('url-member', 'credential_store_set', { returnUrl: true });
+      const after = Date.now();
+
+      expect(mockLaunchAuthWeb).toHaveBeenCalledTimes(1);
+      expect(result.url).not.toContain('/secret-entry/');
+
+      expect(result.url).toBe('http://127.0.0.1:54321/tok3n');
+      expect(result.password).toBeUndefined();
+      expect(result.fallback).toBeUndefined();
+      expect(result.expiresAt).toBeDefined();
+      const expiresAtMs = new Date(result.expiresAt as string).getTime();
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + AUTH_WEB_TTL_MS);
+      expect(expiresAtMs).toBeLessThanOrEqual(after + AUTH_WEB_TTL_MS);
+    });
+
+    it('wires launchAuthWeb\'s onSubmit to submitPassword by default when no onOobSubmit is given', async () => {
+      let capturedOnSubmit: ((value: string) => { ok: boolean; error?: string }) | undefined;
+      mockLaunchAuthWeb.mockImplementation((_name, _mode, _prompt, onSubmit, opts) => {
+        capturedOnSubmit = onSubmit;
+        opts?.openUrl?.('http://127.0.0.1:1/default-submit');
+        return { kind: 'launched', close: vi.fn() };
+      });
+
+      await collectOobApiKey('default-submit-member', 'credential_store_set', { returnUrl: true });
+
+      expect(capturedOnSubmit).toBeTypeOf('function');
+      // The return_url path never calls createPendingAuth for this member, so
+      // if capturedOnSubmit really is submitPassword (not a no-op stub), it
+      // reports "no pending auth" -- proving the default fallback is wired.
+      const res = capturedOnSubmit!('the-secret-value');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('No pending auth');
+    });
+
+    it('wires a caller-supplied onOobSubmit into launchAuthWeb instead of the default', async () => {
+      const customSubmit = vi.fn().mockReturnValue({ ok: true });
+      let capturedOnSubmit: ((value: string) => { ok: boolean; error?: string }) | undefined;
+      mockLaunchAuthWeb.mockImplementation((_name, _mode, _prompt, onSubmit, opts) => {
+        capturedOnSubmit = onSubmit;
+        opts?.openUrl?.('http://127.0.0.1:1/custom-submit');
+        return { kind: 'launched', close: vi.fn() };
+      });
+
+      await collectOobApiKey('custom-submit-member', 'credential_store_set', {
+        returnUrl: true,
+        onOobSubmit: customSubmit,
+      });
+
+      expect(capturedOnSubmit).toBe(customSubmit);
+    });
+
+    it('returns the fallback string (rather than hanging) when launchAuthWeb reports unavailable', async () => {
+      mockLaunchAuthWeb.mockReturnValue({ kind: 'unavailable' });
+
+      const result = await collectOobApiKey('unavailable-member', 'credential_store_set', { returnUrl: true });
+
+      expect(result.url).toBeUndefined();
+      expect(result.password).toBeUndefined();
+      expect(result.fallback).toContain('Could not start the local credential-entry web server');
+      expect(result.fallback).toContain('unavailable-member');
+    });
+
+    it('resolves with the fallback (does not hang) when the server never listens after a synchronous "launched" outcome', async () => {
+      // Reproduces apra-fleet-972p.7: launchAuthWeb can return {kind:'launched'}
+      // synchronously (right after calling server.listen(), before listen has
+      // actually succeeded or failed) and then never call openUrl at all if the
+      // subsequent listen fails (server.on('error') tears the server down
+      // without invoking it). Without a bounded backstop, collectOobUrl's
+      // promise would never settle.
+      vi.useFakeTimers();
+      try {
+        const closeFn = vi.fn();
+        mockLaunchAuthWeb.mockImplementation(() => ({ kind: 'launched', close: closeFn }));
+        // openUrl deliberately never invoked -- simulates the listen failure.
+
+        const resultPromise = collectOobApiKey('listen-fail-member', 'credential_store_set', { returnUrl: true });
+
+        await vi.advanceTimersByTimeAsync(OOB_URL_LISTEN_TIMEOUT_MS);
+
+        const result = await resultPromise;
+        expect(result.url).toBeUndefined();
+        expect(result.password).toBeUndefined();
+        expect(result.fallback).toContain('Could not start the local credential-entry web server');
+        expect(result.fallback).toContain('listen-fail-member');
+        // The backstop must tear down the server it gave up waiting on.
+        expect(closeFn).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not resolve with the fallback before the listen-timeout backstop elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const closeFn = vi.fn();
+        mockLaunchAuthWeb.mockImplementation(() => ({ kind: 'launched', close: closeFn }));
+
+        const resultPromise = collectOobApiKey('listen-pending-member', 'credential_store_set', { returnUrl: true });
+
+        let settled = false;
+        resultPromise.then(() => { settled = true; });
+
+        await vi.advanceTimersByTimeAsync(OOB_URL_LISTEN_TIMEOUT_MS - 1);
+        // Flush microtasks without advancing real time further.
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(closeFn).not.toHaveBeenCalled();
+
+        // Let the backstop fire so the promise doesn't leak into later tests.
+        await vi.advanceTimersByTimeAsync(1);
+        await resultPromise;
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

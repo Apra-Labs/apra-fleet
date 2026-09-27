@@ -148,6 +148,13 @@ is a synchronous, in-process registry write, so there is no "could not
 start the local web server" failure mode and no listen-timeout backstop to
 reason about here.
 
+This console-relative shape applies only when the server process hosts the
+console (HTTP transport). Under `--transport stdio` no console is mounted in
+that process, so a secret-entry path would resolve to nothing; there the
+return-URL path falls back to the loopback `launchAuthWeb` page and `url`
+(and `absoluteUrl`) is an absolute `http://127.0.0.1:<port>/...` URL, bounded
+by `OOB_URL_LISTEN_TIMEOUT_MS` with a "could not start" fallback.
+
 A separate, still-loopback browser flow (`src/services/auth-web.ts`'s
 `launchAuthWeb`) exists for a different case entirely: the BLOCKING terminal
 path above, when no terminal emulator could be spawned at all (a headless

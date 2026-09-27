@@ -687,7 +687,10 @@
  * @property {string} url - Console-relative path to open for entering the secret (e.g.
  *   '/ui/#/secret-entry/<token>'), one-time and single-use. Resolve it against whatever origin
  *   the caller reaches the console on -- this is what makes it work from a browser that is not
- *   on the server machine (a LAN address, an SSH tunnel, a reverse proxy).
+ *   on the server machine (a LAN address, an SSH tunnel, a reverse proxy). This is the shape
+ *   when the server hosts the console (HTTP transport); under stdio transport no console is
+ *   hosted, so `url` is instead an absolute loopback URL (http://127.0.0.1:<port>/...) that only
+ *   a browser on the server machine can open.
  * @property {string} expiresAt - ISO-8601 timestamp after which the URL stops accepting submissions.
  * @property {string} absoluteUrl - The same `url`, already resolved by the server against
  *   APRA_FLEET_CONSOLE_BASE_URL when set, else its own bound origin. A best-effort, advisory
@@ -1115,8 +1118,9 @@ export class ApraFleet {
      * (`{url, expiresAt, absoluteUrl}`) instead of the usual plain-text
      * confirmation -- the call returns immediately without waiting for the
      * secret, which is stored once the user submits the form at that URL
-     * (apra-fleet-972p.2.1). `url` is console-relative; resolve it against
-     * whatever origin this caller reaches the console on. `absoluteUrl` is
+     * (apra-fleet-972p.2.1). `url` is console-relative when the server hosts
+     * the console (resolve it against whatever origin this caller reaches the
+     * console on), or an absolute loopback URL under stdio transport. `absoluteUrl` is
      * the server's own best-effort rendering of the same path and is only
      * advisory -- prefer resolving `url` yourself when reaching the console
      * through a tunnel or proxy the server does not know about.
