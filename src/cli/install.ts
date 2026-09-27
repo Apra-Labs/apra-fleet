@@ -1718,20 +1718,34 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
+  let serviceReused = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
     const svcMgr = await getServiceManager();
     try {
-      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';
+      if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
       try {
         await svcMgr.start();
         serviceRegistered = true;
       } catch (startErr) {
-        try { await svcMgr.unregister(); } catch {}
+        // Never delete a reused task: it predates this install (e.g. elevated).
+        if (!serviceReused) { try { await svcMgr.unregister(); } catch {} }
         throw startErr;
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+      // --force stopped the server; reporting success would leave it down silently.
+      if (force && (runningScope?.relevant || guardStoppedService)) {
+        console.error(`
+Error: install --force stopped the running apra-fleet server, but the service
+could not be registered/started, so the server is NOT running.
+Start it with:
+    ${serviceRestartCommand()}
+or re-run the install from an elevated prompt.
+`);
+        process.exit(1);
+      }
     }
   }
 
@@ -1747,7 +1761,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `registered and running${serviceReused ? ' (existing task reused)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

@@ -10,8 +10,11 @@ export interface ServiceStatus {
   enabled?: boolean;
 }
 
+/** 'reused': the platform kept an existing registration it could not recreate (Windows). */
+export type RegisterResult = 'created' | 'reused';
+
 export interface ServiceManager {
-  register(binaryPath: string, args: string[], logPath: string): Promise<void>;
+  register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult | void>;
   unregister(): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
