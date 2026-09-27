@@ -56,16 +56,17 @@ What shipped and is verified working:
   entry points, and the lane's argv is now built by a pure, unit-tested
   builder (`scripts/integ-lane-args.mjs`) instead of inline in the spawn call.
 
-Carried forward / still open:
-
-- The SEA binary's staleness guard (`tests/sea-http-verify.test.ts`) diffs
-  git-tracked SEA-relevant paths against the binary's own build hash, but the
-  built shell UI is gitignored, so that one input is checked via an mtime
-  proxy instead -- a byte-identical UI rebuild still advances that mtime and
-  trips the guard even though nothing the binary serves actually changed.
-  Tracked as an open P2 issue against the console epic; see
-  [docs/npm-packaging.md](docs/npm-packaging.md) for the generic fix
-  direction (replace the mtime proxy with a content comparison).
+- **The SEA binary's staleness guard no longer false-positives on a
+  byte-identical UI rebuild.** That guard (`tests/sea-http-verify.test.ts`)
+  diffs git-tracked SEA-relevant paths against the binary's own build hash,
+  but the built shell UI is gitignored, so that one input used to be checked
+  via an mtime proxy -- and a byte-identical UI rebuild advanced the mtime and
+  tripped the guard even though nothing the binary serves had changed. The
+  proxy is replaced by a content comparison: the SEA blob stores assets
+  verbatim, so each built shell-UI file's bytes are looked for inside the
+  binary itself. A `packages/apra-fleet-ui-kit` change, which the git-diff
+  half of the guard cannot see, is still caught (it changes the Vite output).
+  See [docs/npm-packaging.md](docs/npm-packaging.md).
 
 ## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
 

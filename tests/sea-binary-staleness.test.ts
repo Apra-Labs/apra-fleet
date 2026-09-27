@@ -3,8 +3,19 @@
 // smoke" suite. Drives the PURE predicate (evaluateSeaBinaryStaleness) with
 // injected inputs, so this needs no real binary build and runs under plain
 // `npm test`.
-import { describe, it, expect } from 'vitest';
-import { evaluateSeaBinaryStaleness, parseBuildHash } from './helpers/sea-binary-staleness.js';
+//
+// apra-fleet-v6t7.20 also covers findUiDistFilesNotEmbedded -- the content
+// comparison that replaced the old UI-dist mtime proxy -- against scratch
+// files, so it needs no real binary either.
+import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  evaluateSeaBinaryStaleness,
+  findUiDistFilesNotEmbedded,
+  parseBuildHash,
+} from './helpers/sea-binary-staleness.js';
 
 describe('evaluateSeaBinaryStaleness (apra-fleet-v6t7.17.1 staleness predicate)', () => {
   it('stale: a resolvable build hash with a relevant changed file reports stale, with a message naming both "stale" and "npm run build:binary"', () => {
@@ -100,5 +111,62 @@ describe('parseBuildHash', () => {
 
   it('returns null for garbage input', () => {
     expect(parseBuildHash('not a version string at all')).toBeNull();
+  });
+});
+
+describe('findUiDistFilesNotEmbedded (apra-fleet-v6t7.20 content comparison)', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A scratch shell dist plus a fake "binary" embedding the named files verbatim. */
+  function makeFixture(distFiles: Record<string, string>, embed: string[]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sea-ui-content-'));
+    tmpDirs.push(root);
+    const shellDistDir = path.join(root, 'dist');
+    for (const [rel, content] of Object.entries(distFiles)) {
+      const full = path.join(shellDistDir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    const binaryPath = path.join(root, 'fake-binary');
+    // Padding around the embedded assets mirrors a real SEA blob, where the
+    // asset bytes sit verbatim inside a much larger executable.
+    fs.writeFileSync(binaryPath, `\u0000NODE_SEA_BLOB${embed.map((rel) => distFiles[rel]).join('\u0000')}\u0000tail`);
+    return { shellDistDir, binaryPath };
+  }
+
+  it('fresh: reports nothing when every built asset is embedded verbatim, even after a byte-identical rebuild bumps mtimes (the old proxy\'s false positive)', () => {
+    const files = { 'index.html': '<div id="root"></div>', 'assets/index-abc123.js': 'console.log("shell")' };
+    const { shellDistDir, binaryPath } = makeFixture(files, ['index.html', 'assets/index-abc123.js']);
+
+    // Rebuild in place with identical bytes: mtimes now postdate the binary.
+    const future = new Date(Date.now() + 60_000);
+    for (const rel of Object.keys(files)) {
+      fs.writeFileSync(path.join(shellDistDir, rel), files[rel as keyof typeof files]);
+      fs.utimesSync(path.join(shellDistDir, rel), future, future);
+    }
+
+    expect(findUiDistFilesNotEmbedded({ binaryPath, shellDistDir })).toEqual([]);
+  });
+
+  it('stale: names the drifted asset when a built file\'s content is not in the binary (e.g. a ui-kit change git diff cannot see)', () => {
+    const { shellDistDir, binaryPath } = makeFixture(
+      { 'index.html': '<div id="root"></div>', 'assets/index-abc123.js': 'console.log("shell")' },
+      ['index.html'],
+    );
+
+    const drifted = findUiDistFilesNotEmbedded({ binaryPath, shellDistDir, distLabel: 'shell-ui/dist' });
+
+    expect(drifted).toEqual([path.join('shell-ui/dist', 'assets/index-abc123.js')]);
+  });
+
+  it('returns [] when the shell dist or the binary is absent (nothing to compare)', () => {
+    const { shellDistDir, binaryPath } = makeFixture({ 'index.html': 'x' }, ['index.html']);
+
+    expect(findUiDistFilesNotEmbedded({ binaryPath, shellDistDir: path.join(shellDistDir, 'nope') })).toEqual([]);
+    expect(findUiDistFilesNotEmbedded({ binaryPath: `${binaryPath}.missing`, shellDistDir })).toEqual([]);
   });
 });

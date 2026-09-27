@@ -388,17 +388,20 @@ missing shell dist is only a warning, since that path is also used for
 non-release dev iteration where the shell may not be built yet.
 
 **The SEA binary staleness guard is a hybrid check: git-tracked inputs
-diffed against the binary's own build hash, plus an mtime proxy for the one
-gitignored input a git diff can never see.** `tests/sea-http-verify.test.ts`'s
+diffed against the binary's own build hash, plus a content comparison for the
+one gitignored input a git diff can never see.** `tests/sea-http-verify.test.ts`'s
 SEA-binary smoke test parses the short git hash `build-sea.mjs` bakes into
 the binary's own `--version` output, then diffs the tracked SEA-relevant
 paths (`scripts/gen-sea-config.mjs`, `scripts/build-sea.mjs`,
 `packages/apra-fleet-shell-ui/src`, `packages/apra-fleet-shell-ui/package.json`,
 `src`) between that hash and HEAD, including anything currently uncommitted.
 Because `packages/apra-fleet-shell-ui/dist` is gitignored, a git diff can
-never see a change there, so the check separately falls back to comparing
-that dist's `index.html` mtime against the binary's own mtime as a proxy for
-"was the shell rebuilt after the binary." A binary whose build hash cannot be
+never see a change there, so the check separately compares that dist's
+contents against the binary: a SEA blob stores its assets verbatim, so every
+built shell-UI file the binary was packaged with is present byte-for-byte
+inside the binary, and any dist file whose bytes are absent is real drift
+(`findUiDistFilesNotEmbedded` in `tests/helpers/sea-binary-staleness.ts`).
+A binary whose build hash cannot be
 resolved to a real commit (shallow clone, rewritten history, or a dev/npm
 build with no git info) is treated as staleness-unknown, which counts as
 stale rather than being assumed fresh. This is deliberate: an actually-stale
@@ -406,16 +409,15 @@ binary must fail loudly and name the reason, never silently pass a smoke test
 against assets that no longer match the source tree. The tracked-path list
 (`SEA_RELEVANT_GIT_PATHS`) does not include `packages/apra-fleet-ui-kit` --
 the shell's Vite build pulls it in as a dependency, so a `ui-kit` change is
-caught only through the mtime proxy on the built `dist/index.html`, not
-through the git-diff half of the check. The mtime proxy's own known
-limitation is that it cannot distinguish a meaningful rebuild from a
-byte-identical one: rebuilding the shell UI with unchanged output still
-advances `dist/index.html`'s mtime, so the guard can trip even when nothing
-the binary serves actually changed. Do not fix that by dropping or weakening
-the mtime proxy -- it is the only thing that catches a `ui-kit` change at
-all. The correct fix is to replace it with a content comparison (a hash of
-the shell dist, or the binary's own embedded manifest) that still catches a
-real `ui-kit`-driven change but no longer fires on a no-op rebuild.
+caught only through this content comparison on the built dist, not through
+the git-diff half of the check. Never drop or weaken that half of the guard:
+it is the only thing that catches a `ui-kit` change at all. It used to be an
+mtime comparison (`dist/index.html` newer than the binary), which could not
+tell a meaningful rebuild from a byte-identical one and so fired on a no-op
+`npm run build:ui`; apra-fleet-v6t7.20 replaced it with the byte comparison
+above, which still catches a real `ui-kit`-driven change (Vite's output
+filenames are content-hashed and are named in `index.html`) but no longer
+fires on a no-op rebuild.
 
 ### 7.2 Other package.json fields
 

@@ -15,12 +15,13 @@
 // This module is split into a PURE predicate (evaluateSeaBinaryStaleness)
 // that takes already-resolved inputs and makes the stale/fresh/unknown call
 // with no I/O at all, and an IMPURE gatherer (resolveSeaBinaryStaleness)
-// that shells out to `git` and reads real file mtimes to build those inputs
-// from an actual on-disk repo + binary. tests/sea-binary-staleness.test.ts
+// that shells out to `git` and compares the built shell-UI assets byte-for-byte
+// against the binary's embedded copy to build those inputs from an actual
+// on-disk repo + binary. tests/sea-binary-staleness.test.ts
 // (apra-fleet-v6t7.17.2) drives the pure predicate directly with injected
 // inputs, so it needs no real binary build.
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -28,7 +29,7 @@ import { join } from 'node:path';
  * Relative to the repo root. Deliberately does NOT include
  * packages/apra-fleet-shell-ui/dist -- that tree is gitignored (built UI
  * assets), so `git diff`/`git status` can never see a change there; its
- * freshness is instead checked via mtime in resolveSeaBinaryStaleness().
+ * freshness is instead checked by content in findUiDistFilesNotEmbedded().
  */
 export const SEA_RELEVANT_GIT_PATHS = [
   'scripts/gen-sea-config.mjs',
@@ -38,8 +39,44 @@ export const SEA_RELEVANT_GIT_PATHS = [
   'src',
 ];
 
-/** The gitignored built-UI-asset proxy file checked via mtime (see header). */
-export const SEA_UI_DIST_MTIME_PROXY = join('packages', 'apra-fleet-shell-ui', 'dist', 'index.html');
+/** The gitignored built-UI-asset tree, checked by content against the binary (see header). */
+export const SEA_UI_DIST_DIR = join('packages', 'apra-fleet-shell-ui', 'dist');
+
+/** Every file under `dir`, as paths relative to it (recursive, files only). */
+function listFilesRecursive(dir: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFilesRecursive(join(dir, entry.name), rel));
+    else if (entry.isFile()) out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * apra-fleet-v6t7.20: content comparison replacing the old mtime proxy.
+ *
+ * The SEA blob stores assets verbatim, so every file of the built shell dist
+ * that the binary was packaged with is present byte-for-byte inside the binary
+ * itself. Returns the dist files whose exact bytes are NOT in the binary --
+ * i.e. real content drift between the built console shell and what the binary
+ * serves. A byte-identical rebuild of the shell UI (which advanced the mtime
+ * the old proxy compared, producing a false "stale") finds every file still
+ * embedded and reports nothing; a `packages/apra-fleet-ui-kit` change, which
+ * the git-diff half of the check cannot see, changes the Vite output and is
+ * still caught here.
+ *
+ * Returns [] when either side is missing (nothing to compare).
+ */
+export function findUiDistFilesNotEmbedded(opts: { binaryPath: string; shellDistDir: string; distLabel?: string }): string[] {
+  const { binaryPath, shellDistDir } = opts;
+  const label = opts.distLabel ?? SEA_UI_DIST_DIR;
+  if (!existsSync(shellDistDir) || !existsSync(binaryPath)) return [];
+  const binary = readFileSync(binaryPath);
+  return listFilesRecursive(shellDistDir)
+    .filter((rel) => !binary.includes(readFileSync(join(shellDistDir, rel))))
+    .map((rel) => join(label, rel));
+}
 
 const HASH_RE = /\bv?[\d]+\.[\d]+\.[\d]+_([0-9a-f]{6,40})\b/;
 
@@ -67,8 +104,8 @@ export interface SeaStalenessInput {
   hashResolvable: boolean;
   /**
    * SEA-relevant paths (tracked git changes since buildHash, PLUS any
-   * currently-uncommitted changes to those same paths, PLUS the UI-dist
-   * mtime proxy when it is newer than the binary) that differ from what the
+   * currently-uncommitted changes to those same paths, PLUS any built shell-UI
+   * asset whose bytes are not embedded in the binary) that differ from what the
    * binary was built against. Empty means "nothing relevant changed" --
    * fresh. Non-empty means stale; the list is folded into the failure
    * message so a human can see WHY without re-deriving it.
@@ -121,8 +158,9 @@ export function evaluateSeaBinaryStaleness(input: SeaStalenessInput): SeaStalene
  * Impure gatherer: runs the real binary's `--version`, checks the parsed
  * hash against this repo's git history, diffs SEA-relevant tracked paths
  * (committed since that hash, plus anything currently uncommitted), and
- * folds in an mtime check against the gitignored UI-dist proxy file --
- * then hands all of that to the pure predicate above.
+ * folds in a byte-for-byte comparison of the gitignored built shell-UI assets
+ * against the binary's embedded copy -- then hands all of that to the pure
+ * predicate above.
  *
  * Never throws: any git/spawn failure degrades to the same "stale-unknown"
  * verdict evaluateSeaBinaryStaleness() already produces for an unresolvable
@@ -169,7 +207,7 @@ export function resolveSeaBinaryStaleness(opts: { binaryPath: string; root: stri
   } catch {
     // A diff failure with an already-resolvable hash is unexpected, but
     // fail safe (treat as no committed changes found) rather than throw --
-    // the uncommitted-changes check and the mtime proxy below still run.
+    // the uncommitted-changes check and the content probe below still run.
   }
 
   try {
@@ -186,16 +224,11 @@ export function resolveSeaBinaryStaleness(opts: { binaryPath: string; root: stri
   }
 
   try {
-    const uiDistProxy = join(root, SEA_UI_DIST_MTIME_PROXY);
-    if (existsSync(uiDistProxy) && existsSync(binaryPath)) {
-      const uiMtime = statSync(uiDistProxy).mtimeMs;
-      const binaryMtime = statSync(binaryPath).mtimeMs;
-      if (uiMtime > binaryMtime) {
-        changedRelevantFiles.push(`${SEA_UI_DIST_MTIME_PROXY} (rebuilt after the binary was built)`);
-      }
+    for (const rel of findUiDistFilesNotEmbedded({ binaryPath, shellDistDir: join(root, SEA_UI_DIST_DIR) })) {
+      changedRelevantFiles.push(`${rel} (content is not embedded in the binary)`);
     }
   } catch {
-    // best-effort mtime probe, see above
+    // best-effort content probe, see above
   }
 
   return evaluateSeaBinaryStaleness({
