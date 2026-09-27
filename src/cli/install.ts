@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
@@ -25,6 +25,7 @@ import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transfo
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { downloadAndExtractBeads, verifyBeads, resolveBeadsAsset, BEADS_VERSION } from './beads-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
@@ -62,6 +63,42 @@ export function _resetDoltStepDeps(): void {
 function doltStepEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
   return process.env.APRA_FLEET_ENABLE_DOLT_INSTALL === '1';
+}
+
+// --- Beads (bd) CLI install step: injectable deps + explicit gate ---
+//
+// Same two mechanisms as the dolt step above, for the same reason: the beads
+// step does a REAL network download (~53MB from GitHub) plus a real `bd
+// --version` exec, which must not run from every unit test that happens to
+// call runInstall() without caring about beads.
+// 1. Dependency injection: beadsStepDeps.downloadAndExtractBeads / .verifyBeads
+//    default to the real implementations but can be swapped for fakes in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts) the whole
+//    step is skipped UNLESS APRA_FLEET_ENABLE_BEADS_INSTALL=1 is also set -- an
+//    explicit, opt-in escape hatch for tests that specifically want to exercise
+//    this path (and are expected to inject fakes via _setBeadsStepDeps when they
+//    do). The gate is OFF by default so `npm test` downloads nothing.
+//
+// NOTE the deliberate asymmetry with dolt: when this step is ENABLED and fails,
+// it is FATAL (see the step itself) -- unlike dolt, which warns and continues.
+export interface BeadsStepDeps {
+  downloadAndExtractBeads: typeof downloadAndExtractBeads;
+  verifyBeads: typeof verifyBeads;
+}
+const realBeadsStepDeps: BeadsStepDeps = { downloadAndExtractBeads, verifyBeads };
+let beadsStepDeps: BeadsStepDeps = realBeadsStepDeps;
+/** Test-only: inject fakes for the beads CLI install step's download/verify calls. */
+export function _setBeadsStepDeps(overrides: Partial<BeadsStepDeps>): void {
+  beadsStepDeps = { ...realBeadsStepDeps, ...overrides };
+}
+/** Test-only: restore the real (non-mocked) beads step dependencies. */
+export function _resetBeadsStepDeps(): void {
+  beadsStepDeps = realBeadsStepDeps;
+}
+
+function beadsStepEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_BEADS_INSTALL === '1';
 }
 
 // Detect SEA mode
@@ -1605,27 +1642,62 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     }
   }
 
-  // --- Beads install step ---
-  // shell:true required on Windows - npm global packages install as .cmd wrappers
-  // that cannot be directly spawned by Node without a shell
+  // --- Beads (bd) install step (apra-fleet-i9ag.13.2) ---
+  // Portable bd binary, downloaded straight into BIN_DIR (never system PATH),
+  // exactly like the dolt step above: verify an already-present binary first,
+  // download+checksum-verify+extract otherwise.
+  //
+  // This replaced a `npm install -g @beads/bd@...` invocation. That required
+  // node/npm on the target machine, which the released single-file binary
+  // explicitly does NOT, so on a clean host the step failed and was swallowed
+  // into a warning -- leaving the console backlog and Sprints with no bd while
+  // the install still reported success.
+  //
   // KB + code intelligence is the final step (before the optional service step),
   // so Beads sits one slot earlier than it does on main.
   const beadsStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
   console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
-  try {
-    // Check if already installed
+  const beadsBinaryName = process.platform === 'win32' ? 'bd.exe' : 'bd';
+  const beadsPath = path.join(BIN_DIR, beadsBinaryName);
+  let beadsVersion = 'not available';
+  if (beadsStepEnabled()) {
     try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed - skip
-    } catch {
-      // not installed - install it
-      // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
-      // pin -- see that file's comment for why (schema v66 compatibility).
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
+      let installed = false;
+      // Check if already installed (and actually usable)
+      if (fs.existsSync(beadsPath)) {
+        try {
+          beadsVersion = await beadsStepDeps.verifyBeads(beadsPath);
+          installed = true;
+        } catch {
+          // existing binary is broken/unusable -- fall through and (re)download
+        }
+      }
+      if (!installed) {
+        // not installed (or broken) -- download, checksum-verify and verify it
+        const extractedPath = await beadsStepDeps.downloadAndExtractBeads(BIN_DIR);
+        beadsVersion = await beadsStepDeps.verifyBeads(extractedPath);
+      }
+      console.log(`    [OK] Beads ${beadsVersion} at ${beadsPath}`);
+    } catch (err) {
+      // FATAL -- deliberately UNLIKE the dolt step above, which warns and
+      // continues. The released binary promises no node prerequisite, and the
+      // console backlog and Sprints both need bd on this machine, so an install
+      // that skips beads and still reports success is a false success.
+      let assetLabel = `the beads ${BEADS_VERSION} release asset`;
+      try {
+        const asset = resolveBeadsAsset(process.platform, process.arch);
+        assetLabel = `release asset ${asset.assetName} (${asset.url})`;
+      } catch {
+        // Unsupported platform/arch: the underlying error already names both.
+      }
+      console.error(
+        `\nError: the Beads (bd) task tracker could not be installed: ${(err as Error).message}\n` +
+          `       Tried ${assetLabel}, destination ${beadsPath}.\n` +
+          `       Beads is required -- the console backlog and Sprints cannot run without it, so\n` +
+          `       this install is incomplete. Resolve the reason above and re-run 'apra-fleet install'.`,
+      );
+      process.exit(1);
     }
-  } catch (err) {
-    // non-fatal: warn but don't fail the install
-    console.warn('  - Beads install skipped - npm not available or install failed');
   }
 
   // --- KB + code intelligence setup step ---
@@ -1757,13 +1829,10 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // --- Done ---
-  let beadsVersion = 'installed';
-  try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
-    beadsVersion = (versionOut as string).trim() || 'installed';
-  } catch {
-    beadsVersion = 'not available';
-  }
+  // beadsVersion comes from the beads step above -- i.e. the version of the
+  // binary actually installed at beadsPath. It is deliberately NOT a bare `bd`
+  // PATH probe any more: the installer does not put BIN_DIR on PATH, so a bd
+  // that is installed and working was previously reported as "not available".
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;

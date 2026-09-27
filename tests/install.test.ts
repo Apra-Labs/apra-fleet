@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import {
+  runInstall,
+  _setSeaOverride,
+  _setManifestOverride,
+  _setBeadsStepDeps,
+  _resetBeadsStepDeps,
+} from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -421,9 +427,10 @@ describe('install step 8 — Beads task tracker', () => {
     logSpy.mockRestore();
   });
 
-  it('skips npm install when bd is already installed', async () => {
-    // bd --version succeeds — already installed
-    vi.mocked(execFileSync).mockReturnValue('bd 1.2.3\n' as any);
+  it('never shells out to npm for beads on any path (apra-fleet-i9ag.13.2)', async () => {
+    // bd --version succeeds — an already-installed bd, the path that used to be
+    // the only reason npm was not called.
+    vi.mocked(execFileSync).mockReturnValue('bd version 1.3.0 (f45b249ce)\n' as any);
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -432,30 +439,60 @@ describe('install step 8 — Beads task tracker', () => {
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
 
-    // npm install -g @beads/bd@1.1.2 should NOT have been called
-    const npmCall = vi.mocked(execFileSync).mock.calls.find(
-      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.1.2')
+    // Beads is installed from its release binary now, never via npm. This
+    // deliberately matches ANY npm beads install rather than one pinned version
+    // string: the previous assertion pinned '@beads/bd@1.1.2' while the product
+    // had moved on to 1.3.0, so it could never have failed.
+    const npmBeadsCall = vi.mocked(execFileSync).mock.calls.find(
+      c => typeof c[0] === 'string'
+        && /(^|[\\/])npm(\.cmd)?$/.test(c[0] as string)
+        && Array.isArray(c[1])
+        && (c[1] as string[]).some(a => typeof a === 'string' && /beads|\bbd\b/.test(a))
     );
-    expect(npmCall).toBeUndefined();
+    expect(npmBeadsCall).toBeUndefined();
 
     logSpy.mockRestore();
   });
 
-  it('warns non-fatally when npm install fails', async () => {
-    // bd --version throws, then npm install also throws
-    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('npm: not found'); });
+  // REWRITTEN (apra-fleet-i9ag.13.2). This test was 'warns non-fatally when npm
+  // install fails' and asserted console.warn('Beads install skipped') plus a
+  // resolved runInstall -- i.e. exactly the silent-skip-and-report-success
+  // behaviour that left a clean host with no bd. Beads is now fatal-and-loud, so
+  // the test asserts the inverse contract rather than being deleted.
+  it('fails the install loudly when the beads install fails (apra-fleet-i9ag.13.2)', async () => {
+    process.env.APRA_FLEET_ENABLE_BEADS_INSTALL = '1';
+    _setBeadsStepDeps({
+      downloadAndExtractBeads: vi.fn().mockRejectedValue(new Error('network unreachable')),
+      verifyBeads: vi.fn(),
+    } as any);
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called');
+    });
 
-    // Should not throw
-    await expect(runInstall([])).resolves.toBeUndefined();
+    try {
+      // Non-zero exit, not a resolved install.
+      await expect(runInstall([])).rejects.toThrow('process.exit called');
+      expect(exitSpy).toHaveBeenCalledWith(1);
 
-    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).toContain('Beads install skipped');
+      const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      expect(errors).toMatch(/Beads/);
+      expect(errors).toContain('network unreachable');
 
-    logSpy.mockRestore();
-    warnSpy.mockRestore();
+      // ...and specifically NOT the old skipped-and-continuing warning.
+      const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      expect(warns).not.toContain('Beads install skipped');
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+      _resetBeadsStepDeps();
+      delete process.env.APRA_FLEET_ENABLE_BEADS_INSTALL;
+    }
   });
 });
 
