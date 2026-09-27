@@ -29,12 +29,21 @@ import path from 'node:path';
  * @typedef {Object} IsolatedHome
  * @property {string} tempHome - the temp directory now acting as HOME/USERPROFILE.
  * @property {string} dataDir - tempHome/.apra-fleet/data (same relative layout src/paths.ts's default uses).
+ * @property {string} seDataDir - tempHome/.apra-fleet-se (same relative layout packages/apra-fleet-se's spawner.mjs/history.mjs/ledger.mjs default FLEET_SE_DATA_DIR resolution uses -- see seDataDirFor()).
  * @property {() => Promise<void>} restore - restores every touched env var to its exact prior value (deleting any var that was previously unset) and removes the temp dir. Idempotent.
  */
 
 // The full set of env vars this helper owns. Order matters for HOMEDRIVE/HOMEPATH
 // derivation below but not for save/restore.
-const HOME_VARS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APRA_FLEET_DATA_DIR'];
+//
+// FLEET_SE_DATA_DIR (apra-fleet-v6t7.16): packages/apra-fleet-se's
+// src/supervisor/{spawner,history,ledger}.mjs each default their data dir to
+// os.homedir()/.apra-fleet-se when this var is unset, so an isolated HOME
+// alone still leaves that package writing (and its supervisor.log
+// accumulating) under the REAL developer home unless this helper also
+// redirects FLEET_SE_DATA_DIR. Harmless for callers outside apra-fleet-se
+// (root vitest, apra-fleet-workflow): nothing there reads this var.
+const HOME_VARS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APRA_FLEET_DATA_DIR', 'FLEET_SE_DATA_DIR'];
 
 /**
  * Derive the win32 HOMEDRIVE/HOMEPATH pair from a directory the same way
@@ -61,6 +70,16 @@ function deriveHomeDriveAndPath(dir) {
  */
 export function fleetDataDirFor(homeDir) {
   return path.join(homeDir, '.apra-fleet', 'data');
+}
+
+/**
+ * The relative layout under a home dir that packages/apra-fleet-se's
+ * src/supervisor/{spawner,history,ledger}.mjs default FLEET_SE_DATA_DIR
+ * resolution uses (path.join(os.homedir(), '.apra-fleet-se')).
+ * @param {string} homeDir
+ */
+export function seDataDirFor(homeDir) {
+  return path.join(homeDir, '.apra-fleet-se');
 }
 
 /**
@@ -118,6 +137,7 @@ export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
   // header promises still holds -- there's nothing left to resolve later.
   const tempHome = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
   const dataDir = fleetDataDirFor(tempHome);
+  const seDataDir = seDataDirFor(tempHome);
 
   /** @type {Record<string, string | undefined>} */
   const saved = {};
@@ -129,6 +149,7 @@ export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
   process.env.HOMEDRIVE = homedrive;
   process.env.HOMEPATH = homepath;
   process.env.APRA_FLEET_DATA_DIR = dataDir;
+  process.env.FLEET_SE_DATA_DIR = seDataDir;
 
   assertHomeResolves(tempHome);
 
@@ -152,7 +173,7 @@ export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
     }
   };
 
-  return { tempHome, dataDir, restore };
+  return { tempHome, dataDir, seDataDir, restore };
 }
 
 /**
@@ -188,5 +209,6 @@ export function buildIsolatedHomeEnv(tempHome, baseEnv = process.env) {
   env.HOMEDRIVE = homedrive;
   env.HOMEPATH = homepath;
   env.APRA_FLEET_DATA_DIR = fleetDataDirFor(tempHome);
+  env.FLEET_SE_DATA_DIR = seDataDirFor(tempHome);
   return env;
 }

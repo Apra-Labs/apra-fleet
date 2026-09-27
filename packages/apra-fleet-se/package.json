@@ -15,7 +15,7 @@
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs mock",
-    "test:slow": "node --test --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout test/slow/*.test.mjs",
+    "test:slow": "node --test --import ./test/isolated-home-setup.mjs --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout test/slow/*.test.mjs",
     "test:unit": "node scripts/run-tests.mjs mock",
     "test:integration": "node scripts/run-tests.mjs real",
     "test:record": "node scripts/run-tests.mjs record",

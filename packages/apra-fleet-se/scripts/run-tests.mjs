@@ -22,13 +22,23 @@
 // child is still running, which a fully synchronous spawnSync cannot give
 // us.
 import { spawn, spawnSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.join(__dirname, '..');
 const isWindows = process.platform === 'win32';
+
+// apra-fleet-v6t7.16: run-level home isolation, applied via --import before
+// any test file's own top-level code runs (see
+// test/isolated-home-setup.mjs's header for the full rationale). A file URL
+// (not a bare path) so it resolves correctly regardless of this process's
+// cwd -- --import resolves relative specifiers like a bare path would, but a
+// file:// URL is unambiguous.
+const isolatedHomeSetupImport = pathToFileURL(path.join(pkgRoot, 'test', 'isolated-home-setup.mjs')).href;
 
 const MODES = { mock: '1', real: '0', record: 'record' };
 const mode = process.argv[2];
@@ -42,6 +52,55 @@ const timeoutMs = (() => {
     const raw = Number(process.env.APRA_TEST_TIMEOUT_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
 })();
+
+// apra-fleet-v6t7.16: test/isolated-home-setup.mjs's per-test-file-process
+// exit handler cleans up its own apra-fleet-se-test-run-* temp home, but
+// that handler is registered via process.on('exit'), which never fires when
+// a hung test file is force-killed (taskkill /F on Windows, SIGKILL on
+// POSIX -- see killTree()/runBounded() above), leaking the temp dir under
+// os.tmpdir() indefinitely. Sweep those stale dirs from THIS parent process
+// -- which outlives every individual test-file child -- BEFORE spawning the
+// node --test run below, rather than from inside isolated-home-setup.mjs
+// itself: that module is imported by every test-file process via --import,
+// so a sweep there would race with and delete a SIBLING file's still-live
+// temp home in the same concurrent run.
+//
+// Age-gated by this run's own wall-clock bound (timeoutMs) so a temp home
+// belonging to a DIFFERENT, still-running concurrent invocation of this
+// script (e.g. two suites launched in parallel by an outer runner) is never
+// mistaken for stale and deleted out from under it -- only a dir older than
+// the longest any single run of this script is allowed to take could
+// possibly be an orphan.
+const STALE_TEMP_HOME_PREFIX = 'apra-fleet-se-test-run-';
+
+function sweepStaleTempHomes() {
+    let entries;
+    try {
+        entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true });
+    } catch {
+        return; // best effort -- an unreadable tmpdir is not this script's problem to fix
+    }
+    const now = Date.now();
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.startsWith(STALE_TEMP_HOME_PREFIX)) continue;
+        const fullPath = path.join(os.tmpdir(), entry.name);
+        let stat;
+        try {
+            stat = fs.statSync(fullPath);
+        } catch {
+            continue; // already gone, or a race with something else cleaning it up
+        }
+        const ageMs = now - stat.mtimeMs;
+        if (ageMs <= timeoutMs) continue; // could still belong to a live, concurrent run
+        try {
+            fs.rmSync(fullPath, { recursive: true, force: true, maxRetries: 5 });
+        } catch {
+            // best effort -- leave it for the next sweep rather than fail this run over it
+        }
+    }
+}
+
+sweepStaleTempHomes();
 
 // TEST_CONCURRENCY (test/helpers/test-concurrency.mjs) is exported into the
 // test workers' env below so test/helpers/scaled-timeout.mjs can derive
@@ -159,6 +218,7 @@ const result = await runBounded(
     process.execPath,
     [
         '--test',
+        `--import=${isolatedHomeSetupImport}`,
         '--test-reporter=./test/helpers/timestamped-reporter.mjs',
         '--test-reporter-destination=stdout',
         `--test-concurrency=${TEST_CONCURRENCY}`,
