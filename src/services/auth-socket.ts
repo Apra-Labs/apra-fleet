@@ -9,6 +9,7 @@ import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb, TTL_MS as AUTH_WEB_TTL_MS, type AuthWebMode } from './auth-web.js';
+import { createSecretEntry, isConsoleHosted } from './secret-entry.js';
 import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
@@ -310,19 +311,32 @@ type OobLaunchFn = (
 
 
 /**
- * Launch the local browser credential-entry UI (auth-web.ts's `launchAuthWeb`,
- * UNCHANGED -- same single-use form, same POST-to-store flow) and return its
- * URL + expiry as soon as the server is listening, WITHOUT waiting for the
- * user to submit. Used when the caller cannot (or does not want to) block on
- * `waitForPassword()` -- no TTY attached, or `return_url: true` was passed
- * (apra-fleet-972p.2.1, F3).
+ * Hand out a URL for single-use, out-of-band secret entry and return it +
+ * its expiry immediately, WITHOUT waiting for the user to submit. Used when
+ * the caller cannot (or does not want to) block on `waitForPassword()` -- no
+ * TTY attached, or `return_url: true` was passed (apra-fleet-972p.2.1, F3).
  *
- * `onSubmit` is wired directly into `launchAuthWeb`'s POST handler (secret
- * stored on form submit, per that module's existing contract) -- callers that
- * need bespoke storage logic (e.g. `credential_store_set` needs to call
- * `credentialSet()` with persist/policy/members/ttl, none of which this
- * service layer knows about) pass their own `onOobSubmit`; the default falls
- * back to the same `submitPassword()` the blocking/terminal path uses.
+ * Two branches, chosen by whether THIS process serves the console
+ * (secret-entry.ts `isConsoleHosted()`):
+ *
+ * - Console hosted (HTTP transport): register a console-hosted entry
+ *   (secret-entry.ts `createSecretEntry`) and return its CONSOLE-RELATIVE
+ *   path (e.g. `/ui/#/secret-entry/...`), which resolves wherever the caller
+ *   can reach the console (LAN, an SSH tunnel on the console port, a remote
+ *   install) -- never a loopback-only scheme/host/port. There is no server
+ *   to listen on here, so no "could not start" failure mode.
+ * - No console in this process (stdio transport): a console-relative path
+ *   would resolve to nothing, so launch the local browser credential-entry
+ *   UI (auth-web.ts's `launchAuthWeb`) and return its ABSOLUTE loopback URL
+ *   as soon as the server is listening, or a fallback string if it cannot
+ *   start (bounded by OOB_URL_LISTEN_TIMEOUT_MS).
+ *
+ * `onSubmit` is wired directly into whichever branch receives the submitted
+ * value -- callers that need bespoke storage logic (e.g.
+ * `credential_store_set` needs to call `credentialSet()` with
+ * persist/policy/members/ttl, none of which this service layer knows about)
+ * pass their own `onOobSubmit`; the default falls back to the same
+ * `submitPassword()` the blocking/terminal path uses.
  */
 function collectOobUrl(
   mode: 'password' | 'api-key' | 'confirm',
@@ -335,11 +349,16 @@ function collectOobUrl(
     return Promise.resolve({ fallback: '[FAIL] return_url is not supported for confirmation prompts.' });
   }
 
-  const webMode: AuthWebMode = mode;
   const webPrompt = _opts?.prompt
     ?? (mode === 'api-key' ? `Enter API key for ${memberName}` : `Enter SSH password for ${memberName}`);
   const onSubmit = _opts?.onOobSubmit ?? ((value: string) => submitPassword(memberName, value));
 
+  if (isConsoleHosted()) {
+    const entry = createSecretEntry({ name: memberName, prompt: webPrompt, onSubmit });
+    return Promise.resolve({ url: entry.path, expiresAt: entry.expiresAt });
+  }
+
+  const webMode: AuthWebMode = mode;
   return new Promise((resolve) => {
     let settled = false;
     let listenTimer: ReturnType<typeof setTimeout> | undefined;
@@ -541,13 +560,16 @@ export async function collectOobPassword(
  * Collect an API key out-of-band.
  *
  * `returnUrl` (apra-fleet-972p.2.1, F3): when true, skips the terminal/socket
- * blocking flow entirely and resolves as soon as the local credential-entry
- * web server is listening, with `{ url, expiresAt }` set instead of
- * `password` -- the secret itself arrives later via `onOobSubmit` (or
+ * blocking flow entirely and resolves immediately with `{ url, expiresAt }`
+ * instead of `password` -- `url` is a console-relative entry path when this
+ * process serves the console (the caller resolves it against whatever origin
+ * the operator reaches the console on), or an absolute loopback URL under
+ * stdio transport (see collectOobUrl). The secret itself arrives later via `onOobSubmit` (or
  * `submitPassword()` if no `onOobSubmit` is given) when the user submits the
- * form. Callers should pass `true` here whenever they cannot block on a
- * human being present at a TTY (`credential_store_set` does this whenever
- * `process.stdin.isTTY` is falsy, or the caller explicitly asked for it).
+ * console-hosted entry form. Callers should pass `true` here whenever they
+ * cannot block on a human being present at a TTY (`credential_store_set`
+ * does this whenever `process.stdin.isTTY` is falsy, or the caller
+ * explicitly asked for it).
  * @see collectOobInput
  */
 export async function collectOobApiKey(

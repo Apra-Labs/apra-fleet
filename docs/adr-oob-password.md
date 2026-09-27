@@ -286,3 +286,39 @@ Run a localhost HTTP endpoint for password submission. Rejected: opens a network
 3. Manual test: register with `auth_type=password`, no password -> terminal pops up -> enter password -> retry succeeds
 4. Manual test (headless): `DISPLAY=` -> returns manual instructions instead of auto-launching
 5. Manual test (backwards compat): register with password in params -> works as before
+
+## Amendment (2026-09-27): return_url collection moved off the loopback server (apra-fleet-i9ag.11)
+
+The `return_url` collection path described above (`credential_store_set`'s
+headless/service-caller flow, F3/apra-fleet-972p.2.1) originally reused the
+same loopback ephemeral-port web server this ADR documents
+(`src/services/auth-web.ts`'s `launchAuthWeb`): the returned URL was
+`http://127.0.0.1:<random port>/<token>`, reachable only from a browser on the
+server machine itself. That is fine for the BLOCKING on-box fallback this ADR
+covers (a human already sitting at the server's own terminal), but it meant
+"set a secret from the console" failed for any browser that was not on the
+server machine -- a LAN client, an SSH tunnel forwarding only the console's
+port, or any remote install could not reach a random loopback port on a
+different host.
+
+The `return_url` path (and only that path) was moved to a console-hosted,
+one-time entry page instead: `POST /api/secret-entry/prompt` + `/submit`
+(a route module under the console's existing `/api` guard), rendered at the
+`/ui` hash route `#/secret-entry/<token>`. The token lives in the URL
+fragment, never a path segment or query string, so it never reaches a server
+access log or a `Referer` header; the entry is single-use with a 10-minute
+TTL, and the browser's POSTs carry the same `apra_console_token` cookie
+(`SameSite=Strict`) every other console call already uses. That cookie is
+CSRF / same-site protection, not network authentication: `GET /ui` is
+unguarded and hands a valid cookie to any client that can reach the console
+port, so the security these routes actually rest on is the single-use token
+itself plus its short TTL, and reaching the console port -- not holding the
+cookie -- is the real trust boundary (pre-existing console behaviour,
+unchanged by this move). Full detail:
+`docs/console-architecture.md`'s "Console-hosted secret entry" section.
+
+**This loopback server itself was not removed** -- it remains exactly as
+described above for the BLOCKING flow's "no terminal available" fallback,
+where the browser is by construction on the server machine and a loopback URL
+introduces no off-box gap. Only the `return_url` collection path's target
+changed.

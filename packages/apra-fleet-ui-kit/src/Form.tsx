@@ -32,6 +32,16 @@ export interface TextFieldProps {
   type?: string;
   required?: boolean;
   placeholder?: string;
+  /** Forwarded to the underlying <input autocomplete>. Undefined (the
+   *  default) omits the attribute entirely, preserving every existing
+   *  caller's current browser-default behaviour. */
+  autoComplete?: string;
+  /** Forwarded to the underlying <input autofocus>. Defaults to false/
+   *  unset, preserving every existing caller's current behaviour. */
+  autoFocus?: boolean;
+  /** Forwarded to the underlying <input disabled>. Defaults to false/unset,
+   *  preserving every existing caller's current behaviour. */
+  disabled?: boolean;
 }
 
 /** Labelled single-line text/password/number input, controlled by the caller. */
@@ -42,7 +52,10 @@ export function TextField({
   onChange,
   type = "text",
   required,
-  placeholder
+  placeholder,
+  autoComplete,
+  autoFocus,
+  disabled
 }: TextFieldProps) {
   return (
     <div style={fieldWrapperStyle}>
@@ -57,6 +70,9 @@ export function TextField({
         value={value}
         required={required}
         placeholder={placeholder}
+        autoComplete={autoComplete}
+        autoFocus={autoFocus}
+        disabled={disabled}
         onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
         style={inputStyle}
       />
