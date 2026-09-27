@@ -9,6 +9,8 @@ import {
   _setManifestOverride,
   _setBeadsStepDeps,
   _resetBeadsStepDeps,
+  _setDoltStepDeps,
+  _resetDoltStepDeps,
 } from '../src/cli/install.js';
 
 // apra-fleet-i9ag.13.3 -- vitest coverage for how install.ts's beads step
@@ -93,7 +95,9 @@ describe('beads CLI install step wiring (apra-fleet-i9ag.13.3)', () => {
     _setSeaOverride(null);
     _setManifestOverride(null);
     _resetBeadsStepDeps();
+    _resetDoltStepDeps();
     delete process.env.APRA_FLEET_ENABLE_BEADS_INSTALL;
+    delete process.env.APRA_FLEET_ENABLE_DOLT_INSTALL;
     logSpy.mockRestore();
     warnSpy.mockRestore();
     errorSpy.mockRestore();
@@ -303,17 +307,33 @@ describe('beads CLI install step wiring (apra-fleet-i9ag.13.3)', () => {
     expect(beadsLine).toBeDefined();
   });
 
-  it('leaves the dolt step non-fatal: a dolt failure still warns and the install succeeds', async () => {
+  it('leaves the dolt step non-fatal: a REAL injected dolt failure still only warns and the install succeeds', async () => {
     // Guards the deliberate asymmetry from the other side -- making beads fatal
-    // must not have made dolt fatal too. The dolt step stays gated off here, so
-    // it reports "not available" without downloading, and the install still ends
-    // successfully with beads installed.
+    // must not have made dolt fatal too. An earlier version of this test left
+    // the dolt step GATED OFF, so it never induced a dolt failure at all and
+    // only asserted the gated-off "not available" line -- the name overclaimed
+    // what was actually exercised. It now opts the dolt step IN
+    // (APRA_FLEET_ENABLE_DOLT_INSTALL=1) and injects a REJECTING
+    // downloadAndExtractDolt through the dolt step-deps seam, so the failure
+    // path is genuinely taken: it must warn, leave dolt "not available", and
+    // still let the install finish successfully with beads installed.
+    process.env.APRA_FLEET_ENABLE_DOLT_INSTALL = '1';
+    const downloadAndExtractDolt = vi.fn().mockRejectedValue(new Error('dolt mirror unreachable'));
+    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt: vi.fn() } as any);
     _setBeadsStepDeps({
       downloadAndExtractBeads: vi.fn().mockResolvedValue(BEADS_PATH),
       verifyBeads: vi.fn().mockResolvedValue('1.3.0'),
     } as any);
 
     await expect(runInstall([])).resolves.toBeUndefined();
+
+    // The dolt failure really happened (not skipped by the gate) ...
+    expect(downloadAndExtractDolt).toHaveBeenCalledTimes(1);
+    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).toMatch(/Dolt install skipped -- dolt mirror unreachable/);
+    // ... and was NON-FATAL: no error-level abort, install resolved, beads fine.
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).not.toMatch(/Dolt/i);
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toMatch(/Dolt:\s+not available/);
