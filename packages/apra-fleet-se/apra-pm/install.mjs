@@ -18,6 +18,17 @@ import { spawnSync } from 'node:child_process';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
 
+// The beads (bd) version this installer installs when bd is missing.
+//
+// MUST stay equal to BEADS_VERSION in src/cli/beads-install.ts, which is the
+// product's authority for which bd it ships against. It is duplicated here only
+// because this installer is deliberately dependency-free plain Node (no build
+// step, no imports outside node: builtins) and so cannot import a TypeScript
+// constant. tests/apra-pm-beads-pin.test.ts FAILS the build the moment the two
+// disagree, so the copy cannot silently rot the way the previous hardcoded
+// '1.1.2' did while the product had moved to 1.3.0.
+const BEADS_VERSION = '1.3.0';
+
 // --- provider config -------------------------------------------------------
 // Each provider gets a config dir; the skill lands in <configDir>/skills/pm,
 // the agents in <configDir>/agents, and permissions merge into settings.json.
@@ -487,18 +498,45 @@ function main() {
     }
   }
 
-  // beads check -- install automatically if missing
+  // beads check -- install automatically if missing.
+  //
+  // The pm orchestrator tracks ALL of its work in beads, so an install that
+  // leaves the machine with no bd has not produced a working pm. This used to
+  // print a one-line '[!] beads install failed' and then go on to report
+  // 'pm installed.' -- a false success. It now exits non-zero, naming the
+  // failure and the manual command, so the operator cannot miss it.
+  //
+  // Still npm-based, unlike the apra-fleet installer (which downloads the bd
+  // release binary via src/cli/beads-install.ts and therefore needs no
+  // node/npm on the target). Porting that path here would mean either a second
+  // copy of the download+checksum-verify logic or a dependency from this
+  // deliberately standalone script onto the apra-fleet build output; both are
+  // real design decisions rather than this fix. See the bead for that follow-up.
   console.log('');
   const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
   if (bdCheck.error || bdCheck.status !== 0) {
-    console.log('  beads (bd) not found -- installing via npm...');
-    const bdInstall = spawnSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { encoding: 'utf-8', shell: true, stdio: 'inherit' });
+    const pinnedPkg = `@beads/bd@${BEADS_VERSION}`;
+    console.log(`  beads (bd) not found -- installing ${pinnedPkg} via npm...`);
+    const bdInstall = spawnSync('npm', ['install', '-g', pinnedPkg], { encoding: 'utf-8', shell: true, stdio: 'inherit' });
     if (bdInstall.error || bdInstall.status !== 0) {
-      console.error('  [!] beads install failed. Run manually:  npm install -g @beads/bd@1.1.2');
-    } else {
-      const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
-      console.log(`  beads OK: ${bdRecheck.stdout.trim()}`);
+      const reason = bdInstall.error ? bdInstall.error.message : `npm exited ${bdInstall.status}`;
+      console.error('');
+      console.error(`  [!] beads (bd) could not be installed: ${reason}`);
+      console.error(`      Tried: npm install -g ${pinnedPkg}`);
+      console.error('      beads is REQUIRED -- the pm orchestrator tracks all of its work in it, so');
+      console.error('      this install is incomplete. Resolve the reason above (or install bd by hand,');
+      console.error('      e.g. from its GitHub release) and re-run this installer.');
+      process.exit(1);
     }
+    const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
+    if (bdRecheck.error || bdRecheck.status !== 0) {
+      console.error('');
+      console.error(`  [!] npm reported success but 'bd --version' still does not run.`);
+      console.error('      beads is REQUIRED -- this install is incomplete. Check that npm\'s global');
+      console.error('      bin directory is on your PATH, then re-run this installer.');
+      process.exit(1);
+    }
+    console.log(`  beads OK: ${bdRecheck.stdout.trim()}`);
   } else {
     console.log(`  beads OK: ${bdCheck.stdout.trim()}`);
   }
