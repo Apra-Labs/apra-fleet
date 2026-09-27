@@ -38,6 +38,26 @@ import path from 'node:path';
 import { HTML_TEMPLATE } from '@apralabs/apra-fleet-workflow/viewer';
 import { getOldRunsDir, getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
+// (apra-fleet-i9ag.3.8) SAME supervisor-side back-link the live proxy injects
+// into the live-proxied child HTML (apra-fleet-i9ag.5.2/3.6) -- reused here so
+// the finished-sprint page reached through /sprints/:id/live's history
+// fallthrough (proxy.mjs's serveHistory(), wired to this module's
+// renderForSprint() below) carries the SAME mount-aware, target="_top"
+// back-link, without teaching @apralabs/apra-fleet-workflow's generic
+// HTML_TEMPLATE anything about the supervisor dashboard (docs/generic-engine-
+// boundary.md) -- the injection happens IN THIS SUPERVISOR-ONLY module,
+// against the already-rendered HTML string, exactly like proxy.mjs does for
+// the live view.
+import { injectLiveViewBackLink, renderLiveViewBackLinkHtml } from './proxy.mjs';
+// (apra-fleet-i9ag.3.9) The DEDICATED History route (`GET /sprints/:id/history`,
+// `handleGet` below) is entered directly, so nothing threads a mount prefix
+// into it the way bin/serve.mjs threads the live proxy's own resolved value
+// into the `/sprints/:id/live` history fallthrough. It therefore resolves the
+// console's per-request mount path itself, exactly as registerDashboardRoutes
+// (dashboard.mjs) and the live proxy's handleBase (proxy.mjs) do -- otherwise
+// the back-link injected below is always rooted at '/' and a click from inside
+// the console's /ext/<id> iframe leaves the mount point behind.
+import { resolveMountPrefix } from './mount-prefix.mjs';
 
 /**
  * BOUNDARY-COMPAT (apra-fleet-eft.37.1/37.2): the legacy pre-rename terminal
@@ -192,7 +212,7 @@ export function renderHistoryPageHtml(state, dashboardExtensions = []) {
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
  *   handleGet: Function,
- *   renderForSprint: (sprintId: string) => Promise<string|null>,
+ *   renderForSprint: (sprintId: string, mountPrefix?: string) => Promise<string|null>,
  * }}
  */
 export function createHistoryView(deps = {}) {
@@ -210,13 +230,25 @@ export function createHistoryView(deps = {}) {
      * first; the live-proxy's `renderHistory` seam (src/supervisor/proxy.mjs)
      * already treats a throwing renderer as "no history" and answers 404,
      * which is itself a rejection of the path-traversal attempt.
+     *
+     * `mountPrefix` (apra-fleet-i9ag.3.8) is `resolveMountPrefix(req)`'s
+     * per-request result (or `''`/omitted for serve-direct), threaded through
+     * from whichever caller resolved it -- bin/serve.mjs forwards the live
+     * proxy's own resolved value into this seam so the page reached via
+     * `/sprints/:id/live`'s history fallthrough carries a back-link that
+     * resolves under the console's `/ext/<id>` mount point instead of the
+     * console root when embedded, and this module's own `handleGet`
+     * (apra-fleet-i9ag.3.9) resolves it from its own `req` so the dedicated
+     * `/sprints/:id/history` route behaves identically.
      * @param {string} sprintId
+     * @param {string} [mountPrefix]
      * @returns {Promise<string|null>}
      */
-    async function renderForSprint(sprintId) {
+    async function renderForSprint(sprintId, mountPrefix) {
         const state = await loadOldSprintState(sprintId, env, readFile);
         if (state == null) return null;
-        return renderHistoryPageHtml(state, dashboardExtensions);
+        const html = renderHistoryPageHtml(state, dashboardExtensions);
+        return injectLiveViewBackLink(html, renderLiveViewBackLinkHtml(mountPrefix ?? '', sprintId));
     }
 
     // GET /sprints/:id/history -- the dedicated "History" link (apra-fleet-eft.6,
@@ -237,7 +269,13 @@ export function createHistoryView(deps = {}) {
         }
         let html;
         try {
-            html = await renderForSprint(sprintId);
+            // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
+            // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
+            // handleBase: one rendered page answers both the direct-on-port
+            // hit and the console's /ext/<id> iframe hop. A hostile or
+            // malformed header fails closed to '' in resolveMountPrefix(),
+            // which is exactly the serve-direct render.
+            html = await renderForSprint(sprintId, resolveMountPrefix(req));
         } catch (err) {
             logError('[history-view] failed to load state for', sprintId, err);
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);

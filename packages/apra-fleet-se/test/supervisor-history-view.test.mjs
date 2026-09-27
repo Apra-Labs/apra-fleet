@@ -15,6 +15,8 @@ import {
 } from '../src/supervisor/history-view.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
+import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
+import { sprintCardAnchorId } from '../src/supervisor/sprint-anchor.mjs';
 
 // apra-fleet-eft.6.5 -- process-free History view. Renders a finished
 // sprint's persisted old_runs/<sprintId>.json (or the legacy
@@ -24,9 +26,9 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 // renderer refuses any path-traversal attempt via the :id route param.
 
 /** GET a supervisor path, resolving the full body once the response ends. */
-function getText(port, urlPath) {
+function getText(port, urlPath, { headers } = {}) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'GET' }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'GET', headers }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });
@@ -200,9 +202,12 @@ describe('history-view -- wired as the /sprints/:id/live fallthrough renderer', 
         await fs.writeFile(path.join(dir, 'old_sprints', 'finished-1.json'), JSON.stringify(SAMPLE_STATE));
 
         const view = createHistoryView({ env: { APRA_FLEET_DATA_DIR: dir } });
+        // (apra-fleet-i9ag.3.8) Mirrors bin/serve.mjs's real wiring: the live
+        // proxy's own per-request resolveMountPrefix() result is forwarded
+        // into renderForSprint() as its second argument, not dropped.
         const liveProxy = createLiveProxy({
             resolvePort: () => undefined, // no live child -> always falls through
-            renderHistory: (sprintId) => view.renderForSprint(sprintId),
+            renderHistory: (sprintId, mountPrefix) => view.renderForSprint(sprintId, mountPrefix),
         });
         sup = createSupervisor({ port: 0 });
         registerLiveRoutes(sup, liveProxy);
@@ -225,8 +230,82 @@ describe('history-view -- wired as the /sprints/:id/live fallthrough renderer', 
         assert.ok(res.body.includes(SAMPLE_STATE.workflowName));
     });
 
+    // (apra-fleet-i9ag.3.8) The finished-sprint page reached through the
+    // /sprints/:id/live fallthrough must carry the SAME mount-aware,
+    // target="_top" back-link the live proxy injects into a still-live
+    // sprint's HTML (apra-fleet-i9ag.5.2/3.6) -- previously this renderer
+    // dropped the mount prefix entirely, so the back-link was either absent
+    // or always unprefixed even when embedded in the console's /ext/<id>
+    // iframe.
+    test('history fallthrough back-link is unprefixed with target="_top" when no mount-path header is set', async () => {
+        const res = await getText(port, '/sprints/finished-1/live');
+        assert.strictEqual(res.status, 200);
+        const anchorHref = '/#' + sprintCardAnchorId('finished-1');
+        assert.ok(res.body.includes('href="' + anchorHref + '" target="_top"'), res.body);
+    });
+
+    test('history fallthrough back-link is prefixed when the console mount-path header is set', async () => {
+        const res = await getText(port, '/sprints/finished-1/live', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+        assert.strictEqual(res.status, 200);
+        const anchorHref = '/ext/se/#' + sprintCardAnchorId('finished-1');
+        assert.ok(res.body.includes('href="' + anchorHref + '" target="_top"'), res.body);
+    });
+
     test('a path-traversal :id at the /live URL is rejected too (renderHistory throws -> 404, never reads outside old_sprints/)', async () => {
         const res = await getText(port, '/sprints/' + encodeURIComponent('../../etc/passwd') + '/live');
         assert.strictEqual(res.status, 404);
+    });
+});
+
+describe('history-view -- GET /sprints/:id/history resolves the mount prefix itself', () => {
+    // (apra-fleet-i9ag.3.9) The DEDICATED History route is entered directly --
+    // nothing threads a mount prefix into it the way bin/serve.mjs threads the
+    // live proxy's resolved value into the /sprints/:id/live fallthrough tested
+    // above. It therefore calls resolveMountPrefix(req) itself, so the SAME
+    // page carries a correct back-link whether it was opened on the
+    // supervisor's own port or through the console's /ext/<id> iframe hop.
+    // Previously handleGet dropped the prefix entirely, so the History page's
+    // back-link left the console's mount point behind when embedded.
+    let dir;
+    let sup;
+    let port;
+    const anchorSuffix = '/#' + sprintCardAnchorId('finished-1');
+
+    before(async () => {
+        dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-history-view-mount-'));
+        await fs.mkdir(path.join(dir, 'old_sprints'), { recursive: true });
+        await fs.writeFile(path.join(dir, 'old_sprints', 'finished-1.json'), JSON.stringify(SAMPLE_STATE));
+
+        const view = createHistoryView({ env: { APRA_FLEET_DATA_DIR: dir } });
+        sup = createSupervisor({ port: 0 });
+        registerHistoryViewRoutes(sup, view);
+        await sup.start();
+        port = sup.server.address().port;
+    });
+
+    after(async () => {
+        await sup.stop('test');
+        await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    test('back-link is prefixed exactly once, with target="_top", when the console mount-path header is set', async () => {
+        const res = await getText(port, '/sprints/finished-1/history', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="/ext/se' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('/ext/se/ext/se'), 'the prefix must be applied exactly once, never doubled');
+    });
+
+    test('back-link stays rooted at / when no mount-path header is set (serve-direct is unchanged)', async () => {
+        const res = await getText(port, '/sprints/finished-1/history');
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('href="/ext/'), 'no prefix may appear when none was sent');
+    });
+
+    test('a hostile mount-path header fails closed to the unprefixed back-link', async () => {
+        const res = await getText(port, '/sprints/finished-1/history', { headers: { [MOUNT_PATH_HEADER]: '//evil.example' } });
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.includes('href="' + anchorSuffix + '" target="_top"'), res.body);
+        assert.ok(!res.body.includes('evil.example'), 'a protocol-relative header value must never reach the rendered page');
     });
 });

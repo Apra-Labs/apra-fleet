@@ -31,7 +31,13 @@ const BASE_PACKAGE: WorkflowPackageView = {
   health: "/api/health",
   nav: [
     { label: "Projects", path: "/ui/projects" },
-    { label: "Sprints", path: "/ui/sprints", scope: "project" },
+    // (apra-fleet-i9ag.5.3) Unscoped, matching the real manifest
+    // (src/registration/manifest.mjs's Sprints entry, apra-fleet-i9ag.3.3):
+    // the Sprints dashboard has no project-context dependency, so it must
+    // render in the header with no project selected. A fixture that put
+    // scope:"project" back here would silently hide the regression this
+    // suite exists to catch.
+    { label: "Sprints", path: "/ui/sprints" },
     { label: "KB", path: "/ui/kb", scope: "project" },
     { label: "Code", path: "/ui/code", scope: "project" }
   ],
@@ -148,25 +154,32 @@ describe("Registry-driven nav (DQ-18)", () => {
   it("case 1: renders the static screens plus a package nav entry from the registry", async () => {
     await renderApp([BASE_PACKAGE]);
 
-    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects"]);
+    // (apra-fleet-i9ag.5.3) `project` is still null here (renderApp posts no
+    // context message) -- an unscoped Sprints entry must render anyway. Today's
+    // fixture declaring scope:'project' is exactly the case that hid it.
+    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects", "Sprints"]);
 
     const projects = navLinks().find((a) => a.textContent?.includes("Projects"));
     expect(projects?.getAttribute("href")).toBe("#/ext/se/ui/projects");
+
+    const sprints = navLinks().find((a) => a.textContent === "Sprints");
+    expect(sprints?.getAttribute("href")).toBe("#/ext/se/ui/sprints");
   });
 
   it("case 2: hides project-scoped entries until a context message arrives, and again on project null", async () => {
     await renderApp([BASE_PACKAGE], "#/ext/se/ui/projects");
 
-    // No project context yet -- only the unscoped package entry shows.
-    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects"]);
+    // No project context yet -- the unscoped package entries (Projects,
+    // Sprints) show; the project-scoped ones (KB, Code) do not.
+    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects", "Sprints"]);
 
     await postMessageToShell({ type: "apra-fleet:context", project: "p1" });
     expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects", "Sprints", "KB", "Code"]);
-    const sprints = navLinks().find((a) => a.textContent === "Sprints");
-    expect(sprints?.getAttribute("href")).toBe("#/ext/se/ui/sprints");
+    const kb = navLinks().find((a) => a.textContent === "KB");
+    expect(kb?.getAttribute("href")).toBe("#/ext/se/ui/kb");
 
     await postMessageToShell({ type: "apra-fleet:context", project: null });
-    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects"]);
+    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects", "Sprints"]);
   });
 
   it("case 3: an offline package renders greyed, disabled entries with an offline chip", async () => {
@@ -253,7 +266,7 @@ describe("Registry-driven nav (DQ-18)", () => {
       { type: "apra-fleet:context", project: "p1" },
       { origin: "https://attacker.example" }
     );
-    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects"]);
+    expect(navLabels()).toEqual(["Members", "Secrets", "Health", "Projects", "Sprints"]);
   });
 
   it("case 7: a 404 registry renders the static nav only, without crashing", async () => {
