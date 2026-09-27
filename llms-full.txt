@@ -196,9 +196,9 @@ The sprint page has four views:
 
 | View | What you see |
 |---|---|
-| **Board** | JIRA-style columns (To Do, Blocked, In Progress, Done) with a swimlane per feature. Cards show type, priority, model tier and the helper on them, with a live timer while someone is working, and whether the work is landing or being fixed after a failed landing. Click a card for its description, acceptance criteria and history. |
+| **Board** | Jira-style columns (To Do, Blocked, In Progress, Done) with a swimlane per feature, search, helper and quick filters, grouping, and a sortable List view. Cards show type, priority, model tier and the helper on them, with a live timer while someone is working. While the sprint runs you can create issues, change priority, rename, leave notes for the helpers, and drag a card to Done (won't do) or back to To do. These go straight to the sprint's own task list (beads) on your machine, so the board updates at once and nothing calls GitHub. |
 | **Helpers** | One row per helper: what it is doing right now in plain words, plus a timeline of everything it has done, so you can see the work happening in parallel, and a feed of what landed, what was sent back and who was told. |
-| **Code changes** | Every commit and changed file on the sprint branch, with a diff viewer. |
+| **Code changes** | A code review: file tree with viewed marks, unified or split diff with syntax colors and word-level changes, more context on demand, and one commit at a time or only what changed since your last visit. Comment on a line or a dragged or selected range, suggest replacement code, reply, edit and resolve. Comments follow their code as new commits land (or are marked outdated), and the view updates live. **Send to helpers** turns them into one task per file for the running sprint, or starts a follow-up sprint from the branch once it has finished. |
 | **Log** | The raw engine log, for when something needs a closer look. |
 
 Your own checkout is never edited while a sprint runs. Helpers work in copies
