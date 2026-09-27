@@ -9,6 +9,7 @@ import { escapeDoubleQuoted } from '../os/os-commands.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
+import { transformAgentForClaude } from '../cli/agent-transform.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -484,8 +485,9 @@ export class ClaudeProvider implements ProviderAdapter {
     return { project: rel, home: rel };
   }
 
-  transformAgent(content: string, _relPath: string): string {
-    return content;
+  transformAgent(content: string, relPath: string): string {
+    // Same resolver the local install uses for this provider, so remote == local.
+    return transformAgentForClaude(content, relPath);
   }
 
   agentNameFlag(agentName: string): string {
