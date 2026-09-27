@@ -30,7 +30,7 @@ import path from 'node:path';
  * @property {string} tempHome - the temp directory now acting as HOME/USERPROFILE.
  * @property {string} dataDir - tempHome/.apra-fleet/data (same relative layout src/paths.ts's default uses).
  * @property {string} seDataDir - tempHome/.apra-fleet-se (same relative layout packages/apra-fleet-se's spawner.mjs/history.mjs/ledger.mjs default FLEET_SE_DATA_DIR resolution uses -- see seDataDirFor()).
- * @property {() => Promise<void>} restore - restores every touched env var to its exact prior value (deleting any var that was previously unset) and removes the temp dir. Idempotent.
+ * @property {(opts?: { keepDir?: boolean }) => Promise<void>} restore - restores every touched env var to its exact prior value (deleting any var that was previously unset) and removes the temp dir. Pass { keepDir: true } to keep the directory (see restore()'s own JSDoc). Idempotent.
  */
 
 // The full set of env vars this helper owns. Order matters for HOMEDRIVE/HOMEPATH

@@ -41,8 +41,11 @@
 //    of rows that change every sprint) into the page under test. A temp cwd
 //    makes the rendered document depend only on the code, not on the state of
 //    whatever clone happens to be running the suite;
-//  - HOME/USERPROFILE are redirected to a temp dir, so the fleet.key minted
-//    here is never the developer's own.
+//  - the subprocess's notion of "home" is redirected to a temp dir through the
+//    shared tests/helpers/isolated-home.mjs helper (HOME, USERPROFILE and
+//    HOMEDRIVE/HOMEPATH together -- os.homedir() reads USERPROFILE, not HOME,
+//    on win32), so the fleet.key minted here is never the developer's own on
+//    any platform.
 // =============================================================================
 
 import { test, describe, before, after } from 'node:test';
@@ -62,6 +65,7 @@ import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 import { buildManifest, PACKAGE_ID, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
+import { buildIsolatedHomeEnv } from '../../../tests/helpers/isolated-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVE_BIN = path.join(__dirname, '../bin/serve.mjs');
@@ -261,12 +265,13 @@ async function bootSupervisor() {
     const child = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
         cwd: workDir,
         stdio: ['ignore', 'pipe', 'pipe'],
+        // The child's home is isolated to homeDir (where the fleet.key above was
+        // written); its data dirs are this case's own, hence the explicit values
+        // AFTER the helper's spread.
         env: {
-            ...process.env,
+            ...buildIsolatedHomeEnv(homeDir),
             APRA_FLEET_DATA_DIR: dataDir,
             FLEET_SE_DATA_DIR: seDataDir,
-            HOME: homeDir,
-            USERPROFILE: homeDir,
         },
     });
     if (Number.isInteger(child.pid) && child.pid > 0) spawnedPids.add(child.pid);
