@@ -167,6 +167,38 @@ status=<status>`), never the token or the value, and never a thrown
 `onSubmit`'s message (which could itself be derived from the submitted
 secret).
 
+### Printing an absolute URL for a headless return_url caller
+
+`credential_store_set`'s `return_url` collection mode (a headless/service
+caller that cannot block on a human at a terminal) hands back the
+console-relative path described above, but a human still needs a clickable,
+absolute URL to open it from wherever they actually are. Resolving that
+origin cannot be a guess: the server's own bind address
+(`APRA_FLEET_HOST`) is frequently `0.0.0.0` or a bare LAN interface address,
+neither of which a browser can be pointed at directly. `resolveConsoleBaseUrl`
+(`src/paths.ts`) resolves the origin from an explicit operator opt-in,
+`APRA_FLEET_CONSOLE_BASE_URL`, falling back only to the server's own bound
+origin when unset (correct for an on-box/loopback reader, not necessarily
+reachable off-box). A value that is *set but invalid* fails loudly rather
+than silently falling back, on the reasoning that an operator who mistyped
+the variable needs to know the printed URL is wrong, not receive one that
+quietly points somewhere else.
+
+Joining that origin to the console-relative path cannot use a plain
+`new URL(relativePath, baseUrl)` resolve: per RFC 3986/WHATWG URL
+resolution, a root-relative path (one starting with `/`) *replaces* the
+base's entire path rather than appending to it, so any reverse-proxy
+sub-path in the operator-declared origin (e.g. `https://fleet.example.com/fleet`)
+would be silently discarded from the printed link. `joinConsoleUrl`
+(`src/paths.ts`) preserves the base's path component instead, which is the
+property that makes a console mounted under a reverse-proxy sub-path an
+actually-supported deployment shape rather than one that quietly breaks
+only the printed-URL feature. The tool result carries both the
+console-relative `url` (for a caller resolving it against a different origin
+of its own, e.g. an SSH tunnel or LAN address) and the resolved
+`absoluteUrl` (the rendered, clickable link) side by side, rather than only
+one or the other.
+
 **What deliberately did not change:** `src/services/auth-web.ts`'s loopback
 ephemeral-port server is still there, and still the right tool for the
 BLOCKING on-box flow's "no terminal available" fallback -- the case where a

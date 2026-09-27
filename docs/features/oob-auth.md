@@ -122,27 +122,39 @@ TTY attached (a headless/service context cannot block a tool call on a human
 sitting at a terminal) or the caller passes `return_url: true` explicitly
 even when a TTY is available. Instead of blocking on `waitForPassword()`
 like the terminal flow above, the tool returns immediately with
-`structuredContent: {url, expiresAt}` -- a one-time, loopback-only browser
-URL. The secret is still encrypted and stored server-side, but the moment of
-storage is decoupled from the tool call: it happens when the user submits
-the form at `url`, via the same `auth-web.ts` browser flow this mechanism
-already used for interactive password entry, not through the
+`structuredContent: {url, expiresAt, absoluteUrl}`. `url` is a
+**console-relative path** (e.g. `/ui/#/secret-entry/<token>`) registered
+against the console-hosted, single-use secret-entry registry
+(`src/services/secret-entry.ts`) -- it carries no scheme, host, or port, so
+it resolves wherever a browser can reach the console (on-box, LAN, an SSH
+tunnel on the console's port, or a remote install), not only from the
+server's own machine. `absoluteUrl` is the same path resolved against an
+operator-declared or bound console origin, for a caller that wants a
+directly clickable link (see `docs/console-architecture.md`'s "Printing an
+absolute URL for a headless return_url caller"). The secret is still
+encrypted and stored server-side, but the moment of storage is decoupled
+from the tool call: it happens when the user submits the form, POSTing to
+the console's `/api/secret-entry/submit` route, which invokes the same
+`onOobSubmit` callback the tool call registered -- not through the
 `pendingRequests`/`waitForPassword` machinery the blocking terminal path
 uses (there is no waiter to resolve -- the tool call has already returned by
 the time the form is submitted). No follow-up tool call is needed on
 success; the credential simply becomes available as `{{secret.NAME}}` once
 submitted.
 
-**Bounded listen backstop.** The internal collector that produces the URL
-(`collectOobUrl` in `auth-socket.ts`) resolves as soon as the underlying web
-server's `openUrl` callback fires -- normally within the same tick as
-`server.listen()`. If `listen()` fails asynchronously after that callback
-has already been wired but before it fires, nothing would otherwise ever
-settle the returned promise. A bounded timer (default 5 seconds) backstops
-this: if the callback has not fired by the deadline, the promise rejects and
-the caller (`credential_store_set`) reports a `[FAIL]` result instead of
-hanging indefinitely. The timer is cleared the instant the callback does
-fire, so the common case pays no delay.
+There is no listener to start on this path (unlike the loopback web-server
+flow it replaced for `return_url` collection): registering a secret-entry
+is a synchronous, in-process registry write, so there is no "could not
+start the local web server" failure mode and no listen-timeout backstop to
+reason about here.
+
+A separate, still-loopback browser flow (`src/services/auth-web.ts`'s
+`launchAuthWeb`) exists for a different case entirely: the BLOCKING terminal
+path above, when no terminal emulator could be spawned at all (a headless
+display with no `!`-operator/second-SSH-terminal option). There, the
+browser is by construction on the server's own machine (a human physically
+at that terminal), so a loopback-only URL introduces no off-box gap, and
+this flow is unaffected by the `return_url` change above.
 
 ---
 
