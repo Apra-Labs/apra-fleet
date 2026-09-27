@@ -209,15 +209,20 @@ codebase. The `--help` text does not list them.
   "dist/",
   "hooks/",
   "scripts/fleet-statusline.sh",
-  "scripts/agy-settings-merge.js",
   "scripts/agy-transcript-reader.js",
   "skills/",
-  "version.json"
+  "version.json",
+  "packages/apra-fleet-se/...",
+  "packages/apra-fleet-workflow/...",
+  "packages/apra-fleet-client/...",
+  "packages/apra-fleet-shell-ui/dist/"
 ]
 ```
 
-**What is shipped:** compiled JS (`dist/`), hooks config, three runtime scripts,
-skills (fleet + pm), and `version.json`.
+**What is shipped:** compiled JS (`dist/`), hooks config, runtime scripts,
+skills (fleet + pm), `version.json`, the fleet-sprint engine subtree (see
+below), and the built console shell (`packages/apra-fleet-shell-ui/dist/`,
+see 7.1a).
 
 **Workspace packages are intentionally private** (apra-fleet-3ns.4):
 `packages/apra-fleet-se`, `packages/apra-fleet-workflow`, and
@@ -242,7 +247,16 @@ TypeScript output:
   left over from a different branch or a since-removed source file) does not
   survive a re-run -- a schema-staleness guard that tells a developer to
   "run dist-pm to fix it" is only trustworthy if dist-pm actually prunes,
-  not just adds.
+  not just adds. The vendoring copy itself is atomic: it stages into a temp
+  sibling directory and only swaps it into the real destination (renaming the
+  previous destination aside first) once the copy has fully succeeded, so a
+  copy that throws partway through leaves the previous destination intact
+  instead of half-overwritten. The destination root is also overridable via a
+  `DIST_PM_DIST_DIR` env var (default behavior and `npm run dist-pm`
+  unchanged) specifically so tests can vendor into a throwaway temp directory
+  instead of mutating the developer's real `dist/` tree -- a test that
+  vendors into the live tree has a side effect outside the test and can race
+  a concurrent build.
 
 **The fleet-sprint engine ships as source, not a bundle.** There is no
 `scripts/bundle-se.mjs` or `build:se` script -- no esbuild step produces
@@ -341,6 +355,52 @@ tarball.
 
 Validated tarball size (post apra-fleet-fyc.2, measured via `npm pack --dry-run`
 on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
+
+### 7.1a Console shell UI: npm package and SEA binary both serve `/ui`
+
+The console shell (`packages/apra-fleet-shell-ui`, a Vite/React SPA, see
+`docs/console-architecture.md`) is built once (`npm run build:ui`) and then
+shipped through two independent channels that must each be kept in sync
+whenever the shell's build output changes:
+
+- **npm package**: `packages/apra-fleet-shell-ui/dist/` is in the root
+  `files` allowlist above, so a global `npm install` gets the shell's static
+  assets on disk; `static.ts` (see `docs/console-architecture.md`) reads them
+  directly from `packages/apra-fleet-shell-ui/dist` relative to the installed
+  package root.
+- **SEA binary**: `scripts/gen-sea-config.mjs` has a dedicated `ui/` asset
+  section that walks the same `dist/` directory and embeds it into the SEA
+  asset store (forward-slash keys on every OS); `static.ts` falls back to
+  reading from that store when running as a single-executable binary, since
+  a SEA binary has no real directory tree to read `packages/.../dist` from.
+
+`build:ui` is chained into every release path that can produce a
+distributable artifact (`build:binary`, `prepublishOnly`) so a release build
+whose shell dist is missing fails loudly, by design -- naming the missing
+directory rather than silently shipping a `/ui` that 404s. A bare, standalone
+invocation of `gen-sea-config.mjs` outside those chains is the one place a
+missing shell dist is only a warning, since that path is also used for
+non-release dev iteration where the shell may not be built yet.
+
+**The SEA binary staleness guard compares mtimes, not content, and a
+same-content rebuild is enough to trip it.** `tests/sea-http-verify.test.ts`'s
+SEA-binary smoke test refuses to run against a `dist/` binary whose
+embedded-assets timestamp predates the current tree's SEA-relevant inputs
+(the shell dist among them) -- this is deliberate: an actually-stale binary
+must fail loudly and name the reason, never silently pass a smoke test
+against assets that no longer match the source tree. The known limitation is
+that the comparison is time-based: rebuilding the shell UI with byte-identical
+output still advances its mtime, so the guard trips even when nothing that
+would change the binary's served content actually changed. Do not "fix" this
+by weakening or removing the check -- its job of catching a genuinely stale
+binary (the common case: a UI change landed and nobody rebuilt the SEA
+binary) is real and still needed. The available generic fix is to key the
+comparison off shell-dist content (a hash or the binary's own embedded
+manifest) instead of filesystem mtime; until that lands, any workflow that
+deploys a commit and then runs the bounded test suite against it (sandbox
+deploy, CI, a local rebuild-then-test loop) must rebuild the SEA binary for
+that commit first, or expect this one test file to fail on a stale local
+artifact that is otherwise unrelated to the change under test.
 
 ### 7.2 Other package.json fields
 

@@ -307,17 +307,16 @@ uses it. It is possible to satisfy every route test while the corresponding
 screen quietly renders off data it already has cached, leaving the detail
 route wired but unreachable from the shell.
 
-## Known constraints (by design, this iteration)
+## Packaging: the shell ships in both distribution channels
 
-- **Packaging is dev-checkout-complete, distribution-incomplete.** The
-  console seam and static-serving logic support both the disk path and the
-  SEA-asset path, but as of this writing neither the SEA manifest generator
-  nor the npm package's shipped file list actually includes the built shell
-  assets -- so `GET /ui` only answers 200 from a source checkout with the
-  shell built locally. Making the SEA binary and the installed npm package
-  both serve `/ui` requires wiring the shell's `dist/` into each
-  distribution channel's asset manifest; the serving code on the receiving
-  end is already in place and does not need to change.
+Both the npm-installed package and the SEA binary serve `GET /ui`: the shell's
+built `dist/` is in the npm package's `files` allowlist and in the SEA asset
+manifest's dedicated `ui/` section, and `build:ui` is chained into every
+release build path so a distributable artifact can never silently ship
+without the shell. See "Console shell UI: npm package and SEA binary both
+serve `/ui`" in `docs/npm-packaging.md` for the packaging mechanics, and for
+a known limitation in the SEA binary's staleness guard (time-based, not
+content-based) that any deploy/test workflow needs to account for.
 
 ## Shared local-token helper: generic mechanism vs. per-caller route policy
 

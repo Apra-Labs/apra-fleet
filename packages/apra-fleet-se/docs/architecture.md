@@ -256,6 +256,25 @@ Both failure lists are threaded into the Final Review prompt and the
 harvester's analysis text, so a deploy/integ failure is never silently
 swallowed.
 
+### The regression phase degrades a provisioning failure; it never aborts the sprint
+
+The once-per-sprint regression phase calls its runbook-permissions
+provisioner before dispatching the `regression-test-runner` role, outside
+that row's own catch-all degrade handling. A provisioning failure here (the
+runbook's declared permissions cannot be granted) is caught and turned into a
+`FAILED`, schema-shaped regression result whose summary names the runbook and
+the specific entries that were not granted -- the phase never dispatches the
+role in that case, and it never lets the provisioning error escape to the
+top-level handler. Before this was fixed, an escaping provisioning error
+turned an already-decided sprint verdict into a terminal ABORTED, skipping
+Harvest and Publish PR entirely for a failure that was informational by
+design (the regression pass never gates the sprint's PASS/FAIL verdict -- see
+"Regression pass" in the harvester's sprint-analysis output). The two
+run-level control signals that must still propagate out of this catch
+(`CancelledError`, `BudgetExceededError`) are matched by class name rather
+than caught generically, so a genuine cancellation or budget cutoff during
+provisioning still aborts the run as it should.
+
 ## Exit condition
 
 The cycle loop's completion check is **not** "`bd list --ready` returned
