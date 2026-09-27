@@ -118,8 +118,7 @@ export const executePromptSchema = z.object({
   agent: z.string().optional().describe(
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
-    'For AGY: prepends @<name> to the prompt on every dispatch. ' +
-    'Substitution runs before the @<name> prepend. ' +
+    'For AGY: invokes agy --agent <name>. ' +
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +

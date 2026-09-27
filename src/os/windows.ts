@@ -188,7 +188,7 @@ export class WindowsCommands implements OsCommands {
     }
     // Delegate unattended-mode flag resolution entirely to the provider --
     // each provider's own auto/dangerous fallback and warning semantics (e.g.
-    // AGY has no true auto and falls back to its dangerous flag; OpenCode has
+    // AGY has no true auto and uses its baseline --mode accept-edits (with a warning); OpenCode has
     // no true dangerous and falls back to --auto) must not be re-derived here,
     // or this path silently diverges from the POSIX buildPromptCommand() path.
     const permFlag = provider.resolvePermissionFlag(unattended);
