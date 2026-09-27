@@ -12,6 +12,7 @@ import {
 } from '../src/cli/install.js';
 import { extractWorkflowSubsystemAssets } from '../src/cli/workflow-assets.js';
 import { MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from '../src/cli/fleet-se-prereqs.js';
+import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
 
 // apra-fleet-i9ag.13.7.3 -- pins the fix for gap bug apra-fleet-i9ag.13.7 (the
 // installer silently npm-installed beads via a non-fatal try/catch, exactly
@@ -229,6 +230,16 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     expect(logs).toMatch(/fleet-se:\s+ready/);
     expect(logs).toContain('node 22.16.0');
     expect(logs).toContain('npm 10.5.0');
+    // The bd version on the ready line is the one this install actually
+    // probed, never the placeholder 'not available' (apra-fleet-i9ag.13.7.2):
+    // 'ready' and 'bd not available' must not be able to co-occur.
+    expect(logs).toMatch(/fleet-se:\s+ready \(node 22\.16\.0, npm 10\.5\.0, bd bd 1\.3\.0\)/);
+    expect(logs).not.toContain('bd not available');
+    // bd was already present, so no npm install was attempted.
+    const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE),
+    );
+    expect(npmInstallCall).toBeUndefined();
   });
 
   it('case 5: prerequisites absent, --workflows none -- exits 0, the Beads step never runs, and the summary reports fleet-se NOT INSTALLED with the fix line', async () => {
@@ -252,7 +263,7 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     expect(logs).toContain(FLEET_SE_PREREQ_FIX_LINE);
     // No npm install of @beads/bd was ever attempted.
     const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
-      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.3.0'),
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE),
     );
     expect(npmInstallCall).toBeUndefined();
   });
@@ -260,9 +271,24 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
   it('case 6: prerequisites satisfied but the @beads/bd npm install itself throws -- exits non-zero and surfaces npm\'s own error text (REVERT CANARY)', async () => {
     _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
     // bd --version throws (not installed), then the npm install throws too.
-    vi.mocked(execFileSync).mockImplementation(() => {
-      throw new Error('npm ERR! network timeout');
-    });
+    //
+    // FIDELITY (apra-fleet-i9ag.13.7.2): the thrown error is shaped the way a
+    // REAL failed execFileSync is -- a generic 'Command failed: ...' message
+    // with npm's diagnostics on err.stderr, NOT baked into err.message. An
+    // earlier version of this test put npm's text in the message, which passed
+    // even though install.ts used stdio 'inherit' and therefore could never
+    // have recovered that text itself. Asserting on a string that appears ONLY
+    // in stderr is what makes "surfaces npm's own error text" a real claim.
+    vi.mocked(execFileSync).mockImplementation(((file: string) => {
+      if (file === 'npm') {
+        throw Object.assign(new Error(`Command failed: npm install -g ${BEADS_PACKAGE}`), {
+          stdout: '',
+          stderr: 'npm ERR! network timeout',
+          status: 1,
+        });
+      }
+      throw new Error('bd: command not found');
+    }) as any);
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('exit');
     }) as any);
@@ -274,12 +300,53 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     expect(errors).toContain('npm ERR! network timeout');
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(warns).not.toContain('Beads install skipped');
+    // The install never reached the summary, so it cannot have claimed ready.
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).not.toMatch(/fleet-se:\s+ready/);
 
     exitSpy.mockRestore();
     // See the reset comment on the equivalent test in tests/install.test.ts --
     // execFileSync is an automock, not a vi.spyOn; clearAllMocks() does not
     // reset a custom .mockImplementation(), so a throwing implementation set
     // here would otherwise leak into whichever test runs next.
+    vi.mocked(execFileSync).mockReset();
+  });
+
+  it('case 7: npm install succeeds but bd is still not runnable -- exits non-zero and never claims fleet-se ready', async () => {
+    // apra-fleet-i9ag.13.7.2: npm exiting 0 does not mean bd works. npm's
+    // global bin directory is routinely off PATH (nvm, volta, most Windows
+    // setups), and the installer used to go on to print
+    // 'fleet-se: ready (node X, npm Y, bd not available)' and exit 0 -- a
+    // false success of exactly the shape this lane exists to delete.
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
+    vi.mocked(execFileSync).mockImplementation(((file: string) => {
+      // npm happily reports success...
+      if (file === 'npm') return '' as any;
+      // ...but bd still cannot be spawned, before OR after the install.
+      throw new Error('bd: command not found');
+    }) as any);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // The install really was attempted -- this is the post-install check
+    // failing, not the pre-check short-circuiting past npm.
+    const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE),
+    );
+    expect(npmInstallCall).toBeDefined();
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain(BEADS_PACKAGE);
+    expect(errors).toContain('PATH');
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).not.toMatch(/fleet-se:\s+ready/);
+    expect(logs).not.toContain('bd not available');
+
+    exitSpy.mockRestore();
+    // See the reset comment on case 6 -- same automock leak risk.
     vi.mocked(execFileSync).mockReset();
   });
 });

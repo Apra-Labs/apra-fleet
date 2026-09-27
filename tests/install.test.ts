@@ -468,25 +468,11 @@ describe('install step 8 — Beads task tracker', () => {
     vi.mocked(execFileSync).mockReset();
   });
 
-  it('never prints the old non-fatal "Beads install skipped" wording anywhere', async () => {
-    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('npm: not found'); });
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('exit');
-    }) as any);
-
-    await expect(runInstall([])).rejects.toThrow('exit');
-
-    const warns = vi.mocked(console.warn).mock.calls.map(c => c.join(' ')).join('\n');
-    const errors = vi.mocked(console.error).mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).not.toContain('Beads install skipped');
-    expect(errors).not.toContain('Beads install skipped');
-
-    logSpy.mockRestore();
-    exitSpy.mockRestore();
-    // See the reset comment in the previous test -- same automock leak risk.
-    vi.mocked(execFileSync).mockReset();
-  });
+  // NOTE (apra-fleet-i9ag.13.7.3): a further test here asserting the retired
+  // "Beads install skipped" wording is never printed was removed as redundant --
+  // the fatal-exit test above already proves the non-fatal path is gone, and
+  // tests/install-fleet-se-prereqs.test.ts greps the whole real src/ tree for
+  // that string, which catches a reintroduction anywhere, not just on this path.
 });
 
 // T3.4 (F9b, D8): installer copies the repo's committed
