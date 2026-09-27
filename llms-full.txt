@@ -1920,11 +1920,11 @@ the time the form is submitted). No follow-up tool call is needed on
 success; the credential simply becomes available as `{{secret.NAME}}` once
 submitted.
 
-There is no listener to start on this path (unlike the loopback web-server
-flow it replaced for `return_url` collection): registering a secret-entry
-is a synchronous, in-process registry write, so there is no "could not
-start the local web server" failure mode and no listen-timeout backstop to
-reason about here.
+When the console is hosted, there is no listener to start on this path
+(unlike the loopback web-server flow): registering a secret-entry is a
+synchronous, in-process registry write, so there is no "could not start the
+local web server" failure mode and no listen-timeout backstop to reason
+about here.
 
 This console-relative shape applies only when the server process hosts the
 console (HTTP transport). Under `--transport stdio` no console is mounted in
