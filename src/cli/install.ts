@@ -27,6 +27,7 @@ import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { downloadAndExtractBeads, verifyBeads, resolveBeadsAsset, BEADS_VERSION } from './beads-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -1215,6 +1216,40 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
+
+  // --- Fleet key mint (apra-fleet-i9ag.12.1) ---
+  //
+  // Runs BEFORE every numbered step on purpose: ~/.apra-fleet/fleet.key is the
+  // HS256 secret behind both the JWT issuer and the loopback bearer check, and
+  // several later paths are gated on it -- most importantly the supervisor
+  // service this install may register and START as its final step, which needs
+  // the key to register its workflow package. Before this step NO install-time
+  // or CLI-startup path minted the key (getOrCreateKey() had zero call sites in
+  // this file), so on a fresh machine the key only appeared the first time some
+  // request happened to need it -- and a supervisor that started earlier had
+  // already skipped registration.
+  //
+  // Deliberately UNNUMBERED: it is a sub-second local file write, not a
+  // user-visible install stage, and numbering it would renumber every step
+  // below (and the totalSteps arithmetic each one derives from).
+  //
+  // getOrCreateKey() is already mint-or-reuse: it returns an existing 64-char
+  // key untouched and only writes (mode 0600, via mkdir -p) when the file is
+  // missing, unreadable or the wrong length. So re-running install is a no-op
+  // on the key bytes. The key VALUE is never logged -- only its path.
+  try {
+    getOrCreateKey();
+    console.log(`  Fleet key ready at ${fleetKeyPath()}`);
+  } catch (err) {
+    // Non-fatal, but LOUD: naming the path and the reason. An unwritable home
+    // must not silently produce an install whose key-gated features fail later
+    // with an unrelated-looking error.
+    console.warn(
+      `  [WARN] Could not create the fleet key at ${fleetKeyPath()}: ${(err as Error).message}\n` +
+        `         Features that need it (workflow-package registration, console auth) will fail\n` +
+        `         until this path is writable. Fix the permissions and re-run 'apra-fleet install'.`,
+    );
+  }
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';
