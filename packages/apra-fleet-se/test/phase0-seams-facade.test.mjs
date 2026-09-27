@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { resultText, resolveMemberTarget } from '../fleet-sprint/runner.js';
+import { linkNodeModulesSync } from './helpers/node-modules-link.mjs';
 
 // apra-fleet-3swo.2.6: proves the two Phase 0 seams (mcp-result.mjs,
 // member-target.mjs -- apra-fleet-3swo.2.4/2.5) are behaviour-preserving:
@@ -151,7 +152,7 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
             // findWorkspaceNodeModules doc comment above). rmSync on
             // sandboxDir at cleanup only unlinks this symlink, never
             // recurses into the real node_modules it points at.
-            fs.symlinkSync(findWorkspaceNodeModules(packageRoot), path.join(sandboxDir, 'node_modules'), 'dir');
+            linkNodeModulesSync(findWorkspaceNodeModules(packageRoot), path.join(sandboxDir, 'node_modules'));
             const sandboxRunnerPath = path.join(sandboxFleetSprint, 'runner.js');
             const originalContent = fs.readFileSync(sandboxRunnerPath, 'utf-8');
 
