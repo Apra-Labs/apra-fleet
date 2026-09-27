@@ -63,6 +63,196 @@ Carried forward / still open:
   `npm test` runner does, so that lane can still run against the operator's
   real home directory.
 
+## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
+
+Sprint goal: let the fleet-supervisor OS service start on a machine that has
+only the released `apra-fleet` binary and no separate `node` install, ship the
+supervisor's source inside the published npm package so an npm-installed
+`serve.mjs` can actually resolve its imports, and make a supervisor
+registration failure a loud, non-zero install error instead of a silent
+advisory. All of the code and test work landed and is independently verified
+(build green, full `npm test` green, pack-size gate green, zero remaining
+references to the deleted node-path-resolution helper, `npm pack --dry-run`
+confirms the supervisor source ships). The sprint verdict is nonetheless FAIL:
+a documentation page added by this same sprint (`docs/install.md`) still
+describes the OLD behaviour it replaced -- a node-path unit, a
+resolved-at-install-time node executable, and a non-fatal registration
+failure -- which is the exact inversion of what shipped and is left open as a
+reopened, unclosed issue for a follow-up sprint to fix (`llms-full.txt` is
+generated from README/docs and will need regenerating once that page is
+corrected).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $28.7711.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.8045 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **`apra-fleet supervisor`**: a new foreground subcommand that boots the
+  installed fleet-sprint supervisor (`bin/serve.mjs`) on the running
+  binary's own embedded runtime -- no separate `node` on PATH required.
+  Arguments after `supervisor` pass through verbatim. See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md)
+  for the no-double-boot design this relies on.
+- **The fleet-supervisor OS service now runs `<installed apra-fleet binary>
+  supervisor`**, not a resolved node path -- the dead-code
+  node-executable-resolution helper this replaces is gone entirely
+  (zero references left in the tree).
+- **Supervisor registration failing at install time is now a loud, non-zero
+  install failure** naming the reason, replacing the previous silent
+  advisory-and-continue behaviour. `install --workflows none` (which never
+  installs the supervisor's source to begin with) remains the one
+  legitimate non-registration and is reported as such.
+- **The OS service manager is generalized to multiple named services**
+  (`mcp-server`, `fleet-supervisor`), each with its own unit/plist/scheduled
+  task so either can be stopped, restarted, or removed independently of the
+  other; per-service restart policy and stop mechanism live on a shared
+  descriptor table instead of being duplicated per platform.
+- **`packages/apra-fleet-se/src/` now ships inside the published npm
+  package's `files` array**, closing the gap where an npm-installed
+  `bin/serve.mjs` could not resolve its own `../src/supervisor/*.mjs`
+  imports; a new test walks every import reachable from `serve.mjs` and
+  guards that all of it is published.
+- **Windows service teardown terminates the whole process tree**, not just
+  the scheduled task's own wrapper process, on both `stop` and `unregister` --
+  closing an orphaned-process gap where the supervisor could survive a
+  stop/uninstall still bound to its port.
+- See
+  [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md)
+  for the formal schema this sprint also wrote down: how a project, its one
+  beads database, its members, and the supervisor relate.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open for a future sprint):
+- **Reopened, blocking**: `docs/install.md`'s "Two OS-level services" section
+  still documents the pre-sprint behaviour (node-path unit, resolved node
+  executable, non-fatal registration) that this sprint replaced -- an agent
+  or operator reading it will misdiagnose a failed install. Needs a doc-only
+  fix plus an `llms-full.txt` regeneration.
+- On macOS, `apra-fleet stop` then `apra-fleet start` cannot restart the
+  supervisor service -- `stop` unloads the launchd job entirely and `start`
+  only attempts a `kickstart`, which fails for a job that is no longer
+  bootstrapped; currently downgraded to a warning rather than fixed.
+- `apra-fleet stop` is missing the non-default-instance guard that
+  `apra-fleet start` already has, so running `stop` under an overridden
+  `APRA_FLEET_DATA_DIR`/`APRA_FLEET_PORT` stops the machine-global
+  supervisor belonging to the default instance instead of leaving it alone.
+- Pack-size headroom dropped to about 12.5% after shipping the supervisor
+  source; still under the gate but worth a deliberate decision (raise the
+  threshold, or ship only the subtree reachable from `serve.mjs`) before the
+  next moderate asset addition trips it.
+- The supervisor's registered `WorkingDirectory` still does not point at the
+  project it supervises (a pre-existing, separately tracked gap -- see
+  `docs/project-model.md`).
+
+## [Unreleased] -- Sprints embedded in the console, with mount-aware and cross-linked pages
+
+Sprint goal: make the fleet-supervisor's sprint dashboard reachable from
+inside the console shell rather than only at its own standalone port, and
+give the console, the dashboard, and a running sprint's live viewer working
+links back to each other. Both landed and are verified working.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $35.8734.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5372 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The fleet-supervisor self-registers as a workflow package** on boot
+  (id `se`, an unscoped "Sprints" nav entry so it renders in the console
+  header with no project selected) and unregisters on a clean shutdown. A
+  real registration defect was found and fixed along the way: the register
+  call was previously built from the MCP connection's own URL (pointing at
+  `/mcp`), so it silently 404ed and retried forever; it is now derived from
+  that connection's origin alone, resolved once and shared with every other
+  self-referential link the package renders.
+- **The console's Sprints nav entry now serves the real dashboard**, not a
+  placeholder page -- mounted at the manifest's single declared path so the
+  nav target and the served route can never independently drift.
+- **Every dashboard/history/live-viewer page renders correctly both directly
+  and embedded** under the console's `/ext/se/*` reverse proxy: a per-request
+  mount-path header (stripped from any client-supplied value before the
+  proxy sets its own) tells the page which context it is in, and a hardened,
+  fail-closed sanitizer is what makes it safe to interpolate that value
+  straight into inline `<script>` string literals and `href` attributes.
+- **The dashboard, the console, and a sprint's live viewer cross-link to each
+  other**: the dashboard's "back to console" link resolves the console's
+  origin only from the real registration connection (no hardcoded host or
+  port, nothing rendered if unresolved); the live viewer's back-link and the
+  dashboard's own per-sprint card anchor are derived from one shared,
+  injective anchor-id function, so the two sides can never disagree on the
+  anchor for the same sprint.
+
+Carried forward (filed as follow-up work, not fixed this sprint, lower
+priority than the goal and left open):
+- The dedicated read-only sprint history route (as opposed to the
+  live-view fallthrough) does not yet resolve the mount prefix for its own
+  back-link, so that one page's link is unprefixed when reached through the
+  embedded hop.
+- An end-to-end check that a sprint launched from the embedded launch form
+  actually appears live on the embedded Sprints page is still open.
+- A regression pass run after this sprint's verdict surfaced pre-existing,
+  already-tracked failures unrelated to this sprint's scope (golden-transcript
+  snapshot non-determinism, several mock-sprint suite timeouts, and a smoke
+  test blocked by a known permission-classifier denial before a toy sprint
+  could launch); these are informational carry-over items, not regressions
+  introduced by this sprint, and do not change the verdict above.
+
+## [Unreleased] -- Member edit and compose-permissions inputs in the console drawer
+
+Sprint goal: give the console's member drawer an in-place edit form for the
+fields `update_member` accepts, and real inputs (role, tags, grant list,
+grant reason) for compose-permissions instead of a bare button that could
+only fail against the server's schema. Both submit only the fields the
+operator actually changed, never the whole record, to avoid clobbering
+concurrent server-side changes.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.3672.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2424 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 9 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Member edit form in the drawer**: friendly name, category, tags, icon,
+  unattended mode, LLM provider, and (for remote members) host/port/
+  username, posted to `update_member` as a dirty-field-only body. A
+  successful save refreshes the members list; a server validation error
+  renders verbatim in the form.
+- **Compose-permissions inputs in the drawer**: role (doer/reviewer), tags,
+  grant list, and grant reason, posted to `compose_permissions`. The
+  server schema has no "at least one of role or tags" validation, so that
+  rule is enforced client-side before any request is issued; a
+  `NEVER_AUTO_GRANT` refusal (which the server answers as an HTTP 200 text
+  body, not a thrown error) is rendered verbatim.
+- **Member `unattended` mode is now readable, not just writable**:
+  `list_members` and `member_detail` both emit the member's current
+  permission mode for unattended execution, closing the gap where the
+  console could set it but never show what it currently was. The
+  `apra-fleet-client` typedefs were updated in the same change to stay in
+  sync with the server payload shape.
+- **Shared shell-ui test harness**: the three Members-screen test suites
+  now share one harness module, including a section-scoped field lookup
+  that resolves an ambiguous duplicate label (e.g. "Tags" appearing in both
+  the edit form and the compose-permissions form) to the correct section.
+
+Carried forward: the drawer's re-sync-after-save fix has a known defect --
+because the edit form's baseline snapshot is taken once at mount but the
+drawer can still receive a newer member object from a background refresh
+while the form itself stays frozen, an operator's untouched fields can read
+as dirty against the moved baseline and get resubmitted, spuriously
+reverting a concurrent change made by someone else while the drawer was
+open. This is being reopened rather than shipped as-is. See
+[docs/console-architecture.md](docs/console-architecture.md) for the
+dirty-diff design and the invariant this defect violates.
 ## [Unreleased] -- Member env map actually reaches dispatch, reservation becomes a reapable object
 
 Sprint goal: make the member registry's `env` name-value map actually reach
@@ -446,6 +636,22 @@ Carried forward (sprint goal not yet met):
   permission gaps (missing broad `curl`/`kill` allowances for the sandbox's
   dynamically assigned ports) blocked full integration and regression runs
   this sprint.
+
+## [Unreleased] -- Beads hygiene: milestone labels, gate-lock ignore, no token-estimate memories
+
+- `scripts/check-bead-milestones.mjs`: lists non-closed beads with zero, several or
+  unknown `milestone:*` labels (exit 2). Options `--assignee`, `--known`, `--file`,
+  `--json`. A standalone, opt-in operator tool. The `milestone:*` labels are a local,
+  ad-hoc convention until a formal milestone model lands, so the script is not wired
+  into any sprint phase, hook, prompt or CI job.
+- `.gitignore`: ignore `.beads.gate.lock`, the bd runtime lock that sprints kept
+  re-filing as a dirty-worktree finding.
+- apra-pm: the legacy auto-sprint harvest and the pm cost skill no longer write the
+  `token-estimates-json` bd memory; `scripts/fix-token-memories.mjs` is removed.
+  Calibration stays in `sprint-logs/calibration.json`.
+- backlog-groomer: new hygiene step. Follow-ups under closed parents are groomed, given
+  the parent's context and detached. Fully closed epics are listed as deletion
+  candidates, which need operator confirmation. Token-estimate memories are banned.
 
 ## [Unreleased] -- Windows dispatch pipe stall, missed-stall tail truncation and unbounded test runner (sprint goal not yet met -- see carried-forward items)
 
@@ -1306,6 +1512,62 @@ Integ-test-runner spend: $0.8319 across 6 dispatch(es) this sprint (a subset of 
 Pricing source: all 71 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
+
+## [Unreleased] -- restore config-driven HTTP KB provider selection
+
+Sprint goal: give `getKbProviders` back the provider-selection logic an
+earlier cleanup removed, so a stock, unmodified build can be pointed at a
+remote KB server by configuration alone, with the SQLite path staying
+byte-identical when no such configuration is present.
+
+What shipped:
+
+- **`getKbProviders` selects the project provider from config.** When
+  `FLEET_DIR/knowledge/config.json` (written by `kb_setup`) selects
+  `provider: "http"` with a URL and a decryptable token, the project KB
+  provider is now an `HttpKbProvider`; every other case -- no config file,
+  `provider: "sqlite"`, or a malformed/incomplete config -- degrades to the
+  existing `SqliteProvider` unchanged, with a malformed config logging one
+  loud warning instead of failing every KB tool.
+- **No new no-arg `SqliteProvider` construction.** The `HttpKbProvider` this
+  selection builds is always constructed with the already-built project
+  `SqliteProvider` as its explicit fallback, closing the specific hazard of
+  `HttpKbProvider`'s own default fallback resolving a database from the
+  wrong working directory.
+- **A `requireSqliteProject` narrowing guard** now sits in front of every KB
+  tool call site that needs `SqliteProvider`-only capabilities (list,
+  feedback, freshness sweep, reconcile/resolve-contradiction, directive
+  methods), so those operations refuse loudly and by name when the project
+  provider is remote instead of behaving unpredictably. That is eight of the
+  nine SqliteProvider-only call sites; the ninth, `kb_stats`, deliberately
+  degrades instead, using the non-throwing `isSqliteProject` guard to report
+  a not-computable bible block over a remote provider.
+- **`kb_setup` validates `remote`.** A value that is not an `http://` or
+  `https://` URL is rejected before any hook or config is written, and plain
+  `http://` to a non-loopback host returns a `warnings` entry (and logs one),
+  because the bearer token would travel in cleartext. Loopback http
+  (`localhost`, `127.0.0.0/8`, `[::1]`) does not warn. It warns rather than
+  refuses so existing LAN deployments keep working.
+- Test coverage is against real implementations only, including an
+  end-to-end test that runs `kb_setup` for real against a live local HTTP
+  server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`
+  for the full selection contract and its one remaining follow-up gap (an
+  audit of `kb_stats` consumers now that its response is a union shape).
+
+Carried forward as open backlog: auditing `kb_stats` consumers against its
+now-union response shape. The user-directive pending-proposal clamp and
+`kb serve`'s behaviour under a remote project provider were both listed here
+as follow-ups and are resolved in this same branch.
+
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.0737.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 15 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
 

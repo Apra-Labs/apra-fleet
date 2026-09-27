@@ -1,8 +1,12 @@
 #!/usr/bin/env node
-// Runs vitest and the apra-fleet-se workspace's own test suite unconditionally
-// -- unlike `vitest run && npm test --workspace=...`, a failure (including a
-// flaky, unrelated one) in the first suite no longer silently skips the
-// second suite entirely. Exits non-zero if either suite failed.
+// Single source of truth for `npm test`: runs vitest plus every workspace
+// package's own test suite (apra-fleet-client, apra-fleet-workflow,
+// apra-fleet-se) and apra-pm (not an npm workspace) unconditionally, each
+// exactly once -- unlike `vitest run && npm test --workspace=...`, a failure
+// (including a flaky, unrelated one) in one suite no longer silently skips
+// the rest. CI's "Run tests" step is just `npm test`; do not add separate
+// workflow steps that re-run any of these suites. Exits non-zero if any
+// suite failed.
 //
 // apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 15
 // minutes, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
@@ -38,19 +42,12 @@ const timeoutMs = (() => {
 
 const defaultSuites = [
     { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
-    { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
-    // packages/apra-fleet-se/apra-pm is NOT an npm workspace (see ci.yml's
-    // "Run apra-pm test suite (node:test; not an npm workspace)" step), so
-    // it is otherwise reached only by CI's explicit --prefix invocation.
-    // Mirror that here so local runs get the same signal as CI.
-    { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
-    // apra-fleet-iywi.6: packages/apra-fleet-client has its own `node --test
-    // test/*.test.mjs` script and is an npm workspace, but was not among the
-    // suites above, so `npm test` never ran it locally -- only CI's separate
-    // `npm test --workspaces --if-present` step (ci.yml) caught a regression
-    // there. Run it explicitly here too so it inherits the same wall-clock
-    // bound and process-tree kill as the others.
     { name: 'apra-fleet-client', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-client'] },
+    { name: 'apra-fleet-workflow', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-workflow'] },
+    { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
+    // packages/apra-fleet-se/apra-pm is NOT an npm workspace, so it is
+    // otherwise unreached by any --workspace(s) invocation above.
+    { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
 ];
 
 const suites = process.env.APRA_TEST_SUITES_JSON

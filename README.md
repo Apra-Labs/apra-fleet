@@ -209,6 +209,21 @@ MCP tools that ship with the KB:
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
+`kb_setup --remote <url> --token <key>` takes effect immediately: the next
+KB tool call resolves its project provider from this config, so a stock build
+points at a remote KB server by configuration alone, with no code change and
+no separate "server mode" build. A config with no remote, or any config the
+reader cannot parse, always falls back to the local SQLite provider -- see
+[Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
+for the exact selection rule and its fallback-construction invariant.
+
+**The provider config is install-wide, not per repo.** There is one
+`knowledge/config.json` per fleet install, so pointing it at a remote KB
+points EVERY repo that install serves -- every member, every project -- at
+that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
+post-commit hook; it does not scope the config. On a shared fleet server,
+treat `kb_setup --remote` as a change for all of its users.
+
 Every KB tool call is scoped to the repo it is about -- a fleet server
 handling many members across many repos never lets one repo's learnings land
 in another repo's KB. Scope is normally derived from the caller's repo path;
@@ -431,14 +446,30 @@ third-party workflow packages can be registered and reached through a
 `/ext/<package id>/*` reverse proxy (SSE included) using a per-package
 derived upstream credential rather than the raw fleet key, and
 `compose_permissions` refuses to auto-grant a member curl access to the
-console or supervisor's own control-plane ports. It now serves from every
-distribution channel -- a dev checkout, the npm-installed package, and the
-SEA binary all answer `GET /ui`. A known gap: the Members table's owner
-column and the member-detail drawer action need further work before every
-screen action in the design's action table has both a tested route and a
-tested UI control.
-See [docs/console-architecture.md](docs/console-architecture.md) and
-[docs/npm-packaging.md](docs/npm-packaging.md) (console shell packaging).
+console or supervisor's own control-plane ports. The fleet-supervisor is now
+one such package: it self-registers on boot with an unscoped "Sprints" nav
+entry, and the console embeds its real dashboard (Sprint Stack, backlog,
+launch form, per-sprint live view and history) in an iframe under
+`/ext/se/*` -- every page it renders resolves its own links correctly whether
+opened directly or embedded, and the dashboard, the console and a running
+sprint's live viewer cross-link back to each other (console origin, and a
+shared per-sprint card anchor) with no hardcoded host or port. The member
+drawer now has an in-place edit form (name, category, tags, icon, unattended
+mode, LLM provider, and host/port/username for remote members) and
+compose-permissions inputs (role, tags, grant list, grant reason), both
+submitting only the fields the operator actually changed rather than the
+whole record. It now serves from every distribution channel -- a dev
+checkout, the npm-installed package, and the SEA binary all answer
+`GET /ui`. Known gaps: the Members table's owner column and the
+member-detail drawer action need further work before every screen action in
+the design's action table has both a tested route and a tested UI control,
+and the edit form's re-sync-on-background-refresh behavior has a known
+defect where an operator's untouched fields can be spuriously resubmitted
+after another operator's concurrent change lands mid-edit -- see
+[docs/console-architecture.md](docs/console-architecture.md) for the
+dirty-diff design and the invariant this defect violates. See also
+[docs/npm-packaging.md](docs/npm-packaging.md) (console shell packaging) and
+[packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
 
 ## Documentation
 
@@ -480,7 +511,8 @@ See [docs/console-architecture.md](docs/console-architecture.md) and
 | Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
 | Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
-| Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| Auto-sprint internals (cycle loop, stall detection, budget, topology; supervisor OS-service registration and binary-subcommand launcher) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| The fleet project model (supervisor, members, beads, and how they relate) | [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | fleet-integrator merge gate (read-only PR status script + agent merge/repair/wait/skip loop for an integration branch) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md) |

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { listMembers } from "../../../src/tools/list-members.js";
 import { Members } from "../src/pages/Members";
 import { memberFieldGuards } from "../src/api/members";
-import { MEMBERS_A, MEMBERS_B } from "./member-fixtures";
+import { MEMBERS_A, MEMBERS_B, LOCAL_MEMBER } from "./member-fixtures";
 
 // Drift guard (response direction): the Members screen once typed owner as a
 // string while the server emitted {package, ref}; hand-written fixtures kept
@@ -118,7 +118,7 @@ describe("FleetMember vs real list_members json (drift guard)", () => {
   });
 
   it("the hand-written Members fixtures satisfy the same guards", () => {
-    for (const member of [...MEMBERS_A.members, ...MEMBERS_B.members]) {
+    for (const member of [...MEMBERS_A.members, ...MEMBERS_B.members, LOCAL_MEMBER]) {
       expect(guardFailures(member)).toEqual([]);
     }
   });

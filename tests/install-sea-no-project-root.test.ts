@@ -29,6 +29,18 @@ vi.mock('node:os', () => ({
 vi.mock('node:fs');
 vi.mock('node:child_process');
 
+// The fleet-supervisor service registration is NOT this suite's subject -- it is
+// covered by tests/supervisor-service.test.ts and
+// tests/install-supervisor-service.test.ts. It is stubbed as successful here
+// because install now treats a failed supervisor registration as FATAL, and
+// tests/setup.ts always sets APRA_FLEET_DATA_DIR -- so a real call would refuse
+// to bake a machine-global unit and hard-fail every install in this file.
+vi.mock('../src/services/supervisor-service.js', () => ({
+  registerSupervisorService: vi.fn(async () => ({ registered: true })),
+  unregisterSupervisorService: vi.fn(async () => {}),
+  SUPERVISOR_SUBCOMMAND: 'supervisor',
+}));
+
 const mockHome = '/mock/home';
 
 describe('SEA install with no project root on disk (apra-fleet-installer.exe scenario)', () => {

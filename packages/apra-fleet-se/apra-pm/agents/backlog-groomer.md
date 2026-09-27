@@ -189,6 +189,20 @@ Cross `priority`/urgency-language against content quality for every in-scope bea
 - **Priority x age**: compare `created_at`/`updated_at` to now, always jointly with
   priority. Old+low = noise; old+high = an explicit "still worth pursuing or stale?" call.
 
+## Step 6a -- Hygiene sweep (every time)
+
+Same identity scope as everything else: beads assigned to other people are never touched.
+
+- **Follow-ups under closed parents**: an open bead whose parent (epic or otherwise) is
+  closed is a leftover. Groom it -- close with evidence if landed or duplicate; otherwise
+  append the parent's context to its notes (parent title, goal, relevant decisions, key
+  files, originating branch/PR) so it stands alone, then detach it
+  (`bd update <id> --parent ""`) and label it `from-epic:<parent-id>`.
+- **Fully closed epics** (epic and every descendant closed): list them as deletion
+  candidates with descendant counts. Never `bd delete` without operator confirmation.
+- **No token-estimate memories**: never write per-bead or aggregate token/cost estimates
+  with `bd remember`; flag any found for `bd forget`.
+
 ## Step 7 -- Cohesive sprint-set proposal (1b)
 
 From the ready, verified, well-formed, non-duplicate subset only:

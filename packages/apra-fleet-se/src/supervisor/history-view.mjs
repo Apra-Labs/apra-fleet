@@ -38,6 +38,26 @@ import path from 'node:path';
 import { HTML_TEMPLATE } from '@apralabs/apra-fleet-workflow/viewer';
 import { getOldRunsDir, getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
+// (apra-fleet-i9ag.3.8) SAME supervisor-side back-link the live proxy injects
+// into the live-proxied child HTML (apra-fleet-i9ag.5.2/3.6) -- reused here so
+// the finished-sprint page reached through /sprints/:id/live's history
+// fallthrough (proxy.mjs's serveHistory(), wired to this module's
+// renderForSprint() below) carries the SAME mount-aware, target="_top"
+// back-link, without teaching @apralabs/apra-fleet-workflow's generic
+// HTML_TEMPLATE anything about the supervisor dashboard (docs/generic-engine-
+// boundary.md) -- the injection happens IN THIS SUPERVISOR-ONLY module,
+// against the already-rendered HTML string, exactly like proxy.mjs does for
+// the live view.
+import { injectLiveViewBackLink, renderLiveViewBackLinkHtml } from './proxy.mjs';
+// (apra-fleet-i9ag.3.9) The DEDICATED History route (`GET /sprints/:id/history`,
+// `handleGet` below) is entered directly, so nothing threads a mount prefix
+// into it the way bin/serve.mjs threads the live proxy's own resolved value
+// into the `/sprints/:id/live` history fallthrough. It therefore resolves the
+// console's per-request mount path itself, exactly as registerDashboardRoutes
+// (dashboard.mjs) and the live proxy's handleBase (proxy.mjs) do -- otherwise
+// the back-link injected below is always rooted at '/' and a click from inside
+// the console's /ext/<id> iframe leaves the mount point behind.
+import { resolveMountPrefix } from './mount-prefix.mjs';
 
 /**
  * BOUNDARY-COMPAT (apra-fleet-eft.37.1/37.2): the legacy pre-rename terminal
@@ -192,7 +212,7 @@ export function renderHistoryPageHtml(state, dashboardExtensions = []) {
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
  *   handleGet: Function,
- *   renderForSprint: (sprintId: string) => Promise<string|null>,
+ *   renderForSprint: (sprintId: string, mountPrefix?: string) => Promise<string|null>,
  * }}
  */
 export function createHistoryView(deps = {}) {
@@ -210,13 +230,25 @@ export function createHistoryView(deps = {}) {
      * first; the live-proxy's `renderHistory` seam (src/supervisor/proxy.mjs)
      * already treats a throwing renderer as "no history" and answers 404,
      * which is itself a rejection of the path-traversal attempt.
+     *
+     * `mountPrefix` (apra-fleet-i9ag.3.8) is `resolveMountPrefix(req)`'s
+     * per-request result (or `''`/omitted for serve-direct), threaded through
+     * from whichever caller resolved it -- bin/serve.mjs forwards the live
+     * proxy's own resolved value into this seam so the page reached via
+     * `/sprints/:id/live`'s history fallthrough carries a back-link that
+     * resolves under the console's `/ext/<id>` mount point instead of the
+     * console root when embedded, and this module's own `handleGet`
+     * (apra-fleet-i9ag.3.9) resolves it from its own `req` so the dedicated
+     * `/sprints/:id/history` route behaves identically.
      * @param {string} sprintId
+     * @param {string} [mountPrefix]
      * @returns {Promise<string|null>}
      */
-    async function renderForSprint(sprintId) {
+    async function renderForSprint(sprintId, mountPrefix) {
         const state = await loadOldSprintState(sprintId, env, readFile);
         if (state == null) return null;
-        return renderHistoryPageHtml(state, dashboardExtensions);
+        const html = renderHistoryPageHtml(state, dashboardExtensions);
+        return injectLiveViewBackLink(html, renderLiveViewBackLinkHtml(mountPrefix ?? '', sprintId));
     }
 
     // GET /sprints/:id/history -- the dedicated "History" link (apra-fleet-eft.6,
@@ -237,7 +269,13 @@ export function createHistoryView(deps = {}) {
         }
         let html;
         try {
-            html = await renderForSprint(sprintId);
+            // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
+            // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
+            // handleBase: one rendered page answers both the direct-on-port
+            // hit and the console's /ext/<id> iframe hop. A hostile or
+            // malformed header fails closed to '' in resolveMountPrefix(),
+            // which is exactly the serve-direct render.
+            html = await renderForSprint(sprintId, resolveMountPrefix(req));
         } catch (err) {
             logError('[history-view] failed to load state for', sprintId, err);
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);
@@ -262,6 +300,156 @@ export function createHistoryView(deps = {}) {
         handleGet,
         renderForSprint,
     };
+}
+
+/** Default cap on how many finished runs the dashboard History list shows. */
+export const DEFAULT_FINISHED_RUNS_LIMIT = 50;
+
+/**
+ * Pulls the dashboard-facing summary out of one parsed terminal state file.
+ * Verdict/PR come from the opaque `result` (post-M2, or backfilled from the
+ * legacy top-level fields by backfillLegacyResult()), with the engine's own
+ * `extensions.terminal.verdict` as a verdict fallback -- the SAME field the
+ * watchdog copies into sprint-history.json's FINISHED event. A prUrl is only
+ * kept when it is an http(s) URL, so a malformed/hostile value can never
+ * become a `javascript:` href on the dashboard.
+ * @param {string} sprintId - the file's basename (the id GET /sprints/:id/history resolves)
+ * @param {object} state
+ * @param {number} mtimeMs
+ * @returns {{ sprintId: string, verdict: string|null, prUrl: string|null, endedAt: string|null, goal: string|null, workflowName: string|null }}
+ */
+export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
+    const s = backfillLegacyResult(state) || {};
+    const result = s.result && typeof s.result === 'object' ? s.result : {};
+    const terminalVerdict = s.extensions && s.extensions.terminal ? s.extensions.terminal.verdict : null;
+    const rawVerdict = result.verdict ?? terminalVerdict ?? null;
+    const verdict = typeof rawVerdict === 'string' && rawVerdict.length > 0 ? rawVerdict : null;
+    const prUrl = typeof result.prUrl === 'string' && /^https?:\/\//i.test(result.prUrl) ? result.prUrl : null;
+    const endedAt = typeof s.endedAt === 'string' && s.endedAt.length > 0
+        ? s.endedAt
+        : (mtimeMs > 0 ? new Date(mtimeMs).toISOString() : null);
+    const goal = s.args && typeof s.args === 'object' && typeof s.args.goal === 'string' ? s.args.goal : null;
+    return {
+        sprintId,
+        verdict,
+        prUrl,
+        endedAt,
+        goal,
+        workflowName: typeof s.workflowName === 'string' ? s.workflowName : null,
+    };
+}
+
+/**
+ * The finished-sprints index behind the dashboard's History list
+ * (apra-fleet-i9ag.4): every persisted terminal run under old_runs/ (plus the
+ * legacy old_sprints/), newest first, each summarized by
+ * summarizeFinishedRun(). Only runs that HAVE a terminal state file are
+ * listed, so every row's GET /sprints/:id/history link resolves.
+ *
+ * old_runs/ lives in the shared fleet data dir, so other workflows' runs land
+ * there too. When a `history` collaborator (history.mjs's sprint-history log)
+ * is injected, the list is narrowed to run ids this supervisor has recorded a
+ * terminal event for; without one every terminal run is listed.
+ *
+ * Parsed summaries are cached per file keyed by mtime+size, so a dashboard
+ * poll re-reads only files that changed since the last call.
+ *
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   history?: { list: () => Array<{ sprintId: string, verdict?: string|null }> }|null,
+ *   limit?: number,
+ *   fs?: { readdir: Function, stat: Function, readFile: Function },
+ *   logger?: { log?: Function, error?: Function },
+ * }} [deps]
+ * @returns {{ list: () => Promise<ReturnType<typeof summarizeFinishedRun>[]> }}
+ */
+export function createFinishedRunsIndex(deps = {}) {
+    const env = deps.env ?? process.env;
+    const history = deps.history && typeof deps.history.list === 'function' ? deps.history : null;
+    const limit = Number.isInteger(deps.limit) && deps.limit > 0 ? deps.limit : DEFAULT_FINISHED_RUNS_LIMIT;
+    const fs = deps.fs ?? fsp;
+    const logger = deps.logger ?? console;
+    const logError = (...a) => (logger.error ?? logger.log)?.(...a);
+    /** @type {Map<string, { key: string, summary: object }>} */
+    const cache = new Map();
+
+    async function scanDir(dir) {
+        let names;
+        try {
+            names = await fs.readdir(dir);
+        } catch (err) {
+            if (err && err.code === 'ENOENT') return [];
+            throw err;
+        }
+        const out = [];
+        for (const name of names) {
+            if (!name.endsWith('.json')) continue;
+            const sprintId = name.slice(0, -'.json'.length);
+            if (!isSafeSprintId(sprintId)) continue;
+            const filePath = path.join(dir, name);
+            try {
+                const st = await fs.stat(filePath);
+                if (!st.isFile()) continue;
+                out.push({ sprintId, filePath, mtimeMs: st.mtimeMs, size: st.size });
+            } catch {
+                // Raced away between readdir and stat -- skip.
+            }
+        }
+        return out;
+    }
+
+    async function list() {
+        // old_runs/ wins over the legacy dir for the same id, mirroring
+        // getTerminalRunStatePath()'s own resolution order.
+        const byId = new Map();
+        for (const dir of [getOldRunsDir(env), getLegacyOldSprintsDir(env)]) {
+            for (const f of await scanDir(dir)) {
+                if (!byId.has(f.sprintId)) byId.set(f.sprintId, f);
+            }
+        }
+        let historyVerdicts = null;
+        if (history) {
+            historyVerdicts = new Map();
+            for (const e of history.list()) {
+                if (!e || typeof e.sprintId !== 'string') continue;
+                const prior = historyVerdicts.get(e.sprintId) ?? null;
+                historyVerdicts.set(e.sprintId, e.verdict ?? prior);
+            }
+        }
+        const files = [...byId.values()]
+            .filter((f) => !historyVerdicts || historyVerdicts.has(f.sprintId))
+            .sort((a, b) => b.mtimeMs - a.mtimeMs)
+            // Only the newest `limit` files are ever parsed -- a long-lived
+            // data dir with hundreds of old runs costs one stat each, not one
+            // full JSON parse each.
+            .slice(0, limit);
+        const summaries = [];
+        for (const f of files) {
+            const key = f.mtimeMs + ':' + f.size;
+            const hit = cache.get(f.filePath);
+            if (hit && hit.key === key) { summaries.push(hit.summary); continue; }
+            let state;
+            try {
+                state = JSON.parse(await fs.readFile(f.filePath, 'utf-8'));
+            } catch (err) {
+                logError('[history-view] skipping unreadable terminal state', f.filePath, err && err.message);
+                continue;
+            }
+            const summary = summarizeFinishedRun(f.sprintId, state, f.mtimeMs);
+            cache.set(f.filePath, { key, summary });
+            summaries.push(summary);
+        }
+        const rows = summaries.map((s) => {
+            if (s.verdict || !historyVerdicts) return { ...s };
+            return { ...s, verdict: historyVerdicts.get(s.sprintId) ?? null };
+        });
+        // Newest first by the run's own endedAt (summarizeFinishedRun() falls
+        // back to the file mtime when absent); ISO-8601 strings sort lexically.
+        rows.sort((a, b) => String(b.endedAt ?? '').localeCompare(String(a.endedAt ?? '')));
+        return rows;
+    }
+
+    return { list };
 }
 
 /**

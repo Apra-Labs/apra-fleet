@@ -278,6 +278,30 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     expect(result).toHaveProperty('promote_ratio');
     expect(result).toHaveProperty('bible');
   });
+
+  // my-beads-db-0cd.13: over an HttpKbProvider project, bible drift must be
+  // reported as not computable, never as an ambiguous drift:0 (indistinguishable
+  // from an up-to-date bible) and never by throwing.
+  it('HttpKbProvider project -> bible reports not computable, never drift 0', async () => {
+    const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+
+    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token', provider);
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: httpProvider,
+      global: provider,
+      projectSlug: 'test',
+    } as any);
+
+    const result = JSON.parse(await kbStats({ repo: tmpDir }));
+    expect(result.bible).toEqual({
+      computable: false,
+      reason: 'bible drift is not computable over a remote HTTP provider',
+    });
+    expect(result.bible.drift).toBeUndefined();
+    httpProvider.dispose();
+  });
 });
 
 // apra-fleet-src: kb_stats was the ONLY kb_* tool naming this input `repo`;

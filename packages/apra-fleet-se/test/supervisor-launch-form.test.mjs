@@ -9,6 +9,7 @@ import {
     renderLaunchFormHtml,
 } from '../src/supervisor/launch-form.mjs';
 import { renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
+import { sanitizeMountPrefix } from '../src/supervisor/mount-prefix.mjs';
 
 // apra-fleet-eft.6.3 -- Launch Sprint form: issue multi-select (click-to-toggle
 // on the Backlog tree), member/role assignment, a goal selector offering
@@ -236,5 +237,53 @@ describe('launch-form -- attaches to the index page in the Backlog tab', () => {
     test('an explicit launchFormHtml override is honored verbatim', () => {
         const html = renderIndexPageHtml([], '<p>no backlog</p>', '<p data-marker="custom-launch-form"/>');
         assert.ok(html.includes('data-marker="custom-launch-form"'));
+    });
+});
+
+// apra-fleet-i9ag.3.2: the form's two fetch targets must survive being served
+// under the console's /ext/<id> mount. Inside that iframe a root-relative
+// '/api/members' resolves against the CONSOLE origin -- the member checklist
+// never loads and a submit 404s -- so a launch from the embedded form is
+// impossible until both targets carry the mount prefix dashboard.mjs threads in.
+describe('launch-form -- mount-aware fetch targets (apra-fleet-i9ag.3.2)', () => {
+    test('no prefix: both targets are byte-identical to what they always were', () => {
+        const direct = renderLaunchFormHtml();
+        assert.ok(direct.includes("fetch('/api/members')"));
+        assert.ok(direct.includes("fetch('/api/sprints'"));
+        // Omitted, '' and a non-string are all the one serve-direct behaviour.
+        assert.strictEqual(renderLaunchFormHtml(''), direct);
+        assert.strictEqual(renderLaunchFormHtml(null), direct);
+        assert.strictEqual(renderLaunchFormHtml(undefined), direct);
+        assert.ok(!direct.includes('undefined/'), 'a missing prefix must never leak into a fetch target');
+    });
+
+    test('with a prefix: both targets are prefixed exactly once and none stays rooted at /', () => {
+        const html = renderLaunchFormHtml('/ext/se');
+        assert.ok(html.includes("fetch('/ext/se/api/members')"), html);
+        assert.ok(html.includes("fetch('/ext/se/api/sprints'"), html);
+        assert.ok(!html.includes("fetch('/api/"), 'no fetch target may stay rooted at the console root');
+        assert.ok(!html.includes('/ext/se/ext/se'), 'the prefix must be applied exactly once');
+    });
+
+    test('the index page threads its own resolved prefix into the form it renders', () => {
+        // The form is rendered BY renderIndexPageHtml() (no caller passes a
+        // launchFormHtml override in production), so this is the path that
+        // actually matters for the embedded console page.
+        const html = renderIndexPageHtml([], '<p>no backlog</p>', undefined, { mountPrefix: '/ext/se' });
+        assert.ok(html.includes("fetch('/ext/se/api/members')"), 'form members fetch must be mounted');
+        assert.ok(html.includes("fetch('/ext/se/api/sprints'"), 'form submit fetch must be mounted');
+    });
+
+    test('a hostile prefix never reaches the page -- it is rejected before rendering', () => {
+        // renderLaunchFormHtml() interpolates its prefix into a single-quoted JS
+        // literal, which is only safe because mount-prefix.mjs fails a value
+        // like this closed to '' (resolveMountPrefix(), called in
+        // registerDashboardRoutes()). Asserting the rejection HERE too documents
+        // that this module's safety depends on that validation and nothing else.
+        const hostile = "/ext/se'+alert(1)+'";
+        assert.strictEqual(sanitizeMountPrefix(hostile), '');
+        const html = renderIndexPageHtml([], '<p>no backlog</p>', undefined, { mountPrefix: sanitizeMountPrefix(hostile) });
+        assert.ok(!html.includes('alert(1)'), html.slice(0, 200));
+        assert.ok(html.includes("fetch('/api/members')"), 'a rejected prefix falls back to serve-direct paths');
     });
 });

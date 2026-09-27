@@ -1410,6 +1410,78 @@ builds a real installed tree and walks the full static import graph from the
 installed `bin/serve.mjs`, so it is also the authoritative, always-current
 enumeration of which modules the supervisor reaches.
 
+## Supervisor: OS service registration and the binary-subcommand launcher
+
+The supervisor's auto-start-on-boot registration is a second, independent OS
+service alongside the MCP server's, and it is started by the installed
+`apra-fleet` binary's own `supervisor` subcommand rather than by spawning a
+separate `node` process. Both properties are load-bearing, not incidental:
+
+- **Why not `<node> <installed>/bin/serve.mjs`.** A unit file has no shell rc
+  and no PATH the way an interactive session does, so registering a bare
+  `node` command never resolves under nvm/fnm/volta, and under the released
+  SEA binary `node` may not exist on the machine at all --
+  `process.execPath` there IS the `apra-fleet` binary, not a node runtime.
+  Resolving an absolute node path at install time and baking it into the unit
+  used to paper over the PATH problem, but it fails outright on a fresh
+  machine that only has the released binary: there is no node to resolve, the
+  service is never registered, and (before this fix) install still reported
+  success. The durable fix is to never depend on an external node at all --
+  point the unit at `<installed apra-fleet binary> supervisor` and let the
+  binary's own embedded runtime boot the supervisor in-process.
+- **The launcher's double-boot trap.** `bin/serve.mjs` self-executes when
+  `import.meta.url` matches `pathToFileURL(process.argv[1]).href` (its own
+  `isMainModule()` guard). The generic SEA workflow trampoline
+  (`apra-fleet workflow <name>`) runs an installed entry point by rewriting
+  `process.argv[1]` to point at that entry and letting the module's own
+  self-execution guard fire -- but `serve.mjs` cannot be launched that way
+  from the `supervisor` subcommand, because the subcommand also needs the
+  `{ exitCode }` that `serveMain()` returns, which a self-executing module
+  cannot hand back through an argv rewrite. The subcommand launcher
+  (`src/cli/supervisor.ts`) therefore does the opposite: it deliberately never
+  touches `process.argv`, and instead imports `serve.mjs` and calls its
+  exported `serveMain(argv)` directly. Combining both mechanisms (an argv
+  rewrite AND an explicit `serveMain()` call) would boot the supervisor
+  twice and the second HTTP listener would fail on the port -- exactly one
+  boot mechanism must be chosen per entry point, and the subcommand's choice
+  is the explicit call.
+- **Registration is one of two failure classes, and the supervisor's is
+  fatal.** The MCP server's own service registration failing at install time
+  is non-fatal (it warns and continues) because the MCP server can still be
+  reached over stdio. The fleet-supervisor's registration failing is treated
+  as a hard install failure (non-zero exit, reason printed) because a
+  silently-unregistered supervisor is a false success: nothing restarts it
+  after a reboot and there is no other way to reach it. The one legitimate
+  non-registration is `install --workflows none`, which never installs the
+  supervisor's source tree in the first place and reports that explicitly
+  rather than attempting registration and failing.
+- **Two independent services, one registration mechanism.** Each OS-level
+  service (`mcp-server`, `fleet-supervisor`) gets its own unit/plist/scheduled
+  task name so either can be stopped, restarted, or removed without touching
+  the other; the platform-specific managers (`src/services/service-manager/`)
+  are parameterized by a `ServiceId` rather than duplicated per service.
+  `restartOnFailure` and `gracefulStopViaServerJson` are per-service flags on
+  the descriptor, not per-platform: the fleet-supervisor is `Restart=no`
+  (started at boot/login; an exit is treated as intentional) and never writes
+  a `server.json`, so its `stop()` cannot use the MCP server's graceful
+  HTTP-handshake path and instead goes through the platform's own
+  process-tree termination (`taskkill /F /T` on Windows, since the scheduled
+  task's own process is only a wrapper `cmd.exe` and the actual supervisor is
+  its child -- discovery of the wrapper's live pids must happen *before*
+  ending the task, or the parent link the tree-kill needs is gone).
+- **Known gaps, deliberately not closed by this design:** on macOS,
+  `stop()` unloads the launchd job (`launchctl bootout`), but `start()` only
+  `kickstart`s it, which fails for a job no longer bootstrapped -- a
+  stop-then-start cycle currently cannot bring the supervisor back without a
+  full reinstall. `apra-fleet start`'s guard against acting on a
+  non-default instance (`isNonDefaultInstance()`, checked because the
+  registered unit is always machine-global and would otherwise silently run
+  against the wrong instance) does not yet have a matching guard on
+  `apra-fleet stop`. Both are tracked as open follow-up work, not fixed here.
+- **Also still open:** the registered service's `WorkingDirectory` is the
+  installed engine's own path, not the supervised project's -- see
+  `docs/project-model.md`'s rule 1 for that gap and its tracked fix.
+
 ## Supervisor: project store (fleet-supervisor console)
 
 Alongside the reservation ledger described above, the supervisor is gaining
@@ -1487,6 +1559,91 @@ port, so nothing leaks the supervisor's internal port allocation or requires
 per-sprint firewall holes. Live-streamed updates (Server-Sent Events) are
 proxied with no buffering and no compression, so the live view stays live
 through the proxy hop.
+
+## Embedding the dashboard in the console: mount-prefix resolution and cross-links
+
+The supervisor is a self-registering workflow package in the fleet console
+(see `docs/console-architecture.md`'s "The fleet-supervisor as a
+self-registering workflow package" section for the registration and header
+contract from the console's side). Every dashboard/history/live-viewer page
+it serves must render correctly in both of the console's two rendering
+contexts -- served directly at the supervisor's own origin, and reverse-proxied
+under the console's `/ext/<id>/*` mount -- without knowing in advance which
+one a given request is in.
+
+**Resolution is per-request, not per-process.** The console's proxy sets a
+request header naming the exact mount path it computed for that hop; a
+sanitizer resolves that header into either a usable prefix or `''` (meaning:
+render exactly as the long-standing direct-serve case always has). The
+sanitizer fails closed on anything outside a conservative allowlist --
+narrower than what a URL path technically permits, deliberately excluding
+quotes, angle brackets, whitespace, control characters, `:`, `?`, `#`, `&`,
+and any path starting with `//` (which a browser would read as a host) or
+containing a `.`/`..` segment in any spelling recognized (including the
+`%2e`-encoded form). This is not defense-in-depth against the proxy alone:
+the same code may run reachable directly by anything that can talk to its
+port, so it treats the header as untrusted network input regardless of the
+proxy's own header-stripping. The narrow allowlist is what makes it safe to
+interpolate the resolved prefix directly into an inline `<script>`'s
+single-quoted JS string literals and into HTML `href` attributes with no
+second escaping layer -- a value that survives the allowlist cannot carry a
+quote, angle bracket, or scheme that would break out of either context.
+
+**Prefixing is idempotent and one-directional.** The helper that applies a
+resolved prefix to one absolute app-path returns the path unchanged if it
+already starts with that prefix, so a value that has already been prefixed
+once (e.g. threaded through two call sites that both apply it) can never be
+prefixed twice into a broken `/ext/se/ext/se/...` path. A non-absolute input
+(relative path, full URL, bare `#fragment`) is also returned unchanged, since
+it was never resolving against the origin root in the first place and so was
+never broken by embedding.
+
+**This prefixing helper is ES5-only on purpose.** It is not only called
+server-side -- it is also shipped to the browser verbatim, via
+`Function.prototype.toString()`, inside the dashboard's own inline
+live-refresh `<script>` block, so the same one function builds every
+live-updated row's links both at initial server-side render and at every
+client-side refresh thereafter. `toString()` returns only a function's own
+source text, so the function must be self-contained: no closures over
+outer `const`/`let` bindings, no template literals, no arrow functions --
+anything that depends on surrounding module scope compiles fine server-side
+but throws `ReferenceError` the instant the embedded copy runs in the browser
+with no such binding available. Any future function that needs to run
+identically in both the server-rendered HTML and the client-refreshed DOM
+should follow this same shipped-via-toString, deliberately-ES5,
+zero-closure pattern rather than duplicating logic by hand in two places.
+
+**Cross-linking the dashboard, the console, and a live sprint viewer** follows
+the same "one source of truth read by every consumer" discipline used
+elsewhere in this codebase:
+
+- The dashboard's own "back to console" link resolves the console's origin
+  only from the supervisor's actual registration connection -- never a
+  hardcoded host or port -- and renders nothing (no dead href) rather than a
+  broken link if that origin has not been resolved yet. The origin used here
+  is the exact same one used to build the registration call itself (see
+  `docs/console-architecture.md`), so the two can never independently drift
+  to different values.
+- Every running sprint's dashboard card and the live viewer's own back-link
+  to that card derive their anchor id from one shared function, so the two
+  sides can never compute a different anchor for the same sprint id. A
+  sprint id is operator-supplied at launch time and not guaranteed to be
+  URL-fragment-safe or a legal HTML `id` value, so every character outside a
+  small allowlist is escaped to a fixed-width `_<hex>_` run. The escape
+  delimiter (`_`) is deliberately excluded from the allowlist of literal
+  pass-through characters -- if it were both a literal character and the
+  escape delimiter, two different sprint ids could produce the same escaped
+  anchor id (a real, checked injectivity requirement, not just tidiness).
+
+**Known carried-forward gap:** the dedicated read-only sprint history page
+(reached by its own direct route, not through the live-view fallthrough) does
+not yet resolve the mount prefix for its own back-link, so that one page's
+link resolves against the console root rather than the package mount point
+when the page is reached through the embedded `/ext/<id>` hop. The live-view
+fallthrough surface does not have this gap; only the standalone history route
+does. This is intentionally left open as a small, isolated fix rather than
+bundled into the mount-prefix work that fixed every other page, since it does
+not affect the widely-used live-embedded path.
 
 ## Server-side member reservation
 
