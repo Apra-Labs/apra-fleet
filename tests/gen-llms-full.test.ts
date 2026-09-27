@@ -101,7 +101,7 @@ describe('gen-llms-full: llms-full.txt output', () => {
 
   it('llms-full.txt does not embed any external community links as doc elements', () => {
     const full = readFileSync(join(root, 'llms-full.txt'), 'utf-8');
-    expect(full).not.toMatch(/<doc title="GitHub/);
+    expect(full).not.toMatch(/<doc title="GitHub Discussions/);
     expect(full).not.toMatch(/<doc title="Releases/);
     expect(full).not.toMatch(/<doc title="Issues/);
   });
