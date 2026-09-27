@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+    ISOLATED_HOME_SETUP_PATH, ISOLATED_HOME_SETUP_IMPORT, ISOLATED_HOME_IMPORT_FLAG,
+} from '../scripts/isolated-home-import.mjs';
 import { defaultDataDir as spawnerDefaultDataDir } from '../src/supervisor/spawner.mjs';
 import { defaultDataDir as historyDefaultDataDir } from '../src/supervisor/history.mjs';
 import { defaultDataDir as ledgerDefaultDataDir } from '../src/supervisor/ledger.mjs';
@@ -131,21 +134,33 @@ test('run-tests.mjs: every node --test invocation block carries the run-level ho
     const blocks = extractExecPathArgBlocks(source).filter((b) => b.includes("'--test'"));
     assert.ok(blocks.length > 0, 'expected at least one node --test invocation in run-tests.mjs');
 
+    // apra-fleet-y3xp: the flag is now the shared ISOLATED_HOME_IMPORT_FLAG
+    // constant (scripts/isolated-home-import.mjs), so that the OTHER entry point
+    // into this suite -- the repo root's scripts/run-integ-suites.mjs real-bd
+    // lanes, which had drifted and lost the preload entirely -- resolves the same
+    // value instead of re-deriving it. Either shape satisfies this pin; removing
+    // the preload from an invocation block does not.
     for (const block of blocks) {
         assert.match(
             block,
-            /--import=\$\{isolatedHomeSetupImport\}/,
-            `expected every node --test invocation block to carry --import=\${isolatedHomeSetupImport}, got:\n${block}`,
+            /ISOLATED_HOME_IMPORT_FLAG|--import=\$\{isolatedHomeSetupImport\}/,
+            `expected every node --test invocation block to carry the run-level ` +
+                `home-isolation --import (ISOLATED_HOME_IMPORT_FLAG), got:\n${block}`,
         );
     }
 });
 
-test('run-tests.mjs: isolatedHomeSetupImport resolves to test/isolated-home-setup.mjs via a file:// URL', () => {
-    const runTestsPath = path.join(PKG_ROOT, 'scripts', 'run-tests.mjs');
-    const source = fs.readFileSync(runTestsPath, 'utf8');
-    assert.match(
-        source,
-        /isolatedHomeSetupImport\s*=\s*pathToFileURL\(path\.join\(pkgRoot,\s*'test',\s*'isolated-home-setup\.mjs'\)\)\.href/,
-        'expected isolatedHomeSetupImport to be derived from test/isolated-home-setup.mjs via pathToFileURL',
+test('the shared isolated-home import flag resolves to test/isolated-home-setup.mjs via a file:// URL', () => {
+    // Asserted against the module's real exported values rather than the source
+    // text that computes them, so a refactor that keeps the contract passes and
+    // one that breaks the resolved path fails.
+    assert.equal(ISOLATED_HOME_SETUP_PATH, path.join(PKG_ROOT, 'test', 'isolated-home-setup.mjs'));
+    assert.ok(fs.existsSync(ISOLATED_HOME_SETUP_PATH), `${ISOLATED_HOME_SETUP_PATH} does not exist`);
+    assert.equal(ISOLATED_HOME_SETUP_IMPORT, pathToFileURL(ISOLATED_HOME_SETUP_PATH).href);
+    assert.ok(
+        ISOLATED_HOME_SETUP_IMPORT.startsWith('file://'),
+        `expected a file:// URL (a bare relative path would resolve against the spawning ` +
+            `process's cwd), got ${ISOLATED_HOME_SETUP_IMPORT}`,
     );
+    assert.equal(ISOLATED_HOME_IMPORT_FLAG, `--import=${ISOLATED_HOME_SETUP_IMPORT}`);
 });

@@ -25,21 +25,14 @@ import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
 import { sweepStaleTempHomes } from './stale-temp-home-sweep.mjs';
+import { ISOLATED_HOME_IMPORT_FLAG } from './isolated-home-import.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.join(__dirname, '..');
 const isWindows = process.platform === 'win32';
-
-// apra-fleet-v6t7.16: run-level home isolation, applied via --import before
-// any test file's own top-level code runs (see
-// test/isolated-home-setup.mjs's header for the full rationale). A file URL
-// (not a bare path) so it resolves correctly regardless of this process's
-// cwd -- --import resolves relative specifiers like a bare path would, but a
-// file:// URL is unambiguous.
-const isolatedHomeSetupImport = pathToFileURL(path.join(pkgRoot, 'test', 'isolated-home-setup.mjs')).href;
 
 const MODES = { mock: '1', real: '0', record: 'record' };
 const mode = process.argv[2];
@@ -187,7 +180,12 @@ const result = await runBounded(
     process.execPath,
     [
         '--test',
-        `--import=${isolatedHomeSetupImport}`,
+        // apra-fleet-v6t7.16: run-level home isolation, applied via --import
+        // before any test file's own top-level code runs. The flag itself is
+        // resolved once in ./isolated-home-import.mjs and shared with the other
+        // entry point into this suite (scripts/run-integ-suites.mjs's real-bd
+        // lanes) -- see that module's header.
+        ISOLATED_HOME_IMPORT_FLAG,
         '--test-reporter=./test/helpers/timestamped-reporter.mjs',
         '--test-reporter-destination=stdout',
         `--test-concurrency=${TEST_CONCURRENCY}`,

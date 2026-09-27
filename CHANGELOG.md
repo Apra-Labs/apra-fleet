@@ -47,6 +47,14 @@ What shipped and is verified working:
   degrades to a `FAILED` regression result instead of aborting the whole
   sprint** (skipping Harvest and Publish PR). See
   [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+- **`scripts/run-integ-suites.mjs`'s real-bd lanes now apply the same
+  home-isolation `--import` preload the bounded `npm test` runner does.**
+  That lane previously spawned `node --test` without it, so the whole real-bd
+  suite ran against the operator's real `HOME`/`APPDATA`/`LOCALAPPDATA` and
+  the real `~/.apra-fleet-se`. The flag is resolved once in
+  `packages/apra-fleet-se/scripts/isolated-home-import.mjs` and shared by both
+  entry points, and the lane's argv is now built by a pure, unit-tested
+  builder (`scripts/integ-lane-args.mjs`) instead of inline in the spawn call.
 
 Carried forward / still open:
 
@@ -58,10 +66,6 @@ Carried forward / still open:
   Tracked as an open P2 issue against the console epic; see
   [docs/npm-packaging.md](docs/npm-packaging.md) for the generic fix
   direction (replace the mtime proxy with a content comparison).
-- A carried-over regression: `scripts/run-integ-suites.mjs`'s real-bd test
-  lane does not apply the same home-isolation `--import` flag the bounded
-  `npm test` runner does, so that lane can still run against the operator's
-  real home directory.
 
 ## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
 
