@@ -662,16 +662,25 @@ extract it with `parseToolJson()`). `credentialStoreDelete({ name })` removes
 one. `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
 
-**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3):
-when the server has no TTY attached, or `return_url: true` is passed
-explicitly, the call returns immediately (never blocking on the secret being
-entered) with `result.structuredContent` set to a `CredentialStoreSetResult`
--- `{ url, expiresAt }` -- instead of the usual plain-text confirmation.
-`url` is a one-time, loopback-only link; opening it and submitting the form
-encrypts and stores the secret server-side at that moment, with no further
-tool call needed. `expiresAt` is an ISO-8601 timestamp after which the URL
-stops accepting submissions. Read `structuredContent`, never scrape it out of
-the display text.
+**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3;
+console-relative since apra-fleet-i9ag.11): when the server has no TTY
+attached, or `return_url: true` is passed explicitly, the call returns
+immediately (never blocking on the secret being entered) with
+`result.structuredContent` set to a `CredentialStoreSetResult` -- `{ url,
+expiresAt, absoluteUrl }` -- instead of the usual plain-text confirmation.
+`url` is a one-time, single-use, CONSOLE-RELATIVE path (e.g.
+`/ui/#/secret-entry/<token>`) -- resolve it against whatever origin this
+caller reaches the console on (a LAN address, an SSH tunnel, a reverse
+proxy), which is what makes it work from a browser that is not on the server
+machine. Opening it and submitting the form encrypts and stores the secret
+server-side at that moment, with no further tool call needed. `expiresAt` is
+an ISO-8601 timestamp after which the URL stops accepting submissions.
+`absoluteUrl` is the server's own best-effort rendering of `url` (using
+`APRA_FLEET_CONSOLE_BASE_URL` when set, else its bound origin) -- advisory
+only: a caller reaching the console through a tunnel or proxy the server does
+not know about should resolve `url` against its own origin instead of using
+this value. Read `structuredContent`, never scrape it out of the display
+text.
 
 #### `doltPushMutex(options)`
 

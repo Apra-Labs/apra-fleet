@@ -90,7 +90,14 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     });
 
     if (result.url && result.expiresAt) {
-      const absoluteUrl = `${baseUrlResult.baseUrl}${result.url}`;
+      // new URL(relative, base) rather than a naked string concat: result.url
+      // is documented (src/services/secret-entry.ts) to always be a
+      // console-relative path, but resolving it through the URL constructor
+      // means a future regression that hands back something already
+      // absolute (or missing its leading slash) still resolves to a valid,
+      // sane URL per RFC 3986 rather than the double-origin garbage a plain
+      // `${base}${result.url}` concat would silently produce.
+      const absoluteUrl = new URL(result.url, baseUrlResult.baseUrl).toString();
       return {
         text: `Open this URL to provide the secret for "${input.name}" (expires ${result.expiresAt}):\n${absoluteUrl}\n\n` +
           `If the console is reached on a different host or port (a LAN address, an SSH tunnel, or a reverse ` +
