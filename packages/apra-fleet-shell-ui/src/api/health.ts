@@ -32,7 +32,11 @@ export interface FleetStatusPayload {
    *  cannot import that module itself (it shells out via node:child_process,
    *  which has no browser build), so the server is the single place that
    *  computes this text -- this lane must never restate the minimum version
-   *  or the fix line as its own literal. */
+   *  or the fix line as its own literal. When this field is absent (older
+   *  server, or the server-side probe threw), Health.tsx renders an explicit
+   *  "unknown" fleet-se row rather than omitting the row (apra-fleet-
+   *  i9ag.13.9) -- omitting it silently collapsed "prerequisites fine" and
+   *  "not reported" into one indistinguishable state. */
   fleetSePrereqs?: string;
 }
 

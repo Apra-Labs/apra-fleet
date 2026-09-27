@@ -191,7 +191,12 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     );
   });
 
-  it("shows no fleet-se row when the server omits the field (older server / probe failed)", async () => {
+  // apra-fleet-i9ag.13.9: an operator must be able to tell "prerequisites
+  // fine" apart from "not reported" -- hiding the row entirely (the old
+  // behaviour this case used to pin) collapses those two states into one.
+  // The row is now always rendered, with an explicit unknown value when the
+  // server omits the field.
+  it("shows an explicit unknown fleet-se row when the server omits the field (older server / probe failed)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: unknown) => {
@@ -204,7 +209,14 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
 
     await renderHealth();
 
-    expect(container.querySelector("dt")?.textContent).not.toBe("fleet-se");
-    expect(Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent)).not.toContain("fleet-se");
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).toContain("fleet-se");
+    const text = container.textContent ?? "";
+    expect(text).toContain("unknown");
+    expect(text).toContain("Version");
+    expect(text).toContain("Data dir");
+    expect(text).toContain("Update available");
+    expect(text).toContain("Fleet status");
+    expect(text).toContain("Workflow packages");
   });
 });
