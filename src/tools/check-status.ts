@@ -17,6 +17,7 @@ import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, 
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
+import { FLEET_DIR } from '../paths.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
 import { kbStats } from './kb-stats.js';
 import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
@@ -460,7 +461,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   if (agents.length === 0) {
     if (format === 'json') {
-      return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [] });
+      return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [], dataDir: FLEET_DIR });
     }
     return 'No members registered. Use register_member to add one.';
   }
@@ -556,6 +557,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       summary: { total: rows.length, online, offline: rows.length - online },
       members: rows,
       codeIntelligence,
+      dataDir: FLEET_DIR,
     };
     if (kbHealth) payload.kbHealth = kbHealth;
     if (versionMismatch) payload.versionMismatch = versionMismatch;
