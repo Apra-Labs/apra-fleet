@@ -1648,14 +1648,12 @@ needs no special privilege and Windows treats it identically for the purpose
 of resolving bare specifiers out of the linked tree.
 
 **Known gap: the real-bd integration suite runner does not apply this
-isolation.** `scripts/run-integ-suites.mjs`'s own `node --test` invocation
-does not pass the `--import` flag pointed at `isolated-home-setup.mjs` that
-`scripts/run-tests.mjs` applies for the bounded `npm test` path, so a test
-file that depends on home isolation can pass under `npm test` and still run
-against the operator's real `HOME`/`APPDATA` under the real-bd suite runner.
-Any test whose correctness depends on this isolation needs to be verified
-under both runners, not just the bounded one, until the two runners' isolation
-is unified.
+isolation.** The repo-root `scripts/run-integ-suites.mjs`'s own `node --test`
+invocation does not pass the `--import` flag pointed at
+`isolated-home-setup.mjs` that `packages/apra-fleet-se/scripts/run-tests.mjs`
+applies for the bounded `npm test` path, so a test file that depends on home
+isolation can pass under `npm test` and still run against the operator's
+real `HOME`/`APPDATA` under the real-bd suite runner.
 
 ## Testing convention: named, env-overridable timeout budgets with bind-state diagnostics
 

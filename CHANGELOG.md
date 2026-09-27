@@ -50,13 +50,14 @@ What shipped and is verified working:
 
 Carried forward / still open:
 
-- The SEA binary's staleness guard (`tests/sea-http-verify.test.ts`) compares
-  file mtimes, not content, so rebuilding the shell UI with byte-identical
-  output still trips it -- any deploy-then-test workflow must rebuild the
-  SEA binary for the deployed commit first. Tracked as an open P2 issue
-  against the console epic; see
+- The SEA binary's staleness guard (`tests/sea-http-verify.test.ts`) diffs
+  git-tracked SEA-relevant paths against the binary's own build hash, but the
+  built shell UI is gitignored, so that one input is checked via an mtime
+  proxy instead -- a byte-identical UI rebuild still advances that mtime and
+  trips the guard even though nothing the binary serves actually changed.
+  Tracked as an open P2 issue against the console epic; see
   [docs/npm-packaging.md](docs/npm-packaging.md) for the generic fix
-  direction (content-hash comparison instead of mtime).
+  direction (replace the mtime proxy with a content comparison).
 - A carried-over regression: `scripts/run-integ-suites.mjs`'s real-bd test
   lane does not apply the same home-isolation `--import` flag the bounded
   `npm test` runner does, so that lane can still run against the operator's

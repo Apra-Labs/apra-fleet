@@ -354,7 +354,8 @@ also be added to `files` manually or it will be silently excluded from the
 tarball.
 
 Tarball size is enforced by `scripts/check-pack-size.mjs` against a fixed
-threshold (10 MB by default), run against a live `npm pack --dry-run`; do not
+threshold (`DEFAULT_THRESHOLD_BYTES`, 10,000,000 bytes, overridable via
+`--threshold`/`PACK_SIZE_THRESHOLD`), run against a live `npm pack --dry-run`; do not
 treat any single measurement recorded in a sprint log as current -- adding
 the shell dist to `files` measurably raised the packed size, and any future
 `files` addition will again, so re-run the check rather than trusting a
@@ -402,14 +403,19 @@ resolved to a real commit (shallow clone, rewritten history, or a dev/npm
 build with no git info) is treated as staleness-unknown, which counts as
 stale rather than being assumed fresh. This is deliberate: an actually-stale
 binary must fail loudly and name the reason, never silently pass a smoke test
-against assets that no longer match the source tree -- do not weaken or
-remove the check, because a `packages/apra-fleet-ui-kit` change is only
-caught through it. The known limitation is specifically in the mtime-proxy
-half: rebuilding the shell UI with byte-identical output still advances the
-dist's mtime, so the guard can trip even when nothing that would change the
-binary's served content actually changed. The generic fix is to key that
-half of the check off shell-dist content (a hash, or the binary's own
-embedded manifest) instead of filesystem mtime.
+against assets that no longer match the source tree. The tracked-path list
+(`SEA_RELEVANT_GIT_PATHS`) does not include `packages/apra-fleet-ui-kit` --
+the shell's Vite build pulls it in as a dependency, so a `ui-kit` change is
+caught only through the mtime proxy on the built `dist/index.html`, not
+through the git-diff half of the check. The mtime proxy's own known
+limitation is that it cannot distinguish a meaningful rebuild from a
+byte-identical one: rebuilding the shell UI with unchanged output still
+advances `dist/index.html`'s mtime, so the guard can trip even when nothing
+the binary serves actually changed. Do not fix that by dropping or weakening
+the mtime proxy -- it is the only thing that catches a `ui-kit` change at
+all. The correct fix is to replace it with a content comparison (a hash of
+the shell dist, or the binary's own embedded manifest) that still catches a
+real `ui-kit`-driven change but no longer fires on a no-op rebuild.
 
 ### 7.2 Other package.json fields
 
