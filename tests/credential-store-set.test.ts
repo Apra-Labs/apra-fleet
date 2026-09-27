@@ -393,6 +393,84 @@ describe('credentialStoreSet', () => {
       }
     });
 
+    // apra-fleet-i9ag.11.18/.20: a reverse-proxy sub-path in the base must be
+    // JOINED with the console-relative path, not silently discarded by plain
+    // `new URL(relative, base)` resolution (see joinConsoleUrl in src/paths.ts).
+    it('preserves a reverse-proxy sub-path when joining the base with the console-relative url', async () => {
+      process.env.APRA_FLEET_CONSOLE_BASE_URL = 'https://fleet.example.com/fleet';
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      const SENTINEL = 'sentinel-subpath-secret-does-not-leak-4d1e';
+      let capturedSubmit: ((value: string) => { ok: boolean; error?: string }) | undefined;
+      vi.mocked(authSocket.collectOobApiKey).mockImplementation(async (_name, _tool, opts: any) => {
+        capturedSubmit = opts?.onOobSubmit;
+        return { url: '/ui/#/secret-entry/abc123', expiresAt: '2026-01-01T00:02:00.000Z' };
+      });
+
+      const result = await credentialStoreSet({
+        name: 'subpath_cred',
+        prompt: 'Enter key:',
+        persist: false,
+        network_policy: 'confirm',
+        members: '*',
+      });
+
+      expect(typeof result).toBe('object');
+      if (typeof result === 'object') {
+        expect(result.structuredContent.absoluteUrl).toBe('https://fleet.example.com/fleet/ui/#/secret-entry/abc123');
+        expect(result.text).toContain('https://fleet.example.com/fleet/ui/#/secret-entry/abc123');
+        // structuredContent.url stays console-relative regardless of the
+        // sub-path join applied to absoluteUrl.
+        expect(result.structuredContent.url).toBe('/ui/#/secret-entry/abc123');
+        expect(result.text).not.toContain(SENTINEL);
+        expect(JSON.stringify(result.structuredContent)).not.toContain(SENTINEL);
+      }
+
+      expect(capturedSubmit).toBeTypeOf('function');
+      capturedSubmit!(SENTINEL);
+      for (const call of vi.mocked(logHelpers.logLine).mock.calls) {
+        expect(JSON.stringify(call)).not.toContain(SENTINEL);
+      }
+    });
+
+    it('produces the identical absolute URL when the sub-path base has a trailing slash, with no "//" after the scheme', async () => {
+      process.env.APRA_FLEET_CONSOLE_BASE_URL = 'https://fleet.example.com/fleet/';
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      const SENTINEL = 'sentinel-subpath-trailing-secret-does-not-leak-7b2a';
+      let capturedSubmit: ((value: string) => { ok: boolean; error?: string }) | undefined;
+      vi.mocked(authSocket.collectOobApiKey).mockImplementation(async (_name, _tool, opts: any) => {
+        capturedSubmit = opts?.onOobSubmit;
+        return { url: '/ui/#/secret-entry/abc123', expiresAt: '2026-01-01T00:02:00.000Z' };
+      });
+
+      const result = await credentialStoreSet({
+        name: 'subpath_trailing_cred',
+        prompt: 'Enter key:',
+        persist: false,
+        network_policy: 'confirm',
+        members: '*',
+      });
+
+      expect(typeof result).toBe('object');
+      if (typeof result === 'object') {
+        expect(result.structuredContent.absoluteUrl).toBe('https://fleet.example.com/fleet/ui/#/secret-entry/abc123');
+        expect(result.text).toContain('https://fleet.example.com/fleet/ui/#/secret-entry/abc123');
+        expect(result.structuredContent.url).toBe('/ui/#/secret-entry/abc123');
+        // No double slash anywhere after the scheme's own '//', proving the
+        // trailing slash on the base did not collide with the leading slash
+        // on the console-relative path.
+        const afterScheme = result.structuredContent.absoluteUrl.replace(/^https:\/\//, '');
+        expect(afterScheme).not.toContain('//');
+        expect(result.text).not.toContain(SENTINEL);
+        expect(JSON.stringify(result.structuredContent)).not.toContain(SENTINEL);
+      }
+
+      expect(capturedSubmit).toBeTypeOf('function');
+      capturedSubmit!(SENTINEL);
+      for (const call of vi.mocked(logHelpers.logLine).mock.calls) {
+        expect(JSON.stringify(call)).not.toContain(SENTINEL);
+      }
+    });
+
     it('fails loudly, naming the variable, on a malformed APRA_FLEET_CONSOLE_BASE_URL -- never falls through to a guessed origin', async () => {
       process.env.APRA_FLEET_CONSOLE_BASE_URL = 'not-a-url';
       Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
