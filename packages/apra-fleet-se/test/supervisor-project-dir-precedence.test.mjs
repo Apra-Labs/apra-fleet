@@ -93,6 +93,9 @@ async function makeFixture() {
         flagDir: path.join(root, 'flagDir'),
         noBeads: path.join(root, 'noBeads'),
         vanished: path.join(root, 'vanished-never-created'),
+        // A subfolder INSIDE projB, i.e. a cwd from which the walk-up
+        // genuinely has to climb before it finds a `.beads`.
+        projBSub: path.join(root, 'projB', 'src', 'nested'),
     };
     await fsp.mkdir(dirs.dataDir, { recursive: true });
     await fsp.mkdir(dirs.home, { recursive: true });
@@ -100,6 +103,7 @@ async function makeFixture() {
     await fsp.mkdir(path.join(dirs.projB, '.beads'), { recursive: true });
     await fsp.mkdir(path.join(dirs.flagDir, '.beads'), { recursive: true });
     await fsp.mkdir(dirs.noBeads, { recursive: true });
+    await fsp.mkdir(dirs.projBSub, { recursive: true });
     return dirs;
 }
 
@@ -398,6 +402,29 @@ describe('project-dir on a REAL supervisor -- boots, logs one source line, repor
                 health.projectDir, dirs.projB,
                 'REGRESSION: a stale setting fell back to the walk-up on a real boot',
             );
+        } finally {
+            await stop();
+        }
+    });
+
+    test('source=walk-up from a SUBFOLDER: health reports the discovered project root, not the cwd it started from', async () => {
+        const dirs = await makeFixture();
+        // No config, no flag -- the walk-up has to climb out of projB/src/
+        // nested to reach projB, which is the folder that holds `.beads` and
+        // the cwd every sprint child would be given.
+        const { health, log, exited, stop } = await bootServe(dirs, { cwd: dirs.projBSub });
+        try {
+            assert.equal(exited, false, `the walk-up path must still start. Log:\n${log}`);
+            assert.ok(health, `no /api/health answer. Log:\n${log}`);
+            assert.equal(health.projectDirSource, PROJECT_DIR_SOURCE.WALK_UP);
+            assert.equal(
+                health.projectDir, dirs.projB,
+                'the walk-up must report the folder it FOUND, not the subfolder it started from',
+            );
+            assert.notEqual(health.projectDir, dirs.projBSub);
+            const lines = log.split('\n').filter((l) => l.includes('project folder:'));
+            assert.equal(lines.length, 1, `expected exactly one project-folder line:\n${log}`);
+            assert.ok(lines[0].includes(dirs.projB), lines[0]);
         } finally {
             await stop();
         }

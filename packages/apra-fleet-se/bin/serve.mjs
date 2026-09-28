@@ -315,13 +315,25 @@ export async function serveMain(argv = process.argv.slice(2)) {
             };
         }
     }
-    console.log(`[supervisor] project folder: ${project.projectDir} (source: ${project.source})`);
-
     // An unusable configured folder must not run the walk-up at all (see the
     // asymmetry comment above), so the discovery is skipped and its warning
     // stands in for the no-beads one.
     const discovered = project.usable ? discoverBeadsDir({ cwd: process.cwd() }) : null;
     const repoRoot = discovered ? discovered.repoRoot : (project.usable ? process.cwd() : project.projectDir);
+
+    // WALK-UP REPORTS WHAT IT FOUND, not where it started. The walk-up
+    // branch of resolveProjectDir() can only answer with the cwd -- it does
+    // no discovery of its own -- but the folder this supervisor actually
+    // adopted is the ancestor that holds `.beads`, which is also the cwd
+    // handed to every sprint child. Reporting the cwd instead made health
+    // and GET /api/project name a directory that is merely INSIDE the
+    // project, which reads as the wrong project whenever the supervisor was
+    // started from a subfolder. The flag and config sources already report
+    // the folder itself, so this is also what makes the three agree.
+    if (project.source === PROJECT_DIR_SOURCE.WALK_UP && discovered) {
+        project = { ...project, projectDir: discovered.repoRoot };
+    }
+    console.log(`[supervisor] project folder: ${project.projectDir} (source: ${project.source})`);
     let beadsIdentityRecord = null;
     let beadsWarning = null;
     if (!discovered) {

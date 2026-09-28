@@ -165,7 +165,11 @@ Notes:
      supervisor's own data dir (`~/.apra-fleet-se` by default, or
      `FLEET_SE_DATA_DIR` when set);
   3. walking up from the supervisor's working directory looking for a
-     `.beads` folder -- the same discovery `bd` itself performs.
+     `.beads` folder -- the same discovery `bd` itself performs. What is
+     reported as the project folder in this case is the folder that was
+     FOUND (the one holding `.beads`, which is also the working directory
+     handed to every sprint), not the subfolder the supervisor happened to
+     be started from.
 
   Step 2 is what makes a service-registered supervisor reach a real
   project's beads DB: its working directory is the engine's own installed

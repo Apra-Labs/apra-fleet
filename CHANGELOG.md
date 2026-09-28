@@ -56,6 +56,11 @@ What shipped and is verified working:
   temp file in the same directory plus a rename. Previously an install
   destroyed any key a newer supervisor had written and could leave a
   truncated file behind. A malformed existing file is still simply replaced.
+- **The walk-up source now reports the project folder it FOUND** -- the
+  ancestor holding `.beads`, which is also the working directory every
+  sprint child is given -- in `GET /api/health`, `GET /api/project` and the
+  startup line, rather than the subfolder the supervisor happened to be
+  started from. All three sources now name the same kind of thing.
 - **Console: a guarded `GET`/`POST /api/project` route** on the supervisor,
   and a real `/ui/projects` page (replacing the placeholder that used to
   answer "fleet-supervisor UI arrives in a later sprint") showing the
@@ -68,9 +73,6 @@ What shipped and is verified working:
 
 Carried forward (filed as follow-up work, not fixed this sprint, all left
 open for a future sprint at P2/P3, none blocking this sprint's goal):
-- The walk-up source reports the process's working directory as the project
-  folder rather than the `.beads` folder actually discovered by walking up
-  from it.
 - The stale-configured-folder warning tells an operator to use Health's
   refresh, which only re-probes a folder that is already valid again; a
   genuinely wrong path still needs a console/flag change plus a restart.
