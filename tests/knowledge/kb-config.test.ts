@@ -29,17 +29,28 @@ afterEach(() => {
 describe('readKbConfigFromDisk', () => {
   it('returns the sqlite default when the config file is absent, no throw', () => {
     expect(fs.existsSync(KB_CONFIG_PATH)).toBe(false);
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
   });
 
   it('returns sqlite and does not touch a corrupt token_encrypted when provider is sqlite', () => {
     writeConfig({ provider: 'sqlite', token_encrypted: 'aa:bb:cc' });
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
   });
 
   it('returns sqlite and does not touch a corrupt token_encrypted when provider key is absent', () => {
     writeConfig({ token_encrypted: 'aa:bb:cc' });
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
+  });
+
+  // apra-fleet-i9ag.15.13.2 (review fix): offline_fallback is validated BEFORE
+  // the provider branch, so a stale/typo'd value left over from an earlier
+  // http config is no longer silently ignored just because the file currently
+  // says "sqlite" -- it fails loudly at config load like every other invalid
+  // value, per KbConfigResult's "always resolved to a concrete value" contract.
+  it('throws naming the config path and the invalid value when offline_fallback is invalid even though provider is sqlite', () => {
+    writeConfig({ provider: 'sqlite', offline_fallback: 'ignore-errors' });
+    expect(() => readKbConfigFromDisk()).toThrowError(/offline_fallback/);
+    expect(() => readKbConfigFromDisk()).toThrowError(/ignore-errors/);
   });
 
   it('returns provider http with url and decrypted token when config is well-formed', () => {

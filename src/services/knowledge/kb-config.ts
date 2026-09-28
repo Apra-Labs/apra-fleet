@@ -47,9 +47,9 @@ export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
  * currently reads this file back -- this restores that capability as a pure reader with
  * no side effects, so a later task can wire it into getKbProviders.
  *
- * - Absent file, or provider missing/"sqlite" -> { provider: 'sqlite' }, silently,
- *   without ever touching token_encrypted (a corrupt token must never break the
- *   stock sqlite path).
+ * - Absent file, or provider missing/"sqlite" -> { provider: 'sqlite', offlineFallback: 'local' }
+ *   (or the persisted offline_fallback value, if set and valid), silently, without ever
+ *   touching token_encrypted (a corrupt token must never break the stock sqlite path).
  * - provider "http" -> decrypts token_encrypted and returns { provider: 'http', url, token }.
  *   Missing url, missing token_encrypted, or a decryption failure all throw a
  *   descriptive Error naming this config path and the failing key -- never a silent
@@ -58,7 +58,7 @@ export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
  */
 export function readKbConfigFromDisk(): KbConfigResult {
   if (!fs.existsSync(KB_CONFIG_PATH)) {
-    return { provider: 'sqlite' };
+    return { provider: 'sqlite', offlineFallback: 'local' };
   }
 
   const raw = fs.readFileSync(KB_CONFIG_PATH, 'utf-8');
@@ -72,10 +72,28 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
+  // apra-fleet-i9ag.15.13.2 (review fix): validated and resolved BEFORE the
+  // provider branch below, so offlineFallback is always a concrete value on
+  // every returned KbConfigResult -- including the "sqlite" early return --
+  // matching the doc comment on KbConfigResult above. Previously this ran
+  // only on the http path, so a stale/typo'd offline_fallback left over from
+  // an earlier http config was silently ignored once the file said "sqlite".
+  // Absent key -> 'local' (today's only behaviour, unchanged).
+  const offlineFallbackRaw = parsed.offline_fallback;
+  let offlineFallback: 'local' | 'error' = 'local';
+  if (offlineFallbackRaw !== undefined) {
+    if (offlineFallbackRaw !== 'local' && offlineFallbackRaw !== 'error') {
+      throw new Error(
+        `KB config at ${KB_CONFIG_PATH} has invalid "offline_fallback" value ${JSON.stringify(offlineFallbackRaw)}; expected "local" or "error"`,
+      );
+    }
+    offlineFallback = offlineFallbackRaw;
+  }
+
   if (parsed.provider !== 'http') {
     // Stock path: sqlite, or provider key absent. Deliberately never touches
     // token_encrypted here -- see module doc.
-    return { provider: 'sqlite' };
+    return { provider: 'sqlite', offlineFallback };
   }
 
   const url = typeof parsed.url === 'string' ? parsed.url : undefined;
@@ -101,19 +119,7 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  // apra-fleet-i9ag.15.13.2: read explicitly, validated here so a typo'd or
-  // stale value fails loudly at config load rather than defaulting silently
-  // to either mode. Absent key -> 'local' (today's only behaviour, unchanged).
-  const offlineFallbackRaw = parsed.offline_fallback;
-  let offlineFallback: 'local' | 'error' = 'local';
-  if (offlineFallbackRaw !== undefined) {
-    if (offlineFallbackRaw !== 'local' && offlineFallbackRaw !== 'error') {
-      throw new Error(
-        `KB config at ${KB_CONFIG_PATH} has invalid "offline_fallback" value ${JSON.stringify(offlineFallbackRaw)}; expected "local" or "error"`,
-      );
-    }
-    offlineFallback = offlineFallbackRaw;
-  }
-
+  // offlineFallback was already resolved/validated above, before the provider
+  // branch, so it needs no re-derivation here.
   return { provider: 'http', url, token, offlineFallback };
 }

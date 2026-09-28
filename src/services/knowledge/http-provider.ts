@@ -115,10 +115,17 @@ export class HttpKbProvider implements MemoryProvider {
     this.degradedReason = reason;
     if (!this.hasWarnedDegraded) {
       this.hasWarnedDegraded = true;
+      // apra-fleet-i9ag.15.13.2 (review fix): this warning fires on every
+      // degrading path, including the strict-mode ones that are about to
+      // throw strictFailure() instead of serving/queuing anything -- so the
+      // sentence describing what happens next must match `this.strict`,
+      // never assume the fallback-mode behaviour unconditionally.
+      const consequence = this.strict
+        ? 'offline_fallback is set to "error": rejecting this call instead of serving local data.'
+        : 'Serving reads from the local fallback KB and queuing writes -- team-shared truth ' +
+          'is NOT being consulted until connectivity is restored.';
       process.stderr.write(
-        `[KB] WARNING: remote KB server at ${this.baseUrl} is unreachable (${reason}). ` +
-        `Serving reads from the local fallback KB and queuing writes -- team-shared truth ` +
-        `is NOT being consulted until connectivity is restored.\n`
+        `[KB] WARNING: remote KB server at ${this.baseUrl} is unreachable (${reason}). ${consequence}\n`
       );
     }
   }
@@ -367,6 +374,13 @@ export class HttpKbProvider implements MemoryProvider {
   // Delegated to the local fallback store like getLinked: delivery telemetry is
   // a property of the KB the entries were read out of, and there is no remote
   // route for it. Never throws -- a telemetry write must not fail a prime.
+  //
+  // apra-fleet-i9ag.15.13.2 (review fix): deliberately EXEMPT from strict mode,
+  // unlike getLinked/relatedClaims below. This is best-effort delivery
+  // telemetry, not a claim read -- a caller never branches on its result, so
+  // there is nothing "silently local" for a caller to be misled by, and
+  // gating it would turn a fire-and-forget counter update into a failure mode
+  // for the read path that happens to call it.
   async touch(ids: string[]): Promise<number> {
     try {
       return await this.fallback.touch(ids);
@@ -375,10 +389,15 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  // Delegated to the local store like getLinked: the graph lives alongside the
-  // entries, and there is no remote route for it. Never throws -- a graph miss
-  // must degrade to "no related claims", not fail a prime.
+  // apra-fleet-i9ag.15.13.2 (review fix): same local-only-delegation shape as
+  // getLinked above, and the same reasoning applies -- a local-only delegation
+  // must not become an unwritten exemption from strict mode, which exists
+  // precisely to stop a configured-http provider from silently answering a
+  // read out of the local fallback while the remote is unreachable.
   async relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]> {
+    if (this.strict) {
+      await this.ensureReachable();
+    }
     try {
       return await this.fallback.relatedClaims(ids, limit);
     } catch {
@@ -402,10 +421,19 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // apra-fleet-i9ag.15.13.2 (review fix): promote() has no remote route (like
+  // getLinked/relatedClaims) but it IS a write -- a confidence change against
+  // the operator's private local KB, not the team-shared one. Ungated, this
+  // was the silently-local write strict mode exists to forbid: with a
+  // refusing remote, a caller could not tell "my promote landed on the
+  // team-shared KB" from "my promote silently landed on my own machine".
   async promote(
     id: string,
     reason?: string
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    if (this.strict) {
+      await this.ensureReachable();
+    }
     return this.fallback.promote(id, reason);
   }
 

@@ -152,6 +152,9 @@ async function selectProjectProvider(projectProvider: SqliteProvider, configFing
   // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
   // HttpKbProvider.init() grows later runs here instead of being skipped.
   // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
+  // readKbConfigFromDisk (apra-fleet-i9ag.15.13.2 review fix) now always resolves
+  // offlineFallback to a concrete value, but the `?? 'local'` stays as a defensive
+  // default for this call site regardless of that upstream guarantee.
   const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider, config.offlineFallback ?? 'local');
   try {
     await httpProvider.init();
