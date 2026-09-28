@@ -81,7 +81,10 @@
             "superseded": {},
             "retrieval": {},
             "promote_ratio": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "coverage": {},
             "bible": {}
