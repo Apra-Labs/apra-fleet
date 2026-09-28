@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   detectFleetSePrereqs,
+  resolveFleetSeToolchainPaths,
   MIN_NODE_VERSION,
   PREREQ_PROBE_TIMEOUT_MS,
   type FleetSePrereqExec,
@@ -182,5 +183,150 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
     expect(result.missing).toContain('npm');
     // node resolved fine -- isolates this case to the npm branch only.
     expect(result.missing).not.toContain('node');
+  });
+});
+
+// apra-fleet-i9ag.19.1: resolveFleetSeToolchainPaths() resolves the ABSOLUTE
+// path of the node and bd the installer itself successfully probed, so a
+// later step can record that path for a service manager (macOS launchd, a
+// Windows scheduled task) that does not inherit the login shell's PATH.
+// Unlike makeExec() above (keyed only by `file`), these fakes need to
+// distinguish node's two different probes (`-p process.execPath` vs
+// `--version`) by their full argv, so they key on `${file} ${args.join(' ')}`.
+
+/**
+ * Builds a fake FleetSePrereqExec keyed by `${file} ${args.join(' ')}`. A
+ * key with no entry in `responses` throws ENOENT, mirroring a real failed
+ * spawn -- never a falsy/empty success value.
+ */
+function makeArgvExec(responses: Record<string, string | Error>): FleetSePrereqExec {
+  return vi.fn((file: string, args: string[]) => {
+    const key = [file, ...args].join(' ');
+    const resp = responses[key];
+    if (resp === undefined) {
+      throw Object.assign(new Error(`spawn ${key} ENOENT`), { code: 'ENOENT' });
+    }
+    if (resp instanceof Error) throw resp;
+    return resp;
+  });
+}
+
+describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
+  it('healthy host -> absolute node and bd paths with ok:true', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/opt/nvm/versions/node/v22.16.0/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      'bd --version': 'bd version 1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.node).toEqual({
+      path: '/opt/nvm/versions/node/v22.16.0/bin/node',
+      version: '22.16.0',
+      ok: true,
+      reason: null,
+    });
+    expect(result.bd).toEqual({
+      path: '/usr/local/bin/bd',
+      version: '1.2.3',
+      ok: true,
+      reason: null,
+    });
+  });
+
+  it('win32 resolves bd via "where bd" (first non-empty line); the SAME exec under linux cannot satisfy it', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': '\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\other\\bd.cmd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const win32Result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(win32Result.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(win32Result.bd.ok).toBe(true);
+    expect(exec).toHaveBeenCalledWith('where', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+
+    vi.mocked(exec).mockClear();
+
+    // Same exec, POSIX platform: resolveBdPath() must ask 'which bd', which
+    // this fake does not know how to answer -> bd.ok false. This is what
+    // makes the win32 assertion above non-vacuous.
+    const linuxResult = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    expect(linuxResult.bd.ok).toBe(false);
+    expect(linuxResult.bd.path).toBeNull();
+    expect(exec).toHaveBeenCalledWith('which', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  it('node -p process.execPath throws -> node.ok false with a reason naming the probe, never thrown out of the function', () => {
+    const exec = makeArgvExec({
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    let result: ReturnType<typeof resolveFleetSeToolchainPaths> | undefined;
+    expect(() => {
+      result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    }).not.toThrow();
+
+    expect(result!.node.ok).toBe(false);
+    expect(result!.node.path).toBeNull();
+    expect(result!.node.reason).toMatch(/process\.execPath/);
+  });
+
+  it('node below MIN_NODE_VERSION -> node.ok false, reason names the found version and the minimum', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.9.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.node.ok).toBe(false);
+    expect(result.node.path).toBe('/usr/bin/node');
+    expect(result.node.version).toBe('22.9.0');
+    expect(result.node.reason).toContain('22.9.0');
+    expect(result.node.reason).toContain(MIN_NODE_VERSION);
+  });
+
+  it('bd absent -> bd.ok false with a reason, and does not affect node\'s result', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.bd.ok).toBe(false);
+    expect(result.bd.path).toBeNull();
+    expect(result.bd.reason).not.toBeNull();
+    expect(result.node).toEqual({
+      path: '/usr/bin/node',
+      version: '22.16.0',
+      ok: true,
+      reason: null,
+    });
+  });
+
+  it('bd found on PATH but "bd --version" throws -> bd.ok stays true (path is what matters), version is null', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      'bd --version': Object.assign(new Error('spawn bd ENOENT'), { code: 'ENOENT' }),
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    // Path resolution succeeded -- bd IS on PATH -- so ok reflects that,
+    // even though its version could not be determined.
+    expect(result.bd.path).toBe('/usr/local/bin/bd');
+    expect(result.bd.ok).toBe(true);
+    expect(result.bd.version).toBeNull();
   });
 });
