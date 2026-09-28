@@ -25,6 +25,26 @@ function fakeExec(versions) {
     };
 }
 
+/**
+ * A fake `exec` that also records every call it received (file, args,
+ * options) -- apra-fleet-i9ag.15.4's win32-quoting tests need to assert
+ * exactly what string node-runner.mjs's probeVersion() handed to `exec`,
+ * not just what it returns. `versions` is keyed on the (possibly quoted)
+ * file string exec actually receives, mirroring how cmd.exe would only ever
+ * see the already-quoted candidate.
+ */
+function fakeExecCapturing(versions) {
+    const calls = [];
+    const exec = (file, args, options) => {
+        calls.push({ file, args, options });
+        if (!Object.prototype.hasOwnProperty.call(versions, file) || versions[file] === null) {
+            throw new Error(`spawn ENOENT: ${file}`);
+        }
+        return versions[file];
+    };
+    return { exec, calls };
+}
+
 describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
     test('isSea() false + a probeable execPath: returns execPath, source identifies the current runtime', () => {
         const result = resolveSprintRunnerCommand({
@@ -178,6 +198,106 @@ describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
                 `expected only node: built-in imports, found: ${line}`,
             );
         }
+    });
+
+    test('win32: a current-runtime execPath containing a space is quoted before the shell probe, so it resolves', () => {
+        const spacedPath = 'C:\\Program Files\\nodejs\\node.exe';
+        const quoted = `"${spacedPath}"`;
+        const { exec, calls } = fakeExecCapturing({ [quoted]: 'v22.16.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: spacedPath,
+            isSea: () => false,
+            exec,
+            platform: 'win32',
+        });
+
+        assert.deepEqual(result, {
+            command: spacedPath,
+            source: SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME,
+            version: '22.16.0',
+        }, 'the resolved command returned to the caller is the ORIGINAL unquoted path');
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, quoted, 'the probe itself was quoted for the win32 shell');
+        assert.equal(calls[0].options.shell, true);
+    });
+
+    test('win32: an unquoted spaced execPath is never resolvable -- proves the fix is necessary, not just harmless', () => {
+        const spacedPath = 'C:\\Program Files\\nodejs\\node.exe';
+        // Only the UNQUOTED literal resolves here -- simulates the pre-fix
+        // behaviour where cmd.exe would split the spaced path.
+        const { exec } = fakeExecCapturing({ [spacedPath]: 'v22.16.0' });
+
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: spacedPath,
+                isSea: () => false,
+                exec,
+                platform: 'win32',
+                // no PATH node available either, so a regression surfaces as a
+                // hard resolution failure rather than a silent PATH fall-through
+            }),
+            SprintRunnerResolutionError,
+        );
+    });
+
+    test('win32: FLEET_SE_NODE override containing a space is quoted before the shell probe, so it resolves', () => {
+        const spacedOverride = 'C:\\Users\\Some User\\.nvm\\node.exe';
+        const quoted = `"${spacedOverride}"`;
+        const { exec, calls } = fakeExecCapturing({ [quoted]: 'v20.0.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: { FLEET_SE_NODE: spacedOverride },
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'win32',
+        });
+
+        assert.deepEqual(result, {
+            command: spacedOverride,
+            source: SPRINT_RUNNER_SOURCE.OVERRIDE,
+            version: '20.0.0',
+        });
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, quoted, 'the override probe itself was quoted for the win32 shell');
+    });
+
+    test('win32: PATH tier probes the bare "node" literal unquoted (no whitespace to quote)', () => {
+        const { exec, calls } = fakeExecCapturing({ node: 'v22.17.1' });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'win32',
+        });
+
+        assert.equal(result.command, 'node');
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, 'node', 'no quoting applied to a token with no whitespace');
+        assert.equal(calls[0].options.shell, true);
+    });
+
+    test('non-win32: a spaced execPath is probed unquoted and without a shell (quoting is win32-shell-only)', () => {
+        const spacedPath = '/usr/local/my node/bin/node';
+        const { exec, calls } = fakeExecCapturing({ [spacedPath]: 'v22.16.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: spacedPath,
+            isSea: () => false,
+            exec,
+            platform: 'linux',
+        });
+
+        assert.equal(result.command, spacedPath);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, spacedPath, 'linux/darwin never quote -- no shell is used there');
+        assert.equal(calls[0].options.shell, false);
     });
 
     test('the real defaults (no injected deps) resolve without throwing on this test host', () => {

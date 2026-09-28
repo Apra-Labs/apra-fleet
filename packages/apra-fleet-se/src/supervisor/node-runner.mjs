@@ -161,6 +161,32 @@ function compareVersions(a, b) {
 }
 
 /**
+ * Quotes a single win32 shell command-line token when it needs it (contains
+ * whitespace), so `cmd.exe /d /s /c "<file> <args...>"` -- the literal string
+ * Node's child_process builds internally when `shell: true` on Windows --
+ * does not get re-split on the space inside a candidate path. Node joins
+ * `file` and `args` with a single space and wraps the WHOLE line in one pair
+ * of outer quotes for the `/s` flag; `/s` only strips those outer quotes when
+ * the line contains no OTHER embedded quotes, so an unquoted spaced file
+ * (e.g. the default `C:\Program Files\nodejs\node.exe`) is handed to cmd.exe
+ * as bare, unquoted text and splits into `C:\Program` (treated as the
+ * executable) plus `Files\nodejs\node.exe` and `--version` (treated as
+ * args) -- this IS the bug this module exists to fix (apra-fleet-i9ag.15.4).
+ * Quoting `file` here instead defeats that outer-quote stripping (the line
+ * now has embedded quotes), so cmd.exe parses the whole thing itself and
+ * keeps the spaced path as one token. No-op for a token with no whitespace,
+ * and only ever called on the win32 shell path -- POSIX shells/argv arrays
+ * never see this. Escapes embedded double quotes by doubling them, cmd.exe's
+ * own quoting convention (distinct from POSIX backslash-escaping).
+ * @param {string} token
+ * @returns {string}
+ */
+function quoteForWindowsShell(token) {
+    if (!/\s/.test(token)) return token;
+    return `"${token.replace(/"/g, '""')}"`;
+}
+
+/**
  * Probes `file --version` (well, `file`, `args`), returning the parsed
  * version or null when the probe fails or its output carries no
  * version-like substring. `shell: true` on win32 only -- mirrors
@@ -168,7 +194,13 @@ function compareVersions(a, b) {
  * explicit FLEET_SE_NODE override routinely resolve to a `.cmd`/shim on
  * Windows, and Node refuses to spawn one without a shell. Argv is always a
  * fixed-literal array (never a caller-interpolated command string), so
- * routing through a shell here introduces no expansion (CLAUDE.md).
+ * routing through a shell here introduces no expansion (CLAUDE.md). On
+ * win32, `file` (a caller/environment-supplied path, unlike the fixed
+ * literal args) is quoted via quoteForWindowsShell() before being handed to
+ * `exec` -- see that function's doc comment for why an unquoted spaced path
+ * breaks under `shell: true` on Windows. This is probe-internal only: the
+ * unquoted original path is still what resolveSprintRunnerCommand() returns
+ * to its caller.
  * @param {(file: string, args: string[], options?: object) => string|Buffer} exec
  * @param {NodeJS.Platform} platform
  * @param {string} file
@@ -176,9 +208,10 @@ function compareVersions(a, b) {
  * @returns {string|null}
  */
 function probeVersion(exec, platform, file, args) {
+    const isWin32Shell = platform === 'win32';
     try {
-        const raw = exec(file, args, {
-            shell: platform === 'win32',
+        const raw = exec(isWin32Shell ? quoteForWindowsShell(file) : file, args, {
+            shell: isWin32Shell,
             timeout: SPRINT_RUNNER_PROBE_TIMEOUT_MS,
         });
         return parseVersionString(raw);
