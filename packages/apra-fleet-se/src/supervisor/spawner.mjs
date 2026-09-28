@@ -294,6 +294,7 @@ export function buildSprintArgv(opts = {}) {
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
  *   spawnSprint(opts: object): Promise<{ pid: number, port: number, command: string, args: string[], logPath: string }>,
+ *   preflightRunner(): string,
  *   liveCount: number,
  *   livePorts: Set<number>,
  *   getLiveEntry(pid: number): { port: number, child: object, logPath: string }|undefined,
@@ -551,6 +552,28 @@ export function createSpawner(deps = {}) {
         },
 
         spawnSprint,
+
+        /**
+         * apra-fleet-i9ag.15: the runner resolution, callable on its own,
+         * with NO side effect beyond resolveCommand()'s own success-only
+         * cache (and its one-time success log line) -- no port allocation,
+         * no per-sprint log file, no child, no ledger write. api.mjs's
+         * launch() calls this FIRST, before any other collaborator runs, so
+         * that on a host with no usable Node.js runtime the operator gets
+         * the resolver's own actionable 503 instead of whatever generic 500
+         * an earlier pre-launch guard happens to fail with. (The concrete
+         * case: `bd` is installed by npm with a `#!/usr/bin/env node`
+         * shebang, so the beads-backed scope-overlap guard is ALSO dead on a
+         * node-less box and used to be the first thing to blow up.)
+         *
+         * Throws the same SprintRunnerResolutionError spawnSprint() does,
+         * and shares its cache: a successful preflight means the subsequent
+         * spawnSprint() in the same launch re-resolves nothing.
+         * @returns {string}
+         */
+        preflightRunner() {
+            return resolveCommand();
+        },
 
         /**
          * Registers a RE-ADOPTED child (apra-fleet-eft.4.5): a live process

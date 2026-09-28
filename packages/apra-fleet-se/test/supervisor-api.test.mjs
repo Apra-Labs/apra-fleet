@@ -572,6 +572,147 @@ describe('api -- apra-fleet-i9ag.15.2 runner-resolution failure -> 503', () => {
         );
         await fsp.rm(dir, { recursive: true, force: true });
     });
+
+    // apra-fleet-i9ag.15: the 503 above was UNREACHABLE on the host class it
+    // was written for. `bd` is npm-installed with a `#!/usr/bin/env node`
+    // shebang, so on a node-less box the beads-backed pre-launch guards
+    // composed into beforeLaunch (bin/serve.mjs -> scope-overlap.mjs) are
+    // dead too, and their raw failure reached server.mjs's generic 500
+    // "internal supervisor error" BEFORE spawnSprint() ever ran. launch()
+    // now resolves the runner first, via the side-effect-free
+    // spawner.preflightRunner().
+    test('a failing resolver short-circuits launch() BEFORE beforeLaunch runs: 503 with the resolver message, and beforeLaunch is never called', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner, fsCalls } = unresolvableSpawner();
+        let beforeLaunchCalls = 0;
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+            // Stands in for the real beads-backed scope-overlap guard, which
+            // on a node-less box fails with a raw `bd list ...` ENOENT-class
+            // error that used to become the generic 500.
+            beforeLaunch: () => {
+                beforeLaunchCalls += 1;
+                throw new Error('Command failed: bd list --all --limit 0 --json\n/usr/bin/env: \'node\': No such file or directory');
+            },
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => {
+                assert.ok(err instanceof ApiError, 'must be an ApiError, not the raw beforeLaunch failure');
+                assert.equal(err.status, 503, 'the resolver failure must win over the beads-guard failure');
+                assert.ok(err.message.includes(FIX_LINE), err.message);
+                assert.ok(!/internal supervisor error/i.test(err.message));
+                assert.ok(!/bd list/.test(err.message), 'must not be the beads-guard error');
+                return true;
+            },
+        );
+        assert.equal(beforeLaunchCalls, 0, 'beforeLaunch must never run once the runner cannot be resolved');
+        assert.equal(ledger.list().length, 0);
+        assert.equal(fsCalls.mkdirSync, 0);
+        assert.equal(fsCalls.openSync, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-i9ag.15 (Fix 2): a resolution failure used to write NOTHING
+    // to the supervisor's own log -- spawner.mjs logs only the success line,
+    // so an operator tailing /supervisor/log after a failed launch saw no
+    // trace of it at all. console.error is the sink self-log.mjs tees into
+    // <dataDir>/logs/supervisor.log.
+    test('a resolution failure is logged to the supervisor log with the FULL resolver message', async (t) => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner } = unresolvableSpawner();
+        const errorCalls = [];
+        t.mock.method(console, 'error', (...args) => { errorCalls.push(args.join(' ')); });
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 503,
+        );
+
+        const logged = errorCalls.filter((line) => line.includes(FIX_LINE));
+        assert.equal(logged.length, 1, `exactly one log line must carry the resolver message; saw: ${JSON.stringify(errorCalls)}`);
+        assert.ok(/resolution failed/i.test(logged[0]), logged[0]);
+        assert.ok(logged[0].includes('503'), 'the log line must say the launch was refused with a 503');
+        assert.ok(logged[0].includes('single-executable binary'), 'the FULL resolver message (every candidate tried) must be logged, not a summary');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a SUCCEEDING resolver still reaches beforeLaunch and spawnSprint unchanged, and resolves exactly once for the whole launch', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        let resolveCalls = 0;
+        const spawner = createSpawner({
+            basePort: 9100,
+            resolveRunner: () => { resolveCalls += 1; return { command: 'node', source: 'path', version: '22.16.0' }; },
+            spawn: (command, args) => {
+                captured.push({ command, args });
+                const listeners = {};
+                return { pid: 6001, once(ev, cb) { listeners[ev] = cb; return this; }, unref() {} };
+            },
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: { mkdirSync() {}, openSync() { return 910; }, closeSync() {} },
+            logger: { log() {}, error() {} },
+        });
+        let beforeLaunchCalls = 0;
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+            beforeLaunch: () => { beforeLaunchCalls += 1; },
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+
+        assert.equal(beforeLaunchCalls, 1, 'the happy path must still run beforeLaunch');
+        assert.equal(captured.length, 1, 'the happy path must still spawn the child');
+        assert.equal(captured[0].command, 'node');
+        assert.equal(result.pid, 6001);
+        assert.equal(ledger.list().length, 1, 'the happy path must still claim its ledger reservation');
+        // The preflight shares resolveCommand()'s success-only cache, so
+        // hoisting it must not double the resolution work per launch.
+        assert.equal(resolveCalls, 1, 'preflight + spawn must resolve the runner exactly once');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an injected spawner double WITHOUT preflightRunner() still launches (optional-call), and its own resolution failure still yields the 503', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+
+        // Happy path: a bare double with only spawnSprint().
+        const okController = createSprintController({
+            ledger, history,
+            spawner: { spawnSprint: async () => ({ pid: 7001, port: 9200, args: [], logPath: '/tmp/x.log' }) },
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const result = await okController.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.pid, 7001);
+
+        // Failure path: the spawnSprint() catch is still the fallback for a
+        // double that cannot be preflighted.
+        const { ledger: ledger2, history: history2 } = await stores(await tmpDir());
+        const failController = createSprintController({
+            ledger: ledger2, history: history2,
+            spawner: {
+                spawnSprint: async () => { throw new SprintRunnerResolutionError(`no runtime. ${FIX_LINE}`); },
+            },
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => failController.launch({ issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 503 && err.message.includes(FIX_LINE),
+        );
+        assert.equal(ledger2.list().length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
 });
 
 describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLaunch)', () => {

@@ -320,6 +320,13 @@ export function defaultBuildVersion() {
  *   },
  *   spawner: {
  *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[], logPath?: string }>,
+ *     preflightRunner?: () => string,
+ *       apra-fleet-i9ag.15: side-effect-free runner resolution (spawner.mjs).
+ *       launch() calls it FIRST, before validation/listMembers/beforeLaunch,
+ *       so a host with no usable Node.js runtime answers with the resolver's
+ *       own 503 rather than a generic 500 from a beads-backed pre-launch
+ *       guard that is equally dead there. Optional: an injected spawner
+ *       without it keeps the previous spawnSprint()-only behaviour.
  *     getLiveEntry?: (pid: number) => { port: number, logPath?: string }|undefined,
  *   },
  *   history?: {
@@ -494,8 +501,48 @@ export function createSprintController(deps = {}) {
         return { ...result, scopeFreshness: freshness };
     }
 
+    /**
+     * apra-fleet-i9ag.15: the ONE place a SprintRunnerResolutionError becomes
+     * an operator-facing 503. Logs the resolver's FULL message first (Fix 2 --
+     * previously a failed resolution wrote nothing at all to the supervisor's
+     * own log, so an operator tailing /supervisor/log after a failed launch
+     * saw no trace of it; spawner.mjs only ever logged the SUCCESS line).
+     * console.error is the supervisor's log sink -- self-log.mjs tees it,
+     * timestamped, into <dataDir>/logs/supervisor.log.
+     * @param {Error} err
+     * @returns {ApiError}
+     */
+    function runnerResolutionApiError(err) {
+        console.error(`[spawner] sprint runner resolution failed -- launch refused (503): ${err.message}`);
+        return new ApiError(503, err.message);
+    }
+
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
+        // apra-fleet-i9ag.15: resolve the sprint runner BEFORE anything else
+        // this function does -- before validation, before the listMembers()
+        // fetch, and above all before beforeLaunch. A node-less host cannot
+        // launch a sprint at all, and the pre-launch guards composed into
+        // beforeLaunch (bin/serve.mjs's composeBeforeLaunch -> the
+        // scope-overlap.mjs guard) shell out to the npm-installed `bd`,
+        // whose `#!/usr/bin/env node` shebang makes it equally dead there.
+        // That guard's raw failure used to reach server.mjs's generic 500
+        // "internal supervisor error" first, so the actionable 503 this
+        // resolver exists to produce was unreachable in exactly the
+        // situation it was written for. Resolution is side-effect-free
+        // (spawner.preflightRunner()), so hoisting it costs nothing on the
+        // happy path and the later spawnSprint() reuses the same cached
+        // result. Optional-call: a test double or older injected spawner
+        // without preflightRunner() keeps its previous behaviour, with the
+        // spawnSprint() catch below still covering it.
+        if (typeof spawner.preflightRunner === 'function') {
+            try {
+                spawner.preflightRunner();
+            } catch (err) {
+                if (err instanceof SprintRunnerResolutionError) throw runnerResolutionApiError(err);
+                throw err;
+            }
+        }
         const { issue, issueIds, branch, base, members } = validateLaunchRequest(body);
         const rawRoleMap = body.roleMap === undefined
             ? undefined
@@ -609,12 +656,18 @@ export function createSprintController(deps = {}) {
         // error", which would tell the operator nothing actionable. Every
         // other spawnSprint() failure is rethrown unchanged and keeps its
         // existing (500, isolation-wrapper) behaviour.
+        //
+        // apra-fleet-i9ag.15: this catch is KEPT even though launch() now
+        // preflights the same resolution at its top -- it is the fallback
+        // for an injected spawner that has no preflightRunner(), and for the
+        // (deliberately uncached) failure case where a resolution that
+        // succeeded at preflight somehow does not at spawn time.
         let spawned;
         try {
             spawned = await spawner.spawnSprint(spawnOpts);
         } catch (err) {
             if (err instanceof SprintRunnerResolutionError) {
-                throw new ApiError(503, err.message);
+                throw runnerResolutionApiError(err);
             }
             throw err;
         }
