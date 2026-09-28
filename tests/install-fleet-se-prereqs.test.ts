@@ -228,6 +228,33 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     exitSpy.mockRestore();
   });
 
+  // apra-fleet-i9ag.12.15: the gate is a hard failure an operator can only
+  // avoid by knowing the requirement in advance, so `install --help` has to
+  // state it. The byte-for-byte fixture guard in
+  // tests/install-multi-provider.test.ts pins the whole help surface; this
+  // asserts the CLAIM itself, so a future fixture refresh cannot quietly
+  // drop the line.
+  it('`install --help` states the fleet-se Node/npm requirement under --workflows', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+
+    const help = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(help).toContain('fleet-se requires Node.js 22.16+ and npm.');
+    // It belongs to --workflows, the flag that turns the requirement on/off,
+    // not to some unrelated part of the help. (Search for the NEXT '--force'
+    // after --workflows: the examples block above the flag list mentions
+    // --force too.)
+    const wfStart = help.indexOf('  --workflows <mode>');
+    expect(wfStart).toBeGreaterThan(-1);
+    const workflowsSection = help.slice(wfStart, help.indexOf('  --force ', wfStart));
+    expect(workflowsSection).toContain('fleet-se requires Node.js 22.16+ and npm.');
+
+    exitSpy.mockRestore();
+  });
+
   // apra-fleet-i9ag.13 / apra-fleet-i9ag.12.15: the gate used to run MID-
   // install -- after the fleet.key mint, the binary copy, hooks, scripts and
   // settings had already been written -- so a machine missing Node was left
