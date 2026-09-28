@@ -64,6 +64,7 @@ import { startRegistrationConvergence } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
 import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
+import { createProjectsPageHandler } from '../src/registration/project-page.mjs';
 import { registerProjectFolderRoutes } from '../src/supervisor/project-route.mjs';
 import { openStore, NodeSqliteUnavailableError } from '../src/projects/store/db.mjs';
 import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
@@ -733,9 +734,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
         registerProjectsStoreUnavailableRoutes(supervisor, projectStoreOpenError ? projectStoreOpenError.message : 'store unavailable');
     }
 
-    // apra-fleet-g6ap.3.1: /ui placeholder -- outside the /api guard, swapped
-    // for the real static-file handler by a later UI-bundle sprint.
-    registerUiRoutes(supervisor);
+    // apra-fleet-g6ap.3.1 / apra-fleet-i9ag.17.2.2: /ui placeholder -- outside
+    // the /api guard, swapped for a real static-file handler for exactly
+    // PROJECTS_UI_PATH (createProjectsPageHandler() delegates every other
+    // manifest-declared path back to the unchanged placeholder). A later
+    // UI-bundle sprint can still replace this ONE call site again for the
+    // remaining paths without touching server.mjs's routing table.
+    registerUiRoutes(supervisor, {
+        staticHandler: createProjectsPageHandler({ token: supervisor.token }),
+    });
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
