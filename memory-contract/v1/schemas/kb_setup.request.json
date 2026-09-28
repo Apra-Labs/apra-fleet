@@ -28,6 +28,14 @@
         "token": {
           "type": "string",
           "description": "Authentication token for remote KB server (stored encrypted, never logged)"
+        },
+        "offline_fallback": {
+          "type": "string",
+          "enum": [
+            "local",
+            "error"
+          ],
+          "description": "Only meaningful for provider=http. What to do when the configured remote is unreachable: \"local\" (default) silently degrades to the local sqlite KB for reads and queues writes; \"error\" hard-fails every KB read/write instead. Persisted alongside provider/remote/token; merges into the existing config file like every other kb_setup input, so a hand-set value already on disk is kept when this is omitted."
         }
       },
       "additionalProperties": false
