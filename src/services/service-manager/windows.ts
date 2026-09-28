@@ -183,20 +183,97 @@ export class WindowsServiceManager implements ServiceManager {
     }
   }
 
+  /**
+   * Registration + run state of THIS service's scheduled task.
+   *
+   * Preferred path is an `-EncodedCommand` PowerShell probe of
+   * `Get-ScheduledTask`, for two reasons:
+   *
+   *  1. It is the only source that can tell whether the task is ENABLED.
+   *     `schtasks /query` collapses "registered and armed" and "registered
+   *     but disabled" into one localized Status string, so before this the
+   *     Windows manager never populated `enabled` at all and every running
+   *     task was reported by `apra-fleet status` as "installed (disabled)".
+   *  2. The probe emits the NUMERIC ScheduledTask state enum, so the mapping
+   *     is locale-independent. Comparing a Status column to the English
+   *     literal 'Running' is simply wrong on a localized Windows.
+   *
+   * PowerShell is invoked as an explicit `-EncodedCommand` (CLAUDE.md: never
+   * rely on shell-level expansion in a Windows command string), exactly as
+   * findWrapperProcessIds() does; the only interpolated value is the
+   * descriptor's fixed ASCII task name.
+   *
+   * `schtasks /query ... /fo csv /nh` remains as a FALLBACK for hosts where
+   * the probe cannot run at all (no powershell, non-zero exit, unparseable
+   * output). That path reports only what CSV can honestly tell and leaves
+   * `enabled` UNDEFINED for a status string it does not recognize -- an
+   * unknown enable state is never guessed into `enabled:false`.
+   */
   async query(): Promise<ServiceStatus> {
+    const probed = this.queryScheduledTaskState();
+    if (probed) return probed;
+    return this.queryViaSchtasksCsv();
+  }
+
+  /**
+   * `Get-ScheduledTask` state probe. Returns null -- meaning "ask the CSV
+   * fallback instead" -- when the probe could not be run or produced output
+   * this cannot interpret. A task that genuinely does not exist is NOT null:
+   * it is a definite {installed:false, running:false}.
+   *
+   * Numeric ScheduledTask state enum: 1=Disabled, 2=Queued, 3=Ready,
+   * 4=Running (0=Unknown, which falls through to the CSV fallback).
+   */
+  private queryScheduledTaskState(): ServiceStatus | null {
+    const needle = this.taskName.replace(/'/g, "''");
+    const script = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      `$t = Get-ScheduledTask -TaskName '${needle}'`,
+      "if ($t) { [int]$t.State } else { 'NOTFOUND' }",
+    ].join('; ');
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    let out: string;
     try {
-      const out = execFileSync(
+      out = String(execFileSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        { encoding: 'utf8' },
+      ) ?? '');
+    } catch {
+      // No powershell, or it exited non-zero: the probe is unusable here.
+      return null;
+    }
+    const value = out.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean).pop() ?? '';
+    if (value === 'NOTFOUND') return { installed: false, running: false };
+    switch (value) {
+      case '4': return { installed: true, running: true, enabled: true };
+      case '1': return { installed: true, running: false, enabled: false };
+      case '2':
+      case '3': return { installed: true, running: false, enabled: true };
+      default: return null;
+    }
+  }
+
+  /** Legacy `schtasks` CSV read. Never invents an `enabled` value. */
+  private queryViaSchtasksCsv(): ServiceStatus {
+    let out: string;
+    try {
+      out = execFileSync(
         'schtasks', ['/query', '/tn', this.taskName, '/fo', 'csv', '/nh'],
         { encoding: 'utf8' },
       );
-      // CSV line: "TaskName","Next Run Time","Status"
-      const line = out.trim().split(/\r?\n/)[0] ?? '';
-      const cols = line.split('","');
-      const status = (cols[2] ?? '').replace(/"/g, '').trim();
-      return { installed: true, running: status === 'Running' };
     } catch {
       return { installed: false, running: false };
     }
+    // CSV line: "TaskName","Next Run Time","Status"
+    const line = String(out ?? '').trim().split(/\r?\n/)[0] ?? '';
+    const cols = line.split('","');
+    const status = (cols[2] ?? '').replace(/"/g, '').trim();
+    if (status === 'Disabled') return { installed: true, running: false, enabled: false };
+    if (status === 'Running') return { installed: true, running: true, enabled: true };
+    // Localized or otherwise unrecognized: registered, not observably
+    // running, enable state unknown. Deliberately no `enabled` key.
+    return { installed: true, running: false };
   }
 
   async isInstalled(): Promise<boolean> {

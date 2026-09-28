@@ -486,6 +486,12 @@ concurrent change lands mid-edit -- see
 [docs/console-architecture.md](docs/console-architecture.md) for the
 dirty-diff design and the invariant this defect violates. See also
 [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+The Health page's data directory now comes from an explicit `dataDir` field
+the server always includes in the `fleet_status` JSON payload, and
+`apra-fleet status`/the OS service managers report a genuinely three-state
+`enabled` (armed / disabled / unknown) rather than collapsing "the platform
+can't tell" into a false "disabled" claim -- see
+[docs/transport-and-service-mode.md](docs/transport-and-service-mode.md#reported-service-state-installed--enabled--running).
 
 ## Documentation
 

@@ -63,17 +63,33 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
 }
 
 /**
- * Registration label for one service. `enabled` is only reported by the Linux
- * manager (systemd is-enabled); the other platforms leave it undefined, which
- * renders as "installed (disabled)" exactly as it did before this became
- * multi-service.
+ * Registration label for one service. THREE-STATE on purpose, because
+ * `ServiceStatus.enabled` is genuinely tri-valued:
+ *
+ *   enabled === true       -> "installed (enabled)"
+ *   enabled === false      -> "installed (disabled)"
+ *   enabled === undefined  -> "installed", with NO enable claim at all
+ *
+ * The undefined case is not "disabled": it means this platform's manager could
+ * not determine the auto-start state (macOS never reports one, and a Windows
+ * host that cannot run the Get-ScheduledTask probe falls back to a schtasks
+ * read that honestly declines to guess). Collapsing it into "disabled" is what
+ * made `apra-fleet status` tell fresh Windows installs that both services were
+ * disabled while they were running and answering /health -- a definite wrong
+ * claim where saying less is correct. Loud honesty over a silent falsehood.
  */
 function serviceLabelFor(status: ServiceStatus): string {
   if (!status.installed) return 'not installed';
-  return status.enabled ? 'installed (enabled)' : 'installed (disabled)';
+  if (status.enabled === true) return 'installed (enabled)';
+  if (status.enabled === false) return 'installed (disabled)';
+  return 'installed';
 }
 
-/** Running/stopped label for a service, used for the supervisor line. */
+/**
+ * Running/stopped label for a service. Appended to BOTH service lines: a user
+ * checking health needs to see the run state of the MCP server too, not only
+ * the supervisor's.
+ */
 function runStateFor(status: ServiceStatus): string {
   if (!status.installed) return '';
   return status.running ? ', running' : ', stopped';
@@ -113,7 +129,7 @@ export async function runStatus(
   const supervisorStatus: ServiceStatus = await supervisorMgr.query()
     .catch(() => ({ installed: false, running: false }));
 
-  const serviceLabel = serviceLabelFor(svcStatus);
+  const serviceLabel = `${serviceLabelFor(svcStatus)}${runStateFor(svcStatus)}`;
   const supervisorLabel = `${serviceLabelFor(supervisorStatus)}${runStateFor(supervisorStatus)}`;
 
   if (!instance.running) {

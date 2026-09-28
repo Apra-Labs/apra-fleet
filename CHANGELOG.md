@@ -91,6 +91,49 @@ open for a future sprint):
   classifier) -- that underlying breakage still carries over to a future
   sprint.
 
+## [Unreleased] -- accurate service enable/running state and Health page data directory
+
+Sprint goal: fix a fresh-Windows-install defect where `apra-fleet status`
+reported running, auto-starting scheduled-task services as
+"installed (disabled)", and the console Health page showed a blank data
+directory. All acceptance criteria verified against the shipped code and a
+green full-repo test run.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $9.7522.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.7063 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 11 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Windows service state reporting is now locale-independent and can
+  answer `enabled`.** The Windows service manager's `query()` now probes
+  `Get-ScheduledTask` (via an explicit `-EncodedCommand` invocation, numeric
+  state enum) as its primary source, with the legacy `schtasks` CSV read
+  kept only as a fallback for hosts where the probe cannot run -- and that
+  fallback never invents an `enabled` value for a status string it does not
+  recognize.
+- **`apra-fleet status` is honest about an unknown enable state.** The
+  service registration label is now genuinely three-state
+  (`enabled`/`disabled`/unknown-so-no-claim), instead of collapsing "the
+  platform couldn't determine this" into a false "disabled". The run-state
+  suffix (`, running` / `, stopped`) is now shown on every reported service
+  line, not only the supervisor's.
+- **`fleet_status`'s JSON payload always carries an explicit `dataDir`
+  field** -- the resolved absolute fleet data directory -- including on the
+  zero-members-registered payload of a fresh install. The client wrapper and
+  its API reference docs were updated in the same change.
+- **The console Health page renders the server-reported `dataDir` directly**
+  instead of only deriving it from the log file path; the old derivation
+  remains as a fallback for a console talking to an older server that
+  predates the field.
+- Known, non-blocking follow-up left open: the new Windows probe still
+  cannot distinguish "task genuinely absent" from "the probe itself failed
+  to run" (missing cmdlet, access denied) -- both currently short-circuit to
+  a definite "not installed" without falling through to the CSV fallback.
+
 ## [Unreleased] -- Console-hosted secret entry: "Add credential" now works off-box
 
 Sprint goal: fix the console's "Add credential" flow so setting a secret

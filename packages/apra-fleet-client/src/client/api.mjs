@@ -834,6 +834,24 @@ export class ApraFleet {
 
     /**
      * Get status of all fleet members.
+     *
+     * In "json" format the payload always carries `dataDir` (the resolved
+     * absolute fleet data directory, honoring `APRA_FLEET_DATA_DIR`) --
+     * unconditional, present even on a fresh install with zero members
+     * registered. `logFile` remains a separate, optional field kept for
+     * back-compat with older consoles that derived the data dir from it;
+     * prefer `dataDir` directly. `format: "compact"` output is unaffected.
+     *
+     * The "json" payload also carries an OPTIONAL `fleetSePrereqs` string --
+     * the server's pre-rendered fleet-se (Node.js/npm) prerequisite summary,
+     * e.g. "ready (node 22.16.0, npm 10.5.0)" or "NOT INSTALLED (node: NOT
+     * INSTALLED) -- <fix line>". Render it verbatim; the server is the single
+     * place that computes this text, so callers must never restate the
+     * minimum version or the fix line themselves. The key is omitted
+     * entirely (not null) when the server-side probe threw, or by an older
+     * server that predates the field -- treat absence as "not reported"
+     * rather than as "prerequisites met".
+     *
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {

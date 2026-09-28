@@ -314,6 +314,24 @@ Calls `fleet_status` -- status of all fleet members.
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 
+In `"json"` format the payload always carries `dataDir` -- the resolved
+absolute fleet data directory (honors `APRA_FLEET_DATA_DIR`). It is
+unconditional: present on both the zero-members-registered payload (a fresh
+install) and the normal payload, never derived or omitted. `logFile` remains
+a separate optional field kept only for back-compat with older consoles that
+used to derive the data dir by stripping `logs/fleet-<pid>.log` off it;
+prefer `dataDir` directly. `"compact"` format output is unchanged.
+
+The `"json"` payload also carries an optional `fleetSePrereqs` string -- the
+server's pre-rendered fleet-se (Node.js/npm) prerequisite summary, e.g.
+`ready (node 22.16.0, npm 10.5.0)` or
+`NOT INSTALLED (node: NOT INSTALLED) -- <fix line>`. Render it verbatim: the
+server owns that text (`src/cli/fleet-se-prereqs.ts`), so callers must never
+restate the minimum version or the fix line as their own literal. The key is
+omitted entirely (not `null`) when the server-side probe threw, and by an
+older server that predates the field -- treat absence as "not reported",
+never as "prerequisites met".
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,

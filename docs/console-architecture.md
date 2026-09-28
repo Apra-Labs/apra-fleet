@@ -380,7 +380,13 @@ screens against the `/api/fleet/*` route set:
 - **Health (S3)**: fleet status, version, data directory, update-available
   state, and a workflow-packages list that reads `GET /api/workflow-packages`
   tolerantly (both a 404 and a network failure render the same "none
-  registered" empty state rather than an error).
+  registered" empty state rather than an error). The data directory is read
+  from an explicit `dataDir` field on the `fleet_status` JSON payload
+  (unconditional -- present even on the zero-members-registered payload of a
+  fresh install), not derived from the log file path; a legacy `logFile`
+  parse remains as a fallback only for a server old enough to predate the
+  `dataDir` field, so the page degrades gracefully against a mismatched
+  server version instead of showing a blank value.
 
 All three pages are built on shared primitives in a separate `@apralabs/apra-fleet-ui-kit`
 workspace package (`Table`, `Drawer`, `Form`, `Wizard`, `Page`, plus a shared

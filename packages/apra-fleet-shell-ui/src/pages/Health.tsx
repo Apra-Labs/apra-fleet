@@ -73,7 +73,11 @@ export function Health() {
           <dt>Version</dt>
           <dd>{status.payload.version}</dd>
           <dt>Data dir</dt>
-          <dd>{deriveDataDir(status.payload.logFile) ?? "-"}</dd>
+          <dd>
+            {status.payload.dataDir && status.payload.dataDir.length > 0
+              ? status.payload.dataDir
+              : deriveDataDir(status.payload.logFile) ?? "-"}
+          </dd>
           <dt>Update available</dt>
           <dd>
             {status.payload.updateAvailable
