@@ -62,7 +62,14 @@ vi.mock('../src/cli/install.js', async (importOriginal) => {
 });
 vi.mock('node:readline/promises', () => ({ createInterface: vi.fn() }));
 
-import { SUPERVISOR_SERVE_SCRIPT } from '../src/cli/supervisor.js';
+import { SUPERVISOR_SERVE_SCRIPT, supervisorConfigPath, SUPERVISOR_DATA_DIR } from '../src/cli/supervisor.js';
+// The REAL apra-fleet-se reader -- apra-fleet-i9ag.17.4.2's "Seeded" case
+// asserts against this, not a restated literal shape, so a drift between
+// the writer here and this reader is exactly what would fail. `node:fs` is
+// mocked file-wide above, but this module only ever touches `node:fs/
+// promises` (a separate specifier, unmocked) via its own injectable `fs`
+// option, which the test below overrides directly -- no real disk I/O.
+import { readSupervisorConfig } from '../packages/apra-fleet-se/src/supervisor/project-config.mjs';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -76,14 +83,29 @@ let exitCode: number | undefined;
 
 const EXIT_SENTINEL = '__process_exit__';
 
-/** Mirrors tests/install-service.test.ts's fs mock, plus a present serve.mjs. */
-function makeFsMock(serveScriptExists = true): void {
+/**
+ * Mirrors tests/install-service.test.ts's fs mock, plus a present serve.mjs.
+ *
+ * `extraExists` layers additional exact-path -> boolean answers on top of
+ * the defaults below (apra-fleet-i9ag.17.4.2's --project-dir cases use this
+ * for the candidate project folder and, for the "preserved" case, an
+ * already-existing supervisor.config.json). `statSync` for any path this
+ * map marks `true` reports as a directory -- good enough for
+ * seedSupervisorProjectDir()'s existsSync()+statSync().isDirectory() check,
+ * without needing a second mock table just for stat.
+ */
+function makeFsMock(serveScriptExists = true, extraExists: Record<string, boolean> = {}): void {
   vi.mocked(fs.existsSync).mockImplementation((p: any) => {
     const ps = p.toString();
+    if (Object.prototype.hasOwnProperty.call(extraExists, ps)) return extraExists[ps];
     if (ps === SUPERVISOR_SERVE_SCRIPT) return serveScriptExists;
     if (ps.includes('version.json')) return true;
     if (ps.includes('hooks-config.json')) return true;
     return false;
+  });
+  vi.mocked(fs.statSync).mockImplementation((p: any) => {
+    const ps = p.toString();
+    return { isDirectory: () => extraExists[ps] === true } as any;
   });
   vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
     const ps = p.toString();
@@ -300,5 +322,111 @@ describe('install -- the mcp-server step still only WARNS', () => {
     expect(vi.mocked(console.warn).mock.calls.flat().join('\n')).toContain(
       'Service registration skipped',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-i9ag.17.4.2 -- --project-dir seeds the supervisor's persisted
+// project folder. Five independently named properties: seeded (and accepted
+// by the REAL apra-fleet-se reader), ordering (write happens before
+// supervisor registration is attempted), rejected (bad path, non-zero exit,
+// nothing written), omitted (no option -> no write, no behaviour change),
+// and preserved (no option leaves an existing console-set config untouched).
+// ---------------------------------------------------------------------------
+const PROJECT_DIR = '/mock/project-a';
+const CONFIG_PATH = supervisorConfigPath(SUPERVISOR_DATA_DIR);
+
+/** Every fs.writeFileSync call this run made to the supervisor config path,
+ *  in call order -- the content argument only. */
+function configWriteContents(): string[] {
+  return vi
+    .mocked(fs.writeFileSync)
+    .mock.calls.filter(([p]) => (p as any)?.toString() === CONFIG_PATH)
+    .map(([, content]) => (content as any).toString());
+}
+
+describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
+  it('seeded: writes supervisor.config.json under the resolved data dir, accepted by the REAL apra-fleet-se reader', async () => {
+    makeFsMock(true, { [PROJECT_DIR]: true });
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+
+    const writes = configWriteContents();
+    expect(writes).toHaveLength(1);
+
+    // Assert against the REAL reader (imported above), not a restated
+    // literal shape -- a hardcoded-on-both-sides assertion cannot detect
+    // drift, which is the specific risk this feature carries.
+    const parsed = await readSupervisorConfig({
+      dataDir: SUPERVISOR_DATA_DIR,
+      fs: { readFile: async () => writes[0] },
+    });
+    expect(parsed.configured).toBe(true);
+    expect(parsed.projectDir).toBe(PROJECT_DIR);
+  });
+
+  it('ordering: the config write happens before the supervisor service registration call', async () => {
+    makeFsMock(true, { [PROJECT_DIR]: true });
+    await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
+    expect(exitCode).toBeUndefined();
+
+    const writeOrders = vi
+      .mocked(fs.writeFileSync)
+      .mock.calls.map((call, i) => ({ call, order: vi.mocked(fs.writeFileSync).mock.invocationCallOrder[i] }))
+      .filter(({ call }) => (call[0] as any)?.toString() === CONFIG_PATH)
+      .map(({ order }) => order);
+    expect(writeOrders.length).toBeGreaterThan(0);
+    expect(supervisorMgr.register.mock.invocationCallOrder.length).toBeGreaterThan(0);
+    expect(writeOrders[0]).toBeLessThan(supervisorMgr.register.mock.invocationCallOrder[0]);
+  });
+
+  it('rejected: a nonexistent path fails the install with a non-zero exit and writes no config', async () => {
+    makeFsMock(true, { [PROJECT_DIR]: false });
+    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(out).toContain(PROJECT_DIR);
+    expect(configWriteContents()).toHaveLength(0);
+    expect(supervisorMgr.register).not.toHaveBeenCalled();
+  });
+
+  it('omitted: install with no --project-dir writes no config file', async () => {
+    makeFsMock();
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none']),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+    expect(configWriteContents()).toHaveLength(0);
+  });
+
+  it('preserved: an install with no option leaves an existing console-set config file untouched (no write, no delete)', async () => {
+    // Simulate a config file an operator already set from the console:
+    // existsSync(CONFIG_PATH) is true, exactly as a real prior write would
+    // leave it -- the point is that NOTHING in this run's code path
+    // touches that path at all, since --project-dir was never supplied.
+    makeFsMock(true, { [CONFIG_PATH]: true });
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none']),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+    expect(configWriteContents()).toHaveLength(0);
+    expect(vi.mocked(fs.rmSync).mock.calls.some(([p]) => (p as any)?.toString() === CONFIG_PATH)).toBe(false);
+    expect(vi.mocked(fs.unlinkSync).mock.calls.length).toBe(0);
+  });
+
+  it('an install that overwrites an existing installation (--force) still respects the option', async () => {
+    makeFsMock(true, { [PROJECT_DIR]: true });
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none', '--force', '--project-dir', PROJECT_DIR]),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+    expect(configWriteContents()).toHaveLength(1);
+  });
+
+  it('the install help text documents --project-dir (apra-fleet-i9ag.17.4.1)', async () => {
+    await expect(runInstall(['--help'])).rejects.toThrow(EXIT_SENTINEL);
+    expect(exitCode).toBe(0);
+    const out = operatorOutput();
+    expect(out).toContain('--project-dir <path>');
   });
 });
