@@ -141,3 +141,7 @@ packages/apra-fleet-se/auto-sprint/logs/
 # (e.g. .fleet-out/plan-review-verdict.json) -- per-run, never commit. Its own
 # directory, so a directory rule shadows nothing tracked (unlike .fleet/).
 /.fleet-out/
+
+# Fresh-install release harness: download cache and run results (local only)
+tests/integration/fresh-install/.cache/
+tests/integration/fresh-install/results/
