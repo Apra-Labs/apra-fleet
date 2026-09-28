@@ -12,6 +12,7 @@ import {
   defaultCredentialsPath,
 } from '../scripts/check-toy-doer-credentials.mjs';
 import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // apra-fleet-eft.48.9: regression pin for eft.48 / impl eft.48.8 (the
 // env-var provisioning path).
@@ -122,28 +123,20 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
     let tmpHome: string;
     // apra-fleet-eft.48.7 (reopened) precedent: override every profile-
     // resolution variable together, and restore all -- HOME alone does not
-    // sandbox the spawned CLI on every platform.
-    const PROFILE_ENV_KEYS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const;
-    let savedProfileEnv: Record<string, string | undefined>;
+    // sandbox the spawned CLI on every platform. applyIsolatedHome() does
+    // this (HOME, USERPROFILE, HOMEDRIVE+HOMEPATH) and restores them all.
+    let restoreHome: (() => Promise<void>) | undefined;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       backupAndResetRegistry();
-      savedProfileEnv = {};
-      for (const key of PROFILE_ENV_KEYS) savedProfileEnv[key] = process.env[key];
-      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft-48-9-envvar-real-cli-'));
-      process.env.HOME = tmpHome;
-      process.env.USERPROFILE = tmpHome;
-      process.env.HOMEDRIVE = path.parse(tmpHome).root.replace(/[\\/]+$/, '');
-      process.env.HOMEPATH = tmpHome.slice(path.parse(tmpHome).root.length - 1);
+      const home = await applyIsolatedHome('apra-fleet-eft-48-9-envvar-real-cli-');
+      tmpHome = home.tempHome;
+      restoreHome = home.restore;
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       restoreRegistry();
-      for (const key of PROFILE_ENV_KEYS) {
-        if (savedProfileEnv[key] !== undefined) process.env[key] = savedProfileEnv[key];
-        else delete process.env[key];
-      }
-      fs.rmSync(tmpHome, { recursive: true, force: true });
+      await restoreHome?.();
     });
 
     function credPath(): string {

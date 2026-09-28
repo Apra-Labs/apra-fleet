@@ -55,6 +55,10 @@ const IDENTITY_EMAIL = 'git-repo-fixture@test.local';
 function hermeticEnv(root) {
     return {
         ...process.env,
+        // isolated-home-allow: this is git-config isolation (hermetic
+        // ~/.gitconfig for the real git subprocess this fixture drives),
+        // not a fleet-home/fleet.key sandbox -- see the file header. It
+        // still sets USERPROFILE alongside HOME per the lane's rule.
         HOME: path.join(root, 'home'),
         USERPROFILE: path.join(root, 'home'),
         XDG_CONFIG_HOME: path.join(root, 'home', '.config'),

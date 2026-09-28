@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execSync } from 'node:child_process';
+import { buildIsolatedHomeEnv } from '../../../tests/helpers/isolated-home.mjs';
 
 // On Windows, `child.kill('SIGTERM')` (Node emulates it via TerminateProcess)
 // only terminates the top-level bash.exe handle -- it does not propagate to
@@ -211,7 +212,7 @@ test('slow-lane log persistence', async (t) => {
       const child = spawn('bash', ['-c', shellScript], {
         detached: process.platform !== 'win32', // Only detached on non-Windows
         stdio: 'pipe',
-        env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
+        env: buildIsolatedHomeEnv(sandboxHome, process.env)
       });
 
       // Wait for the log to actually gain output before interrupting,
@@ -278,7 +279,7 @@ test('slow-lane log persistence', async (t) => {
       const child = spawn('bash', ['-c', bareShellScript], {
         detached: process.platform !== 'win32',
         stdio: 'pipe',
-        env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
+        env: buildIsolatedHomeEnv(sandboxHome, process.env)
       });
 
       // Unlike test 1 (where the script's own `>` redirect sends everything

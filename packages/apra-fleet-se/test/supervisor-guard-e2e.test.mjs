@@ -275,6 +275,12 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
             stdio: ['ignore', 'pipe', 'pipe'],
             env: {
                 ...process.env,
+                // isolated-home-allow: HOME/USERPROFILE point at a fleet-home
+                // sandbox, but APRA_FLEET_DATA_DIR is deliberately a SEPARATE
+                // temp dir (not home/.apra-fleet/data) -- this test proves
+                // fleet.key resolution independent of the data dir, so it
+                // cannot use the shared helper's builder, which colocates
+                // the two.
                 HOME: home,
                 USERPROFILE: home, // Windows member running this same suite
                 APRA_FLEET_DATA_DIR: dataDir,

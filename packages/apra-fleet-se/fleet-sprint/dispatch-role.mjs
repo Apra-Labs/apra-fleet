@@ -303,7 +303,7 @@ function resolveSchema(ctx, schemaName) {
 // -----------------------------------------------------------------------------
 
 /** Every constructor NAME on an error's prototype chain, nearest first. */
-function errorClassNames(err) {
+export function errorClassNames(err) {
     const names = [];
     for (let proto = err; proto; proto = Object.getPrototypeOf(proto)) {
         const name = proto.constructor && proto.constructor.name;

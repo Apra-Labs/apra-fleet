@@ -8,6 +8,7 @@ import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { decryptPassword } from '../src/utils/crypto.js';
 import { credentialSet } from '../src/services/credential-store.js';
 import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // Stabilization Issue 43 (smoke-test rehearsal): `auth --oauth` used to write
 // { claudeAiOauth: { accessToken } } no matter what it was given. The Claude
@@ -193,30 +194,25 @@ describe('resolveAmbientClaudeCredential (apra-fleet-04g.5)', () => {
 // real secret.
 describe('handleOAuth / getOAuthCredentialPatch write path (apra-fleet-eft.48.5)', () => {
   let tmpHome: string;
-  let savedHome: string | undefined;
   // Windows: os.homedir() -- which runAuth's write path resolves -- reads
   // USERPROFILE, not HOME. Sandboxing only HOME made these tests WRITE FAKE
   // TOKENS INTO THE OPERATOR'S REAL ~/.claude/.credentials.json on Windows
   // (observed live 2026-07-21: instant 401s in the operator's interactive
   // session after local runs; windows-latest CI run 29866815136 failed the
   // same 5 tests because the file landed in the real profile, not tmpHome).
-  // Both profile variables must point at the sandbox together.
-  let savedUserProfile: string | undefined;
+  // Both profile variables must point at the sandbox together --
+  // applyIsolatedHome() below sets HOME, USERPROFILE, HOMEDRIVE/HOMEPATH and
+  // APRA_FLEET_DATA_DIR together and self-checks os.homedir().
+  let restoreHome: (() => Promise<void>) | undefined;
 
-  beforeEach(() => {
-    savedHome = process.env.HOME;
-    savedUserProfile = process.env.USERPROFILE;
-    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-auth-oauth-write-test-'));
-    process.env.HOME = tmpHome;
-    process.env.USERPROFILE = tmpHome;
+  beforeEach(async () => {
+    const home = await applyIsolatedHome('apra-fleet-auth-oauth-write-test-');
+    tmpHome = home.tempHome;
+    restoreHome = home.restore;
   });
 
-  afterEach(() => {
-    if (savedHome !== undefined) process.env.HOME = savedHome;
-    else delete process.env.HOME;
-    if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-    else delete process.env.USERPROFILE;
-    fs.rmSync(tmpHome, { recursive: true, force: true });
+  afterEach(async () => {
+    await restoreHome?.();
   });
 
   function credPath(): string {
@@ -434,19 +430,16 @@ describe('handleOAuth --member env-var provisioning (apra-fleet-eft.48.8)', () =
   });
 
   it('does NOT write any provider credentials file -- registry-only', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-auth-member-envvar-test-'));
-    const savedHome = process.env.HOME;
-    process.env.HOME = tmpHome;
+    const home = await applyIsolatedHome('apra-fleet-auth-member-envvar-test-');
     try {
       const member = makeTestLocalAgent({ friendlyName: 'toy-doer-3' });
       addAgent(member);
 
       await runAuth(['--oauth', '--member', 'toy-doer-3', 'sk-test-no-file-write']);
 
-      expect(fs.existsSync(path.join(tmpHome, '.claude', '.credentials.json'))).toBe(false);
+      expect(fs.existsSync(path.join(home.tempHome, '.claude', '.credentials.json'))).toBe(false);
     } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome; else delete process.env.HOME;
-      fs.rmSync(tmpHome, { recursive: true, force: true });
+      await home.restore();
     }
   });
 

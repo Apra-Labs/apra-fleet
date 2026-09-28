@@ -70,7 +70,7 @@ export async function runDeployPhase({
 }) {
     phase(`Deploy C${cycle}`);
     await ensureUnattendedAuto(getMemberForRole('deployer'));
-    await ensureDeployPermissions(getMemberForRole('deployer'));
+    await ensureDeployPermissions(getMemberForRole('deployer'), 'deployer');
     let deployResult;
     // Turn budget for the deployer, with the same-session
     // turn-exhaustion resume below: a source-build fallback deploy runs

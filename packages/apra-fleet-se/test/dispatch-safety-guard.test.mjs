@@ -396,7 +396,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // stageCommandBodyMemberSide moved out of runner.js into
 // ./member-provisioning.mjs. Exactly TWO of the four own a command() site of
 // their own: createDeployPermissionsProvisioner's `node -e ...` read of
-// deploy.md's Permissions section, and stageCommandBodyMemberSide's
+// the role's runbook Permissions section, and stageCommandBodyMemberSide's
 // `node -e ...` member-side temp-file write, both verified compliant. The
 // other two (createMemberSessionGuard, createUnattendedAutoProvisioner) issue
 // no command() at all. So this is -2, which is exactly 11 - 9; no site was
@@ -1151,7 +1151,7 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // test/sprint-state.test.mjs) and is not part of this module's surface.
 //
 // Its baseline is TWO: createDeployPermissionsProvisioner's `node -e ...`
-// read of deploy.md's Permissions section, and stageCommandBodyMemberSide's
+// read of the role's runbook Permissions section, and stageCommandBodyMemberSide's
 // `node -e ...` member-side temp-file write. Both are shell-agnostic
 // (base64-encoded argv, no `$`-expansion/backticks/template literals) --
 // exactly the invariant shell-command-guard.mjs separately enforces on this

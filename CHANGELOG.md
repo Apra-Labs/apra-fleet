@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
+
+Sprint goal: finish shipping the `/ui` console shell that a prior sprint
+introduced -- the npm-installed package and the SEA binary must both serve
+`GET /ui` and `/api/fleet/*`, not only a dev checkout -- and fix a Windows
+test-isolation bug where `HOME`-only overrides silently left tests reading
+and writing the real developer's fleet home.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $34.8815.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.9912 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 43 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The console shell now ships in both distribution channels.** The npm
+  package's `files` allowlist includes the built shell `dist/`, and the SEA
+  manifest generator embeds it under a dedicated `ui/` asset section;
+  `build:ui` is chained into every release build path (`build:binary`,
+  `prepublishOnly`) so a release build with a missing shell dist fails
+  loudly instead of silently shipping a `/ui` that 404s. See
+  [docs/npm-packaging.md](docs/npm-packaging.md).
+- **The console cookie is now loopback-only.** `GET /ui` only issues the
+  `apra_console_token` cookie to a caller whose socket peer address is
+  loopback, failing closed on a missing or unparseable peer address, so a
+  non-loopback bind (`APRA_FLEET_HOST`) can no longer let an off-machine
+  caller turn a plain `GET /ui` into an authenticated `/api/*` session. See
+  [docs/console-architecture.md](docs/console-architecture.md).
+- **A shared `isolated-home` test helper replaces every ad hoc `HOME`-only
+  override.** Overriding `process.env.HOME` alone is a silent no-op on
+  Windows (`os.homedir()` reads `USERPROFILE` there), so affected tests were
+  quietly reading/writing the real fleet home. The shared helper sets
+  `HOME`, `USERPROFILE`, `HOMEDRIVE`/`HOMEPATH` and the project's data-dir
+  overrides together and asserts `os.homedir()` actually resolved to the
+  temp directory; a guard test fails the suite if a new test file
+  reintroduces a bare `HOME` assignment. See
+  [docs/architecture.md](docs/architecture.md) (Cross-Platform Support).
+- **`dist-pm`'s vendoring copy is now atomic** (stage-then-rename) and no
+  longer mutates the live `dist/` tree under test.
+- **A regression-phase runbook-permissions provisioning failure now
+  degrades to a `FAILED` regression result instead of aborting the whole
+  sprint** (skipping Harvest and Publish PR). See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+- **`scripts/run-integ-suites.mjs`'s real-bd lanes now apply the same
+  home-isolation `--import` preload the bounded `npm test` runner does.**
+  That lane previously spawned `node --test` without it, so the whole real-bd
+  suite ran against the operator's real `HOME`/`APPDATA`/`LOCALAPPDATA` and
+  the real `~/.apra-fleet-se`. The flag is resolved once in
+  `packages/apra-fleet-se/scripts/isolated-home-import.mjs` and shared by both
+  entry points, and the lane's argv is now built by a pure, unit-tested
+  builder (`scripts/integ-lane-args.mjs`) instead of inline in the spawn call.
+
+- **The SEA binary's staleness guard no longer false-positives on a
+  byte-identical UI rebuild.** That guard (`tests/sea-http-verify.test.ts`)
+  diffs git-tracked SEA-relevant paths against the binary's own build hash,
+  but the built shell UI is gitignored, so that one input used to be checked
+  via an mtime proxy -- and a byte-identical UI rebuild advanced the mtime and
+  tripped the guard even though nothing the binary serves had changed. The
+  proxy is replaced by a content comparison: the SEA blob stores assets
+  verbatim, so each built shell-UI file's bytes are looked for inside the
+  binary itself. A `packages/apra-fleet-ui-kit` change, which the git-diff
+  half of the guard cannot see, is still caught (it changes the Vite output).
+  See [docs/npm-packaging.md](docs/npm-packaging.md).
+
 ## [Unreleased] -- Fresh install: reliable supervisor registration and loud fleet-se prerequisite failures
 
 Sprint goal: on a fresh install, make the fleet-supervisor register itself

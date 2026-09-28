@@ -9,15 +9,18 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 import { getOrCreateKey } from '../src/services/jwt.js';
+import { applyIsolatedHome, buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 // apra-fleet-i9ag.2.2.2 (end-to-end half) -- ONE real boot of the installed
 // supervisor THROUGH `apra-fleet supervisor`, proving the launcher actually
 // starts a working supervisor rather than merely calling a function.
 //
 // Isolation, in full (nothing here may touch the operator's real state):
-//  - HOME/USERPROFILE point at a temp home, so the child's own
+//  - The temp home comes from the shared tests/helpers/isolated-home.mjs
+//    helper (HOME, USERPROFILE and HOMEDRIVE/HOMEPATH together -- os.homedir()
+//    reads USERPROFILE, not HOME, on win32), so the child's own
 //    src/cli/config.ts (which captures os.homedir() at module load) resolves
-//    <FLEET_BASE> inside the temp dir.
+//    <FLEET_BASE> inside the temp dir on every platform.
 //  - The "installed" fleet-sprint tree is a symlink (junction on Windows) from
 //    <tmpHome>/.apra-fleet/workflows/fleet-sprint to packages/apra-fleet-se.
 //    That is deliberately NOT a packaging test -- packaging fidelity of the
@@ -148,7 +151,15 @@ beforeAll(async () => {
 
   realFleetKeyBefore = snapshotRealFleetKey();
 
-  const tmpHome = await mkTmp('supervisor-subcommand-home-');
+  // Isolated home for THIS process, applied through the shared helper rather
+  // than hand-set: the key-minting step below runs against os.homedir(), which
+  // ignores a HOME-only override on win32. Tracked in tmpDirs and restored
+  // with keepDir, so afterAll owns removal -- the staged workflows tree and the
+  // minted fleet.key under it must outlive the env-var restore, because the
+  // spawned child reads them for the whole file.
+  const isolatedHome = await applyIsolatedHome('supervisor-subcommand-home-');
+  const tmpHome = isolatedHome.tempHome;
+  tmpDirs.push(tmpHome);
   const seDataDir = await mkTmp('supervisor-subcommand-se-data-');
   const fleetDataDir = await mkTmp('supervisor-subcommand-fleet-data-');
   const cwd = await mkTmp('supervisor-subcommand-cwd-');
@@ -168,17 +179,18 @@ beforeAll(async () => {
   // os.homedir() lazily on every call -- see its header comment), then resolve
   // the bearer exactly as the supervisor does. Doing this BEFORE the spawn also
   // avoids racing the child's own first resolve.
-  const prevHome = process.env.HOME;
-  const prevUserProfile = process.env.USERPROFILE;
+  //
+  // The isolation is released again immediately afterwards (env vars only --
+  // keepDir leaves the directory itself in place): the tests below deliberately
+  // re-read the REAL home through snapshotRealFleetKey() to prove this file
+  // never touched the operator's own fleet.key, which only holds with the real
+  // os.homedir() back in effect.
   let token: string;
   let tokenSource: string;
   try {
-    process.env.HOME = tmpHome;
-    process.env.USERPROFILE = tmpHome;
     getOrCreateKey();
   } finally {
-    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
-    if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+    await isolatedHome.restore({ keepDir: true });
   }
   const resolved = resolveServiceToken(seDataDir, { home: tmpHome });
   token = resolved.token;
@@ -189,10 +201,10 @@ beforeAll(async () => {
   const child = spawn(process.execPath, [DIST_INDEX, 'supervisor', '--port', String(port)], {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // The same isolated home as the minting step above, but this child's OWN
+    // data dirs -- hence the explicit values AFTER the helper's spread.
     env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
+      ...buildIsolatedHomeEnv(tmpHome),
       FLEET_SE_DATA_DIR: seDataDir,
       APRA_FLEET_DATA_DIR: fleetDataDir,
       // Keep the dolt-orphan sweep from reaching any other instance on this machine.

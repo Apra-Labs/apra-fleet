@@ -209,15 +209,20 @@ codebase. The `--help` text does not list them.
   "dist/",
   "hooks/",
   "scripts/fleet-statusline.sh",
-  "scripts/agy-settings-merge.js",
   "scripts/agy-transcript-reader.js",
   "skills/",
-  "version.json"
+  "version.json",
+  "packages/apra-fleet-se/...",
+  "packages/apra-fleet-workflow/...",
+  "packages/apra-fleet-client/...",
+  "packages/apra-fleet-shell-ui/dist/"
 ]
 ```
 
-**What is shipped:** compiled JS (`dist/`), hooks config, three runtime scripts,
-skills (fleet + pm), and `version.json`.
+**What is shipped:** compiled JS (`dist/`), hooks config, runtime scripts,
+skills (fleet + pm), `version.json`, the fleet-sprint engine subtree (see
+below), and the built console shell (`packages/apra-fleet-shell-ui/dist/`,
+see 7.1a).
 
 **Workspace packages are intentionally private** (apra-fleet-3ns.4):
 `packages/apra-fleet-se`, `packages/apra-fleet-workflow`, and
@@ -242,7 +247,16 @@ TypeScript output:
   left over from a different branch or a since-removed source file) does not
   survive a re-run -- a schema-staleness guard that tells a developer to
   "run dist-pm to fix it" is only trustworthy if dist-pm actually prunes,
-  not just adds.
+  not just adds. The vendoring copy itself is atomic: it stages into a temp
+  sibling directory and only swaps it into the real destination (renaming the
+  previous destination aside first) once the copy has fully succeeded, so a
+  copy that throws partway through leaves the previous destination intact
+  instead of half-overwritten. The destination root is also overridable via a
+  `DIST_PM_DIST_DIR` env var (default behavior and `npm run dist-pm`
+  unchanged) specifically so tests can vendor into a throwaway temp directory
+  instead of mutating the developer's real `dist/` tree -- a test that
+  vendors into the live tree has a side effect outside the test and can race
+  a concurrent build.
 
 **The fleet-sprint engine ships as source, not a bundle.** There is no
 `scripts/bundle-se.mjs` or `build:se` script -- no esbuild step produces
@@ -339,8 +353,71 @@ new source directory is added under any shipped `packages/*` subtree, it must
 also be added to `files` manually or it will be silently excluded from the
 tarball.
 
-Validated tarball size (post apra-fleet-fyc.2, measured via `npm pack --dry-run`
-on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
+Tarball size is enforced by `scripts/check-pack-size.mjs` against a fixed
+threshold (`DEFAULT_THRESHOLD_BYTES`, 10,000,000 bytes, overridable via
+`--threshold`/`PACK_SIZE_THRESHOLD`), run against a live `npm pack --dry-run`; do not
+treat any single measurement recorded in a sprint log as current -- adding
+the shell dist to `files` measurably raised the packed size, and any future
+`files` addition will again, so re-run the check rather than trusting a
+stale number here.
+
+### 7.1a Console shell UI: npm package and SEA binary both serve `/ui`
+
+The console shell (`packages/apra-fleet-shell-ui`, a Vite/React SPA, see
+`docs/console-architecture.md`) is built once (`npm run build:ui`) and then
+shipped through two independent channels that must each be kept in sync
+whenever the shell's build output changes:
+
+- **npm package**: `packages/apra-fleet-shell-ui/dist/` is in the root
+  `files` allowlist above, so a global `npm install` gets the shell's static
+  assets on disk; `static.ts` (see `docs/console-architecture.md`) reads them
+  directly from `packages/apra-fleet-shell-ui/dist` relative to the installed
+  package root.
+- **SEA binary**: `scripts/gen-sea-config.mjs` has a dedicated `ui/` asset
+  section that walks the same `dist/` directory and embeds it into the SEA
+  asset store (forward-slash keys on every OS); `static.ts` falls back to
+  reading from that store when running as a single-executable binary, since
+  a SEA binary has no real directory tree to read `packages/.../dist` from.
+
+`build:ui` is chained into every release path that can produce a
+distributable artifact (`build:binary`, `prepublishOnly`) so a release build
+whose shell dist is missing fails loudly, by design -- naming the missing
+directory rather than silently shipping a `/ui` that 404s. A bare, standalone
+invocation of `gen-sea-config.mjs` outside those chains is the one place a
+missing shell dist is only a warning, since that path is also used for
+non-release dev iteration where the shell may not be built yet.
+
+**The SEA binary staleness guard is a hybrid check: git-tracked inputs
+diffed against the binary's own build hash, plus a content comparison for the
+one gitignored input a git diff can never see.** `tests/sea-http-verify.test.ts`'s
+SEA-binary smoke test parses the short git hash `build-sea.mjs` bakes into
+the binary's own `--version` output, then diffs the tracked SEA-relevant
+paths (`scripts/gen-sea-config.mjs`, `scripts/build-sea.mjs`,
+`packages/apra-fleet-shell-ui/src`, `packages/apra-fleet-shell-ui/package.json`,
+`src`) between that hash and HEAD, including anything currently uncommitted.
+Because `packages/apra-fleet-shell-ui/dist` is gitignored, a git diff can
+never see a change there, so the check separately compares that dist's
+contents against the binary: a SEA blob stores its assets verbatim, so every
+built shell-UI file the binary was packaged with is present byte-for-byte
+inside the binary, and any dist file whose bytes are absent is real drift
+(`findUiDistFilesNotEmbedded` in `tests/helpers/sea-binary-staleness.ts`).
+A binary whose build hash cannot be
+resolved to a real commit (shallow clone, rewritten history, or a dev/npm
+build with no git info) is treated as staleness-unknown, which counts as
+stale rather than being assumed fresh. This is deliberate: an actually-stale
+binary must fail loudly and name the reason, never silently pass a smoke test
+against assets that no longer match the source tree. The tracked-path list
+(`SEA_RELEVANT_GIT_PATHS`) does not include `packages/apra-fleet-ui-kit` --
+the shell's Vite build pulls it in as a dependency, so a `ui-kit` change is
+caught only through this content comparison on the built dist, not through
+the git-diff half of the check. Never drop or weaken that half of the guard:
+it is the only thing that catches a `ui-kit` change at all. It used to be an
+mtime comparison (`dist/index.html` newer than the binary), which could not
+tell a meaningful rebuild from a byte-identical one and so fired on a no-op
+`npm run build:ui`; apra-fleet-v6t7.20 replaced it with the byte comparison
+above, which still catches a real `ui-kit`-driven change (Vite's output
+filenames are content-hashed and are named in `index.html`) but no longer
+fires on a no-op rebuild.
 
 ### 7.2 Other package.json fields
 
@@ -351,7 +428,7 @@ on this checkout): 1.1 MB packed / 4.4 MB unpacked, 891 files.
 | `bin` | `{ "apra-fleet": "dist/index.js" }` | npm sets the executable bit; the fleet-sprint engine is reached via `apra-fleet workflow fleet-sprint`, not a separate bin entry |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `npm run dist-pm && npm run build` | Copies the apra-pm package content into `dist/`, then runs tsc -- no bundling step remains |
+| `prepublishOnly` | `npm run dist-pm && npm run build && npm run build:ui:checked` | Copies the apra-pm package content into `dist/`, runs tsc, then builds the console shell and fails loudly if its dist is missing (see 7.1a) -- no bundling step remains |
 | `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`) |
 
 ---

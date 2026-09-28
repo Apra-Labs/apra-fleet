@@ -9,6 +9,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
+import { applyIsolatedHome } from '../../../tests/helpers/isolated-home.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -197,13 +198,13 @@ function waitForExit(child, timeoutMs) {
  * @returns {Promise<{ tmpHome: string, fleetSprintDir: string }>}
  */
 async function installPackagedFleetSprintTree() {
-    const tmpHome = await mkTmp('installed-supervisor-home-');
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
+    const home = await applyIsolatedHome('installed-supervisor-home-');
+    const tmpHome = home.tempHome;
+    // keepDir (below) leaves this directory on disk past this function's
+    // return, so register it with the suite's tmpDirs set (same as mkTmp())
+    // for the after() hook to actually remove it.
+    tmpDirs.add(tmpHome);
     try {
-        process.env.HOME = tmpHome;
-        process.env.USERPROFILE = tmpHome;
-
         const cacheBust = `${Date.now()}-${Math.random()}`;
         const installMod = await import(`${pathToFileURL(path.join(ROOT, 'dist/cli/install.js')).href}?installed-supervisor=${cacheBust}`);
         const assetsMod = await import(`${pathToFileURL(path.join(ROOT, 'dist/cli/workflow-assets.js')).href}?installed-supervisor=${cacheBust}`);
@@ -223,8 +224,11 @@ async function installPackagedFleetSprintTree() {
         assert.ok(fs.existsSync(fleetSprintDir), `install did not produce ${fleetSprintDir}`);
         return { tmpHome, fleetSprintDir };
     } finally {
-        if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
-        if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
+        // keepDir: true -- the caller reuses tmpHome/fleetSprintDir after
+        // this function returns (e.g. spawning a child process pointed at
+        // it), so only the env vars are restored here; the directory itself
+        // is cleaned up by the suite's own after() hook.
+        await home.restore({ keepDir: true });
     }
 }
 

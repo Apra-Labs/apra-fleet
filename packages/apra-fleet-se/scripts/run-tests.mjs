@@ -22,9 +22,13 @@
 // child is still running, which a fully synchronous spawnSync cannot give
 // us.
 import { spawn, spawnSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
+import { sweepStaleTempHomes } from './stale-temp-home-sweep.mjs';
+import { ISOLATED_HOME_IMPORT_FLAG } from './isolated-home-import.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.join(__dirname, '..');
@@ -42,6 +46,23 @@ const timeoutMs = (() => {
     const raw = Number(process.env.APRA_TEST_TIMEOUT_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
 })();
+
+// apra-fleet-v6t7.16: test/isolated-home-setup.mjs's per-test-file-process
+// exit handler cleans up its own apra-fleet-se-test-run-* temp home, but
+// that handler is registered via process.on('exit'), which never fires when
+// a hung test file is force-killed (taskkill /F on Windows, SIGKILL on
+// POSIX -- see killTree()/runBounded() above), leaking the temp dir under
+// os.tmpdir() indefinitely. Sweep those stale dirs from THIS parent process
+// -- which outlives every individual test-file child -- BEFORE spawning the
+// node --test run below, rather than from inside isolated-home-setup.mjs
+// itself: that module is imported by every test-file process via --import,
+// so a sweep there would race with and delete a SIBLING file's still-live
+// temp home in the same concurrent run. See scripts/stale-temp-home-sweep.mjs
+// (extracted so it is independently unit-testable) for the liveness-marker
+// rework this does: the sweep never deletes a dir whose owning pid is still
+// alive, regardless of age, and only falls back to age-gating by this run's
+// own timeoutMs for dirs with no live-owner marker.
+sweepStaleTempHomes(timeoutMs);
 
 // TEST_CONCURRENCY (test/helpers/test-concurrency.mjs) is exported into the
 // test workers' env below so test/helpers/scaled-timeout.mjs can derive
@@ -159,6 +180,12 @@ const result = await runBounded(
     process.execPath,
     [
         '--test',
+        // apra-fleet-v6t7.16: run-level home isolation, applied via --import
+        // before any test file's own top-level code runs. The flag itself is
+        // resolved once in ./isolated-home-import.mjs and shared with the other
+        // entry point into this suite (scripts/run-integ-suites.mjs's real-bd
+        // lanes) -- see that module's header.
+        ISOLATED_HOME_IMPORT_FLAG,
         '--test-reporter=./test/helpers/timestamped-reporter.mjs',
         '--test-reporter-destination=stdout',
         `--test-concurrency=${TEST_CONCURRENCY}`,

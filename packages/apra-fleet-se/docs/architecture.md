@@ -256,6 +256,46 @@ Both failure lists are threaded into the Final Review prompt and the
 harvester's analysis text, so a deploy/integ failure is never silently
 swallowed.
 
+### Each dispatched role's own runbook Permissions are provisioned before dispatch, and failure is loud
+
+Before dispatching a `deployer`, `integ-test-runner`, or `regression-test-runner`,
+the engine reads the Permissions section of the runbook that role is actually
+about to run (`deploy.md` / `integ-test-playbook.md` /
+`regression-test-playbook.md` respectively -- not always `deploy.md`, which
+an earlier version of this provisioner read regardless of which role was
+being dispatched), parses the permission-shaped token out of each bullet, and
+grants it to the member via `compose_permissions`, caching per
+(member, runbook) pair. A grant that `compose_permissions` refuses (e.g. its
+never-auto-grant denylist) is a text response, not a thrown error -- reading
+success from call status rather than assuming "it didn't throw, so it must
+have granted" is what makes the failure visible at all. A failed batch grant
+re-grants each entry alone so the error can name exactly which entries could
+not be provisioned, and throws `RunbookPermissionsError` (see
+`fleet-sprint/errors.mjs`) before the role is ever dispatched. A runbook with
+no Permissions section is a no-op. This exists because the previous behavior
+let a missing grant surface only once the dispatched agent itself hit the
+gap mid-run, burning a full dispatch cycle on a failure that was knowable
+before dispatch.
+
+### The regression phase degrades a provisioning failure; it never aborts the sprint
+
+The once-per-sprint regression phase calls its runbook-permissions
+provisioner before dispatching the `regression-test-runner` role, outside
+that row's own catch-all degrade handling. A provisioning failure here (the
+runbook's declared permissions cannot be granted) is caught and turned into a
+`FAILED`, schema-shaped regression result whose summary names the runbook and
+the specific entries that were not granted -- the phase never dispatches the
+role in that case, and it never lets the provisioning error escape to the
+top-level handler. Before this was fixed, an escaping provisioning error
+turned an already-decided sprint verdict into a terminal ABORTED, skipping
+Harvest and Publish PR entirely for a failure that was informational by
+design (the regression pass never gates the sprint's PASS/FAIL verdict -- see
+"Regression pass" in the harvester's sprint-analysis output). The two
+run-level control signals that must still propagate out of this catch
+(`CancelledError`, `BudgetExceededError`) are matched by class name rather
+than caught generically, so a genuine cancellation or budget cutoff during
+provisioning still aborts the run as it should.
+
 ## Exit condition
 
 The cycle loop's completion check is **not** "`bd list --ready` returned
@@ -1713,6 +1753,64 @@ it exited 0 -- a child that spawned zero subtests, or crashed before running
 anything, would still report a clean marker file and a zero exit code,
 silently passing a vacuous check. Parse the child's own TAP summary line
 (`# tests`, `# pass`) and assert it clears a known floor.
+
+## Testing convention: run-level home isolation for the package's own `node --test` run
+
+The package's own `node --test` invocations (mock, real, record, and
+`test:slow`) apply home isolation at the run level, not per test file: a
+dedicated `test/isolated-home-setup.mjs` is loaded via `--import` (in both
+`scripts/run-tests.mjs` and the package's `test:slow` script) so it applies
+before any test file's own top-level code runs, redirecting `HOME`,
+`USERPROFILE`, `APPDATA`/`LOCALAPPDATA` and `FLEET_SE_DATA_DIR` to a fresh
+temp home for that run. This closes a leak that a per-test-file isolation
+helper alone would not: `src/supervisor/{spawner,history,ledger}.mjs` each
+default their data directory to `os.homedir()/.apra-fleet-se` when
+`FLEET_SE_DATA_DIR` is unset, so a test file that only isolated `HOME` still
+left the *real* developer home's `.apra-fleet-se/logs` accumulating
+per-run artefacts next to the live `supervisor.log`. The setup module also
+seeds a minimal `.gitconfig` (`safe.directory=*` plus a user identity) under
+the isolated home, since a real `git status`/`git config` invocation against
+the checkout would otherwise fail once `HOME` has no gitconfig at all.
+
+**The stale-temp-home sweep is liveness-aware, not age-only.** A force-killed
+test-file child (`taskkill /F` on Windows, `SIGKILL` on POSIX) never runs its
+own `process.on('exit')` cleanup, so its `apra-fleet-se-test-run-*` temp home
+under `os.tmpdir()` would otherwise leak indefinitely. `run-tests.mjs` sweeps
+these before spawning a new run, using `scripts/stale-temp-home-sweep.mjs`
+(extracted into its own module specifically so it is independently unit
+testable -- `run-tests.mjs` itself has argv-parsing/`process.exit` side
+effects at import time and cannot be imported from a test). The sweep must
+never delete a live, still-running concurrent run's temp home: an early
+age-only version compared a candidate directory's mtime against the
+*sweeping* run's own wall-clock timeout rather than the *owning* run's,
+so a short-timeout invocation (e.g. a test that spawns a 1.5s-bounded child)
+could delete a normal-length run's still-live temp home purely because it
+looked old relative to the sweeper's own budget. The fix is a liveness
+marker: `isolated-home-setup.mjs` stamps an `.owner-pid` file into the temp
+home it creates, and the sweep checks that marker first -- a directory whose
+owning pid is still alive is never deleted regardless of age, and only a
+directory with a missing/unreadable marker or a confirmed-dead owning pid
+falls back to the age gate.
+
+**A Windows directory symlink needs a privilege most accounts don't have; a
+directory junction does not.** Any test that links a real `node_modules`
+tree into a sandbox directory (to restore workspace package resolution for a
+facade/falsification test run from a temp location) must not call
+`fs.symlinkSync(target, path, 'dir')` directly -- it throws `EPERM` on a
+Windows host without Developer Mode or admin privilege. The shared
+`linkNodeModulesSync` helper (`test/helpers/node-modules-link.mjs`) requests
+a `'junction'` on `win32` instead (falling back to `'junction'` from `'dir'`
+on `EPERM` elsewhere, in case a platform report is wrong), since a junction
+needs no special privilege and Windows treats it identically for the purpose
+of resolving bare specifiers out of the linked tree.
+
+**Known gap: the real-bd integration suite runner does not apply this
+isolation.** The repo-root `scripts/run-integ-suites.mjs`'s own `node --test`
+invocation does not pass the `--import` flag pointed at
+`isolated-home-setup.mjs` that `packages/apra-fleet-se/scripts/run-tests.mjs`
+applies for the bounded `npm test` path, so a test file that depends on home
+isolation can pass under `npm test` and still run against the operator's
+real `HOME`/`APPDATA` under the real-bd suite runner.
 
 ## Testing convention: named, env-overridable timeout budgets with bind-state diagnostics
 

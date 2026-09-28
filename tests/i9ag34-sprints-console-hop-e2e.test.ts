@@ -43,8 +43,11 @@
  *  - no shell-level variable expansion in the spawned command: the script path
  *    and every env value are resolved in JavaScript and passed to spawn() as
  *    structured argv/env;
- *  - HOME/USERPROFILE are redirected to a per-run temp dir, so the fleet key
- *    this file mints (and hands the supervisor) is never the developer's own;
+ *  - the notion of "home" is redirected to a per-run temp dir through the
+ *    shared tests/helpers/isolated-home.mjs helper (HOME, USERPROFILE and
+ *    HOMEDRIVE/HOMEPATH together -- os.homedir() reads USERPROFILE, not HOME,
+ *    on win32), so the fleet key this file mints (and hands the supervisor) is
+ *    never the developer's own on any platform;
  *  - the supervisor subprocess runs in a FRESH TEMP CWD, never the checkout:
  *    the dashboard renders whatever tracker it discovers from cwd, so running
  *    it in the repo would embed this clone's live backlog (megabytes of rows
@@ -70,6 +73,7 @@ import {
   OFFLINE_THRESHOLD_MS,
 } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { applyIsolatedHome, buildIsolatedHomeEnv } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
   // no tools registered -- this suite never opens an /mcp session
@@ -100,8 +104,7 @@ const POLL_TIMEOUT_MS = 60_000;
 // -----------------------------------------------------------------------------
 // Lifecycle
 // -----------------------------------------------------------------------------
-let realHome: string | undefined;
-let realUserProfile: string | undefined;
+let restoreHome: (() => Promise<void>) | undefined;
 let tempHome: string;
 let tempDirs: string[] = [];
 let fleetKey: string;
@@ -228,11 +231,9 @@ beforeAll(async () => {
     );
   }
 
-  realHome = process.env.HOME;
-  realUserProfile = process.env.USERPROFILE;
-  tempHome = await mkTmp('i9ag34-console-home-');
-  process.env.HOME = tempHome;
-  process.env.USERPROFILE = tempHome;
+  const home = await applyIsolatedHome('i9ag34-console-home-');
+  tempHome = home.tempHome;
+  restoreHome = home.restore;
 
   // ONE fleet key, minted through the real accessor into the temp home. The
   // console verifies its guard against it, derives the per-package credential
@@ -263,12 +264,14 @@ beforeAll(async () => {
   supervisor = spawn(process.execPath, [SERVE_BIN, '--port', String(supervisorPort)], {
     cwd: supervisorCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // The supervisor child gets the SAME isolated home as this process (so it
+    // reads the one fleet key minted above) but its OWN data dirs, which is
+    // why the two APRA_FLEET_DATA_DIR/FLEET_SE_DATA_DIR values below are set
+    // AFTER the helper's spread rather than left at the helper's defaults.
     env: {
-      ...process.env,
+      ...buildIsolatedHomeEnv(tempHome),
       APRA_FLEET_DATA_DIR: supervisorFleetDataDir,
       FLEET_SE_DATA_DIR: supervisorSeDataDir,
-      HOME: tempHome,
-      USERPROFILE: tempHome,
     },
   });
   supervisor.stdout?.on('data', (c: Buffer) => { supervisorOutput += c.toString('utf8'); });
@@ -303,9 +306,7 @@ afterAll(async () => {
     try { await consoleHandle.close(); } catch { /* already down */ }
   }
   await workflowPackageService.unregister(PACKAGE_ID).catch(() => undefined);
-  process.env.HOME = realHome;
-  if (realUserProfile === undefined) delete process.env.USERPROFILE;
-  else process.env.USERPROFILE = realUserProfile;
+  if (restoreHome) await restoreHome();
   for (const dir of tempDirs.splice(0)) {
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   }

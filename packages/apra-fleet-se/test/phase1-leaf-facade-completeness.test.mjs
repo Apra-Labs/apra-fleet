@@ -18,6 +18,7 @@ import * as runner from '../fleet-sprint/runner.js';
 // but does not re-export it) -- it is only reachable directly from
 // worklists.mjs, never through the runner.js facade.
 import { selectStreaks } from '../fleet-sprint/worklists.mjs';
+import { linkNodeModulesSync } from './helpers/node-modules-link.mjs';
 // apra-fleet-3swo.53: shared with phase3-dispatch-engine-completeness.test.mjs
 // -- see that module's header for why this was extracted. (excerptChildOutput
 // also lives there, used internally by handleNestedSuiteSpawnResult; this file
@@ -326,7 +327,7 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
                 if (parent === dir) throw new Error(`could not locate a node_modules/@apralabs directory above ${SE_DIR}`);
                 dir = parent;
             }
-            fs.symlinkSync(hoisted, path.join(sandboxDir, 'node_modules'), 'dir');
+            linkNodeModulesSync(hoisted, path.join(sandboxDir, 'node_modules'));
 
             const sandboxRunnerPath = path.join(sandboxFleetSprint, 'runner.js');
             const originalContent = fs.readFileSync(sandboxRunnerPath, 'utf-8');

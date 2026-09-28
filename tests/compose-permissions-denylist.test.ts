@@ -227,3 +227,29 @@ describe('isNeverAutoGrant -- deploy.md Permissions regression guard (apra-fleet
     expect(refused).toEqual([]);
   });
 });
+
+describe('isNeverAutoGrant -- runbook-permissions provisioner guard (apra-fleet-v6t7.12)', () => {
+  // The fleet-sprint engine now grants EACH runbook-driven role's own runbook
+  // Permissions section before dispatch (deploy.md, integ-test-playbook.md,
+  // regression-test-playbook.md), using the engine's own parser. Every entry
+  // it would grant must be grantable, or that role's phase now fails loudly
+  // before dispatch -- so a runbook edit colliding with the denylist fails
+  // HERE first. The denylist itself is untouched: a console-port curl on any
+  // port is still refused, so no runbook can grant around it.
+  const runbooks = ['deploy.md', 'integ-test-playbook.md', 'regression-test-playbook.md'];
+
+  for (const runbook of runbooks) {
+    it(`refuses none of ${runbook}'s Permissions entries, as the engine parses them`, async () => {
+      const { parseRunbookPermissions } = await import('../packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs');
+      const entries: string[] = parseRunbookPermissions(fs.readFileSync(path.join(repoRoot, runbook), 'utf8'));
+      expect(entries.length).toBeGreaterThan(0);
+      expect(entries.filter((e) => isNeverAutoGrant(e))).toEqual([]);
+    });
+  }
+
+  it('still refuses a console-port curl on the default and a non-default port', () => {
+    expect(isNeverAutoGrant('Bash(curl * localhost:7523/api/fleet/members)')).toBe(true);
+    expect(isNeverAutoGrant('Bash(curl * localhost:9001/api/fleet/members)')).toBe(true);
+    expect(isNeverAutoGrant('Bash(curl localhost:*/api*)')).toBe(true);
+  });
+});

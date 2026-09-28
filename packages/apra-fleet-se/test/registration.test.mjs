@@ -20,6 +20,7 @@ import { createSupervisor } from '../src/supervisor/server.mjs';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 import { isNodeSqliteAvailable, openStore } from '../src/projects/store/db.mjs';
 import { createProject } from '../src/projects/store/projects.mjs';
+import { buildIsolatedHomeEnv } from '../../../tests/helpers/isolated-home.mjs';
 
 // =============================================================================
 // apra-fleet-g6ap.2.3 -- registration module coverage:
@@ -678,11 +679,19 @@ describe('registerOwnerRefsRoute', () => {
 // -----------------------------------------------------------------------------
 
 /** Allocate a freshly free port and boot `bin/serve.mjs` as a real
- *  subprocess with a given env, capturing its stdout. */
-async function bootServe(extraEnv) {
+ *  subprocess with a given env, capturing its stdout.
+ *
+ *  `opts.homeDir` lets a caller that has already staged files under a temp
+ *  home (e.g. a fleet.key) reuse it as the child's isolated home. It is a
+ *  named option rather than an `extraEnv` entry on purpose: the full
+ *  isolated-home variable set (HOME plus USERPROFILE and HOMEDRIVE/HOMEPATH,
+ *  which is what os.homedir() actually reads on win32) is owned by
+ *  buildIsolatedHomeEnv below, so no caller has to know -- or get right --
+ *  more than the directory itself. */
+async function bootServe(extraEnv, opts = {}) {
     const dataDir = await mkTmp('g6ap23-serve-data-');
     const seDataDir = await mkTmp('g6ap23-serve-se-');
-    const homeDir = await mkTmp('g6ap23-home-');
+    const homeDir = opts.homeDir ?? await mkTmp('g6ap23-home-');
     const port = await getFreePort();
 
     // console.warn/error write to stderr (installSelfLogTee only tees them
@@ -694,11 +703,9 @@ async function bootServe(extraEnv) {
         cwd: SE_PKG_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-            ...process.env,
+            ...buildIsolatedHomeEnv(homeDir),
             APRA_FLEET_DATA_DIR: dataDir,
             FLEET_SE_DATA_DIR: seDataDir,
-            HOME: homeDir,
-            USERPROFILE: homeDir,
             ...extraEnv,
         },
     });
@@ -778,7 +785,7 @@ describe('registration waits and retries instead of skipping (real bin/serve.mjs
         await fsp.mkdir(path.join(homeDir, '.apra-fleet'), { recursive: true });
         await fsp.writeFile(path.join(homeDir, '.apra-fleet', 'fleet.key'), crypto.randomBytes(32).toString('hex'), 'utf-8');
 
-        const serve = await bootServe({ HOME: homeDir, USERPROFILE: homeDir, APRA_FLEET_TRANSPORT: 'stdio' });
+        const serve = await bootServe({ APRA_FLEET_TRANSPORT: 'stdio' }, { homeDir });
         try {
             const stdout = serve.getStdout();
             assert.ok(stdout.includes('[registration]'), `expected a loud registration log line, got:\n${stdout}`);

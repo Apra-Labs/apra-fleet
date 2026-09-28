@@ -92,7 +92,20 @@ console never has anything written to `res`.
 
 A caller authenticates with either the raw fleet key as a bearer token
 (`Authorization: Bearer <fleet.key>`, unchanged for existing CLI/script
-callers) or the `apra_console_token` cookie set on every `GET /ui`. The
+callers) or the `apra_console_token` cookie set on every `GET /ui` from a
+**loopback** caller. The cookie is issued only when the request's socket
+peer address (`req.socket.remoteAddress`, never a client-supplied header such
+as `X-Forwarded-For`) is loopback -- `127.0.0.0/8`, `::1`, or an IPv4-mapped
+`::ffff:127.x` (`isLoopbackRemoteAddress` in `src/console/server.ts`). This
+matters only when the server binds a non-loopback host (the explicit
+`APRA_FLEET_HOST` opt-in): an off-machine caller is still served the shell,
+but gets no cookie, so it cannot turn a plain `GET /ui` into an authenticated
+`/api/*` session and must present the fleet-key bearer instead. The check
+fails closed -- an absent, empty or unparseable peer address is treated as
+non-loopback. With the default loopback bind every caller is loopback, so
+behaviour there is unchanged. The non-loopback startup warning
+(`nonLoopbackBindWarning` in `src/services/http-transport.ts`) names this
+console behaviour alongside the other surfaces the bind exposes. The
 cookie is **not** the raw fleet key -- the fleet key also signs member JWTs
 (`jwt.ts`'s HS256 HMAC secret), so handing it to a browser as a cookie would
 let anything that reads it mint arbitrary member JWTs. The cookie instead
@@ -501,17 +514,16 @@ uses it. It is possible to satisfy every route test while the corresponding
 screen quietly renders off data it already has cached, leaving the detail
 route wired but unreachable from the shell.
 
-## Known constraints (by design, this iteration)
+## Packaging: the shell ships in both distribution channels
 
-- **Packaging is dev-checkout-complete, distribution-incomplete.** The
-  console seam and static-serving logic support both the disk path and the
-  SEA-asset path, but as of this writing neither the SEA manifest generator
-  nor the npm package's shipped file list actually includes the built shell
-  assets -- so `GET /ui` only answers 200 from a source checkout with the
-  shell built locally. Making the SEA binary and the installed npm package
-  both serve `/ui` requires wiring the shell's `dist/` into each
-  distribution channel's asset manifest; the serving code on the receiving
-  end is already in place and does not need to change.
+Both the npm-installed package and the SEA binary serve `GET /ui`: the shell's
+built `dist/` is in the npm package's `files` allowlist and in the SEA asset
+manifest's dedicated `ui/` section, and `build:ui` is chained into every
+release build path so a distributable artifact can never silently ship
+without the shell. See "Console shell UI: npm package and SEA binary both
+serve `/ui`" in `docs/npm-packaging.md` for the packaging mechanics, and for
+a known limitation in the SEA binary's staleness guard (time-based, not
+content-based) that any deploy/test workflow needs to account for.
 
 ## Shared local-token helper: generic mechanism vs. per-caller route policy
 

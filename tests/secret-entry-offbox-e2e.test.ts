@@ -36,6 +36,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 import { handleConsoleRequest } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
@@ -63,11 +64,8 @@ interface RawResponse {
 // GET /ui can actually answer 200, and a real http.Server bound to an
 // OS-assigned loopback port whose listener is exactly handleConsoleRequest.
 // -----------------------------------------------------------------------------
-let realHome: string | undefined;
-let realUserProfile: string | undefined;
-let realDataDir: string | undefined;
+let home: Awaited<ReturnType<typeof applyIsolatedHome>>;
 let realConsoleBaseUrl: string | undefined;
-let tempHome: string;
 let tempDataDir: string;
 let tempDistDir: string;
 let server: http.Server;
@@ -85,18 +83,15 @@ beforeEach(async () => {
   // createHttpTransport, so mark the console hosted the way it would.
   __setConsoleHostedForTest(true);
 
-  realHome = process.env.HOME;
-  realUserProfile = process.env.USERPROFILE;
-  realDataDir = process.env.APRA_FLEET_DATA_DIR;
   realConsoleBaseUrl = process.env.APRA_FLEET_CONSOLE_BASE_URL;
 
-  tempHome = await mkTmp('secret-entry-offbox-home-');
   tempDataDir = await mkTmp('secret-entry-offbox-data-');
   tempDistDir = await mkTmp('secret-entry-offbox-dist-');
   fs.writeFileSync(path.join(tempDistDir, 'index.html'), INDEX_HTML, 'utf8');
 
-  process.env.HOME = tempHome;
-  process.env.USERPROFILE = tempHome;
+  // HOME/USERPROFILE/HOMEDRIVE+HOMEPATH via the shared helper; its restore()
+  // also puts APRA_FLEET_DATA_DIR back, so overriding it below is safe.
+  home = await applyIsolatedHome('secret-entry-offbox-home-');
   process.env.APRA_FLEET_DATA_DIR = tempDataDir;
   // Neutralize the ambient environment: credential-store-set.ts's return_url
   // branch reads APRA_FLEET_CONSOLE_BASE_URL through resolveConsoleBaseUrl()
@@ -138,14 +133,11 @@ afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.destroy();
   await new Promise<void>((resolve) => server.close(() => resolve()));
 
-  process.env.HOME = realHome;
-  process.env.USERPROFILE = realUserProfile;
-  if (realDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
-  else process.env.APRA_FLEET_DATA_DIR = realDataDir;
+  await home.restore();
   if (realConsoleBaseUrl === undefined) delete process.env.APRA_FLEET_CONSOLE_BASE_URL;
   else process.env.APRA_FLEET_CONSOLE_BASE_URL = realConsoleBaseUrl;
 
-  for (const dir of [tempHome, tempDataDir, tempDistDir]) {
+  for (const dir of [tempDataDir, tempDistDir]) {
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 });

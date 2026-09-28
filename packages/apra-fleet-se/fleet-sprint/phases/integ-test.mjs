@@ -115,7 +115,7 @@ export async function runIntegTestPhase({
 }) {
     phase(`Integ Test C${cycle}`);
     await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
-    await ensureDeployPermissions(getMemberForRole('integ-test-runner'));
+    await ensureDeployPermissions(getMemberForRole('integ-test-runner'), 'integ-test-runner');
     // apra-fleet-nwh.1: snapshot the running total BEFORE this
     // cycle's Integ Test dispatch(es) so the delta after (below) is
     // this phase's own spend, not the whole run's. budget.spent()

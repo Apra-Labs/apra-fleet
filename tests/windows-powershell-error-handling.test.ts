@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { execSync, spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -6,6 +6,29 @@ import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { wrapPowerShellEncoded, WindowsCommands } from '../src/os/windows.js';
 import { buildWindowsDeleteFilesScript } from '../src/services/strategy.js';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
+
+// apra-fleet-v6t7.16: this whole file's makeTempDir() (below) creates
+// fixtures directly under os.homedir() (deliberately -- hashFilesRecursive's
+// generated PowerShell script resolves paths via `Join-Path $HOME`, so its
+// fixtures must actually live where $HOME points). A sentinel-home run
+// showed this leaves wpse-* directories behind under the REAL developer
+// home whenever teardown does not run to completion. Isolate HOME (and, on
+// win32, USERPROFILE/HOMEDRIVE+HOMEPATH, which os.homedir() actually reads)
+// at the top of this file's suite so every makeTempDir() call in every
+// describe block below resolves under a temp directory instead -- $HOME
+// (the env var PowerShell's `Join-Path $HOME` reads) and os.homedir() move
+// together since applyIsolatedHome sets both.
+let restoreHome: (() => Promise<void>) | undefined;
+
+beforeAll(async () => {
+  const home = await applyIsolatedHome('wpse-home-');
+  restoreHome = () => home.restore();
+});
+
+afterAll(async () => {
+  await restoreHome?.();
+});
 
 /**
  * apra-fleet-ot2z.12: on PS 5.1, `powershell -EncodedCommand <script>`'s raw

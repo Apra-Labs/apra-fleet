@@ -262,7 +262,7 @@ export const GUARDED_MODULES = [
     //
     // It took exactly TWO member_name-bearing command() call sites out of
     // runner.js: createDeployPermissionsProvisioner's `node -e ...` read of
-    // deploy.md's Permissions section, and stageCommandBodyMemberSide's
+    // the role's runbook Permissions section, and stageCommandBodyMemberSide's
     // `node -e ...` member-side temp-file write. Both are shell-agnostic
     // (base64-encoded argv, no `$`-expansion/backticks/template literals),
     // which is exactly the invariant shell-command-guard.mjs enforces here.

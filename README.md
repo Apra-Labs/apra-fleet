@@ -472,16 +472,17 @@ drawer now has an in-place edit form (name, category, tags, icon, unattended
 mode, LLM provider, and host/port/username for remote members) and
 compose-permissions inputs (role, tags, grant list, grant reason), both
 submitting only the fields the operator actually changed rather than the
-whole record. Today it serves from a dev checkout only -- packaging it into
-the SEA binary and the npm-distributed package is still open. Known gaps: the
-Members table's owner column and the member-detail drawer action need further
-work before every screen action in the design's action table has both a
-tested route and a tested UI control, and the edit form's
-re-sync-on-background-refresh behavior has a known defect where an operator's
-untouched fields can be spuriously resubmitted after another operator's
-concurrent change lands mid-edit -- see
+whole record. It now serves from every distribution channel -- a dev
+checkout, the npm-installed package, and the SEA binary all answer
+`GET /ui`. Known gaps: the Members table's owner column and the
+member-detail drawer action need further work before every screen action in
+the design's action table has both a tested route and a tested UI control,
+and the edit form's re-sync-on-background-refresh behavior has a known
+defect where an operator's untouched fields can be spuriously resubmitted
+after another operator's concurrent change lands mid-edit -- see
 [docs/console-architecture.md](docs/console-architecture.md) for the
 dirty-diff design and the invariant this defect violates. See also
+[docs/npm-packaging.md](docs/npm-packaging.md) (console shell packaging) and
 [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
 The Health page's data directory now comes from an explicit `dataDir` field
 the server always includes in the `fleet_status` JSON payload, and

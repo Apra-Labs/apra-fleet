@@ -429,3 +429,52 @@ Two-layer monitoring. `fleet_status` gives a quick summary table across all memb
 ## Cross-Platform Support
 
 Members can run Windows, macOS, or Linux. The `os/*` command builders generate the right shell commands for each OS -- different commands for checking processes, reading memory, and setting environment variables -- while `src/utils/platform.ts` handles OS detection and path resolution. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+
+### Isolating a test's home directory: `HOME` alone is a Windows no-op
+
+Any test that needs to keep the fleet's real user data (`~/.apra-fleet`,
+`fleet.key`, credentials) untouched must not isolate the home directory by
+overriding `process.env.HOME` alone. Node's `os.homedir()` on `win32` reads
+`USERPROFILE` (falling back to `HOMEDRIVE`+`HOMEPATH`), never `HOME` -- a
+`HOME`-only override is a silent no-op on Windows, and the test goes on to
+read/write the real developer's or CI runner's actual fleet home, only
+failing when it happens to assert against the on-disk path. The correct
+approach is one shared helper (`tests/helpers/isolated-home.mjs`, a plain
+`.mjs` module) whose `applyIsolatedHome()` creates a temp directory, sets
+`HOME`, `USERPROFILE`, `HOMEDRIVE`/`HOMEPATH`, and any project-specific
+data-dir override env vars (`APRA_FLEET_DATA_DIR`, `FLEET_SE_DATA_DIR`)
+together, resolves symlinks in the temp path up front, restores the previous
+values afterward, and asserts `os.homedir()` actually resolves to the temp
+directory before the test body runs (failing loudly rather than silently
+continuing against the wrong directory). A root vitest `.ts` test imports
+`applyIsolatedHome` from that module directly; each `node --test` package
+(`packages/apra-fleet-se`, `packages/apra-fleet-workflow`) instead loads its
+own thin `test/isolated-home-setup.mjs` via `--import`, which itself calls
+into the shared `applyIsolatedHome()` -- the `--import` wrapper is what makes
+isolation apply before any test file's own top-level code runs, and each
+package's wrapper additionally covers whatever that package needs beyond the
+shared variable set (e.g. `packages/apra-fleet-se`'s wrapper also isolates
+`APPDATA`/`LOCALAPPDATA` and seeds a minimal `.gitconfig`). Every test
+overriding the home directory should go through this helper (directly or via
+a package's `--import` wrapper), plus a static+behavioural guard test that
+fails the suite if a new test file assigns `process.env.HOME` directly
+instead of using it.
+
+**Isolation must be applied before importing anything that reads the home
+directory eagerly.** Some product modules cache a home-derived path in a
+top-level `const` evaluated at import time -- `src/paths.ts`'s `FLEET_DIR`,
+for example, resolves `os.homedir()` (via `APRA_FLEET_DATA_DIR`) once, at
+module load, not lazily per call. Calling `applyIsolatedHome()` (or its
+`--import` wrapper) after such a module has already been imported in that
+process does nothing for that module's already-cached value -- the module
+keeps pointing at whatever `HOME` was when it first loaded, with no error,
+because the code path still "works," just against the wrong directory. This
+is precisely why isolation is applied at the runner level (a `node --test`
+`--import`, or a caller resolving isolation via a dynamic `await import(...)`
+performed strictly after `applyIsolatedHome()` resolves) rather than inside
+each test's own `beforeEach`, where the module under test may already have
+been imported once with the real `HOME` still in effect. For genuinely new
+product code, prefer resolving a home-derived path lazily inside the
+function that uses it rather than adding another eager module-level
+constant -- that keeps the code correct under both orderings instead of
+depending on which one happens to run first.

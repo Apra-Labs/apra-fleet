@@ -74,16 +74,20 @@ import {
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathToFileURL } from 'node:url';
+import {
+  buildLaneArgs, INTEG_PKG_DIR, INTEG_TEST_DIR,
+} from './integ-lane-args.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), '..');
-const pkgDir = path.join(repoRoot, 'packages', 'apra-fleet-se');
-const testDir = path.join(pkgDir, 'test');
+// pkgDir/testDir come from ./integ-lane-args.mjs so the paths this runner
+// discovers files under are the exact ones the spawned lane argv is built
+// from -- one resolution, not two that can drift.
+const pkgDir = INTEG_PKG_DIR;
+const testDir = INTEG_TEST_DIR;
 const statusFile = path.join(repoRoot, 'integ-suite-status.json');
 const heartbeatFile = path.join(repoRoot, 'integ-suite-heartbeat.json');
 const logFile = path.join(repoRoot, 'integ-suite-run.log');
-const reporterPath = path.join(repoRoot, 'scripts', 'integ-file-results-reporter.mjs');
 
 const HEARTBEAT_STALE_MS = 120000;
 const TEST_CONCURRENCY = 8;
@@ -343,20 +347,19 @@ function cmdStart(files) {
 // even though scripts/run-tests.mjs (the OTHER entry point) already
 // exported this var correctly. See scripts/run-tests.mjs for the sibling
 // export this mirrors.
+//
+// The argv itself is built by ./integ-lane-args.mjs's buildLaneArgs() rather
+// than inline here (apra-fleet-y3xp, bug v9p2). That is what carries the
+// run-level home-isolation `--import` preload this lane previously lacked:
+// without it, every test file in this lane ran with the operator's REAL
+// HOME/USERPROFILE, APPDATA/LOCALAPPDATA and ~/.apra-fleet-se, because
+// test/isolated-home-setup.mjs only takes effect when it is preloaded.
 function runLane(files, concurrency) {
   return new Promise((resolve) => {
     if (files.length === 0) { resolve(0); return; }
     const child = spawn(
       process.execPath,
-      [
-        '--test',
-        `--test-concurrency=${concurrency}`,
-        '--test-reporter=./test/helpers/timestamped-reporter.mjs',
-        '--test-reporter-destination=stdout',
-        `--test-reporter=${pathToFileURL(reporterPath).href}`,
-        '--test-reporter-destination=stdout',
-        ...files.map((f) => path.join(testDir, f)),
-      ],
+      buildLaneArgs(files, concurrency),
       {
         cwd: pkgDir,
         stdio: 'inherit',

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runAuth } from '../src/cli/auth.js';
 import { checkCleanEnvRealClaudeAuth } from '../scripts/check-toy-doer-credentials.mjs';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // apra-fleet-eft.48.7: regression pin for bug eft.48 / impl eft.48.6.
 //
@@ -97,26 +98,18 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
     // resolution on Windows -- the spawned real CLI resolves USERPROFILE (or
     // the Win32 API when unset), so overriding only HOME ran probes against
     // the OPERATOR'S real ~/.claude and rotated their live OAuth session.
-    // Override every profile-resolution variable together, and restore all.
-    const PROFILE_ENV_KEYS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const;
-    let savedProfileEnv: Record<string, string | undefined>;
+    // applyIsolatedHome() overrides every profile-resolution variable
+    // together (HOME, USERPROFILE, HOMEDRIVE+HOMEPATH) and restores them all.
+    let restoreHome: (() => Promise<void>) | undefined;
 
-    beforeEach(() => {
-      savedProfileEnv = {};
-      for (const key of PROFILE_ENV_KEYS) savedProfileEnv[key] = process.env[key];
-      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft-48-7-real-cli-'));
-      process.env.HOME = tmpHome;
-      process.env.USERPROFILE = tmpHome;
-      process.env.HOMEDRIVE = path.parse(tmpHome).root.replace(/[\\/]+$/, '');
-      process.env.HOMEPATH = tmpHome.slice(path.parse(tmpHome).root.length - 1);
+    beforeEach(async () => {
+      const home = await applyIsolatedHome('apra-fleet-eft-48-7-real-cli-');
+      tmpHome = home.tempHome;
+      restoreHome = home.restore;
     });
 
-    afterEach(() => {
-      for (const key of PROFILE_ENV_KEYS) {
-        if (savedProfileEnv[key] !== undefined) process.env[key] = savedProfileEnv[key];
-        else delete process.env[key];
-      }
-      fs.rmSync(tmpHome, { recursive: true, force: true });
+    afterEach(async () => {
+      await restoreHome?.();
     });
 
     function credPath(): string {
