@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Sprint launches reliably from the installed binary, and a failed launch is now visible
+
+Sprint goal: fix three console launch-path defects found by an acceptance
+run in a fresh installed-binary Windows Sandbox -- launching a sprint from
+the installed binary always failed (the supervisor spawned the child with
+its own binary instead of a real Node.js runtime), a failed launch was
+completely invisible in the console (the form reported success and the run
+never appeared anywhere but the raw supervisor log), and the launch form's
+"no issue selected" hint stayed stuck after a Backlog row was checked and
+pointed the wrong direction. All three are fixed and verified against the
+deployed build. Cross-cutting KB/memory-contract hardening (a strict
+offline mode for the team-shared KB server, response-conformance coverage
+for the memory-contract test suite, and a loud loopback-bind requirement
+for the KB server) landed alongside this scope.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $66.3328.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.5696 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 64 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **Sprint launch no longer depends on the supervisor's own execPath.** A
+  new sprint-runner resolver picks a real Node.js runtime through a fixed,
+  three-tier order (an explicit operator override, the current process's
+  own execPath when it is confirmed to be a real Node.js runtime and not a
+  single-executable binary, or `node` resolved from PATH at or above the
+  required minimum version), resolved lazily on first launch (never at
+  supervisor startup) and cached only on success. A launch that cannot
+  resolve any usable runtime now fails with a distinct, class-checkable
+  error and an operator-facing fix line instead of an opaque spawn failure.
+  See [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md).
+- **A launch that fails before producing a terminal state file is now
+  visible in Finished Sprints**, with its failure reason and a link to the
+  sprint's raw log -- previously it vanished from the console entirely and
+  was only visible in the supervisor's own process log. The launch form
+  also now watches a freshly launched sprint for its first seconds and
+  reports an observed failure instead of always declaring success the
+  instant the launch request returns. See
+  [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md)
+  ("Launch-failed visibility").
+- **The launch form's selection hint now updates reliably from anywhere a
+  Backlog row selection can change**, and its wording points the correct
+  direction. See the same doc's "Selection-hint binding" section.
+- **The team-shared KB server supports a strict offline mode**
+  (`offline_fallback: "error"`): every read and write that would otherwise
+  silently fall back to local data instead throws, naming the unreachable
+  remote -- including calls (linked/related-entry reads, confidence
+  promotion) that have no remote route of their own and would otherwise be
+  an unwritten exemption from strict mode. See
+  [docs/knowledge-layer-design.md](docs/knowledge-layer-design.md)
+  ("Central Service Architecture").
+- **The KB server's loopback-only bind default is now documented as an
+  upgrade consideration** for an existing team-shared install that relied
+  on the old wildcard-bind default. See
+  [docs/knowledge-layer.md](docs/knowledge-layer.md).
+- **The memory-contract test suite gained a live response-conformance
+  lane** with per-tool coverage accounting, proven falsifiable against the
+  specific class of schema drift that motivated it, and wired into the
+  bounded test chain. See
+  [docs/memory-contract-v1-roundtrip-and-handoff.md](docs/memory-contract-v1-roundtrip-and-handoff.md).
+
+Carried forward (filed as backlog, not blocking this sprint's goal): a
+sprint-runner candidate that resolves via a Windows shim can still fail at
+the actual (non-shell) spawn; the launch form's post-launch UI reset still
+depends on a container element that may not be present and does not clear
+row checkboxes; duplicated launch-form test coverage across two files; and
+each KB strict-mode delegation with no remote route spends a network round
+trip confirming reachability on every call, which is worth revisiting if
+those calls end up on a hot path.
+
 ## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
 
 Sprint goal: finish shipping the `/ui` console shell that a prior sprint
