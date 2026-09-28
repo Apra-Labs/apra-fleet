@@ -20,6 +20,17 @@ import { execFileSync } from 'node:child_process';
 /** Minimum Node.js version fleet-se requires (major.minor.patch). */
 export const MIN_NODE_VERSION = '22.16.0';
 
+/**
+ * Wall-clock ceiling for a single `--version` probe (apra-fleet-i9ag.12.15).
+ * A probe that never returns -- an interpreter wedged on a broken shim, a
+ * network-mounted PATH entry that hangs, an npm prefix on an unresponsive
+ * filesystem -- must never hang the installer indefinitely. execFileSync
+ * kills the child at this deadline and throws, which the probes already
+ * treat as "not present", so a hung prerequisite fails loudly and fast
+ * instead of silently stalling `apra-fleet install`.
+ */
+export const PREREQ_PROBE_TIMEOUT_MS = 15_000;
+
 /** Exact operator-facing fix line every consumer must surface verbatim. */
 export const FLEET_SE_PREREQ_FIX_LINE =
   'fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only';
@@ -34,14 +45,31 @@ export const FLEET_SE_PREREQ_FIX_LINE =
 export type FleetSePrereqExec = (
   file: string,
   args: string[],
-  options?: { shell?: boolean },
+  options?: { shell?: boolean; timeout?: number },
 ) => string | Buffer;
 
-function defaultExec(file: string, args: string[], options: { shell?: boolean } = {}): string {
+function defaultExec(
+  file: string,
+  args: string[],
+  options: { shell?: boolean; timeout?: number } = {},
+): string {
   return String(
     execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', ...options }),
   );
 }
+
+/**
+ * Options every prerequisite probe spawns with.
+ *
+ * `shell: true` is NOT a POSIX-only nicety: on Windows both `node` and `npm`
+ * routinely resolve to a `.cmd` shim rather than a directly spawnable `.exe`
+ * (nvm-windows installs node exactly this way), and Node refuses to spawn a
+ * `.cmd` without a shell -- so a shell-less probe reports a perfectly good
+ * toolchain as NOT INSTALLED. The argv array is fixed literals with no
+ * user/environment interpolation, so routing through a shell introduces no
+ * expansion the CLAUDE.md rule warns about.
+ */
+const PROBE_OPTIONS = { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS } as const;
 
 export interface FleetSePrereqDeps {
   /** Injectable process spawner -- defaults to a real execFileSync wrapper. */
@@ -92,7 +120,7 @@ function compareVersions(a: string, b: string): number {
 
 function probeNode(exec: FleetSePrereqExec): FleetSeNodeProbe {
   try {
-    const raw = exec('node', ['--version']);
+    const raw = exec('node', ['--version'], { ...PROBE_OPTIONS });
     const version = parseVersionString(raw);
     if (!version) return { present: false, version: null, satisfiesMin: false };
     return { present: true, version, satisfiesMin: compareVersions(version, MIN_NODE_VERSION) >= 0 };
@@ -103,13 +131,14 @@ function probeNode(exec: FleetSePrereqExec): FleetSeNodeProbe {
 
 function probeNpm(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSePrereqProbe {
   // npm on Windows resolves to an npm-generated `.cmd` shim, not a directly
-  // spawnable executable -- handle that explicitly here rather than assuming
+  // spawnable executable -- name it explicitly here rather than assuming
   // 'npm' resolves the same way it does on POSIX (see scripts/lib/exec-bd.mjs's
   // module doc for the same shim problem in bd's own cross-platform launcher).
+  // PROBE_OPTIONS supplies the `shell: true` that makes spawning that shim
+  // possible at all.
   const file = platform === 'win32' ? 'npm.cmd' : 'npm';
-  const options = platform === 'win32' ? { shell: true } : {};
   try {
-    const raw = exec(file, ['--version'], options);
+    const raw = exec(file, ['--version'], { ...PROBE_OPTIONS });
     const version = parseVersionString(raw);
     return { present: version !== null, version };
   } catch {
@@ -147,10 +176,12 @@ export function summarizeFleetSePrereqs(result: FleetSePrereqResult): string {
  * Detects whether the current host satisfies fleet-se's prerequisites
  * (Node.js >= MIN_NODE_VERSION and a working npm). Never rely on shell-level
  * variable expansion in the invoked command (CLAUDE.md rule) -- the exec
- * function passed here (or the real default) always spawns via an argv
- * array, never a shell-interpolated string. Reports only -- callers decide
- * what to do (print, exit, etc.); this module never touches the console or
- * process.exit.
+ * function passed here (or the real default) always passes the command and
+ * its arguments as an argv array of fixed literals, never a caller- or
+ * environment-interpolated command string, so the `shell: true` that
+ * PROBE_OPTIONS needs for Windows `.cmd` shims expands nothing. Reports only
+ * -- callers decide what to do (print, exit, etc.); this module never touches
+ * the console or process.exit.
  */
 export function detectFleetSePrereqs(deps: Partial<FleetSePrereqDeps> = {}): FleetSePrereqResult {
   const exec = deps.exec ?? defaultExec;

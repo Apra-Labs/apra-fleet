@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { detectFleetSePrereqs, MIN_NODE_VERSION, type FleetSePrereqExec } from '../src/cli/fleet-se-prereqs.js';
+import {
+  detectFleetSePrereqs,
+  MIN_NODE_VERSION,
+  PREREQ_PROBE_TIMEOUT_MS,
+  type FleetSePrereqExec,
+} from '../src/cli/fleet-se-prereqs.js';
 
 // apra-fleet-i9ag.12.8: detectFleetSePrereqs() itself had ZERO direct test
 // coverage -- tests/install-fleet-se-prereqs.test.ts replaces it entirely
@@ -68,7 +73,7 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
     expect(result.missing).toEqual([]);
   });
 
-  it('platform win32 resolves npm via "npm.cmd" with shell:true; the SAME exec under platform linux cannot satisfy it (non-vacuous, POSIX branch cannot pass)', () => {
+  it('platform win32 resolves npm via "npm.cmd"; the SAME exec under platform linux cannot satisfy it (non-vacuous, POSIX branch cannot pass)', () => {
     // This exec answers ONLY 'npm.cmd', never bare 'npm' -- so the assertion
     // below is only satisfiable if detectFleetSePrereqs actually spawned the
     // win32-specific file name, not a POSIX-compatible fallback.
@@ -76,9 +81,13 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
 
     const win32Result = detectFleetSePrereqs({ exec, platform: 'win32' });
     expect(win32Result.npm).toEqual({ present: true, version: '10.5.0' });
-    // Confirms the win32 shim quirk this module exists to handle: spawned via
-    // { shell: true }, unlike the POSIX branch.
-    expect(exec).toHaveBeenCalledWith('npm.cmd', ['--version'], { shell: true });
+    // The win32 shim quirk this module exists to handle: the `.cmd` file name.
+    // (The `shell: true` that makes a `.cmd` spawnable is now platform-
+    // independent -- see the probe-options test below.)
+    expect(exec).toHaveBeenCalledWith('npm.cmd', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
 
     vi.mocked(exec).mockClear();
 
@@ -88,7 +97,48 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
     // genuinely cannot satisfy the same fake.
     const linuxResult = detectFleetSePrereqs({ exec, platform: 'linux' });
     expect(linuxResult.npm).toEqual({ present: false, version: null });
-    expect(exec).toHaveBeenCalledWith('npm', ['--version'], {});
+    expect(exec).toHaveBeenCalledWith('npm', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
+  });
+
+  // apra-fleet-i9ag.12.15: both probes must spawn through a shell (node itself
+  // is a `.cmd` shim under nvm-windows, so a shell-less probe reports a
+  // perfectly good toolchain as NOT INSTALLED) and both must carry a wall-clock
+  // timeout, so a wedged interpreter can never hang `apra-fleet install`.
+  it('BOTH probes spawn with shell:true and a 15s timeout, on every platform', () => {
+    expect(PREREQ_PROBE_TIMEOUT_MS).toBe(15_000);
+    const expected = { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS };
+
+    for (const platform of ['linux', 'darwin', 'win32'] as const) {
+      const npmFile = platform === 'win32' ? 'npm.cmd' : 'npm';
+      const exec = makeExec({ node: 'v22.16.0\n', [npmFile]: '10.5.0\n' });
+
+      const result = detectFleetSePrereqs({ exec, platform });
+
+      expect(result.ok).toBe(true);
+      expect(exec).toHaveBeenCalledWith('node', ['--version'], expected);
+      expect(exec).toHaveBeenCalledWith(npmFile, ['--version'], expected);
+    }
+  });
+
+  it('a probe that exceeds the timeout (execFileSync throws ETIMEDOUT) is reported NOT INSTALLED, never rethrown', () => {
+    // execFileSync signals a timeout kill by throwing -- detectFleetSePrereqs
+    // must absorb that into a plain "not present" verdict so the installer
+    // prints the fix line and exits 1 rather than crashing with a stack trace.
+    const timedOut = Object.assign(new Error('spawnSync node ETIMEDOUT'), {
+      code: 'ETIMEDOUT',
+      signal: 'SIGTERM',
+    });
+    const exec = makeExec({ node: timedOut, npm: '10.5.0\n' });
+
+    const result = detectFleetSePrereqs({ exec, platform: 'linux' });
+
+    expect(result.node).toEqual({ present: false, version: null, satisfiesMin: false });
+    expect(result.npm).toEqual({ present: true, version: '10.5.0' });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toEqual(['node']);
   });
 
   it('boundary: node v21.99.99 (major below MIN_NODE_VERSION) -> satisfiesMin false', () => {
