@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process';
 import { claudeSettingsPath, clearBaseUrl, currentBaseUrl, setBaseUrl } from './claude-settings.js';
 import { lazyDir, loadConfig, saveConfig, type LazyConfig } from './config.js';
 import { helperSettingsPath, writeHelperSettings } from './mode.js';
-import { installService, restartService, uninstallService } from './service.js';
+import { installService, uninstallService } from './service.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -210,7 +210,9 @@ async function status(): Promise<void> {
 async function on(): Promise<void> {
   const cfg = loadConfig();
   if (!(await healthy(cfg))) {
-    restartService();
+    // Rewrite the service, not just restart it: the recorded command may point
+    // at a path that no longer exists (a vanished per-shell node link, a move).
+    installService();
     if (!(await healthy(cfg, 10_000))) {
       console.error(`Background helper will not start; see ${lazyDir()}/server.log. Claude left unchanged.`);
       process.exit(1);

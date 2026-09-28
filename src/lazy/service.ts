@@ -13,9 +13,14 @@ import { lazyDir } from './config.js';
 const LABEL = 'dev.lazyfleet';
 const UNIT = 'lazyfleet.service';
 
-/** node + this CLI's script, so the service runs whatever was installed. */
+/**
+ * node + this CLI's script, so the service runs whatever was installed.
+ * The script is resolved through symlinks: version managers (fnm, nvm, volta)
+ * put `lazyfleet` on PATH through per-shell links that vanish when the shell
+ * exits, which would leave the service pointing at nothing.
+ */
 export function serveCommand(): { command: string; args: string[] } {
-  return { command: process.execPath, args: [path.resolve(process.argv[1]), 'serve'] };
+  return { command: fs.realpathSync(process.execPath), args: [fs.realpathSync(path.resolve(process.argv[1])), 'serve'] };
 }
 
 function unitPath(): string {
@@ -166,17 +171,6 @@ export function uninstallService(): void {
     } catch {
       // not installed
     }
-  }
-}
-
-export function restartService(): void {
-  try {
-    if (process.env.LAZYFLEET_SERVICE === 'detached') startDetached();
-    else if (process.platform === 'linux') execFileSync('systemctl', ['--user', 'restart', UNIT], { stdio: 'ignore' });
-    else if (process.platform === 'darwin') execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${LABEL}`]);
-    else startDetached();
-  } catch {
-    startDetached();
   }
 }
 
