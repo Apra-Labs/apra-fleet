@@ -994,9 +994,18 @@ export { HTML_TEMPLATE };
  *   fleet-sprint (e.g., { members, targetIssues, goal }). Defaults to null if omitted.
  * @param {Array} [opts.dashboardExtensions] - Dashboard widget extensions
  * @param {Object} [opts.env] - Environment variables (defaults to process.env)
+ * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by
+ *   default -- see the `host`/`exclusive` note at server.listen() below for
+ *   why the bind address is explicit rather than the OS wildcard.
  */
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
+    // The interface this dashboard binds. Explicit, and loopback-only by
+    // default -- matching the supervisor's own bindHost default
+    // (apra-fleet-se/src/supervisor/server.mjs) and the "local surface binds
+    // 127.0.0.1 only" rule in docs/hub-service-deployment.md. A caller that
+    // genuinely wants this dashboard reachable off-box must say so.
+    const host = (typeof opts.host === 'string' && opts.host.length > 0) ? opts.host : '127.0.0.1';
     const dashboardExtensions = opts.dashboardExtensions || [];
 
     // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
@@ -1594,8 +1603,32 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
     });
 
-    server.listen(port, () => {
-        console.log(`[Viewer] Workflow Dashboard live at http://localhost:${server.address().port}`);
+    // apra-fleet-i9ag.15.9: bind an EXPLICIT address with `exclusive: true`,
+    // never the OS wildcard.
+    //
+    // This used to be `server.listen(port, cb)` -- no host -- which binds the
+    // wildcard address. A wildcard bind does NOT give this process exclusive
+    // ownership of `127.0.0.1:<port>`: another process can still bind the
+    // same port on the loopback address specifically, that bind SUCCEEDS
+    // (both sockets carry SO_REUSEADDR), and because the kernel routes to the
+    // most specific match, the newcomer then silently receives EVERY loopback
+    // connection meant for this dashboard. Neither side errors; this server
+    // stays "listening" on a port it no longer serves, and clients get the
+    // impostor's answers -- e.g. a 404 for a route this dashboard would have
+    // answered 302/200. That is the class of silent, load-dependent
+    // wrong-answer failure the workflow suite hit intermittently, and it
+    // affects every route equally (there is no route table here to race: the
+    // handler above is one synchronous if/else chain, complete from the first
+    // accepted connection).
+    //
+    // Binding the loopback address specifically inverts that: a second
+    // loopback bind on this port now fails loudly with EADDRINUSE, and a
+    // later wildcard binder cannot steal loopback traffic from us because we
+    // are the more specific match. It also stops an unauthenticated
+    // per-sprint dashboard from being exposed on every network interface by
+    // default, which the supervisor in front of it already refuses to be.
+    server.listen({ port, host, exclusive: true }, () => {
+        console.log(`[Viewer] Workflow Dashboard live at http://${host}:${server.address().port}`);
     });
 
     workflow.on('end', () => {

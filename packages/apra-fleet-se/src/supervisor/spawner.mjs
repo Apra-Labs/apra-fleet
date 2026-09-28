@@ -110,13 +110,19 @@ export function defaultCliPath(deps = {}) {
  * real OS-level availability, not just what this supervisor process itself
  * has handed out.
  *
- * The real viewer binds the wildcard address (`server.listen(port, cb)`, no
- * host -- see apra-fleet-workflow/src/viewer/index.mjs). On Windows, a
- * loopback-only bind and a pre-existing wildcard bind on the same port can
- * coexist without either side erroring, so a plain `host` bind-test alone
- * can report a port "free" when a real viewer already owns it via a
- * wildcard bind -- allocateFreePort would then hand that port to a second
- * process, and inbound connections would silently split between the two.
+ * A loopback-only bind and a pre-existing WILDCARD bind on the same port can
+ * coexist without either side erroring (observed on Windows, and equally
+ * reproducible on macOS), so a plain `host` bind-test alone can report a
+ * port "free" when some wildcard-bound listener already owns it --
+ * allocateFreePort would then hand that port to a second process, and
+ * inbound connections would silently split between the two.
+ *
+ * apra-fleet-i9ag.15.9: the viewer itself is no longer such a listener -- it
+ * now binds an explicit loopback address with `exclusive: true` (see
+ * apra-fleet-workflow/src/viewer/index.mjs), precisely because a wildcard
+ * bind made its port silently stealable. The connect-then-bind probe below
+ * still stands, because this supervisor does not get to assume every other
+ * process on the box is as well behaved.
  *
  * This is deliberately NOT fixed by making the probe itself bind the
  * wildcard address: doing so opens this process up to inbound connections
