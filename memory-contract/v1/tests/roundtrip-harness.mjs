@@ -649,9 +649,22 @@ function taxonomyFailures(fixture, taxonomyIndex) {
  * @param {string[]} [rosterTools]  the inventoried tool roster (pass
  *   generate-contract.mjs's roster so coverage is checked against the real
  *   data, not a hand-copied list)
+ * @param {object} [options]
+ * @param {(observation: {key: string, tool: string, case: string, kind: string,
+ *   request: object, envelope: object, decoded: object}) => void} [options.onLiveResponse]
+ *   apra-fleet-i9ag.15.16.2: called once per step that produced a LIVE,
+ *   successfully decoded response envelope, immediately after this harness
+ *   validated it. It exists so a consumer can do its own accounting over the
+ *   real payloads (which tools were actually reached, whether each declared
+ *   `parsed` body was ever populated on the wire) WITHOUT standing up a second
+ *   corpus/dispatch/substitution driver next to this one -- see
+ *   response-conformance.mjs. Purely observational: this harness ignores what
+ *   the observer does, and a throw from it is the caller's own bug, not a
+ *   round-trip failure, so it is deliberately not caught here.
  * @returns {Promise<{provider: {name,slug,repoPath}, steps: object[], failures: string[]}>}
  */
-export async function runRoundTrip(provider, rosterTools) {
+export async function runRoundTrip(provider, rosterTools, options = {}) {
+  const { onLiveResponse } = options ?? {};
   assertProviderShape(provider);
   const taxonomyIndex = loadTaxonomyIndex();
   const failures = coverageFailures(rosterTools);
@@ -751,6 +764,10 @@ export async function runRoundTrip(provider, rosterTools) {
     record.responseValid = validateResponse(decoded);
     if (!record.responseValid) {
       fail(`live response does not validate against schemas/${step.tool}.response.json: ${ajvErrors(validateResponse)}`);
+    }
+    record.parsedType = decoded.parsed === null ? 'null' : Array.isArray(decoded.parsed) ? 'array' : typeof decoded.parsed;
+    if (onLiveResponse) {
+      onLiveResponse({ key, tool: step.tool, case: step.case, kind: fixture.kind, request, envelope, decoded });
     }
 
     // 5. extra live evidence, where the fixture's evidence is a response field

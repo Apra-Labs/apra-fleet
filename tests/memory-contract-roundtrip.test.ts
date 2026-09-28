@@ -32,6 +32,13 @@ import {
   decodeEnvelope,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
+import {
+  createResponseConformanceRecorder,
+  formatConformanceReport,
+  validateToolResponse,
+  schemaDeclaresParsedBody,
+  LIVE_SERVICE_SKIPS,
+} from '../memory-contract/v1/tests/response-conformance.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
 
@@ -156,13 +163,40 @@ class SqliteContractProvider {
   }
 }
 
+// apra-fleet-i9ag.15.16.2: the live round trip and the response-conformance
+// lane share ONE dispatch of the corpus. Driving the 23 real handlers twice
+// (once per entry point) would double a multi-minute suite's wall clock for a
+// second copy of the same evidence, and the two copies would drift; instead
+// the conformance recorder observes THIS run's live responses via
+// runRoundTrip's onLiveResponse hook and does its own independent validation
+// and coverage accounting over them.
+const conformance = createResponseConformanceRecorder({ roster: ROSTER, skips: LIVE_SERVICE_SKIPS });
+
+/**
+ * One REAL live decoded envelope per tool, kept so the lane's non-vacuity
+ * probes below can mutate an actual payload this run produced rather than a
+ * hand-authored stand-in (a hand-authored one could pass or fail for reasons
+ * that have nothing to do with what the handlers really emit). Mutations are
+ * always made on a structured-clone copy -- never on this map's value, and
+ * never on a committed fixture or a generated schema.
+ */
+const liveSamples = new Map<string, { parsed: Record<string, unknown> } & Record<string, unknown>>();
+const observeLiveResponse = (observation: { tool: string; decoded: unknown }) => {
+  if (!liveSamples.has(observation.tool)) {
+    liveSamples.set(observation.tool, observation.decoded as never);
+  }
+  (conformance.onLiveResponse as (o: unknown) => void)(observation);
+};
+
 describe('memory-contract/v1 round trip (sqlite provider)', () => {
   let report: Awaited<ReturnType<typeof runRoundTrip>>;
   let handlers: Map<string, ToolHandler>;
 
   beforeAll(async () => {
     handlers = await registerHandlers();
-    report = await runRoundTrip(new SqliteContractProvider(handlers), ROSTER);
+    report = await runRoundTrip(new SqliteContractProvider(handlers), ROSTER, {
+      onLiveResponse: observeLiveResponse,
+    });
   }, 120_000);
 
   it('round-trips every inventoried tool green against sqlite', () => {
@@ -224,4 +258,95 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
 
     await expect(kbCapture({ ...request, repo_path: empty })).rejects.toThrow(/src\/pair\.ts/);
   }, 60_000);
+
+  // apra-fleet-i9ag.15.16.2: THE LIVE RESPONSE-CONFORMANCE LANE.
+  //
+  // Nested inside this describe on purpose, so it runs against the SAME
+  // dispatch the outer beforeAll performed -- see the recorder's comment
+  // above for why a second dispatch was rejected. The accounting itself lives
+  // in memory-contract/v1/tests/response-conformance.mjs, which re-validates
+  // every observed payload with its own ajv instance rather than trusting the
+  // round trip's verdict, so this lane cannot be left silently green by an
+  // upstream check that stopped running.
+  describe('live response conformance lane', () => {
+    it('validated a REAL response for every inventoried tool, and reports the covered count and every skip with its reason', () => {
+      const conformanceReport = conformance.report();
+
+      // Printed unconditionally: a coverage claim nobody can read is the same
+      // blind spot as no coverage claim at all.
+      // eslint-disable-next-line no-console
+      console.log(`\n${formatConformanceReport(conformanceReport)}\n`);
+
+      expect(conformanceReport.failures).toEqual([]);
+      expect(conformanceReport.uncovered).toEqual([]);
+      // Every roster tool is accounted for exactly once, as covered or as an
+      // explicitly-reasoned skip. Nothing may fall between the two.
+      expect(conformanceReport.covered.length + conformanceReport.skipped.length).toBe(ROSTER.length);
+      expect(ROSTER.length).toBe(23);
+      // Non-vacuity floor: at least one live response per tool really was
+      // validated, so an empty observation stream cannot read as full coverage.
+      expect(conformanceReport.responsesValidated).toBeGreaterThanOrEqual(ROSTER.length);
+      for (const skip of conformanceReport.skipped) {
+        expect(skip.reason.trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it('every tool whose schema declares a TYPED parsed body actually reached that body live', () => {
+      // Without this, a tool could "pass" the lane on an envelope whose parsed
+      // body never materialised -- the body's own additionalProperties:false
+      // would then police nothing, which is exactly how the kb_stats
+      // degraded-field drift got through review.
+      const typed = ROSTER.filter((tool) => schemaDeclaresParsedBody(tool));
+      // 15 of 23: the 7 code_* tools and kb_query declare `parsed` as an
+      // unconstrained schema (their zod shape is z.unknown()), so reaching it
+      // proves nothing and is not required of them.
+      expect(typed.length).toBe(15);
+      expect(ROSTER.filter((tool) => !schemaDeclaresParsedBody(tool)).sort()).toEqual(
+        ['code_context', 'code_flow', 'code_graph', 'code_impact', 'code_map', 'code_query', 'code_tests', 'kb_query'],
+      );
+
+      const unreached = conformance
+        .report()
+        .covered.filter((c) => c.declaresParsedBody && !c.parsedReached)
+        .map((c) => c.tool);
+      expect(unreached).toEqual([]);
+    });
+
+    it('is NOT vacuous: an undeclared field on a real live payload FAILS, naming the tool and the field', () => {
+      const live = liveSamples.get('kb_capture');
+      expect(live).toBeDefined();
+
+      // Positive control first: the unmutated live payload passes, so the
+      // failure below is attributable to the mutation and not to an always-red
+      // lane.
+      expect(validateToolResponse('kb_capture', live).valid).toBe(true);
+
+      const mutated = structuredClone(live) as { parsed: Record<string, unknown> };
+      mutated.parsed.undeclared_drift_field = 'shipped without a schema change';
+      const result = validateToolResponse('kb_capture', mutated);
+      expect(result.valid).toBe(false);
+      // The offending FIELD must be named, not just the instance path: ajv puts
+      // it in params.additionalProperty and leaves it out of both instancePath
+      // and message, so drift reported without it is unactionable.
+      expect(result.errors).toContain('undeclared_drift_field');
+      expect(result.errors).toContain('/parsed');
+    });
+
+    it('is NOT vacuous: nullability drift on a real live payload FAILS', () => {
+      const live = liveSamples.get('kb_capture');
+      expect(live).toBeDefined();
+      expect(validateToolResponse('kb_capture', live).valid).toBe(true);
+
+      // kb_capture.parsed.id is declared `string` with no null member (unlike
+      // kb_stats.parsed.promote_ratio, which IS ["number","null"]), so a
+      // handler that started returning null here is drift the schema must
+      // reject.
+      const mutated = structuredClone(live) as { parsed: Record<string, unknown> };
+      mutated.parsed.id = null;
+      const result = validateToolResponse('kb_capture', mutated);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('/parsed/id');
+      expect(result.errors).toContain('must be string');
+    });
+  });
 });
