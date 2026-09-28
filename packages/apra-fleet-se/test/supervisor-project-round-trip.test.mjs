@@ -14,6 +14,7 @@ import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { expectedWalkUpProjectDir } from './helpers/walk-up-project-dir.mjs';
+import { prependToPathEnv, pathEnvKey } from './helpers/child-path-env.mjs';
 
 // =============================================================================
 // apra-fleet-i9ag.17.2.3 -- console project-folder round trip, end to end
@@ -38,6 +39,11 @@ import { expectedWalkUpProjectDir } from './helpers/walk-up-project-dir.mjs';
 // folder with no `.beads`. The git `origin` is a real one created by
 // `git init` + `git remote add` in the fixture: git is already a hard
 // prerequisite of this product, bd is the one this suite must not depend on.
+// The shim dir is therefore PREPENDED to the child's search path, never
+// assigned over it -- the probe still has to find the real git. Doing that
+// case-correctly is not optional on Windows (see ./helpers/child-path-env.mjs
+// and the unit cases below); getting it wrong there surfaced as POST
+// /api/project refusing the fixture's own folder for a missing git origin.
 //
 // Isolation: every fixture lives under one mkdtemp root, removed in
 // after(). FLEET_SE_DATA_DIR/HOME are redirected into it, and BEADS_DIR is
@@ -215,8 +221,12 @@ async function bootServe(dirs, { cwd, flag } = {}) {
     env.FLEET_SE_SWEEP_OWNER_DATA_DIR = dirs.root;
     // The bd shim wins over any real bd this host happens to carry, so the
     // suite behaves identically on a developer box and on a bare CI runner.
-    env.PATH = `${dirs.fakeBin}${path.delimiter}${env.PATH ?? ''}`;
-    if (env.Path !== undefined) env.Path = env.PATH;
+    // PREPENDED, never assigned: the child still needs the real search path
+    // for `git`, which the POST usability probe runs. Via the helper because
+    // `{ ...process.env }` loses process.env's case-insensitive lookup and
+    // Windows spells the variable `Path` -- writing env.PATH there left the
+    // child with the shim dir and nothing else. See ./helpers/child-path-env.mjs.
+    prependToPathEnv(env, dirs.fakeBin);
 
     const args = [SERVE_BIN, '--port', String(port)];
     if (flag) args.push('--beads-dir', flag);
@@ -253,6 +263,39 @@ async function bootServe(dirs, { cwd, flag } = {}) {
         get pid() { return child.pid; },
     };
 }
+
+// -----------------------------------------------------------------------------
+// The fixture's own PATH handling, pinned on every host.
+//
+// The real assertion above (POST accepts the fixture's project folder) can
+// only fail for this reason ON Windows, where CI is the first place it would
+// be noticed. These two cases drive the Windows-shaped env explicitly, so a
+// POSIX dev box catches the same regression before the push.
+// -----------------------------------------------------------------------------
+describe('fixture PATH shim -- prepends without destroying the real search path', () => {
+    test("a Windows-shaped env (spelled 'Path') keeps every existing entry", () => {
+        const env = { Path: 'C:\\Windows\\system32;C:\\Program Files\\Git\\cmd', ComSpec: 'C:\\Windows\\system32\\cmd.exe' };
+
+        prependToPathEnv(env, 'C:\\tmp\\fake-bin', ';');
+
+        assert.equal(pathEnvKey(env), 'Path', 'the existing spelling must be reused, not shadowed by a second key');
+        assert.equal(Object.keys(env).filter((k) => k.toLowerCase() === 'path').length, 1, 'a child must never be handed two search-path keys differing only in case');
+        assert.equal(env.Path, 'C:\\tmp\\fake-bin;C:\\Windows\\system32;C:\\Program Files\\Git\\cmd');
+        assert.ok(
+            env.Path.includes('C:\\Program Files\\Git\\cmd'),
+            'REGRESSION: the real search path was dropped, so the child loses git and the identity probe reports a missing origin remote',
+        );
+    });
+
+    test("a POSIX-shaped env (spelled 'PATH') keeps every existing entry", () => {
+        const env = { PATH: '/usr/local/bin:/usr/bin' };
+
+        prependToPathEnv(env, '/tmp/fake-bin', ':');
+
+        assert.equal(env.PATH, '/tmp/fake-bin:/usr/local/bin:/usr/bin');
+        assert.equal(Object.keys(env).filter((k) => k.toLowerCase() === 'path').length, 1);
+    });
+});
 
 describe('console project-folder round trip (apra-fleet-i9ag.17.2.3)', () => {
     let dirs;
