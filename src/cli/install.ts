@@ -64,6 +64,82 @@ function doltStepEnabled(): boolean {
   return process.env.APRA_FLEET_ENABLE_DOLT_INSTALL === '1';
 }
 
+// --- fleet-se prerequisite check (Node.js 22.16+ and npm on PATH) ---
+//
+// fleet-se (fleet-sprint, supervisor, bd) needs a SYSTEM Node.js >= 22.16.0
+// and npm; apra-fleet core does not. Checked up front in runInstall (only when
+// workflows are being installed) so a missing prerequisite fails loudly before
+// anything is stopped or written. Same DI + NODE_ENV=test gate shape as the
+// dolt step above: skipped under NODE_ENV=test unless
+// APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK=1 (tests then inject fake probes).
+export interface FleetSePrereqProbes {
+  nodeVersion: () => string | null;
+  npmVersion: () => string | null;
+}
+const FLEET_SE_MIN_NODE: [number, number, number] = [22, 16, 0];
+
+function probeVersion(cmd: string, shell: boolean): string | null {
+  try {
+    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell });
+    return String(out).trim() || null;
+  } catch {
+    return null;
+  }
+}
+// System node from PATH, NOT process.version (in SEA mode that is the embedded runtime).
+// node/npm can be .cmd shims on Windows (nvm-windows, corporate wrappers), so both need shell:true.
+const realFleetSePrereqProbes: FleetSePrereqProbes = {
+  nodeVersion: () => probeVersion('node', true),
+  npmVersion: () => probeVersion('npm', true),
+};
+let fleetSePrereqProbes: FleetSePrereqProbes = realFleetSePrereqProbes;
+/** Test-only: the real (non-overridden) probes, to assert their exec options. */
+export const _realFleetSePrereqProbes = realFleetSePrereqProbes;
+/** Test-only: inject fake probes for the fleet-se prerequisite check. */
+export function _setFleetSePrereqProbes(overrides: Partial<FleetSePrereqProbes>): void {
+  fleetSePrereqProbes = { ...realFleetSePrereqProbes, ...overrides };
+}
+/** Test-only: restore the real fleet-se prerequisite probes. */
+export function _resetFleetSePrereqProbes(): void {
+  fleetSePrereqProbes = realFleetSePrereqProbes;
+}
+
+function fleetSePrereqCheckEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK === '1';
+}
+
+function nodeVersionSatisfies(raw: string): boolean {
+  const m = raw.trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return false;
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) {
+    if (v[i] !== FLEET_SE_MIN_NODE[i]) return v[i] > FLEET_SE_MIN_NODE[i];
+  }
+  return true;
+}
+
+export function checkFleetSePrereqs(probes: FleetSePrereqProbes): { ok: boolean; missing: string[]; message: string } {
+  const missing: string[] = [];
+  const causes: string[] = [];
+  const minNode = FLEET_SE_MIN_NODE.join('.');
+  const node = probes.nodeVersion();
+  if (node === null) {
+    missing.push('node');
+    causes.push('Node.js not found on PATH');
+  } else if (!nodeVersionSatisfies(node)) {
+    missing.push('node');
+    causes.push(`Node.js ${node.trim()} found, ${minNode}+ required`);
+  }
+  if (probes.npmVersion() === null) {
+    missing.push('npm');
+    causes.push('npm not found on PATH');
+  }
+  if (missing.length === 0) return { ok: true, missing, message: '' };
+  const message = `${causes.join('; ')}. fleet-se requires Node.js 22.16+ and npm. Install them and re-run, or use --workflows none to install the core only.`;
+  return { ok: false, missing, message };
+}
+
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
 /** Override isSea() result -- for tests only. Pass null to restore default. */
@@ -973,6 +1049,7 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
+                          fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
@@ -1096,6 +1173,16 @@ Options:
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
   const installWorkflows = workflowsMode === 'all';
+
+  // fleet-se prerequisites: fail before the running-process guard so nothing is stopped or written.
+  if (installWorkflows && fleetSePrereqCheckEnabled()) {
+    const prereq = checkFleetSePrereqs(fleetSePrereqProbes);
+    if (!prereq.ok) {
+      console.error(`Error: ${prereq.message}`);
+      process.exit(1);
+    }
+  }
+
   const serviceStep = isSea() && transport === 'http';
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
