@@ -200,9 +200,21 @@ const KB_RESPONSE_BODIES = {
   // only present for a provider that cannot compute stats at all) and adds
   // bible. Nested aggregates have no zod shape anywhere to cite, so they stay
   // z.unknown() rather than a guessed structure.
+  //
+  // apra-fleet-i9ag.15.13.1: degraded/degraded_reason/degraded_since/
+  // remote_url are HttpKbProvider-only fields (src/services/knowledge/
+  // types.ts ProviderStats, added by commit 4ac7b70f) exposing whether the
+  // configured remote KB server is currently reachable. All four are
+  // optional (absent on SqliteProvider and on a healthy http provider) --
+  // matching ProviderStats's own `?:` declarations exactly, so none of them
+  // belongs in a `required` list.
   kb_stats: z.object({
     supported: z.boolean().optional(),
     reason: z.string().optional(),
+    degraded: z.boolean().optional(),
+    degraded_reason: z.string().optional(),
+    degraded_since: z.string().optional(),
+    remote_url: z.string().optional(),
     totals: z.unknown(),
     stale: z.unknown(),
     flagged: z.unknown(),
