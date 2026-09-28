@@ -352,7 +352,16 @@ describe('HttpKbProvider', () => {
   // error so a caller can tell this apart from any other thrown error. A test
   // that merely tolerates either outcome (reject OR silently-local) proves
   // nothing, so every assertion below is an explicit `.rejects`.
-  it('strict mode: remote refusing connections -- init, query, context, getLinked, prime and a write all reject naming the remote and the connection error', async () => {
+  //
+  // apra-fleet-i9ag.15.13.3 (review fix): the URL+"unreachable" regex alone
+  // would still pass if strictFailure() dropped the `(${reason})` fragment
+  // entirely (e.g. reverted to a generic "unreachable" with no cause), so
+  // each rejection is also asserted to name the actual connection error code
+  // (ECONNREFUSED -- nothing listens on OFFLINE_URL's loopback port, so this
+  // is deterministic, never ENOTFOUND/ETIMEDOUT). promote() and
+  // relatedClaims() are covered here too, per apra-fleet-i9ag.15.13.2's
+  // review fix gating both behind ensureReachable()/strictFailure().
+  it('strict mode: remote refusing connections -- every read and write path rejects naming the remote and the connection error', async () => {
     const fallback = new SqliteProvider(':memory:');
     await fallback.init();
     const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback, 'error');
@@ -362,14 +371,19 @@ describe('HttpKbProvider', () => {
         await expect(p).rejects.toThrow(
           new RegExp(`${OFFLINE_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*unreachable`, 's')
         );
+        // A promise settles once, so re-awaiting the same rejected promise is
+        // safe and lets both assertions inspect the identical thrown error.
+        await expect(p).rejects.toThrow(/ECONNREFUSED/);
       };
 
       await assertStrictRejection(provider.init());
       await assertStrictRejection(provider.query({}));
       await assertStrictRejection(provider.context(['src/fixture.ts']));
       await assertStrictRejection(provider.getLinked('some-id'));
+      await assertStrictRejection(provider.relatedClaims(['some-id']));
       await assertStrictRejection(provider.prime({}));
       await assertStrictRejection(provider.capture(makeInput({ title: 'Strict write' })));
+      await assertStrictRejection(provider.promote('some-id', 'strict test'));
 
       // Never silently local: no read above must have populated the fallback
       // query path, and no write above must have been queued for later flush.

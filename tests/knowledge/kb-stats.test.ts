@@ -318,8 +318,10 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     } as any);
 
     try {
-      // Force the degraded state directly rather than depending on a real
-      // connection-refused round trip's exact error shape in this test file.
+      // apra-fleet-i9ag.15.13.3 (review fix): this genuinely IS a real
+      // connection-refused round trip -- port 1 is a privileged port nothing
+      // in a sandboxed test run can be listening on, so the ECONNREFUSED is
+      // deterministic without needing to fake/inject the error shape.
       await httpProvider.query({}).catch(() => {});
       const result = JSON.parse(await kbStats({ repo: tmpDir }));
       expect(result.degraded).toBe(true);
