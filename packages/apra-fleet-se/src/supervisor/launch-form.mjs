@@ -180,6 +180,49 @@ export function buildLaunchRequestBody(input) {
 }
 
 /**
+ * (apra-fleet-i9ag.16.4) Given a GET /api/sprints/:id response body (api.mjs's
+ * getSprint() shape: `{ sprintId, live: true, state }` while the child is
+ * still running, or `{ sprintId, live: false, history: [...], latest }` once
+ * it is no longer live -- see src/supervisor/api.mjs's getSprint()), classifies
+ * whether the post-launch watch below should report the run failed, live, or
+ * still unknown. PURE -- no DOM, no fetch, no timers -- so it is unit-testable
+ * in isolation AND embedded verbatim into this module's client script via
+ * `.toString()` (matching buildLaunchRequestBody/formatLaunchError's
+ * convention above), so the exact code under test is the exact code shipped
+ * to the browser.
+ *
+ * Priority: a LAUNCH_FAILED terminal event (`latest.event === 'launch-failed'`,
+ * history.mjs's HISTORY_EVENTS.LAUNCH_FAILED) always wins over anything else,
+ * then a CHILD_EXITED history event with a non-zero exit code or any signal,
+ * then an explicit `live: true`. Anything else (a 404 body normalized to
+ * null/undefined, an empty object, a malformed response) is 'unknown': the
+ * caller must keep polling rather than ever inventing a failure from an
+ * inconclusive response.
+ * @param {{ live?: boolean, latest?: { event?: string|null, reason?: string|null }|null, history?: Array<{ event?: string|null, exitCode?: number|null, signal?: string|null }> }|null|undefined} body
+ * @returns {{ status: 'failed', reason: string }|{ status: 'live' }|{ status: 'unknown' }}
+ */
+export function classifyLaunchWatch(body) {
+    if (!body || typeof body !== 'object') return { status: 'unknown' };
+    if (body.latest && body.latest.event === 'launch-failed') {
+        const reason = (typeof body.latest.reason === 'string' && body.latest.reason.length > 0)
+            ? body.latest.reason
+            : 'launch failed';
+        return { status: 'failed', reason };
+    }
+    const history = Array.isArray(body.history) ? body.history : [];
+    const exited = history.find((e) => e && e.event === 'child-exited'
+        && ((typeof e.exitCode === 'number' && e.exitCode !== 0) || (typeof e.signal === 'string' && e.signal.length > 0)));
+    if (exited) {
+        const reason = (typeof exited.signal === 'string' && exited.signal.length > 0)
+            ? `terminated by signal ${exited.signal}`
+            : `exited with code ${exited.exitCode}`;
+        return { status: 'failed', reason };
+    }
+    if (body.live === true) return { status: 'live' };
+    return { status: 'unknown' };
+}
+
+/**
  * Renders a POST /api/sprints error response (api.mjs's ApiError JSON shape:
  * `{ error: string, field?: string }`) as a legible operator-facing message.
  * A 409 (eft.5.2 member-overlap guard) is passed through VERBATIM -- the
@@ -393,6 +436,87 @@ function clientScriptSource(mountPrefix) {
     ${buildLaunchRequestBody.toString()}
     ${formatLaunchError.toString()}
 
+    // apra-fleet-i9ag.16.4: after a 201, watch the newly launched sprint for
+    // its first seconds via GET /api/sprints/:id (the existing historical-
+    // record endpoint -- no new endpoint needed) rather than trusting the
+    // 201 alone, which only means the request was accepted, not that the
+    // child is actually still alive a moment later. mountHref/MOUNT_PREFIX
+    // embedded here (not just used server-side like the two fixed fetch
+    // targets above) because THIS target is built per-launch from a runtime
+    // sprintId, so it must be assembled client-side.
+    var MOUNT_PREFIX = '${typeof mountPrefix === 'string' ? mountPrefix : ''}';
+    ${mountHref.toString()}
+    ${classifyLaunchWatch.toString()}
+
+    // Poll every 2s for up to 30s -- comfortably more than one watchdog
+    // classification tick (watchdog.mjs's launch-failed window check runs on
+    // a ~5s cadence), so the window reliably observes at least one
+    // classification even under load.
+    var WATCH_INTERVAL_MS = 2000;
+    var WATCH_WINDOW_MS = 30000;
+    var watchTimer = null;
+    // Bumped on every watchLaunch() call; a tick's own async fetch/.then()
+    // chain checks its captured generation before touching resultEl, so a
+    // slow response from a SUPERSEDED watch (a second submit started a new
+    // one, or this same watch already stopped itself) can never overwrite a
+    // newer result after the fact.
+    var watchGeneration = 0;
+
+    function stopWatch() {
+        if (watchTimer) {
+            clearInterval(watchTimer);
+            watchTimer = null;
+        }
+    }
+
+    function renderLaunchWatchFailure(sprintId, reason) {
+        resultEl.style.color = '#ef4444';
+        resultEl.textContent = 'Sprint ' + sprintId + ' failed to launch: ' + reason;
+        var logLink = document.createElement('a');
+        logLink.href = mountHref(MOUNT_PREFIX, '/sprints/' + encodeURIComponent(sprintId) + '/log');
+        logLink.target = '_blank';
+        logLink.rel = 'noopener';
+        logLink.style.marginLeft = '8px';
+        logLink.textContent = 'Raw log';
+        resultEl.appendChild(logLink);
+    }
+
+    // apra-fleet-i9ag.16.4: only ONE watch runs at a time -- a second submit
+    // (a new call to this function) cancels whatever watch is already in
+    // flight before starting its own, via stopWatch() below.
+    function watchLaunch(sprintId) {
+        stopWatch();
+        watchGeneration += 1;
+        var myGeneration = watchGeneration;
+        var elapsedMs = 0;
+        function tick() {
+            elapsedMs += WATCH_INTERVAL_MS;
+            fetch(mountHref(MOUNT_PREFIX, '/api/sprints/' + encodeURIComponent(sprintId)))
+                .then(function (r) { return (r && r.ok) ? r.json() : null; })
+                .catch(function () { return null; })
+                .then(function (body) {
+                    // Superseded by a newer watch (or this watch already
+                    // concluded) while this fetch was in flight -- discard.
+                    if (myGeneration !== watchGeneration) return;
+                    var result = classifyLaunchWatch(body);
+                    if (result.status === 'failed') {
+                        stopWatch();
+                        renderLaunchWatchFailure(sprintId, result.reason);
+                        return;
+                    }
+                    if (result.status === 'live') {
+                        stopWatch();
+                        return;
+                    }
+                    // Inconclusive (404 / network error / unparseable body) --
+                    // keep polling until the window closes, then leave the
+                    // original success line untouched. NEVER invent a failure.
+                    if (elapsedMs >= WATCH_WINDOW_MS) stopWatch();
+                });
+        }
+        watchTimer = setInterval(tick, WATCH_INTERVAL_MS);
+    }
+
     if (form) {
         form.addEventListener('submit', function (ev) {
             ev.preventDefault();
@@ -447,6 +571,7 @@ function clientScriptSource(mountPrefix) {
                     document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
                         tr.classList.remove('bead-row-selected');
                     });
+                    watchLaunch(r.json.sprintId);
                 } else {
                     resultEl.style.color = '#ef4444';
                     resultEl.textContent = formatLaunchError(r.status, r.json);
