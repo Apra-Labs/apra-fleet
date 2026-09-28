@@ -455,9 +455,22 @@ layer in the binary.
 
 **Chosen architecture: KB Server (HTTP REST relay)**
 
-One machine on the team runs: `apra-fleet kb-server [--port 7878]`
+One machine on the team runs: `apra-fleet kb-server [--port 7878] [--host <bind-address>]`
 This starts an embedded HTTP server on top of `SqliteProvider` (server-side).
-Team members configure `HttpKbProvider` pointing at the server:
+Bind address defaults to `127.0.0.1` (loopback-only), the same class of fix
+applied to the workflow viewer (apra-fleet-i9ag.15.9/15.11): a wildcard bind
+does not give the process exclusive ownership of `127.0.0.1:<port>`, so
+another process can bind that port on loopback specifically and, via the
+kernel's most-specific-match routing, silently receive every loopback
+request meant for this server -- neither side errors, and clients get the
+impostor's answers instead of a loud failure. The loopback default is
+therefore the safe default for a single machine, but it is a hard
+requirement for THIS architecture's multi-machine topology that the
+operator pass `--host` explicitly to an address the client machines can
+reach (a LAN/VPN IP, or `0.0.0.0` to bind every interface) -- otherwise
+every remote `HttpKbProvider` below gets `ECONNREFUSED` against a server
+that is, from its own perspective, running fine. Team members configure
+`HttpKbProvider` pointing at the server:
 
 ```
 Member A (local) -> HttpKbProvider -> HTTP REST -> KB Server -> SqliteProvider

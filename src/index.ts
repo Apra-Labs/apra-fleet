@@ -51,6 +51,7 @@ Usage:
   apra-fleet auth --oauth --member <name> secret.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secret.<name>  Resolve API key from persistent credential store
+  apra-fleet kb-server [options]                       Run the team-shared KB server (see 'kb-server --help')
   apra-fleet kb directives                             List pending + active user-directives
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
@@ -122,12 +123,19 @@ Usage:
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
 } else if (arg === 'kb-server') {
-  import('./commands/kb-server.js')
-    .then(async m => {
-      const opts = m.parseKbServerArgs(process.argv.slice(3));
-      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath, opts.host);
-    })
-    .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+  const rest = process.argv.slice(3);
+  if (rest.includes('--help') || rest.includes('-h')) {
+    import('./commands/kb-server.js')
+      .then(m => { console.log(m.KB_SERVER_USAGE); process.exit(0); })
+      .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+  } else {
+    import('./commands/kb-server.js')
+      .then(async m => {
+        const opts = m.parseKbServerArgs(rest);
+        await m.startKbServer(opts.port, opts.generateToken, opts.dbPath, opts.host);
+      })
+      .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+  }
 } else if (arg === 'kb') {
   const subCmd = process.argv[3];
   if (subCmd === 'invalidate') {

@@ -400,21 +400,29 @@ On the server machine, generate a token and start the server:
 ```bash
 node dist/index.js kb-server --generate-token
 # Prints: KB server token: <64-hex-chars>
-node dist/index.js kb-server
-# Prints: KB server listening on port 7878
+node dist/index.js kb-server --host <server-reachable-address> --port 7878
+# Prints: KB server listening on http://<server-reachable-address>:7878
 ```
+
+`kb-server` binds `127.0.0.1` (loopback-only) by default -- the same
+silently-stealable-port class fixed for the workflow viewer
+(apra-fleet-i9ag.15.9/15.11): a wildcard bind does not give the process
+exclusive ownership of loopback, so another process can steal
+`127.0.0.1:<port>` and silently receive traffic meant for this server
+instead. That default is safe for a single-machine setup, but **this
+team-shared topology needs `--host` set explicitly** to an address client
+machines can actually reach -- e.g. the server's LAN/VPN IP, or `0.0.0.0`
+to bind every interface. Leaving the loopback default here means every
+remote client's `HttpKbProvider` gets `ECONNREFUSED` (see
+[knowledge-layer-design.md](knowledge-layer-design.md), "Central Service
+Architecture"). Run `node dist/index.js kb-server --help` for the full flag
+reference.
 
 On each client machine, configure the provider. This is per fleet install,
 not per repo: every repo that install serves switches to the central server.
 
 ```
-kb_setup with provider=http, remote=http://<host>:7878, token=<token>
-```
-
-Or equivalently via CLI:
-
-```bash
-node dist/index.js kb-server --port 7878
+kb_setup with provider=http, remote=http://<server-reachable-address>:7878, token=<token>
 ```
 
 The client writes this to `~/.apra-fleet/data/knowledge/config.json`:

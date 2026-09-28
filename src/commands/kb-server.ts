@@ -295,6 +295,34 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   });
 }
 
+// apra-fleet-i9ag.15.11 (rework): kb-server had no discoverable help text at
+// all -- `--host` (the escape hatch this bead added for the team-shared
+// topology) was only visible by reading source. Exported so src/index.ts's
+// `kb-server` branch can print it on `--help`/`-h` before parsing/starting.
+export const KB_SERVER_USAGE = `apra-fleet kb-server -- run the team-shared KB server (HTTP REST relay over a SqliteProvider)
+
+Usage:
+  apra-fleet kb-server [options]
+
+Options:
+  --port <n>          Port to listen on (default: 7878)
+  --host <address>    Bind address (default: 127.0.0.1, loopback-only). A
+                       team-shared deployment (see docs/knowledge-layer.md,
+                       "Central server") MUST pass an address reachable from
+                       client machines here -- e.g. --host 0.0.0.0 to bind
+                       every interface, or the server's specific LAN/VPN IP.
+                       The loopback default means every remote client gets
+                       ECONNREFUSED.
+  --db <path>         Serve this local SQLite database file instead of the
+                       project/global KB the local config would otherwise
+                       select. Required if the local KB config itself selects
+                       provider=http, since kb-server must never self-proxy
+                       to a remote server.
+  --generate-token    Generate a new bearer token, print it, and store it
+                       (encrypted) for the server to authenticate clients
+                       against. Run this once before distributing the token.
+  --help, -h          Show this help`;
+
 export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string; host?: string } {
   let port = 7878;
   let generateToken = false;
