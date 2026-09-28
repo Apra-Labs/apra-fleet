@@ -156,15 +156,78 @@ Notes:
   when the workflow assets that contain it were installed (skipped by
   `--workflows none`), logs to `~/.apra-fleet/data/fleet-supervisor.log`, and
   is `Restart=no` (started at boot/login; an exit is treated as intentional).
-  **Known gap:** its working directory is currently the engine's own installed
-  path (`~/.apra-fleet/workflows/fleet-sprint`), not the project it supervises
-  -- since that is the directory `bd` resolves the project's beads DB from
-  (`BEADS_DIR`, else a `.beads` walk-up), this means it does not yet reach a
-  real project's beads DB out of the box. The real fix (a folder-selection
-  setting persisted to `supervisor.config.json`, plus graceful degradation
-  when no beads DB is found) is tracked separately; see
+- **Project folder:** the supervisor resolves which project's beads database
+  to work against by this precedence, in order:
+  1. an explicit `--beads-dir <path>` passed directly to `serve.mjs` (not
+     used by the registered service unit, which passes no extra arguments --
+     see below);
+  2. the project folder **persisted** in `supervisor.config.json`, under the
+     supervisor's own data dir (`~/.apra-fleet-se` by default, or
+     `FLEET_SE_DATA_DIR` when set);
+  3. walking up from the supervisor's working directory looking for a
+     `.beads` folder -- the same discovery `bd` itself performs. What is
+     reported as the project folder in this case is the folder that was
+     FOUND (the one holding `.beads`, which is also the working directory
+     handed to every sprint), not the subfolder the supervisor happened to
+     be started from.
+
+  Step 2 is what makes a service-registered supervisor reach a real
+  project's beads DB: its working directory is the engine's own installed
+  path (`~/.apra-fleet/workflows/fleet-sprint`), which has no `.beads` of its
+  own, so step 3 alone would never find a real project. Set the persisted
+  folder either at install time (`apra-fleet install --project-dir
+  <path>`) or later from the console's Projects page (`/ui/projects` under
+  the fleet-supervisor workflow package), which reads and writes the same
+  file through the supervisor's own guarded API. Setting it from either
+  place requires restarting the supervisor to take effect (the config is
+  read once, at startup); the console page states this explicitly after a
+  save.
+
+  **A folder is only accepted if a sprint could actually run in it.** Both
+  the install flag and the console refuse a folder that does not have all
+  of: an initialised `.beads` (`bd init`), a git `origin` remote
+  (`git remote add origin <url>`), and bd's `sync.remote` set
+  (`bd config set sync.remote <url>`). The refusal names every missing
+  piece and the command that fixes it, and nothing is written. This is not
+  strictness for its own sake: the sprint engine's beads identity check
+  treats an incomplete identity as fatal, so accepting such a folder would
+  produce a supervisor that starts cleanly and then fails every launch.
+  `bd` must be runnable for the `sync.remote` check, so `apra-fleet
+  install` runs that one check (and the write) only AFTER its own Beads
+  step has provisioned bd -- a fresh machine with no bd yet is not a
+  reason to reject a good folder. The checks that need no bd (the path
+  itself, `.beads`, the git remote) still run before the install writes a
+  single file, so a typo'd path costs you nothing. If bd is still not
+  runnable by the time the deferred check runs -- only possible with
+  `--workflows none`, which skips the Beads step -- the install fails
+  saying so rather than skipping the check. Either input also accepts the
+  folder's `.beads` path and normalises it to the parent, the same
+  convenience `--beads-dir` offers.
+
+  A folder that was already persisted and has since become incomplete is a
+  different case: the supervisor still starts (see below) and reports the
+  missing field(s) and their fix in `GET /api/health`'s `beadsWarning`, so
+  the console stays reachable to correct it.
+
+  **Staleness-tolerant, but a typo is still fatal:** a persisted folder that
+  has since been moved, renamed, or deleted does **not** stop the supervisor
+  from starting -- it starts, warns naming the missing path and how to fix
+  it, and reports its beads status as unknown until the setting is corrected.
+  If the SAME path becomes valid again (e.g. a remounted volume), `GET
+  /api/health?refresh=1` re-probes it with no restart needed; saving a
+  DIFFERENT project folder from the console still requires a restart to
+  take effect, exactly like the install-time/flag setting. This is
+  deliberately asymmetric with an explicit `--beads-dir` typo'd on the
+  command line, which is always a hard error: an operator who just typed a
+  flag should never have that typo silently ignored, while a persisted
+  setting can go stale for reasons the operator was not present for (a
+  moved checkout, an unmounted volume, a reimaged machine), and a
+  supervisor that refuses to boot cannot serve the very console page that
+  would let them fix it.
+
+  See
   [`packages/apra-fleet-se/docs/project-model.md`](../packages/apra-fleet-se/docs/project-model.md)
-  for the full supervisor/member/beads schema and gap tracking.
+  for the full supervisor/member/beads schema.
 - Pointing the unit at the binary's own subcommand removes the external node
   dependency entirely: service units do not source shell rc files, so a bare
   `node` would not resolve under nvm/fnm/volta, and under the released binary

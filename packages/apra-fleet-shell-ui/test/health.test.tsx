@@ -362,4 +362,135 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
     expect(dts).not.toContain("fleet-se");
   });
+
+  // apra-fleet-i9ag.17.3.2: the supervisor project-folder row, reached
+  // through the console's /ext/se/* proxy to the supervisor's own GET
+  // /api/health (apra-fleet-i9ag.17.3.1). These four cases pin the three
+  // distinguishable states (configured / not-configured / unknown) plus the
+  // isolation guarantee that a supervisor outage can never take the rest of
+  // the page down.
+  //
+  // REVERT CHECK: reverting Health.tsx's project-folder row (and its
+  // supervisor-health fetch) back to the pre-change page makes every one of
+  // these five cases fail -- there is no "Project folder" <dt> at all, so
+  // `dts` never contains it and the text assertions below never match.
+  // Verified via `git stash` of src/pages/Health.tsx and
+  // src/api/supervisor-health.ts, observed the failure (no "Project folder"
+  // dt, TS import error for supervisor-health), then restored.
+  describe("supervisor project-folder row (apra-fleet-i9ag.17.3.2)", () => {
+    it("configured: renders both the resolved project folder and the source that won", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown) => {
+          const url = String(input);
+          if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+          if (url === "/api/workflow-packages") return jsonResponse(404, {});
+          if (url === "/ext/se/api/health") {
+            return jsonResponse(200, {
+              status: "ok",
+              projectDir: "/home/fleet/project-a",
+              projectDirSource: "config"
+            });
+          }
+          throw new Error(`unexpected fetch: ${url}`);
+        })
+      );
+
+      await renderHealth();
+
+      const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+      expect(dts).toContain("Project folder");
+      const text = container.textContent ?? "";
+      expect(text).toContain("/home/fleet/project-a");
+      expect(text).toContain("config");
+    });
+
+    it("not configured: renders the explicit not-configured text naming the fix, never an empty value", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown) => {
+          const url = String(input);
+          if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+          if (url === "/api/workflow-packages") return jsonResponse(404, {});
+          if (url === "/ext/se/api/health") {
+            return jsonResponse(200, { status: "ok", projectDir: null, projectDirSource: null });
+          }
+          throw new Error(`unexpected fetch: ${url}`);
+        })
+      );
+
+      await renderHealth();
+
+      const text = container.textContent ?? "";
+      expect(text).toContain("not configured");
+      expect(text).toContain("--beads-dir");
+      expect(text).not.toContain("unknown (supervisor unreachable");
+    });
+
+    it("unknown: renders the explicit unknown text when the supervisor is unreachable", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown) => {
+          const url = String(input);
+          if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+          if (url === "/api/workflow-packages") return jsonResponse(404, {});
+          if (url === "/ext/se/api/health") throw new Error("network down");
+          throw new Error(`unexpected fetch: ${url}`);
+        })
+      );
+
+      await renderHealth();
+
+      const text = container.textContent ?? "";
+      expect(text).toContain("unknown (supervisor unreachable");
+      expect(text).not.toContain("not configured");
+    });
+
+    it("unknown: renders the explicit unknown text when the payload predates the field (older supervisor)", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown) => {
+          const url = String(input);
+          if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+          if (url === "/api/workflow-packages") return jsonResponse(404, {});
+          // No projectDir key at all -- the older-supervisor payload shape.
+          if (url === "/ext/se/api/health") return jsonResponse(200, { status: "ok" });
+          throw new Error(`unexpected fetch: ${url}`);
+        })
+      );
+
+      await renderHealth();
+
+      const text = container.textContent ?? "";
+      expect(text).toContain("unknown (supervisor unreachable");
+      expect(text).not.toContain("not configured");
+    });
+
+    it("isolation: an unreachable supervisor degrades only its own row -- the other five rows and the workflow-packages list still render", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown) => {
+          const url = String(input);
+          if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+          if (url === "/api/workflow-packages") {
+            return jsonResponse(200, { packages: [packageFixture("build")] });
+          }
+          if (url === "/ext/se/api/health") throw new Error("network down");
+          throw new Error(`unexpected fetch: ${url}`);
+        })
+      );
+
+      await renderHealth();
+
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+      expect(dts).toEqual(["Version", "Data dir", "Update available", "Fleet status", "fleet-se", "Project folder"]);
+      const text = container.textContent ?? "";
+      expect(text).toContain("apra-fleet 0.9.0");
+      expect(text).toContain("3 member(s)");
+      expect(text).toContain("unknown (supervisor unreachable");
+      const items = Array.from(container.querySelectorAll("li")).map((li) => li.textContent ?? "");
+      expect(items).toEqual(["build"]);
+    });
+  });
 });

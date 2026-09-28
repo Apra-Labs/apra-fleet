@@ -75,6 +75,105 @@ each KB strict-mode delegation with no remote route spends a network round
 trip confirming reachability on every call, which is worth revisiting if
 those calls end up on a hot path.
 
+## [Unreleased] -- Supervisor project folder: persisted setting, console page, Health row, and install-time seeding
+
+Sprint goal: the installed supervisor had no way to pick a project -- it read
+beads from wherever its service's working directory happened to walk up
+from, and the console's Projects page was a placeholder -- so "browse the
+backlog, launch a sprint" had no supported way to point at a project. Fix
+the M1-minimal gap: a persisted project-folder setting, a real console page
+to set it, its surfacing on Health, and an install-time way to seed it.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.5452.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2083 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The fleet-supervisor now resolves a persisted project folder instead of
+  always defaulting to its own installed engine path.** Precedence order:
+  an explicit `--beads-dir` flag, then the folder **persisted** in
+  `supervisor.config.json` under the supervisor's data dir, then the
+  `.beads` walk-up from the supervisor's working directory (unchanged
+  legacy behavior). A persisted folder that has since gone missing degrades
+  to a warning and an "unknown" beads status rather than refusing to start
+  -- deliberately asymmetric with a typo'd `--beads-dir`, which is still a
+  hard startup error. See
+  [`packages/apra-fleet-se/docs/project-model.md`](packages/apra-fleet-se/docs/project-model.md)
+  (rule 1) and [`docs/install.md`](docs/install.md)'s "Project folder" note.
+- **`apra-fleet install --project-dir <path>`** seeds that persisted folder
+  before the supervisor service is registered and started, so a fresh
+  install's first boot already resolves the right project without a
+  restart. Omitting the flag changes nothing, including an existing setting
+  an operator already made from the console.
+- **A project folder is only accepted if a sprint could actually run in
+  it.** Both `install --project-dir` and `POST /api/project` now require an
+  initialised `.beads`, a git `origin` remote and bd's `sync.remote` before
+  persisting anything, and refuse otherwise with a message naming every
+  missing piece and the one command that fixes it. The sprint engine's
+  beads identity check treats an incomplete identity as fatal, so the old
+  "accept any existing directory" behaviour only moved the failure to the
+  first launch, by which time the operator who could fix it had walked
+  away. `bd` must be runnable for the `sync.remote` check, so `apra-fleet
+  install` defers that check and the write until after its own Beads step
+  has provisioned bd (the path, `.beads` and git-remote checks still run
+  before anything is written) -- a fresh machine with no bd yet no longer
+  fails an install for a prerequisite the install was about to satisfy
+  itself. If bd is still not runnable then (`--workflows none`), the
+  install fails saying so rather than silently skipping it. A folder
+  that was already persisted and has since become incomplete still starts
+  the supervisor (the console must stay reachable) and now reports the
+  missing field(s) and their fix in `GET /api/health`'s `beadsWarning`
+  instead of looking healthy until the first launch fails. The setting is
+  read once, at startup, so every save says so: the console's save response
+  asks for a restart (and names the `--beads-dir` flag when one is currently
+  overriding the setting), and the stale-folder warning says a restart is
+  required rather than leaving the operator to assume
+  `GET /api/health?refresh=1` picked the new value up -- that refresh only
+  re-probes the path already resolved. The console's save response also
+  carries the source the saved value will resolve to after that restart, so
+  the page's Source row no longer reads "unknown" the moment a save
+  succeeds, and a rejected path is now reported in the page's own terms
+  rather than quoting a `--beads-dir` flag the operator never typed.
+- **The install-time `supervisor.config.json` writer now matches the runtime
+  writer's contract:** it preserves unknown top-level keys (merging
+  `projectDir` over whatever is already there) and writes atomically via a
+  temp file in the same directory plus a rename. Previously an install
+  destroyed any key a newer supervisor had written and could leave a
+  truncated file behind. A malformed existing file is still simply replaced.
+- **The walk-up source now reports the project folder it FOUND** -- the
+  ancestor holding `.beads`, which is also the working directory every
+  sprint child is given -- in `GET /api/health`, `GET /api/project` and the
+  startup line, rather than the subfolder the supervisor happened to be
+  started from. All three sources now name the same kind of thing.
+- **Console: a guarded `GET`/`POST /api/project` route** on the supervisor,
+  and a real `/ui/projects` page (replacing the placeholder that used to
+  answer "fleet-supervisor UI arrives in a later sprint") showing the
+  current folder, its winning source, and whether a beads DB was found
+  there, with a form to save a new one and an inline rejection message on a
+  bad path. A save states plainly whether a restart is required.
+- **Console Health page:** a new "Project folder" row, fetched independently
+  of the existing status row so a supervisor outage degrades only that row,
+  distinguishing configured / not-configured / unknown states.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open for a future sprint at P2/P3, none blocking this sprint's goal):
+- The stale-configured-folder warning tells an operator to use Health's
+  refresh, which only re-probes a folder that is already valid again; a
+  genuinely wrong path still needs a console/flag change plus a restart.
+- `POST /api/project`'s response omits `source`, so the console's Source row
+  reads "unknown" immediately after a successful save until the next reload.
+- The console's path-rejection message names the `--beads-dir` flag, which
+  the browser operator submitting the form never typed.
+- A sprint launched against a since-gone-stale project folder fails with
+  only a logged spawn error, no surfaced console message.
+- The M2 route guard that keeps `/api/projects` (the separate sqlite-backed
+  multi-project store) out of scope matches on comment text, not just code
+  references, and is worth hardening before M2 work begins.
+
 ## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
 
 Sprint goal: finish shipping the `/ui` console shell that a prior sprint

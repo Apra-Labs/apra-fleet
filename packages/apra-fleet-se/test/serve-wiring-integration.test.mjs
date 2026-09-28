@@ -324,7 +324,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         assert.ok(backlogIdx < launchIdx, 'expected Launch Sprint after the Backlog table, within the Backlog tab');
     });
 
-    test('GET /ui/sprints returns the real dashboard, not the /ui placeholder; GET /ui/projects still does', async () => {
+    test('GET /ui/sprints returns the real dashboard, not the /ui placeholder; GET /ui/projects renders the real Projects page (apra-fleet-i9ag.17.2.2)', async () => {
         // (apra-fleet-i9ag.3.3) The manifest's Sprints nav path (registration/
         // manifest.mjs's SPRINTS_UI_PATH) must be mounted against the SAME
         // real dashboard handler as GET / -- not the /ui placeholder every
@@ -348,9 +348,16 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         assert.ok(res.body.includes('id="sprint-stack"'), 'expected the Sprint Stack container');
         assert.ok(res.body.includes('id="launch-form"'), 'expected the Launch Sprint form markup');
 
+        // apra-fleet-i9ag.17.2.2: /ui/projects now swaps the placeholder for a
+        // real page (registration/project-page.mjs, wired in via the SAME
+        // staticHandler seam SPRINTS_UI_PATH's dashboard mount above reuses)
+        // -- the literal placeholder string must never appear here again,
+        // and a genuine page marker must.
         const projectsRes = await httpGet(port, '/ui/projects', { serviceToken });
         assert.equal(projectsRes.status, 200);
-        assert.ok(projectsRes.body.includes('fleet-supervisor UI arrives in a later sprint'), 'expected /ui/projects to still answer the placeholder');
+        assert.ok(projectsRes.headers['content-type'].includes('text/html'), projectsRes.headers['content-type']);
+        assert.ok(!projectsRes.body.includes('fleet-supervisor UI arrives in a later sprint'), 'expected /ui/projects to no longer answer the placeholder');
+        assert.ok(projectsRes.body.includes('id="save-form"'), 'expected the real Projects page save form');
     });
 
     test('POST /api/sprints reaches the real sprint controller (validation error, not 404)', async () => {

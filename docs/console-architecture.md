@@ -628,6 +628,25 @@ link) -- a single resolved origin cannot let those two consumers disagree
 about what the console's address is, where two independent derivations could
 drift.
 
+### The supervisor's own Health row: a separate "which project" signal from the shell's Health (S3) page
+
+The shell's own Health (S3) page (above) reports the *console's* status --
+version, data directory, registered workflow packages. Once the
+fleet-supervisor workflow package is registered, its embedded pages add a
+second, package-scoped Health surface that answers a different question:
+which project folder is *this* supervisor instance running the Backlog and
+Sprints pages against, and where did that folder come from (an explicit
+flag, a persisted setting, or the legacy walk-up)? That resolved folder and
+source come from the supervisor's own startup precedence (see
+`packages/apra-fleet-se/docs/architecture.md`'s "single-project bootstrap
+setting" section and `docs/install.md`'s "Project folder" note for the full
+three-way precedence and its stale-tolerant/typo-fatal asymmetry) and are
+rendered as three distinct states -- configured-with-folder, explicitly
+not-configured, and unknown (the folder is set but could not be re-probed)
+-- so an operator can tell a genuinely empty setting apart from a
+supervisor-side probe failure, and a lost project folder degrades only that
+one row rather than the whole embedded page.
+
 ### Registration convergence, not a one-shot attempt
 
 Self-registration cannot assume its two dependencies -- a signed credential
