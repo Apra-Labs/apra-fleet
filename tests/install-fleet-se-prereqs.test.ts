@@ -79,6 +79,29 @@ vi.mock('../src/services/jwt.js', async (importOriginal) => {
 
 const mockHome = '/mock/home';
 
+/**
+ * The isolation predicate used by the afterEach check below, factored out so it
+ * can be exercised under an explicit path flavour (see the win32 assertion at
+ * the bottom of this file). `impl` is a path module flavour -- node:path on the
+ * host under test, or path.win32/path.posix in that assertion.
+ *
+ * Separator-agnostic on purpose (apra-fleet-i9ag.13): mockHome is written with
+ * '/', but install.ts builds its targets with path.join(), so on win32 they
+ * come back as '\\mock\\home\\...'. A literal startsWith('/mock/home') therefore
+ * rejected a perfectly in-sandbox path and turned the whole suite red on
+ * Windows CI. Resolving both sides normalizes the separators (and the drive
+ * root win32 prepends) without weakening the check: a target that really is
+ * outside the mocked home resolves outside it and still fails.
+ */
+function isInsideMockHome(target: string, impl: path.PlatformPath = path): boolean {
+  // A relative target cannot name the developer's real HOME, so it was always
+  // accepted here -- keep that, unchanged.
+  if (!impl.isAbsolute(target)) return true;
+  const home = impl.resolve(mockHome);
+  const resolved = impl.resolve(target);
+  return resolved === home || resolved.startsWith(home + impl.sep);
+}
+
 const BASE_MANIFEST = {
   version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {}, workflows: {},
 };
@@ -154,7 +177,7 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
       ...vi.mocked(fs.mkdirSync).mock.calls.map(c => String(c[0])),
     ];
     for (const target of allWriteTargets) {
-      expect(target.startsWith(mockHome) || !path.isAbsolute(target)).toBe(true);
+      expect(isInsideMockHome(target), `write target escaped the mocked home: ${target}`).toBe(true);
     }
   });
 
@@ -494,6 +517,35 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     // See the reset comment on case 6 -- same automock leak risk.
     vi.mocked(execFileSync).mockReset();
   });
+});
+
+// apra-fleet-i9ag.13: the afterEach isolation check above used to compare write
+// targets against the '/'-spelled mockHome literally, so on Windows CI -- where
+// install.ts's path.join() returns '\\mock\\home\\...' -- every test in the suite
+// above failed teardown on a path that was in fact inside the sandbox. These
+// assertions run the predicate under BOTH path flavours explicitly, so the
+// regression is caught on any host rather than only on a Windows runner.
+describe('isInsideMockHome() is separator-agnostic (apra-fleet-i9ag.13)', () => {
+  for (const [name, impl] of [['win32', path.win32], ['posix', path.posix]] as const) {
+    it(`${name}: accepts targets the installer builds under the mocked home`, () => {
+      expect(isInsideMockHome(impl.join(mockHome, '.apra-fleet', 'fleet.key'), impl)).toBe(true);
+      expect(isInsideMockHome(impl.join(mockHome, '.apra-fleet'), impl)).toBe(true);
+      // The mocked home itself (a bare mkdirSync of HOME) is inside it.
+      expect(isInsideMockHome(impl.resolve(mockHome), impl)).toBe(true);
+      // Relative targets never name a real HOME -- unchanged from before.
+      expect(isInsideMockHome(impl.join('relative', 'dir'), impl)).toBe(true);
+    });
+
+    it(`${name}: still REJECTS a genuine write outside the mocked home`, () => {
+      const outside = name === 'win32' ? 'C:\\Users\\real\\.apra-fleet\\fleet.key' : '/home/real/.apra-fleet/fleet.key';
+      expect(isInsideMockHome(outside, impl)).toBe(false);
+      // A sibling whose name merely STARTS with the mocked home is outside it
+      // too -- the '/'-literal startsWith() check used to accept this one.
+      expect(isInsideMockHome(impl.join(`${mockHome}evil`, 'fleet.key'), impl)).toBe(false);
+      // ...and so is an escape spelled with '..' rather than absolutely.
+      expect(isInsideMockHome(impl.join(mockHome, '..', 'elsewhere', 'fleet.key'), impl)).toBe(false);
+    });
+  }
 });
 
 // Criterion 7 (a second, independent revert canary -- see the REVERT CHECK
