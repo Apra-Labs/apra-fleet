@@ -212,3 +212,58 @@ describe('kb-server refuses an http project provider (my-beads-db-0cd.15)', () =
     await expect(startKbServer(REFUSAL_PORT, false)).rejects.toThrow('KB server refuses an http project provider');
   });
 });
+
+// apra-fleet-i9ag.15.11: same silently-stealable-port class as the workflow
+// viewer fix (apra-fleet-i9ag.15.9, see
+// packages/apra-fleet-workflow/test/apra-fleet-workflow-viewer-bind-exclusivity.test.mjs).
+// startKbServer() used to call `server.listen(port, cb)` with no host,
+// binding the OS wildcard. A wildcard bind does not give this process
+// exclusive ownership of `127.0.0.1:<port>`: another process can still bind
+// the same port on loopback specifically, that bind succeeds, and the
+// kernel's most-specific-match routing then silently hands the newcomer
+// every loopback request meant for this Bearer-token-guarded KB server --
+// neither side errors, and clients get the impostor's answers.
+describe('apra-fleet-i9ag.15.11: the KB server owns its loopback port exclusively', () => {
+  const BIND_PORT = 17880;
+
+  it('binds loopback explicitly by default, not the OS wildcard', async () => {
+    const s = await startKbServer(0, false);
+    try {
+      const addr = s.address();
+      expect(addr && typeof addr === 'object' ? addr.address : addr).toBe('127.0.0.1');
+    } finally {
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  });
+
+  it('honors an explicit host override', async () => {
+    const s = await startKbServer(0, false, undefined, '127.0.0.1');
+    try {
+      const addr = s.address();
+      expect(addr && typeof addr === 'object' ? addr.address : addr).toBe('127.0.0.1');
+    } finally {
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  });
+
+  it('refuses a rival loopback bind on the live port instead of silently splitting traffic', async () => {
+    const s = await startKbServer(BIND_PORT, false);
+    try {
+      const rivalErr = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
+        const rival = http.createServer();
+        rival.once('error', (err: NodeJS.ErrnoException) => resolve(err));
+        rival.listen({ port: BIND_PORT, host: '127.0.0.1' }, () => {
+          rival.close(() => resolve(null));
+        });
+      });
+      expect(
+        rivalErr?.code,
+        'a competing loopback bind on the live KB server\'s port must be REFUSED. If it succeeds, the KB ' +
+        'server is bound to the wildcard address again and every loopback request to it can be silently ' +
+        'answered by the impostor instead.'
+      ).toBe('EADDRINUSE');
+    } finally {
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  });
+});
