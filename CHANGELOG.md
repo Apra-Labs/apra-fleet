@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Fresh install: reliable supervisor registration and loud fleet-se prerequisite failures
+
+Sprint goal: on a fresh install, make the fleet-supervisor register itself
+with the console reliably no matter which order the install step and the
+supervisor start in, and make the installer detect and fail loudly on a
+missing Node.js/npm prerequisite for fleet-se (the fleet-sprint engine, the
+fleet supervisor, and `bd`) instead of silently skipping the `bd` install.
+Both landed and are independently verified against the deployed build; one
+integration-test finding along the way turned out to be a stale
+verification against a different branch rather than a real gap in this
+branch's code, and was corrected in-sprint (see docs/dogfooding-approach.md
+for the general lesson this left behind about verifying build identity by
+ancestry, not just a plausible commit or bead reference).
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $25.7750.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.7777 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **`install` mints `fleet.key` deterministically before the supervisor
+  service is registered or started**, so the credential the supervisor
+  needs to register itself always exists before registration is attempted
+  on a fresh machine.
+- **Supervisor self-registration is now a convergence loop, not a one-shot
+  attempt.** It re-resolves the auth token, the connection, and the console
+  origin on every pass instead of caching them from the first attempt, so a
+  fresh install converges to "registered" within a bounded time regardless
+  of whether the key or the console becomes available first -- and an
+  absent key correctly falls back to a private/token credential rather than
+  silently giving up. See docs/console-architecture.md for the design and a
+  known, separately-tracked asymmetry (the supervisor's *inbound* auth guard
+  does not yet re-read its accepted credential the same way).
+- **The installer detects Node.js (>=22.16.0) and npm before the
+  fleet-se/workflows step** and either stops with a clear message and a
+  non-zero exit naming the fix, or -- with `--workflows none` -- completes a
+  Node-free core-only install and reports fleet-se as `NOT INSTALLED` with
+  the same fix line. `apra-fleet status` and the console Health page now
+  report this prerequisite state explicitly (met / not met / unknown)
+  instead of hiding the row.
+- **The `bd` (Beads) npm install step is now fatal on failure**, including
+  the case where npm reports success but the installed binary is not
+  actually runnable afterward (a global bin directory not on `PATH`) --
+  replacing a previous silent "install skipped" warning that let the
+  installer report success with `bd` unusable.
+- **The `bd` version pin has one canonical TypeScript owner**
+  (`src/cli/beads-pin.ts`); the one unavoidable duplicate, a dependency-free
+  plain-Node installer that cannot import TypeScript, is held equal to it by
+  a dedicated test. See docs/install.md for why the earlier
+  release-binary-download approach for `bd` was deliberately abandoned in
+  favor of this.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open for a future sprint):
+- The supervisor's inbound HTTP auth guard still resolves its accepted
+  credential once at process start and never re-reads it. Not reachable
+  under the fresh-install ordering this sprint guarantees, but a latent trap
+  for any other startup ordering (see docs/console-architecture.md).
+- The fleet-se prerequisite gate can exit mid-install after some files
+  (binary, hooks, scripts, settings, skills) have already been written,
+  rather than leaving the machine untouched or completing a working
+  core-only install; `--workflows none` avoids the gap entirely.
+- The fleet-se prerequisite probe re-spawns `node`/`npm` synchronously on
+  every `fleet_status` JSON call instead of caching the result, which is a
+  real (if currently modest) event-loop stall risk on a shared server.
+- A stale code comment in the `apra-pm` installer still describes the
+  abandoned release-binary approach for `bd` and points at a module that no
+  longer exists.
+- Pre-existing carried-forward items from an earlier sprint remain open: the
+  macOS `stop`-then-`start` supervisor restart gap, `stop` missing the
+  non-default-instance guard that `start` already has, and pack-size
+  headroom after shipping the supervisor source.
+- The once-per-sprint regression pass found no new regressions this sprint;
+  every failure it hit was a recurrence of already-tracked, pre-existing
+  carry-over breakage (a stale golden-transcript test cascade, a couple of
+  flaky mock-sprint/beads-identity tests, a slow-lane test timing/budget
+  issue, and a sandbox smoke-test step blocked by the permission
+  classifier) -- that underlying breakage still carries over to a future
+  sprint.
+
 ## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
 
 Sprint goal: let the fleet-supervisor OS service start on a machine that has

@@ -114,6 +114,13 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+The standalone installer binary needs no Node.js at all for the core console
+and MCP server. Sprint automation (`fleet-sprint`, the always-on supervisor,
+and `bd`) is the one part that needs Node.js 22.16+ and npm; `install` checks
+for them up front and fails loudly with the fix if they're missing, or you
+can pass `--workflows none` for a Node-free, core-only install. See
+[docs/install.md](docs/install.md#prerequisites).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
