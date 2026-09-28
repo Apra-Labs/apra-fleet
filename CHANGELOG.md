@@ -50,6 +50,12 @@ What shipped and is verified working:
   the supervisor (the console must stay reachable) and now reports the
   missing field(s) and their fix in `GET /api/health`'s `beadsWarning`
   instead of looking healthy until the first launch fails.
+- **The install-time `supervisor.config.json` writer now matches the runtime
+  writer's contract:** it preserves unknown top-level keys (merging
+  `projectDir` over whatever is already there) and writes atomically via a
+  temp file in the same directory plus a rename. Previously an install
+  destroyed any key a newer supervisor had written and could leave a
+  truncated file behind. A malformed existing file is still simply replaced.
 - **Console: a guarded `GET`/`POST /api/project` route** on the supervisor,
   and a real `/ui/projects` page (replacing the placeholder that used to
   answer "fleet-supervisor UI arrives in a later sprint") showing the
@@ -62,11 +68,6 @@ What shipped and is verified working:
 
 Carried forward (filed as follow-up work, not fixed this sprint, all left
 open for a future sprint at P2/P3, none blocking this sprint's goal):
-- The install-time `supervisor.config.json` writer drops unknown top-level
-  keys and is not atomic, diverging from the runtime writer's documented
-  preserve-unknown-keys/atomic-write guarantee -- harmless today (the file
-  has one key) but a latent trap once a second key exists. See
-  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
 - The walk-up source reports the process's working directory as the project
   folder rather than the `.beads` folder actually discovered by walking up
   from it.

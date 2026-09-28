@@ -95,8 +95,16 @@ const EXIT_SENTINEL = '__process_exit__';
  * map marks `true` reports as a directory -- good enough for
  * seedSupervisorProjectDir()'s existsSync()+statSync().isDirectory() check,
  * without needing a second mock table just for stat.
+ *
+ * `extraReads` does the same for readFileSync: exact-path -> contents, so a
+ * test can stand up an ALREADY-EXISTING supervisor.config.json (valid or
+ * corrupt) and assert what the installer's write does to it.
  */
-function makeFsMock(serveScriptExists = true, extraExists: Record<string, boolean> = {}): void {
+function makeFsMock(
+  serveScriptExists = true,
+  extraExists: Record<string, boolean> = {},
+  extraReads: Record<string, string> = {},
+): void {
   vi.mocked(fs.existsSync).mockImplementation((p: any) => {
     const ps = p.toString();
     if (Object.prototype.hasOwnProperty.call(extraExists, ps)) return extraExists[ps];
@@ -111,6 +119,7 @@ function makeFsMock(serveScriptExists = true, extraExists: Record<string, boolea
   });
   vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
     const ps = p.toString();
+    if (Object.prototype.hasOwnProperty.call(extraReads, ps)) return extraReads[ps];
     if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
     if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
     if (ps.includes('install-config.json')) return JSON.stringify({ providers: { claude: { skill: 'all' } } });
@@ -122,6 +131,7 @@ function makeFsMock(serveScriptExists = true, extraExists: Record<string, boolea
   vi.mocked(fs.chmodSync).mockImplementation(() => {});
   vi.mocked(fs.copyFileSync).mockImplementation(() => {});
   vi.mocked(fs.writeFileSync).mockImplementation(() => {});
+  vi.mocked(fs.renameSync).mockImplementation(() => {});
   vi.mocked(fs.rmSync).mockImplementation(() => undefined);
 }
 
@@ -378,13 +388,26 @@ function mockProjectDirProbes({
   }) as any);
 }
 
-/** Every fs.writeFileSync call this run made to the supervisor config path,
+/** The installer writes the config ATOMICALLY: temp file in the same dir,
+ *  then rename. Asserting on the temp path is therefore asserting on the
+ *  real write; `configRenames()` below pins the second half. */
+const CONFIG_TMP_PATH = `${CONFIG_PATH}.tmp`;
+
+/** Every fs.writeFileSync call this run made toward the supervisor config,
  *  in call order -- the content argument only. */
 function configWriteContents(): string[] {
   return vi
     .mocked(fs.writeFileSync)
-    .mock.calls.filter(([p]) => (p as any)?.toString() === CONFIG_PATH)
+    .mock.calls.filter(([p]) => (p as any)?.toString() === CONFIG_TMP_PATH)
     .map(([, content]) => (content as any).toString());
+}
+
+/** Every fs.renameSync call that published a config temp file. */
+function configRenames(): Array<[string, string]> {
+  return vi
+    .mocked(fs.renameSync)
+    .mock.calls.map(([from, to]) => [(from as any).toString(), (to as any).toString()] as [string, string])
+    .filter(([, to]) => to === CONFIG_PATH);
 }
 
 describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
@@ -419,7 +442,7 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
     const writeOrders = vi
       .mocked(fs.writeFileSync)
       .mock.calls.map((call, i) => ({ call, order: vi.mocked(fs.writeFileSync).mock.invocationCallOrder[i] }))
-      .filter(({ call }) => (call[0] as any)?.toString() === CONFIG_PATH)
+      .filter(({ call }) => (call[0] as any)?.toString() === CONFIG_TMP_PATH)
       .map(({ order }) => order);
     expect(writeOrders.length).toBeGreaterThan(0);
     expect(supervisorMgr.register.mock.invocationCallOrder.length).toBeGreaterThan(0);
@@ -521,6 +544,56 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
     ).resolves.toBeUndefined();
     expect(exitCode).toBeUndefined();
     expect(configWriteContents()).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // The installer and the supervisor write the SAME file, so the installer
+  // owes the same two guarantees the runtime writer documents: unknown
+  // top-level keys survive, and the write is atomic (temp + rename in the
+  // same directory). Without them an install silently destroys a field a
+  // newer supervisor wrote, or leaves a truncated file behind.
+  // -------------------------------------------------------------------
+
+  it('the write is atomic: a temp file in the config directory, then a rename onto the real path', async () => {
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes();
+    await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
+    expect(exitCode).toBeUndefined();
+
+    expect(configWriteContents()).toHaveLength(1);
+    expect(configRenames()).toEqual([[CONFIG_TMP_PATH, CONFIG_PATH]]);
+    // The real path is never written directly -- that is what makes a
+    // half-finished write unobservable to the supervisor's next boot.
+    const direct = vi.mocked(fs.writeFileSync).mock.calls.filter(([p]) => (p as any)?.toString() === CONFIG_PATH);
+    expect(direct).toHaveLength(0);
+  });
+
+  it('an unknown top-level key already in the config survives the install-time write', async () => {
+    makeFsMock(
+      true,
+      { ...USABLE_PROJECT_FS, [CONFIG_PATH]: true },
+      { [CONFIG_PATH]: JSON.stringify({ projectDir: '/mock/older-project', futureSetting: { nested: [1, 2] } }) },
+    );
+    mockProjectDirProbes();
+    await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
+    expect(exitCode).toBeUndefined();
+
+    const written = JSON.parse(configWriteContents()[0]);
+    expect(written.projectDir).toBe(PROJECT_DIR);
+    expect(written.futureSetting).toEqual({ nested: [1, 2] });
+  });
+
+  it('a malformed existing config is replaced by a good one rather than blocking the write', async () => {
+    makeFsMock(
+      true,
+      { ...USABLE_PROJECT_FS, [CONFIG_PATH]: true },
+      { [CONFIG_PATH]: '{ this is not json' },
+    );
+    mockProjectDirProbes();
+    await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
+    expect(exitCode).toBeUndefined();
+
+    expect(JSON.parse(configWriteContents()[0])).toEqual({ projectDir: PROJECT_DIR });
   });
 
   it('the install help text documents --project-dir (apra-fleet-i9ag.17.4.1)', async () => {

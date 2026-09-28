@@ -318,13 +318,28 @@ function parseBdConfigValue(text: string): string {
  * rejected path leaves no new file behind and an already-existing config
  * (e.g. one an operator set from the console) is left untouched.
  *
+ * THE WRITE ITSELF matches the runtime writer's two documented guarantees
+ * (writeSupervisorConfig() in
+ * packages/apra-fleet-se/src/supervisor/project-config.mjs), because the two
+ * write the SAME file and an installer that only honoured one of them would
+ * silently undo the other's work:
+ *
+ *   - UNKNOWN TOP-LEVEL KEYS ARE PRESERVED. A newer supervisor may have
+ *     written a field this build has never heard of; an install must not
+ *     destroy it. The existing file is read and merged under `projectDir`
+ *     (a file that is missing, unreadable or not a JSON object simply
+ *     yields nothing to preserve and is replaced by a good one).
+ *   - THE WRITE IS ATOMIC: temp file in the SAME directory, then rename, so
+ *     an interrupted install can never leave a truncated file that the
+ *     supervisor's next boot has to reject.
+ *
  * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
  * always use the defaults (real `node:fs`, real child processes).
  */
 export function seedSupervisorProjectDir(
   projectDir: string,
   dataDir: string = SUPERVISOR_DATA_DIR,
-  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync'> = fs,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync' | 'readFileSync' | 'renameSync'> = fs,
   execImpl: SeedProjectDirExec = realSeedProjectDirExec,
 ): SeedProjectDirResult {
   const given = path.resolve(projectDir);
@@ -395,6 +410,20 @@ export function seedSupervisorProjectDir(
 
   fsImpl.mkdirSync(dataDir, { recursive: true });
   const configPath = supervisorConfigPath(dataDir);
-  fsImpl.writeFileSync(configPath, `${JSON.stringify({ projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(String(fsImpl.readFileSync(configPath, 'utf-8')));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // No file, unreadable, or not JSON -- there is nothing to preserve, and
+    // a corrupt file is replaced by a good one rather than blocking the
+    // write (the same total-read stance the runtime reader takes).
+    existing = {};
+  }
+  const tmpPath = `${configPath}.tmp`;
+  fsImpl.writeFileSync(tmpPath, `${JSON.stringify({ ...existing, projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');
+  fsImpl.renameSync(tmpPath, configPath);
   return { ok: true, resolvedPath };
 }

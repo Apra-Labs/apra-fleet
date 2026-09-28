@@ -1546,18 +1546,18 @@ See `docs/install.md`'s "Project folder" note and this folder's
 integrator needs, and `../../../docs/console-architecture.md`'s Health
 section for how the resolved folder and its source surface in the shell.
 
-**Known latent gap:** the install-time seeding path and the runtime
-`writeSupervisorConfig()` path are two different writers of the same file.
-The runtime writer explicitly preserves unknown top-level keys across a
-write (a newer supervisor may add a field this build has never heard of);
-the install-time writer does not carry that same guarantee and is not
-atomic the way the runtime writer is (temp-file-then-rename). This is
-harmless today because the file has exactly one key, but a future second
-top-level key would silently survive a console-triggered write and be
-destroyed by an install-triggered one, and the client/server parity test
-covering this file's shape cannot catch that divergence because it only
-asserts the reader accepts what the writer already produces, not that two
-writers agree with each other.
+**Two writers, one contract:** the install-time seeding path and the
+runtime `writeSupervisorConfig()` path are two different writers of the same
+file, so both carry the same two guarantees -- unknown top-level keys are
+preserved across a write (a newer supervisor may add a field this build has
+never heard of), and the write is atomic (temp file in the same directory,
+then rename). They used to diverge, which was harmless only while the file
+had exactly one key: a future second top-level key would have survived a
+console-triggered write and been destroyed by an install-triggered one. The
+client/server parity test covering this file's shape cannot catch that class
+of divergence -- it asserts the reader accepts what the writer produces, not
+that two writers agree with each other -- so each writer is pinned by its own
+preserve-unknown-keys test instead.
 
 ## Dashboard
 
