@@ -341,7 +341,9 @@ export function formatStaleConfiguredProjectWarning(projectDir, configPath) {
         `(configured in ${configPath}). ` +
         "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
         'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
-        `To fix: point the setting at the project folder from the console's project setting (or pass --beads-dir <project-or-.beads-path>), ${FIX_TAIL}`;
+        "To fix: point the setting at the project folder from the console's project setting " +
+        '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor -- the setting is read ' +
+        'only at startup, so GET /api/health?refresh=1 re-probes this same path and cannot pick up a new one.';
 }
 
 /**

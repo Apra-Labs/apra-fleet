@@ -235,6 +235,13 @@ describe('project-dir severity -- a typo is FATAL, staleness is NOT', () => {
         assert.ok(r.warning, 'a warning must be produced');
         assert.ok(r.warning.includes(dirs.vanished), `the warning must name the offending path: ${r.warning}`);
         assert.match(r.warning, /To fix:/, 'the warning must carry the fix');
+        // The setting is read only at startup: a fix that is not followed by a
+        // restart leaves the supervisor on the stale value, so the warning has
+        // to say so -- otherwise the operator edits the setting and waits.
+        assert.match(
+            r.warning, /RESTART/i,
+            `the warning must say a restart is required after fixing the setting: ${r.warning}`,
+        );
         // The no-fallback property: projB has its own .beads and must NOT win.
         assert.notEqual(
             r.projectDir, dirs.projB,
