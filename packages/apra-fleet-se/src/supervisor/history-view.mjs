@@ -431,13 +431,13 @@ export function createFinishedRunsIndex(deps = {}) {
                 historyVerdicts.set(e.sprintId, e.verdict ?? prior);
             }
         }
-        const files = [...byId.values()]
+        const filteredFiles = [...byId.values()]
             .filter((f) => !historyVerdicts || historyVerdicts.has(f.sprintId))
-            .sort((a, b) => b.mtimeMs - a.mtimeMs)
-            // Only the newest `limit` files are ever parsed -- a long-lived
-            // data dir with hundreds of old runs costs one stat each, not one
-            // full JSON parse each.
-            .slice(0, limit);
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+        // Only the newest `limit` files are ever parsed -- a long-lived data
+        // dir with hundreds of old runs costs one stat each, not one full
+        // JSON parse each.
+        const files = filteredFiles.slice(0, limit);
         // Ids that actually produced a usable file-backed summary -- NOT the
         // same as `byId`'s keys (apra-fleet-i9ag.15.4): a terminal state file
         // can exist on disk (so `byId.has(sprintId)` is true) yet still fail
@@ -445,7 +445,18 @@ export function createFinishedRunsIndex(deps = {}) {
         // this id must remain a candidate for LAUNCH_FAILED synthesis, not be
         // treated as "already covered by a file". Gating synthesis on THIS
         // set instead of on `byId` is exactly the fix.
-        const producedIds = new Set();
+        //
+        // apra-fleet-i9ag.15.7: pre-seeded with every id excluded from `files`
+        // PURELY by the newest-`limit` slice above (never even attempted to
+        // parse) -- a perfectly good terminal state file exists for these on
+        // disk, it is only outside the display window, which is a completely
+        // different reason from "this id's file WAS attempted and failed to
+        // parse" (i9ag.15.4's case, left un-seeded here so it remains
+        // eligible for synthesis below). Without this, an id whose file sorts
+        // outside the window but which also carries a LAUNCH_FAILED event
+        // would get a spurious synthesized duplicate even though its file is
+        // fine -- it is simply not being shown this poll.
+        const producedIds = new Set(filteredFiles.slice(limit).map((f) => f.sprintId));
         const summaries = [];
         for (const f of files) {
             const key = f.mtimeMs + ':' + f.size;

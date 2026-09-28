@@ -242,6 +242,62 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.equal(brokenRows[0].reason, 'watchdog: child exited within launch window (exited 1)');
     });
 
+    test('apra-fleet-i9ag.15.7: a terminal file that sorts OUTSIDE the newest-limit window is never duplicated by LAUNCH_FAILED synthesis, even though it was never attempted to parse', async () => {
+        // Two EXTRA terminal-state files, both with an explicit FILE MTIME
+        // (the actual sort/slice key -- list()'s newest-`limit` window sorts
+        // by mtimeMs, not by the JSON body's `endedAt`) older than
+        // sprint-pass/sprint-fail's real mtimes from this describe's own
+        // before() fixture, so with limit: 2 neither ever lands in the
+        // sliced `files` array this module actually parses -- 'sprint-old'
+        // is the one under test here (it also carries a LAUNCH_FAILED event
+        // below); 'sprint-older' is a second, even-older file with no
+        // history event at all, just extra noise proving the fix does not
+        // depend on there being exactly one excluded id.
+        const oldRuns = path.join(dataDir, 'old_runs');
+        const OLD_RUN = {
+            ...FAIL_RUN, runId: 'sprint-old', result: { verdict: 'FAIL', prUrl: null },
+            endedAt: '2026-09-10T00:00:00.000Z',
+        };
+        const OLDER_RUN = {
+            ...FAIL_RUN, runId: 'sprint-older', result: { verdict: 'FAIL', prUrl: null },
+            endedAt: '2026-09-05T00:00:00.000Z',
+        };
+        const oldPath = path.join(oldRuns, 'sprint-old.json');
+        const olderPath = path.join(oldRuns, 'sprint-older.json');
+        await fs.writeFile(oldPath, JSON.stringify(OLD_RUN));
+        await fs.writeFile(olderPath, JSON.stringify(OLDER_RUN));
+        // Force these two files' actual mtimes far into the past -- writing
+        // them here (mid-test) would otherwise give them the NEWEST mtimes
+        // of the whole fixture (they are created after sprint-pass/
+        // sprint-fail from before()), the opposite of what this test needs.
+        await fs.utimes(oldPath, new Date('2026-09-10T00:00:00.000Z'), new Date('2026-09-10T00:00:00.000Z'));
+        await fs.utimes(olderPath, new Date('2026-09-05T00:00:00.000Z'), new Date('2026-09-05T00:00:00.000Z'));
+        try {
+            const history = {
+                list: () => [
+                    { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                    { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                    {
+                        sprintId: 'sprint-old',
+                        event: HISTORY_EVENTS.LAUNCH_FAILED,
+                        reason: 'stale watchdog event for a run that actually finished cleanly',
+                        at: '2026-09-11T00:00:00.000Z',
+                    },
+                ],
+            };
+            // limit: 2 keeps only sprint-pass/sprint-fail (the two newest);
+            // sprint-old/sprint-older sort outside the window and are never
+            // even read off disk by this call.
+            const rows = await createFinishedRunsIndex({ env, history, limit: 2, logger: { error() {} } }).list();
+            const oldRows = rows.filter((r) => r.sprintId === 'sprint-old');
+            assert.equal(oldRows.length, 0, 'sprint-old has a perfectly good file on disk (just outside the display window) -- it must not gain a synthesized launch-failed duplicate');
+            assert.deepEqual(rows.map((r) => r.sprintId).sort(), ['sprint-fail', 'sprint-pass'], 'the limit still caps the list to the two newest file-backed rows, nothing synthesized in their place');
+        } finally {
+            await fs.rm(path.join(oldRuns, 'sprint-old.json'));
+            await fs.rm(path.join(oldRuns, 'sprint-older.json'));
+        }
+    });
+
     test('apra-fleet-i9ag.16.1: with no history collaborator injected, no launch-failed rows are synthesized', async () => {
         const rows = await createFinishedRunsIndex({ env, logger: { error() {} } }).list();
         assert.deepEqual(rows.map((r) => r.sprintId), ['sprint-fail', 'sprint-pass']);
