@@ -8,10 +8,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import { Redactor, SseRestorer, type ScrubEvent } from './redact.js';
+import { appendGuide, ROLE_HEADER, wantsGuide } from './guide.js';
 
 export interface ProxyDeps {
   upstream: string;
   redactor: () => Redactor;
+  /** Tell Claude what lazyfleet adds (guide.ts). Default on. */
+  guide?: () => boolean;
   onEvents?: (events: ScrubEvent[]) => void;
   onError?: (message: string) => void;
 }
@@ -70,6 +73,7 @@ export function createProxyHandler(deps: ProxyDeps) {
         if (isMessagesPath(url)) {
           const r = redactor.scrubRequest(parsed);
           scrubbed = r.body;
+          if ((deps.guide?.() ?? true) && wantsGuide(scrubbed, req.headers)) scrubbed = appendGuide(scrubbed);
           events.push(...r.events);
         } else {
           scrubbed = redactor.scrubDeep(parsed, events);
@@ -85,7 +89,7 @@ export function createProxyHandler(deps: ProxyDeps) {
 
     const headers: http.OutgoingHttpHeaders = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (!HOP_BY_HOP.has(k.toLowerCase()) && v !== undefined) headers[k] = v;
+      if (!HOP_BY_HOP.has(k.toLowerCase()) && k.toLowerCase() !== ROLE_HEADER && v !== undefined) headers[k] = v;
     }
     headers.host = upstream.host;
     // Compressed responses would hide tool calls from the restorer.

@@ -5,6 +5,7 @@
  */
 import { SPRINTS_CSS, SPRINTS_HTML, SPRINTS_JS } from './ui-sprints.js';
 import { HOME_CSS, HOME_HTML, HOME_JS } from './ui-home.js';
+import { FLOWS_CSS, FLOWS_HTML, FLOWS_JS } from './ui-flows.js';
 
 export function renderUi(): string {
   return PAGE;
@@ -86,6 +87,7 @@ h2 { font-size: 15px; margin: 22px 2px 8px; }
 @media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 10px; } }
 ${SPRINTS_CSS}
 ${HOME_CSS}
+${FLOWS_CSS}
 nav .nav-gap { flex: 1; min-width: 12px; }
 </style>
 </head>
@@ -105,6 +107,7 @@ nav .nav-gap { flex: 1; min-width: 12px; }
     <button role="tab" data-tab="home" aria-selected="true">Home</button>
     <button role="tab" data-tab="sprints">Sprints</button>
     <button role="tab" data-tab="issues">Issues</button>
+    <button role="tab" data-tab="flows">Flows</button>
     <button role="tab" data-tab="schedules">Schedules</button>
     <span class="nav-gap" aria-hidden="true"></span>
     <button role="tab" data-tab="vault">Vault</button>
@@ -166,6 +169,7 @@ nav .nav-gap { flex: 1; min-width: 12px; }
   </section>
 ${SPRINTS_HTML}
 ${HOME_HTML}
+${FLOWS_HTML}
 </main>
 <div class="toast" id="toast"></div>
 <script>
@@ -318,7 +322,7 @@ ${HOME_HTML}
     if (!found) return;
     document.querySelectorAll('main > section').forEach(function (s) { s.hidden = s.id !== 'tab-' + name; });
     // The dashboard pages use the full width and hide the vault counters.
-    document.body.classList.toggle('wide', ['home', 'sprints', 'issues', 'schedules'].indexOf(name) !== -1);
+    document.body.classList.toggle('wide', ['home', 'sprints', 'issues', 'flows', 'schedules'].indexOf(name) !== -1);
     window.dispatchEvent(new CustomEvent('lazy:tab', { detail: name }));
   }
   window.lazyShowTab = showTab;
@@ -341,6 +345,7 @@ ${HOME_HTML}
 </script>
 <script>${SPRINTS_JS}</script>
 <script>${HOME_JS}</script>
+<script>${FLOWS_JS}</script>
 </body>
 </html>
 `;

@@ -20,6 +20,9 @@ import { getRecord } from './sprints/launcher.js';
 import { launchSprint, resumeSprintWatchers, stopSprint, type LaunchInput } from './sprints/launcher.js';
 import { checkDesign, deleteDesign, designSteps, designWarnings, listDesigns, saveDesign, DEFAULT_DESIGN, type Design } from './sprints/designs.js';
 import { handleFleet, startScheduler, type FleetDeps } from './api-fleet.js';
+import { handleFlows } from './flows/api.js';
+import { markInterruptedRuns } from './flows/runner.js';
+import { guideNote } from './guide.js';
 
 export interface SprintDeps {
   launch: (input: LaunchInput) => Promise<{ runId: string }>;
@@ -349,7 +352,7 @@ export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<
           startedAt,
           config: publicConfig,
           vault: vault.list(),
-          presetNote: new Redactor(vault, config.detection).systemNote(vault.presets()),
+          presetNote: `${new Redactor(vault, config.detection).systemNote(vault.presets())}\n\n${guideNote()}`,
           activity: activity.items.slice(0, 100),
           totals: activity.totals,
           helpers: helpersSummary(),
@@ -383,6 +386,7 @@ export function createLazyServer(opts: { config?: LazyConfig; sprints?: Partial<
         return;
       }
       if (await handleFleet(req, res, url, fleetDeps)) return;
+      if (await handleFlows(req, res, url)) return;
       if (await handleSprints(req, res, url, sprintDeps)) return;
       json(res, 404, { error: 'not found' });
     } catch (e) {
@@ -422,6 +426,8 @@ export function startLazyServer(): Promise<LazyServer> {
     s.server.listen(s.config().port, '127.0.0.1', () => {
       // Sprints that kept running while this process was down still grow their pool.
       resumeSprintWatchers();
+      // A flow run cut off by a restart is marked as such rather than left "running" forever.
+      markInterruptedRuns();
       // Scheduled sprints start themselves, and designs learn from finished ones.
       startScheduler({ vault: s.vault, launch: launchSprint });
       resolve(s);

@@ -508,6 +508,7 @@ export const HOME_JS = String.raw`
     return api('schedules').then(function (r) { S2.list = r.schedules; renderSchedules(); }).catch(function (e) { schedRoot.textContent = 'Could not load: ' + e.message; });
   }
   function sentence(s) {
+    if (s.source.type === 'flow') return s.whenText + ', runs the flow "' + s.source.flow + '"' + (s.source.input ? ' with input "' + s.source.input.split('\n')[0].slice(0, 50) + '"' : '') + ', up to ' + s.limits.perDay + ' time' + (s.limits.perDay === 1 ? '' : 's') + (s.limits.usagePerDay ? ' and ' + money(s.limits.usagePerDay) : '') + ' a day, only while you have approved it.';
     var what = s.source.type === 'issues' ? 'takes the oldest open issue labeled ' + s.source.labels.join(', ') + ' from ' + s.source.repo + (s.source.trustedOnly ? ' (repo members only)' : '') : 'runs "' + s.source.ask.split('\n')[0].slice(0, 70) + '"';
     var limits = 'up to ' + s.limits.perDay + ' sprint' + (s.limits.perDay === 1 ? '' : 's') + (s.limits.usagePerDay ? ' and ' + money(s.limits.usagePerDay) : '') + ' a day';
     return s.whenText + ', ' + what + ', with ' + (s.design === 'auto' ? 'the suggested design' : 'the ' + s.design + ' design') + ', ' + limits + (s.requireClean ? ', only when the folder has no uncommitted changes' : '') + '.';
@@ -518,7 +519,8 @@ export const HOME_JS = String.raw`
     sw.addEventListener('change', function () { api('schedules/' + s.id + '/enable', { method: 'POST', body: { enabled: sw.checked } }).then(loadSchedules).catch(function (e) { toast(e.message); }); });
     var logList = el('ul', { cls: 'log' }, s.log.map(function (e) {
       var links = [];
-      if (e.runId && e.action === 'started') links.push(el('button', { cls: 'linkish', type: 'button', text: 'open the board', onclick: function () { openSprint(e.runId); } }));
+      if (e.runId && e.action === 'started' && s.source.type === 'flow') links.push(el('button', { cls: 'linkish', type: 'button', text: 'open the run', onclick: function () { goTab('flows', s.source.flow + '/' + e.runId); } }));
+      else if (e.runId && e.action === 'started') links.push(el('button', { cls: 'linkish', type: 'button', text: 'open the board', onclick: function () { openSprint(e.runId); } }));
       if (e.issue) links.push(el('a', { cls: 'linkish', href: e.issue.url, target: '_blank', rel: 'noopener', text: e.action === 'commented' ? 'see the comment' : 'see the issue' }));
       var tail = [];
       links.forEach(function (l, i) { tail.push(i ? ' - ' : '  '); tail.push(l); });
@@ -531,8 +533,9 @@ export const HOME_JS = String.raw`
           el('button', { cls: 'act', type: 'button', text: 'Run now', onclick: function (ev) {
             var b = ev.target; b.disabled = true; b.textContent = 'Starting...';
             var done = function (r) {
-              toast(r.runId ? 'Sprint started' : (r.last ? r.last.text : 'Not started'));
-              if (r.runId) openSprint(r.runId); else loadSchedules();
+              toast(r.runId ? (s.source.type === 'flow' ? 'Flow started' : 'Sprint started') : (r.last ? r.last.text : 'Not started'));
+              if (r.runId && s.source.type === 'flow') goTab('flows', s.source.flow + '/' + r.runId);
+              else if (r.runId) openSprint(r.runId); else loadSchedules();
             };
             api('schedules/' + s.id + '/run', { method: 'POST', body: {} }).then(function (r) {
               if (!r.needsConfirm) return done(r);
@@ -540,12 +543,14 @@ export const HOME_JS = String.raw`
               return api('schedules/' + s.id + '/run', { method: 'POST', body: { override: true } }).then(done);
             }).catch(function (e) { toast(e.message); loadSchedules(); });
           } }),
-          el('button', { cls: 'act', type: 'button', text: 'Edit', onclick: function () { S2.editing = JSON.parse(JSON.stringify(s)); renderSchedules(); } }),
+          s.source.type === 'flow'
+            ? el('button', { cls: 'act', type: 'button', text: 'Open the flow', title: 'Ask Claude to change when it runs', onclick: function () { goTab('flows', s.source.flow); } })
+            : el('button', { cls: 'act', type: 'button', text: 'Edit', onclick: function () { S2.editing = JSON.parse(JSON.stringify(s)); renderSchedules(); } }),
           el('button', { cls: 'act danger', type: 'button', text: 'Delete', onclick: function () { if (!confirm('Delete the schedule "' + s.name + '"? Sprints it started stay.')) return; api('schedules/' + s.id + '/delete', { method: 'POST', body: {} }).then(loadSchedules); } })
         ])
       ]),
       el('div', { cls: 'sentence', text: sentence(s) }),
-      el('div', { cls: 'next' }, ['In ', el('code', { title: s.repo, text: s.repo }), ' ', s.folder === 'ready' ? el('span', { cls: 'ok-chip', text: 'folder ready' }) : el('span', { cls: 'warn-chip', text: { dirty: 'uncommitted changes' + (s.requireClean ? ': runs wait' : ''), missing: 'folder missing', 'not-git': 'not a git checkout' }[s.folder] || s.folder })]),
+      s.folder === 'none' ? null : el('div', { cls: 'next' }, ['In ', el('code', { title: s.repo, text: s.repo }), ' ', s.folder === 'ready' ? el('span', { cls: 'ok-chip', text: 'folder ready' }) : el('span', { cls: 'warn-chip', text: { dirty: 'uncommitted changes' + (s.requireClean ? ': runs wait' : ''), missing: 'folder missing', 'not-git': 'not a git checkout' }[s.folder] || s.folder })]),
       el('div', { cls: 'next', text: s.enabled ? (s.nextAt ? (s.retryAt ? 'Trying again every 10 minutes while ' + (s.retryReason || 'the last skip reason holds') + '. Next try ' + clock(s.nextAt) + '.' : 'Next: ' + clock(s.nextAt) + ' (' + until(s.nextAt) + ')') : '') : 'Off' }),
       s.log.length ? (function () {
         var det = el('details', S2.openLogs[s.id] ? { open: true } : {}, [el('summary', { style: 'cursor:pointer; color:var(--muted); font-size:13px', text: 'What it did (' + s.log.length + ')' }), el('div', { style: 'max-height: 240px; overflow: auto' }, [logList])]);

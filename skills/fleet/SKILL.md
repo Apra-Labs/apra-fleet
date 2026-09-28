@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Run work in parallel across isolated workers, on this machine or other machines. Use whenever a task splits into two or more independent pieces (several features, several bug fixes, a repo-wide refactor, independent test suites), whenever work is long-running, or whenever it spans multiple repos or machines. Also covers the mechanics - worker setup, permissions, credentials, dispatch, monitoring, and cleanup.
+description: Run work in parallel across isolated workers, on this machine or other machines. Use whenever a task splits into two or more independent pieces (several features, several bug fixes, a repo-wide refactor, independent test suites), whenever work is long-running, or whenever it spans multiple repos or machines. Also use when the user wants a job done repeatedly or at set times (every evening, each morning, weekly) - fill a timesheet, post a summary, check something and report - which becomes a flow (flows.md). Also covers the mechanics - worker setup, permissions, credentials, dispatch, monitoring, and cleanup.
 ---
 
 # Fleet Skill
@@ -57,6 +57,7 @@ Everything below is mechanics, to be read once one of those decisions is made.
 See sub-documents for detailed usage:
 - `autonomy.md`  -  when to split work without being asked, the cost gate, worker lifecycle, and the user-facing vocabulary contract
 - `fast-local.md`  -  the four-step local worker setup (the default path)
+- `flows.md`  -  lazyfleet flows: fixed jobs made of blocks (own model, tools and job each), designed by you and approved by the user
 - `onboarding.md`  -  full 8-step onboarding sequence for **remote** members
 - `permissions.md`  -  permission composition and denial handling
 - `profiles/`  -  stack permission profiles (base-dev, base-reviewer, node, python, go, etc.)  -  add new profiles here to support additional stacks or roles

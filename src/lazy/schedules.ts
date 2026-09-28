@@ -30,10 +30,13 @@ export interface Schedule {
   id: string;
   name: string;
   enabled: boolean;
-  /** Local project folder the sprint runs in. */
+  /** Local project folder the sprint runs in (empty for a flow: the flow names its own). */
   repo: string;
-  source: { type: 'ask'; ask: string } | { type: 'issues'; repo: string; labels: string[]; trustedOnly: boolean };
-  /** A design id, or 'auto' for the advisor's pick each time. */
+  source:
+    | { type: 'ask'; ask: string }
+    | { type: 'issues'; repo: string; labels: string[]; trustedOnly: boolean }
+    | { type: 'flow'; flow: string; input?: string };
+  /** A design id, or 'auto' for the advisor's pick each time ('flow' for a flow). */
   design: string;
   when: ScheduleWhen;
   /** Local "HH:MM-HH:MM" window the schedule may start in; empty means any time. */
@@ -101,11 +104,18 @@ const LABEL_RE = /^[^,\n\r]{1,50}$/;
 export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
   const name = String(raw?.name ?? '').trim();
   if (!name || name.length > 80) throw new Error('Give the schedule a name (up to 80 characters)');
+  const isFlow = raw?.source?.type === 'flow';
   const repo = String(raw?.repo ?? '').trim();
-  if (!repo || !path.isAbsolute(repo)) throw new Error('Pick the project folder (a full path)');
+  if (isFlow ? repo && !path.isAbsolute(repo) : !repo || !path.isAbsolute(repo)) throw new Error('Pick the project folder (a full path)');
   if (raw?.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error('enabled must be true or false');
   let source: Schedule['source'];
-  if (raw?.source?.type === 'issues') {
+  if (isFlow) {
+    const flow = String(raw.source.flow ?? '').trim();
+    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(flow)) throw new Error('Pick the flow to run');
+    const input = raw.source.input === undefined || raw.source.input === null ? '' : String(raw.source.input);
+    if (input.length > 8000) throw new Error('Keep the flow input under 8000 characters');
+    source = { type: 'flow', flow, ...(input.trim() ? { input } : {}) };
+  } else if (raw?.source?.type === 'issues') {
     const labels = (Array.isArray(raw.source.labels) ? raw.source.labels : String(raw.source.labels ?? '').split(','))
       .map((l: unknown) => String(l).trim()).filter(Boolean);
     if (!labels.length) throw new Error('Name at least one label, so only issues you marked get picked up');
@@ -145,7 +155,7 @@ export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
   const usage = raw?.limits?.usagePerDay;
   const usagePerDay = usage === undefined || usage === null || usage === '' ? undefined : usage;
   if (usagePerDay !== undefined && (typeof usagePerDay !== 'number' || !Number.isFinite(usagePerDay) || usagePerDay < 0.01 || usagePerDay > 1000)) throw new Error('Usage per day: between $0.01 and $1000 (an estimate)');
-  const design = String(raw?.design ?? 'auto').trim() || 'auto';
+  const design = isFlow ? 'flow' : String(raw?.design ?? 'auto').trim() || 'auto';
   if (!/^[a-z0-9-]{1,40}$/.test(design)) throw new Error('Pick a design');
   return {
     id: existing?.id ?? crypto.randomBytes(6).toString('hex'),
@@ -157,7 +167,8 @@ export function normalizeSchedule(raw: any, existing?: Schedule): Schedule {
     when,
     ...(window ? { window } : {}),
     limits: { perDay, ...(usagePerDay !== undefined ? { usagePerDay } : {}) },
-    requireClean: raw?.requireClean !== false,
+    // A flow is not a code change, so an unsaved edit in its folder does not block it unless asked.
+    requireClean: isFlow ? raw?.requireClean === true : raw?.requireClean !== false,
     comment: source.type === 'issues' && raw?.comment !== false,
     ...(raw?.requireClean !== undefined && typeof raw.requireClean !== 'boolean' ? (() => { throw new Error('requireClean must be true or false'); })() : {}),
     createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -281,6 +292,10 @@ export interface TickDeps {
   sprintedIssues: () => Set<string>;
   reportedRuns: () => Set<string>;
   markReported: (runId: string) => void;
+  /** Flows: start one for real, list its runs, and why it cannot run now (not approved, already running). */
+  startFlow?: (input: { flowId: string; input?: string; scheduleId: string }) => Promise<{ runId: string }>;
+  flowRuns?: (flowId: string) => Array<{ scheduleId?: string; startedAt: string; cost: number }>;
+  flowBlocker?: (flowId: string) => { text: string; retry: boolean } | null;
 }
 
 export function gitIsClean(folder: string): Promise<boolean | null> {
@@ -300,6 +315,7 @@ function log(id: string, entry: Omit<ScheduleLogEntry, 'at'>, now: Date, patch: 
 /** Why this schedule may not start now, or null when it may. */
 async function blocker(s: Schedule, now: Date, deps: TickDeps): Promise<{ text: string; retry: boolean } | null> {
   if (!inWindow(s.window, now)) return { text: `outside its window (${s.window})`, retry: true };
+  if (s.source.type === 'flow') return flowBlocker(s, s.source.flow, now, deps);
   const sprints = deps.listSprints();
   const busy = sprints.find(x => x.live && x.repo && path.resolve(x.repo) === path.resolve(s.repo));
   if (busy) return { text: `a sprint is already running in this project ("${busy.title}")`, retry: true };
@@ -313,6 +329,23 @@ async function blocker(s: Schedule, now: Date, deps: TickDeps): Promise<{ text: 
   const clean = await deps.repoIsClean(s.repo);
   if (clean === null) return { text: `the project folder ${s.repo} is not a git checkout`, retry: false };
   if (s.requireClean && !clean) return { text: 'the project has uncommitted changes (you may be working in it)', retry: true };
+  return null;
+}
+
+async function flowBlocker(s: Schedule, flowId: string, now: Date, deps: TickDeps): Promise<{ text: string; retry: boolean } | null> {
+  if (!deps.startFlow || !deps.flowRuns || !deps.flowBlocker) return { text: 'flows are not available in this lazyfleet', retry: false };
+  const why = deps.flowBlocker(flowId);
+  if (why) return why;
+  const mine = deps.flowRuns(flowId).filter(r => r.scheduleId === s.id && sameLocalDay(new Date(r.startedAt), now));
+  if (mine.length >= s.limits.perDay) return { text: `already ran ${mine.length} of ${s.limits.perDay} time${s.limits.perDay === 1 ? '' : 's'} today`, retry: false };
+  if (s.limits.usagePerDay !== undefined) {
+    const used = mine.reduce((a, r) => a + (r.cost || 0), 0);
+    if (used >= s.limits.usagePerDay) return { text: `today's usage limit is spent ($${used.toFixed(2)} of $${s.limits.usagePerDay.toFixed(2)})`, retry: false };
+  }
+  if (s.repo && s.requireClean) {
+    const clean = await deps.repoIsClean(s.repo);
+    if (clean === false) return { text: 'the folder has uncommitted changes (you may be working in it)', retry: true };
+  }
   return null;
 }
 
@@ -336,13 +369,13 @@ export async function runNowWarnings(s: Schedule, deps: TickDeps): Promise<strin
  */
 export async function fire(s: Schedule, deps: TickDeps, { override = false, manual = false } = {}): Promise<string | null> {
   const now = deps.now();
-  const key = path.resolve(s.repo);
+  const key = s.source.type === 'flow' ? `flow:${s.source.flow}` : path.resolve(s.repo);
   if (starting.has(key)) {
     log(s.id, { action: 'skipped', text: 'Not started: another sprint is being started in this project right now.' }, now, { retryAt: new Date(now.getTime() + RETRY_MINUTES * 60000).toISOString() });
     return null;
   }
   const block = await blocker(s, now, deps);
-  const busy = block && /already running in this project|folder .* is missing|not a git checkout/.test(block.text);
+  const busy = block && /already running|folder .* is missing|not a git checkout|waiting for your approval|changed since you approved|no flow called|not available/.test(block.text);
   if (block && (!override || busy)) {
     log(s.id, { action: 'skipped', text: `Not started: ${block.text}.` }, now, block.retry ? { retryAt: new Date(now.getTime() + RETRY_MINUTES * 60000).toISOString() } : { lastFiredAt: now.toISOString(), retryAt: undefined });
     return null;
@@ -356,6 +389,16 @@ export async function fire(s: Schedule, deps: TickDeps, { override = false, manu
 }
 
 async function start(s: Schedule, deps: TickDeps, now: Date, how: string): Promise<string | null> {
+  if (s.source.type === 'flow') {
+    try {
+      const { runId } = await deps.startFlow!({ flowId: s.source.flow, input: s.source.input, scheduleId: s.id });
+      log(s.id, { action: 'started', text: `${how ? how + '. S' : 'S'}tarted the flow "${s.source.flow}".`, runId }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
+      return runId;
+    } catch (e) {
+      log(s.id, { action: 'error', text: `Could not start the flow: ${(e as Error).message}.` }, now, { lastFiredAt: now.toISOString(), retryAt: undefined });
+      return null;
+    }
+  }
   let ask: string, title: string | undefined, issue: Issue | undefined;
   if (s.source.type === 'issues') {
     const token = await deps.githubToken();

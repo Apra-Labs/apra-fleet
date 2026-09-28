@@ -68,6 +68,28 @@ function base() {
 }
 
 describe('proxy over HTTP', () => {
+  it('tells Claude Code what lazyfleet adds, but not side requests or flow blocks', async () => {
+    respondWith = res => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"content":[]}'); };
+    const send = (body: any, extra: Record<string, string> = {}) => fetch(`${base()}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', ...extra }, body: JSON.stringify(body) });
+    const turn = { system: [{ type: 'text', text: 'You are Claude Code' }], tools: [{ name: 'Bash' }, { name: 'Read' }], messages: [{ role: 'user', content: 'fill my timesheet every evening' }] };
+
+    upstreamBodies = [];
+    await send(turn);
+    await send(turn);
+    const notes = upstreamBodies.map(b => b.system.filter((x: any) => x.text.startsWith('lazyfleet is installed')));
+    expect(notes[0]).toHaveLength(1);
+    expect(notes[0][0].text).toMatch(/flows\.md/);
+    expect(notes[1][0].text).toBe(notes[0][0].text);
+
+    upstreamBodies = [];
+    upstreamHeaders = [];
+    await send({ system: 'Write a title', messages: [{ role: 'user', content: 'x' }] });
+    await send(turn, { 'x-lazyfleet-role': 'flow' });
+    expect(upstreamBodies[0].system).not.toContain('lazyfleet is installed');
+    expect(JSON.stringify(upstreamBodies[1].system)).not.toContain('lazyfleet is installed');
+    expect(upstreamHeaders[1]['x-lazyfleet-role']).toBeUndefined();
+  });
+
   it('hides a pasted secret upstream and restores it in the streamed tool call', async () => {
     upstreamBodies = [];
     respondWith = res => {

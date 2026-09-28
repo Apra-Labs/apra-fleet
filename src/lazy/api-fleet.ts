@@ -15,6 +15,9 @@ import { listSprints } from './sprints/index.js';
 import { loadRegistry, markIssueReported, type LaunchInput } from './sprints/launcher.js';
 import * as sched from './schedules.js';
 import { lazyDir } from './config.js';
+import { getFlow } from './flows/flow.js';
+import { flowBlocker } from './flows/api.js';
+import { listRuns, startRun } from './flows/runner.js';
 
 /** First-run welcome: done once, never nagging again. */
 function welcomeFile(): string {
@@ -80,6 +83,9 @@ export function schedulerDeps(deps: FleetDeps): sched.TickDeps {
     sprintedIssues: () => new Set(sprintedIssues().keys()),
     reportedRuns: () => new Set(loadRegistry().filter(r => r.issueReported).map(r => r.runId)),
     markReported: markIssueReported,
+    startFlow: async ({ flowId, input, scheduleId }) => ({ runId: startRun(flowId, { input, scheduleId, trigger: 'schedule' }).run.runId }),
+    flowRuns: flowId => listRuns(flowId),
+    flowBlocker,
   };
 }
 
@@ -152,7 +158,7 @@ function scheduleView(s: sched.Schedule, now: Date) {
   const lastSkip = [...s.log].reverse().find(e => e.action === 'skipped' || e.action === 'error');
   return {
     ...s, whenText: sched.describeWhen(s), nextAt: next, log: s.log.slice(-40).reverse(),
-    folder: folderState(s.repo),
+    folder: s.source.type === 'flow' && !s.repo ? 'none' : folderState(s.repo),
     retryReason: s.retryAt && lastSkip ? lastSkip.text.replace(/^Not started: /, '').replace(/\.$/, '') : null,
   };
 }
@@ -189,6 +195,10 @@ export function checkFolderMatchesRepo(folder: string, repo: string): void {
 }
 
 function checkScheduleTarget(raw: any): void {
+  if (raw?.source?.type === 'flow') {
+    getFlow(String(raw.source.flow ?? ''));
+    return;
+  }
   const folder = String(raw?.repo ?? '').trim();
   if (folder && path.isAbsolute(folder)) checkProjectFolder(folder);
   if (raw?.source?.type === 'issues' && raw.source.repo && folder) checkFolderMatchesRepo(folder, gh.validRepo(raw.source.repo));

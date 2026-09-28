@@ -35,6 +35,27 @@ Usage:
                          Without --design, lazyfleet picks one and says why.
   lazyfleet sprints      Running and recent sprints
   lazyfleet schedules    Schedules and when each runs next
+
+  lazyfleet flow ...     Fixed jobs made of blocks (see: lazyfleet flow help)
+`;
+
+const FLOW_HELP = `lazyfleet flow - jobs made of blocks, run in a fixed order
+
+  lazyfleet flow check <file.json>     Validate a flow; prints problems, warnings and its steps
+  lazyfleet flow save <file.json>      Save it (after the same checks) and print its review link
+  lazyfleet flow try <id> [--input "..."]
+                                       Trial run: read-only tools, nothing changed; waits and prints each step
+  lazyfleet flow run <id> [--input "..."] [--no-wait]
+                                       Run for real (needs the person's approval on the Flows page)
+  lazyfleet flow schedule <id> (--at HH:MM [--days mon-fri|1,3,5] | --every <hours>)
+                           [--name "..."] [--input "..."] [--per-day N] [--usd X]
+                                       Run it on a schedule (runs only while approved)
+  lazyfleet flow list                  Every flow, its approval and its last run
+  lazyfleet flow show <id>             Its blocks, edges, approval and recent runs
+  lazyfleet flow log <run-id>          Every step of one run, with outputs
+  lazyfleet flow delete <id>
+
+The file format and how to design one: the fleet skill's flows.md.
 `;
 
 function baseUrl(cfg: LazyConfig): string {
@@ -303,7 +324,166 @@ async function schedules(): Promise<void> {
   }
 }
 
-const commands: Record<string, () => Promise<void>> = { install, uninstall, status, on, off, ui, serve, sprint, sprints, schedules };
+function pageUrl(cfg: LazyConfig, hash: string): string {
+  return `${baseUrl(cfg)}/_lazy/?t=${cfg.uiToken}#${hash}`;
+}
+
+async function pageApiMethod(cfg: LazyConfig, method: string, p: string): Promise<any> {
+  if (!(await healthy(cfg))) {
+    console.error('lazyfleet is not running. Start it with `lazyfleet on`.');
+    process.exit(1);
+  }
+  const r = await fetch(`${baseUrl(cfg)}/_lazy/api/${p}`, { method, headers: { cookie: `lazy_t=${encodeURIComponent(cfg.uiToken)}`, 'x-lazy': '1', host: `127.0.0.1:${cfg.port}` } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+function readFlowFile(file: string | undefined): unknown {
+  if (!file) throw new Error('Name the flow file: lazyfleet flow check flow.json');
+  try {
+    return JSON.parse(fs.readFileSync(path.resolve(file), 'utf-8'));
+  } catch (e) {
+    throw new Error(`Could not read ${file}: ${(e as Error).message}`);
+  }
+}
+
+function printGraph(graph: any): void {
+  graph.blocks.forEach((b: any, i: number) => {
+    const how = b.kind === 'command' ? `command: ${b.command}` : `${b.model}${b.tools?.length ? `, tools: ${b.tools.join(' ')}` : ', no tools'}`;
+    console.log(`  ${i + 1}. ${b.id}${b.id === graph.start ? ' (start)' : ''} - ${how}`);
+    console.log(`     pass -> ${b.edges.pass}, fail -> ${b.retries ? `retry ${b.retries}x, then ` : ''}${b.edges.fail}${b.input?.length ? `; reads ${b.input.join(', ')}` : ''}`);
+  });
+}
+
+const RUN_MARK: Record<string, string> = { pass: '[pass]', fail: '[FAIL]', skipped: '[skip]', running: '[....]' };
+
+function printRun(run: any, full: boolean): void {
+  console.log(`${run.trial ? 'Trial run' : 'Run'} ${run.runId}: ${run.status}${run.error ? ` - ${run.error}` : ''} ($${(run.cost || 0).toFixed(2)})`);
+  for (const s of run.steps) {
+    console.log(`  ${RUN_MARK[s.status] ?? s.status} ${s.block}${s.attempt > 1 ? ` (try ${s.attempt})` : ''}${s.model ? ` [${s.model}]` : ''}${s.cost ? ` $${s.cost.toFixed(3)}` : ''}${s.next ? ` -> ${s.next}` : ''}`);
+    if (s.error) console.log(`       error: ${s.error}`);
+    if (s.notes) console.log(`       notes: ${s.notes}`);
+    if (full && s.output) console.log(s.output.split('\n').map((l: string) => `       | ${l}`).join('\n'));
+  }
+}
+
+async function waitRun(cfg: LazyConfig, runId: string): Promise<any> {
+  for (;;) {
+    const run = await pageApi(cfg, `flow-runs/${runId}`);
+    if (run.status !== 'running') return run;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+function parseDays(spec: string | undefined): number[] {
+  if (!spec) return [];
+  const s = spec.toLowerCase().trim();
+  if (s === 'weekdays') return [1, 2, 3, 4, 5];
+  if (s === 'weekends') return [0, 6];
+  const out = new Set<number>();
+  for (const part of s.split(',')) {
+    const [a, b] = part.split('-').map(x => x.trim());
+    const n = (x: string) => (/^\d$/.test(x) ? Number(x) : DAY_NAMES.indexOf(x.slice(0, 3)));
+    const from = n(a), to = b === undefined ? from : n(b);
+    if (from < 0 || to < 0 || from > 6 || to > 6) throw new Error(`Days look like mon-fri, 1,3,5 or weekdays (got "${spec}")`);
+    for (let d = from; ; d = (d + 1) % 7) { out.add(d); if (d === to) break; }
+  }
+  return [...out].sort();
+}
+
+async function flow(): Promise<void> {
+  const args = process.argv.slice(3);
+  const sub = args[0];
+  const cfg = loadConfig();
+  if (!sub || sub === 'help' || sub === '--help') { process.stdout.write(FLOW_HELP); return; }
+  if (sub === 'check') {
+    const r = await pageApi(cfg, 'flows/check', { flow: readFlowFile(args[1]) });
+    if (!r.ok) {
+      console.log('Problems:');
+      for (const p of r.problems) console.log(`  - ${p}`);
+      process.exit(1);
+    }
+    console.log('OK. Steps:');
+    printGraph(r.graph);
+    if (r.warnings.length) { console.log('Warnings:'); for (const w of r.warnings) console.log(`  - ${w}`); }
+    return;
+  }
+  if (sub === 'save') {
+    const r = await pageApi(cfg, 'flows', { flow: readFlowFile(args[1]) });
+    console.log(`Saved "${r.flow.name}" (${r.flow.id}).`);
+    for (const w of r.warnings) console.log(`  warning: ${w}`);
+    console.log(r.approval.state === 'approved'
+      ? 'Unchanged from the version the person approved.'
+      : `It runs for real only after the person approves it: ${pageUrl(cfg, `flows/${r.flow.id}`)}`);
+    return;
+  }
+  if (sub === 'try' || sub === 'run') {
+    const id = args[1];
+    if (!id) throw new Error(`Name the flow: lazyfleet flow ${sub} <id>`);
+    const input = flag(args, '--input');
+    const r = await pageApi(cfg, `flows/${id}/run`, { trial: sub === 'try', ...(input !== undefined ? { input } : {}) });
+    console.log(`${sub === 'try' ? 'Trial run' : 'Run'} started: ${pageUrl(cfg, `flows/${id}/${r.runId}`)}`);
+    if (args.includes('--no-wait')) return;
+    const run = await waitRun(cfg, r.runId);
+    printRun(run, true);
+    if (run.status !== 'passed') process.exit(1);
+    return;
+  }
+  if (sub === 'schedule') {
+    const id = args[1];
+    if (!id) throw new Error('Name the flow: lazyfleet flow schedule <id> --at 18:30 --days mon-fri');
+    const every = flag(args, '--every');
+    const at = flag(args, '--at');
+    if (!every && !at) throw new Error('Say when: --at HH:MM (with optional --days) or --every <hours>');
+    const f = await pageApi(cfg, `flows/${id}`);
+    const perDay = flag(args, '--per-day');
+    const usd = flag(args, '--usd');
+    const r = await pageApi(cfg, 'schedules', {
+      name: flag(args, '--name') ?? f.flow.name,
+      repo: '',
+      source: { type: 'flow', flow: id, input: flag(args, '--input') },
+      when: every ? { type: 'interval', hours: Number(every) } : { type: 'daily', time: at, days: parseDays(flag(args, '--days')) },
+      limits: { perDay: perDay ? Number(perDay) : 1, ...(usd ? { usagePerDay: Number(usd) } : {}) },
+    });
+    console.log(`Scheduled "${r.schedule.name}": ${r.schedule.whenText}. Next: ${new Date(r.schedule.nextAt).toLocaleString()}.`);
+    if (f.approval.state !== 'approved') console.log(`It skips until the person approves the flow: ${pageUrl(cfg, `flows/${id}`)}`);
+    return;
+  }
+  if (sub === 'list') {
+    const { flows } = await pageApi(cfg, 'flows');
+    if (!flows.length) { console.log('No flows yet.'); return; }
+    for (const v of flows) {
+      const last = v.lastRun ? `last ${v.lastRun.trial ? 'trial ' : ''}${v.lastRun.status} ${new Date(v.lastRun.startedAt).toLocaleString()}` : 'never run';
+      console.log(`${v.flow.id.padEnd(28)} ${v.approval.state.padEnd(9)} ${v.flow.blocks.length} blocks  ${last}${v.schedules.length ? `  [${v.schedules.map((s: any) => s.whenText).join('; ')}]` : ''}`);
+    }
+    return;
+  }
+  if (sub === 'show') {
+    const v = await pageApi(cfg, `flows/${args[1] ?? ''}`);
+    console.log(`${v.flow.name} (${v.flow.id}): ${v.flow.purpose}`);
+    console.log(`Folder: ${v.flow.folder ?? '(its own scratch folder)'}`);
+    console.log(`Approval: ${v.approval.state}${v.approval.changed?.length ? ` (changed: ${v.approval.changed.join(', ')})` : ''}`);
+    printGraph(v.graph);
+    for (const s of v.schedules) console.log(`Schedule: ${s.name} - ${s.whenText}${s.enabled ? '' : ' (off)'}`);
+    for (const r of v.runs.slice(0, 8)) console.log(`Run ${r.runId}: ${r.trial ? 'trial, ' : ''}${r.status}, $${(r.cost || 0).toFixed(2)}, ${new Date(r.startedAt).toLocaleString()}`);
+    console.log(`Review page: ${pageUrl(cfg, `flows/${v.flow.id}`)}`);
+    return;
+  }
+  if (sub === 'log') {
+    printRun(await pageApi(cfg, `flow-runs/${args[1] ?? ''}`), true);
+    return;
+  }
+  if (sub === 'delete') {
+    await pageApiMethod(cfg, 'DELETE', `flows/${args[1] ?? ''}`);
+    console.log('Deleted.');
+    return;
+  }
+  throw new Error(`Unknown flow command "${sub}". See: lazyfleet flow help`);
+}
+
+const commands: Record<string, () => Promise<void>> = { install, uninstall, status, on, off, ui, serve, sprint, sprints, schedules, flow };
 
 const cmd = process.argv[2] ?? 'install';
 if (cmd === '--help' || cmd === '-h' || cmd === 'help') {

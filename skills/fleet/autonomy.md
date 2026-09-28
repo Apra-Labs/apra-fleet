@@ -61,6 +61,16 @@ user's plan for several minutes:
 Keep doing small and medium work inline or with workers as above; a sprint for a
 five-minute change is waste.
 
+## Fixed jobs, often on a schedule: design a flow
+
+When the job is not a code change but something done the same way each time -
+"fill my timesheet every evening", "post a summary to Slack each morning", "check
+the backups and tell me" - design a flow instead of a sprint: a short chain of
+blocks, each with its own job, model tier and tools, run in a fixed order.
+Design, check, save and trial-run it yourself, then give the user the review link
+to approve it; it runs for real only after they do. `flows.md` has the format and
+the steps.
+
 ## Lifecycle of an auto-created worker
 
 1. **Isolate.** `git worktree add` a directory per worker so their edits cannot

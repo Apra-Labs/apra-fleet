@@ -106,6 +106,7 @@ You will rarely need these.
 | `lazyfleet status` | Is it running, is Claude going through it, GitHub, sprints, the next schedule |
 | `lazyfleet sprint "<job>"` | Hand a job to helpers in this project; prints the design it picked and why (`--dry-run` to only ask) |
 | `lazyfleet sprints` / `lazyfleet schedules` | What is running, finished and coming up |
+| `lazyfleet flow list` | Your flows, whether you approved them, and their last run |
 | `lazyfleet off` | Bypass it for a while (secrets are **not** hidden while off) |
 | `lazyfleet on` | Switch back on |
 | `lazyfleet uninstall` | Undo every change it made. Your vault is kept. |
@@ -246,6 +247,24 @@ Your designs are saved in `~/.lazyfleet/designs/`. A project can ship designs
 for everyone in `.lazyfleet/designs/`. The designer checks every design with
 the engine before it can be saved, and shows the steps it will run. Details
 and benchmarks: [docs/lazy-sprint-designs.md](docs/lazy-sprint-designs.md).
+
+### Flows
+
+Some jobs are not code changes and need none of a sprint's planning or review:
+fill in the timesheet every evening, post a standup note, summarise the week.
+Ask Claude for one ("every weekday at 6pm, fill my timesheet from what I did
+today") and it designs a **flow**: a short chain of blocks, each with its own
+job in plain words, its own model (a cheap one for filling in a form, a
+stronger one for judgement) and only the tools it needs, down to single MCP
+tools. Plain code runs the blocks in order and passes each one's output to
+the next; a block can retry, or send a failure back to an earlier block.
+
+Claude checks the flow, tries it once with read-only tools (nothing is
+changed; each block says what it would have done), and sends you to the
+**Flows** tab. There you read each block, its model and tools, and what the
+trial did, and approve it. Only the version you approved runs for real or on
+its schedule; if Claude changes it, the changed blocks are outlined and it
+waits for you again. Details: [docs/lazy-flows.md](docs/lazy-flows.md).
 
 ## Under the hood
 
