@@ -39,6 +39,8 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { resolveSprintRunnerCommand } from './node-runner.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -262,6 +264,7 @@ export function buildSprintArgv(opts = {}) {
  * @param {{
  *   basePort?: number,
  *   command?: string,
+ *   resolveRunner?: () => { command: string, source: string, version: string },
  *   cliPath?: string,
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
@@ -301,7 +304,46 @@ export function createSpawner(deps = {}) {
     // fs so a test can drive a temp dir/fake fs without touching real disk.
     const dataDir = deps.dataDir ?? defaultDataDir();
     const fsImpl = deps.fs ?? fs;
-    const command = deps.command ?? process.execPath;
+    // apra-fleet-i9ag.15.2: deps.command still wins UNCONDITIONALLY and
+    // UNCHANGED -- every existing caller/test that injects a command is
+    // unaffected, and resolution below never even runs for them. When absent,
+    // the actual runner command is resolved LAZILY inside spawnSprint() (see
+    // resolveCommand() below), never here at createSpawner() time: a
+    // supervisor on a host with no usable Node.js runtime must still start
+    // and still serve the console/dashboard/health -- only a launch attempt
+    // fails. `resolveRunner` is injectable so a test can drive a throwing or
+    // succeeding resolution without touching the real environment/PATH.
+    const commandOverride = deps.command;
+    const resolveRunner = deps.resolveRunner ?? resolveSprintRunnerCommand;
+    // A SUCCESSFUL resolution is cached for this process's lifetime -- the
+    // Node.js runtime available to this supervisor process cannot change
+    // while it is up. A FAILURE is deliberately NEVER cached, so a transient
+    // problem (e.g. a momentarily-unusable FLEET_SE_NODE override, or PATH
+    // not yet populated at the moment of an early launch attempt) can heal
+    // itself on a later launch without requiring a full supervisor restart.
+    let cachedRunner = null;
+
+    /**
+     * Resolves the command to spawn a sprint's fleet-sprint CLI child
+     * process with. Throws node-runner.mjs's SprintRunnerResolutionError
+     * when no tier resolves to a usable Node.js runtime -- spawnSprint()
+     * below is required to call this BEFORE any other side effect (port
+     * allocation, per-sprint log file creation) so a failed resolution leaks
+     * neither. Logs the resolved command and its source exactly once, the
+     * first time resolution actually runs and succeeds.
+     * @returns {string}
+     */
+    function resolveCommand() {
+        if (commandOverride !== undefined) return commandOverride;
+        if (cachedRunner) return cachedRunner.command;
+        const resolved = resolveRunner();
+        cachedRunner = resolved;
+        logger.log?.(
+            `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,
+        );
+        return resolved.command;
+    }
+
     const cliPath = deps.cliPath ?? defaultCliPath();
     // apra-fleet-f34.1: the supervisor's OWN HTTP listen address (e.g.
     // `http://localhost:8787`), the same address it already binds for its
@@ -363,6 +405,14 @@ export function createSpawner(deps = {}) {
      * @returns {Promise<{ pid: number, port: number, command: string, args: string[], logPath: string }>}
      */
     async function spawnSprint(opts = {}) {
+        // apra-fleet-i9ag.15.2: resolve (or fail to resolve) the runner
+        // command FIRST -- strictly before allocating a port, creating the
+        // per-sprint log file, or (via the caller, api.mjs's launch(), which
+        // claims the ledger reservation only AFTER this call returns) leaking
+        // a ledger reservation. A thrown SprintRunnerResolutionError here
+        // propagates straight out of spawnSprint() with none of those side
+        // effects ever having run.
+        const command = resolveCommand();
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
         const args = [cliPath, ...buildSprintArgv({
             ...opts,

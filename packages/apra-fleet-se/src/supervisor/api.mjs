@@ -47,6 +47,7 @@ import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { SprintRunnerResolutionError } from './node-runner.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -597,7 +598,26 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
             ...(body.sync === true ? { extraArgs: ['--sync'] } : {}),
         };
-        const spawned = await spawner.spawnSprint(spawnOpts);
+        // apra-fleet-i9ag.15.2: a runner-resolution failure (spawner.mjs's
+        // resolveCommand(), thrown BEFORE port allocation/log-file creation/
+        // any ledger write -- see spawnSprint()'s own doc comment) is
+        // recognised via node-runner.mjs's own SprintRunnerResolutionError
+        // class, never by string-matching the message, and answered as a 503
+        // carrying the resolver's own operator-facing message (names every
+        // candidate tried plus the Node.js version/PATH fix line) -- instead
+        // of bubbling to server.mjs's generic 500 "internal supervisor
+        // error", which would tell the operator nothing actionable. Every
+        // other spawnSprint() failure is rethrown unchanged and keeps its
+        // existing (500, isolation-wrapper) behaviour.
+        let spawned;
+        try {
+            spawned = await spawner.spawnSprint(spawnOpts);
+        } catch (err) {
+            if (err instanceof SprintRunnerResolutionError) {
+                throw new ApiError(503, err.message);
+            }
+            throw err;
+        }
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
         // the build this supervisor process STAMPED at startup against
         // what's on disk RIGHT NOW. A mismatch means code changed after this
