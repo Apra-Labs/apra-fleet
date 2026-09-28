@@ -314,6 +314,14 @@ Calls `fleet_status` -- status of all fleet members.
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 
+In `"json"` format the payload always carries `dataDir` -- the resolved
+absolute fleet data directory (honors `APRA_FLEET_DATA_DIR`). It is
+unconditional: present on both the zero-members-registered payload (a fresh
+install) and the normal payload, never derived or omitted. `logFile` remains
+a separate optional field kept only for back-compat with older consoles that
+used to derive the data dir by stripping `logs/fleet-<pid>.log` off it;
+prefer `dataDir` directly. `"compact"` format output is unchanged.
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,

@@ -96,6 +96,95 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     expect(text).toContain("1 offline");
   });
 
+  // apra-fleet-i9ag.14.6: the server now sends an authoritative `dataDir`
+  // field (i9ag.14.4); the Health page must prefer it over the legacy
+  // logFile-derivation fallback, which stays only for an older server whose
+  // payload has no dataDir at all.
+  it("renders payload.dataDir directly when present with no logFile (the fresh-install case)", async () => {
+    const fixture = {
+      version: "apra-fleet 0.9.0",
+      summary: { total: 0, online: 0, offline: 0 },
+      dataDir: "/home/fleet/.apra-fleet/data"
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, fixture);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("/home/fleet/.apra-fleet/data");
+    expect(text).not.toContain("Data dir-");
+  });
+
+  it("still derives the data dir from logFile for a legacy payload with no dataDir field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    expect(container.textContent ?? "").toContain("/home/fleet/.apra-fleet/data");
+  });
+
+  it("renders '-' when the payload has neither dataDir nor logFile", async () => {
+    const fixture = {
+      version: "apra-fleet 0.9.0",
+      summary: { total: 0, online: 0, offline: 0 }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, fixture);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const dd = container.querySelectorAll("dd");
+    // Version, Data dir, Update available, Fleet status -- Data dir is index 1.
+    expect(dd[1]?.textContent).toBe("-");
+  });
+
+  it("prefers dataDir over logFile when both are present", async () => {
+    const fixture = {
+      version: "apra-fleet 0.9.0",
+      summary: { total: 0, online: 0, offline: 0 },
+      dataDir: "/authoritative/data/dir",
+      logFile: "/legacy/derived/logs/fleet-1.log"
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, fixture);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const dd = container.querySelectorAll("dd");
+    expect(dd[1]?.textContent).toBe("/authoritative/data/dir");
+    expect(container.textContent ?? "").not.toContain("/legacy/derived");
+  });
+
   it("renders exactly the empty-state text with no error state when workflow-packages 404s", async () => {
     vi.stubGlobal(
       "fetch",
