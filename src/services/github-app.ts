@@ -87,10 +87,13 @@ export function mapAccessLevel(level: string): Record<string, string> {
   // GitHub rejects any push touching workflow files with "refusing to allow
   // a GitHub App to create or update workflow ... without workflows
   // permission", regardless of git_access level.
+  //
+  // 'actions' on 'push+pr' lets the agent re-run failed CI jobs
+  // (gh run rerun --failed) on its own PRs.
   const levels: Record<string, Record<string, string>> = {
     read: { contents: 'read', metadata: 'read' },
     push: { contents: 'write', metadata: 'read', workflows: 'write' },
-    'push+pr': { contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write' },
+    'push+pr': { contents: 'write', pull_requests: 'write', metadata: 'read', workflows: 'write', actions: 'write' },
     admin: { contents: 'write', administration: 'write', actions: 'write', metadata: 'read', workflows: 'write' },
     issues: { issues: 'write', pull_requests: 'write', discussions: 'write', metadata: 'read' },
     full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', discussions: 'write', metadata: 'read', workflows: 'write' },
