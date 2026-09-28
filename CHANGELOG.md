@@ -49,7 +49,17 @@ What shipped and is verified working:
   that was already persisted and has since become incomplete still starts
   the supervisor (the console must stay reachable) and now reports the
   missing field(s) and their fix in `GET /api/health`'s `beadsWarning`
-  instead of looking healthy until the first launch fails.
+  instead of looking healthy until the first launch fails. The setting is
+  read once, at startup, so every save says so: the console's save response
+  asks for a restart (and names the `--beads-dir` flag when one is currently
+  overriding the setting), and the stale-folder warning says a restart is
+  required rather than leaving the operator to assume
+  `GET /api/health?refresh=1` picked the new value up -- that refresh only
+  re-probes the path already resolved. The console's save response also
+  carries the source the saved value will resolve to after that restart, so
+  the page's Source row no longer reads "unknown" the moment a save
+  succeeds, and a rejected path is now reported in the page's own terms
+  rather than quoting a `--beads-dir` flag the operator never typed.
 - **The install-time `supervisor.config.json` writer now matches the runtime
   writer's contract:** it preserves unknown top-level keys (merging
   `projectDir` over whatever is already there) and writes atomically via a

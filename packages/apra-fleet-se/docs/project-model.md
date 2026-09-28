@@ -43,7 +43,11 @@ dispatched members do.
      (no initialised `.beads`, no git `origin` remote, or no bd
      `sync.remote`), naming each missing piece and its fix and persisting
      nothing -- the engine's beads identity precondition is fatal, so
-     accepting one would only move the failure to the first launch. A
+     accepting one would only move the failure to the first launch. The
+     setting is read ONCE, during startup resolution, so a save from either
+     input takes effect only after the supervisor is restarted; `GET
+     /api/health?refresh=1` re-probes the path already resolved and can
+     never pick up a newly saved one. A
      persisted folder that has since gone missing degrades
      to a warning and an "unknown" beads status rather than refusing to
      start (deliberately asymmetric with a typo'd `--beads-dir`, which is
