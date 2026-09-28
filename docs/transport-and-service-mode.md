@@ -101,6 +101,59 @@ registers and starts the OS service automatically -- no extra step.
 Service registration failures are non-fatal: a warning is printed and the install
 continues.
 
+## Reported service state: installed / enabled / running
+
+`apra-fleet status` and the `ServiceManager.query()` contract each service
+manager implements report state as three independent fields, not one
+collapsed label:
+
+- `installed` -- the OS service registration exists at all.
+- `enabled` -- the registration is armed to auto-start. This field is
+  genuinely **tri-state**: `true`, `false`, or `undefined` when the platform
+  cannot determine it. `undefined` is not a synonym for `false` -- it means
+  "no claim either way," and the CLI renders it as a bare `"installed"` label
+  with no enable claim, never as `"installed (disabled)"`. Collapsing
+  "unknown" into "disabled" is a definite wrong claim where saying less is
+  correct, and this distinction exists because that exact collapse used to
+  make a fully running, auto-starting service read as disabled.
+- `running` -- whether the service process is currently up, independent of
+  registration/enable state, and reported for every service line the CLI
+  prints (not only the supervisor line), so a user checking health can see
+  the run state of every managed service, not just one of them.
+
+### Windows: two-tier query with an honest fallback
+
+The Windows service manager's `query()` prefers a `Get-ScheduledTask`
+PowerShell probe over the legacy `schtasks /query` CSV read, for two reasons:
+
+1. **It is the only source that can answer `enabled` at all.** `schtasks`
+   collapses "registered and armed" and "registered but disabled" into one
+   localized `Status` string that cannot be mapped to an enable state
+   reliably.
+2. **It reports the numeric ScheduledTask state enum**, not a
+   locale-dependent status string -- comparing a CSV `Status` column against
+   an English literal like `"Running"` breaks on a non-English Windows
+   install.
+
+The probe is invoked as PowerShell with an explicit `-EncodedCommand`
+(never string-interpolated shell invocation), per the project-wide rule
+against relying on shell-level expansion for a member-bound or host-bound
+command string; only a fixed, escaped, ASCII task name is interpolated into
+the script body.
+
+The probe is not a strict replacement for the CSV read -- it is consulted
+first, and the CSV path remains as a fallback for hosts where the probe
+cannot produce an interpretable result (no PowerShell available, non-zero
+exit, or output this cannot parse). The fallback never invents an `enabled`
+value for a status string it does not recognize; an unrecognized or
+localized CSV status is reported as registered, not observably running, with
+`enabled` left absent. A probe that runs but fails partway (cmdlet missing,
+access denied) is a distinct, still-open hazard from a probe that cleanly
+answers "no such task" -- treating the two as indistinguishable would
+silently deny that an actually-registered, actually-running service exists,
+which is the same class of failure this two-tier design exists to prevent
+in the other direction.
+
 ## Supported user-facing interfaces
 
 Fleet exposes exactly one supported user-facing interface: the **service HTTP
