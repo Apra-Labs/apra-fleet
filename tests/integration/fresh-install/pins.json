@@ -1,0 +1,30 @@
+{
+  "_comment": "Pinned downloads for the fresh-install harness. run.mjs fetches each into the cache dir and refuses a sha256 mismatch; the box re-verifies. Bump deliberately.",
+  "node": {
+    "version": "v22.23.3",
+    "windows": {
+      "file": "node-v22.23.3-x64.msi",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-x64.msi",
+      "sha256": "1c0efc8449987e7da5d184786a0a96da83ffa11d334421201e5c09b93017cb8d"
+    },
+    "linux": {
+      "file": "node-v22.23.3-linux-x64.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.gz",
+      "sha256": "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
+    }
+  },
+  "baselines": {
+    "v0.4.2": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.2_2b2a2f",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "4680c97bd0ddb2b803b31325522005bc4c25c7db62ba8e71ae811fa1e9e97efb"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "b39b79b36eb43c6a85f4ee91fc6f97e5f8abdf0f1916f050aa797783836a6bdb"
+      }
+    }
+  }
+}
