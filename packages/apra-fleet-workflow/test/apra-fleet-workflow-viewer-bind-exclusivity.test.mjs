@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { FleetWorkflow } from '../src/workflow/index.mjs';
 import { createDashboardViewer } from '../src/viewer/index.mjs';
+import { tryRivalBind } from './rival-bind-helper.mjs';
 
 // apra-fleet-i9ag.15.9: regression coverage for the SILENT PORT HIJACK that
 // made viewer routes answer an intermittent, load-dependent 404 under a full
@@ -59,18 +60,6 @@ async function withServer(server, fn) {
     }
 }
 
-/** Attempt a competing bind; resolves the error code, or null if the bind succeeded. */
-function tryBind(opts) {
-    return new Promise((resolve) => {
-        const rival = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
-        rival.once('error', (err) => resolve({ code: err.code, close: async () => {} }));
-        rival.listen(opts, () => resolve({
-            code: null,
-            close: () => new Promise((done) => rival.close(done))
-        }));
-    });
-}
-
 // createDashboardViewer() persists sprint state under process.cwd() -- keep
 // every test in this file against a fresh temp cwd.
 async function inTempCwd(fn) {
@@ -92,7 +81,7 @@ describe('apra-fleet-i9ag.15.9: the viewer owns its loopback port exclusively', 
             const server = createDashboardViewer(wf, { port: 0, name: 'Bind Exclusivity Test' });
 
             await withServer(server, async (port) => {
-                const rival = await tryBind({ port, host: '127.0.0.1' });
+                const rival = await tryRivalBind({ port, host: '127.0.0.1' });
                 try {
                     assert.equal(
                         rival.code,
@@ -119,7 +108,7 @@ describe('apra-fleet-i9ag.15.9: the viewer owns its loopback port exclusively', 
                 // (loopback) socket -- ours -- keeps winning loopback
                 // traffic. Skipped if the platform refuses the bind outright,
                 // which is an even stronger guarantee.
-                const rival = await tryBind({ port });
+                const rival = await tryRivalBind({ port });
                 try {
                     // A route the viewer answers unconditionally, and that
                     // the rival would answer 404 -- exactly the reported

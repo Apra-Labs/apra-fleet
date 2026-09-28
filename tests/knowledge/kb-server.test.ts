@@ -224,8 +224,6 @@ describe('kb-server refuses an http project provider (my-beads-db-0cd.15)', () =
 // every loopback request meant for this Bearer-token-guarded KB server --
 // neither side errors, and clients get the impostor's answers.
 describe('apra-fleet-i9ag.15.11: the KB server owns its loopback port exclusively', () => {
-  const BIND_PORT = 17880;
-
   it('binds loopback explicitly by default, not the OS wildcard', async () => {
     const s = await startKbServer(0, false);
     try {
@@ -247,12 +245,18 @@ describe('apra-fleet-i9ag.15.11: the KB server owns its loopback port exclusivel
   });
 
   it('refuses a rival loopback bind on the live port instead of silently splitting traffic', async () => {
-    const s = await startKbServer(BIND_PORT, false);
+    // apra-fleet-i9ag.15.14: listen on 0 (kernel-assigned port) rather than a
+    // fixed literal -- a hardcoded port was an odd choice in a test that is
+    // specifically about port collisions, and the live port is available via
+    // address() right after startKbServer() resolves.
+    const s = await startKbServer(0, false);
     try {
+      const addr = s.address();
+      const livePort = addr && typeof addr === 'object' ? addr.port : (addr as unknown as number);
       const rivalErr = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
         const rival = http.createServer();
         rival.once('error', (err: NodeJS.ErrnoException) => resolve(err));
-        rival.listen({ port: BIND_PORT, host: '127.0.0.1' }, () => {
+        rival.listen({ port: livePort, host: '127.0.0.1' }, () => {
           rival.close(() => resolve(null));
         });
       });

@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { FleetWorkflow } from '../src/workflow/index.mjs';
 import { createDashboardViewer } from '../src/viewer/index.mjs';
+import { tryRivalBind } from './rival-bind-helper.mjs';
 
 // Tests for apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
 // the former apra-fleet-eft.27.2 GET /beads/:id/description endpoint was
@@ -45,19 +46,14 @@ async function withServer(server, fn) {
 }
 
 // apra-fleet-i9ag.15.10: attempt a rival HTTP listener on the SAME loopback
-// port the viewer already owns. Resolves { code: 'EADDRINUSE', close } if the
-// bind was correctly refused (the exclusive-bind contract holding), or
-// { code: null, close } if the rival's bind unexpectedly succeeded (the
-// silent port-hijack condition apra-fleet-i9ag.15.9 fixed).
+// port the viewer already owns, via the shared tryRivalBind() helper
+// (apra-fleet-i9ag.15.14 -- previously a near-verbatim local copy here).
+// Resolves { code: 'EADDRINUSE', close } if the bind was correctly refused
+// (the exclusive-bind contract holding), or { code: null, close } if the
+// rival's bind unexpectedly succeeded (the silent port-hijack condition
+// apra-fleet-i9ag.15.9 fixed).
 function tryRivalLoopbackBind(port) {
-    return new Promise((resolve) => {
-        const rival = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
-        rival.once('error', (err) => resolve({ code: err.code, close: async () => {} }));
-        rival.listen({ port, host: '127.0.0.1' }, () => resolve({
-            code: null,
-            close: () => new Promise((done) => rival.close(done))
-        }));
-    });
+    return tryRivalBind({ port, host: '127.0.0.1' });
 }
 
 // createDashboardViewer() persists sprint state under process.cwd() -- run
@@ -162,7 +158,7 @@ describe('apra-fleet-eft.37.4: GET /extensions/:extId/detail/:itemId (generic ho
     // every route the viewer serves, not just the alias below. This is the
     // "natural sibling" route named in apra-fleet-i9ag.15.10's task
     // description: GET /extensions/:extId/detail/:itemId.
-    test('apra-fleet-i9ag.15.9: the generic detail route also survives a rival wildcard bind on the same port -- the exclusive-bind guard is listener-level, not alias-specific', async () => {
+    test('apra-fleet-i9ag.15.9: the generic detail route also survives a rival loopback bind on the same port -- the exclusive-bind guard is listener-level, not alias-specific', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
         const stuffExtension = {
             id: 'stuff',
@@ -245,7 +241,7 @@ describe('apra-fleet-eft.37.4: GET /beads/:id/description (BOUNDARY-COMPAT one-r
     // (code stays `null` instead of 'EADDRINUSE'), which fails this test's
     // first assertion immediately -- confirmed by hand against the pre-fix
     // source while writing this test.
-    test('apra-fleet-i9ag.15.9: the alias survives a rival wildcard bind attempt on the same port -- it never answers a stolen-socket 404', async () => {
+    test('apra-fleet-i9ag.15.9: the alias survives a rival loopback bind attempt on the same port -- it never answers a stolen-socket 404', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
         const server = createDashboardViewer(wf, { port: 0, name: 'Bead Alias Bind Hijack Test' });
 
