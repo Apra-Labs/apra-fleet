@@ -7,6 +7,7 @@ import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { registerSupervisorService } from '../services/supervisor-service.js';
+import { seedSupervisorProjectDir } from './supervisor.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
@@ -1026,6 +1027,7 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --project-dir <path>  Seed the fleet-supervisor's project folder before it starts
   apra-fleet install --help            Show this help
 
 Options:
@@ -1039,6 +1041,13 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
                           fleet-se requires Node.js 22.16+ and npm.
+  --project-dir <path>    Seed the fleet-supervisor's persisted project folder (the folder whose
+                          .beads tracker the supervisor runs against) before the supervisor service
+                          is registered and started, so the first boot already resolves the right
+                          project instead of the installed engine path. The path must exist and be
+                          a directory. Omitting this leaves any project folder set earlier (e.g.
+                          from the console) untouched; this can also be set later from the console's
+                          Projects page or by re-running install with this flag.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
 
 Services (SEA + --transport http):
@@ -1153,15 +1162,56 @@ Services (SEA + --transport http):
     }
   }
 
+  // Parse --project-dir flag (apra-fleet-i9ag.17.4.1): the fleet-supervisor's
+  // project folder, seeded into supervisor.config.json before the supervisor
+  // service is registered (see the seeding step below). Both spellings,
+  // matching every other flag in this file. undefined = option omitted --
+  // the seeding step below must then write nothing and touch nothing.
+  let projectDirArg: string | undefined;
+  const projectDirEqualArg = args.find(a => a.startsWith('--project-dir='));
+  if (projectDirEqualArg) {
+    projectDirArg = projectDirEqualArg.slice('--project-dir='.length);
+  } else {
+    const projectDirIdx = args.indexOf('--project-dir');
+    if (projectDirIdx >= 0) {
+      if (projectDirIdx < args.length - 1) {
+        projectDirArg = args[projectDirIdx + 1];
+      } else {
+        console.error('Error: --project-dir requires a path.');
+        process.exit(1);
+      }
+    }
+  }
+
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--project-dir='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--project-dir', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
     if (!a.startsWith('-')) continue; // non-flag positional (e.g. value token for --skill)
     console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
     process.exit(1);
+  }
+
+  // Seed the supervisor's persisted project folder EARLY -- before any other
+  // install side effect runs (same "fail loudly before a single file is
+  // written" philosophy as the fleet-se prerequisite gate below), and well
+  // before supervisor service registration further down (apra-fleet-
+  // i9ag.17.4.1's ordering requirement: the config must exist before the
+  // FIRST boot, or that boot resolves the wrong project and needs a
+  // restart). seedSupervisorProjectDir() validates (exists + is a
+  // directory) before writing anything, so a bad path aborts a fresh
+  // install cleanly with nothing written and no existing config disturbed.
+  // Omitting --project-dir entirely (projectDirArg undefined) calls nothing
+  // here, leaving today's behaviour -- including any config an operator
+  // already set from the console -- byte-identical.
+  if (projectDirArg !== undefined) {
+    const seedResult = seedSupervisorProjectDir(projectDirArg);
+    if (!seedResult.ok) {
+      console.error(`Error: --project-dir: ${seedResult.error}.`);
+      process.exit(1);
+    }
   }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';

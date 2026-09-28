@@ -189,3 +189,83 @@ export async function runSupervisor(
     return 1;
   }
 }
+
+/**
+ * apra-fleet-i9ag.17.4.1: the supervisor's persisted project-folder setting
+ * -- `supervisor.config.json` under `SUPERVISOR_DATA_DIR` -- written here
+ * (install time) and read by packages/apra-fleet-se's own
+ * `readSupervisorConfig()`/`resolveProjectDir()`
+ * (packages/apra-fleet-se/src/supervisor/project-config.mjs,
+ * beads-identity.mjs). This is the ONLY writer of that file on the install
+ * side, mirroring the reader's own "one owner" rule.
+ *
+ * SCHEMA DRIFT: this package cannot import the .mjs reader directly to
+ * share one schema definition -- the root package is TypeScript under
+ * `rootDir: ./src` with `allowJs` off, and does not depend on
+ * `@apralabs/apra-fleet-se` (the dependency runs the other way, through
+ * `@apralabs/apra-fleet-client`; see src/services/sprint-coordination.ts's
+ * header for the identical constraint already documented there). Drift is
+ * instead caught by a parity test (tests/install-supervisor-service.test.ts)
+ * that imports the REAL reader and asserts it accepts exactly what this
+ * writer produces, rather than two hand-restated copies of the same JSON
+ * shape checked against each other in name only.
+ */
+export const SUPERVISOR_CONFIG_FILENAME = 'supervisor.config.json';
+
+/** Absolute path of `supervisor.config.json` for a given supervisor data
+ *  dir (default `SUPERVISOR_DATA_DIR`) -- byte-identical in shape to
+ *  packages/apra-fleet-se/src/supervisor/project-config.mjs's own
+ *  `supervisorConfigPath()`. */
+export function supervisorConfigPath(dataDir: string = SUPERVISOR_DATA_DIR): string {
+  return path.join(dataDir, SUPERVISOR_CONFIG_FILENAME);
+}
+
+export interface SeedProjectDirResult {
+  ok: boolean;
+  /** The resolved absolute path, whether or not the seed succeeded -- so a
+   *  caller can name it in an error message without re-resolving. */
+  resolvedPath: string;
+  /** Present only when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * Validate `projectDir` (must exist and be a directory) and, on success,
+ * write it to `supervisor.config.json` under `dataDir` -- the exact shape
+ * `readSupervisorConfig()` accepts: a JSON object with a non-empty string
+ * `projectDir` key, resolved to an ABSOLUTE path before writing (the reader
+ * otherwise resolves a relative value against ITS OWN cwd at read time,
+ * which is not install's cwd and not stable across a service restart).
+ *
+ * Never partially writes: the existence/directory check runs before any
+ * `fs.writeFileSync` call, so a rejected path leaves no new file behind and
+ * an already-existing config (e.g. one an operator set from the console) is
+ * left completely untouched by a rejected call.
+ *
+ * `fsImpl` is injectable purely for tests -- production callers always use
+ * the default (real `node:fs`).
+ */
+export function seedSupervisorProjectDir(
+  projectDir: string,
+  dataDir: string = SUPERVISOR_DATA_DIR,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync'> = fs,
+): SeedProjectDirResult {
+  const resolvedPath = path.resolve(projectDir);
+  let isDir = false;
+  try {
+    isDir = fsImpl.existsSync(resolvedPath) && fsImpl.statSync(resolvedPath).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' does not exist or is not a directory`,
+    };
+  }
+  fsImpl.mkdirSync(dataDir, { recursive: true });
+  const configPath = supervisorConfigPath(dataDir);
+  fsImpl.writeFileSync(configPath, `${JSON.stringify({ projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');
+  return { ok: true, resolvedPath };
+}

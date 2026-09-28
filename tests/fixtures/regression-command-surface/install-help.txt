@@ -14,6 +14,7 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --project-dir <path>  Seed the fleet-supervisor's project folder before it starts
   apra-fleet install --help            Show this help
 
 Options:
@@ -27,6 +28,13 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
                           fleet-se requires Node.js 22.16+ and npm.
+  --project-dir <path>    Seed the fleet-supervisor's persisted project folder (the folder whose
+                          .beads tracker the supervisor runs against) before the supervisor service
+                          is registered and started, so the first boot already resolves the right
+                          project instead of the installed engine path. The path must exist and be
+                          a directory. Omitting this leaves any project folder set earlier (e.g.
+                          from the console) untouched; this can also be set later from the console's
+                          Projects page or by re-running install with this flag.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
 
 Services (SEA + --transport http):
