@@ -18,6 +18,7 @@ import { writeSupervisorConfig, supervisorConfigPath } from '../src/supervisor/p
 import { serveMain } from '../bin/serve.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { expectedWalkUpProjectDir, hostBeadsAncestor } from './helpers/walk-up-project-dir.mjs';
 
 // =============================================================================
 // The supervisor's project-folder PRECEDENCE chain, and the deliberate
@@ -55,6 +56,14 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // would otherwise leak that workspace in. Mirrors the BD_CHILD_ENV pattern in
 // tests/check-sandbox-sync-remote.test.ts and
 // tests/2cc-win-bd-invocation-integ.test.ts.
+//
+// The ONE thing that isolation cannot cover: the walk-up climbs ABOVE the
+// temp root, so a `.beads` anywhere above os.tmpdir() is reachable from
+// every fixture folder here. That is not hypothetical -- a Windows runner's
+// os.tmpdir() sits inside the user profile, so a `.beads` in that profile is
+// an ancestor of all of them. Cases that depend on a beads-less walk-up
+// therefore state their expectation through ./helpers/walk-up-project-dir.mjs
+// instead of hardcoding the cwd they passed in.
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -378,9 +387,14 @@ describe('project-dir on a REAL supervisor -- boots, logs one source line, repor
         }
     });
 
-    test('source=config on a folder with no .beads: starts, beads unknown, carries a beadsWarning', async () => {
+    test('source=config on a folder with no .beads: starts, beads unknown, carries a beadsWarning', async (t) => {
         const dirs = await makeFixture();
         await writeSupervisorConfig({ dataDir: dirs.dataDir, projectDir: dirs.noBeads });
+
+        // The supervisor chdirs INTO the configured folder and then discovers
+        // from there, so the identity half of this case is subject to the
+        // same host-pollution hazard as the walk-up cases below.
+        const polluted = hostBeadsAncestor(dirs.noBeads, dirs.root);
 
         const { health, log, exited, stop } = await bootServe(dirs, { cwd: dirs.projB });
         try {
@@ -392,8 +406,12 @@ describe('project-dir on a REAL supervisor -- boots, logs one source line, repor
                 health.projectDir, dirs.projB,
                 'REGRESSION: the walk-up trap won over the persisted setting on a real boot',
             );
-            assert.equal(health.beads, null, 'beads identity is unknown');
-            assert.ok(health.beadsWarning, 'a beadsWarning must be carried');
+            if (polluted) {
+                t.diagnostic(`non-hermetic host: ${polluted} carries a .beads above the fixture temp root, so the beads-unknown assertions are skipped`);
+            } else {
+                assert.equal(health.beads, null, 'beads identity is unknown');
+                assert.ok(health.beadsWarning, 'a beadsWarning must be carried');
+            }
             const lines = log.split('\n').filter((l) => l.includes('project folder:'));
             assert.equal(lines.length, 1, `expected exactly one project-folder line:\n${log}`);
             assert.ok(lines[0].includes(`source: ${PROJECT_DIR_SOURCE.CONFIG}`));
@@ -450,18 +468,36 @@ describe('project-dir on a REAL supervisor -- boots, logs one source line, repor
         }
     });
 
-    test('source=walk-up: no flag and no config, health reports the cwd and walk-up as its source', async () => {
+    test('source=walk-up: no flag and no config, health reports the cwd and walk-up as its source', async (t) => {
         const dirs = await makeFixture();
         // No config file at all -- the legacy path.
+
+        // The walk-up climbs past the fixture's temp root, so what it should
+        // report from a beads-less cwd depends on the HOST: `noBeads` when
+        // nothing above the temp dir carries a `.beads` (every POSIX runner
+        // and dev box), and that ancestor when something does (a Windows
+        // runner, whose os.tmpdir() sits inside the user profile). See
+        // ./helpers/walk-up-project-dir.mjs.
+        const polluted = hostBeadsAncestor(dirs.noBeads, dirs.root);
 
         const { health, log, exited, stop } = await bootServe(dirs, { cwd: dirs.noBeads });
         try {
             assert.equal(exited, false, `the legacy no-beads path must still start. Log:\n${log}`);
             assert.ok(health, `no /api/health answer. Log:\n${log}`);
-            assert.equal(health.projectDir, dirs.noBeads);
+            assert.equal(health.projectDir, expectedWalkUpProjectDir(dirs.noBeads));
             assert.equal(health.projectDirSource, PROJECT_DIR_SOURCE.WALK_UP);
-            assert.equal(health.beads, null);
-            assert.ok(health.beadsWarning, 'the pre-existing no-beads warning still fires');
+            if (polluted) {
+                // A real `.beads` above the temp root means the walk-up
+                // legitimately found a tracker, so "identity unknown" is no
+                // longer the thing under test here. The hermetic half of
+                // this claim is the "source=config on a VANISHED folder"
+                // case above, which reaches beads-unknown without depending
+                // on what is above os.tmpdir().
+                t.diagnostic(`non-hermetic host: ${polluted} carries a .beads above the fixture temp root, so the beads-unknown assertions are skipped`);
+            } else {
+                assert.equal(health.beads, null);
+                assert.ok(health.beadsWarning, 'the pre-existing no-beads warning still fires');
+            }
             const lines = log.split('\n').filter((l) => l.includes('project folder:'));
             assert.equal(lines.length, 1, `expected exactly one project-folder line:\n${log}`);
             assert.ok(lines[0].includes(`source: ${PROJECT_DIR_SOURCE.WALK_UP}`));

@@ -13,6 +13,7 @@ import { PROJECT_DIR_SOURCE, discoverBeadsDir } from '../src/supervisor/beads-id
 import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { expectedWalkUpProjectDir } from './helpers/walk-up-project-dir.mjs';
 
 // =============================================================================
 // apra-fleet-i9ag.17.2.3 -- console project-folder round trip, end to end
@@ -294,9 +295,19 @@ describe('console project-folder round trip (apra-fleet-i9ag.17.2.3)', () => {
         // isn't" failure that field exists to prevent. The "survives
         // restart" case below is where GET legitimately reads the saved
         // value back, on a process that has genuinely adopted it.
+        //
+        // What that original resolution IS depends on the host: the walk-up
+        // climbs past the fixture's temp root, so it is `bootCwd` only while
+        // nothing above os.tmpdir() carries a `.beads` -- untrue on a Windows
+        // runner, whose temp dir sits inside the user profile. See
+        // ./helpers/walk-up-project-dir.mjs. The claim under test is that GET
+        // reports the BOOT-TIME resolution rather than the just-saved folder,
+        // and `savedProj` is inside the temp root, so it can never be what
+        // the walk-up answers either way.
         const getRes = await request(sup.port, 'GET', '/api/project', { token: sup.token });
         assert.equal(getRes.status, 200);
-        assert.equal(getRes.json.projectDir, dirs.bootCwd);
+        assert.equal(getRes.json.projectDir, expectedWalkUpProjectDir(dirs.bootCwd));
+        assert.notEqual(getRes.json.projectDir, dirs.savedProj, 'GET must not report a saved-but-not-yet-adopted folder as live');
         assert.equal(getRes.json.source, PROJECT_DIR_SOURCE.WALK_UP);
     });
 
