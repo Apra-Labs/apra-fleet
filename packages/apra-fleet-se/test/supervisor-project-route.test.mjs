@@ -307,6 +307,10 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         assert.equal(res.statusCode, 200);
         assert.equal(payloadOf(res).flagActive, true);
         assert.ok(payloadOf(res).note.includes('--beads-dir'), `expected the response note to name the overriding flag, got: ${payloadOf(res).note}`);
+        assert.equal(
+            payloadOf(res).source, 'flag',
+            'the flag keeps winning the precedence after a restart, so the save must not claim source "config"',
+        );
 
         // Still genuinely persisted -- inert only until the flag is dropped.
         const config = await readSupervisorConfig({ dataDir });
@@ -327,6 +331,12 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         assert.equal(payloadOf(res).flagActive, false);
         assert.ok(!payloadOf(res).note.includes('--beads-dir'), `expected no flag-override caveat, got: ${payloadOf(res).note}`);
         assert.equal(payloadOf(res).restartRequired, true);
+        // The console re-renders its Current block straight from this
+        // response; without `source` the Source row reads "unknown" the
+        // instant a save succeeds. 'config' is what the saved value resolves
+        // to at the next startup, not the pre-save 'walk-up' this route was
+        // mounted with.
+        assert.equal(payloadOf(res).source, 'config');
     });
 
     test('the route only opens supervisor.config.json through project-config.mjs -- writing via the route and reading via readSupervisorConfig agree on the same file', async () => {

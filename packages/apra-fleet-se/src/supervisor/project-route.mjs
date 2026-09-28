@@ -57,7 +57,9 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME } from './beads-identity.mjs';
+import {
+    resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME, PROJECT_DIR_SOURCE,
+} from './beads-identity.mjs';
 import { writeSupervisorConfig } from './project-config.mjs';
 
 /**
@@ -158,6 +160,14 @@ export function registerProjectFolderRoutes(supervisor, deps) {
             projectDir: result.projectDir,
             hasBeadsDb: hasBeadsDbAt(result.projectDir, fsImpl),
             flagActive,
+            // The source the SAVED value will have once the supervisor is
+            // restarted: 'config', unless a --beads-dir flag is in force, in
+            // which case the flag keeps winning the precedence
+            // (resolveProjectDir()) and this setting stays dormant. Reported
+            // because the console re-renders its whole Current block from
+            // this response -- without it the Source row falls back to
+            // "unknown" the instant a save succeeds.
+            source: flagActive ? PROJECT_DIR_SOURCE.FLAG : PROJECT_DIR_SOURCE.CONFIG,
             // The config is read only during startup resolution (see
             // beads-identity.mjs's resolveProjectDir()) -- a save is never
             // live, so this is unconditionally true.
