@@ -474,6 +474,13 @@ via `kb_setup --remote <url> --token <key>`.
 Offline behavior: `HttpKbProvider` falls back to local `SqliteProvider` when
 the server is unreachable. Reads work offline. Writes are queued and flushed
 on next connection (or dropped if queue exceeds 1000 entries -- configurable).
+The fallback is not silent: the first request to hit an unreachable remote
+logs a `[KB] WARNING` to stderr naming the configured remote URL and the
+connection error, and the degraded state (plus the reason and a timestamp) is
+exposed through `kb_stats` (`degraded`, `degraded_reason`, `degraded_since`,
+`remote_url`) so it is inspectable without watching process output. The
+warning re-arms on reconnect so a later drop is reported again rather than
+staying silent for the rest of the session (apra-fleet-i9ag.15.13).
 Port: 7878 (default). Configurable in config.json or via `--port` flag.
 TLS: optional. Recommended for remote (non-localhost) deployments. Configured
 via `--tls-cert` and `--tls-key` flags.

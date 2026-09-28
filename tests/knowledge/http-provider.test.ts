@@ -192,6 +192,91 @@ describe('HttpKbProvider', () => {
     }
   });
 
+  it('degraded signal: offline read warns to stderr naming the remote URL and error, and stats() reports degraded', async () => {
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string, ...rest: unknown[]) => {
+      stderrLines.push(typeof s === 'string' ? s : String(s));
+      return origWrite(s as any, ...(rest as any[]));
+    };
+
+    try {
+      const fallback = new SqliteProvider(':memory:');
+      await fallback.init();
+      const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+      await provider.init();
+
+      try {
+        // apra-fleet-i9ag.15.13: before any request, the provider must not
+        // claim to be degraded -- it has not tried to reach the remote yet.
+        const preStats = await provider.stats();
+        expect(preStats.degraded).toBe(false);
+
+        // A read against an unreachable configured remote must be an
+        // observable signal, not a silent local read: a stderr warning naming
+        // the remote URL and the connection error...
+        await provider.query({});
+        const warning = stderrLines.find(
+          l => l.includes('[KB] WARNING: remote KB server at') && l.includes(OFFLINE_URL)
+        );
+        expect(warning).toBeDefined();
+        expect(warning).toContain('unreachable');
+
+        // ...and an inspectable degraded state via stats() (kb_stats), not
+        // just a one-time stderr line a later caller can't see.
+        const stats = await provider.stats();
+        expect(stats.degraded).toBe(true);
+        expect(stats.remote_url).toBe(OFFLINE_URL);
+        expect(stats.degraded_reason).toBeTruthy();
+        expect(stats.degraded_since).toBeTruthy();
+
+        // The warning fires once per drop, not once per call.
+        const warningCountAfterFirst = stderrLines.filter(l => l.includes('is unreachable')).length;
+        await provider.query({});
+        const warningCountAfterSecond = stderrLines.filter(l => l.includes('is unreachable')).length;
+        expect(warningCountAfterSecond).toBe(warningCountAfterFirst);
+      } finally {
+        provider.dispose();
+      }
+    } finally {
+      (process.stderr as any).write = origWrite;
+    }
+  });
+
+  it('degraded signal: reconnecting to a live server clears degraded state and re-arms the warning', async () => {
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string, ...rest: unknown[]) => {
+      stderrLines.push(typeof s === 'string' ? s : String(s));
+      return origWrite(s as any, ...(rest as any[]));
+    };
+
+    try {
+      const fallback = new SqliteProvider(':memory:');
+      await fallback.init();
+      const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+      await provider.init();
+
+      try {
+        await provider.query({});
+        expect((await provider.stats()).degraded).toBe(true);
+
+        // Server comes back.
+        (provider as any).baseUrl = `http://127.0.0.1:${MOCK_PORT}`;
+        await provider.query({});
+
+        const reconnected = await provider.stats();
+        expect(reconnected.degraded).toBe(false);
+        expect(reconnected.degraded_reason).toBeUndefined();
+        expect(stderrLines.some(l => l.includes('Reconnected to remote KB server'))).toBe(true);
+      } finally {
+        provider.dispose();
+      }
+    } finally {
+      (process.stderr as any).write = origWrite;
+    }
+  });
+
   it('beforeExit warning: queue has entries, warning emitted to stderr', async () => {
     const stderrLines: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);

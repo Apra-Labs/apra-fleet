@@ -202,6 +202,15 @@ export interface ProviderStats {
   // throwing). Absent/true on SqliteProvider's real computation.
   supported?: boolean;
   reason?: string;
+  // apra-fleet-i9ag.15.13: HttpKbProvider-only fields exposing whether the
+  // remote KB server configured via kb_setup is currently reachable, so a
+  // caller can tell "answers are coming from my private local fallback, not
+  // the team-shared KB" without watching stderr for the one-time warning.
+  // Always absent on SqliteProvider (there is no remote to be degraded from).
+  degraded?: boolean;
+  degraded_reason?: string;
+  degraded_since?: string;
+  remote_url?: string;
   totals: KbTotals;
   stale: number;
   flagged: number;
