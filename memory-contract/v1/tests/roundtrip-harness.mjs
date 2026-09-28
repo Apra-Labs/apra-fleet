@@ -187,6 +187,16 @@ export const SCENARIO = [
   // below reads it back through the path anchor, no derive needed.
   { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
+  // apra-fleet-i9ag.15.17: repo B never receives a live capture anywhere in
+  // this scenario -- kb_import/happy above rejects its one entry (imported:0)
+  // rather than creating one -- so a kb_stats call scoped to repo B's slug
+  // deterministically has zero CONFIRMED entries and stats.promote_ratio is
+  // null (sqlite-provider.ts: `confirmedRow.c > 0 ? ... : null`). This is the
+  // ONLY committed kb_stats fixture whose parsed body reaches promote_ratio:
+  // null, so schemas/kb_stats.response.json's nested parsed sub-schema
+  // (including its now-nullable promote_ratio, apra-fleet-i9ag.15.15) is
+  // actually exercised by the corpus, not just by happy.json's non-null 1.
+  { tool: 'kb_stats', case: 'edge-empty-promote-ratio-null' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
@@ -639,9 +649,22 @@ function taxonomyFailures(fixture, taxonomyIndex) {
  * @param {string[]} [rosterTools]  the inventoried tool roster (pass
  *   generate-contract.mjs's roster so coverage is checked against the real
  *   data, not a hand-copied list)
+ * @param {object} [options]
+ * @param {(observation: {key: string, tool: string, case: string, kind: string,
+ *   request: object, envelope: object, decoded: object}) => void} [options.onLiveResponse]
+ *   apra-fleet-i9ag.15.16.2: called once per step that produced a LIVE,
+ *   successfully decoded response envelope, immediately after this harness
+ *   validated it. It exists so a consumer can do its own accounting over the
+ *   real payloads (which tools were actually reached, whether each declared
+ *   `parsed` body was ever populated on the wire) WITHOUT standing up a second
+ *   corpus/dispatch/substitution driver next to this one -- see
+ *   response-conformance.mjs. Purely observational: this harness ignores what
+ *   the observer does, and a throw from it is the caller's own bug, not a
+ *   round-trip failure, so it is deliberately not caught here.
  * @returns {Promise<{provider: {name,slug,repoPath}, steps: object[], failures: string[]}>}
  */
-export async function runRoundTrip(provider, rosterTools) {
+export async function runRoundTrip(provider, rosterTools, options = {}) {
+  const { onLiveResponse } = options ?? {};
   assertProviderShape(provider);
   const taxonomyIndex = loadTaxonomyIndex();
   const failures = coverageFailures(rosterTools);
@@ -741,6 +764,10 @@ export async function runRoundTrip(provider, rosterTools) {
     record.responseValid = validateResponse(decoded);
     if (!record.responseValid) {
       fail(`live response does not validate against schemas/${step.tool}.response.json: ${ajvErrors(validateResponse)}`);
+    }
+    record.parsedType = decoded.parsed === null ? 'null' : Array.isArray(decoded.parsed) ? 'array' : typeof decoded.parsed;
+    if (onLiveResponse) {
+      onLiveResponse({ key, tool: step.tool, case: step.case, kind: fixture.kind, request, envelope, decoded });
     }
 
     // 5. extra live evidence, where the fixture's evidence is a response field

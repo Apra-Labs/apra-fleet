@@ -86,13 +86,20 @@ const server = createDashboardViewer(workflow, {
     port: 8080,
     name: 'My Workflow',
     dashboardExtensions: []   // optional; see architecture doc section 7
+    // host: '127.0.0.1' is the default (loopback-only); pass an explicit
+    // opts.host (e.g. '0.0.0.0') only if you genuinely need this dashboard
+    // reachable off-box -- see architecture doc section 7.
 });
 ```
 
 Attach the viewer to the same `FleetWorkflow` instance you pass to `WorkflowEngine`, before
 calling `executeFile()`, so it observes the run from the start. Open `http://localhost:8080`
 to see phases/activities stream in live, token/cost totals, and a Stop button that triggers
-cooperative cancellation (`workflow.requestStop()`) rather than killing the process.
+cooperative cancellation (`workflow.requestStop()`) rather than killing the process. This
+works out of the box because the viewer binds loopback by default; if you pass a wide
+`opts.host`, the printed startup URL reflects that literal host (e.g.
+`http://0.0.0.0:8080`, which is not itself navigable) -- browse to `http://localhost:8080`
+instead.
 
 ### Running the test suite
 

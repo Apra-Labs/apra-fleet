@@ -227,6 +227,14 @@ reader cannot parse, always falls back to the local SQLite provider -- see
 [Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
 for the exact selection rule and its fallback-construction invariant.
 
+A remote-configured install can also opt into a strict offline mode
+(`offline_fallback: "error"` on `kb_setup`): every read/write that would
+otherwise silently fall back to local data instead throws, naming the
+unreachable remote, for a team that needs every KB call to reflect
+team-shared truth rather than a possibly-stale local copy. The default
+(`"local"`) keeps today's silent-degrade behavior. See
+[docs/knowledge-layer-design.md](docs/knowledge-layer-design.md#adr-002-central-service-architecture----http-relay).
+
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
@@ -493,6 +501,15 @@ the server always includes in the `fleet_status` JSON payload, and
 `enabled` (armed / disabled / unknown) rather than collapsing "the platform
 can't tell" into a false "disabled" claim -- see
 [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md#reported-service-state-installed--enabled--running).
+Launching a sprint from the console now works reliably whether the
+supervisor is running as a plain Node process or as the installed
+single-executable binary (a dedicated resolver picks a real Node.js
+runtime instead of trusting the supervisor's own execPath), and a launch
+that fails before producing a terminal state file is now visible in
+Finished Sprints with its reason and a raw-log link, instead of silently
+vanishing -- see
+[docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md)
+and [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md).
 
 ## Documentation
 
@@ -516,6 +533,8 @@ can't tell" into a false "disabled" claim -- see
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Console server (`/ui` shell, `/api/fleet/*`, seam design) | [docs/console-architecture.md](docs/console-architecture.md) |
+| Sprint-runner resolution (how the supervisor picks a Node.js runtime to launch sprints with) | [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md) |
+| Supervisor dashboard live refresh (launch-failed visibility, selection-hint binding) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |

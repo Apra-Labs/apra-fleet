@@ -180,6 +180,49 @@ export function buildLaunchRequestBody(input) {
 }
 
 /**
+ * (apra-fleet-i9ag.16.4) Given a GET /api/sprints/:id response body (api.mjs's
+ * getSprint() shape: `{ sprintId, live: true, state }` while the child is
+ * still running, or `{ sprintId, live: false, history: [...], latest }` once
+ * it is no longer live -- see src/supervisor/api.mjs's getSprint()), classifies
+ * whether the post-launch watch below should report the run failed, live, or
+ * still unknown. PURE -- no DOM, no fetch, no timers -- so it is unit-testable
+ * in isolation AND embedded verbatim into this module's client script via
+ * `.toString()` (matching buildLaunchRequestBody/formatLaunchError's
+ * convention above), so the exact code under test is the exact code shipped
+ * to the browser.
+ *
+ * Priority: a LAUNCH_FAILED terminal event (`latest.event === 'launch-failed'`,
+ * history.mjs's HISTORY_EVENTS.LAUNCH_FAILED) always wins over anything else,
+ * then a CHILD_EXITED history event with a non-zero exit code or any signal,
+ * then an explicit `live: true`. Anything else (a 404 body normalized to
+ * null/undefined, an empty object, a malformed response) is 'unknown': the
+ * caller must keep polling rather than ever inventing a failure from an
+ * inconclusive response.
+ * @param {{ live?: boolean, latest?: { event?: string|null, reason?: string|null }|null, history?: Array<{ event?: string|null, exitCode?: number|null, signal?: string|null }> }|null|undefined} body
+ * @returns {{ status: 'failed', reason: string }|{ status: 'live' }|{ status: 'unknown' }}
+ */
+export function classifyLaunchWatch(body) {
+    if (!body || typeof body !== 'object') return { status: 'unknown' };
+    if (body.latest && body.latest.event === 'launch-failed') {
+        const reason = (typeof body.latest.reason === 'string' && body.latest.reason.length > 0)
+            ? body.latest.reason
+            : 'launch failed';
+        return { status: 'failed', reason };
+    }
+    const history = Array.isArray(body.history) ? body.history : [];
+    const exited = history.find((e) => e && e.event === 'child-exited'
+        && ((typeof e.exitCode === 'number' && e.exitCode !== 0) || (typeof e.signal === 'string' && e.signal.length > 0)));
+    if (exited) {
+        const reason = (typeof exited.signal === 'string' && exited.signal.length > 0)
+            ? `terminated by signal ${exited.signal}`
+            : `exited with code ${exited.exitCode}`;
+        return { status: 'failed', reason };
+    }
+    if (body.live === true) return { status: 'live' };
+    return { status: 'unknown' };
+}
+
+/**
  * Renders a POST /api/sprints error response (api.mjs's ApiError JSON shape:
  * `{ error: string, field?: string }`) as a legible operator-facing message.
  * A 409 (eft.5.2 member-overlap guard) is passed through VERBATIM -- the
@@ -236,7 +279,6 @@ function clientScriptSource(mountPrefix) {
     var selectedIssuesEl = document.getElementById('launch-selected-issues');
     var resultEl = document.getElementById('launch-result');
     var form = document.getElementById('launch-sprint-form');
-    var backlogEl = document.getElementById('backlog');
     var roleOptions = ${roleOptionsJson};
     // buildLaunchRequestBody (embedded below via .toString()) references
     // the module-level GOAL_OPTIONS by name -- it must exist in this
@@ -244,10 +286,18 @@ function clientScriptSource(mountPrefix) {
     // above stands in for FORM_ROLE_OPTIONS.
     var GOAL_OPTIONS = ${goalOptionsJson};
 
+    // apra-fleet-i9ag.18.1: a missing hint element must be reported loudly,
+    // never degrade to a silent no-op (CLAUDE.md "Fix the product, not the
+    // environment": implicit environment deciding behaviour with a silent
+    // failure is exactly the shape to avoid).
     function renderSelectedIssues() {
+        if (!selectedIssuesEl) {
+            console.error('[launch-form] missing required element #launch-selected-issues; cannot render the selection hint');
+            return;
+        }
         selectedIssuesEl.textContent = selectedRoots.length > 0
             ? 'Selected issue(s): ' + selectedRoots.join(', ')
-            : 'No issue selected -- click a Backlog row below to select one.';
+            : 'No issue selected -- check a Backlog row above to select one.';
     }
     renderSelectedIssues();
 
@@ -267,10 +317,38 @@ function clientScriptSource(mountPrefix) {
         isSelected: function (id) { return selectedRoots.indexOf(id) !== -1; },
     };
 
+    // apra-fleet-i9ag.18.1: the ONE function that mutates selection state.
+    // Every mutation path -- a row checkbox, the cascade to descendant rows,
+    // and the post-launch reset (see clearSelection(), next) -- funnels
+    // through here (or clearSelection()) so no future path can change
+    // selectedRoots without also re-rendering the hint.
     function setSelected(id, checked) {
         var idx = selectedRoots.indexOf(id);
         if (checked && idx === -1) selectedRoots.push(id);
         else if (!checked && idx !== -1) selectedRoots.splice(idx, 1);
+        renderSelectedIssues();
+    }
+
+    // apra-fleet-i9ag.18: the post-launch reset. It must leave the DOM
+    // AGREEING with selectedRoots, so it unchecks every row checkbox as well
+    // as dropping the highlight class. The prior shape cleared only
+    // selectedRoots and the row class, leaving every .bead-select-checkbox
+    // still checked: the page then showed checked rows under a "No issue
+    // selected" hint, and re-clicking such a row was a no-op (the checkbox
+    // was already checked, so no 'change' event ever fired and the row could
+    // not be re-selected without a page reload). Both queries are
+    // DOCUMENT-level for the same reason the 'change' listener below is:
+    // '#backlog' is not guaranteed to be the resolvable container the rows
+    // live in, and scoping to it made the reset silently do nothing.
+    function clearSelection() {
+        selectedRoots = [];
+        document.querySelectorAll('.bead-select-checkbox').forEach(function (cb) {
+            if (cb.checked) cb.checked = false;
+        });
+        document.querySelectorAll('tr.bead-row-selected').forEach(function (tr) {
+            tr.classList.remove('bead-row-selected');
+        });
+        renderSelectedIssues();
     }
 
     // A row's nesting depth is encoded in its first <td>'s inline
@@ -304,18 +382,25 @@ function clientScriptSource(mountPrefix) {
         }
     }
 
-    if (backlogEl) {
-        backlogEl.addEventListener('change', function (ev) {
-            var cb = ev.target;
-            if (!cb || !cb.classList || !cb.classList.contains('bead-select-checkbox')) return;
-            var id = cb.getAttribute('data-bead-id');
-            var row = cb.closest('tr[data-bead-id]');
-            setSelected(id, cb.checked);
-            if (row) row.classList.toggle('bead-row-selected', cb.checked);
-            if (row) cascadeToDescendants(row, cb.checked);
-            renderSelectedIssues();
-        });
-    }
+    // apra-fleet-i9ag.18.1: delegated at DOCUMENT level, not '#backlog' --
+    // a checkbox change bubbles to document from ANY container, including a
+    // '#backlog-table' that backlog.mjs's own script has re-rendered, and
+    // keeps working even when '#backlog' itself is not resolvable at
+    // script-execution time. Binding to a possibly-absent element behind a
+    // silent if (backlogEl) guard (the prior shape) meant the listener was
+    // simply never registered with nothing reported anywhere -- exactly the
+    // "implicit environment decides behaviour, failure is silent" pattern
+    // CLAUDE.md calls out. The 'bead-select-checkbox' class guard in this same
+    // listener still ignores this form's OWN member checkboxes.
+    document.addEventListener('change', function (ev) {
+        var cb = ev.target;
+        if (!cb || !cb.classList || !cb.classList.contains('bead-select-checkbox')) return;
+        var id = cb.getAttribute('data-bead-id');
+        var row = cb.closest('tr[data-bead-id]');
+        setSelected(id, cb.checked);
+        if (row) row.classList.toggle('bead-row-selected', cb.checked);
+        if (row) cascadeToDescendants(row, cb.checked);
+    });
 
     function memberRow(m) {
         var name = typeof m === 'string' ? m : (m && m.name) || '';
@@ -368,6 +453,87 @@ function clientScriptSource(mountPrefix) {
     ${buildLaunchRequestBody.toString()}
     ${formatLaunchError.toString()}
 
+    // apra-fleet-i9ag.16.4: after a 201, watch the newly launched sprint for
+    // its first seconds via GET /api/sprints/:id (the existing historical-
+    // record endpoint -- no new endpoint needed) rather than trusting the
+    // 201 alone, which only means the request was accepted, not that the
+    // child is actually still alive a moment later. mountHref/MOUNT_PREFIX
+    // embedded here (not just used server-side like the two fixed fetch
+    // targets above) because THIS target is built per-launch from a runtime
+    // sprintId, so it must be assembled client-side.
+    var MOUNT_PREFIX = '${typeof mountPrefix === 'string' ? mountPrefix : ''}';
+    ${mountHref.toString()}
+    ${classifyLaunchWatch.toString()}
+
+    // Poll every 2s for up to 30s -- comfortably more than one watchdog
+    // classification tick (watchdog.mjs's launch-failed window check runs on
+    // a ~5s cadence), so the window reliably observes at least one
+    // classification even under load.
+    var WATCH_INTERVAL_MS = 2000;
+    var WATCH_WINDOW_MS = 30000;
+    var watchTimer = null;
+    // Bumped on every watchLaunch() call; a tick's own async fetch/.then()
+    // chain checks its captured generation before touching resultEl, so a
+    // slow response from a SUPERSEDED watch (a second submit started a new
+    // one, or this same watch already stopped itself) can never overwrite a
+    // newer result after the fact.
+    var watchGeneration = 0;
+
+    function stopWatch() {
+        if (watchTimer) {
+            clearInterval(watchTimer);
+            watchTimer = null;
+        }
+    }
+
+    function renderLaunchWatchFailure(sprintId, reason) {
+        resultEl.style.color = '#ef4444';
+        resultEl.textContent = 'Sprint ' + sprintId + ' failed to launch: ' + reason;
+        var logLink = document.createElement('a');
+        logLink.href = mountHref(MOUNT_PREFIX, '/sprints/' + encodeURIComponent(sprintId) + '/log');
+        logLink.target = '_blank';
+        logLink.rel = 'noopener';
+        logLink.style.marginLeft = '8px';
+        logLink.textContent = 'Raw log';
+        resultEl.appendChild(logLink);
+    }
+
+    // apra-fleet-i9ag.16.4: only ONE watch runs at a time -- a second submit
+    // (a new call to this function) cancels whatever watch is already in
+    // flight before starting its own, via stopWatch() below.
+    function watchLaunch(sprintId) {
+        stopWatch();
+        watchGeneration += 1;
+        var myGeneration = watchGeneration;
+        var elapsedMs = 0;
+        function tick() {
+            elapsedMs += WATCH_INTERVAL_MS;
+            fetch(mountHref(MOUNT_PREFIX, '/api/sprints/' + encodeURIComponent(sprintId)))
+                .then(function (r) { return (r && r.ok) ? r.json() : null; })
+                .catch(function () { return null; })
+                .then(function (body) {
+                    // Superseded by a newer watch (or this watch already
+                    // concluded) while this fetch was in flight -- discard.
+                    if (myGeneration !== watchGeneration) return;
+                    var result = classifyLaunchWatch(body);
+                    if (result.status === 'failed') {
+                        stopWatch();
+                        renderLaunchWatchFailure(sprintId, result.reason);
+                        return;
+                    }
+                    if (result.status === 'live') {
+                        stopWatch();
+                        return;
+                    }
+                    // Inconclusive (404 / network error / unparseable body) --
+                    // keep polling until the window closes, then leave the
+                    // original success line untouched. NEVER invent a failure.
+                    if (elapsedMs >= WATCH_WINDOW_MS) stopWatch();
+                });
+        }
+        watchTimer = setInterval(tick, WATCH_INTERVAL_MS);
+    }
+
     if (form) {
         form.addEventListener('submit', function (ev) {
             ev.preventDefault();
@@ -418,11 +584,8 @@ function clientScriptSource(mountPrefix) {
                     resultEl.style.color = '#22c55e';
                     resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.'
                         + (r.json.buildVersionWarning ? ' Warning: ' + r.json.buildVersionWarning : '');
-                    selectedRoots = [];
-                    renderSelectedIssues();
-                    document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
-                        tr.classList.remove('bead-row-selected');
-                    });
+                    clearSelection();
+                    watchLaunch(r.json.sprintId);
                 } else {
                     resultEl.style.color = '#ef4444';
                     resultEl.textContent = formatLaunchError(r.status, r.json);
@@ -454,7 +617,7 @@ export function renderLaunchFormHtml(mountPrefix) {
         .map((g) => '<option value="' + escapeHtml(g) + '">' + escapeHtml(g) + '</option>')
         .join('');
     return (
-        '<p style="color:#a1a1aa; font-size: 13px;">Click one Backlog row above to select the issue to launch, ' +
+        '<p style="color:#a1a1aa; font-size: 13px;">Check a Backlog row\'s checkbox above to select the issue to launch, ' +
         'choose members/roles, a goal, and branch names, then submit.</p>' +
         '<div id="launch-selected-issues" style="margin-bottom: 8px; font-size: 13px; color:#a1a1aa;"></div>' +
         '<div id="launch-members" style="margin-bottom: 12px; font-size: 13px;">Loading members...</div>' +

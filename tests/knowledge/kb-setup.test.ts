@@ -247,3 +247,43 @@ describe('kb_setup merges into the existing config', () => {
     expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
   });
 });
+
+// apra-fleet-i9ag.15.18: offline_fallback ("local" | "error", read by
+// readKbConfigFromDisk and consumed by HttpKbProvider's strict mode) was
+// previously reachable only by hand-editing config.json. kb_setup is now the
+// supported way to set it.
+describe('kb_setup offline_fallback', () => {
+  type SetupResult = { success: boolean; steps: string[]; warnings: string[] };
+  async function setup(input: Parameters<typeof kbSetup>[0]): Promise<SetupResult> {
+    return JSON.parse(await kbSetup({ repo_path: tmpDir, ...input }));
+  }
+
+  it('persists offline_fallback "error" into config.json and reports it in steps', async () => {
+    const result = await setup({ provider: 'http', remote: 'https://kb.example.com/', token: crypto.randomUUID(), offline_fallback: 'error' });
+
+    expect(result.success).toBe(true);
+    expect(result.steps.some((s) => s.includes('offline_fallback') && s.includes('error'))).toBe(true);
+    expect(readConfig().offline_fallback).toBe('error');
+  });
+
+  it('persists offline_fallback "local" explicitly', async () => {
+    await setup({ provider: 'sqlite', offline_fallback: 'local' });
+
+    expect(readConfig().offline_fallback).toBe('local');
+  });
+
+  it('keeps a previously-set offline_fallback when a later call omits it', async () => {
+    await setup({ provider: 'http', remote: 'https://kb.example.com/', token: crypto.randomUUID(), offline_fallback: 'error' });
+
+    const result = await setup({});
+
+    expect(result.warnings).toEqual([]);
+    expect(readConfig().offline_fallback).toBe('error');
+  });
+
+  it('does not write an offline_fallback key when never requested', async () => {
+    await setup({ provider: 'sqlite' });
+
+    expect(readConfig()).not.toHaveProperty('offline_fallback');
+  });
+});

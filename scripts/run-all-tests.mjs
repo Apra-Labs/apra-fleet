@@ -41,6 +41,18 @@ const timeoutMs = (() => {
 })();
 
 const defaultSuites = [
+    // apra-fleet-i9ag.15.16.1: the memory-contract drift guard
+    // (`npm run contract:check` -> memory-contract/v1/generate-contract.mjs
+    // --check) used to run only when someone remembered to type it, so an
+    // authoring rule with no gate was one forgetful change away from a
+    // drifted contract. It runs here, inside the bounded runner, under the
+    // same per-suite wall-clock timeout and child-tree kill as every other
+    // suite. FIRST on purpose: it is seconds long, so drift fails fast
+    // instead of behind the multi-minute suites. It is an entry in this
+    // DEFAULT list rather than a hardcoded pre-step, so the
+    // APRA_TEST_SUITES_JSON stub-suite override still bypasses it exactly
+    // like everything else here.
+    { name: 'contract:check', cmd: npmCmd, args: ['run', 'contract:check'] },
     { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
     { name: 'apra-fleet-client', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-client'] },
     { name: 'apra-fleet-workflow', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-workflow'] },
@@ -314,6 +326,10 @@ function runBounded(suite) {
 }
 
 let failed = false;
+// apra-fleet-i9ag.15.16.1: per-suite outcomes, so the end-of-run SUMMARY line
+// below names WHICH suite failed even when a multi-minute suite's own output
+// has long since scrolled the per-suite FAILED line out of view.
+const outcomes = [];
 for (const suite of suites) {
     // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal handled
     // while the previous suite's own 'exit' event resolved runBounded()
@@ -326,12 +342,23 @@ for (const suite of suites) {
     if (terminating) break;
     if (result.timedOut) {
         failed = true;
+        outcomes.push(`${suite.name}=TIMED_OUT`);
         console.error(`\n> ${suite.name} suite TIMED OUT after ${timeoutMs}ms and was killed\n`);
     } else if (result.status !== 0) {
         failed = true;
+        outcomes.push(`${suite.name}=FAILED`);
         console.error(`\n> ${suite.name} suite FAILED (exit ${result.status})\n`);
+    } else {
+        outcomes.push(`${suite.name}=ok`);
     }
 }
+
+// One machine-greppable line naming every suite that actually ran and how it
+// ended. Suites never reached (an outer terminating signal broke the loop) are
+// reported as such rather than silently omitted, so a truncated run can never
+// read as a clean one.
+const unreached = suites.slice(outcomes.length).map(pending => `${pending.name}=not_run`);
+console.log(`\nSUMMARY: ${[...outcomes, ...unreached].join(' ')} -- ${failed || terminating ? 'FAILED' : 'ok'}\n`);
 
 // apra-fleet-qe83.3.5.1: an outer terminating signal must always end this
 // runner with a non-zero exit, even when the group SIGTERM above reaps the

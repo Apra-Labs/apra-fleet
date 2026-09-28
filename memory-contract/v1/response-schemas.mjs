@@ -200,15 +200,39 @@ const KB_RESPONSE_BODIES = {
   // only present for a provider that cannot compute stats at all) and adds
   // bible. Nested aggregates have no zod shape anywhere to cite, so they stay
   // z.unknown() rather than a guessed structure.
+  //
+  // apra-fleet-i9ag.15.13.1: degraded/degraded_reason/degraded_since/
+  // remote_url are HttpKbProvider-only fields (src/services/knowledge/
+  // types.ts ProviderStats, added by commit 4ac7b70f) exposing whether the
+  // configured remote KB server is currently reachable. All four are
+  // optional (absent on SqliteProvider and on a healthy http provider) --
+  // matching ProviderStats's own `?:` declarations exactly, so none of them
+  // belongs in a `required` list.
+  //
+  // apra-fleet-i9ag.15.15: promote_ratio is NULLABLE, not optional. types.ts
+  // declares `promote_ratio: number | null` on ProviderStats (no `?:`) -- it
+  // is always present on the wire, but its VALUE is null whenever the ratio's
+  // denominator is zero: HttpKbProvider.stats() always returns null (D4,
+  // kb_stats is not supported over the remote provider at all -- http-
+  // provider.ts's stats() literally returns `promote_ratio: null`), and
+  // SqliteProvider.stats() (sqlite-provider.ts) returns null when there are
+  // no CONFIRMED entries yet (`confirmedRow.c > 0 ? promotedRow.c /
+  // confirmedRow.c : null`). It stays in `required` below (zod-to-json-schema
+  // still emits it there since the field itself is never optional -- only
+  // its TYPE widens to accept null) because ProviderStats never omits it.
   kb_stats: z.object({
     supported: z.boolean().optional(),
     reason: z.string().optional(),
+    degraded: z.boolean().optional(),
+    degraded_reason: z.string().optional(),
+    degraded_since: z.string().optional(),
+    remote_url: z.string().optional(),
     totals: z.unknown(),
     stale: z.unknown(),
     flagged: z.unknown(),
     superseded: z.unknown(),
     retrieval: z.unknown(),
-    promote_ratio: z.number(),
+    promote_ratio: z.number().nullable(),
     coverage: z.unknown().optional(),
     bible: z.unknown(),
   }),

@@ -15,6 +15,7 @@ import {
     isPortAvailable,
     DEFAULT_SPAWNER_BASE_PORT,
 } from '../src/supervisor/spawner.mjs';
+import { SprintRunnerResolutionError } from '../src/supervisor/node-runner.mjs';
 
 // apra-fleet-eft.4.2 -- detached child-per-sprint spawner with per-sprint
 // --viewer-port allocation.
@@ -806,5 +807,115 @@ describe('createSpawner -- real detached child process (orphan survival)', () =>
             await sleep(100); // let the OS release the just-killed children's log fds
             try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
+    });
+});
+
+// apra-fleet-i9ag.15.2 -- createSpawner() no longer hardcodes
+// `process.execPath` as its default command: absent an injected
+// `deps.command`, the actual runner is resolved LAZILY inside spawnSprint()
+// through node-runner.mjs's resolveSprintRunnerCommand() (injectable here as
+// `deps.resolveRunner` so these tests never touch the real environment/PATH).
+describe('createSpawner -- lazy runner resolution (apra-fleet-i9ag.15.2)', () => {
+    test('constructing a spawner with a throwing resolveRunner does NOT throw -- resolution happens at spawn time only', () => {
+        const throwingResolver = () => { throw new SprintRunnerResolutionError('no usable Node.js runtime anywhere'); };
+        assert.doesNotThrow(() => createSpawner({ resolveRunner: throwingResolver, logger: { log() {}, error() {} } }));
+    });
+
+    test('a throwing resolveRunner rejects spawnSprint() with that SAME error, before allocating a port or creating the per-sprint log file', async () => {
+        const fixLine = 'Install Node.js 22.16+ and ensure \'node\' resolves on PATH, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with.';
+        const thrown = new SprintRunnerResolutionError(`Could not resolve a Node.js runtime to launch a sprint with. ${fixLine}`);
+        const throwingResolver = () => { throw thrown; };
+        const { spawnFn, calls } = makeFakeSpawn([222]);
+        const fakeFs = makeFakeFs();
+        let portProbed = false;
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            resolveRunner: throwingResolver,
+            basePort: 9000,
+            isPortAvailable: async () => { portProbed = true; return true; },
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        await assert.rejects(
+            () => spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' }),
+            (err) => err === thrown && err instanceof SprintRunnerResolutionError && err.message.includes(fixLine),
+        );
+        assert.equal(portProbed, false, 'must never allocate a port when runner resolution fails');
+        assert.equal(fakeFs.mkdirCalls.length, 0, 'must never create the per-sprint log directory when runner resolution fails');
+        assert.equal(fakeFs.opened.length, 0, 'must never open the per-sprint log file when runner resolution fails');
+        assert.equal(calls.length, 0, 'must never call spawn() when runner resolution fails');
+    });
+
+    test('an injected deps.command bypasses resolution entirely -- resolveRunner is never called, and existing command-injecting tests are unaffected', async () => {
+        let resolverCalls = 0;
+        const { spawnFn, calls } = makeFakeSpawn([333]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/custom/node',
+            resolveRunner: () => { resolverCalls += 1; return { command: 'node', source: 'path', version: '22.16.0' }; },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        const result = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        assert.equal(result.command, '/custom/node');
+        assert.equal(calls[0].command, '/custom/node');
+        assert.equal(resolverCalls, 0, 'an injected deps.command must bypass resolveRunner entirely');
+    });
+
+    test('a successful resolution is cached (resolveRunner called once) and logged exactly once, across multiple spawns', async () => {
+        let resolverCalls = 0;
+        const logs = [];
+        const { spawnFn } = makeFakeSpawn([444, 555]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            resolveRunner: () => { resolverCalls += 1; return { command: '/resolved/node', source: 'path', version: '22.16.0' }; },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log: (...a) => logs.push(a.join(' ')), error() {} },
+        });
+
+        const first = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        const second = await spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' });
+
+        assert.equal(first.command, '/resolved/node');
+        assert.equal(second.command, '/resolved/node');
+        assert.equal(resolverCalls, 1, 'a successful resolution must be cached for the process lifetime, not re-resolved per spawn');
+        const resolutionLogs = logs.filter((l) => l.includes('resolved sprint runner'));
+        assert.equal(resolutionLogs.length, 1, 'the resolved command/source must be logged exactly once, the first time it is used');
+        assert.ok(resolutionLogs[0].includes('/resolved/node') && resolutionLogs[0].includes('path'), resolutionLogs[0]);
+    });
+
+    test('a FAILED resolution is never cached -- a later spawn attempt can succeed once the runner becomes resolvable', async () => {
+        let attempt = 0;
+        const { spawnFn } = makeFakeSpawn([666]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            resolveRunner: () => {
+                attempt += 1;
+                if (attempt === 1) throw new SprintRunnerResolutionError('not yet resolvable');
+                return { command: '/now/resolvable/node', source: 'path', version: '22.16.0' };
+            },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        await assert.rejects(() => spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' }), SprintRunnerResolutionError);
+        const result = await spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' });
+        assert.equal(result.command, '/now/resolvable/node');
+        assert.equal(attempt, 2, 'a failed resolution must never be cached');
     });
 });

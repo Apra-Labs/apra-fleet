@@ -29,11 +29,14 @@ import {
     renderIndexPageHtml,
     verdictBadge,
     prLink,
+    launchFailedBadge,
+    buildStatePayload,
 } from '../src/supervisor/dashboard.mjs';
 import { createFinishedRunsIndex, summarizeFinishedRun } from '../src/supervisor/history-view.mjs';
 import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
+import { HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 
 const PR_URL = 'https://github.com/example/repo/pull/42';
 
@@ -152,6 +155,166 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
             await fs.rm(path.join(oldRuns, 'sprint-nov.json'));
             await fs.rm(path.join(oldRuns, 'other-workflow.json'));
         }
+    });
+
+    test('apra-fleet-i9ag.16.1: file-backed rows gain status/reason/hasTerminalState, unchanged otherwise', async () => {
+        const rows = await createFinishedRunsIndex({ env, logger: { error() {} } }).list();
+        const pass = rows.find((r) => r.sprintId === 'sprint-pass');
+        assert.equal(pass.status, 'finished');
+        assert.equal(pass.reason, null);
+        assert.equal(pass.hasTerminalState, true);
+        assert.equal(pass.verdict, 'PASS');
+        assert.equal(pass.prUrl, PR_URL);
+        assert.equal(pass.goal, 'P1');
+    });
+
+    test('apra-fleet-i9ag.16.1: a LAUNCH_FAILED event with no terminal file is reported as one launch-failed row', async () => {
+        const history = {
+            list: () => [
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                {
+                    sprintId: 'sprint-launch-dead',
+                    event: HISTORY_EVENTS.LAUNCH_FAILED,
+                    reason: 'watchdog: child exited within launch window (exited 1)',
+                    at: '2026-09-25T00:00:00.000Z',
+                },
+            ],
+        };
+        const rows = await createFinishedRunsIndex({ env, history, logger: { error() {} } }).list();
+        const launchDead = rows.filter((r) => r.sprintId === 'sprint-launch-dead');
+        assert.equal(launchDead.length, 1, 'exactly one synthesized row for the launch-failed sprint');
+        assert.deepEqual(launchDead[0], {
+            sprintId: 'sprint-launch-dead',
+            verdict: null,
+            prUrl: null,
+            endedAt: '2026-09-25T00:00:00.000Z',
+            goal: null,
+            workflowName: null,
+            status: 'launch-failed',
+            reason: 'watchdog: child exited within launch window (exited 1)',
+            hasTerminalState: false,
+        });
+        // Newest first across the merged set: sprint-launch-dead's endedAt
+        // (2026-09-25) sorts ahead of sprint-fail (2026-09-21).
+        assert.deepEqual(rows.map((r) => r.sprintId), ['sprint-launch-dead', 'sprint-fail', 'sprint-pass']);
+    });
+
+    test('apra-fleet-i9ag.16.1: a sprint with BOTH a LAUNCH_FAILED event and a terminal file yields only the file-backed row', async () => {
+        const history = {
+            list: () => [
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'stale, superseded by the finished run' },
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+            ],
+        };
+        const rows = await createFinishedRunsIndex({ env, history, logger: { error() {} } }).list();
+        const passRows = rows.filter((r) => r.sprintId === 'sprint-pass');
+        assert.equal(passRows.length, 1, 'the file-backed row wins; no synthesized duplicate');
+        assert.equal(passRows[0].status, 'finished');
+        assert.equal(passRows[0].hasTerminalState, true);
+    });
+
+    test('apra-fleet-i9ag.15.4: a terminal state file that exists but fails to parse still surfaces via LAUNCH_FAILED synthesis', async () => {
+        // 'broken.json' (content '{not json') is written in this describe's
+        // own before() fixture specifically to prove skip-unparseable-file
+        // handling never crashes the list; reused here as the unreadable
+        // terminal state this bead calls out. Its sprintId ('broken') IS in
+        // the raw file scan (byId), but produces no summary -- pre-fix, that
+        // alone suppressed LAUNCH_FAILED synthesis too, and the run vanished
+        // from the Finished list entirely.
+        const history = {
+            list: () => [
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                {
+                    sprintId: 'broken',
+                    event: HISTORY_EVENTS.LAUNCH_FAILED,
+                    reason: 'watchdog: child exited within launch window (exited 1)',
+                    at: '2026-09-27T00:00:00.000Z',
+                },
+            ],
+        };
+        const rows = await createFinishedRunsIndex({ env, history, logger: { error() {} } }).list();
+        const brokenRows = rows.filter((r) => r.sprintId === 'broken');
+        assert.equal(brokenRows.length, 1, 'exactly one row for the sprint whose terminal file exists but is unparseable');
+        assert.equal(brokenRows[0].status, 'launch-failed');
+        assert.equal(brokenRows[0].hasTerminalState, false);
+        assert.equal(brokenRows[0].reason, 'watchdog: child exited within launch window (exited 1)');
+    });
+
+    test('apra-fleet-i9ag.15.7: a terminal file that sorts OUTSIDE the newest-limit window is never duplicated by LAUNCH_FAILED synthesis, even though it was never attempted to parse', async () => {
+        // Two EXTRA terminal-state files, both with an explicit FILE MTIME
+        // (the actual sort/slice key -- list()'s newest-`limit` window sorts
+        // by mtimeMs, not by the JSON body's `endedAt`) older than
+        // sprint-pass/sprint-fail's real mtimes from this describe's own
+        // before() fixture, so with limit: 2 neither ever lands in the
+        // sliced `files` array this module actually parses -- 'sprint-old'
+        // is the one under test here (it also carries a LAUNCH_FAILED event
+        // below); 'sprint-older' is a second, even-older file with no
+        // history event at all, just extra noise proving the fix does not
+        // depend on there being exactly one excluded id.
+        const oldRuns = path.join(dataDir, 'old_runs');
+        const OLD_RUN = {
+            ...FAIL_RUN, runId: 'sprint-old', result: { verdict: 'FAIL', prUrl: null },
+            endedAt: '2026-09-10T00:00:00.000Z',
+        };
+        const OLDER_RUN = {
+            ...FAIL_RUN, runId: 'sprint-older', result: { verdict: 'FAIL', prUrl: null },
+            endedAt: '2026-09-05T00:00:00.000Z',
+        };
+        const oldPath = path.join(oldRuns, 'sprint-old.json');
+        const olderPath = path.join(oldRuns, 'sprint-older.json');
+        await fs.writeFile(oldPath, JSON.stringify(OLD_RUN));
+        await fs.writeFile(olderPath, JSON.stringify(OLDER_RUN));
+        // Force these two files' actual mtimes far into the past -- writing
+        // them here (mid-test) would otherwise give them the NEWEST mtimes
+        // of the whole fixture (they are created after sprint-pass/
+        // sprint-fail from before()), the opposite of what this test needs.
+        await fs.utimes(oldPath, new Date('2026-09-10T00:00:00.000Z'), new Date('2026-09-10T00:00:00.000Z'));
+        await fs.utimes(olderPath, new Date('2026-09-05T00:00:00.000Z'), new Date('2026-09-05T00:00:00.000Z'));
+        try {
+            const history = {
+                list: () => [
+                    { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                    { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                    {
+                        sprintId: 'sprint-old',
+                        event: HISTORY_EVENTS.LAUNCH_FAILED,
+                        reason: 'stale watchdog event for a run that actually finished cleanly',
+                        at: '2026-09-11T00:00:00.000Z',
+                    },
+                ],
+            };
+            // limit: 2 keeps only sprint-pass/sprint-fail (the two newest);
+            // sprint-old/sprint-older sort outside the window and are never
+            // even read off disk by this call.
+            const rows = await createFinishedRunsIndex({ env, history, limit: 2, logger: { error() {} } }).list();
+            const oldRows = rows.filter((r) => r.sprintId === 'sprint-old');
+            assert.equal(oldRows.length, 0, 'sprint-old has a perfectly good file on disk (just outside the display window) -- it must not gain a synthesized launch-failed duplicate');
+            assert.deepEqual(rows.map((r) => r.sprintId).sort(), ['sprint-fail', 'sprint-pass'], 'the limit still caps the list to the two newest file-backed rows, nothing synthesized in their place');
+        } finally {
+            await fs.rm(path.join(oldRuns, 'sprint-old.json'));
+            await fs.rm(path.join(oldRuns, 'sprint-older.json'));
+        }
+    });
+
+    test('apra-fleet-i9ag.16.1: with no history collaborator injected, no launch-failed rows are synthesized', async () => {
+        const rows = await createFinishedRunsIndex({ env, logger: { error() {} } }).list();
+        assert.deepEqual(rows.map((r) => r.sprintId), ['sprint-fail', 'sprint-pass']);
+        assert.ok(rows.every((r) => r.status === 'finished' && r.hasTerminalState === true));
+    });
+
+    test('apra-fleet-i9ag.16.1: limit caps the merged total across file-backed and synthesized rows', async () => {
+        const history = {
+            list: () => [
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                { sprintId: 'sprint-launch-dead', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'r', at: '2026-09-26T00:00:00.000Z' },
+            ],
+        };
+        const rows = await createFinishedRunsIndex({ env, history, limit: 1, logger: { error() {} } }).list();
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].sprintId, 'sprint-launch-dead', 'newest row survives the cap');
     });
 
     test('summarizeFinishedRun reads legacy top-level verdict/prUrl and extensions.terminal.verdict, and drops a non-http prUrl', () => {
@@ -323,5 +486,93 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.equal(prLink('javascript:alert(1)'), '');
         assert.ok(renderFinishedRunsHtml([]).includes('No finished sprints yet.'));
         assert.ok(renderIndexPageHtml([]).includes('id="finished-sprints"'));
+    });
+});
+
+// apra-fleet-i9ag.16.2 -- a launch-failed row (history-view.mjs's
+// `status: 'launch-failed'`, `hasTerminalState: false`; see apra-fleet-i9ag.16.1)
+// renders a failure badge, its reason and a raw-log link instead of the
+// verdict/PR/History trio a file-backed row gets. Full HTTP-route-level
+// coverage (first paint + /state parity, dedupe against a file-backed row for
+// the same id) is apra-fleet-i9ag.16.3's dedicated test file; these are the
+// direct, pure-function unit assertions for the two functions this task
+// changed.
+describe('apra-fleet-i9ag.16.2: launch-failed rows in the finished-sprints list', () => {
+    const LAUNCH_FAILED_ROW = {
+        sprintId: 'sprint-launch-failed',
+        verdict: null,
+        prUrl: null,
+        endedAt: '2026-09-28T00:00:00.000Z',
+        goal: null,
+        status: 'launch-failed',
+        reason: 'member "alice" not registered',
+        hasTerminalState: false,
+    };
+
+    test('renders the reason, a raw-log link, and the launch-failed badge -- no History link', () => {
+        const html = renderFinishedRunsHtml([LAUNCH_FAILED_ROW]);
+        assert.ok(html.includes('data-finished-sprint-id="sprint-launch-failed"'));
+        assert.ok(!html.includes('data-sprint-id='), 'must never emit the live stack\'s row-key attribute');
+        assert.ok(html.includes(launchFailedBadge()));
+        assert.ok(html.includes('Reason: member &quot;alice&quot; not registered'));
+        assert.ok(hrefs(html).includes('/sprints/sprint-launch-failed/log'), 'must link the raw log');
+        assert.ok(!html.includes('class="history-link"'), 'a row with no terminal state file has nothing for History to render');
+        assert.ok(!html.includes('class="pr-link"'), 'a launch-failed run has no PR');
+    });
+
+    test('the launch-failed badge is a different CSS class than the verdict badge, and never grey/unknown-styled', () => {
+        assert.ok(launchFailedBadge().includes('class="launch-failed-badge"'));
+        assert.ok(!launchFailedBadge().includes('verdict-badge'));
+        assert.ok(launchFailedBadge().includes('var(--danger)'));
+    });
+
+    test('a raw reason with HTML is escaped in the rendered output', () => {
+        const html = renderFinishedRunsHtml([{ ...LAUNCH_FAILED_ROW, reason: '<script>alert(1)</script>' }]);
+        assert.ok(!html.includes('<script>alert(1)</script>'));
+        assert.ok(html.includes('&lt;script&gt;'));
+    });
+
+    test('a row with no reason text omits the reason line entirely', () => {
+        const html = renderFinishedRunsHtml([{ ...LAUNCH_FAILED_ROW, reason: null }]);
+        assert.ok(!html.includes('launch-failed-reason'));
+    });
+
+    test('a file-backed finished row (status "finished") is completely unaffected: verdict badge, PR link, History link', () => {
+        const fileBackedRow = { sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL, endedAt: null, goal: null, status: 'finished', reason: null, hasTerminalState: true };
+        const html = renderFinishedRunsHtml([fileBackedRow]);
+        assert.ok(html.includes(verdictBadge('PASS')));
+        assert.ok(html.includes(prLink(PR_URL)));
+        assert.ok(hrefs(html).includes('/sprints/sprint-pass/history'));
+        assert.ok(!html.includes('launch-failed-badge'));
+        assert.ok(!html.includes('raw-log-link'));
+    });
+
+    test('a row missing the status field entirely (older/un-migrated caller) still renders the file-backed shape, not launch-failed', () => {
+        const html = renderFinishedRunsHtml([{ sprintId: 'sprint-legacy', verdict: 'FAIL', prUrl: null, endedAt: null, goal: null }]);
+        assert.ok(html.includes(verdictBadge('FAIL')));
+        assert.ok(hrefs(html).includes('/sprints/sprint-legacy/history'));
+    });
+
+    test('buildStatePayload() carries status/reason/hasTerminalState through finished[] entries', () => {
+        const payload = buildStatePayload([], [LAUNCH_FAILED_ROW]);
+        assert.deepEqual(payload.finished, [{
+            sprintId: 'sprint-launch-failed',
+            verdict: null,
+            prUrl: null,
+            endedAt: '2026-09-28T00:00:00.000Z',
+            goal: null,
+            status: 'launch-failed',
+            reason: 'member "alice" not registered',
+            hasTerminalState: false,
+        }]);
+    });
+
+    test('feeding buildStatePayload()\'s finished[] entries back through renderFinishedRunsHtml() reproduces the server-rendered card byte-for-byte, for both a launch-failed and a file-backed row', () => {
+        const fileBackedRow = { sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL, endedAt: '2026-09-19T00:00:00.000Z', goal: 'P1', status: 'finished', reason: null, hasTerminalState: true };
+        const rows = [LAUNCH_FAILED_ROW, fileBackedRow];
+        const serverRendered = renderFinishedRunsHtml(rows, '/ext/se');
+        const payload = buildStatePayload([], rows);
+        const clientReRendered = renderFinishedRunsHtml(payload.finished, '/ext/se');
+        assert.equal(clientReRendered, serverRendered);
     });
 });

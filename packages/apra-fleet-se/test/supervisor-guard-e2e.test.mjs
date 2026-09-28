@@ -115,25 +115,29 @@ const CONNECT_TIMEOUT_MS = scaledTimeout(5000, { concurrency: TEST_CONCURRENCY }
 const BOOT_DEADLINE_MS = scaledTimeout(20000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
 const FIRST_PROBE_DEADLINE_MS = scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
 
-// apra-fleet-v6t7.7: GET / renders the full dashboard -- unlike the
+// apra-fleet-i9ag.15.8: GET / renders the full dashboard -- unlike the
 // /api/* JSON endpoints exercised above, which only touch in-memory
-// state, this route can read/parse the local beads database, so on a
-// cold cache it can plausibly take longer than the generic
-// REQUEST_TIMEOUT_MS. Named and independently env-overridable (rather
-// than folded into REQUEST_TIMEOUT_MS) so a slow machine or CI leg can
-// raise just this budget without loosening the timing on every other
-// assertion in this file. Default equals REQUEST_TIMEOUT_MS itself
-// (5000ms base x 3x contention headroom = 15000ms @ TEST_CONCURRENCY=4)
-// -- that value has not actually been shown insufficient: a standalone
-// re-run of this exact lane under identical contention passed clean
-// (pass=4224, fail=0), and the one observed timeout coincided with a
-// concurrent `npm run build` and server probes loading the same machine.
-// 15s is kept as the documented default rather than raised blind; the
-// env override exists for a genuinely slower environment to prove its
-// own number instead of everyone inheriting a bigger guess.
-const GET_ROOT_TIMEOUT_MS = (() => {
+// state, this route can read/parse the local beads database and, when no
+// apra-fleet HTTP singleton is reachable, waits behind serve.mjs
+// self-spawning a stdio MCP server and its registration retry ladder
+// (2s/4s/8s/15s -- up to ~29s on its own before the dashboard can even
+// start rendering). A single fixed budget for this one request is
+// contention-proof only up to the number picked; apra-fleet-i9ag.15.8
+// observed a real full-`npm test` run miss a 15000ms budget by 3ms. So,
+// same as BOOT_DEADLINE_MS / FIRST_PROBE_DEADLINE_MS above, this is a
+// scaled DEADLINE (not a per-request timeout): GET / is retried via
+// requestWithRetry (same pattern as the first loopback probe) with a
+// moderate per-attempt timeout, so one slow attempt -- e.g. a request
+// that lands mid-registration-ladder and times out -- does not fail the
+// suite; a following attempt after the ladder has finished in the
+// background typically returns fast. APRA_TEST_GUARD_BUDGET_MS remains a
+// supported override of the overall deadline for a genuinely slower
+// environment, but is no longer required for a loaded machine running the
+// documented worst case.
+const GET_ROOT_DEADLINE_MS = (() => {
     const override = Number(process.env.APRA_TEST_GUARD_BUDGET_MS);
-    return Number.isFinite(override) && override > 0 ? override : REQUEST_TIMEOUT_MS;
+    if (Number.isFinite(override) && override > 0) return override;
+    return scaledTimeout(30000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
 })();
 
 const LISTENING_LOG_RE = /listening on http:\/\/localhost:\d+/;
@@ -182,12 +186,17 @@ function request(port, method, urlPath, { headers, host = '127.0.0.1', timeoutMs
 
 /**
  * Retry `request()` until ANY HTTP status arrives or the deadline passes.
- * Only used for the very first loopback probe, which asserts nothing about
+ * Used for (1) the very first loopback probe, which asserts nothing about
  * the status -- it exists to prove the listener is reachable at all, so a
- * slow first accept on a contended runner must not fail the suite. Every
- * later request keeps its single-shot budget and exact assertion.
+ * slow first accept on a contended runner must not fail the suite; and (2)
+ * GET / (apra-fleet-i9ag.15.8), the single most expensive route in this
+ * file, where one attempt landing mid-registration-retry-ladder must not
+ * fail the suite either -- a later attempt, issued after the ladder has
+ * settled in the background, typically returns quickly. Every OTHER
+ * request in this file (the 401/200 guard checks) keeps its single-shot
+ * budget and exact assertion -- only these two probes retry.
  */
-async function requestWithRetry(port, method, urlPath, { deadlineMs, isAlive, label }) {
+async function requestWithRetry(port, method, urlPath, { deadlineMs, isAlive, label, requestTimeoutMs = REQUEST_TIMEOUT_MS }) {
     const deadline = Date.now() + deadlineMs;
     const errors = [];
     for (;;) {
@@ -196,7 +205,7 @@ async function requestWithRetry(port, method, urlPath, { deadlineMs, isAlive, la
         }
         try {
             // eslint-disable-next-line no-await-in-loop
-            return await request(port, method, urlPath);
+            return await request(port, method, urlPath, { timeoutMs: requestTimeoutMs });
         } catch (err) {
             errors.push(String(err?.message ?? err));
         }
@@ -348,7 +357,15 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
             assert.equal(withWrongFallback.status, 401, 'the private/token fallback value must NOT authorize once a fleet.key is present');
 
             // 4. GET / -> 200, body free of the token; any Set-Cookie is HttpOnly.
-            const root = await request(port, 'GET', '/', { timeoutMs: GET_ROOT_TIMEOUT_MS });
+            // Retried (apra-fleet-i9ag.15.8): this is the single most
+            // expensive route in the file (full dashboard render, possibly
+            // behind the MCP registration retry ladder), so one slow
+            // attempt must not fail the suite -- see requestWithRetry doc.
+            const root = await requestWithRetry(port, 'GET', '/', {
+                deadlineMs: GET_ROOT_DEADLINE_MS,
+                isAlive: () => !exited,
+                label: 'GET / (dashboard render)',
+            });
             assert.equal(root.status, 200);
             assert.ok(!root.body.includes(VALID_FLEET_KEY), 'GET / body must never contain the fleet.key token');
             const setCookie = root.headers['set-cookie'];

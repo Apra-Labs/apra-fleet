@@ -60,9 +60,9 @@ No tool in this surface declares a response zod schema; see section 3.
 | 10 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | repo_remote_url, path, repo, repo_path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
 | 11 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | repo_remote_url, repo_path, winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
 | 12 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | repo_remote_url, repo_path | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
-| 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | repo_path, provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
+| 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | repo_path, provider, remote, token, offline_fallback | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
 | 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | repo_remote_url, repo_path, scope | `text(JSON): {exported, path, scope, committed}` | Export all CONFIRMED/non-superseded/non-stale entries to a canonical bible file (project or global scope). Auto-commits the bible file by default when content changed. |
-| 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | repo_remote_url, repo, repo_path, symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
+| 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | repo_remote_url, repo, repo_path, symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, degraded?, degraded_reason?, degraded_since?, remote_url?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
 | 16 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | repo_remote_url, repo_path, id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
 
 Scope-field note: 15 of the 16 `kb_*` request schemas spread the shared
@@ -159,6 +159,19 @@ Additional response-shape findings on the `kb_*` side:
   `bible`. `ProviderStats` itself has optional `supported`/`reason` fields that
   appear only on a provider which cannot compute stats at all, and an optional
   `coverage` field. The response schema must allow those optionals.
+- apra-fleet-i9ag.15.13.1: `ProviderStats` also carries four optional,
+  HttpKbProvider-only fields added by commit `4ac7b70f` --
+  `degraded`/`degraded_reason`/`degraded_since`/`remote_url` -- exposing
+  whether the configured remote KB server is currently reachable. Always
+  absent on `SqliteProvider` (there is no remote to be degraded from) and on
+  a healthy `http` provider. The response schema must allow those optionals
+  too, none of them required.
+- `kb_setup`'s request gained an optional `offline_fallback: 'local' | 'error'`
+  field: only meaningful for `provider=http`, it is persisted alongside
+  `provider`/`remote`/`token` and controls whether `kb_stats`'s `degraded`
+  fields above (F-9 note) reflect a silent local fallback (`local`, default)
+  or every read/write hard-failing instead (`error`). `kb_stats` still reports
+  `degraded: true` in `error` mode even though the failing call itself threw.
 
 ## 4. Provider method surface
 

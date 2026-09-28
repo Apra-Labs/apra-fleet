@@ -302,6 +302,36 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     expect(result.bible.drift).toBeUndefined();
     httpProvider.dispose();
   });
+
+  // apra-fleet-i9ag.15.13.3: kb_stats is the programmatic surface a caller
+  // uses to check "am I silently reading local data instead of the
+  // team-shared KB" (see apra-fleet-i9ag.15.13's degraded/degraded_reason/
+  // degraded_since/remote_url on ProviderStats) -- confirm the tool-level
+  // JSON actually carries that state through kbStats' `{ ...providerStats,
+  // bible }` spread, not just HttpKbProvider.stats() in isolation.
+  it('degraded http provider: kb_stats JSON reports degraded true with degraded_reason, degraded_since and remote_url', async () => {
+    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token', provider);
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: httpProvider,
+      global: provider,
+      projectSlug: 'test',
+    } as any);
+
+    try {
+      // apra-fleet-i9ag.15.13.3 (review fix): this genuinely IS a real
+      // connection-refused round trip -- port 1 is a privileged port nothing
+      // in a sandboxed test run can be listening on, so the ECONNREFUSED is
+      // deterministic without needing to fake/inject the error shape.
+      await httpProvider.query({}).catch(() => {});
+      const result = JSON.parse(await kbStats({ repo: tmpDir }));
+      expect(result.degraded).toBe(true);
+      expect(result.degraded_reason).toBeTruthy();
+      expect(result.degraded_since).toBeTruthy();
+      expect(result.remote_url).toBe('http://127.0.0.1:1');
+    } finally {
+      httpProvider.dispose();
+    }
+  });
 });
 
 // apra-fleet-src: kb_stats was the ONLY kb_* tool naming this input `repo`;

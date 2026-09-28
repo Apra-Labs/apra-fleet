@@ -708,6 +708,11 @@
  *   (kb_setup accepts it but returns a warning).
  * @property {string} [token] - Authentication token for the remote KB server (stored encrypted,
  *   never logged)
+ * @property {"local" | "error"} [offline_fallback] - Only meaningful for provider "http". What to
+ *   do when the configured remote is unreachable: "local" (default) silently degrades to the
+ *   local sqlite KB for reads and queues writes; "error" hard-fails every KB read/write instead.
+ *   Merges into the existing config file like every other kb_setup input, so a hand-set value
+ *   already on disk is kept when this is omitted.
  */
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /

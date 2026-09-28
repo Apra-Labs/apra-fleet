@@ -192,6 +192,228 @@ describe('HttpKbProvider', () => {
     }
   });
 
+  it('degraded signal: offline read warns to stderr naming the remote URL and error, and stats() reports degraded', async () => {
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string, ...rest: unknown[]) => {
+      stderrLines.push(typeof s === 'string' ? s : String(s));
+      return origWrite(s as any, ...(rest as any[]));
+    };
+
+    try {
+      const fallback = new SqliteProvider(':memory:');
+      await fallback.init();
+      const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+      await provider.init();
+
+      try {
+        // apra-fleet-i9ag.15.13: before any request, the provider must not
+        // claim to be degraded -- it has not tried to reach the remote yet.
+        const preStats = await provider.stats();
+        expect(preStats.degraded).toBe(false);
+
+        // A read against an unreachable configured remote must be an
+        // observable signal, not a silent local read: a stderr warning naming
+        // the remote URL and the connection error...
+        await provider.query({});
+        const warning = stderrLines.find(
+          l => l.includes('[KB] WARNING: remote KB server at') && l.includes(OFFLINE_URL)
+        );
+        expect(warning).toBeDefined();
+        expect(warning).toContain('unreachable');
+
+        // ...and an inspectable degraded state via stats() (kb_stats), not
+        // just a one-time stderr line a later caller can't see.
+        const stats = await provider.stats();
+        expect(stats.degraded).toBe(true);
+        expect(stats.remote_url).toBe(OFFLINE_URL);
+        expect(stats.degraded_reason).toBeTruthy();
+        expect(stats.degraded_since).toBeTruthy();
+
+        // The warning fires once per drop, not once per call.
+        const warningCountAfterFirst = stderrLines.filter(l => l.includes('is unreachable')).length;
+        await provider.query({});
+        const warningCountAfterSecond = stderrLines.filter(l => l.includes('is unreachable')).length;
+        expect(warningCountAfterSecond).toBe(warningCountAfterFirst);
+      } finally {
+        provider.dispose();
+      }
+    } finally {
+      (process.stderr as any).write = origWrite;
+    }
+  });
+
+  it('degraded signal: reconnecting to a live server clears degraded state and re-arms the warning', async () => {
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string, ...rest: unknown[]) => {
+      stderrLines.push(typeof s === 'string' ? s : String(s));
+      return origWrite(s as any, ...(rest as any[]));
+    };
+
+    try {
+      const fallback = new SqliteProvider(':memory:');
+      await fallback.init();
+      const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+      await provider.init();
+
+      try {
+        await provider.query({});
+        expect((await provider.stats()).degraded).toBe(true);
+
+        // Server comes back.
+        (provider as any).baseUrl = `http://127.0.0.1:${MOCK_PORT}`;
+        await provider.query({});
+
+        const reconnected = await provider.stats();
+        expect(reconnected.degraded).toBe(false);
+        expect(reconnected.degraded_reason).toBeUndefined();
+        expect(stderrLines.some(l => l.includes('Reconnected to remote KB server'))).toBe(true);
+      } finally {
+        provider.dispose();
+      }
+    } finally {
+      (process.stderr as any).write = origWrite;
+    }
+  });
+
+  // apra-fleet-i9ag.15.13.3: the once-per-drop dedupe (hasWarnedDegraded) must
+  // reset on reconnect, not just clear degraded/stats(). Otherwise a SECOND,
+  // independent outage after a successful reconnect would stay silent forever
+  // -- exactly the "implicit environment decides behaviour, failure is
+  // silent" shape CLAUDE.md forbids. This pins that the tracker genuinely
+  // resets rather than the first test's single-drop count happening to match.
+  it('degraded signal: the warning fires again after a reconnect is followed by a second, independent drop', async () => {
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string, ...rest: unknown[]) => {
+      stderrLines.push(typeof s === 'string' ? s : String(s));
+      return origWrite(s as any, ...(rest as any[]));
+    };
+
+    try {
+      const fallback = new SqliteProvider(':memory:');
+      await fallback.init();
+      const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+      await provider.init();
+
+      try {
+        // First drop: warns once.
+        await provider.query({});
+        const countAfterFirstDrop = stderrLines.filter(l => l.includes('is unreachable')).length;
+        expect(countAfterFirstDrop).toBe(1);
+
+        // Reconnect: degraded clears, warning re-arms.
+        (provider as any).baseUrl = `http://127.0.0.1:${MOCK_PORT}`;
+        await provider.query({});
+        expect((await provider.stats()).degraded).toBe(false);
+
+        // Second, independent drop: must warn AGAIN, not stay silent because
+        // hasWarnedDegraded was never reset.
+        (provider as any).baseUrl = OFFLINE_URL;
+        await provider.query({});
+        const countAfterSecondDrop = stderrLines.filter(l => l.includes('is unreachable')).length;
+        expect(countAfterSecondDrop).toBe(2);
+        expect((await provider.stats()).degraded).toBe(true);
+      } finally {
+        provider.dispose();
+      }
+    } finally {
+      (process.stderr as any).write = origWrite;
+    }
+  });
+
+  // apra-fleet-i9ag.15.13.3: kb_stats must not be stuck reporting degraded on
+  // a provider that has always been healthy -- the flag is inspectable state,
+  // not a one-way latch.
+  it('degraded signal: kb_stats on a healthy http provider reports degraded false', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${MOCK_PORT}`, MOCK_TOKEN, fallback
+    );
+    await provider.init();
+
+    try {
+      await provider.query({});
+      const stats = await provider.stats();
+      expect(stats.degraded).toBe(false);
+      expect(stats.degraded_reason).toBeUndefined();
+      expect(stats.degraded_since).toBeUndefined();
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  // apra-fleet-i9ag.15.13.2/.3: strict mode (offline_fallback: "error") is the
+  // hard-fail half of this bead -- every read AND write path must reject
+  // rather than silently serving/queuing against the local fallback, and each
+  // rejection must name the configured remote and the underlying connection
+  // error so a caller can tell this apart from any other thrown error. A test
+  // that merely tolerates either outcome (reject OR silently-local) proves
+  // nothing, so every assertion below is an explicit `.rejects`.
+  //
+  // apra-fleet-i9ag.15.13.3 (review fix): the URL+"unreachable" regex alone
+  // would still pass if strictFailure() dropped the `(${reason})` fragment
+  // entirely (e.g. reverted to a generic "unreachable" with no cause), so
+  // each rejection is also asserted to name the actual connection error code
+  // (ECONNREFUSED -- nothing listens on OFFLINE_URL's loopback port, so this
+  // is deterministic, never ENOTFOUND/ETIMEDOUT). promote() and
+  // relatedClaims() are covered here too, per apra-fleet-i9ag.15.13.2's
+  // review fix gating both behind ensureReachable()/strictFailure().
+  it('strict mode: remote refusing connections -- every read and write path rejects naming the remote and the connection error', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback, 'error');
+
+    try {
+      const assertStrictRejection = async (p: Promise<unknown>) => {
+        await expect(p).rejects.toThrow(
+          new RegExp(`${OFFLINE_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*unreachable`, 's')
+        );
+        // A promise settles once, so re-awaiting the same rejected promise is
+        // safe and lets both assertions inspect the identical thrown error.
+        await expect(p).rejects.toThrow(/ECONNREFUSED/);
+      };
+
+      await assertStrictRejection(provider.init());
+      await assertStrictRejection(provider.query({}));
+      await assertStrictRejection(provider.context(['src/fixture.ts']));
+      await assertStrictRejection(provider.getLinked('some-id'));
+      await assertStrictRejection(provider.relatedClaims(['some-id']));
+      await assertStrictRejection(provider.prime({}));
+      await assertStrictRejection(provider.capture(makeInput({ title: 'Strict write' })));
+      await assertStrictRejection(provider.promote('some-id', 'strict test'));
+
+      // Never silently local: no read above must have populated the fallback
+      // query path, and no write above must have been queued for later flush.
+      expect(provider.offlineQueue.length).toBe(0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  // Strict mode must not change behaviour for a reachable remote -- it only
+  // changes what happens when the remote is unreachable.
+  it('strict mode: reachable remote behaves normally (init succeeds, capture forwarded)', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${MOCK_PORT}`, MOCK_TOKEN, fallback, 'error'
+    );
+
+    try {
+      await expect(provider.init()).resolves.toBeUndefined();
+      const result = await provider.capture(makeInput({ title: 'Strict but reachable' }));
+      expect(result.id).toBe('server-id-123');
+      expect(captureRequests.some(r => r.title === 'Strict but reachable')).toBe(true);
+      const stats = await provider.stats();
+      expect(stats.degraded).toBe(false);
+    } finally {
+      provider.dispose();
+    }
+  });
+
   it('beforeExit warning: queue has entries, warning emitted to stderr', async () => {
     const stderrLines: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);

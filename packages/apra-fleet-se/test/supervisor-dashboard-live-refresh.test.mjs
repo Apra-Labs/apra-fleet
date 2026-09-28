@@ -23,6 +23,7 @@ import {
     registerDashboardRoutes,
     renderIndexPageHtml,
     renderSprintSection,
+    renderFinishedRunsHtml,
     buildStatePayload,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
@@ -144,15 +145,231 @@ function extractHeartbeatIntervalMs() {
 }
 
 /**
+ * apra-fleet-i9ag.15.6: evaluates the REAL extracted live-refresh script and
+ * returns its embedded `renderFinishedRunsHtml`/`renderSprintSection`
+ * bindings directly (rather than driving them indirectly through poll()'s
+ * mocked /state response), so a test can invoke either renderer with a
+ * payload hand-picked to hit every branch, and compare the result
+ * byte-for-byte against the server-rendered module function for the SAME
+ * input. If a renderer calls a helper that was not ALSO embedded above it in
+ * sprintStackLiveScript() (apra-fleet-i9ag.16.2's regression: `renderFinished
+ * RunsHtml` calling `launchFailedBadge` before that helper was embedded),
+ * this throws a `ReferenceError` here, at the call site, in the SAME way it
+ * would throw in a real browser.
+ */
+function extractLiveScriptRenderers() {
+    const script = extractLiveRefreshScript();
+    // eslint-disable-next-line no-new-func
+    const fn = new Function(
+        'document', 'fetch', 'EventSource',
+        script + '\nreturn { renderFinishedRunsHtml: renderFinishedRunsHtml, renderSprintSection: renderSprintSection };'
+    );
+    const noopDocument = { getElementById: () => null };
+    const noopFetch = async () => ({ json: async () => ({}) });
+    return fn(noopDocument, noopFetch, undefined);
+}
+
+/**
+ * apra-fleet-i9ag.15.6: strips JS comments, string literals, and regex
+ * literals from `source`, replacing each with a same-length-irrelevant,
+ * empty-content placeholder (a quote/space, never removed outright) so
+ * brace/paren balance in the REMAINING real code is unaffected. This is a
+ * small hand-rolled scanner rather than a naive `/'...'/`-style
+ * string-stripping regex, because a naive stripper misparses a regex
+ * literal that itself contains a quote character -- e.g. escapeHtml's own
+ * `.replace(/'/g, '&#039;')`, embedded verbatim into the live script below
+ * -- as the START of a string, and then silently misinterprets a large,
+ * arbitrary span of unrelated downstream code as "inside a string".
+ *
+ * Regex-vs-division ambiguity is resolved with the standard heuristic: a
+ * `/` can start a regex literal unless the last significant (non-space)
+ * character emitted so far is an identifier character, digit, `)`, or `]`
+ * -- i.e. unless a VALUE was just produced, in which case `/` is division.
+ * Every actual regex literal in the helpers this guard inspects
+ * (escapeHtml, prLink, sprintCardAnchorId) is preceded by an operator/
+ * punctuator (`(`, `,`, `=`, `!`), never a value, so this heuristic resolves
+ * all of them correctly.
+ */
+function stripJsNoise(source) {
+    let out = '';
+    let i = 0;
+    const n = source.length;
+    let lastSignificant = '';
+    while (i < n) {
+        const ch = source[i];
+        if (ch === '/' && source[i + 1] === '/') {
+            while (i < n && source[i] !== '\n') i++;
+            continue;
+        }
+        if (ch === '/' && source[i + 1] === '*') {
+            i += 2;
+            while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i++;
+            i += 2;
+            out += ' ';
+            continue;
+        }
+        if (ch === '\'' || ch === '"' || ch === '`') {
+            const quote = ch;
+            i++;
+            while (i < n && source[i] !== quote) {
+                if (source[i] === '\\') i++;
+                i++;
+            }
+            i++; // consume the closing quote
+            out += quote + quote; // empty string of the SAME quote kind
+            lastSignificant = ']'; // a string is a "value" -- next `/` is division
+            continue;
+        }
+        if (ch === '/' && !/[)\]A-Za-z0-9_$]/.test(lastSignificant)) {
+            let j = i + 1;
+            let inClass = false;
+            let closed = false;
+            while (j < n) {
+                if (source[j] === '\\') { j += 2; continue; }
+                if (source[j] === '\n') break; // unterminated -- not actually a regex
+                if (source[j] === '[') { inClass = true; j++; continue; }
+                if (source[j] === ']') { inClass = false; j++; continue; }
+                if (source[j] === '/' && !inClass) { j++; closed = true; break; }
+                j++;
+            }
+            if (closed) {
+                while (j < n && /[a-z]/i.test(source[j])) j++; // flags
+                out += ' ';
+                i = j;
+                lastSignificant = ']'; // a regex literal is also a "value"
+                continue;
+            }
+            // Fall through: treat this '/' as an ordinary character (division).
+        }
+        out += ch;
+        if (!/\s/.test(ch)) lastSignificant = ch;
+        i++;
+    }
+    return out;
+}
+
+/** JS keywords that can be immediately followed by `(` without being a call. */
+const JS_CONTROL_KEYWORDS = new Set([
+    'if', 'while', 'for', 'switch', 'catch', 'function', 'return', 'typeof',
+    'new', 'in', 'of', 'instanceof', 'delete', 'void', 'yield', 'await',
+    'else', 'do', 'try', 'finally', 'var', 'let', 'const', 'throw',
+]);
+
+/**
+ * Bare global identifiers this repo does not (and never needs to) declare
+ * inside the live-refresh script itself -- real JS/browser builtins a
+ * `new Function('document', 'fetch', 'EventSource', script)` sandbox
+ * legitimately exposes. Anything called bare (not as `foo.bar(...)`) that is
+ * NOT in this set must be a name the script itself declares (a `function`
+ * or `var`/`let`/`const`), or the call is a live ReferenceError waiting to
+ * happen the moment a browser actually reaches it.
+ */
+const JS_BUILTIN_CALLEES = new Set([
+    'String', 'Number', 'Boolean', 'Array', 'Object', 'JSON', 'Math',
+    'encodeURIComponent', 'decodeURIComponent', 'parseInt', 'parseFloat',
+    'isNaN', 'isFinite', 'Date', 'RegExp', 'Promise', 'Set', 'Map',
+    'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'fetch',
+    'console', 'EventSource', 'Function',
+]);
+
+/**
+ * Bare `identifier(` call sites in `source` (already run through
+ * stripJsNoise()) -- excludes `.foo(...)` method calls (those resolve
+ * through a receiver, never a free identifier lookup, so they can never be
+ * the "helper wasn't embedded" defect this guard targets) and a `function
+ * name(...)` declaration's own name (a definition, not a call to itself).
+ */
+function extractBareCallIdentifiers(source) {
+    const withoutDecls = source.replace(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(/g, 'function(');
+    const ids = new Set();
+    const re = /(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g;
+    let m;
+    while ((m = re.exec(withoutDecls))) {
+        if (!JS_CONTROL_KEYWORDS.has(m[1])) ids.add(m[1]);
+    }
+    return ids;
+}
+
+/**
+ * Every name `scriptText` (already run through stripJsNoise()) itself
+ * declares: named `function` declarations, `var`/`let`/`const` bindings
+ * (top-level OR inside any nested function -- this deliberately does NOT
+ * try to reproduce real lexical scoping, just "is this name declared
+ * SOMEWHERE in the emitted script text", matching this guard's stated
+ * scope), and every named/anonymous function's own formal parameters.
+ */
+function extractDeclaredNames(scriptText) {
+    const names = new Set();
+    for (const m of scriptText.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)) names.add(m[1]);
+    for (const m of scriptText.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+    for (const m of scriptText.matchAll(/function\s*[A-Za-z_$]*\s*\(([^)]*)\)/g)) {
+        m[1].split(',').map((p) => p.trim()).filter(Boolean).forEach((p) => {
+            const name = p.split('=')[0].trim();
+            if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+        });
+    }
+    return names;
+}
+
+/**
+ * Every named top-level `function name(...) { ... }` declaration in
+ * `scriptText` (already run through stripJsNoise(), so brace-depth counting
+ * -- the only way to find a function's own closing brace -- is never thrown
+ * off by a `{`/`}` inside a string or comment), each with its own full
+ * source slice. Covers every `.toString()`-embedded renderer/helper
+ * (escapeHtml, mountHref, ..., renderSprintSection) PLUS the script's own
+ * renderSprintStackFromState/schedulePoll/poll -- this guard makes no
+ * assumption about which names exist, so a NEW helper embedded here in the
+ * future is automatically covered too, without editing this test.
+ */
+function extractTopLevelFunctionBlocks(scriptText) {
+    const blocks = [];
+    const declRe = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g;
+    let m;
+    while ((m = declRe.exec(scriptText))) {
+        const braceStart = scriptText.indexOf('{', m.index);
+        let depth = 0;
+        let i = braceStart;
+        for (; i < scriptText.length; i++) {
+            if (scriptText[i] === '{') depth++;
+            else if (scriptText[i] === '}') { depth--; if (depth === 0) break; }
+        }
+        blocks.push({ name: m[1], source: scriptText.slice(m.index, i + 1) });
+    }
+    return blocks;
+}
+
+/** The `#finished-sprints` element poll() replaces wholesale via .innerHTML -- see MockContainer's own innerHTML setter for the same shape, just without the Sprint Stack's per-section reconciliation. */
+class MockFinishedContainer {
+    constructor(initialHtml) {
+        this.innerHTML = initialHtml ?? '';
+    }
+}
+
+/**
  * Runs the actual SPRINT_STACK_LIVE_SCRIPT (renderSprintStackFromState() +
  * schedulePoll()/poll() + the EventSource/heartbeat wiring) against mocked
  * document/fetch/EventSource. `eventSourceCtor: undefined` simulates an
  * environment with no EventSource global (the `typeof EventSource !==
  * 'undefined'` guard in the real script then evaluates false).
+ *
+ * `finishedContainer` (apra-fleet-i9ag.16.2), when supplied, is returned for
+ * `document.getElementById('finished-sprints')` -- poll()'s OTHER DOM target
+ * alongside `#sprint-stack`, replaced wholesale via renderFinishedRunsHtml()'s
+ * output. Omitted -> getElementById('finished-sprints') returns null, exactly
+ * as it would on a page render with no finished-sprints element (poll()'s own
+ * `if (finishedEl && ...)` guard skips that branch, matching every
+ * pre-i9ag.16.2 test in this file that never touched it).
  */
-function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor }) {
+function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer }) {
     const script = extractLiveRefreshScript();
-    const mockDocument = { getElementById: (id) => (id === 'sprint-stack' ? container : null) };
+    const mockDocument = {
+        getElementById: (id) => {
+            if (id === 'sprint-stack') return container;
+            if (id === 'finished-sprints') return finishedContainer ?? null;
+            return null;
+        },
+    };
     // eslint-disable-next-line no-new-func
     const fn = new Function('document', 'fetch', 'EventSource', script);
     fn(mockDocument, fetchImpl, eventSourceCtor);
@@ -419,6 +636,49 @@ describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place fr
     });
 });
 
+describe('apra-fleet-i9ag.16.2: a launch-failed row in a /state poll re-renders through the REAL extracted client script, not just the imported module binding', () => {
+    test('poll() feeds a launch-failed finished row through the shipped script\'s embedded renderFinishedRunsHtml()/launchFailedBadge() and produces the SAME markup the server-rendered first paint would', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const finishedRow = {
+                sprintId: 'sprint-dead',
+                verdict: null,
+                prUrl: null,
+                endedAt: '2026-09-28T00:00:00.000Z',
+                goal: null,
+                status: 'launch-failed',
+                reason: 'spawn ENOENT',
+                hasTerminalState: false,
+            };
+            const httpPayload = buildStatePayload([], [finishedRow]);
+
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const finishedContainer = new MockFinishedContainer('<p>placeholder</p>');
+            const fetchImpl = async () => ({ json: async () => httpPayload });
+
+            // This is the exact reproduction of the reviewed regression: before
+            // the fix, executing the shipped script threw "launchFailedBadge is
+            // not defined" inside its embedded renderFinishedRunsHtml() call,
+            // which poll()'s try/catch swallows -- leaving finishedContainer's
+            // innerHTML at its stale placeholder forever. If this throws (or the
+            // assertion below fails), the live-refresh path is broken again.
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, finishedContainer });
+            await flushMicrotasks();
+
+            assert.notEqual(finishedContainer.innerHTML, '<p>placeholder</p>', 'poll() must actually replace the Finished Sprints markup, not silently swallow a render error');
+            assert.equal(
+                finishedContainer.innerHTML,
+                renderFinishedRunsHtml(httpPayload.finished, ''),
+                'the live-refreshed Finished Sprints markup for a launch-failed row must be byte-identical to the server-rendered first paint'
+            );
+            assert.ok(finishedContainer.innerHTML.includes('LAUNCH FAILED'), 'the re-rendered row must carry the launch-failed badge text');
+            assert.ok(finishedContainer.innerHTML.includes('spawn ENOENT'), 'the re-rendered row must carry the escaped reason text');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
 describe('apra-fleet-siqi.1.3: EventSource unavailable degrades to the heartbeat-interval poll', () => {
     test('with no EventSource global, schedulePoll()/poll() is still driven by the heartbeat interval alone (never goes silently stale)', async (t) => {
         t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
@@ -464,5 +724,93 @@ describe('apra-fleet-siqi.1.3: EventSource unavailable degrades to the heartbeat
         } finally {
             t.mock.timers.reset();
         }
+    });
+});
+
+describe('apra-fleet-i9ag.15.6: every helper called by a toString-embedded dashboard renderer is itself embedded in the live script', () => {
+    test('the embedded renderFinishedRunsHtml renders BOTH a file-backed row and a launch-failed row byte-identically to the server-rendered module function -- proves launchFailedBadge() (and every other helper renderFinishedRunsHtml calls) is actually embedded, not merely referenced by name', (t) => {
+        // extractLiveScriptRenderers() runs the WHOLE script (it is the only
+        // way to get real, correctly-scoped bindings for its embedded
+        // functions), which unconditionally starts a real setInterval()
+        // heartbeat and fires poll() on load -- mock the timer APIs so that
+        // interval is never a real OS timer left running after this test
+        // (same discipline every other test in this file already follows).
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const runs = [
+                {
+                    sprintId: 'sprint-ok', verdict: 'merged', prUrl: 'https://example.com/pr/1',
+                    endedAt: '2026-09-28T00:00:00.000Z', goal: 'ship the thing', status: 'finished',
+                    hasTerminalState: true,
+                },
+                {
+                    sprintId: 'sprint-dead', verdict: null, prUrl: null,
+                    endedAt: '2026-09-28T01:00:00.000Z', goal: null, status: 'launch-failed',
+                    reason: 'spawn ENOENT', hasTerminalState: false,
+                },
+            ];
+            const { renderFinishedRunsHtml: liveRenderFinishedRunsHtml } = extractLiveScriptRenderers();
+
+            let liveHtml;
+            assert.doesNotThrow(
+                () => { liveHtml = liveRenderFinishedRunsHtml(runs, ''); },
+                'the embedded renderFinishedRunsHtml must not throw a ReferenceError for any helper it calls (e.g. launchFailedBadge)'
+            );
+            assert.equal(
+                liveHtml,
+                renderFinishedRunsHtml(runs, ''),
+                'the embedded renderFinishedRunsHtml must be byte-identical to the server-rendered module function for the SAME input, covering both the file-backed and launch-failed branches'
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('the embedded renderSprintSection renders a live row (outcome badge, members, pause/resume, base-drift, beads prefix) byte-identically to the server-rendered module function', (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const view = {
+                sprintId: 'sprint-1', branch: 'feat/x', base: 'v0.5_dashboard', goal: 'ship it',
+                status: WATCHDOG_STATUS.PAUSED, issueRoots: ['r1', 'r2'], beadCount: 5,
+                progress: { closed: 1, required: 2, fraction: 0.5 },
+                members: [{ name: 'alice', role: 'doer' }, { name: 'bob' }],
+                verdict: 'merged', prUrl: 'https://example.com/pr/2',
+                baseDrift: 3, beadsPrefix: 'apra-fleet',
+            };
+            const { renderSprintSection: liveRenderSprintSection } = extractLiveScriptRenderers();
+
+            let liveHtml;
+            assert.doesNotThrow(
+                () => { liveHtml = liveRenderSprintSection(view, ''); },
+                'the embedded renderSprintSection must not throw a ReferenceError for any helper it calls'
+            );
+            assert.equal(
+                liveHtml,
+                renderSprintSection(view, ''),
+                'the embedded renderSprintSection must be byte-identical to the server-rendered module function for the SAME live-row input'
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('every bare identifier CALLED inside each embedded top-level helper is either a JS builtin or itself declared somewhere in the emitted script -- a generic guard that fails the moment a renderer gains a helper call without that helper being embedded too', () => {
+        const script = stripJsNoise(extractLiveRefreshScript());
+        const declaredNames = extractDeclaredNames(script);
+        const blocks = extractTopLevelFunctionBlocks(script);
+        // Sanity on the guard itself: if this ever drops to a handful of
+        // blocks, extractTopLevelFunctionBlocks()'s brace-matching broke
+        // silently and the checks below would pass vacuously.
+        assert.ok(blocks.length >= 10, `sanity: expected the live-refresh script to embed many named top-level helper functions, found ${blocks.length}`);
+
+        const missing = [];
+        for (const { name, source } of blocks) {
+            for (const calleeId of extractBareCallIdentifiers(source)) {
+                if (JS_BUILTIN_CALLEES.has(calleeId)) continue;
+                if (declaredNames.has(calleeId)) continue;
+                missing.push(`${name}() calls "${calleeId}(...)" but "${calleeId}" is neither a JS builtin nor declared anywhere in the emitted live-refresh script`);
+            }
+        }
+        assert.deepEqual(missing, [], missing.join('\n'));
     });
 });

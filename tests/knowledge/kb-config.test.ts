@@ -29,17 +29,28 @@ afterEach(() => {
 describe('readKbConfigFromDisk', () => {
   it('returns the sqlite default when the config file is absent, no throw', () => {
     expect(fs.existsSync(KB_CONFIG_PATH)).toBe(false);
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
   });
 
   it('returns sqlite and does not touch a corrupt token_encrypted when provider is sqlite', () => {
     writeConfig({ provider: 'sqlite', token_encrypted: 'aa:bb:cc' });
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
   });
 
   it('returns sqlite and does not touch a corrupt token_encrypted when provider key is absent', () => {
     writeConfig({ token_encrypted: 'aa:bb:cc' });
-    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite' });
+    expect(readKbConfigFromDisk()).toEqual({ provider: 'sqlite', offlineFallback: 'local' });
+  });
+
+  // apra-fleet-i9ag.15.13.2 (review fix): offline_fallback is validated BEFORE
+  // the provider branch, so a stale/typo'd value left over from an earlier
+  // http config is no longer silently ignored just because the file currently
+  // says "sqlite" -- it fails loudly at config load like every other invalid
+  // value, per KbConfigResult's "always resolved to a concrete value" contract.
+  it('throws naming the config path and the invalid value when offline_fallback is invalid even though provider is sqlite', () => {
+    writeConfig({ provider: 'sqlite', offline_fallback: 'ignore-errors' });
+    expect(() => readKbConfigFromDisk()).toThrowError(/offline_fallback/);
+    expect(() => readKbConfigFromDisk()).toThrowError(/ignore-errors/);
   });
 
   it('returns provider http with url and decrypted token when config is well-formed', () => {
@@ -49,7 +60,41 @@ describe('readKbConfigFromDisk', () => {
       provider: 'http',
       url: 'http://kb.example.internal:7878',
       token: 'super-secret-token',
+      offlineFallback: 'local',
     });
+  });
+
+  // apra-fleet-i9ag.15.13.2: offline_fallback is explicit, persisted, and
+  // defaulted -- absent key resolves to 'local' (proven above), a valid
+  // 'error' value passes through, and an unrecognised value fails loudly
+  // rather than silently defaulting.
+  it('returns offlineFallback "error" when the config explicitly opts in', () => {
+    const tokenEncrypted = encryptPassword('super-secret-token');
+    writeConfig({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token_encrypted: tokenEncrypted,
+      offline_fallback: 'error',
+    });
+    expect(readKbConfigFromDisk()).toEqual({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token: 'super-secret-token',
+      offlineFallback: 'error',
+    });
+  });
+
+  it('throws naming the config path and the invalid value when offline_fallback is neither "local" nor "error"', () => {
+    const tokenEncrypted = encryptPassword('super-secret-token');
+    writeConfig({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token_encrypted: tokenEncrypted,
+      offline_fallback: 'ignore-errors',
+    });
+    expect(() => readKbConfigFromDisk()).toThrowError(/offline_fallback/);
+    expect(() => readKbConfigFromDisk()).toThrowError(/ignore-errors/);
+    expect(() => readKbConfigFromDisk()).toThrowError(new RegExp(KB_CONFIG_PATH.replace(/\\/g, '\\\\')));
   });
 
   it('throws naming the config path and the missing key when provider is http but url is missing', () => {

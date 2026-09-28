@@ -8,6 +8,7 @@ import http from 'node:http';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
+import { SprintRunnerResolutionError } from '../src/supervisor/node-runner.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import {
     createSprintController,
@@ -460,6 +461,256 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
             roleMap: { doer: ['bob'], reviewer: ['carol'] },
         });
         assert.deepEqual([...r.members].sort(), ['alice', 'bob', 'carol']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// apra-fleet-i9ag.15.2: a runner-resolution failure (spawner.mjs's
+// resolveCommand(), thrown BEFORE port allocation/log-file creation, never
+// caught anywhere inside spawner.mjs itself) is recognised by launch() via
+// node-runner.mjs's own SprintRunnerResolutionError class and answered as a
+// 503 carrying the resolver's own operator-facing message -- never the
+// generic 500 "internal supervisor error" a caller would otherwise see.
+describe('api -- apra-fleet-i9ag.15.2 runner-resolution failure -> 503', () => {
+    const FIX_LINE = 'Install Node.js 22.16+ and ensure \'node\' resolves on PATH, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with.';
+
+    /**
+     * A REAL createSpawner() whose resolveRunner ALWAYS throws
+     * SprintRunnerResolutionError -- mirrors the installed-binary-with-no-
+     * usable-node case this bug exists for. Tracks fs calls so a test can
+     * assert the per-sprint log file is never created, and never touches the
+     * real filesystem/port table.
+     */
+    function unresolvableSpawner() {
+        const fsCalls = { mkdirSync: 0, openSync: 0 };
+        const spawner = createSpawner({
+            resolveRunner: () => {
+                throw new SprintRunnerResolutionError(
+                    `Could not resolve a Node.js runtime to launch a sprint with. Tried: current runtime (/opt/apra-fleet/apra-fleet) -- ` +
+                    `skipped: running as a single-executable binary (node:sea isSea() is true); 'node' on PATH -- not found. ${FIX_LINE}`,
+                );
+            },
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: {
+                mkdirSync() { fsCalls.mkdirSync += 1; },
+                openSync() { fsCalls.openSync += 1; return 900; },
+                closeSync() {},
+            },
+            logger: { log() {}, error() {} },
+        });
+        return { spawner, fsCalls };
+    }
+
+    test('controller.launch() rejects with ApiError(503) carrying the resolver\'s own message (never "internal supervisor error"), and claims no ledger reservation', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner, fsCalls } = unresolvableSpawner();
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => {
+                assert.ok(err instanceof ApiError, 'must be an ApiError, not a raw SprintRunnerResolutionError or generic Error');
+                assert.equal(err.status, 503);
+                assert.ok(err.message.includes(FIX_LINE), 'the 503 message must carry the resolver\'s own Node.js fix line');
+                assert.ok(!/internal supervisor error/i.test(err.message), 'must never degrade to the generic 500 message');
+                return true;
+            },
+        );
+        assert.equal(ledger.list().length, 0, 'a runner-resolution failure must claim no ledger reservation');
+        assert.equal(fsCalls.mkdirSync, 0, 'must never create the per-sprint log directory');
+        assert.equal(fsCalls.openSync, 0, 'must never open the per-sprint log file');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('POST /api/sprints answers 503 through the real HTTP route layer, with the fix line in the JSON error body', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner } = unresolvableSpawner();
+        const { supervisor, headers } = await createTestSupervisor({ port: 0, dataDir: dir });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }, headers()),
+            res,
+        );
+
+        assert.equal(res.statusCode, 503);
+        assert.ok(payloadOf(res).error.includes(FIX_LINE));
+        assert.ok(!/internal supervisor error/i.test(payloadOf(res).error));
+        assert.equal(ledger.list().length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a NON-resolution spawn failure keeps its existing (uncaught, 500-isolation-wrapper) behaviour', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const spawner = createSpawner({
+            resolveRunner: () => ({ command: 'node', source: 'path', version: '22.16.0' }),
+            spawn: () => { throw new Error('boom: unrelated spawn failure'); },
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: { mkdirSync() {}, openSync() { return 901; }, closeSync() {} },
+            logger: { log() {}, error() {} },
+        });
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => !(err instanceof ApiError) && /boom: unrelated spawn failure/.test(err.message),
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-i9ag.15: the 503 above was UNREACHABLE on the host class it
+    // was written for. `bd` is npm-installed with a `#!/usr/bin/env node`
+    // shebang, so on a node-less box the beads-backed pre-launch guards
+    // composed into beforeLaunch (bin/serve.mjs -> scope-overlap.mjs) are
+    // dead too, and their raw failure reached server.mjs's generic 500
+    // "internal supervisor error" BEFORE spawnSprint() ever ran. launch()
+    // now resolves the runner first, via the side-effect-free
+    // spawner.preflightRunner().
+    test('a failing resolver short-circuits launch() BEFORE beforeLaunch runs: 503 with the resolver message, and beforeLaunch is never called', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner, fsCalls } = unresolvableSpawner();
+        let beforeLaunchCalls = 0;
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+            // Stands in for the real beads-backed scope-overlap guard, which
+            // on a node-less box fails with a raw `bd list ...` ENOENT-class
+            // error that used to become the generic 500.
+            beforeLaunch: () => {
+                beforeLaunchCalls += 1;
+                throw new Error('Command failed: bd list --all --limit 0 --json\n/usr/bin/env: \'node\': No such file or directory');
+            },
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => {
+                assert.ok(err instanceof ApiError, 'must be an ApiError, not the raw beforeLaunch failure');
+                assert.equal(err.status, 503, 'the resolver failure must win over the beads-guard failure');
+                assert.ok(err.message.includes(FIX_LINE), err.message);
+                assert.ok(!/internal supervisor error/i.test(err.message));
+                assert.ok(!/bd list/.test(err.message), 'must not be the beads-guard error');
+                return true;
+            },
+        );
+        assert.equal(beforeLaunchCalls, 0, 'beforeLaunch must never run once the runner cannot be resolved');
+        assert.equal(ledger.list().length, 0);
+        assert.equal(fsCalls.mkdirSync, 0);
+        assert.equal(fsCalls.openSync, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-i9ag.15 (Fix 2): a resolution failure used to write NOTHING
+    // to the supervisor's own log -- spawner.mjs logs only the success line,
+    // so an operator tailing /supervisor/log after a failed launch saw no
+    // trace of it at all. console.error is the sink self-log.mjs tees into
+    // <dataDir>/logs/supervisor.log.
+    test('a resolution failure is logged to the supervisor log with the FULL resolver message', async (t) => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const { spawner } = unresolvableSpawner();
+        const errorCalls = [];
+        t.mock.method(console, 'error', (...args) => { errorCalls.push(args.join(' ')); });
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 503,
+        );
+
+        const logged = errorCalls.filter((line) => line.includes(FIX_LINE));
+        assert.equal(logged.length, 1, `exactly one log line must carry the resolver message; saw: ${JSON.stringify(errorCalls)}`);
+        assert.ok(/resolution failed/i.test(logged[0]), logged[0]);
+        assert.ok(logged[0].includes('503'), 'the log line must say the launch was refused with a 503');
+        assert.ok(logged[0].includes('single-executable binary'), 'the FULL resolver message (every candidate tried) must be logged, not a summary');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a SUCCEEDING resolver still reaches beforeLaunch and spawnSprint unchanged, and resolves exactly once for the whole launch', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        let resolveCalls = 0;
+        const spawner = createSpawner({
+            basePort: 9100,
+            resolveRunner: () => { resolveCalls += 1; return { command: 'node', source: 'path', version: '22.16.0' }; },
+            spawn: (command, args) => {
+                captured.push({ command, args });
+                const listeners = {};
+                return { pid: 6001, once(ev, cb) { listeners[ev] = cb; return this; }, unref() {} };
+            },
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: { mkdirSync() {}, openSync() { return 910; }, closeSync() {} },
+            logger: { log() {}, error() {} },
+        });
+        let beforeLaunchCalls = 0;
+        const controller = createSprintController({
+            ledger, history, spawner,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+            beforeLaunch: () => { beforeLaunchCalls += 1; },
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+
+        assert.equal(beforeLaunchCalls, 1, 'the happy path must still run beforeLaunch');
+        assert.equal(captured.length, 1, 'the happy path must still spawn the child');
+        assert.equal(captured[0].command, 'node');
+        assert.equal(result.pid, 6001);
+        assert.equal(ledger.list().length, 1, 'the happy path must still claim its ledger reservation');
+        // The preflight shares resolveCommand()'s success-only cache, so
+        // hoisting it must not double the resolution work per launch.
+        assert.equal(resolveCalls, 1, 'preflight + spawn must resolve the runner exactly once');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an injected spawner double WITHOUT preflightRunner() still launches (optional-call), and its own resolution failure still yields the 503', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+
+        // Happy path: a bare double with only spawnSprint().
+        const okController = createSprintController({
+            ledger, history,
+            spawner: { spawnSprint: async () => ({ pid: 7001, port: 9200, args: [], logPath: '/tmp/x.log' }) },
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const result = await okController.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.pid, 7001);
+
+        // Failure path: the spawnSprint() catch is still the fallback for a
+        // double that cannot be preflighted.
+        const { ledger: ledger2, history: history2 } = await stores(await tmpDir());
+        const failController = createSprintController({
+            ledger: ledger2, history: history2,
+            spawner: {
+                spawnSprint: async () => { throw new SprintRunnerResolutionError(`no runtime. ${FIX_LINE}`); },
+            },
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => failController.launch({ issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 503 && err.message.includes(FIX_LINE),
+        );
+        assert.equal(ledger2.list().length, 0);
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });

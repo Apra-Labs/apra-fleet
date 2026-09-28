@@ -102,7 +102,7 @@ function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || '0.0.0.0';
 }
 
-export async function startKbServer(port: number, generateToken: boolean, dbPath?: string): Promise<http.Server> {
+export async function startKbServer(port: number, generateToken: boolean, dbPath?: string, host?: string): Promise<http.Server> {
   if (generateToken) {
     const token = generateNewToken();
     process.stderr.write(`KB server token: ${token}\n`);
@@ -256,6 +256,29 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     }
   });
 
+  // apra-fleet-i9ag.15.11: bind an EXPLICIT address with `exclusive: true`,
+  // never the OS wildcard -- same defect class as apra-fleet-i9ag.15.9 (see
+  // the comment block at packages/apra-fleet-workflow/src/viewer/index.mjs
+  // around its server.listen() call).
+  //
+  // `server.listen(port, cb)` with no host binds the wildcard address. That
+  // does NOT give this process exclusive ownership of `127.0.0.1:<port>`:
+  // another process can still bind the same port on loopback specifically,
+  // that bind succeeds, and because the kernel routes to the most specific
+  // match, the newcomer then silently receives every loopback request meant
+  // for this KB server -- neither side errors, and clients get the
+  // impostor's answers instead of a loud failure. It also exposes this
+  // Bearer-token-guarded local surface on every network interface by
+  // default, which the supervisor (src/supervisor/server.mjs, bindHost
+  // default 127.0.0.1) and the workflow viewer both deliberately refuse to
+  // do.
+  //
+  // Binding loopback explicitly (with an opt-in override for a caller that
+  // genuinely wants this reachable off-box) inverts that: a second loopback
+  // bind on this port now fails loudly with EADDRINUSE via the 'error'
+  // handler below, instead of silently splitting traffic.
+  const bindHost = typeof host === 'string' && host.length > 0 ? host : '127.0.0.1';
+
   return new Promise((resolve, reject) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -265,17 +288,49 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       reject(err);
     });
 
-    server.listen(port, () => {
-      process.stderr.write(`KB server listening on port ${port}\n`);
+    server.listen({ port, host: bindHost, exclusive: true }, () => {
+      process.stderr.write(`KB server listening on http://${bindHost}:${port}\n`);
       resolve(server);
     });
   });
 }
 
-export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string } {
+// apra-fleet-i9ag.15.11 (rework): kb-server had no discoverable help text at
+// all -- `--host` (the escape hatch this bead added for the team-shared
+// topology) was only visible by reading source. Exported so src/index.ts's
+// `kb-server` branch can print it on `--help`/`-h` before parsing/starting.
+export const KB_SERVER_USAGE = `apra-fleet kb-server -- run the team-shared KB server (HTTP REST relay over a SqliteProvider)
+
+Usage:
+  apra-fleet kb-server [options]
+
+Options:
+  --port <n>          Port to listen on (default: 7878)
+  --host <address>    Bind address (default: 127.0.0.1, loopback-only). A
+                       team-shared deployment (see docs/knowledge-layer.md,
+                       "Central server") MUST pass an address reachable from
+                       client machines here -- e.g. --host 0.0.0.0 to bind
+                       every interface, or the server's specific LAN/VPN IP.
+                       The loopback default means every remote client gets
+                       ECONNREFUSED.
+  --db <path>         Serve this local SQLite database file instead of the
+                       project/global KB the local config would otherwise
+                       select. Required if the local KB config itself selects
+                       provider=http, since kb-server must never self-proxy
+                       to a remote server.
+  --generate-token    Generate a new bearer token, print it, and store it
+                       (encrypted) for the server to authenticate clients
+                       against. Run this once before distributing the token.
+  --help, -h          Show this help`;
+
+export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string; host?: string } {
   let port = 7878;
   let generateToken = false;
   let dbPath: string | undefined;
+  // apra-fleet-i9ag.15.11: opt-in escape hatch for a caller that genuinely
+  // wants this server reachable off-box (e.g. --host 0.0.0.0). Left
+  // undefined by default so startKbServer's own 127.0.0.1 default applies.
+  let host: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' && argv[i + 1]) {
       port = parseInt(argv[i + 1], 10);
@@ -288,6 +343,10 @@ export function parseKbServerArgs(argv: string[]): { port: number; generateToken
       dbPath = argv[i + 1];
       i++;
     }
+    if (argv[i] === '--host' && argv[i + 1]) {
+      host = argv[i + 1];
+      i++;
+    }
   }
-  return { port, generateToken, dbPath };
+  return { port, generateToken, dbPath, host };
 }

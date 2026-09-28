@@ -53,6 +53,8 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 ```javascript
 const workflow = new FleetWorkflow(fleetApi);
 const engine = new WorkflowEngine(workflow);
+// opts.host defaults to '127.0.0.1' (loopback-only) -- see section 7 for why, and
+// how to widen it deliberately.
 const server = createDashboardViewer(workflow, { port: 8080, name: 'My Workflow' });
 await engine.executeFile('./my-workflow.js', { targetIssue: 'X-1' });
 ```
@@ -477,6 +479,20 @@ dashboard and subscribes to the given `FleetWorkflow` instance's events:
   status `cancelled`, which is what actually transitions the dashboard's status indicator
   and closes the server (after a grace period) -- there is no `process.exit()` anywhere in
   this path.
+
+The server also binds an **explicit** interface, never the OS wildcard: `opts.host`
+defaults to `'127.0.0.1'` (loopback-only), matching the supervisor's own `bindHost`
+default (`apra-fleet-se/src/supervisor/server.mjs`). This is deliberate, not incidental --
+a wildcard bind does not give the process exclusive ownership of `127.0.0.1:<port>`, so
+another process can still bind that same port on loopback specifically and silently
+receive every loopback request meant for this dashboard (the "port is silently
+stealable" failure class); it would also expose this unauthenticated, per-sprint
+dashboard on every network interface by default. A caller that genuinely wants the
+dashboard reachable off-box must pass `opts.host` explicitly (e.g. `{ host: '0.0.0.0' }`).
+Note that with such a wide bind, the startup log line (`[Viewer] Workflow Dashboard live
+at http://<host>:<port>`) prints the literal host you passed -- `http://0.0.0.0:<port>` is
+not itself a navigable URL, so browse to `http://localhost:<port>` (or the machine's real
+address) instead.
 
 `POST /pause` and `POST /resume` follow the same "route only forwards, never
 mutates state directly" pattern as `/stop`: they call

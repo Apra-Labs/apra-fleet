@@ -63,13 +63,28 @@
             "reason": {
               "type": "string"
             },
+            "degraded": {
+              "type": "boolean"
+            },
+            "degraded_reason": {
+              "type": "string"
+            },
+            "degraded_since": {
+              "type": "string"
+            },
+            "remote_url": {
+              "type": "string"
+            },
             "totals": {},
             "stale": {},
             "flagged": {},
             "superseded": {},
             "retrieval": {},
             "promote_ratio": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "coverage": {},
             "bible": {}

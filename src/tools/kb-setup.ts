@@ -16,6 +16,12 @@ export const kbSetupSchema = z.object({
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
     .describe('Authentication token for remote KB server (stored encrypted, never logged)'),
+  offline_fallback: z.enum(['local', 'error']).optional()
+    .describe('Only meaningful for provider=http. What to do when the configured remote is ' +
+      'unreachable: "local" (default) silently degrades to the local sqlite KB for reads and ' +
+      'queues writes; "error" hard-fails every KB read/write instead. Persisted alongside ' +
+      'provider/remote/token; merges into the existing config file like every other kb_setup ' +
+      'input, so a hand-set value already on disk is kept when this is omitted.'),
 });
 
 export type KbSetupInput = z.infer<typeof kbSetupSchema>;
@@ -103,6 +109,11 @@ function discardMalformed(warnings: string[], reason: string): KbConfigFile {
  *   url to a different server and no token is passed, the old token is
  *   dropped with a warning: sending one server's bearer token to another
  *   leaks the credential.
+ * - offline_fallback is written only when passed, so a bare kb_setup run
+ *   never resets a value already on disk (hand-set or set by an earlier
+ *   kb_setup call) back to the implicit "local" default. Read back by
+ *   readKbConfigFromDisk (src/services/knowledge/kb-config.ts) and consumed
+ *   by HttpKbProvider's strict mode (src/services/knowledge/http-provider.ts).
  */
 function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: string[], warnings: string[]): void {
   if (input.provider || input.remote) {
@@ -126,6 +137,11 @@ function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: strin
   if (input.token) {
     config.token_encrypted = encryptPassword(input.token);
     steps.push('Stored remote token encrypted (AES-256-GCM)');
+  }
+
+  if (input.offline_fallback) {
+    config.offline_fallback = input.offline_fallback;
+    steps.push(`Set offline_fallback to "${input.offline_fallback}"`);
   }
 }
 
