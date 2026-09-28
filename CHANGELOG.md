@@ -34,9 +34,22 @@ What shipped and is verified working:
 - **`apra-fleet install --project-dir <path>`** seeds that persisted folder
   before the supervisor service is registered and started, so a fresh
   install's first boot already resolves the right project without a
-  restart. The path is validated (must exist and be a directory) before
-  anything is written; omitting the flag changes nothing, including an
-  existing setting an operator already made from the console.
+  restart. Omitting the flag changes nothing, including an existing setting
+  an operator already made from the console.
+- **A project folder is only accepted if a sprint could actually run in
+  it.** Both `install --project-dir` and `POST /api/project` now require an
+  initialised `.beads`, a git `origin` remote and bd's `sync.remote` before
+  persisting anything, and refuse otherwise with a message naming every
+  missing piece and the one command that fixes it. The sprint engine's
+  beads identity check treats an incomplete identity as fatal, so the old
+  "accept any existing directory" behaviour only moved the failure to the
+  first launch, by which time the operator who could fix it had walked
+  away. `bd` must be runnable for the install-time check -- if it is not,
+  the install fails saying so rather than silently skipping it. A folder
+  that was already persisted and has since become incomplete still starts
+  the supervisor (the console must stay reachable) and now reports the
+  missing field(s) and their fix in `GET /api/health`'s `beadsWarning`
+  instead of looking healthy until the first launch fails.
 - **Console: a guarded `GET`/`POST /api/project` route** on the supervisor,
   and a real `/ui/projects` page (replacing the placeholder that used to
   answer "fleet-supervisor UI arrives in a later sprint") showing the

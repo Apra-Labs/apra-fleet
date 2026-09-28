@@ -32,18 +32,32 @@
 // says so explicitly -- silently persisting a value that does nothing is
 // the failure apra-fleet-i9ag.17.2.1's acceptance criteria calls out.
 //
-// STALENESS-TOLERANT WRITE: a submitted path that exists but has no .beads
-// subdirectory is still ACCEPTED and persisted (the operator may legitimately
-// point at a folder before initialising it there) -- only a path that does
-// not exist, or is not a directory, is rejected. This mirrors the same
-// asymmetry resolveProjectDir() already applies to a stale CONFIGURED
-// folder (see its own header comment).
+// SET-TIME USABILITY CHECK: a submitted path must be a folder a sprint can
+// actually run against, not merely a folder that exists. The engine's beads
+// identity precondition (../../fleet-sprint/beads-identity.mjs's
+// isCompleteIdentity/COMPARED_FIELDS) is FATAL to a sprint, so a folder with
+// no initialised `.beads`, no git `origin` remote, or no bd `sync.remote` can
+// never run one -- and the operator setting it is standing right here, able
+// to fix it, which is exactly when to say so. The route therefore probes the
+// submitted folder (checkProjectFolderIdentity() in ./beads-identity.mjs) and
+// refuses with 400 { error, missing } naming every missing field and its fix,
+// persisting NOTHING.
+//
+// This deliberately REPLACES the route's original staleness-tolerant write
+// (which accepted any existing directory, .beads or not, on the theory that
+// the operator might initialise it later). That tolerance handed back a
+// cheerful 200 for a setting guaranteed to fail at the next launch -- the
+// silent-wrong-thing failure this whole feature exists to remove. The
+// asymmetry resolveProjectDir() applies at STARTUP is unchanged and is a
+// different question: an already-persisted folder that went stale must not
+// stop the supervisor booting, because the console that fixes it is served
+// by that same process.
 // =============================================================================
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { resolveBeadsDirArg, BEADS_DIR_NAME } from './beads-identity.mjs';
+import { resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME } from './beads-identity.mjs';
 import { writeSupervisorConfig } from './project-config.mjs';
 
 /**
@@ -82,11 +96,15 @@ function hasBeadsDbAt(dir, fsImpl) {
  *   sendJson: (res: any, status: number, payload: object) => void,
  *   fs?: { existsSync: Function, statSync?: Function },
  *   fsp?: { readFile: Function, writeFile: Function, mkdir: Function, rename?: Function },
+ *   execBd?: Function,
+ *   execGit?: Function,
  * }} deps `projectDir`/`source` are the project-folder resolution decided
  *   once at startup (resolveProjectDir(), the same values GET /api/health
  *   reports); `flagActive` is whether that resolution's source is the
  *   `--beads-dir` flag (`source === PROJECT_DIR_SOURCE.FLAG`). `fs`/`fsp`
- *   are injectable purely for tests.
+ *   are injectable purely for tests, as are `execBd`/`execGit` -- the two
+ *   child-process shapes the POST usability probe runs through, so no test
+ *   of this route ever needs a real bd or git on PATH.
  */
 export function registerProjectFolderRoutes(supervisor, deps) {
     const { projectDir, source, flagActive, dataDir, readJsonBody, sendJson } = deps;
@@ -120,6 +138,19 @@ export function registerProjectFolderRoutes(supervisor, deps) {
             resolved = resolveBeadsDirArg(body.projectDir, { fs: fsImpl });
         } catch (err) {
             sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+            return;
+        }
+        // The folder exists; can a sprint actually RUN there? See this
+        // module's SET-TIME USABILITY CHECK header. `missing` is returned
+        // alongside the human message so a caller can render the individual
+        // failures without re-parsing prose.
+        const usability = await checkProjectFolderIdentity({
+            cwd: resolved,
+            execBd: deps.execBd,
+            execGit: deps.execGit,
+        });
+        if (!usability.ok) {
+            sendJson(res, 400, { error: usability.error, missing: usability.missing });
             return;
         }
         const result = await writeSupervisorConfig({ projectDir: resolved, dataDir, fs: fspImpl });

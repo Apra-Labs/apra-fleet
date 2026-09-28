@@ -5,7 +5,7 @@ import net from 'node:net';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { PROJECT_DIR_SOURCE, discoverBeadsDir } from '../src/supervisor/beads-identity.mjs';
@@ -25,11 +25,17 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // Mirrors test/supervisor-project-dir-precedence.test.mjs's own established
 // harness (bootServe over a real spawned subprocess is the only honest way
 // to assert "starts successfully" and "resolves X on THIS boot" -- an
-// in-process helper call cannot demonstrate either). The spawned
-// supervisors' project folder deliberately carries NO .beads, so no real
-// `bd` child process is ever required by these assertions -- the
-// properties under test are about the persisted SETTING and its
-// precedence, not tracker identity.
+// in-process helper call cannot demonstrate either).
+//
+// NO REAL `bd` IS EVER REQUIRED. POST /api/project now refuses a folder a
+// sprint could not run in (an initialised .beads, a git `origin` remote and
+// bd's `sync.remote` must all resolve), which a real subprocess cannot be
+// handed injected fakes for -- so the fixture builds a `bd` SHIM on the
+// child's PATH (makeBdShim() below) that answers the two read-only probes
+// from whatever cwd it is run in, and fails exactly as a real bd does in a
+// folder with no `.beads`. The git `origin` is a real one created by
+// `git init` + `git remote add` in the fixture: git is already a hard
+// prerequisite of this product, bd is the one this suite must not depend on.
 //
 // Isolation: every fixture lives under one mkdtemp root, removed in
 // after(). FLEET_SE_DATA_DIR/HOME are redirected into it, and BEADS_DIR is
@@ -78,15 +84,64 @@ async function makeFixture() {
         home: path.join(root, 'home'),
         bootCwd: path.join(root, 'boot-cwd'),
         savedProj: path.join(root, 'saved-proj'),
+        unusableProj: path.join(root, 'unusable-proj'),
         cwdTrap: path.join(root, 'cwd-trap'),
         bogus: path.join(root, 'does-not-exist-at-all'),
     };
     await fsp.mkdir(dirs.dataDir, { recursive: true });
     await fsp.mkdir(dirs.home, { recursive: true });
     await fsp.mkdir(dirs.bootCwd, { recursive: true });
-    await fsp.mkdir(dirs.savedProj, { recursive: true });
+    await fsp.mkdir(path.join(dirs.savedProj, '.beads'), { recursive: true });
+    // A folder that EXISTS but no sprint could run in -- no .beads, no git
+    // origin. The set-time refusal case.
+    await fsp.mkdir(dirs.unusableProj, { recursive: true });
     await fsp.mkdir(path.join(dirs.cwdTrap, '.beads'), { recursive: true });
+
+    // The real git identity half of savedProj's usability (see the header).
+    execFileSync('git', ['init', '-q'], { cwd: dirs.savedProj, stdio: 'pipe' });
+    execFileSync('git', ['remote', 'add', 'origin', SHIM_REMOTE], { cwd: dirs.savedProj, stdio: 'pipe' });
+
+    dirs.fakeBin = await makeBdShim(root);
     return dirs;
+}
+
+/** The URL both the bd shim and the fixture's git origin report, so the two
+ *  halves of the identity agree exactly as a real project's would. */
+const SHIM_REMOTE = 'https://example.invalid/acme/demo.git';
+
+/**
+ * Builds a directory holding a `bd` shim (plus its Windows `.cmd` twin --
+ * the supervisor's bd calls go through `shell: true`, so cmd.exe resolves
+ * that one via PATHEXT) and returns it for prepending to a child's PATH.
+ *
+ * The shim answers the two read-only identity probes relative to its OWN
+ * cwd, and -- like a real bd -- FAILS when that cwd has no `.beads`, so the
+ * refusal cases below are exercised by the same mechanism as the acceptance
+ * ones rather than by a second special case.
+ */
+async function makeBdShim(root) {
+    const binDir = path.join(root, 'fake-bin');
+    await fsp.mkdir(binDir, { recursive: true });
+    const script = path.join(binDir, 'bd-shim.mjs');
+    await fsp.writeFile(script, [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        'const args = process.argv.slice(2);',
+        'const beads = path.join(process.cwd(), ".beads");',
+        'if (args[0] === "--version") { process.stdout.write("bd version 0.0.0-shim\\n"); process.exit(0); }',
+        'if (!fs.existsSync(beads)) { process.stderr.write("no beads database found\\n"); process.exit(1); }',
+        'if (args[0] === "where") { process.stdout.write(JSON.stringify({ path: beads, prefix: "shim", database_path: path.join(beads, "shim.db") })); process.exit(0); }',
+        `if (args[0] === "config" && args[1] === "get") { process.stdout.write(JSON.stringify({ key: args[2], value: ${JSON.stringify(SHIM_REMOTE)} })); process.exit(0); }`,
+        'process.stdout.write("[]");',
+        '',
+    ].join('\n'), 'utf-8');
+
+    const node = JSON.stringify(process.execPath);
+    const shim = JSON.stringify(script);
+    await fsp.writeFile(path.join(binDir, 'bd'), `#!/bin/sh\nexec ${node} ${shim} "$@"\n`, 'utf-8');
+    await fsp.chmod(path.join(binDir, 'bd'), 0o755);
+    await fsp.writeFile(path.join(binDir, 'bd.cmd'), `@echo off\r\n${node} ${shim} %*\r\n`, 'utf-8');
+    return binDir;
 }
 
 function configFor(dirs) {
@@ -144,6 +199,10 @@ async function bootServe(dirs, { cwd, flag } = {}) {
     env.HOME = dirs.home;
     env.USERPROFILE = dirs.home;
     env.FLEET_SE_SWEEP_OWNER_DATA_DIR = dirs.root;
+    // The bd shim wins over any real bd this host happens to carry, so the
+    // suite behaves identically on a developer box and on a bare CI runner.
+    env.PATH = `${dirs.fakeBin}${path.delimiter}${env.PATH ?? ''}`;
+    if (env.Path !== undefined) env.Path = env.PATH;
 
     const args = [SERVE_BIN, '--port', String(port)];
     if (flag) args.push('--beads-dir', flag);
@@ -238,6 +297,20 @@ describe('console project-folder round trip (apra-fleet-i9ag.17.2.3)', () => {
         const after1 = JSON.parse(await fsp.readFile(configFor(dirs), 'utf-8'));
         assert.deepEqual(after1, before1, 'a rejected write must leave the on-disk config byte-for-byte unchanged');
         assert.equal(after1.projectDir, dirs.savedProj);
+    });
+
+    test('set-time refusal: a folder that EXISTS but no sprint could run in is 4xxed, names every missing requirement, and leaves the saved value on disk', async () => {
+        const before1 = JSON.parse(await fsp.readFile(configFor(dirs), 'utf-8'));
+
+        const res = await request(sup.port, 'POST', '/api/project', { token: sup.token, body: { projectDir: dirs.unusableProj } });
+        assert.equal(res.status, 400, res.text);
+        assert.deepEqual(res.json.missing, ['beadsDir', 'prefix', 'syncRemote', 'repoRemote']);
+        assert.ok(res.json.error.includes(dirs.unusableProj), res.json.error);
+        assert.match(res.json.error, /run 'bd init' in that folder/);
+        assert.match(res.json.error, /git remote add origin <url>/);
+
+        const after1 = JSON.parse(await fsp.readFile(configFor(dirs), 'utf-8'));
+        assert.deepEqual(after1, before1, 'a refused write must leave the on-disk config byte-for-byte unchanged');
     });
 
     test('auth: an unauthenticated call to both GET and POST /api/project is refused', async () => {

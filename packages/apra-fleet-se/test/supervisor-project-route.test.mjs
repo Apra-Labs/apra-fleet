@@ -23,6 +23,14 @@ import { BEADS_DIR_NAME } from '../src/supervisor/beads-identity.mjs';
 // Every test works inside its own mkdtemp dataDir and mkdtemp candidate
 // project folders under os.tmpdir(); nothing here writes to a real home
 // directory.
+//
+// The POST usability check (does this folder carry a beads identity a sprint
+// could actually run against?) is driven entirely through the route's
+// injectable `execBd`/`execGit` deps -- see fakeExecs() below. No test in
+// this file needs a real `bd` or `git` on PATH, which is what lets the
+// failure cases (bd missing, sync.remote unset, no git origin) be asserted
+// deterministically on every host instead of only where the environment
+// happens to reproduce them.
 // =============================================================================
 
 /** @type {string[]} */
@@ -67,12 +75,39 @@ function mockRes() {
 }
 const payloadOf = (res) => (res.body ? JSON.parse(res.body) : null);
 
+/**
+ * Fake `bd`/`git` child processes for the POST usability probe, in the exact
+ * shapes probeBeadsIdentity() calls them with (execBdAsync / promisified
+ * execFile). Defaults describe a COMPLETE, usable project folder; each field
+ * can be knocked out to drive one specific missing requirement, and
+ * `bdMissing` models bd not being installed at all (the probe then throws).
+ */
+function fakeExecs({ prefix = 'demo', syncRemote = 'https://example.invalid/acme/demo.git', repoRemote = 'https://example.invalid/acme/demo.git', bdMissing = false } = {}) {
+    const execBd = async (args) => {
+        if (bdMissing) throw new Error('spawn bd ENOENT');
+        if (args[0] === 'where') {
+            return { stdout: JSON.stringify({ path: '/wherever/.beads', prefix, database_path: '/wherever/.beads/db' }) };
+        }
+        if (args[0] === 'config') {
+            return { stdout: JSON.stringify({ key: 'sync.remote', value: syncRemote }) };
+        }
+        return { stdout: '' };
+    };
+    const execGit = async () => {
+        if (!repoRemote) throw new Error("fatal: No such remote 'origin'");
+        return { stdout: `${repoRemote}\n` };
+    };
+    return { execBd, execGit };
+}
+
 /** Builds a supervisor with the project-folder routes mounted exactly the
- *  way bin/serve.mjs does. */
-function mountProjectRoute({ token, projectDir, source = 'walk-up', flagActive = false, dataDir }) {
+ *  way bin/serve.mjs does. `execs` overrides the usability probe's two
+ *  child-process seams (defaulting to a complete, usable folder). */
+function mountProjectRoute({ token, projectDir, source = 'walk-up', flagActive = false, dataDir, execs = fakeExecs() }) {
     const supervisor = createSupervisor({ token });
     registerProjectFolderRoutes(supervisor, {
         projectDir, source, flagActive, dataDir, readJsonBody, sendJson,
+        execBd: execs.execBd, execGit: execs.execGit,
     });
     return supervisor;
 }
@@ -162,22 +197,67 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         assert.equal(config.configured, false, 'a rejected write must never persist');
     });
 
-    test('POST an existing path with no .beads -> 200, ACCEPTED and persisted, hasBeadsDb:false (staleness-tolerant)', async () => {
+    // -------------------------------------------------------------------
+    // SET-TIME USABILITY: the engine's beads identity precondition is fatal
+    // to a sprint, so a folder that cannot satisfy it is refused HERE --
+    // while the operator is present -- instead of at the next launch.
+    // -------------------------------------------------------------------
+
+    test('POST a folder whose beads identity cannot be probed at all (no bd) -> 400 naming every missing requirement and its fix; nothing is persisted', async () => {
         const token = 'g'.repeat(64);
-        const projectDir = await mkTmp('proj-accept-nobeads-');
+        const projectDir = await mkTmp('proj-reject-nobd-');
         const dataDir = await mkTmp('data-');
-        const supervisor = mountProjectRoute({ token, projectDir, dataDir });
-        const target = await mkTmp('proj-accept-nobeads-target-');
+        const supervisor = mountProjectRoute({ token, projectDir, dataDir, execs: fakeExecs({ bdMissing: true }) });
+        const target = await mkTmp('proj-reject-nobd-target-');
 
         const res = mockRes();
         await supervisor.handleRequest(mockReq('POST', '/api/project', { headers: AUTH(token), body: { projectDir: target } }), res);
-        assert.equal(res.statusCode, 200);
-        assert.equal(payloadOf(res).projectDir, target);
-        assert.equal(payloadOf(res).hasBeadsDb, false);
+        assert.equal(res.statusCode, 400);
+        assert.deepEqual(payloadOf(res).missing, ['beadsDir', 'prefix', 'syncRemote', 'repoRemote']);
+        const { error } = payloadOf(res);
+        assert.ok(error.includes(target), `expected the message to name the folder, got: ${error}`);
+        assert.match(error, /run 'bd init' in that folder/);
+        assert.match(error, /bd config set sync\.remote <url>/);
+        assert.match(error, /git remote add origin <url>/);
+        assert.ok(error.includes('spawn bd ENOENT'), `expected the raw probe failure to survive into the message, got: ${error}`);
 
         const config = await readSupervisorConfig({ dataDir });
-        assert.equal(config.configured, true);
-        assert.equal(config.projectDir, target);
+        assert.equal(config.configured, false, 'an unusable folder must never persist');
+    });
+
+    test("POST a folder with no bd 'sync.remote' -> 400 naming ONLY that requirement; nothing is persisted", async () => {
+        const token = 'm'.repeat(64);
+        const projectDir = await mkTmp('proj-reject-nosync-');
+        const dataDir = await mkTmp('data-');
+        const supervisor = mountProjectRoute({ token, projectDir, dataDir, execs: fakeExecs({ syncRemote: '' }) });
+        const target = await mkTmp('proj-reject-nosync-target-');
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/project', { headers: AUTH(token), body: { projectDir: target } }), res);
+        assert.equal(res.statusCode, 400);
+        assert.deepEqual(payloadOf(res).missing, ['syncRemote']);
+        assert.match(payloadOf(res).error, /bd config set sync\.remote <url>/);
+        assert.ok(!payloadOf(res).error.includes('bd init'), 'a requirement that IS satisfied must not be named');
+
+        const config = await readSupervisorConfig({ dataDir });
+        assert.equal(config.configured, false);
+    });
+
+    test("POST a folder with no git 'origin' remote -> 400 naming ONLY that requirement; nothing is persisted", async () => {
+        const token = 'n'.repeat(64);
+        const projectDir = await mkTmp('proj-reject-noorigin-');
+        const dataDir = await mkTmp('data-');
+        const supervisor = mountProjectRoute({ token, projectDir, dataDir, execs: fakeExecs({ repoRemote: '' }) });
+        const target = await mkTmp('proj-reject-noorigin-target-');
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/project', { headers: AUTH(token), body: { projectDir: target } }), res);
+        assert.equal(res.statusCode, 400);
+        assert.deepEqual(payloadOf(res).missing, ['repoRemote']);
+        assert.match(payloadOf(res).error, /git remote add origin <url>/);
+
+        const config = await readSupervisorConfig({ dataDir });
+        assert.equal(config.configured, false);
     });
 
     test('POST an existing path WITH .beads -> 200, persisted, hasBeadsDb:true', async () => {

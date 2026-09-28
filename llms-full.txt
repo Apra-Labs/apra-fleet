@@ -1308,12 +1308,31 @@ Notes:
   path (`~/.apra-fleet/workflows/fleet-sprint`), which has no `.beads` of its
   own, so step 3 alone would never find a real project. Set the persisted
   folder either at install time (`apra-fleet install --project-dir
-  <path>` -- the path must exist and be a directory) or later from the
-  console's Projects page (`/ui/projects` under the fleet-supervisor
-  workflow package), which reads and writes the same file through the
-  supervisor's own guarded API. Setting it from either place requires
-  restarting the supervisor to take effect (the config is read once, at
-  startup); the console page states this explicitly after a save.
+  <path>`) or later from the console's Projects page (`/ui/projects` under
+  the fleet-supervisor workflow package), which reads and writes the same
+  file through the supervisor's own guarded API. Setting it from either
+  place requires restarting the supervisor to take effect (the config is
+  read once, at startup); the console page states this explicitly after a
+  save.
+
+  **A folder is only accepted if a sprint could actually run in it.** Both
+  the install flag and the console refuse a folder that does not have all
+  of: an initialised `.beads` (`bd init`), a git `origin` remote
+  (`git remote add origin <url>`), and bd's `sync.remote` set
+  (`bd config set sync.remote <url>`). The refusal names every missing
+  piece and the command that fixes it, and nothing is written. This is not
+  strictness for its own sake: the sprint engine's beads identity check
+  treats an incomplete identity as fatal, so accepting such a folder would
+  produce a supervisor that starts cleanly and then fails every launch.
+  `bd` must be runnable for the install-time check; if it is not, the
+  install fails saying so rather than skipping the check. Either input also
+  accepts the folder's `.beads` path and normalises it to the parent, the
+  same convenience `--beads-dir` offers.
+
+  A folder that was already persisted and has since become incomplete is a
+  different case: the supervisor still starts (see below) and reports the
+  missing field(s) and their fix in `GET /api/health`'s `beadsWarning`, so
+  the console stays reachable to correct it.
 
   **Staleness-tolerant, but a typo is still fatal:** a persisted folder that
   has since been moved, renamed, or deleted does **not** stop the supervisor

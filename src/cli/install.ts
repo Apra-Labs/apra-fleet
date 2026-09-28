@@ -1044,10 +1044,13 @@ Options:
   --project-dir <path>    Seed the fleet-supervisor's persisted project folder (the folder whose
                           .beads tracker the supervisor runs against) before the supervisor service
                           is registered and started, so the first boot already resolves the right
-                          project instead of the installed engine path. The path must exist and be
-                          a directory. Omitting this leaves any project folder set earlier (e.g.
-                          from the console) untouched; this can also be set later from the console's
-                          Projects page or by re-running install with this flag.
+                          project instead of the installed engine path. The folder must be one a
+                          sprint can actually run in: it must exist, contain an initialised .beads
+                          (bd init), have a git 'origin' remote, and have bd's sync.remote set. A
+                          folder failing any of those is refused and nothing is written. bd must be
+                          on PATH for this check. Omitting this leaves any project folder set
+                          earlier (e.g. from the console) untouched; this can also be set later
+                          from the console's Projects page or by re-running install with this flag.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
 
 Services (SEA + --transport http):
@@ -1200,9 +1203,12 @@ Services (SEA + --transport http):
   // before supervisor service registration further down (apra-fleet-
   // i9ag.17.4.1's ordering requirement: the config must exist before the
   // FIRST boot, or that boot resolves the wrong project and needs a
-  // restart). seedSupervisorProjectDir() validates (exists + is a
-  // directory) before writing anything, so a bad path aborts a fresh
-  // install cleanly with nothing written and no existing config disturbed.
+  // restart). seedSupervisorProjectDir() validates the folder is one a
+  // sprint could actually run in (exists, has an initialised .beads, a git
+  // 'origin' remote and bd's sync.remote set) before writing anything, so an
+  // unusable path aborts a fresh install cleanly with nothing written and no
+  // existing config disturbed -- rather than seeding a setting whose first
+  // sprint launch is guaranteed to fail its beads identity check.
   // Omitting --project-dir entirely (projectDirArg undefined) calls nothing
   // here, leaving today's behaviour -- including any config an operator
   // already set from the console -- byte-identical.

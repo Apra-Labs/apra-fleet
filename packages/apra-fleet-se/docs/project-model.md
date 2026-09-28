@@ -39,7 +39,12 @@ dispatched members do.
      be seeded at install time (`apra-fleet install --project-dir <path>`)
      or set later from the console's Projects page, which reads/writes the
      same file through the supervisor's own guarded `GET`/`POST
-     /api/project`. A persisted folder that has since gone missing degrades
+     /api/project`. Both inputs REFUSE a folder a sprint could not run in
+     (no initialised `.beads`, no git `origin` remote, or no bd
+     `sync.remote`), naming each missing piece and its fix and persisting
+     nothing -- the engine's beads identity precondition is fatal, so
+     accepting one would only move the failure to the first launch. A
+     persisted folder that has since gone missing degrades
      to a warning and an "unknown" beads status rather than refusing to
      start (deliberately asymmetric with a typo'd `--beads-dir`, which is
      still fatal -- see [`../../../docs/install.md`](../../../docs/install.md)'s

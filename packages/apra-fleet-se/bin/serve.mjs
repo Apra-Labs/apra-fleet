@@ -336,8 +336,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
     if (beadsIdentityRecord) {
         console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
-    } else {
-        console.warn(`[supervisor] WARNING: ${beadsWarning}`);
+    }
+    // Read the warning back off the STATE rather than the local above: a
+    // probe that succeeded can still have produced an INCOMPLETE identity
+    // (no prefix, no sync.remote, no git origin), which the engine's own
+    // precondition treats as fatal to every sprint. createBeadsIdentityState
+    // derives that case's warning itself, so exactly one place decides
+    // whether there is something to say and the startup log, GET
+    // /api/health's `beadsWarning` and the dashboard header cannot disagree.
+    const startupBeadsWarning = beadsIdentity.getWarning();
+    if (startupBeadsWarning) {
+        console.warn(`[supervisor] WARNING: ${startupBeadsWarning}`);
     }
 
     // apra-fleet-50j6.1.2 / apra-fleet-ky2l.1.2 (DQ-20): resolve the shared

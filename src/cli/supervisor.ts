@@ -42,6 +42,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { WORKFLOWS_DIR, SCHEMAS_DIR } from './config.js';
 
@@ -229,41 +230,169 @@ export interface SeedProjectDirResult {
   error?: string;
 }
 
+/** The `.beads` directory name, the same one apra-fleet-se's
+ *  `BEADS_DIR_NAME` carries (restated here for the same TypeScript/ESM
+ *  boundary reason `SUPERVISOR_CONFIG_FILENAME` above is). */
+const BEADS_DIR_NAME = '.beads';
+
 /**
- * Validate `projectDir` (must exist and be a directory) and, on success,
- * write it to `supervisor.config.json` under `dataDir` -- the exact shape
+ * One synchronous child-process run, returning stdout. Injectable so
+ * `seedSupervisorProjectDir()` below is unit-testable with no bd, no git and
+ * no real project folder anywhere on the host.
+ */
+export type SeedProjectDirExec = (
+  file: string,
+  args: string[],
+  options: { cwd?: string },
+) => string;
+
+/**
+ * `shell: true` for `bd` only, and for the same reason `probeBdVersion()` in
+ * ./install.ts uses it: on Windows bd resolves through a `.cmd`/`.ps1` shim
+ * that CreateProcess cannot exec directly. `git` is a real executable
+ * everywhere and is deliberately run WITHOUT a shell, so no part of a
+ * caller-supplied path can ever be reinterpreted as a shell token.
+ */
+const realSeedProjectDirExec: SeedProjectDirExec = (file, args, options) =>
+  String(
+    execFileSync(file, args, {
+      ...options,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      shell: file === 'bd',
+    }) ?? '',
+  );
+
+/**
+ * Value of a `bd config get <key> --json` answer ({ key, value, ... }), with
+ * the plain (non-JSON) output of an older bd accepted as a fallback -- the
+ * same two shapes `parseBdConfigValue()` in
+ * packages/apra-fleet-se/fleet-sprint/beads-identity.mjs accepts. Restated
+ * rather than imported for the TypeScript/ESM boundary reason documented on
+ * `SUPERVISOR_CONFIG_FILENAME` above.
+ */
+function parseBdConfigValue(text: string): string {
+  const start = text.indexOf('{');
+  if (start >= 0) {
+    try {
+      const obj = JSON.parse(text.slice(start));
+      if (obj && typeof obj === 'object' && 'value' in obj) {
+        return String((obj as { value: unknown }).value ?? '').trim();
+      }
+    } catch {
+      // Not JSON after all -- fall through to the plain-output reading.
+    }
+  }
+  return text.trim().split(/\r?\n/)[0].trim();
+}
+
+/**
+ * Validate `projectDir` and, on success, write it to
+ * `supervisor.config.json` under `dataDir` -- the exact shape
  * `readSupervisorConfig()` accepts: a JSON object with a non-empty string
  * `projectDir` key, resolved to an ABSOLUTE path before writing (the reader
  * otherwise resolves a relative value against ITS OWN cwd at read time,
  * which is not install's cwd and not stable across a service restart).
  *
- * Never partially writes: the existence/directory check runs before any
- * `fs.writeFileSync` call, so a rejected path leaves no new file behind and
- * an already-existing config (e.g. one an operator set from the console) is
- * left completely untouched by a rejected call.
+ * VALIDATION is the same question the console's POST /api/project asks, and
+ * for the same reason: the fleet-sprint engine's beads identity precondition
+ * is FATAL, so a folder without an initialised `.beads`, a git `origin`
+ * remote and a bd `sync.remote` cannot run a sprint at all. Seeding one at
+ * install time would hand the operator a supervisor that boots cleanly and
+ * then fails every launch, which is exactly the silent-wrong-thing this
+ * option exists to prevent -- so all four checks run here:
  *
- * `fsImpl` is injectable purely for tests -- production callers always use
- * the default (real `node:fs`).
+ *   1. the path exists and is a directory (a `.beads` path is normalised to
+ *      its parent first, the same convenience `--beads-dir` and the console
+ *      both offer),
+ *   2. `<dir>/.beads` is itself a directory,
+ *   3. `git -C <dir> remote get-url origin` succeeds and is non-empty,
+ *   4. `bd config get sync.remote --json` (run in `<dir>`) is non-empty.
+ *
+ * bd MUST be runnable for step 4. When it is not, this fails LOUDLY rather
+ * than skipping the check: a skipped check is indistinguishable from a
+ * passed one to the operator, and would put back the unusable setting the
+ * option is meant to make impossible.
+ *
+ * Never partially writes: every check runs before any write call, so a
+ * rejected path leaves no new file behind and an already-existing config
+ * (e.g. one an operator set from the console) is left untouched.
+ *
+ * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
+ * always use the defaults (real `node:fs`, real child processes).
  */
 export function seedSupervisorProjectDir(
   projectDir: string,
   dataDir: string = SUPERVISOR_DATA_DIR,
   fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync'> = fs,
+  execImpl: SeedProjectDirExec = realSeedProjectDirExec,
 ): SeedProjectDirResult {
-  const resolvedPath = path.resolve(projectDir);
-  let isDir = false;
-  try {
-    isDir = fsImpl.existsSync(resolvedPath) && fsImpl.statSync(resolvedPath).isDirectory();
-  } catch {
-    isDir = false;
+  const given = path.resolve(projectDir);
+  const isDirectory = (p: string): boolean => {
+    try {
+      return fsImpl.existsSync(p) && fsImpl.statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  if (!isDirectory(given)) {
+    return {
+      ok: false,
+      resolvedPath: given,
+      error: `project folder '${given}' does not exist or is not a directory`,
+    };
   }
-  if (!isDir) {
+  // Accept `<project>/.beads` as well as `<project>`, exactly as the
+  // supervisor's own --beads-dir flag and POST /api/project do, so the three
+  // inputs cannot disagree about the same folder.
+  const resolvedPath = path.basename(given) === BEADS_DIR_NAME ? path.dirname(given) : given;
+
+  if (!isDirectory(path.join(resolvedPath, BEADS_DIR_NAME))) {
     return {
       ok: false,
       resolvedPath,
-      error: `project folder '${resolvedPath}' does not exist or is not a directory`,
+      error: `project folder '${resolvedPath}' has no initialised beads database (${BEADS_DIR_NAME}): run 'bd init' there`,
     };
   }
+
+  try {
+    const origin = execImpl('git', ['-C', resolvedPath, 'remote', 'get-url', 'origin'], {}).trim();
+    if (!origin) throw new Error('empty origin');
+  } catch {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' has no git 'origin' remote: run 'git remote add origin <url>' there`,
+    };
+  }
+
+  // bd must be RUNNABLE before its answer can mean anything. Probing the
+  // version separately is what lets the two failures stay distinguishable:
+  // "bd is missing" (an install-machine problem) and "sync.remote is unset"
+  // (a project problem) have completely different fixes.
+  try {
+    execImpl('bd', ['--version'], {});
+  } catch {
+    return {
+      ok: false,
+      resolvedPath,
+      error: "bd could not be run, and is required to validate a project folder: install bd and make sure it is on PATH",
+    };
+  }
+  let syncRemote = '';
+  try {
+    syncRemote = parseBdConfigValue(execImpl('bd', ['config', 'get', 'sync.remote', '--json'], { cwd: resolvedPath }));
+  } catch {
+    syncRemote = '';
+  }
+  if (!syncRemote) {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' has no beads 'sync.remote' setting: run 'bd config set sync.remote <url>' there`,
+    };
+  }
+
   fsImpl.mkdirSync(dataDir, { recursive: true });
   const configPath = supervisorConfigPath(dataDir);
   fsImpl.writeFileSync(configPath, `${JSON.stringify({ projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');

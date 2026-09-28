@@ -17,6 +17,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
 
 // ---------------------------------------------------------------------------
@@ -333,8 +335,48 @@ describe('install -- the mcp-server step still only WARNS', () => {
 // nothing written), omitted (no option -> no write, no behaviour change),
 // and preserved (no option leaves an existing console-set config untouched).
 // ---------------------------------------------------------------------------
-const PROJECT_DIR = '/mock/project-a';
+// path.resolve() so the literal matches what seedSupervisorProjectDir()
+// resolves it to on every host (a bare POSIX literal picks up a drive letter
+// on Windows and would then never match the fs mock's keys).
+const PROJECT_DIR = path.resolve('/mock/project-a');
+const PROJECT_BEADS_DIR = path.join(PROJECT_DIR, '.beads');
 const CONFIG_PATH = supervisorConfigPath(SUPERVISOR_DATA_DIR);
+
+/**
+ * The fs shape of a project folder a sprint could actually run in: the
+ * folder itself plus its initialised `.beads`. Layered onto makeFsMock()'s
+ * `extraExists` map.
+ */
+const USABLE_PROJECT_FS = { [PROJECT_DIR]: true, [PROJECT_BEADS_DIR]: true };
+
+/**
+ * The two child processes seedSupervisorProjectDir() runs to decide whether
+ * a folder carries a usable beads identity: `git remote get-url origin` and
+ * `bd` (a runnability probe, then `bd config get sync.remote --json`).
+ *
+ * Defaults describe a fully usable folder; each knob knocks out exactly one
+ * requirement, so every refusal can be asserted on any host with no real bd
+ * or git and no real project folder anywhere.
+ */
+function mockProjectDirProbes({
+  gitOrigin = 'https://example.invalid/acme/demo.git',
+  bdRunnable = true,
+  syncRemote = 'https://example.invalid/acme/demo.git',
+} = {}): void {
+  vi.mocked(execFileSync).mockImplementation(((file: any, args: any) => {
+    const argv: string[] = Array.isArray(args) ? args : [];
+    if (file === 'git') {
+      if (!gitOrigin) throw new Error("fatal: No such remote 'origin'");
+      return `${gitOrigin}\n` as any;
+    }
+    if (file === 'bd') {
+      if (!bdRunnable) throw new Error('spawn bd ENOENT');
+      if (argv[0] === '--version') return 'bd version 0.0.0-mock\n' as any;
+      if (argv[0] === 'config') return JSON.stringify({ key: 'sync.remote', value: syncRemote }) as any;
+    }
+    return '' as any;
+  }) as any);
+}
 
 /** Every fs.writeFileSync call this run made to the supervisor config path,
  *  in call order -- the content argument only. */
@@ -347,7 +389,8 @@ function configWriteContents(): string[] {
 
 describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
   it('seeded: writes supervisor.config.json under the resolved data dir, accepted by the REAL apra-fleet-se reader', async () => {
-    makeFsMock(true, { [PROJECT_DIR]: true });
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes();
     await expect(
       runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]),
     ).resolves.toBeUndefined();
@@ -368,7 +411,8 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
   });
 
   it('ordering: the config write happens before the supervisor service registration call', async () => {
-    makeFsMock(true, { [PROJECT_DIR]: true });
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes();
     await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
     expect(exitCode).toBeUndefined();
 
@@ -384,10 +428,65 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
 
   it('rejected: a nonexistent path fails the install with a non-zero exit and writes no config', async () => {
     makeFsMock(true, { [PROJECT_DIR]: false });
+    mockProjectDirProbes();
     const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
     expect(out).toContain(PROJECT_DIR);
     expect(configWriteContents()).toHaveLength(0);
     expect(supervisorMgr.register).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------
+  // The folder must be one a sprint could actually RUN in. The engine's
+  // beads identity precondition is fatal, so seeding a folder that fails it
+  // would hand the operator a supervisor that boots and then fails every
+  // launch. Each requirement gets its own case, asserting BOTH the specific
+  // fix in the message and that nothing was written.
+  // ---------------------------------------------------------------------
+
+  it('rejected: a folder with no initialised .beads names bd init and writes no config', async () => {
+    makeFsMock(true, { [PROJECT_DIR]: true, [PROJECT_BEADS_DIR]: false });
+    mockProjectDirProbes();
+    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(out).toContain(PROJECT_DIR);
+    expect(out).toContain("run 'bd init' there");
+    expect(configWriteContents()).toHaveLength(0);
+  });
+
+  it("rejected: a folder with no git 'origin' remote names git remote add and writes no config", async () => {
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes({ gitOrigin: '' });
+    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(out).toContain("run 'git remote add origin <url>' there");
+    expect(configWriteContents()).toHaveLength(0);
+  });
+
+  it("rejected: a folder with no bd 'sync.remote' names bd config set and writes no config", async () => {
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes({ syncRemote: '' });
+    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(out).toContain("run 'bd config set sync.remote <url>' there");
+    expect(configWriteContents()).toHaveLength(0);
+  });
+
+  it('rejected LOUDLY, never skipped, when bd cannot be run at all -- a skipped check is indistinguishable from a passed one', async () => {
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes({ bdRunnable: false });
+    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(out).toContain('bd could not be run');
+    expect(out).toContain('on PATH');
+    expect(configWriteContents()).toHaveLength(0);
+  });
+
+  it('a .beads path is accepted and normalised to its parent project folder, exactly as --beads-dir and the console do', async () => {
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes();
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_BEADS_DIR]),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+    const writes = configWriteContents();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]).projectDir).toBe(PROJECT_DIR);
   });
 
   it('omitted: install with no --project-dir writes no config file', async () => {
@@ -415,7 +514,8 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
   });
 
   it('an install that overwrites an existing installation (--force) still respects the option', async () => {
-    makeFsMock(true, { [PROJECT_DIR]: true });
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes();
     await expect(
       runInstall(['--transport', 'http', '--skill', 'none', '--force', '--project-dir', PROJECT_DIR]),
     ).resolves.toBeUndefined();

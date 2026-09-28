@@ -172,9 +172,14 @@ export function createSupervisor(deps = {}) {
     // Optional beads-identity handle (bin/serve.mjs wires the real one);
     // read by GET /api/health below. Not a seam: it has no start()/stop().
     const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
-    // The "identity unknown" warning (getWarning() is optional on the handle
-    // so an older/test-only { get, refresh } stub still works).
-    const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
+    // The beads-identity warning (getWarning() is optional on the handle so
+    // an older/test-only { get, refresh } stub still works). Deliberately NOT
+    // gated on `!h.get()` any more: an identity that RESOLVED can still be
+    // incomplete (missing prefix / sync.remote / git origin), which is fatal
+    // to every sprint launched against it, and suppressing the warning purely
+    // because a record exists made Health read healthy right up to the first
+    // failed launch. The handle decides whether there is anything to say.
+    const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' ? (h.getWarning() || null) : null);
     // The resolved project folder and WHICH of the three sources won it
     // (flag / config / walk-up -- see resolveProjectDir() in
     // ./beads-identity.mjs). Reported on GET /api/health so the console and
@@ -330,7 +335,10 @@ export function createSupervisor(deps = {}) {
     // repoRemote }, or null when no beadsIdentity dep was wired -- tests,
     // the inert skeleton -- or when the identity is UNKNOWN: no .beads was
     // found, or its probe failed; then `beadsWarning` carries the reason
-    // and the fix). `?refresh=1` re-runs the probes first; a probe failure
+    // and the fix). `beadsWarning` is also present alongside a NON-null
+    // `beads` when the identity resolved but is INCOMPLETE -- a missing
+    // prefix / sync.remote / git origin is fatal to every sprint launched
+    // against it. `?refresh=1` re-runs the probes first; a probe failure
     // keeps the last good identity and is reported as `beadsRefreshError`
     // rather than failing the liveness answer.
     route('GET', '/api/health', async (req, res, ctx) => {

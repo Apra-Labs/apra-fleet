@@ -188,6 +188,136 @@ export async function probeBeadsIdentity(opts = {}) {
 // dashboard header. Generic on purpose: no product paths.
 const FIX_TAIL = 'then GET /api/health?refresh=1.';
 
+// =============================================================================
+// PROJECT-FOLDER USABILITY -- the four fields a folder must resolve before a
+// sprint can run against it, and the operator-facing text for each.
+// =============================================================================
+//
+// The fleet-sprint engine's own precondition compares a member's identity
+// against the orchestrator's on ../../fleet-sprint/beads-identity.mjs's
+// COMPARED_FIELDS and treats an INCOMPLETE identity as FATAL
+// (isCompleteIdentity() there is the same predicate `missingIdentityFields()`
+// below inverts -- the parity is asserted by a test, not restated by hand).
+// A folder that cannot produce all four therefore cannot run a sprint at all,
+// which is why setting one is refused at SET time rather than discovered at
+// launch time by an operator who has already walked away.
+//
+// Each requirement carries BOTH what is missing and the single command that
+// fixes it. Deliberately generic: no product name, no repository layout, no
+// path of ours -- these strings are read by an operator pointing this
+// supervisor at THEIR project.
+
+/** @type {ReadonlyArray<{ field: string, label: string, fix: string }>} */
+export const PROJECT_FOLDER_REQUIREMENTS = Object.freeze([
+    Object.freeze({
+        field: 'beadsDir',
+        label: 'an initialised beads database (.beads)',
+        fix: "run 'bd init' in that folder",
+    }),
+    Object.freeze({
+        field: 'prefix',
+        label: 'a beads issue prefix',
+        fix: "run 'bd init' in that folder so its tracker has a prefix",
+    }),
+    Object.freeze({
+        field: 'syncRemote',
+        label: "the beads 'sync.remote' setting",
+        fix: "run 'bd config set sync.remote <url>' in that folder",
+    }),
+    Object.freeze({
+        field: 'repoRemote',
+        label: "a git 'origin' remote",
+        fix: "run 'git remote add origin <url>' in that folder",
+    }),
+]);
+
+/**
+ * Which of PROJECT_FOLDER_REQUIREMENTS an identity record failed to resolve.
+ * Empty exactly when isCompleteIdentity() would say true (pinned by a test).
+ * @param {object|null} identity
+ * @returns {string[]}
+ */
+export function missingIdentityFields(identity) {
+    return PROJECT_FOLDER_REQUIREMENTS
+        .filter((req) => !(identity && identity[req.field]))
+        .map((req) => req.field);
+}
+
+/** @param {string[]} missing */
+function requirementsFor(missing) {
+    return PROJECT_FOLDER_REQUIREMENTS.filter((req) => missing.includes(req.field));
+}
+
+/**
+ * The SET-time refusal: why this folder cannot be adopted, and how to fix it.
+ * `detail` (optional) is the raw probe failure -- 'bd' not on PATH, no
+ * reachable database -- kept verbatim so the operator sees the real cause
+ * rather than only our summary of it.
+ * @param {string} projectDir
+ * @param {string[]} missing
+ * @param {string|null} [detail]
+ * @returns {string}
+ */
+export function formatUnusableProjectFolderError(projectDir, missing, detail = null) {
+    const reqs = requirementsFor(missing);
+    const what = reqs.map((r) => r.label).join(', ');
+    const verb = reqs.length === 1 ? 'is' : 'are';
+    return `project folder '${projectDir}' cannot be used by sprints: ${what} ${verb} missing`
+        + `${detail ? ` (${detail})` : ''}. To fix: ${reqs.map((r) => r.fix).join('; ')}.`;
+}
+
+/**
+ * The STARTUP warning for a folder that was already adopted (configured, or
+ * walked up to) and whose probe SUCCEEDED but came back incomplete. Never a
+ * startup error -- the console must stay reachable so the setting can be
+ * corrected -- but loud enough on GET /api/health that the operator is not
+ * left to discover it when the first sprint dies on its identity check.
+ * @param {string} repoRoot
+ * @param {string[]} missing
+ * @returns {string}
+ */
+export function formatIncompleteIdentityWarning(repoRoot, missing) {
+    const reqs = requirementsFor(missing);
+    const what = reqs.map((r) => r.label).join(', ');
+    const verb = reqs.length === 1 ? 'is' : 'are';
+    return `the beads identity under ${repoRoot} is incomplete: ${what} ${verb} missing. `
+        + 'Sprints launched against this project folder will fail their beads identity check. '
+        + `To fix: ${reqs.map((r) => r.fix).join('; ')}, then restart the supervisor (or ${FIX_TAIL})`;
+}
+
+/**
+ * Probe `cwd` and report whether it is a project folder a sprint could
+ * actually run against. TOTAL: a probe that throws (no bd on PATH, no
+ * reachable database) is reported as "everything missing" plus the raw
+ * `detail`, never as a rejected promise -- the callers are a request handler
+ * and a startup path, and neither may turn an unusable folder into a crash.
+ *
+ * `execBd`/`execGit` are forwarded to probeBeadsIdentity() so a test can
+ * drive every branch with no real bd or git; `probe` itself is injectable for
+ * the handful of cases that want to skip the parsing layer entirely.
+ * @param {{ cwd?: string, execBd?: Function, execGit?: Function, probe?: Function }} [opts]
+ * @returns {Promise<{ ok: boolean, identity: object|null, missing: string[], detail: string|null, error: string|null }>}
+ */
+export async function checkProjectFolderIdentity(opts = {}) {
+    const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const probe = opts.probe ?? probeBeadsIdentity;
+    let identity = null;
+    let detail = null;
+    try {
+        identity = await probe({ cwd, execBd: opts.execBd, execGit: opts.execGit });
+    } catch (err) {
+        detail = err && err.message ? err.message : String(err);
+    }
+    const missing = missingIdentityFields(identity);
+    return {
+        ok: missing.length === 0,
+        identity,
+        missing,
+        detail,
+        error: missing.length === 0 ? null : formatUnusableProjectFolderError(cwd, missing, detail),
+    };
+}
+
 /**
  * The three sources a project folder can come from, in precedence order.
  * Reported on startup and on GET /api/health as `projectDirSource`.
@@ -359,10 +489,22 @@ export function createBeadsIdentityState(deps = {}) {
     const probe = deps.probe ?? probeBeadsIdentity;
     let current = deps.initial ?? null;
     let warning = current ? null : (deps.warning ?? null);
+    // An identity that RESOLVED can still be unusable: bd answered, but the
+    // record is missing a field the engine's own precondition treats as
+    // fatal. That case used to report no warning at all (the old rule was
+    // "a record means nothing to say"), so Health looked healthy right up
+    // until the first sprint died on its identity check. The warning is
+    // therefore DERIVED from the held record rather than only carried from
+    // startup, which also means refresh() cannot leave a stale one behind.
+    const warningFor = (id) => {
+        if (!id) return warning;
+        const missing = missingIdentityFields(id);
+        return missing.length ? formatIncompleteIdentityWarning(cwd, missing) : null;
+    };
     return {
         cwd,
         get() { return current; },
-        getWarning() { return current ? null : warning; },
+        getWarning() { return warningFor(current); },
         async refresh() {
             let next;
             try {
