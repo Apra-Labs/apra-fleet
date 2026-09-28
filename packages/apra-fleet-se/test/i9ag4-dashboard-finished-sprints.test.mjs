@@ -29,6 +29,8 @@ import {
     renderIndexPageHtml,
     verdictBadge,
     prLink,
+    launchFailedBadge,
+    buildStatePayload,
 } from '../src/supervisor/dashboard.mjs';
 import { createFinishedRunsIndex, summarizeFinishedRun } from '../src/supervisor/history-view.mjs';
 import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
@@ -400,5 +402,93 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.equal(prLink('javascript:alert(1)'), '');
         assert.ok(renderFinishedRunsHtml([]).includes('No finished sprints yet.'));
         assert.ok(renderIndexPageHtml([]).includes('id="finished-sprints"'));
+    });
+});
+
+// apra-fleet-i9ag.16.2 -- a launch-failed row (history-view.mjs's
+// `status: 'launch-failed'`, `hasTerminalState: false`; see apra-fleet-i9ag.16.1)
+// renders a failure badge, its reason and a raw-log link instead of the
+// verdict/PR/History trio a file-backed row gets. Full HTTP-route-level
+// coverage (first paint + /state parity, dedupe against a file-backed row for
+// the same id) is apra-fleet-i9ag.16.3's dedicated test file; these are the
+// direct, pure-function unit assertions for the two functions this task
+// changed.
+describe('apra-fleet-i9ag.16.2: launch-failed rows in the finished-sprints list', () => {
+    const LAUNCH_FAILED_ROW = {
+        sprintId: 'sprint-launch-failed',
+        verdict: null,
+        prUrl: null,
+        endedAt: '2026-09-28T00:00:00.000Z',
+        goal: null,
+        status: 'launch-failed',
+        reason: 'member "alice" not registered',
+        hasTerminalState: false,
+    };
+
+    test('renders the reason, a raw-log link, and the launch-failed badge -- no History link', () => {
+        const html = renderFinishedRunsHtml([LAUNCH_FAILED_ROW]);
+        assert.ok(html.includes('data-finished-sprint-id="sprint-launch-failed"'));
+        assert.ok(!html.includes('data-sprint-id='), 'must never emit the live stack\'s row-key attribute');
+        assert.ok(html.includes(launchFailedBadge()));
+        assert.ok(html.includes('Reason: member &quot;alice&quot; not registered'));
+        assert.ok(hrefs(html).includes('/sprints/sprint-launch-failed/log'), 'must link the raw log');
+        assert.ok(!html.includes('class="history-link"'), 'a row with no terminal state file has nothing for History to render');
+        assert.ok(!html.includes('class="pr-link"'), 'a launch-failed run has no PR');
+    });
+
+    test('the launch-failed badge is a different CSS class than the verdict badge, and never grey/unknown-styled', () => {
+        assert.ok(launchFailedBadge().includes('class="launch-failed-badge"'));
+        assert.ok(!launchFailedBadge().includes('verdict-badge'));
+        assert.ok(launchFailedBadge().includes('var(--danger)'));
+    });
+
+    test('a raw reason with HTML is escaped in the rendered output', () => {
+        const html = renderFinishedRunsHtml([{ ...LAUNCH_FAILED_ROW, reason: '<script>alert(1)</script>' }]);
+        assert.ok(!html.includes('<script>alert(1)</script>'));
+        assert.ok(html.includes('&lt;script&gt;'));
+    });
+
+    test('a row with no reason text omits the reason line entirely', () => {
+        const html = renderFinishedRunsHtml([{ ...LAUNCH_FAILED_ROW, reason: null }]);
+        assert.ok(!html.includes('launch-failed-reason'));
+    });
+
+    test('a file-backed finished row (status "finished") is completely unaffected: verdict badge, PR link, History link', () => {
+        const fileBackedRow = { sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL, endedAt: null, goal: null, status: 'finished', reason: null, hasTerminalState: true };
+        const html = renderFinishedRunsHtml([fileBackedRow]);
+        assert.ok(html.includes(verdictBadge('PASS')));
+        assert.ok(html.includes(prLink(PR_URL)));
+        assert.ok(hrefs(html).includes('/sprints/sprint-pass/history'));
+        assert.ok(!html.includes('launch-failed-badge'));
+        assert.ok(!html.includes('raw-log-link'));
+    });
+
+    test('a row missing the status field entirely (older/un-migrated caller) still renders the file-backed shape, not launch-failed', () => {
+        const html = renderFinishedRunsHtml([{ sprintId: 'sprint-legacy', verdict: 'FAIL', prUrl: null, endedAt: null, goal: null }]);
+        assert.ok(html.includes(verdictBadge('FAIL')));
+        assert.ok(hrefs(html).includes('/sprints/sprint-legacy/history'));
+    });
+
+    test('buildStatePayload() carries status/reason/hasTerminalState through finished[] entries', () => {
+        const payload = buildStatePayload([], [LAUNCH_FAILED_ROW]);
+        assert.deepEqual(payload.finished, [{
+            sprintId: 'sprint-launch-failed',
+            verdict: null,
+            prUrl: null,
+            endedAt: '2026-09-28T00:00:00.000Z',
+            goal: null,
+            status: 'launch-failed',
+            reason: 'member "alice" not registered',
+            hasTerminalState: false,
+        }]);
+    });
+
+    test('feeding buildStatePayload()\'s finished[] entries back through renderFinishedRunsHtml() reproduces the server-rendered card byte-for-byte, for both a launch-failed and a file-backed row', () => {
+        const fileBackedRow = { sprintId: 'sprint-pass', verdict: 'PASS', prUrl: PR_URL, endedAt: '2026-09-19T00:00:00.000Z', goal: 'P1', status: 'finished', reason: null, hasTerminalState: true };
+        const rows = [LAUNCH_FAILED_ROW, fileBackedRow];
+        const serverRendered = renderFinishedRunsHtml(rows, '/ext/se');
+        const payload = buildStatePayload([], rows);
+        const clientReRendered = renderFinishedRunsHtml(payload.finished, '/ext/se');
+        assert.equal(clientReRendered, serverRendered);
     });
 });

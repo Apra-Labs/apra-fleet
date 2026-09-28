@@ -215,6 +215,21 @@ export function prLink(prUrl) {
 }
 
 /**
+ * (apra-fleet-i9ag.16.2) Renders the failure badge for a finished-runs row
+ * whose sprint never produced a terminal state file (history-view.mjs's
+ * `status: 'launch-failed'`). Deliberately a DIFFERENT CSS class
+ * (`launch-failed-badge`, never `verdict-badge`) and a fixed `var(--danger)`
+ * color -- never derived from VERDICT_BADGE_COLORS or the verdict string --
+ * so this can never read as, or be mistaken for, a real terminal verdict.
+ * @returns {string}
+ */
+export function launchFailedBadge() {
+    return '<span class="launch-failed-badge" style="color: var(--danger); font-weight: bold; font-size: 11px; ' +
+        'border: 1px solid var(--danger); border-radius: 3px; padding: 2px 6px; white-space: nowrap;">' +
+        'LAUNCH FAILED</span>';
+}
+
+/**
  * (apra-fleet-i9ag.4) Renders the finished-sprints (History) list: one card
  * per finished run, newest first as supplied (history-view.mjs's
  * createFinishedRunsIndex() already orders them), each with its verdict
@@ -230,7 +245,16 @@ export function prLink(prUrl) {
  * The PR link is an EXTERNAL https URL and is deliberately NOT prefixed (see
  * prLink(); mountHref() would leave it alone anyway, since it only rewrites
  * root-absolute paths).
- * @param {Array<{ sprintId: string, verdict?: string|null, prUrl?: string|null, endedAt?: string|null, goal?: string|null }>} [runs]
+ *
+ * (apra-fleet-i9ag.16.2) A row whose sprint died in its launch window
+ * (history-view.mjs's `status: 'launch-failed'`, `hasTerminalState: false`)
+ * never produced a terminal state file, so GET /sprints/:id/history has
+ * nothing to render for it and would 404 -- that row gets launchFailedBadge()
+ * instead of verdictBadge(), its `reason` text, and a raw-log link
+ * (/sprints/:id/log, the child's own stdout/stderr -- it exists because the
+ * child at least started before it died) in place of the PR/History links.
+ * Every other (file-backed) row renders exactly as it did before this change.
+ * @param {Array<{ sprintId: string, verdict?: string|null, prUrl?: string|null, endedAt?: string|null, goal?: string|null, status?: string|null, reason?: string|null, hasTerminalState?: boolean }>} [runs]
  * @param {string} [mountPrefix] - mount-prefix.mjs's resolved prefix (e.g. '/ext/se'), or '' to serve direct
  * @returns {string}
  */
@@ -242,14 +266,23 @@ export function renderFinishedRunsHtml(runs, mountPrefix) {
     }
     return list.map(function (run) {
         var id = escapeHtml(run.sprintId);
+        var isLaunchFailed = run.status === 'launch-failed';
+        var badgeHtml = isLaunchFailed ? launchFailedBadge() : verdictBadge(run.verdict);
+        var linksHtml = isLaunchFailed
+            ? '<a class="raw-log-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/log') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Raw log</a>'
+            : prLink(run.prUrl) +
+                '<a class="history-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/history') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">History</a>';
+        var reasonHtml = (isLaunchFailed && run.reason)
+            ? '<div class="launch-failed-reason" style="margin-top: 4px; font-size: 12px; color: #a1a1aa;">Reason: ' + escapeHtml(run.reason) + '</div>'
+            : '';
         return '<section class="finished-sprint" data-finished-sprint-id="' + id + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
             'border-radius: 6px; padding: 8px 14px; margin-bottom: 8px;">' +
             '<div style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">' +
             '<strong style="font-size: 13px;">' + id + '</strong>' +
-            verdictBadge(run.verdict) +
-            prLink(run.prUrl) +
-            '<a class="history-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/history') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">History</a>' +
+            badgeHtml +
+            linksHtml +
             '</div>' +
+            reasonHtml +
             '<div style="margin-top: 4px; font-size: 12px; color: #a1a1aa;">' +
             'Finished: ' + (run.endedAt ? escapeHtml(run.endedAt) : 'unknown') +
             (run.goal ? ' | Goal: ' + escapeHtml(run.goal) : '') +
@@ -1220,12 +1253,21 @@ export function buildStatePayload(views, finishedRuns) {
         })),
     };
     if (Array.isArray(finishedRuns)) {
+        // (apra-fleet-i9ag.16.2) status/reason/hasTerminalState travel through
+        // verbatim so the client's live-refresh re-render (which embeds
+        // renderFinishedRunsHtml() via .toString(), see sprintStackLiveScript())
+        // can render a launch-failed row identically to the server's first
+        // paint, instead of silently dropping the failure once the first
+        // /state poll lands.
         payload.finished = finishedRuns.map((r) => ({
             sprintId: r.sprintId,
             verdict: r.verdict ?? null,
             prUrl: r.prUrl ?? null,
             endedAt: r.endedAt ?? null,
             goal: r.goal ?? null,
+            status: r.status ?? null,
+            reason: r.reason ?? null,
+            hasTerminalState: r.hasTerminalState ?? null,
         }));
     }
     return payload;
