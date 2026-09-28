@@ -50,6 +50,19 @@ What shipped and is verified working:
   actually runnable afterward (a global bin directory not on `PATH`) --
   replacing a previous silent "install skipped" warning that let the
   installer report success with `bd` unusable.
+- **The fleet-se prerequisite gate runs before anything is stopped or
+  written.** It used to fire mid-install, after the `fleet.key` mint, the
+  binary copy, hooks, scripts, settings and skills had already landed, so a
+  machine missing Node.js was left half-installed by the same command that
+  told it to install Node.js. The gate is now the first thing the installer
+  does after parsing `--workflows`; a failed gate leaves the machine exactly
+  as it was found and is safe to re-run.
+- **Both prerequisite probes spawn through a shell and are bounded at 15s.**
+  `node` is routinely a `.cmd` shim on Windows (nvm-windows), which Node
+  cannot spawn without a shell -- the probe used to report a working
+  toolchain as NOT INSTALLED there. Neither probe had a timeout, so a wedged
+  interpreter could hang `apra-fleet install` indefinitely; a timed-out probe
+  is now reported NOT INSTALLED like any other failure.
 - **The `bd` version pin has one canonical TypeScript owner**
   (`src/cli/beads-pin.ts`); the one unavoidable duplicate, a dependency-free
   plain-Node installer that cannot import TypeScript, is held equal to it by
@@ -63,16 +76,9 @@ open for a future sprint):
   credential once at process start and never re-reads it. Not reachable
   under the fresh-install ordering this sprint guarantees, but a latent trap
   for any other startup ordering (see docs/console-architecture.md).
-- The fleet-se prerequisite gate can exit mid-install after some files
-  (binary, hooks, scripts, settings, skills) have already been written,
-  rather than leaving the machine untouched or completing a working
-  core-only install; `--workflows none` avoids the gap entirely.
 - The fleet-se prerequisite probe re-spawns `node`/`npm` synchronously on
   every `fleet_status` JSON call instead of caching the result, which is a
   real (if currently modest) event-loop stall risk on a shared server.
-- A stale code comment in the `apra-pm` installer still describes the
-  abandoned release-binary approach for `bd` and points at a module that no
-  longer exists.
 - Pre-existing carried-forward items from an earlier sprint remain open: the
   macOS `stop`-then-`start` supervisor restart gap, `stop` missing the
   non-default-instance guard that `start` already has, and pack-size

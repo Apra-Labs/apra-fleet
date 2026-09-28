@@ -1132,13 +1132,13 @@ version constant that needs a duplicate outside the TypeScript build should
 follow this pattern: one canonical owner plus an equality test pinning every
 duplicate, rather than a bare literal copied by hand into each consumer.
 
-**Known gap:** the prerequisite gate runs after several install steps
-(binary copy, hooks, scripts, settings, skills) have already completed but
-before the workflow runtime, Dolt, KB setup, and service registration. On a
-machine with no Node.js and the default `--workflows all`, a failed gate
-therefore exits non-zero having already written some files, rather than
-either leaving the machine untouched or completing a working core-only
-install. Passing `--workflows none` explicitly avoids this gap entirely.
+**Ordering:** the prerequisite gate runs first -- before the installer stops
+any running server, before it mints `fleet.key`, and before it writes a
+single file. On a machine with no Node.js and the default `--workflows all`,
+a failed gate exits non-zero leaving the machine exactly as it was found; it
+is safe to install Node.js and re-run. (This was previously a known gap: the
+gate used to run mid-install, after the binary copy, hooks, scripts, settings
+and skills had already been written.)
 
 ## Quick install
 

@@ -506,12 +506,14 @@ function main() {
   // 'pm installed.' -- a false success. It now exits non-zero, naming the
   // failure and the manual command, so the operator cannot miss it.
   //
-  // Still npm-based, unlike the apra-fleet installer (which downloads the bd
-  // release binary via src/cli/beads-install.ts and therefore needs no
-  // node/npm on the target). Porting that path here would mean either a second
-  // copy of the download+checksum-verify logic or a dependency from this
-  // deliberately standalone script onto the apra-fleet build output; both are
-  // real design decisions rather than this fix. See the bead for that follow-up.
+  // npm-based, and that is the settled design -- not a shortcut awaiting a
+  // release-binary port. bd is installed from npm (@beads/bd, pinned above)
+  // everywhere; there is no standalone bd release-binary download path, and
+  // the module that a previous version of this comment pointed at
+  // (src/cli/beads-install.ts) does not exist. fleet-se as a whole -- the
+  // fleet-sprint engine, the supervisor, and bd -- REQUIRES Node.js 22.16+
+  // and npm on the target by design, so requiring npm here adds no
+  // prerequisite that fleet-se did not already have.
   console.log('');
   const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
   if (bdCheck.error || bdCheck.status !== 0) {
@@ -524,8 +526,8 @@ function main() {
       console.error(`  [!] beads (bd) could not be installed: ${reason}`);
       console.error(`      Tried: npm install -g ${pinnedPkg}`);
       console.error('      beads is REQUIRED -- the pm orchestrator tracks all of its work in it, so');
-      console.error('      this install is incomplete. Resolve the reason above (or install bd by hand,');
-      console.error('      e.g. from its GitHub release) and re-run this installer.');
+      console.error('      this install is incomplete. bd requires Node.js 22.16+ and npm; resolve the');
+      console.error(`      reason above (or run 'npm install -g ${pinnedPkg}' by hand) and re-run this installer.`);
       process.exit(1);
     }
     const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
