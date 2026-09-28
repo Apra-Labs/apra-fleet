@@ -17,9 +17,11 @@ import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, 
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
+import { FLEET_DIR } from '../paths.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
 import { kbStats } from './kb-stats.js';
 import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
+import { detectFleetSePrereqs, summarizeFleetSePrereqs } from '../cli/fleet-se-prereqs.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -454,13 +456,40 @@ export function versionMismatchCompactLine(mismatch: VersionMismatch): string {
 
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 
+// apra-fleet-i9ag.12.9: fleet-se's prerequisite (Node.js 22.16+ and npm) is
+// otherwise only ever checked once, at install time (src/cli/install.ts) --
+// an operator whose Node.js is later downgraded or removed after a
+// successful install gets no signal at all. The console Health page
+// (packages/apra-fleet-shell-ui's Health.tsx) reads this JSON payload via
+// GET /api/fleet/status, so this is the one place that surfaces it there;
+// `apra-fleet status` (src/cli/status.ts) probes independently since it
+// already runs as a local CLI process on the same host. Degraded-safe, same
+// belt-and-suspenders shape as codeIntelligence/kbHealth/versionMismatch
+// below -- detectFleetSePrereqs() never throws on its own, but this call is
+// wrapped anyway so fleet_status can never fail because of it.
+function safeFleetSePrereqsSummary(): string | null {
+  try {
+    return summarizeFleetSePrereqs(detectFleetSePrereqs());
+  } catch {
+    return null;
+  }
+}
+
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const format = input?.format ?? 'compact';
   const agents = getAllAgents();
 
   if (agents.length === 0) {
     if (format === 'json') {
-      return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [] });
+      const payload: Record<string, unknown> = {
+        version: serverVersion,
+        summary: { total: 0, online: 0, offline: 0 },
+        members: [],
+        dataDir: FLEET_DIR,
+      };
+      const fleetSePrereqs = safeFleetSePrereqsSummary();
+      if (fleetSePrereqs) payload.fleetSePrereqs = fleetSePrereqs;
+      return JSON.stringify(payload);
     }
     return 'No members registered. Use register_member to add one.';
   }
@@ -556,10 +585,13 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       summary: { total: rows.length, online, offline: rows.length - online },
       members: rows,
       codeIntelligence,
+      dataDir: FLEET_DIR,
     };
     if (kbHealth) payload.kbHealth = kbHealth;
     if (versionMismatch) payload.versionMismatch = versionMismatch;
     if (logFile) payload.logFile = logFile;
+    const fleetSePrereqs = safeFleetSePrereqsSummary();
+    if (fleetSePrereqs) payload.fleetSePrereqs = fleetSePrereqs;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
       if (m) payload.updateAvailable = { latest: m[1], installed: m[2] };

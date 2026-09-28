@@ -111,6 +111,13 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+The standalone installer binary needs no Node.js at all for the core console
+and MCP server. Sprint automation (`fleet-sprint`, the always-on supervisor,
+and `bd`) is the one part that needs Node.js 22.16+ and npm; `install` checks
+for them up front and fails loudly with the fix if they're missing, or you
+can pass `--workflows none` for a Node-free, core-only install. See
+[docs/install.md](docs/install.md#prerequisites).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
@@ -357,11 +364,13 @@ Secrets are encrypted in the fleet credential store. They never appear in
 workflow code, config files, or environment variables.
 
 On a headless server (no terminal attached), or by passing `return_url:
-true` explicitly, `credential_store_set` returns a one-time browser URL
-(`{url, expiresAt}`) instead of blocking on terminal input -- open the URL
-to submit the secret; it is stored automatically, with no follow-up call
-needed. See [docs/secret-variables.md](docs/secret-variables.md) for the
-full behavior.
+true` explicitly, `credential_store_set` returns a one-time, console-hosted
+browser URL (`{url, expiresAt, absoluteUrl}`) instead of blocking on
+terminal input -- open the URL to submit the secret; it is stored
+automatically, with no follow-up call needed. The URL works from wherever a
+browser can reach the console (LAN, an SSH tunnel, a remote install), not
+only from the server's own machine. See
+[docs/secret-variables.md](docs/secret-variables.md) for the full behavior.
 
 ### Sending email from a workflow
 
@@ -442,6 +451,11 @@ Members, Secrets and Health pages with drawer actions and an add-member
 wizard, built on a shared `@apralabs/apra-fleet-ui-kit` primitives package,
 and is guarded end to end: every `/api/*` request and every mutating
 `/ext/*` request requires the fleet key (bearer) or the console cookie,
+adding a credential from the Secrets page opens a one-time, single-use entry
+page hosted on the console itself (not a separate loopback listener), so
+submitting a secret value works from any browser that can reach the console
+-- see [docs/console-architecture.md](docs/console-architecture.md)'s
+"Console-hosted secret entry" section,
 third-party workflow packages can be registered and reached through a
 `/ext/<package id>/*` reverse proxy (SSE included) using a per-package
 derived upstream credential rather than the raw fleet key, and
@@ -470,6 +484,12 @@ after another operator's concurrent change lands mid-edit -- see
 dirty-diff design and the invariant this defect violates. See also
 [docs/npm-packaging.md](docs/npm-packaging.md) (console shell packaging) and
 [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+The Health page's data directory now comes from an explicit `dataDir` field
+the server always includes in the `fleet_status` JSON payload, and
+`apra-fleet status`/the OS service managers report a genuinely three-state
+`enabled` (armed / disabled / unknown) rather than collapsing "the platform
+can't tell" into a false "disabled" claim -- see
+[docs/transport-and-service-mode.md](docs/transport-and-service-mode.md#reported-service-state-installed--enabled--running).
 
 ## Documentation
 

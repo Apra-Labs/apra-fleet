@@ -19,12 +19,29 @@ export interface FleetStatusPayload {
   version: string;
   summary: FleetStatusSummary;
   updateAvailable?: UpdateAvailable;
+  /** Resolved absolute fleet data directory, always present on the server
+   *  payload (see src/tools/check-status.ts) -- the authoritative source for
+   *  the Health page's "Data dir" row. Optional here only so this type still
+   *  accepts a payload from an older server that predates the field. */
+  dataDir?: string;
   /** Active server log file path, e.g. "<dataDir>/logs/fleet-1234.log".
-   *  There is no dedicated "data dir" field on this payload -- deriveDataDir
-   *  below strips the trailing "logs/fleet-<pid>.log" segments off this to
-   *  recover it, since src/tools/ is off-limits to this lane and no other
-   *  console route exposes it directly. */
+   *  deriveDataDir below strips the trailing "logs/fleet-<pid>.log" segments
+   *  off this to recover the data dir; kept only as a legacy fallback for a
+   *  console talking to an older server whose payload has no dataDir. */
   logFile?: string;
+  /** apra-fleet-i9ag.12.9: pre-rendered by the server from
+   *  src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- e.g.
+   *  "ready (node 22.16.0, npm 10.5.0)" or "NOT INSTALLED (node: NOT
+   *  INSTALLED) -- <fix line>". Rendered here VERBATIM: the browser bundle
+   *  cannot import that module itself (it shells out via node:child_process,
+   *  which has no browser build), so the server is the single place that
+   *  computes this text -- this lane must never restate the minimum version
+   *  or the fix line as its own literal. When this field is absent (older
+   *  server, or the server-side probe threw), Health.tsx renders an explicit
+   *  "unknown" fleet-se row rather than omitting the row (apra-fleet-
+   *  i9ag.13.9) -- omitting it silently collapsed "prerequisites fine" and
+   *  "not reported" into one indistinguishable state. */
+  fleetSePrereqs?: string;
 }
 
 /** Recovers the fleet data directory from the active log file path

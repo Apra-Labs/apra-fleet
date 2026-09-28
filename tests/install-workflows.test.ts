@@ -153,14 +153,19 @@ describe('runInstall --workflows none: byte-identical existing-step behavior', (
     _setManifestOverride(null);
   });
 
-  it('emits no workflow-runtime step line and no workflow-dir writes when --workflows none', async () => {
+  it('emits no workflow-runtime step line, no Beads step line and no workflow-dir writes when --workflows none', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await runInstall(['--skill', 'none', '--workflows', 'none']);
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).not.toContain('Installing workflow runtime');
-    // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev
-    // mode) +1 dolt (apra-fleet-ire.3, unconditional) +1 KB/code-intelligence setup = 8.
-    expect(logs).toContain('[8/8]');
+    // apra-fleet-i9ag.13.7.2: bd is part of fleet-se under the owner re-scope on
+    // apra-fleet-i9ag.13, so the Beads step is now skipped (not just non-fatal)
+    // when --workflows none -- it no longer occupies a step slot.
+    expect(logs).not.toContain('Installing Beads task tracker');
+    // Base numbering (no skills, no service in dev mode, no workflow-runtime step,
+    // no Beads step) = 5 fixed steps +1 dolt (apra-fleet-ire.3, unconditional)
+    // +1 KB/code-intelligence setup = 7.
+    expect(logs).toContain('[7/7]');
 
     const writeCalls = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writeCalls.some(p => p.startsWith(NODE_MODULES_DIR))).toBe(false);

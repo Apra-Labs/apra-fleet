@@ -102,23 +102,148 @@ describe('WindowsServiceManager', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // query() -- state matrix.
+  //
+  // REGRESSION CONTEXT: on a fresh Windows install both scheduled tasks were
+  // running and answering /health, yet `apra-fleet status` printed "installed
+  // (disabled)" for both, because query() never populated `enabled` at all.
+  // It also decided `running` by comparing the schtasks CSV Status column to
+  // the English literal 'Running', which is wrong on a localized Windows.
+  // The primary source is now an -EncodedCommand Get-ScheduledTask probe that
+  // emits the NUMERIC state enum (1=Disabled, 2=Queued, 3=Ready, 4=Running).
+  // Expected values below are written out literally, never computed from
+  // production code.
+  // -------------------------------------------------------------------------
   describe('query', () => {
-    it('returns installed=true, running=false for Ready status', async () => {
-      vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Ready"\r\n' as any);
-      const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: false });
+    /**
+     * Route the single mocked execFileSync by command. `probe`/`csv` may be a
+     * string (stdout) or an Error to throw; omitted means "this command is
+     * unavailable / fails".
+     */
+    function mockHost(opts: { probe?: string | Error; csv?: string | Error }): void {
+      vi.mocked(execFileSync).mockImplementation(((cmd: string) => {
+        if (cmd === 'powershell') {
+          if (opts.probe === undefined) throw new Error('powershell: not found');
+          if (opts.probe instanceof Error) throw opts.probe;
+          return opts.probe as any;
+        }
+        if (cmd === 'schtasks') {
+          if (opts.csv === undefined) throw new Error('ERROR: The system cannot find the task');
+          if (opts.csv instanceof Error) throw opts.csv;
+          return opts.csv as any;
+        }
+        return '' as any;
+      }) as any);
+    }
+
+    function decodedProbeScripts(): string[] {
+      return vi.mocked(execFileSync).mock.calls
+        .filter(([cmd]) => cmd === 'powershell')
+        .map(([, args]) => Buffer.from(String((args as string[])[3]), 'base64').toString('utf16le'));
+    }
+
+    it('a RUNNING task is installed, running and enabled', async () => {
+      mockHost({ probe: '4\r\n' });
+      expect(await new WindowsServiceManager().query())
+        .toEqual({ installed: true, running: true, enabled: true });
     });
 
-    it('returns installed=true, running=true for Running status', async () => {
-      vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Running"\r\n' as any);
-      const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: true });
+    it('a DISABLED task reports enabled:false', async () => {
+      mockHost({ probe: '1\r\n' });
+      expect(await new WindowsServiceManager().query())
+        .toEqual({ installed: true, running: false, enabled: false });
     });
 
-    it('returns installed=false when task is not found', async () => {
-      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('task not found'); });
-      const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: false, running: false });
+    it('a registered-but-idle READY task is enabled and not running', async () => {
+      mockHost({ probe: '3\r\n' });
+      expect(await new WindowsServiceManager().query())
+        .toEqual({ installed: true, running: false, enabled: true });
+    });
+
+    it('a QUEUED task is enabled and not running', async () => {
+      mockHost({ probe: '2\r\n' });
+      expect(await new WindowsServiceManager().query())
+        .toEqual({ installed: true, running: false, enabled: true });
+    });
+
+    it('a task that does not exist is not installed', async () => {
+      mockHost({ probe: 'NOTFOUND\r\n' });
+      expect(await new WindowsServiceManager().query())
+        .toEqual({ installed: false, running: false });
+    });
+
+    it('probes with -EncodedCommand only, interpolating just this task name', async () => {
+      mockHost({ probe: '4\r\n' });
+      await new WindowsServiceManager().query();
+      const psCalls = vi.mocked(execFileSync).mock.calls.filter(([cmd]) => cmd === 'powershell');
+      expect(psCalls).toHaveLength(1);
+      const args = psCalls[0][1] as string[];
+      // No raw one-liner and no shell expansion (CLAUDE.md Windows rule).
+      expect(args).toHaveLength(4);
+      expect(args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+      const script = decodedProbeScripts()[0];
+      expect(script).toContain('Get-ScheduledTask');
+      expect(script).toContain("-TaskName 'ApraFleet'");
+      // Numeric state enum, so the mapping is locale-independent.
+      expect(script).toContain('[int]$t.State');
+      expect(script).not.toContain('$env:');
+      expect(script).not.toContain('~');
+    });
+
+    it('per-service scoping: the supervisor manager probes only its own task', async () => {
+      mockHost({ probe: '4\r\n' });
+      await new WindowsServiceManager('fleet-supervisor').query();
+      const script = decodedProbeScripts()[0];
+      expect(script).toContain("-TaskName 'ApraFleetSupervisor'");
+      expect(script).not.toContain("-TaskName 'ApraFleet'");
+      for (const [cmd, args] of vi.mocked(execFileSync).mock.calls) {
+        if (cmd === 'schtasks') expect(args as string[]).toContain('ApraFleetSupervisor');
+      }
+    });
+
+    describe('schtasks CSV fallback (PowerShell probe unusable)', () => {
+      it('is used when the probe throws, and maps Running honestly', async () => {
+        mockHost({ probe: new Error('powershell is not recognized'), csv: '"ApraFleet","N/A","Running"\r\n' });
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: true, running: true, enabled: true });
+        expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === 'schtasks')).toBe(true);
+      });
+
+      it('maps an explicit Disabled status to enabled:false', async () => {
+        mockHost({ probe: new Error('no powershell'), csv: '"ApraFleet","N/A","Disabled"\r\n' });
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: true, running: false, enabled: false });
+      });
+
+      it('leaves enabled UNDEFINED for a status string it does not recognize', async () => {
+        // Localized Windows: the Status column is not English, so the only
+        // honest answer is "registered, not observably running, enable state
+        // unknown" -- never a guessed enabled:false.
+        mockHost({ probe: new Error('no powershell'), csv: '"ApraFleet","N/A","Wird ausgefuehrt"\r\n' });
+        const status = await new WindowsServiceManager().query();
+        expect(status).toEqual({ installed: true, running: false });
+        expect('enabled' in status).toBe(false);
+      });
+
+      it('leaves enabled UNDEFINED for English Ready as well', async () => {
+        mockHost({ probe: new Error('no powershell'), csv: '"ApraFleet","N/A","Ready"\r\n' });
+        const status = await new WindowsServiceManager().query();
+        expect(status).toEqual({ installed: true, running: false });
+        expect('enabled' in status).toBe(false);
+      });
+
+      it('falls back when the probe returns output it cannot interpret', async () => {
+        mockHost({ probe: 'Get-ScheduledTask : Access denied\r\n', csv: '"ApraFleet","N/A","Running"\r\n' });
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: true, running: true, enabled: true });
+      });
+
+      it('returns not installed when neither probe nor schtasks can answer', async () => {
+        mockHost({});
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: false, running: false });
+      });
     });
   });
 

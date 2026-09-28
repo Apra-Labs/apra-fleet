@@ -441,22 +441,38 @@ describe('install step 8 — Beads task tracker', () => {
     logSpy.mockRestore();
   });
 
-  it('warns non-fatally when npm install fails', async () => {
+  it('fails fatally when npm install fails (apra-fleet-i9ag.13.7.2 -- bd is part of fleet-se, a silent skip is the fixed defect)', async () => {
     // bd --version throws, then npm install also throws
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error('npm: not found'); });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.mocked(console.error);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): never => {
+      throw new Error('exit');
+    }) as any);
 
-    // Should not throw
-    await expect(runInstall([])).resolves.toBeUndefined();
+    await expect(runInstall([])).rejects.toThrow('exit');
 
-    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).toContain('Beads install skipped');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain('npm: not found');
 
     logSpy.mockRestore();
-    warnSpy.mockRestore();
+    exitSpy.mockRestore();
+    // execFileSync is an automock (vi.mock('node:child_process')), not a
+    // vi.spyOn -- clearAllMocks() (run in every describe's beforeEach in this
+    // file) clears call history but NOT a custom .mockImplementation() set
+    // here, so a throwing implementation would otherwise leak into every
+    // later test in this file that calls runInstall(). Reset it back to the
+    // default automock behavior (returns undefined, never throws).
+    vi.mocked(execFileSync).mockReset();
   });
+
+  // NOTE (apra-fleet-i9ag.13.7.3): a further test here asserting the retired
+  // "Beads install skipped" wording is never printed was removed as redundant --
+  // the fatal-exit test above already proves the non-fatal path is gone, and
+  // tests/install-fleet-se-prereqs.test.ts greps the whole real src/ tree for
+  // that string, which catches a reintroduction anywhere, not just on this path.
 });
 
 // T3.4 (F9b, D8): installer copies the repo's committed

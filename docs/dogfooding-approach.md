@@ -228,6 +228,20 @@ Finished Sprints section with zero root-absolute hrefs, and `/state` carried
 the new `finished` field. The gap: no real finished run was displayed,
 because the supervisor loads sprint history only at start.
 
+**Identity means ancestry, not just a matching commit hash string.** Two
+sibling branches created from the same fork point, worked by different
+sessions against the same bug, can each carry a commit whose message and
+even file paths look like the fix -- but if the branch that actually merges
+is not a descendant of the branch that was verified, the verified content
+never lands. A branch's version/commit identity check has to include
+`git merge-base --is-ancestor <verified-HEAD> <branch-under-test-HEAD>` (or
+equivalent), not just eyeballing that both have a plausibly-named commit. A
+sprint on this codebase closed a bug on evidence gathered against a sibling
+branch that never merged into the one actually being shipped; the deployed
+build looked identical at a glance (same bead id in play, same bug title)
+but was missing the fix files entirely. Re-verifying against the sandbox's
+actual deployed HEAD, and confirming ancestry explicitly, is what caught it.
+
 ## 6. Environment hosts (examples)
 
 The approach needs five things from a host: a clean checkout at a pinned

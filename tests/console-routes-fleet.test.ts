@@ -340,13 +340,25 @@ export const ROUTE_CASES: RouteCase[] = [
     path: '/api/fleet/credential-store-set',
     tool: m(credentialStoreSet),
     validBody: { name: 'my_token', prompt: 'Paste the token' },
+    // apra-fleet-i9ag.11.11: the tool's structuredContent.url is console-
+    // relative post apra-fleet-i9ag.11.2 (no scheme/host/port) -- a loopback
+    // absolute URL here would no longer reflect what the tool actually
+    // returns.
     okResult: {
       text: 'ignored by the route',
-      structuredContent: { url: 'http://127.0.0.1:9999/secret/abc', expiresAt: '2026-01-01T00:00:00.000Z' },
+      structuredContent: {
+        url: '/ui/#/secret-entry/abc123',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+        absoluteUrl: 'http://127.0.0.1:7523/ui/#/secret-entry/abc123',
+      },
     },
     expectOk: (p) => {
-      expect(p.url).toBe('http://127.0.0.1:9999/secret/abc');
+      expect(p.url).toBe('/ui/#/secret-entry/abc123');
       expect(p.expiresAt).toBe('2026-01-01T00:00:00.000Z');
+      // absoluteUrl is a tool-side convenience for the tool caller's own
+      // text -- the console route never echoes it back to the browser.
+      expect(p.absoluteUrl).toBeUndefined();
+      expect(Object.keys(p).sort()).toEqual(['expiresAt', 'url']);
     },
     badBody: { prompt: 'Paste the token' },
     badField: 'name',
@@ -523,10 +535,14 @@ describe.each(ROUTE_CASES)('POST $path ($method)', (route) => {
 });
 
 describe('console fleet routes: credential_store_set is never interactive', () => {
-  it('pins return_url true and answers {url, expiresAt}', async () => {
+  it('pins return_url true and answers {url, expiresAt} with the RELATIVE url, no other fields', async () => {
     vi.mocked(credentialStoreSet).mockResolvedValue({
       text: 'ignored',
-      structuredContent: { url: 'http://127.0.0.1:9999/secret/xyz', expiresAt: '2026-02-02T00:00:00.000Z' },
+      structuredContent: {
+        url: '/ui/#/secret-entry/deadbeef',
+        expiresAt: '2026-02-02T00:00:00.000Z',
+        absoluteUrl: 'http://127.0.0.1:7523/ui/#/secret-entry/deadbeef',
+      },
     });
     const out = await post('/api/fleet/credential-store-set', {
       name: 'my_token',
@@ -536,8 +552,10 @@ describe('console fleet routes: credential_store_set is never interactive', () =
     expect(out.status).toBe(200);
     // return_url is pinned by the route, so the caller's false is overridden.
     expect(vi.mocked(credentialStoreSet).mock.calls[0][0].return_url).toBe(true);
+    // Exactly {url, expiresAt} -- absoluteUrl (and anything else the tool's
+    // structuredContent might carry) never leaks through this route.
     expect(JSON.parse(out.body)).toEqual({
-      url: 'http://127.0.0.1:9999/secret/xyz',
+      url: '/ui/#/secret-entry/deadbeef',
       expiresAt: '2026-02-02T00:00:00.000Z',
     });
   });

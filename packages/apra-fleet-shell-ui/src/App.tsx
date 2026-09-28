@@ -3,6 +3,7 @@ import { Members } from "./pages/Members";
 import { Secrets } from "./pages/Secrets";
 import { Health } from "./pages/Health";
 import { Ext } from "./pages/Ext";
+import { SecretEntry } from "./pages/SecretEntry";
 import { Nav, resolveScreen, screenKey, type Screen } from "./nav/Nav";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { fetchWorkflowPackages, type WorkflowPackageView } from "./api/workflow-packages";
@@ -14,10 +15,11 @@ export const PACKAGE_POLL_MS = 30_000;
 
 /**
  * Root of the shell SPA. Hash-based navigation across the three static
- * screens (S1 Members -- the default, S2 Secrets, S3 Health) plus one iframe
- * screen per registered workflow package at #/ext/<id><path> -- no router
- * dependency (apra-fleet-9h9j.3.2). The active screen resolves from
- * window.location.hash on first render, so a full page load at a deep
+ * screens (S1 Members -- the default, S2 Secrets, S3 Health), one iframe
+ * screen per registered workflow package at #/ext/<id><path>
+ * (apra-fleet-9h9j.3.2), and the one-time #/secret-entry/<token> deep link
+ * (apra-fleet-i9ag.11.6) -- no router dependency. The active screen resolves
+ * from window.location.hash on first render, so a full page load at a deep
  * link (e.g. /ui/#/health) lands directly on that screen rather than
  * falling back to Members.
  */
@@ -73,6 +75,7 @@ export function App() {
         {screen.kind === "ext" ? (
           <Ext packageId={screen.packageId} path={screen.path} view={activeView} onContext={onContext} />
         ) : null}
+        {screen.kind === "secret-entry" ? <SecretEntry token={screen.token} /> : null}
       </ErrorBoundary>
     </div>
   );

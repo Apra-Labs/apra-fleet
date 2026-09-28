@@ -314,6 +314,24 @@ Calls `fleet_status` -- status of all fleet members.
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 
+In `"json"` format the payload always carries `dataDir` -- the resolved
+absolute fleet data directory (honors `APRA_FLEET_DATA_DIR`). It is
+unconditional: present on both the zero-members-registered payload (a fresh
+install) and the normal payload, never derived or omitted. `logFile` remains
+a separate optional field kept only for back-compat with older consoles that
+used to derive the data dir by stripping `logs/fleet-<pid>.log` off it;
+prefer `dataDir` directly. `"compact"` format output is unchanged.
+
+The `"json"` payload also carries an optional `fleetSePrereqs` string -- the
+server's pre-rendered fleet-se (Node.js/npm) prerequisite summary, e.g.
+`ready (node 22.16.0, npm 10.5.0)` or
+`NOT INSTALLED (node: NOT INSTALLED) -- <fix line>`. Render it verbatim: the
+server owns that text (`src/cli/fleet-se-prereqs.ts`), so callers must never
+restate the minimum version or the fix line as their own literal. The key is
+omitted entirely (not `null`) when the server-side probe threw, and by an
+older server that predates the field -- treat absence as "not reported",
+never as "prerequisites met".
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,
@@ -662,16 +680,25 @@ extract it with `parseToolJson()`). `credentialStoreDelete({ name })` removes
 one. `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
 
-**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3):
-when the server has no TTY attached, or `return_url: true` is passed
-explicitly, the call returns immediately (never blocking on the secret being
-entered) with `result.structuredContent` set to a `CredentialStoreSetResult`
--- `{ url, expiresAt }` -- instead of the usual plain-text confirmation.
-`url` is a one-time, loopback-only link; opening it and submitting the form
-encrypts and stores the secret server-side at that moment, with no further
-tool call needed. `expiresAt` is an ISO-8601 timestamp after which the URL
-stops accepting submissions. Read `structuredContent`, never scrape it out of
-the display text.
+**`credentialStoreSet`'s out-of-band URL result** (apra-fleet-972p.2.1, F3;
+console-relative since apra-fleet-i9ag.11): when the server has no TTY
+attached, or `return_url: true` is passed explicitly, the call returns
+immediately (never blocking on the secret being entered) with
+`result.structuredContent` set to a `CredentialStoreSetResult` -- `{ url,
+expiresAt, absoluteUrl }` -- instead of the usual plain-text confirmation.
+`url` is a one-time, single-use, CONSOLE-RELATIVE path (e.g.
+`/ui/#/secret-entry/<token>`) -- resolve it against whatever origin this
+caller reaches the console on (a LAN address, an SSH tunnel, a reverse
+proxy), which is what makes it work from a browser that is not on the server
+machine. Opening it and submitting the form encrypts and stores the secret
+server-side at that moment, with no further tool call needed. `expiresAt` is
+an ISO-8601 timestamp after which the URL stops accepting submissions.
+`absoluteUrl` is the server's own best-effort rendering of `url` (using
+`APRA_FLEET_CONSOLE_BASE_URL` when set, else its bound origin) -- advisory
+only: a caller reaching the console through a tunnel or proxy the server does
+not know about should resolve `url` against its own origin instead of using
+this value. Read `structuredContent`, never scrape it out of the display
+text.
 
 #### `doltPushMutex(options)`
 

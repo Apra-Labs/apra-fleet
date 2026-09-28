@@ -151,20 +151,22 @@ describe('install -- service lifecycle (T11)', () => {
   });
 
   it('increments totalSteps by 1 in SEA + HTTP mode', async () => {
-    // With SEA + HTTP + no skills + no workflows: base=6 steps +1 dolt (apra-fleet-ire.3,
-    // unconditional) +1 KB/code-intelligence setup = 8, +1 service = 9 total
+    // With SEA + HTTP + no skills + no workflows: base=5 steps +1 dolt (apra-fleet-ire.3,
+    // unconditional) +1 KB/code-intelligence setup = 7, +1 service = 8 total.
+    // apra-fleet-i9ag.13.7.2: bd is part of fleet-se, so with --workflows none the
+    // Beads step is skipped entirely (no step slot), not just non-fatal.
     _setSeaOverride(true);
     const logSpy = vi.mocked(console.log);
     await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
-    // Service step should show as [9/9]
-    expect(allOutput).toContain('[9/9]');
-    // KB + code intelligence step should show as [8/9]
-    expect(allOutput).toContain('[8/9]');
-    // Beads step should show as [7/9]
-    expect(allOutput).toContain('[7/9]');
-    // Dolt step should show as [6/9]
-    expect(allOutput).toContain('[6/9]');
+    // Service step should show as [8/8]
+    expect(allOutput).toContain('[8/8]');
+    // KB + code intelligence step should show as [7/8]
+    expect(allOutput).toContain('[7/8]');
+    // No Beads step line at all -- skipped under --workflows none
+    expect(allOutput).not.toContain('Installing Beads task tracker');
+    // Dolt step should show as [6/8]
+    expect(allOutput).toContain('[6/8]');
   });
 });
 

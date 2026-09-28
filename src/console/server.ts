@@ -59,6 +59,7 @@ import { getOrCreateKey } from '../services/jwt.js';
 import { handleExtProxyRequest } from './proxy.js';
 import { fleetRoutes } from './routes/fleet.js';
 import { workflowPackagesRoutes } from './routes/workflow-packages.js';
+import { secretEntryRoutes } from './routes/secret-entry.js';
 import { serveUiAsset } from './static.js';
 
 /** Where the built shell lives, plus how to read it. Passed straight through
@@ -111,6 +112,7 @@ export interface ConsoleRoute {
 const ROUTE_MODULES: ConsoleRoute[][] = [
   fleetRoutes,
   workflowPackagesRoutes,
+  secretEntryRoutes,
 ];
 
 /** '/api/fleet/members' -> '/api/fleet'. The set of these is what makes a

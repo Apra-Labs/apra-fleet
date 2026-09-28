@@ -11,6 +11,7 @@ import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
 import { handleConsoleRequest } from '../console/server.js';
+import { markConsoleHosted } from './secret-entry.js';
 
 interface Session {
   server: McpServer;
@@ -167,6 +168,12 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     }
     await session.transport.handleRequest(req, res);
   }
+
+  // This process now serves the console (see the console seam below), so
+  // secret-entry registrations made here are reachable through it -- lets
+  // collectOobUrl (auth-socket.ts) hand out a console-relative entry path
+  // instead of the loopback page it must use under stdio transport.
+  markConsoleHosted();
 
   const httpServer = http.createServer(async (req, res) => {
     const url = req.url ?? '/';

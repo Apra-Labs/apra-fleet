@@ -15,12 +15,12 @@ import crypto from 'node:crypto';
  * instead of the temp one it thinks it isolated to (apra-fleet-iywi.2.2 review
  * finding).
  */
-function keyPath(): string {
+export function fleetKeyPath(): string {
   return path.join(os.homedir(), '.apra-fleet', 'fleet.key');
 }
 
 export function getOrCreateKey(): string {
-  const filePath = keyPath();
+  const filePath = fleetKeyPath();
   try {
     const existing = fs.readFileSync(filePath, 'utf8').trim();
     if (existing.length === 64) return existing;
