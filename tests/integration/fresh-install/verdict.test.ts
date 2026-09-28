@@ -86,11 +86,11 @@ describe('fresh-install verdict logic', () => {
   });
 
   it('parses jsonl with BOM/CRLF, reports bad lines, and renders ASCII-only markdown', () => {
-    const { records, errors } = parseResults('﻿{"id":"A1","exit":"0"}\r\nnot json\r\n\r\n');
+    const { records, errors } = parseResults('\uFEFF{"id":"A1","exit":"0"}\r\nnot json\r\n\r\n');
     expect(records).toHaveLength(1);
     expect(errors).toHaveLength(1);
-    const p = evaluatePass({ checklist, pass: 'A', platform: 'windows', records: [rec('A1', 0, 'ok ✓ | pipe', 'v0.4.3_78cefd')], vars });
-    const md = renderMarkdown({ candidate: { path: 'x', sha256: 'y' }, vars, passes: [p], summary: summarize([p]), notes: ['n ⚠'] });
+    const p = evaluatePass({ checklist, pass: 'A', platform: 'windows', records: [rec('A1', 0, 'ok \u2713 | pipe', 'v0.4.3_78cefd')], vars });
+    const md = renderMarkdown({ candidate: { path: 'x', sha256: 'y' }, vars, passes: [p], summary: summarize([p]), notes: ['n \u26A0'] });
     expect(/[^\x09\x0a\x20-\x7e]/.test(md)).toBe(false);
     expect(md).toContain('ok \\| pipe');
   });

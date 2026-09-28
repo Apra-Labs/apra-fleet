@@ -98,7 +98,7 @@ export function parseResults(text) {
   const records = [];
   const errors = [];
   for (const [i, line] of String(text ?? '').split(/\r?\n/).entries()) {
-    const t = line.replace(/^﻿/, '').trim();
+    const t = line.replace(/^\uFEFF/, '').trim();
     if (!t) continue;
     try { records.push(JSON.parse(t)); } catch (e) { errors.push(`line ${i + 1}: ${e.message}`); }
   }
