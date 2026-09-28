@@ -12,6 +12,12 @@ export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
   token?: string;
+  // apra-fleet-i9ag.15.13.2: only meaningful for provider "http" -- whether a
+  // configured-but-unreachable remote falls back to the local SqliteProvider
+  // ("local", today's only behaviour) or hard-fails every read/write instead
+  // ("error"). Always resolved to a concrete value (never left undefined) so
+  // every call site can read it directly without its own default.
+  offlineFallback?: 'local' | 'error';
 }
 
 /**
@@ -25,6 +31,12 @@ export interface KbConfigFile {
   url?: string;
   token_encrypted?: string;
   bible?: { autoCommit?: boolean };
+  // apra-fleet-i9ag.15.13.2: explicit, persisted, defaulted switch for a
+  // configured-but-unreachable http remote. "local" (default, unset) keeps
+  // today's silent-fallback-with-stderr-warning behaviour; "error" hard-fails
+  // instead. Never read from an environment variable -- see
+  // readKbConfigFromDisk below.
+  offline_fallback?: 'local' | 'error';
   [key: string]: unknown;
 }
 
@@ -89,5 +101,19 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  return { provider: 'http', url, token };
+  // apra-fleet-i9ag.15.13.2: read explicitly, validated here so a typo'd or
+  // stale value fails loudly at config load rather than defaulting silently
+  // to either mode. Absent key -> 'local' (today's only behaviour, unchanged).
+  const offlineFallbackRaw = parsed.offline_fallback;
+  let offlineFallback: 'local' | 'error' = 'local';
+  if (offlineFallbackRaw !== undefined) {
+    if (offlineFallbackRaw !== 'local' && offlineFallbackRaw !== 'error') {
+      throw new Error(
+        `KB config at ${KB_CONFIG_PATH} has invalid "offline_fallback" value ${JSON.stringify(offlineFallbackRaw)}; expected "local" or "error"`,
+      );
+    }
+    offlineFallback = offlineFallbackRaw;
+  }
+
+  return { provider: 'http', url, token, offlineFallback };
 }

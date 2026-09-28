@@ -49,7 +49,41 @@ describe('readKbConfigFromDisk', () => {
       provider: 'http',
       url: 'http://kb.example.internal:7878',
       token: 'super-secret-token',
+      offlineFallback: 'local',
     });
+  });
+
+  // apra-fleet-i9ag.15.13.2: offline_fallback is explicit, persisted, and
+  // defaulted -- absent key resolves to 'local' (proven above), a valid
+  // 'error' value passes through, and an unrecognised value fails loudly
+  // rather than silently defaulting.
+  it('returns offlineFallback "error" when the config explicitly opts in', () => {
+    const tokenEncrypted = encryptPassword('super-secret-token');
+    writeConfig({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token_encrypted: tokenEncrypted,
+      offline_fallback: 'error',
+    });
+    expect(readKbConfigFromDisk()).toEqual({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token: 'super-secret-token',
+      offlineFallback: 'error',
+    });
+  });
+
+  it('throws naming the config path and the invalid value when offline_fallback is neither "local" nor "error"', () => {
+    const tokenEncrypted = encryptPassword('super-secret-token');
+    writeConfig({
+      provider: 'http',
+      url: 'http://kb.example.internal:7878',
+      token_encrypted: tokenEncrypted,
+      offline_fallback: 'ignore-errors',
+    });
+    expect(() => readKbConfigFromDisk()).toThrowError(/offline_fallback/);
+    expect(() => readKbConfigFromDisk()).toThrowError(/ignore-errors/);
+    expect(() => readKbConfigFromDisk()).toThrowError(new RegExp(KB_CONFIG_PATH.replace(/\\/g, '\\\\')));
   });
 
   it('throws naming the config path and the missing key when provider is http but url is missing', () => {

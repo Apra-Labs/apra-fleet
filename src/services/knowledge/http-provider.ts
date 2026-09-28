@@ -59,10 +59,22 @@ export class HttpKbProvider implements MemoryProvider {
   private degradedSince?: string;
   private hasWarnedDegraded = false;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider) {
+  // apra-fleet-i9ag.15.13.2: the other half of "consider a config switch for
+  // callers who want a hard failure instead of a fallback". `degraded` above
+  // only makes the fallback OBSERVABLE; `strict` changes the behaviour itself
+  // -- every read/write path that would otherwise silently serve/queue
+  // against the local `fallback` instead rejects, naming the configured
+  // remote and the connection error. Sourced from the persisted KB config
+  // (offline_fallback: "local" | "error", see kb-config.ts) via the 4th
+  // constructor param; default 'local' keeps today's behaviour unchanged for
+  // every repo that never opted in.
+  private readonly strict: boolean;
+
+  constructor(url: string, token: string, fallback?: SqliteProvider, offlineFallback: 'local' | 'error' = 'local') {
     this.baseUrl = url.replace(/\/$/, '');
     this.token = token;
     this.fallback = fallback ?? new SqliteProvider();
+    this.strict = offlineFallback === 'error';
 
     this.beforeExitHandler = () => {
       if (this.offlineQueue.length > 0) {
@@ -121,6 +133,44 @@ export class HttpKbProvider implements MemoryProvider {
       this.degradedSince = undefined;
       this.hasWarnedDegraded = false;
       process.stderr.write(`[KB] Reconnected to remote KB server at ${this.baseUrl}.\n`);
+    }
+  }
+
+  // apra-fleet-i9ag.15.13.2: the error every read/write path throws in strict
+  // mode instead of silently degrading to the local fallback. Names the
+  // configured remote URL and the underlying connection error (the message
+  // isConnectionError's caller already carries, e.g. "connect ECONNREFUSED
+  // 127.0.0.1:17777") so the caller can tell this apart from every other
+  // thrown error without inspecting `.code`.
+  private strictFailure(err: unknown): Error {
+    const reason = err instanceof Error ? err.message : String(err);
+    return new Error(
+      `KB remote at ${this.baseUrl} is unreachable (${reason}). offline_fallback is set to "error": ` +
+      'refusing to serve from the local fallback KB.'
+    );
+  }
+
+  // apra-fleet-i9ag.15.13.2: a live reachability probe, used only in strict
+  // mode -- by init() (surface an unreachable remote at construction rather
+  // than quietly building a working-looking provider) and by getLinked(),
+  // which has no remote route of its own to fail on. Reuses the
+  // /api/kb/context endpoint (already used by context()) purely as a cheap
+  // liveness check: any HTTP response (even a 4xx) proves the remote is
+  // reachable and is treated as connected; only a genuine connection error
+  // (ECONNREFUSED/ENOTFOUND/ETIMEDOUT/ECONNRESET) throws.
+  private async ensureReachable(): Promise<void> {
+    try {
+      await this.rawRequest('GET', '/api/kb/context', undefined, { files: '' });
+      this.markConnected();
+    } catch (err) {
+      if (isConnectionError(err)) {
+        this.markDegraded(err);
+        throw this.strictFailure(err);
+      }
+      // A non-connection error (HTTP 4xx/5xx, bad JSON) still proves the
+      // remote host answered -- reachable, just not necessarily happy with
+      // this exact probe request.
+      this.markConnected();
     }
   }
 
@@ -213,6 +263,12 @@ export class HttpKbProvider implements MemoryProvider {
 
   async init(): Promise<void> {
     await this.fallback.init();
+    // apra-fleet-i9ag.15.13.2: strict mode surfaces an unreachable remote
+    // here rather than quietly finishing construction of a provider that
+    // would then silently serve local data on the first call.
+    if (this.strict) {
+      await this.ensureReachable();
+    }
   }
 
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
@@ -226,6 +282,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
+        if (this.strict) throw this.strictFailure(err);
         this.enqueue({ op: 'capture', input });
         return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
       }
@@ -250,6 +307,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
+        if (this.strict) throw this.strictFailure(err);
         return this.fallback.query(opts);
       }
       throw err;
@@ -267,6 +325,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
+        if (this.strict) throw this.strictFailure(err);
         return this.fallback.context(files);
       }
       throw err;
@@ -284,6 +343,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
+        if (this.strict) throw this.strictFailure(err);
         this.enqueue({ op: 'invalidate', files });
         return { invalidated: 0 };
       }
@@ -291,7 +351,16 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // apra-fleet-i9ag.15.13.2: getLinked has no remote route of its own (see the
+  // doc comment below, unchanged) -- but that must not make it an exemption
+  // from strict mode, which exists precisely to stop "silently local" reads
+  // on a configured-http provider. A live reachability probe here is the only
+  // way to know whether serving from `fallback` would BE the silent-local
+  // case strict mode forbids.
   async getLinked(id: string): Promise<KBEntry[]> {
+    if (this.strict) {
+      await this.ensureReachable();
+    }
     return this.fallback.getLinked(id);
   }
 
@@ -326,6 +395,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
+        if (this.strict) throw this.strictFailure(err);
         return this.fallback.prime(opts);
       }
       throw err;
