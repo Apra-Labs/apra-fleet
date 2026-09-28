@@ -1328,10 +1328,17 @@ Notes:
   strictness for its own sake: the sprint engine's beads identity check
   treats an incomplete identity as fatal, so accepting such a folder would
   produce a supervisor that starts cleanly and then fails every launch.
-  `bd` must be runnable for the install-time check; if it is not, the
-  install fails saying so rather than skipping the check. Either input also
-  accepts the folder's `.beads` path and normalises it to the parent, the
-  same convenience `--beads-dir` offers.
+  `bd` must be runnable for the `sync.remote` check, so `apra-fleet
+  install` runs that one check (and the write) only AFTER its own Beads
+  step has provisioned bd -- a fresh machine with no bd yet is not a
+  reason to reject a good folder. The checks that need no bd (the path
+  itself, `.beads`, the git remote) still run before the install writes a
+  single file, so a typo'd path costs you nothing. If bd is still not
+  runnable by the time the deferred check runs -- only possible with
+  `--workflows none`, which skips the Beads step -- the install fails
+  saying so rather than skipping the check. Either input also accepts the
+  folder's `.beads` path and normalises it to the parent, the same
+  convenience `--beads-dir` offers.
 
   A folder that was already persisted and has since become incomplete is a
   different case: the supervisor still starts (see below) and reports the

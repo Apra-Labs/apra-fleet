@@ -287,59 +287,32 @@ function parseBdConfigValue(text: string): string {
 }
 
 /**
- * Validate `projectDir` and, on success, write it to
- * `supervisor.config.json` under `dataDir` -- the exact shape
- * `readSupervisorConfig()` accepts: a JSON object with a non-empty string
- * `projectDir` key, resolved to an ABSOLUTE path before writing (the reader
- * otherwise resolves a relative value against ITS OWN cwd at read time,
- * which is not install's cwd and not stable across a service restart).
- *
- * VALIDATION is the same question the console's POST /api/project asks, and
- * for the same reason: the fleet-sprint engine's beads identity precondition
- * is FATAL, so a folder without an initialised `.beads`, a git `origin`
- * remote and a bd `sync.remote` cannot run a sprint at all. Seeding one at
- * install time would hand the operator a supervisor that boots cleanly and
- * then fails every launch, which is exactly the silent-wrong-thing this
- * option exists to prevent -- so all four checks run here:
+ * PREFLIGHT -- the part of the project-folder validation that needs NOTHING
+ * but the filesystem and git:
  *
  *   1. the path exists and is a directory (a `.beads` path is normalised to
  *      its parent first, the same convenience `--beads-dir` and the console
  *      both offer),
  *   2. `<dir>/.beads` is itself a directory,
- *   3. `git -C <dir> remote get-url origin` succeeds and is non-empty,
- *   4. `bd config get sync.remote --json` (run in `<dir>`) is non-empty.
+ *   3. `git -C <dir> remote get-url origin` succeeds and is non-empty.
  *
- * bd MUST be runnable for step 4. When it is not, this fails LOUDLY rather
- * than skipping the check: a skipped check is indistinguishable from a
- * passed one to the operator, and would put back the unusable setting the
- * option is meant to make impossible.
+ * Split out of `seedSupervisorProjectDir()` below (apra-fleet-i9ag.17) so
+ * `apra-fleet install --project-dir <clone>` can still refuse a bad path
+ * BEFORE the install writes a single file, while the one check that needs a
+ * runnable `bd` (sync.remote) waits until install's own Beads step has
+ * provisioned bd. Running the whole validation up front made a fresh machine
+ * with no bd fail an install that would have installed bd moments later.
  *
- * Never partially writes: every check runs before any write call, so a
- * rejected path leaves no new file behind and an already-existing config
- * (e.g. one an operator set from the console) is left untouched.
- *
- * THE WRITE ITSELF matches the runtime writer's two documented guarantees
- * (writeSupervisorConfig() in
- * packages/apra-fleet-se/src/supervisor/project-config.mjs), because the two
- * write the SAME file and an installer that only honoured one of them would
- * silently undo the other's work:
- *
- *   - UNKNOWN TOP-LEVEL KEYS ARE PRESERVED. A newer supervisor may have
- *     written a field this build has never heard of; an install must not
- *     destroy it. The existing file is read and merged under `projectDir`
- *     (a file that is missing, unreadable or not a JSON object simply
- *     yields nothing to preserve and is replaced by a good one).
- *   - THE WRITE IS ATOMIC: temp file in the SAME directory, then rename, so
- *     an interrupted install can never leave a truncated file that the
- *     supervisor's next boot has to reject.
+ * Writes nothing, ever, and never runs bd: a caller that gets `ok` here must
+ * still call `seedSupervisorProjectDir()`, which re-runs these same checks
+ * before the bd check and the write.
  *
  * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
  * always use the defaults (real `node:fs`, real child processes).
  */
-export function seedSupervisorProjectDir(
+export function validateProjectDirPreflight(
   projectDir: string,
-  dataDir: string = SUPERVISOR_DATA_DIR,
-  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync' | 'readFileSync' | 'renameSync'> = fs,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync'> = fs,
   execImpl: SeedProjectDirExec = realSeedProjectDirExec,
 ): SeedProjectDirResult {
   const given = path.resolve(projectDir);
@@ -380,6 +353,69 @@ export function seedSupervisorProjectDir(
       error: `project folder '${resolvedPath}' has no git 'origin' remote: run 'git remote add origin <url>' there`,
     };
   }
+
+  return { ok: true, resolvedPath };
+}
+
+/**
+ * Validate `projectDir` and, on success, write it to
+ * `supervisor.config.json` under `dataDir` -- the exact shape
+ * `readSupervisorConfig()` accepts: a JSON object with a non-empty string
+ * `projectDir` key, resolved to an ABSOLUTE path before writing (the reader
+ * otherwise resolves a relative value against ITS OWN cwd at read time,
+ * which is not install's cwd and not stable across a service restart).
+ *
+ * VALIDATION is the same question the console's POST /api/project asks, and
+ * for the same reason: the fleet-sprint engine's beads identity precondition
+ * is FATAL, so a folder without an initialised `.beads`, a git `origin`
+ * remote and a bd `sync.remote` cannot run a sprint at all. Seeding one at
+ * install time would hand the operator a supervisor that boots cleanly and
+ * then fails every launch, which is exactly the silent-wrong-thing this
+ * option exists to prevent -- so all four checks run here: the three
+ * `validateProjectDirPreflight()` above owns, re-run here so this function
+ * remains a complete standalone entry point, plus the one that needs bd:
+ *
+ *   4. `bd config get sync.remote --json` (run in `<dir>`) is non-empty.
+ *
+ * bd MUST be runnable for step 4. When it is not, this fails LOUDLY rather
+ * than skipping the check: a skipped check is indistinguishable from a
+ * passed one to the operator, and would put back the unusable setting the
+ * option is meant to make impossible. A caller that can provision bd itself
+ * (the installer) therefore runs the preflight first and calls this only
+ * AFTER its Beads step, so "bd is missing" is a real answer rather than an
+ * ordering artefact.
+ *
+ * Never partially writes: every check runs before any write call, so a
+ * rejected path leaves no new file behind and an already-existing config
+ * (e.g. one an operator set from the console) is left untouched.
+ *
+ * THE WRITE ITSELF matches the runtime writer's two documented guarantees
+ * (writeSupervisorConfig() in
+ * packages/apra-fleet-se/src/supervisor/project-config.mjs), because the two
+ * write the SAME file and an installer that only honoured one of them would
+ * silently undo the other's work:
+ *
+ *   - UNKNOWN TOP-LEVEL KEYS ARE PRESERVED. A newer supervisor may have
+ *     written a field this build has never heard of; an install must not
+ *     destroy it. The existing file is read and merged under `projectDir`
+ *     (a file that is missing, unreadable or not a JSON object simply
+ *     yields nothing to preserve and is replaced by a good one).
+ *   - THE WRITE IS ATOMIC: temp file in the SAME directory, then rename, so
+ *     an interrupted install can never leave a truncated file that the
+ *     supervisor's next boot has to reject.
+ *
+ * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
+ * always use the defaults (real `node:fs`, real child processes).
+ */
+export function seedSupervisorProjectDir(
+  projectDir: string,
+  dataDir: string = SUPERVISOR_DATA_DIR,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync' | 'readFileSync' | 'renameSync'> = fs,
+  execImpl: SeedProjectDirExec = realSeedProjectDirExec,
+): SeedProjectDirResult {
+  const preflight = validateProjectDirPreflight(projectDir, fsImpl, execImpl);
+  if (!preflight.ok) return preflight;
+  const { resolvedPath } = preflight;
 
   // bd must be RUNNABLE before its answer can mean anything. Probing the
   // version separately is what lets the two failures stay distinguishable:

@@ -7,7 +7,7 @@ import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { registerSupervisorService } from '../services/supervisor-service.js';
-import { seedSupervisorProjectDir } from './supervisor.js';
+import { seedSupervisorProjectDir, validateProjectDirPreflight } from './supervisor.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
@@ -1197,25 +1197,29 @@ Services (SEA + --transport http):
     process.exit(1);
   }
 
-  // Seed the supervisor's persisted project folder EARLY -- before any other
-  // install side effect runs (same "fail loudly before a single file is
-  // written" philosophy as the fleet-se prerequisite gate below), and well
-  // before supervisor service registration further down (apra-fleet-
-  // i9ag.17.4.1's ordering requirement: the config must exist before the
-  // FIRST boot, or that boot resolves the wrong project and needs a
-  // restart). seedSupervisorProjectDir() validates the folder is one a
-  // sprint could actually run in (exists, has an initialised .beads, a git
-  // 'origin' remote and bd's sync.remote set) before writing anything, so an
-  // unusable path aborts a fresh install cleanly with nothing written and no
-  // existing config disturbed -- rather than seeding a setting whose first
-  // sprint launch is guaranteed to fail its beads identity check.
+  // Validate --project-dir EARLY -- before any other install side effect runs
+  // (same "fail loudly before a single file is written" philosophy as the
+  // fleet-se prerequisite gate below), so an unusable path aborts a fresh
+  // install cleanly with nothing written and no existing config disturbed.
+  //
+  // Only the checks that need NO bd run here (path exists and is a directory,
+  // an initialised <dir>/.beads, a git 'origin' remote). The fourth check --
+  // bd's sync.remote -- and the config write itself are DEFERRED to just
+  // before service registration further down, because bd is something this
+  // very install provisions in its Beads step: running the bd check up front
+  // made `apra-fleet install --project-dir <clone>` fail on every fresh
+  // machine that did not already have bd, for a prerequisite the install was
+  // about to satisfy itself (apra-fleet-i9ag.17). Deferring the WRITE with it
+  // keeps the never-partially-write guarantee: a path rejected at either
+  // point leaves nothing behind.
+  //
   // Omitting --project-dir entirely (projectDirArg undefined) calls nothing
-  // here, leaving today's behaviour -- including any config an operator
-  // already set from the console -- byte-identical.
+  // here or below, leaving today's behaviour -- including any config an
+  // operator already set from the console -- byte-identical.
   if (projectDirArg !== undefined) {
-    const seedResult = seedSupervisorProjectDir(projectDirArg);
-    if (!seedResult.ok) {
-      console.error(`Error: --project-dir: ${seedResult.error}.`);
+    const preflight = validateProjectDirPreflight(projectDirArg);
+    if (!preflight.ok) {
+      console.error(`Error: --project-dir: ${preflight.error}.`);
       process.exit(1);
     }
   }
@@ -1957,6 +1961,30 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode, workflowsMode);
+
+  // --- Seed the supervisor's persisted project folder (--project-dir) ---
+  // Placed HERE, after the Beads step above and before the supervisor service
+  // is registered below, for two reasons that pin it from both sides
+  // (apra-fleet-i9ag.17):
+  //   - AFTER Beads: the remaining check runs `bd config get sync.remote` in
+  //     the folder, and bd is only guaranteed runnable once the Beads step has
+  //     run. Before it, a fresh machine failed a check for a tool the install
+  //     itself was about to provide.
+  //   - BEFORE registration: the supervisor's FIRST boot must already see the
+  //     config, or it resolves the wrong project and needs a restart -- which
+  //     is the whole point of the option.
+  // The preflight near the top of runInstall() has already rejected a bad
+  // path, so a failure here means bd is missing (e.g. --workflows none on a
+  // machine without bd) or the folder has no beads 'sync.remote'. Both stay
+  // FATAL and loud: a skipped check is indistinguishable from a passed one,
+  // and would seed a setting whose first sprint launch is guaranteed to fail.
+  if (projectDirArg !== undefined) {
+    const seedResult = seedSupervisorProjectDir(projectDirArg);
+    if (!seedResult.ok) {
+      console.error(`Error: --project-dir: ${seedResult.error}.`);
+      process.exit(1);
+    }
+  }
 
   // --- Step N: Register and start services (SEA + HTTP mode only) ---
   //

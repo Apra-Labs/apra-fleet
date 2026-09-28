@@ -44,8 +44,13 @@ What shipped and is verified working:
   beads identity check treats an incomplete identity as fatal, so the old
   "accept any existing directory" behaviour only moved the failure to the
   first launch, by which time the operator who could fix it had walked
-  away. `bd` must be runnable for the install-time check -- if it is not,
-  the install fails saying so rather than silently skipping it. A folder
+  away. `bd` must be runnable for the `sync.remote` check, so `apra-fleet
+  install` defers that check and the write until after its own Beads step
+  has provisioned bd (the path, `.beads` and git-remote checks still run
+  before anything is written) -- a fresh machine with no bd yet no longer
+  fails an install for a prerequisite the install was about to satisfy
+  itself. If bd is still not runnable then (`--workflows none`), the
+  install fails saying so rather than silently skipping it. A folder
   that was already persisted and has since become incomplete still starts
   the supervisor (the console must stay reachable) and now reports the
   missing field(s) and their fix in `GET /api/health`'s `beadsWarning`

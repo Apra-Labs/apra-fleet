@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
 
 // ---------------------------------------------------------------------------
 // Service-id-aware manager mock: the MCP server and the supervisor must be
@@ -338,12 +339,14 @@ describe('install -- the mcp-server step still only WARNS', () => {
 });
 
 // ---------------------------------------------------------------------------
-// apra-fleet-i9ag.17.4.2 -- --project-dir seeds the supervisor's persisted
-// project folder. Five independently named properties: seeded (and accepted
-// by the REAL apra-fleet-se reader), ordering (write happens before
-// supervisor registration is attempted), rejected (bad path, non-zero exit,
-// nothing written), omitted (no option -> no write, no behaviour change),
-// and preserved (no option leaves an existing console-set config untouched).
+// --project-dir seeds the supervisor's persisted project folder. Five
+// independently named properties: seeded (and accepted by the REAL
+// apra-fleet-se reader), ordering (the validation is SPLIT -- a no-bd
+// preflight before any side effect, then the bd check and the write after
+// install's own Beads step and before supervisor registration), rejected
+// (bad path, non-zero exit, nothing written), omitted (no option -> no
+// write, no behaviour change), and preserved (no option leaves an existing
+// console-set config untouched).
 // ---------------------------------------------------------------------------
 // path.resolve() so the literal matches what seedSupervisorProjectDir()
 // resolves it to on every host (a bare POSIX literal picks up a drive letter
@@ -370,22 +373,40 @@ const USABLE_PROJECT_FS = { [PROJECT_DIR]: true, [PROJECT_BEADS_DIR]: true };
  */
 function mockProjectDirProbes({
   gitOrigin = 'https://example.invalid/acme/demo.git',
-  bdRunnable = true,
+  bdRunnable = true as boolean | 'after-npm-install',
   syncRemote = 'https://example.invalid/acme/demo.git',
 } = {}): void {
+  // 'after-npm-install' models the FRESH MACHINE this ordering exists for:
+  // bd does not exist when the install starts and only becomes runnable once
+  // install's own Beads step has npm-installed it.
+  let bdInstalled = bdRunnable === true;
   vi.mocked(execFileSync).mockImplementation(((file: any, args: any) => {
     const argv: string[] = Array.isArray(args) ? args : [];
+    if (file === 'npm' && argv[0] === 'install' && argv.includes(BEADS_PACKAGE)) {
+      if (bdRunnable === 'after-npm-install') bdInstalled = true;
+      return 'added 1 package\n' as any;
+    }
     if (file === 'git') {
       if (!gitOrigin) throw new Error("fatal: No such remote 'origin'");
       return `${gitOrigin}\n` as any;
     }
     if (file === 'bd') {
-      if (!bdRunnable) throw new Error('spawn bd ENOENT');
+      if (!bdInstalled) throw new Error('spawn bd ENOENT');
       if (argv[0] === '--version') return 'bd version 0.0.0-mock\n' as any;
       if (argv[0] === 'config') return JSON.stringify({ key: 'sync.remote', value: syncRemote }) as any;
     }
     return '' as any;
   }) as any);
+}
+
+/** Invocation orders of the execFileSync calls matching `pred`, so a case can
+ *  pin WHERE in the install a child process ran relative to a config write. */
+function execOrders(pred: (file: string, argv: string[]) => boolean): number[] {
+  return vi
+    .mocked(execFileSync)
+    .mock.calls.map((call, i) => ({ call, order: vi.mocked(execFileSync).mock.invocationCallOrder[i] }))
+    .filter(({ call }) => pred(String(call[0]), Array.isArray(call[1]) ? (call[1] as string[]) : []))
+    .map(({ order }) => order);
 }
 
 /** The installer writes the config ATOMICALLY: temp file in the same dir,
@@ -400,6 +421,15 @@ function configWriteContents(): string[] {
     .mocked(fs.writeFileSync)
     .mock.calls.filter(([p]) => (p as any)?.toString() === CONFIG_TMP_PATH)
     .map(([, content]) => (content as any).toString());
+}
+
+/** Invocation orders of those same config writes. */
+function configWriteOrders(): number[] {
+  return vi
+    .mocked(fs.writeFileSync)
+    .mock.calls.map((call, i) => ({ call, order: vi.mocked(fs.writeFileSync).mock.invocationCallOrder[i] }))
+    .filter(({ call }) => (call[0] as any)?.toString() === CONFIG_TMP_PATH)
+    .map(({ order }) => order);
 }
 
 /** Every fs.renameSync call that published a config temp file. */
@@ -433,20 +463,69 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
     expect(parsed.projectDir).toBe(PROJECT_DIR);
   });
 
-  it('ordering: the config write happens before the supervisor service registration call', async () => {
+  it('ordering: the config write lands after the Beads step and before the supervisor service registration call', async () => {
     makeFsMock(true, USABLE_PROJECT_FS);
     mockProjectDirProbes();
     await runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]);
     expect(exitCode).toBeUndefined();
 
-    const writeOrders = vi
-      .mocked(fs.writeFileSync)
-      .mock.calls.map((call, i) => ({ call, order: vi.mocked(fs.writeFileSync).mock.invocationCallOrder[i] }))
-      .filter(({ call }) => (call[0] as any)?.toString() === CONFIG_TMP_PATH)
-      .map(({ order }) => order);
+    const writeOrders = configWriteOrders();
     expect(writeOrders.length).toBeGreaterThan(0);
+
+    // AFTER the Beads step: the deferred half of the validation runs
+    // `bd config get sync.remote`, and bd is only guaranteed runnable once
+    // that step has provisioned it. The step's own `bd --version` probe is
+    // the first bd call of the run, so the write must follow it.
+    const firstBdProbe = execOrders((file, argv) => file === 'bd' && argv[0] === '--version')[0];
+    expect(firstBdProbe).toBeDefined();
+    expect(writeOrders[0]).toBeGreaterThan(firstBdProbe);
+
+    // BEFORE registration: the supervisor's first boot must already see the
+    // config, or it resolves the wrong project and needs a restart.
     expect(supervisorMgr.register.mock.invocationCallOrder.length).toBeGreaterThan(0);
     expect(writeOrders[0]).toBeLessThan(supervisorMgr.register.mock.invocationCallOrder[0]);
+  });
+
+  it('ordering: a path the preflight rejects aborts before ANY install side effect -- not one file written', async () => {
+    // The preflight half keeps the "fail loudly before a single file is
+    // written" guarantee the original all-up-front validation had. Nothing
+    // in runInstall() writes before it, so the strongest possible assertion
+    // is available: no write of any kind, anywhere, occurred.
+    makeFsMock(true, { [PROJECT_DIR]: false });
+    mockProjectDirProbes();
+    await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.mkdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.copyFileSync)).not.toHaveBeenCalled();
+    // ... and no child process ran either: the preflight never reaches bd.
+    expect(execOrders(file => file === 'bd')).toHaveLength(0);
+  });
+
+  it("a fresh machine with no bd yet still installs: the preflight passes, the Beads step provisions bd, then the config is seeded", async () => {
+    // THE DEFECT this ordering fixes (apra-fleet-i9ag.17): the whole
+    // validation used to run up front, so `--project-dir` on a machine
+    // without bd failed the install for a prerequisite the install was
+    // about to satisfy itself, moments later, in its own Beads step.
+    makeFsMock(true, USABLE_PROJECT_FS);
+    mockProjectDirProbes({ bdRunnable: 'after-npm-install' });
+
+    await expect(
+      runInstall(['--transport', 'http', '--skill', 'none', '--project-dir', PROJECT_DIR]),
+    ).resolves.toBeUndefined();
+    expect(exitCode).toBeUndefined();
+
+    // The Beads step really did have to install bd -- otherwise this case
+    // would be the already-have-bd happy path wearing a different name.
+    const npmInstall = execOrders(
+      (file, argv) => file === 'npm' && argv[0] === 'install' && argv.includes(BEADS_PACKAGE),
+    );
+    expect(npmInstall).toHaveLength(1);
+
+    const writeOrders = configWriteOrders();
+    expect(writeOrders).toHaveLength(1);
+    expect(writeOrders[0]).toBeGreaterThan(npmInstall[0]);
+    expect(JSON.parse(configWriteContents()[0]).projectDir).toBe(PROJECT_DIR);
+    expect(supervisorMgr.register).toHaveBeenCalled();
   });
 
   it('rejected: a nonexistent path fails the install with a non-zero exit and writes no config', async () => {
@@ -491,10 +570,14 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
     expect(configWriteContents()).toHaveLength(0);
   });
 
-  it('rejected LOUDLY, never skipped, when bd cannot be run at all -- a skipped check is indistinguishable from a passed one', async () => {
+  it('rejected LOUDLY, never skipped, when bd is STILL not runnable after the Beads step -- a skipped check is indistinguishable from a passed one', async () => {
+    // --workflows none is the one path where bd is legitimately never
+    // provisioned, so it is the case that can still reach the deferred
+    // check with no bd. It must stay fatal: skipping the sync.remote check
+    // would seed a folder whose first sprint launch is guaranteed to fail.
     makeFsMock(true, USABLE_PROJECT_FS);
     mockProjectDirProbes({ bdRunnable: false });
-    const out = await expectLoudFailure(['--project-dir', PROJECT_DIR]);
+    const out = await expectLoudFailure(['--workflows', 'none', '--project-dir', PROJECT_DIR]);
     expect(out).toContain('bd could not be run');
     expect(out).toContain('on PATH');
     expect(configWriteContents()).toHaveLength(0);
