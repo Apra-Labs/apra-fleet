@@ -11,8 +11,9 @@
 // multi-project CRUD store, src/projects/routes/projects.mjs, 11 routes,
 // left completely untouched by this feature) -- see project-config.mjs's
 // header for why the two must not merge. This route module's export is
-// named registerProjectFolderRoutes precisely so it cannot be confused with
-// (or accidentally shadow) that module's registerProjectRoutes.
+// deliberately named registerProjectFolderRoutes (note the extra
+// "Folder"), so it cannot be confused with -- or accidentally shadow --
+// that sibling module's own route-registration export for the CRUD domain.
 //
 // WRITE VALIDATION reuses resolveBeadsDirArg() (./beads-identity.mjs) -- the
 // SAME validator `--beads-dir` uses, including its convenience of accepting
