@@ -918,6 +918,14 @@ const sprintStackLiveScript = (mountPrefix) => `
     var VERDICT_BADGE_COLORS = ${JSON.stringify(VERDICT_BADGE_COLORS)};
     ${verdictBadge.toString()}
     ${prLink.toString()}
+    // (apra-fleet-i9ag.16.2) launchFailedBadge() is renderFinishedRunsHtml()'s
+    // OTHER badge dependency, alongside verdictBadge() above -- embedded here
+    // so a launch-failed row in a /state poll response re-renders identically
+    // to the server's first paint instead of throwing "launchFailedBadge is
+    // not defined" inside renderFinishedRunsHtml() below (which poll()
+    // swallows into a console-only 'Poll Error:', silently freezing the
+    // Finished Sprints list from the first poll onward).
+    ${launchFailedBadge.toString()}
     ${renderFinishedRunsHtml.toString()}
     ${renderProgressBarHtml.toString()}
     ${renderSprintProgressHtml.toString()}

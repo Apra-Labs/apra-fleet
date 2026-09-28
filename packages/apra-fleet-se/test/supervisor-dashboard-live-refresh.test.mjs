@@ -23,6 +23,7 @@ import {
     registerDashboardRoutes,
     renderIndexPageHtml,
     renderSprintSection,
+    renderFinishedRunsHtml,
     buildStatePayload,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
@@ -143,16 +144,37 @@ function extractHeartbeatIntervalMs() {
     return Number(m[1]);
 }
 
+/** The `#finished-sprints` element poll() replaces wholesale via .innerHTML -- see MockContainer's own innerHTML setter for the same shape, just without the Sprint Stack's per-section reconciliation. */
+class MockFinishedContainer {
+    constructor(initialHtml) {
+        this.innerHTML = initialHtml ?? '';
+    }
+}
+
 /**
  * Runs the actual SPRINT_STACK_LIVE_SCRIPT (renderSprintStackFromState() +
  * schedulePoll()/poll() + the EventSource/heartbeat wiring) against mocked
  * document/fetch/EventSource. `eventSourceCtor: undefined` simulates an
  * environment with no EventSource global (the `typeof EventSource !==
  * 'undefined'` guard in the real script then evaluates false).
+ *
+ * `finishedContainer` (apra-fleet-i9ag.16.2), when supplied, is returned for
+ * `document.getElementById('finished-sprints')` -- poll()'s OTHER DOM target
+ * alongside `#sprint-stack`, replaced wholesale via renderFinishedRunsHtml()'s
+ * output. Omitted -> getElementById('finished-sprints') returns null, exactly
+ * as it would on a page render with no finished-sprints element (poll()'s own
+ * `if (finishedEl && ...)` guard skips that branch, matching every
+ * pre-i9ag.16.2 test in this file that never touched it).
  */
-function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor }) {
+function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer }) {
     const script = extractLiveRefreshScript();
-    const mockDocument = { getElementById: (id) => (id === 'sprint-stack' ? container : null) };
+    const mockDocument = {
+        getElementById: (id) => {
+            if (id === 'sprint-stack') return container;
+            if (id === 'finished-sprints') return finishedContainer ?? null;
+            return null;
+        },
+    };
     // eslint-disable-next-line no-new-func
     const fn = new Function('document', 'fetch', 'EventSource', script);
     fn(mockDocument, fetchImpl, eventSourceCtor);
@@ -413,6 +435,49 @@ describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place fr
             assert.equal(secondPayload.sprints[0].progress.closed, 1);
             assert.equal(secondPayload.sprints[0].progress.required, 2);
             assert.equal(rowAfterClose.outerHTML, renderSprintSection(secondPayload.sprints[0]));
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
+describe('apra-fleet-i9ag.16.2: a launch-failed row in a /state poll re-renders through the REAL extracted client script, not just the imported module binding', () => {
+    test('poll() feeds a launch-failed finished row through the shipped script\'s embedded renderFinishedRunsHtml()/launchFailedBadge() and produces the SAME markup the server-rendered first paint would', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const finishedRow = {
+                sprintId: 'sprint-dead',
+                verdict: null,
+                prUrl: null,
+                endedAt: '2026-09-28T00:00:00.000Z',
+                goal: null,
+                status: 'launch-failed',
+                reason: 'spawn ENOENT',
+                hasTerminalState: false,
+            };
+            const httpPayload = buildStatePayload([], [finishedRow]);
+
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const finishedContainer = new MockFinishedContainer('<p>placeholder</p>');
+            const fetchImpl = async () => ({ json: async () => httpPayload });
+
+            // This is the exact reproduction of the reviewed regression: before
+            // the fix, executing the shipped script threw "launchFailedBadge is
+            // not defined" inside its embedded renderFinishedRunsHtml() call,
+            // which poll()'s try/catch swallows -- leaving finishedContainer's
+            // innerHTML at its stale placeholder forever. If this throws (or the
+            // assertion below fails), the live-refresh path is broken again.
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, finishedContainer });
+            await flushMicrotasks();
+
+            assert.notEqual(finishedContainer.innerHTML, '<p>placeholder</p>', 'poll() must actually replace the Finished Sprints markup, not silently swallow a render error');
+            assert.equal(
+                finishedContainer.innerHTML,
+                renderFinishedRunsHtml(httpPayload.finished, ''),
+                'the live-refreshed Finished Sprints markup for a launch-failed row must be byte-identical to the server-rendered first paint'
+            );
+            assert.ok(finishedContainer.innerHTML.includes('LAUNCH FAILED'), 'the re-rendered row must carry the launch-failed badge text');
+            assert.ok(finishedContainer.innerHTML.includes('spawn ENOENT'), 'the re-rendered row must carry the escaped reason text');
         } finally {
             t.mock.timers.reset();
         }
