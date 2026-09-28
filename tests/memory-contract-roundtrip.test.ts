@@ -174,7 +174,8 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(48);
+    // apra-fleet-i9ag.15.17 added kb_stats/edge-empty-promote-ratio-null (48 -> 49).
+    expect(report.steps.length).toBe(49);
   });
 
   it('covers all 23 inventoried tools', () => {

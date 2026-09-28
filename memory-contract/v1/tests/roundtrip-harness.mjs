@@ -187,6 +187,16 @@ export const SCENARIO = [
   // below reads it back through the path anchor, no derive needed.
   { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
+  // apra-fleet-i9ag.15.17: repo B never receives a live capture anywhere in
+  // this scenario -- kb_import/happy above rejects its one entry (imported:0)
+  // rather than creating one -- so a kb_stats call scoped to repo B's slug
+  // deterministically has zero CONFIRMED entries and stats.promote_ratio is
+  // null (sqlite-provider.ts: `confirmedRow.c > 0 ? ... : null`). This is the
+  // ONLY committed kb_stats fixture whose parsed body reaches promote_ratio:
+  // null, so schemas/kb_stats.response.json's nested parsed sub-schema
+  // (including its now-nullable promote_ratio, apra-fleet-i9ag.15.15) is
+  // actually exercised by the corpus, not just by happy.json's non-null 1.
+  { tool: 'kb_stats', case: 'edge-empty-promote-ratio-null' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
