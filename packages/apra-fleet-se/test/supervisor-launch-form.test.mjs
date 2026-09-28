@@ -362,7 +362,7 @@ function makeCheckboxRow({ beadId, depthPx = 8, checked = false }) {
  * no #backlog element resolvable at script-execution time at all (the prior
  * #backlog-scoped listener silently never fired in that case).
  */
-function buildLaunchFormSandbox({ includeHintEl = true, includeForm = false, memberCheckboxes = [] } = {}) {
+function buildLaunchFormSandbox({ includeHintEl = true, includeForm = false, memberCheckboxes = [], documentRows = [] } = {}) {
     const html = renderLaunchFormHtml();
     const scriptStart = html.indexOf('<script>') + '<script>'.length;
     const scriptEnd = html.indexOf('</script>', scriptStart);
@@ -400,10 +400,21 @@ function buildLaunchFormSandbox({ includeHintEl = true, includeForm = false, mem
         return { json: async () => ({ members: [] }) };
     };
 
+    // apra-fleet-i9ag.18: the post-launch reset (clearSelection()) queries
+    // the DOCUMENT -- not '#backlog' -- for '.bead-select-checkbox' and
+    // 'tr.bead-row-selected'. `documentRows` (makeCheckboxRow() results)
+    // registers rows this stub answers those two selectors from, so the
+    // reset's REAL effect on the DOM is observable. Deliberately still no
+    // '#backlog' element anywhere: a reset scoped to it (the prior shape)
+    // must not be able to pass this file.
     const mockDocument = {
         getElementById: (id) => elementsById[id] || null,
         addEventListener: (type, handler) => { if (type === 'change') changeHandlers.push(handler); },
-        querySelectorAll: () => [],
+        querySelectorAll: (sel) => {
+            if (sel === '.bead-select-checkbox') return documentRows.map((r) => r.checkbox);
+            if (sel === 'tr.bead-row-selected') return documentRows.map((r) => r.row).filter((tr) => tr.classList.contains('bead-row-selected'));
+            return [];
+        },
     };
 
     // eslint-disable-next-line no-new-func
@@ -526,6 +537,61 @@ describe('launch-form -- client-side selection-hint binding (apra-fleet-i9ag.18.
 
             assert.ok(sandbox.fetchCalls.some((c) => c.url === '/api/sprints'), 'submit must POST /api/sprints');
             assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    // apra-fleet-i9ag.18: the reset above cleared only selectedRoots, and
+    // dropped the row highlight through a '#backlog'-scoped query. Every
+    // .bead-select-checkbox stayed CHECKED, so the page showed checked rows
+    // under a "No issue selected" hint -- and re-clicking such a row did
+    // nothing at all, because the checkbox was already checked and no
+    // 'change' event ever fired. The reset is now document-level and
+    // unchecks the checkboxes too.
+    test('the post-launch reset also unchecks every .bead-select-checkbox and drops bead-row-selected, document-wide, so a row can be re-selected immediately', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            // The form launches exactly one root, so only `selected` is
+            // checked through the listener. `stale` is a second row left
+            // CHECKED in the DOM without going through this script -- what
+            // backlog.mjs's own re-render does when it restores a row's
+            // checked state from window.__fleetSeLaunch.isSelected(). The
+            // reset must clear it too: "every checked .bead-select-checkbox",
+            // not just the ones this closure knows about.
+            const selected = makeCheckboxRow({ beadId: 'apra-fleet-reset.2', checked: true });
+            const stale = makeCheckboxRow({ beadId: 'apra-fleet-reset.3', checked: true });
+            stale.row.classList.add('bead-row-selected');
+            const sandbox = buildLaunchFormSandbox({
+                includeForm: true,
+                memberCheckboxes: [{ checked: true, value: 'alice' }],
+                documentRows: [selected, stale],
+            });
+
+            sandbox.fireChange(selected.checkbox);
+            assert.equal(sandbox.hintEl.textContent, 'Selected issue(s): apra-fleet-reset.2');
+            assert.ok(selected.row.classList.contains('bead-row-selected'));
+
+            sandbox.submit();
+            for (let i = 0; i < 10; i += 1) {
+                // eslint-disable-next-line no-await-in-loop
+                await Promise.resolve();
+            }
+
+            assert.ok(sandbox.fetchCalls.some((c) => c.url === '/api/sprints'), 'submit must POST /api/sprints');
+            assert.equal(selected.checkbox.checked, false, 'the reset must UNCHECK the row checkbox, not just clear the hint');
+            assert.equal(stale.checkbox.checked, false, 'EVERY checked .bead-select-checkbox must be unchecked, not only the one this script selected');
+            assert.equal(selected.row.classList.contains('bead-row-selected'), false, 'the row highlight must be dropped with no #backlog element present at all');
+            assert.equal(stale.row.classList.contains('bead-row-selected'), false);
+            assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+
+            // The point of unchecking: the row is genuinely re-selectable. A
+            // real browser only fires 'change' on a state transition, so a
+            // still-checked checkbox could never be re-selected at all.
+            selected.checkbox.checked = true;
+            sandbox.fireChange(selected.checkbox);
+            assert.equal(sandbox.hintEl.textContent, 'Selected issue(s): apra-fleet-reset.2');
+            assert.ok(selected.row.classList.contains('bead-row-selected'));
         } finally {
             t.mock.timers.reset();
         }

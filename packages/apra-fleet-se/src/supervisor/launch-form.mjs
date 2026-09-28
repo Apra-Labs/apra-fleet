@@ -329,8 +329,25 @@ function clientScriptSource(mountPrefix) {
         renderSelectedIssues();
     }
 
+    // apra-fleet-i9ag.18: the post-launch reset. It must leave the DOM
+    // AGREEING with selectedRoots, so it unchecks every row checkbox as well
+    // as dropping the highlight class. The prior shape cleared only
+    // selectedRoots and the row class, leaving every .bead-select-checkbox
+    // still checked: the page then showed checked rows under a "No issue
+    // selected" hint, and re-clicking such a row was a no-op (the checkbox
+    // was already checked, so no 'change' event ever fired and the row could
+    // not be re-selected without a page reload). Both queries are
+    // DOCUMENT-level for the same reason the 'change' listener below is:
+    // '#backlog' is not guaranteed to be the resolvable container the rows
+    // live in, and scoping to it made the reset silently do nothing.
     function clearSelection() {
         selectedRoots = [];
+        document.querySelectorAll('.bead-select-checkbox').forEach(function (cb) {
+            if (cb.checked) cb.checked = false;
+        });
+        document.querySelectorAll('tr.bead-row-selected').forEach(function (tr) {
+            tr.classList.remove('bead-row-selected');
+        });
         renderSelectedIssues();
     }
 
@@ -568,9 +585,6 @@ function clientScriptSource(mountPrefix) {
                     resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.'
                         + (r.json.buildVersionWarning ? ' Warning: ' + r.json.buildVersionWarning : '');
                     clearSelection();
-                    document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
-                        tr.classList.remove('bead-row-selected');
-                    });
                     watchLaunch(r.json.sprintId);
                 } else {
                     resultEl.style.color = '#ef4444';
