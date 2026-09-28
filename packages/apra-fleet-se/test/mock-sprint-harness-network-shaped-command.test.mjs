@@ -435,9 +435,15 @@ test('label discrimination: github and azure-devops resolve to distinct mock tok
         'sanity: no single dispatched command should ever carry BOTH labels\' tokens',
     );
 
+    // apra-fleet-qeq1.6.1: 'bitbucket' is now a REGISTERED label
+    // (MOCK_VCS_CREDENTIAL_TOKENS gained a 'bitbucket' entry so the Bitbucket
+    // publish-e2e chain test can drive vcs_credential_exec for real), so it
+    // no longer exercises the "unrecognised label" branch this test is
+    // actually about -- 'gitlab' has no registered VCS provider anywhere in
+    // this codebase and stays a genuinely unrecognised label here.
     const badRes = await callTool('vcs_credential_exec', {
         command: buildCreatePrCommand({ includeInline: false }),
-        label: 'bitbucket',
+        label: 'gitlab',
         member_name: 'local',
     });
     assert.equal(badRes.structuredContent.ok, false, `expected an unrecognised label to fail (ok:false), got: ${JSON.stringify(badRes.structuredContent)}`);

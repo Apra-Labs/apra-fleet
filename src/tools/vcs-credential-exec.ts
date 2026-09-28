@@ -36,6 +36,14 @@ import type { Agent } from '../types.js';
  *   4. redacts any occurrence of the token from stdout/stderr before
  *      returning, the same defence execute-command.ts's redactOutput applies.
  *
+ * The same helper stdout also carries a `username=` line (the basic-auth
+ * user provision_vcs_auth wrote -- for Bitbucket, the provisioning email),
+ * so `{{vcs_username}}` / `{{vcs_username_inline}}` get the identical
+ * two-dialect treatment for providers whose REST API needs `user:token`
+ * basic auth rather than a bearer token (apra-fleet-qeq1.1). The username is
+ * one half of a credential pair, so it is redacted on the same footing as
+ * the token -- under its own marker so a reader can tell the two apart.
+ *
  * The plaintext token therefore appears in no field of any result an
  * orchestrator-side caller can read. readMemberVcsCredentialToken is
  * deliberately left in place; retiring it is a separate task.
@@ -67,6 +75,31 @@ export const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
  */
 export const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
 
+/**
+ * The basic-auth USERNAME half of the same credential, for providers whose
+ * REST API authenticates with `user:token` rather than a bearer token
+ * (Bitbucket Cloud). Reference this one BARE, exactly like
+ * {{vcs_token}}: the substituted value arrives already shell-escaped AND
+ * quoted for the member's shell.
+ *
+ * The value is read from the `username=` line of the SAME credential-helper
+ * stdout the token comes from -- provision_vcs_auth wrote it there (see
+ * src/services/vcs/bitbucket.ts, which passes the provisioning email). No
+ * extra member round trip is involved.
+ */
+export const VCS_USERNAME_PLACEHOLDER = '{{vcs_username}}';
+
+/**
+ * The inside-your-own-single-quotes form of {{vcs_username}}, the exact
+ * counterpart of {{vcs_token_inline}} (e.g.
+ * `-u '{{vcs_username_inline}}:{{vcs_token_inline}}'`): escaped for the
+ * INTERIOR of a single-quoted string in the member's shell dialect, with no
+ * quotes of its own. As with the token pair, placement is documented rather
+ * than enforced -- whether an occurrence really sits inside the caller's
+ * open quotes is not decidable from the command string alone.
+ */
+export const VCS_USERNAME_INLINE_PLACEHOLDER = '{{vcs_username_inline}}';
+
 export const vcsCredentialExecSchema = z.object({
   ...memberIdentifier,
   command: z.string().min(1).describe(
@@ -77,6 +110,10 @@ export const vcsCredentialExecSchema = z.object({
     + 'server substitutes it with the value escaped for the interior of a single-quoted string, with '
     + 'no quotes of its own (use this one when the token must be interpolated into a larger quoted '
     + 'value, e.g. an Authorization header). Both may appear in the same command. '
+    + 'For a provider that needs basic auth (user:token, e.g. Bitbucket) the matching username '
+    + 'placeholders {{vcs_username}} (bare) and {{vcs_username_inline}} (inside your own single '
+    + 'quotes) substitute the credential helper\'s username under the same two dialects; they are '
+    + 'optional and may not appear alone -- a token placeholder is still required. '
     + 'The plaintext credential never leaves the server and never appears in this tool\'s result.'
   ),
   label: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).optional().describe(
@@ -103,6 +140,13 @@ export type VcsCredentialExecReason =
   | 'credential_read_failed'
   /** The helper ran but printed no usable password= line. */
   | 'credential_empty'
+  /**
+   * `command` referenced {{vcs_username}}/{{vcs_username_inline}} but the
+   * helper printed no usable username= line. Only reachable for a command
+   * that actually asks for the username -- a token-only command never
+   * consults it.
+   */
+  | 'username_empty'
   /** Dispatching the credential-requiring command threw. */
   | 'dispatch_failed';
 
@@ -118,9 +162,11 @@ interface VcsCredentialExecFields {
   /** Command stderr with every occurrence of the credential redacted. */
   stderr: string;
   /**
-   * How many times the credential had to be redacted out of stdout+stderr.
-   * Normally 0; a nonzero count means the dispatched command echoed its own
-   * credential back and the redaction earned its keep.
+   * How many times credential material had to be redacted out of
+   * stdout+stderr -- the token, plus the basic-auth username when the
+   * command substituted one. Normally 0; a nonzero count means the
+   * dispatched command echoed its own credential back and the redaction
+   * earned its keep.
    */
   tokenRedactions: number;
   /** Credential label used, or null for the unlabelled helper. */
@@ -140,7 +186,12 @@ export interface VcsCredentialExecResult {
   structuredContent: VcsCredentialExecStructured;
 }
 
-const REDACTION = '[REDACTED:vcs_token]';
+const TOKEN_REDACTION = '[REDACTED:vcs_token]';
+/**
+ * Distinct from TOKEN_REDACTION on purpose: a reader of a redacted stream
+ * needs to know WHICH half of the basic-auth pair was scrubbed out of it.
+ */
+const USERNAME_REDACTION = '[REDACTED:vcs_username]';
 
 function execResult(
   text: string,
@@ -163,10 +214,10 @@ function execResult(
 }
 
 /** Replace every occurrence of `secret` in `output`, and report how many. */
-function redactToken(output: string, secret: string): { text: string; count: number } {
+function redactSecret(output: string, secret: string, marker: string): { text: string; count: number } {
   if (!secret) return { text: output, count: 0 };
   const parts = output.split(secret);
-  return { text: parts.join(REDACTION), count: parts.length - 1 };
+  return { text: parts.join(marker), count: parts.length - 1 };
 }
 
 export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<VcsCredentialExecResult> {
@@ -185,6 +236,9 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // credential handoff rather than a second, unguarded execute_command.
   const hasBare = input.command.includes(VCS_TOKEN_PLACEHOLDER);
   const hasInline = input.command.includes(VCS_TOKEN_INLINE_PLACEHOLDER);
+  // A token placeholder stays mandatory even for a basic-auth command: the
+  // username alone is not a credential, so a username-only command is still
+  // an unguarded execute_command and is still refused here.
   if (!hasBare && !hasInline) {
     return execResult(
       `[FAIL] command must contain ${VCS_TOKEN_PLACEHOLDER} or ${VCS_TOKEN_INLINE_PLACEHOLDER} -- use execute_command for a command that needs no credential.`,
@@ -210,9 +264,17 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
     );
   }
 
+  // Only a command that actually references a username placeholder consults
+  // the username= line, so every existing token-only call site (GitHub,
+  // Azure DevOps) keeps its exact previous behaviour and cannot reach the
+  // username_empty failure.
+  const needsUsername = input.command.includes(VCS_USERNAME_PLACEHOLDER)
+    || input.command.includes(VCS_USERNAME_INLINE_PLACEHOLDER);
+
   // STEP 1 -- read the credential SERVER-SIDE. This result is consumed
   // in-process and is never placed in the payload returned below.
   let token = '';
+  let username = '';
   try {
     const readRes = await strategy.execCommand(read.command, 15000);
     if (readRes.code !== 0) {
@@ -223,6 +285,8 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
     }
     const m = /^password=(.*)$/m.exec(readRes.stdout || '');
     token = m ? m[1].trim() : '';
+    const u = /^username=(.*)$/m.exec(readRes.stdout || '');
+    username = u ? u[1].trim() : '';
   } catch (err: any) {
     return execResult(
       `[FAIL] Failed to read the VCS credential for "${agent.friendlyName}" from '${read.path}': ${err.message}`,
@@ -235,6 +299,15 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
       { ...who, reason: 'credential_empty' },
     );
   }
+  // Substituting an empty username would silently dispatch ':<token>' and
+  // surface much later as a confusing 401, so this is a typed refusal that
+  // never dispatches anything.
+  if (needsUsername && !username) {
+    return execResult(
+      `[FAIL] The VCS credential for "${agent.friendlyName}" carries no basic-auth username (expected a 'username=' line from '${read.path}'), but the command references ${VCS_USERNAME_PLACEHOLDER}. Re-run provision_vcs_auth for a provider that records one.`,
+      { ...who, reason: 'username_empty' },
+    );
+  }
 
   // STEP 2 -- substitute, escaped for the member's OWN shell. A Windows
   // member registered with shell=gitbash runs bash, so it needs POSIX
@@ -242,13 +315,30 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // for every consumer. The bare placeholder gets the fully-quoted form; the
   // inline placeholder gets the SAME dialect's interior-only escaping, with
   // no wrapping quotes of its own, so it composes inside the caller's
-  // already-open single quotes instead of double-escaping.
+  // already-open single quotes instead of double-escaping. The username pair
+  // reuses the SAME two escapers under the SAME isPosixShell branch rather
+  // than adding a second dialect decision.
   const posix = isPosixShell(agentOs, agentShell);
-  const escaped = posix ? escapeShellArg(token) : escapePowerShellArg(token);
-  const escapedInline = posix ? escapeShellArgInner(token) : escapePowerShellArgInner(token);
+  const quote = (v: string): string => (posix ? escapeShellArg(v) : escapePowerShellArg(v));
+  const inner = (v: string): string => (posix ? escapeShellArgInner(v) : escapePowerShellArgInner(v));
   const finalCommand = input.command
-    .replaceAll(VCS_TOKEN_PLACEHOLDER, escaped)
-    .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, escapedInline);
+    .replaceAll(VCS_TOKEN_PLACEHOLDER, quote(token))
+    .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, inner(token))
+    .replaceAll(VCS_USERNAME_PLACEHOLDER, quote(username))
+    .replaceAll(VCS_USERNAME_INLINE_PLACEHOLDER, inner(username));
+
+  /**
+   * Scrub both halves of the credential. The username is only scrubbed when
+   * this command actually substituted one -- a token-only command must not
+   * start redacting an unrelated string (a GitHub helper's username is the
+   * very common literal 'x-access-token') out of its own output.
+   */
+  const redactCredentials = (output: string): { text: string; count: number } => {
+    const t = redactSecret(output, token, TOKEN_REDACTION);
+    if (!needsUsername) return t;
+    const u = redactSecret(t.text, username, USERNAME_REDACTION);
+    return { text: u.text, count: t.count + u.count };
+  };
 
   // STEP 3 -- dispatch. Only the log-safe form (placeholder still in place) is
   // ever logged; `finalCommand` is never written anywhere.
@@ -264,7 +354,7 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   } catch (err: any) {
     // The thrown message can quote the command that failed, so it is redacted
     // on the same footing as stdout/stderr.
-    const redactedErr = redactToken(String(err?.message ?? err), token);
+    const redactedErr = redactCredentials(String(err?.message ?? err));
     return execResult(
       `[FAIL] Command dispatch failed on "${agent.friendlyName}": ${redactedErr.text}`,
       { ...who, reason: 'dispatch_failed', stderr: redactedErr.text, tokenRedactions: redactedErr.count },
@@ -274,8 +364,8 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // STEP 4 -- defence in depth: the command itself may echo the credential
   // back (a curl -v, a git error quoting the remote URL), so scrub both
   // streams before anything is returned.
-  const outRedacted = redactToken(stdout, token);
-  const errRedacted = redactToken(stderr, token);
+  const outRedacted = redactCredentials(stdout);
+  const errRedacted = redactCredentials(stderr);
 
   return execResult(
     `[OK] Ran credential-requiring command on "${agent.friendlyName}" (exit ${code}).`,
