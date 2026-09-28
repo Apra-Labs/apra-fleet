@@ -13,6 +13,7 @@ import {
 import { extractWorkflowSubsystemAssets } from '../src/cli/workflow-assets.js';
 import { MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from '../src/cli/fleet-se-prereqs.js';
 import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
+import { getOrCreateKey } from '../src/services/jwt.js';
 
 // apra-fleet-i9ag.13.7.3 -- pins the fix for gap bug apra-fleet-i9ag.13.7 (the
 // installer silently npm-installed beads via a non-fatal try/catch, exactly
@@ -63,6 +64,15 @@ vi.mock('node:child_process');
 vi.mock('../src/cli/workflow-assets.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../src/cli/workflow-assets.js')>();
   return { ...orig, extractWorkflowSubsystemAssets: vi.fn() };
+});
+// apra-fleet-i9ag.12.15: getOrCreateKey() is the FIRST irreversible act of an
+// install (it mints ~/.apra-fleet/fleet.key), so "the gate runs before
+// anything is written" is only checkable if this call is observable. Wrapped
+// rather than stubbed -- the real implementation still runs for the happy
+// path, exactly as before.
+vi.mock('../src/services/jwt.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../src/services/jwt.js')>();
+  return { ...orig, getOrCreateKey: vi.fn(orig.getOrCreateKey) };
 });
 
 const mockHome = '/mock/home';
@@ -216,6 +226,64 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     expect(vi.mocked(extractWorkflowSubsystemAssets)).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
+  });
+
+  // apra-fleet-i9ag.13 / apra-fleet-i9ag.12.15: the gate used to run MID-
+  // install -- after the fleet.key mint, the binary copy, hooks, scripts and
+  // settings had already been written -- so a machine missing Node was left
+  // half-installed by the very command that then told it to install Node.
+  // The gate now runs immediately after --workflows is parsed, before the
+  // running-process guard stops anything and before the first byte is
+  // written. These two cases pin that ORDERING, which cases 1-3 (message
+  // content) cannot: they would still pass with the gate back in its old
+  // mid-install position.
+  it('case 8 (ORDERING): a failed gate mints no fleet.key and performs no write of any kind', async () => {
+    _setFleetSePrereqStepDeps({
+      detectFleetSePrereqs: fakeDetector({
+        node: { present: false, version: null, satisfiesMin: false },
+        npm: { present: false, version: null },
+        ok: false,
+        missing: ['node', 'npm'],
+      }),
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    // The key mint is the install's first irreversible act -- never reached.
+    expect(vi.mocked(getOrCreateKey)).not.toHaveBeenCalled();
+    // ...and neither is any other mutation of the filesystem: no directory
+    // created, no file written, no binary copied, no mode changed, nothing
+    // removed. An empty HOME stays empty.
+    expect(vi.mocked(fs.mkdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.copyFileSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.chmodSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.rmSync)).not.toHaveBeenCalled();
+    // The gate also precedes the "Installing Apra Fleet ..." banner, so the
+    // operator is never told an install started that then did not happen.
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).not.toContain('Installing Apra Fleet');
+
+    exitSpy.mockRestore();
+  });
+
+  it('case 9 (ORDERING, non-vacuous control): the SAME run with prerequisites satisfied does mint the key and write', async () => {
+    // Without this control, case 8 would also pass if runInstall() simply
+    // never wrote anything under these mocks. Same args, same mocks, only the
+    // detector verdict flipped.
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
+    vi.mocked(execFileSync).mockReturnValue('bd 1.3.0\n' as any);
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(vi.mocked(getOrCreateKey)).toHaveBeenCalled();
+    expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBeGreaterThan(0);
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toContain('Installing Apra Fleet');
   });
 
   it('case 4: prerequisites satisfied, --workflows all (happy path) -- exits 0 and the summary reports fleet-se ready with versions', async () => {

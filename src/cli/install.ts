@@ -1138,6 +1138,37 @@ Services (SEA + --transport http):
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
   const installWorkflows = workflowsMode === 'all';
+
+  // --- fleet-se prerequisite gate (apra-fleet-i9ag.13, apra-fleet-i9ag.12.15) ---
+  // fleet-se (fleet-sprint engine, fleet supervisor, bd) requires Node.js
+  // 22.16+ and npm by design (owner re-scope recorded on apra-fleet-i9ag.13).
+  // This gate runs FIRST -- before the running-process guard stops anything,
+  // before the fleet.key mint, and before a single file is written -- so a
+  // machine that cannot support fleet-se is left exactly as it was found
+  // rather than half-installed. (It used to sit further down, after the key
+  // mint, binary copy, hooks and settings had already run.) A missing
+  // prerequisite fails loudly here instead of silently skipping bd (the
+  // original apra-fleet-i9ag.13.7 defect); `--workflows none` opts out of
+  // fleet-se entirely and skips this gate. fleetSePrereqs stays in scope for
+  // the final summary line's fleet-se row.
+  let fleetSePrereqs: FleetSePrereqResult | null = null;
+  if (installWorkflows && fleetSePrereqCheckEnabled()) {
+    fleetSePrereqs = fleetSePrereqStepDeps.detectFleetSePrereqs();
+    if (!fleetSePrereqs.ok) {
+      const reasons: string[] = [];
+      if (!fleetSePrereqs.node.present) {
+        reasons.push('node: NOT INSTALLED');
+      } else if (!fleetSePrereqs.node.satisfiesMin) {
+        reasons.push(`node: ${fleetSePrereqs.node.version} (requires ${MIN_NODE_VERSION}+)`);
+      }
+      if (!fleetSePrereqs.npm.present) {
+        reasons.push('npm: NOT INSTALLED');
+      }
+      console.error(`\nError: fleet-se prerequisite check failed -- ${reasons.join(', ')}\n${FLEET_SE_PREREQ_FIX_LINE}\n`);
+      process.exit(1);
+    }
+  }
+
   const serviceStep = isSea() && transport === 'http';
   // Base counts no longer bake in an always-on Beads slot (apra-fleet-i9ag.13.7.2):
   // bd is part of fleet-se under the owner re-scope on apra-fleet-i9ag.13, so its
@@ -1152,7 +1183,9 @@ Services (SEA + --transport http):
   if (serviceStep) totalSteps++;
 
   // --- Step-number derivation for the fleet-se tail of the pipeline ---
-  // (workflow runtime -> [fleet-se prereq gate] -> dolt -> beads -> KB -> [service]).
+  // (workflow runtime -> dolt -> beads -> KB -> [service]). The fleet-se
+  // prereq gate is deliberately NOT in this list: it runs before any step is
+  // printed and consumes no step number.
   // kb is always second-to-last-or-last; dolt/beads/workflow-runtime step
   // backward from kb. beads and workflow-runtime are only PRINTED when
   // installWorkflows is true, so dolt sits one slot earlier than kb when
@@ -1658,33 +1691,6 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         ? transformAgentForAgy(rawContent, relPath)
         : rawContent;
       writeAssetFile(path.join(agentsDestDir, relPath), content);
-    }
-  }
-
-  // --- fleet-se prerequisite gate (apra-fleet-i9ag.13.7.2) ---
-  // fleet-se (fleet-sprint engine, fleet supervisor, bd) requires Node.js
-  // 22.16+ and npm by design (owner re-scope recorded on apra-fleet-i9ag.13).
-  // Gate BEFORE any fleet-se asset extraction, the Beads install and
-  // supervisor-service registration, so a missing prerequisite fails loudly
-  // instead of silently skipping bd (the original apra-fleet-i9ag.13.7
-  // defect). A hard process.exit(1) here, after earlier install steps have
-  // already run, mirrors the established pattern this file already uses for
-  // a failed supervisor-service registration below.
-  let fleetSePrereqs: FleetSePrereqResult | null = null;
-  if (installWorkflows && fleetSePrereqCheckEnabled()) {
-    fleetSePrereqs = fleetSePrereqStepDeps.detectFleetSePrereqs();
-    if (!fleetSePrereqs.ok) {
-      const reasons: string[] = [];
-      if (!fleetSePrereqs.node.present) {
-        reasons.push('node: NOT INSTALLED');
-      } else if (!fleetSePrereqs.node.satisfiesMin) {
-        reasons.push(`node: ${fleetSePrereqs.node.version} (requires ${MIN_NODE_VERSION}+)`);
-      }
-      if (!fleetSePrereqs.npm.present) {
-        reasons.push('npm: NOT INSTALLED');
-      }
-      console.error(`\nError: fleet-se prerequisite check failed -- ${reasons.join(', ')}\n${FLEET_SE_PREREQ_FIX_LINE}\n`);
-      process.exit(1);
     }
   }
 
