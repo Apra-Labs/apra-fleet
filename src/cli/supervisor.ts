@@ -42,6 +42,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { WORKFLOWS_DIR, SCHEMAS_DIR } from './config.js';
 
@@ -188,4 +189,277 @@ export async function runSupervisor(
     deps.error(e.stack ?? String(e));
     return 1;
   }
+}
+
+/**
+ * apra-fleet-i9ag.17.4.1: the supervisor's persisted project-folder setting
+ * -- `supervisor.config.json` under `SUPERVISOR_DATA_DIR` -- written here
+ * (install time) and read by packages/apra-fleet-se's own
+ * `readSupervisorConfig()`/`resolveProjectDir()`
+ * (packages/apra-fleet-se/src/supervisor/project-config.mjs,
+ * beads-identity.mjs). This is the ONLY writer of that file on the install
+ * side, mirroring the reader's own "one owner" rule.
+ *
+ * SCHEMA DRIFT: this package cannot import the .mjs reader directly to
+ * share one schema definition -- the root package is TypeScript under
+ * `rootDir: ./src` with `allowJs` off, and does not depend on
+ * `@apralabs/apra-fleet-se` (the dependency runs the other way, through
+ * `@apralabs/apra-fleet-client`; see src/services/sprint-coordination.ts's
+ * header for the identical constraint already documented there). Drift is
+ * instead caught by a parity test (tests/install-supervisor-service.test.ts)
+ * that imports the REAL reader and asserts it accepts exactly what this
+ * writer produces, rather than two hand-restated copies of the same JSON
+ * shape checked against each other in name only.
+ */
+export const SUPERVISOR_CONFIG_FILENAME = 'supervisor.config.json';
+
+/** Absolute path of `supervisor.config.json` for a given supervisor data
+ *  dir (default `SUPERVISOR_DATA_DIR`) -- byte-identical in shape to
+ *  packages/apra-fleet-se/src/supervisor/project-config.mjs's own
+ *  `supervisorConfigPath()`. */
+export function supervisorConfigPath(dataDir: string = SUPERVISOR_DATA_DIR): string {
+  return path.join(dataDir, SUPERVISOR_CONFIG_FILENAME);
+}
+
+export interface SeedProjectDirResult {
+  ok: boolean;
+  /** The resolved absolute path, whether or not the seed succeeded -- so a
+   *  caller can name it in an error message without re-resolving. */
+  resolvedPath: string;
+  /** Present only when `ok` is false. */
+  error?: string;
+}
+
+/** The `.beads` directory name, the same one apra-fleet-se's
+ *  `BEADS_DIR_NAME` carries (restated here for the same TypeScript/ESM
+ *  boundary reason `SUPERVISOR_CONFIG_FILENAME` above is). */
+const BEADS_DIR_NAME = '.beads';
+
+/**
+ * One synchronous child-process run, returning stdout. Injectable so
+ * `seedSupervisorProjectDir()` below is unit-testable with no bd, no git and
+ * no real project folder anywhere on the host.
+ */
+export type SeedProjectDirExec = (
+  file: string,
+  args: string[],
+  options: { cwd?: string },
+) => string;
+
+/**
+ * `shell: true` for `bd` only, and for the same reason `probeBdVersion()` in
+ * ./install.ts uses it: on Windows bd resolves through a `.cmd`/`.ps1` shim
+ * that CreateProcess cannot exec directly. `git` is a real executable
+ * everywhere and is deliberately run WITHOUT a shell, so no part of a
+ * caller-supplied path can ever be reinterpreted as a shell token.
+ */
+const realSeedProjectDirExec: SeedProjectDirExec = (file, args, options) =>
+  String(
+    execFileSync(file, args, {
+      ...options,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      shell: file === 'bd',
+    }) ?? '',
+  );
+
+/**
+ * Value of a `bd config get <key> --json` answer ({ key, value, ... }), with
+ * the plain (non-JSON) output of an older bd accepted as a fallback -- the
+ * same two shapes `parseBdConfigValue()` in
+ * packages/apra-fleet-se/fleet-sprint/beads-identity.mjs accepts. Restated
+ * rather than imported for the TypeScript/ESM boundary reason documented on
+ * `SUPERVISOR_CONFIG_FILENAME` above.
+ */
+function parseBdConfigValue(text: string): string {
+  const start = text.indexOf('{');
+  if (start >= 0) {
+    try {
+      const obj = JSON.parse(text.slice(start));
+      if (obj && typeof obj === 'object' && 'value' in obj) {
+        return String((obj as { value: unknown }).value ?? '').trim();
+      }
+    } catch {
+      // Not JSON after all -- fall through to the plain-output reading.
+    }
+  }
+  return text.trim().split(/\r?\n/)[0].trim();
+}
+
+/**
+ * PREFLIGHT -- the part of the project-folder validation that needs NOTHING
+ * but the filesystem and git:
+ *
+ *   1. the path exists and is a directory (a `.beads` path is normalised to
+ *      its parent first, the same convenience `--beads-dir` and the console
+ *      both offer),
+ *   2. `<dir>/.beads` is itself a directory,
+ *   3. `git -C <dir> remote get-url origin` succeeds and is non-empty.
+ *
+ * Split out of `seedSupervisorProjectDir()` below (apra-fleet-i9ag.17) so
+ * `apra-fleet install --project-dir <clone>` can still refuse a bad path
+ * BEFORE the install writes a single file, while the one check that needs a
+ * runnable `bd` (sync.remote) waits until install's own Beads step has
+ * provisioned bd. Running the whole validation up front made a fresh machine
+ * with no bd fail an install that would have installed bd moments later.
+ *
+ * Writes nothing, ever, and never runs bd: a caller that gets `ok` here must
+ * still call `seedSupervisorProjectDir()`, which re-runs these same checks
+ * before the bd check and the write.
+ *
+ * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
+ * always use the defaults (real `node:fs`, real child processes).
+ */
+export function validateProjectDirPreflight(
+  projectDir: string,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync'> = fs,
+  execImpl: SeedProjectDirExec = realSeedProjectDirExec,
+): SeedProjectDirResult {
+  const given = path.resolve(projectDir);
+  const isDirectory = (p: string): boolean => {
+    try {
+      return fsImpl.existsSync(p) && fsImpl.statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  if (!isDirectory(given)) {
+    return {
+      ok: false,
+      resolvedPath: given,
+      error: `project folder '${given}' does not exist or is not a directory`,
+    };
+  }
+  // Accept `<project>/.beads` as well as `<project>`, exactly as the
+  // supervisor's own --beads-dir flag and POST /api/project do, so the three
+  // inputs cannot disagree about the same folder.
+  const resolvedPath = path.basename(given) === BEADS_DIR_NAME ? path.dirname(given) : given;
+
+  if (!isDirectory(path.join(resolvedPath, BEADS_DIR_NAME))) {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' has no initialised beads database (${BEADS_DIR_NAME}): run 'bd init' there`,
+    };
+  }
+
+  try {
+    const origin = execImpl('git', ['-C', resolvedPath, 'remote', 'get-url', 'origin'], {}).trim();
+    if (!origin) throw new Error('empty origin');
+  } catch {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' has no git 'origin' remote: run 'git remote add origin <url>' there`,
+    };
+  }
+
+  return { ok: true, resolvedPath };
+}
+
+/**
+ * Validate `projectDir` and, on success, write it to
+ * `supervisor.config.json` under `dataDir` -- the exact shape
+ * `readSupervisorConfig()` accepts: a JSON object with a non-empty string
+ * `projectDir` key, resolved to an ABSOLUTE path before writing (the reader
+ * otherwise resolves a relative value against ITS OWN cwd at read time,
+ * which is not install's cwd and not stable across a service restart).
+ *
+ * VALIDATION is the same question the console's POST /api/project asks, and
+ * for the same reason: the fleet-sprint engine's beads identity precondition
+ * is FATAL, so a folder without an initialised `.beads`, a git `origin`
+ * remote and a bd `sync.remote` cannot run a sprint at all. Seeding one at
+ * install time would hand the operator a supervisor that boots cleanly and
+ * then fails every launch, which is exactly the silent-wrong-thing this
+ * option exists to prevent -- so all four checks run here: the three
+ * `validateProjectDirPreflight()` above owns, re-run here so this function
+ * remains a complete standalone entry point, plus the one that needs bd:
+ *
+ *   4. `bd config get sync.remote --json` (run in `<dir>`) is non-empty.
+ *
+ * bd MUST be runnable for step 4. When it is not, this fails LOUDLY rather
+ * than skipping the check: a skipped check is indistinguishable from a
+ * passed one to the operator, and would put back the unusable setting the
+ * option is meant to make impossible. A caller that can provision bd itself
+ * (the installer) therefore runs the preflight first and calls this only
+ * AFTER its Beads step, so "bd is missing" is a real answer rather than an
+ * ordering artefact.
+ *
+ * Never partially writes: every check runs before any write call, so a
+ * rejected path leaves no new file behind and an already-existing config
+ * (e.g. one an operator set from the console) is left untouched.
+ *
+ * THE WRITE ITSELF matches the runtime writer's two documented guarantees
+ * (writeSupervisorConfig() in
+ * packages/apra-fleet-se/src/supervisor/project-config.mjs), because the two
+ * write the SAME file and an installer that only honoured one of them would
+ * silently undo the other's work:
+ *
+ *   - UNKNOWN TOP-LEVEL KEYS ARE PRESERVED. A newer supervisor may have
+ *     written a field this build has never heard of; an install must not
+ *     destroy it. The existing file is read and merged under `projectDir`
+ *     (a file that is missing, unreadable or not a JSON object simply
+ *     yields nothing to preserve and is replaced by a good one).
+ *   - THE WRITE IS ATOMIC: temp file in the SAME directory, then rename, so
+ *     an interrupted install can never leave a truncated file that the
+ *     supervisor's next boot has to reject.
+ *
+ * `fsImpl`/`execImpl` are injectable purely for tests -- production callers
+ * always use the defaults (real `node:fs`, real child processes).
+ */
+export function seedSupervisorProjectDir(
+  projectDir: string,
+  dataDir: string = SUPERVISOR_DATA_DIR,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'statSync' | 'mkdirSync' | 'writeFileSync' | 'readFileSync' | 'renameSync'> = fs,
+  execImpl: SeedProjectDirExec = realSeedProjectDirExec,
+): SeedProjectDirResult {
+  const preflight = validateProjectDirPreflight(projectDir, fsImpl, execImpl);
+  if (!preflight.ok) return preflight;
+  const { resolvedPath } = preflight;
+
+  // bd must be RUNNABLE before its answer can mean anything. Probing the
+  // version separately is what lets the two failures stay distinguishable:
+  // "bd is missing" (an install-machine problem) and "sync.remote is unset"
+  // (a project problem) have completely different fixes.
+  try {
+    execImpl('bd', ['--version'], {});
+  } catch {
+    return {
+      ok: false,
+      resolvedPath,
+      error: "bd could not be run, and is required to validate a project folder: install bd and make sure it is on PATH",
+    };
+  }
+  let syncRemote = '';
+  try {
+    syncRemote = parseBdConfigValue(execImpl('bd', ['config', 'get', 'sync.remote', '--json'], { cwd: resolvedPath }));
+  } catch {
+    syncRemote = '';
+  }
+  if (!syncRemote) {
+    return {
+      ok: false,
+      resolvedPath,
+      error: `project folder '${resolvedPath}' has no beads 'sync.remote' setting: run 'bd config set sync.remote <url>' there`,
+    };
+  }
+
+  fsImpl.mkdirSync(dataDir, { recursive: true });
+  const configPath = supervisorConfigPath(dataDir);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(String(fsImpl.readFileSync(configPath, 'utf-8')));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // No file, unreadable, or not JSON -- there is nothing to preserve, and
+    // a corrupt file is replaced by a good one rather than blocking the
+    // write (the same total-read stance the runtime reader takes).
+    existing = {};
+  }
+  const tmpPath = `${configPath}.tmp`;
+  fsImpl.writeFileSync(tmpPath, `${JSON.stringify({ ...existing, projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');
+  fsImpl.renameSync(tmpPath, configPath);
+  return { ok: true, resolvedPath };
 }

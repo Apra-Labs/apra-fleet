@@ -7,6 +7,7 @@ import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { registerSupervisorService } from '../services/supervisor-service.js';
+import { seedSupervisorProjectDir, validateProjectDirPreflight } from './supervisor.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
@@ -1026,6 +1027,7 @@ Usage:
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --project-dir <path>  Seed the fleet-supervisor's project folder before it starts
   apra-fleet install --help            Show this help
 
 Options:
@@ -1039,6 +1041,16 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
                           fleet-se requires Node.js 22.16+ and npm.
+  --project-dir <path>    Seed the fleet-supervisor's persisted project folder (the folder whose
+                          .beads tracker the supervisor runs against) before the supervisor service
+                          is registered and started, so the first boot already resolves the right
+                          project instead of the installed engine path. The folder must be one a
+                          sprint can actually run in: it must exist, contain an initialised .beads
+                          (bd init), have a git 'origin' remote, and have bd's sync.remote set. A
+                          folder failing any of those is refused and nothing is written. bd must be
+                          on PATH for this check. Omitting this leaves any project folder set
+                          earlier (e.g. from the console) untouched; this can also be set later
+                          from the console's Projects page or by re-running install with this flag.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
 
 Services (SEA + --transport http):
@@ -1153,15 +1165,63 @@ Services (SEA + --transport http):
     }
   }
 
+  // Parse --project-dir flag (apra-fleet-i9ag.17.4.1): the fleet-supervisor's
+  // project folder, seeded into supervisor.config.json before the supervisor
+  // service is registered (see the seeding step below). Both spellings,
+  // matching every other flag in this file. undefined = option omitted --
+  // the seeding step below must then write nothing and touch nothing.
+  let projectDirArg: string | undefined;
+  const projectDirEqualArg = args.find(a => a.startsWith('--project-dir='));
+  if (projectDirEqualArg) {
+    projectDirArg = projectDirEqualArg.slice('--project-dir='.length);
+  } else {
+    const projectDirIdx = args.indexOf('--project-dir');
+    if (projectDirIdx >= 0) {
+      if (projectDirIdx < args.length - 1) {
+        projectDirArg = args[projectDirIdx + 1];
+      } else {
+        console.error('Error: --project-dir requires a path.');
+        process.exit(1);
+      }
+    }
+  }
+
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--project-dir='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--project-dir', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
     if (!a.startsWith('-')) continue; // non-flag positional (e.g. value token for --skill)
     console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
     process.exit(1);
+  }
+
+  // Validate --project-dir EARLY -- before any other install side effect runs
+  // (same "fail loudly before a single file is written" philosophy as the
+  // fleet-se prerequisite gate below), so an unusable path aborts a fresh
+  // install cleanly with nothing written and no existing config disturbed.
+  //
+  // Only the checks that need NO bd run here (path exists and is a directory,
+  // an initialised <dir>/.beads, a git 'origin' remote). The fourth check --
+  // bd's sync.remote -- and the config write itself are DEFERRED to just
+  // before service registration further down, because bd is something this
+  // very install provisions in its Beads step: running the bd check up front
+  // made `apra-fleet install --project-dir <clone>` fail on every fresh
+  // machine that did not already have bd, for a prerequisite the install was
+  // about to satisfy itself (apra-fleet-i9ag.17). Deferring the WRITE with it
+  // keeps the never-partially-write guarantee: a path rejected at either
+  // point leaves nothing behind.
+  //
+  // Omitting --project-dir entirely (projectDirArg undefined) calls nothing
+  // here or below, leaving today's behaviour -- including any config an
+  // operator already set from the console -- byte-identical.
+  if (projectDirArg !== undefined) {
+    const preflight = validateProjectDirPreflight(projectDirArg);
+    if (!preflight.ok) {
+      console.error(`Error: --project-dir: ${preflight.error}.`);
+      process.exit(1);
+    }
   }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
@@ -1901,6 +1961,30 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode, workflowsMode);
+
+  // --- Seed the supervisor's persisted project folder (--project-dir) ---
+  // Placed HERE, after the Beads step above and before the supervisor service
+  // is registered below, for two reasons that pin it from both sides
+  // (apra-fleet-i9ag.17):
+  //   - AFTER Beads: the remaining check runs `bd config get sync.remote` in
+  //     the folder, and bd is only guaranteed runnable once the Beads step has
+  //     run. Before it, a fresh machine failed a check for a tool the install
+  //     itself was about to provide.
+  //   - BEFORE registration: the supervisor's FIRST boot must already see the
+  //     config, or it resolves the wrong project and needs a restart -- which
+  //     is the whole point of the option.
+  // The preflight near the top of runInstall() has already rejected a bad
+  // path, so a failure here means bd is missing (e.g. --workflows none on a
+  // machine without bd) or the folder has no beads 'sync.remote'. Both stay
+  // FATAL and loud: a skipped check is indistinguishable from a passed one,
+  // and would seed a setting whose first sprint launch is guaranteed to fail.
+  if (projectDirArg !== undefined) {
+    const seedResult = seedSupervisorProjectDir(projectDirArg);
+    if (!seedResult.ok) {
+      console.error(`Error: --project-dir: ${seedResult.error}.`);
+      process.exit(1);
+    }
+  }
 
   // --- Step N: Register and start services (SEA + HTTP mode only) ---
   //

@@ -8,6 +8,7 @@ import {
   type FleetStatusPayload,
   type WorkflowPackageView
 } from "../api/health";
+import { fetchSupervisorProjectState, type SupervisorProjectState } from "../api/supervisor-health";
 
 type StatusState =
   | { kind: "loading" }
@@ -19,6 +20,25 @@ type PackagesState =
   | { kind: "empty" }
   | { kind: "loaded"; packages: WorkflowPackageView[] };
 
+/** Adds a transient `loading` state on top of the three settled states
+ *  fetchSupervisorProjectState() returns -- the row must never be blank or
+ *  omitted, so it renders an explicit "loading" text until the fetch
+ *  settles into one of the three distinguishable states. */
+type ProjectFolderState = { kind: "loading" } | SupervisorProjectState;
+
+/** Row content for the supervisor project-folder row, from its own
+ *  independent fetch state -- fetched separately from /api/fleet/status, so
+ *  this row's failure never depends on, or affects, the other status rows
+ *  (apra-fleet-i9ag.17.3.1). */
+function renderProjectFolder(state: ProjectFolderState) {
+  if (state.kind === "loading") return "loading...";
+  if (state.kind === "configured") return `${state.projectDir} (${state.source})`;
+  if (state.kind === "not-configured") {
+    return "not configured -- pass --beads-dir <project-or-.beads-path> or set a project folder in supervisor.config.json";
+  }
+  return "unknown (supervisor unreachable or does not report this field)";
+}
+
 /** S3 screen: server version, data dir, update-available notice, the fleet
  *  status summary, and the workflow-packages list -- a 404 or network
  *  failure from GET /api/workflow-packages is the EXPECTED "registry not
@@ -27,6 +47,7 @@ type PackagesState =
 export function Health() {
   const [status, setStatus] = useState<StatusState>({ kind: "loading" });
   const [packages, setPackages] = useState<PackagesState>({ kind: "loading" });
+  const [projectFolder, setProjectFolder] = useState<ProjectFolderState>({ kind: "loading" });
 
   useEffect(() => {
     let cancelled = false;
@@ -56,8 +77,17 @@ export function Health() {
       }
     }
 
+    async function loadProjectFolder() {
+      // fetchSupervisorProjectState() never throws -- a supervisor outage
+      // degrades to its own `unknown` state, so this fetch's failure can
+      // never break the status or workflow-packages rows above.
+      const state = await fetchSupervisorProjectState();
+      if (!cancelled) setProjectFolder(state);
+    }
+
     void loadStatus();
     void loadPackages();
+    void loadProjectFolder();
 
     return () => {
       cancelled = true;
@@ -95,6 +125,16 @@ export function Health() {
           </dd>
         </dl>
       ) : null}
+
+      {/* Fetched independently of /api/fleet/status, through the console's
+       *  /ext/<package id>/* proxy to the supervisor's own GET /api/health
+       *  (apra-fleet-i9ag.17.3.1) -- a supervisor outage degrades only this
+       *  row, never the status rows above or the workflow-packages list
+       *  below. */}
+      <dl>
+        <dt>Project folder</dt>
+        <dd>{renderProjectFolder(projectFolder)}</dd>
+      </dl>
 
       <h2>Workflow packages</h2>
       {packages.kind === "loading" ? <p>Loading workflow packages...</p> : null}

@@ -146,6 +146,7 @@ function sendUnauthorized(res) {
  *   watchdog?: object,
  *   dashboard?: object,
  *   beadsIdentity?: { get: () => object|null, refresh: () => Promise<object> },
+ *   project?: { projectDir: string, source: string },
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  * }} [deps]
@@ -171,9 +172,22 @@ export function createSupervisor(deps = {}) {
     // Optional beads-identity handle (bin/serve.mjs wires the real one);
     // read by GET /api/health below. Not a seam: it has no start()/stop().
     const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
-    // The "identity unknown" warning (getWarning() is optional on the handle
-    // so an older/test-only { get, refresh } stub still works).
-    const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
+    // The beads-identity warning (getWarning() is optional on the handle so
+    // an older/test-only { get, refresh } stub still works). Deliberately NOT
+    // gated on `!h.get()` any more: an identity that RESOLVED can still be
+    // incomplete (missing prefix / sync.remote / git origin), which is fatal
+    // to every sprint launched against it, and suppressing the warning purely
+    // because a record exists made Health read healthy right up to the first
+    // failed launch. The handle decides whether there is anything to say.
+    const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' ? (h.getWarning() || null) : null);
+    // The resolved project folder and WHICH of the three sources won it
+    // (flag / config / walk-up -- see resolveProjectDir() in
+    // ./beads-identity.mjs). Reported on GET /api/health so the console and
+    // the operator can both see which project this supervisor actually
+    // adopted, including when the answer came from a persisted setting they
+    // cannot see in the process's command line. Absent (null) for the inert
+    // skeleton and for tests that wire no project dep.
+    const project = deps.project && typeof deps.project.projectDir === 'string' ? deps.project : null;
 
     // The shared bearer service token guarding the `/api/` surface and the
     // live-sprint mutating routes (see auth.mjs's requiresAuth). Either
@@ -321,7 +335,10 @@ export function createSupervisor(deps = {}) {
     // repoRemote }, or null when no beadsIdentity dep was wired -- tests,
     // the inert skeleton -- or when the identity is UNKNOWN: no .beads was
     // found, or its probe failed; then `beadsWarning` carries the reason
-    // and the fix). `?refresh=1` re-runs the probes first; a probe failure
+    // and the fix). `beadsWarning` is also present alongside a NON-null
+    // `beads` when the identity resolved but is INCOMPLETE -- a missing
+    // prefix / sync.remote / git origin is fatal to every sprint launched
+    // against it. `?refresh=1` re-runs the probes first; a probe failure
     // keeps the last good identity and is reported as `beadsRefreshError`
     // rather than failing the liveness answer.
     route('GET', '/api/health', async (req, res, ctx) => {
@@ -343,6 +360,13 @@ export function createSupervisor(deps = {}) {
                 Object.entries(seams).map(([k, v]) => [k, v.name ?? 'wired']),
             ),
             beads: beadsIdentity ? toBeadsSummary(beadsIdentity.get()) : null,
+            // An ADDITION alongside `beads`/`beadsWarning`, not a rename:
+            // `beads` stays the resolved tracker identity (null when unknown),
+            // while these two say which FOLDER was adopted and how it was
+            // chosen -- a supervisor can have a project folder but no usable
+            // beads in it, and the pair has to be able to say exactly that.
+            projectDir: project ? project.projectDir : null,
+            projectDirSource: project ? project.source : null,
             ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
         });

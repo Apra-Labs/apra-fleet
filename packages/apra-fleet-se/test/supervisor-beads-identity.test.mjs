@@ -10,8 +10,12 @@ import {
     toBeadsSummary,
     formatNoBeadsWarning,
     formatProbeFailedWarning,
+    missingIdentityFields,
+    checkProjectFolderIdentity,
+    PROJECT_FOLDER_REQUIREMENTS,
     BEADS_DIR_NAME,
 } from '../src/supervisor/beads-identity.mjs';
+import { isCompleteIdentity } from '../fleet-sprint/beads-identity.mjs';
 import { renderIndexPageHtml, renderBeadsHeaderHtml, renderSprintSection, buildStatePayload } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 
@@ -153,6 +157,14 @@ describe('probeBeadsIdentity', () => {
     });
 });
 
+/** A fully resolved identity -- every field the engine's own
+ *  isCompleteIdentity() requires. */
+const COMPLETE = Object.freeze({
+    beadsDir: '/p/.beads', prefix: 'p1', databasePath: '/p/.beads/db',
+    syncRemote: 'https://example.invalid/acme/demo.git',
+    repoRemote: 'https://example.invalid/acme/demo.git',
+});
+
 describe('createBeadsIdentityState', () => {
     test('get() returns the initial record; refresh() re-probes and replaces it', async () => {
         let n = 0;
@@ -176,7 +188,7 @@ describe('createBeadsIdentityState', () => {
         let ok = false;
         const probe = async () => {
             if (!ok) throw new Error('bd where --json failed: no beads');
-            return { beadsDir: '/p/.beads', prefix: 'p1', syncRemote: '', repoRemote: '' };
+            return COMPLETE;
         };
         const state = createBeadsIdentityState({ cwd: ROOT, initial: null, warning, probe });
         assert.equal(state.get(), null);
@@ -192,8 +204,34 @@ describe('createBeadsIdentityState', () => {
         assert.equal(state.getWarning(), null);
     });
 
-    test('a resolved state never reports a warning, even when one was passed', () => {
-        const state = createBeadsIdentityState({ cwd: ROOT, initial: { beadsDir: ROOT, prefix: 'p0' }, warning: 'stale' });
+    test('a resolved AND COMPLETE state never reports a warning, even when one was passed', () => {
+        const state = createBeadsIdentityState({ cwd: ROOT, initial: COMPLETE, warning: 'stale' });
+        assert.equal(state.getWarning(), null);
+    });
+
+    // The defect this pins: a probe that SUCCEEDS can still return a record
+    // the engine's own precondition rejects. Reporting no warning for it made
+    // health read healthy right up to the first failed sprint launch.
+    test('a resolved but INCOMPLETE state warns, naming each missing field and its fix', () => {
+        const state = createBeadsIdentityState({
+            cwd: ROOT,
+            initial: { ...COMPLETE, syncRemote: '', repoRemote: '' },
+        });
+        const warning = state.getWarning();
+        assert.ok(warning, 'an incomplete identity must not be reported as healthy');
+        assert.ok(warning.includes(ROOT), warning);
+        assert.match(warning, /bd config set sync\.remote <url>/);
+        assert.match(warning, /git remote add origin <url>/);
+        assert.ok(!warning.includes('bd init'), 'a satisfied requirement must not be named');
+        assert.match(warning, /restart the supervisor/);
+    });
+
+    test('an incomplete state that a refresh() completes stops warning (the warning is derived, never stale)', async () => {
+        let next = { ...COMPLETE, syncRemote: '' };
+        const state = createBeadsIdentityState({ cwd: ROOT, initial: next, probe: async () => next });
+        assert.ok(state.getWarning());
+        next = COMPLETE;
+        await state.refresh();
         assert.equal(state.getWarning(), null);
     });
 
@@ -260,5 +298,92 @@ describe('dashboard -- beads identity rendering', () => {
         assert.ok(!renderSprintSection(base).includes('Beads prefix'));
         assert.equal(buildStatePayload([{ ...base, beadsPrefix: 'proj' }]).sprints[0].beadsPrefix, 'proj');
         assert.equal(buildStatePayload([base]).sprints[0].beadsPrefix, null);
+    });
+});
+
+// =============================================================================
+// Project-folder usability -- the SET-time question: could a sprint actually
+// run against this folder? The engine treats an incomplete beads identity as
+// fatal, so this is the same predicate, asked early.
+// =============================================================================
+describe('project-folder usability', () => {
+    test('missingIdentityFields() is exactly the inverse of the engine\'s own isCompleteIdentity()', () => {
+        const cases = [
+            null,
+            {},
+            { beadsDir: '/p/.beads' },
+            { beadsDir: '/p/.beads', prefix: 'p' },
+            { beadsDir: '/p/.beads', prefix: 'p', syncRemote: 'u' },
+            COMPLETE,
+        ];
+        for (const id of cases) {
+            assert.equal(
+                missingIdentityFields(id).length === 0,
+                isCompleteIdentity(id),
+                `disagreement on ${JSON.stringify(id)} -- the two predicates must never fork`,
+            );
+        }
+    });
+
+    test('every requirement carries a field, a human label and a single fix command', () => {
+        assert.deepEqual(
+            PROJECT_FOLDER_REQUIREMENTS.map((r) => r.field),
+            ['beadsDir', 'prefix', 'syncRemote', 'repoRemote'],
+        );
+        for (const req of PROJECT_FOLDER_REQUIREMENTS) {
+            assert.ok(req.label && req.fix, JSON.stringify(req));
+        }
+    });
+
+    test('a complete folder is ok, with no error and nothing missing', async () => {
+        const check = await checkProjectFolderIdentity({ cwd: ROOT, probe: async () => COMPLETE });
+        assert.equal(check.ok, true);
+        assert.deepEqual(check.missing, []);
+        assert.equal(check.error, null);
+        assert.equal(check.detail, null);
+    });
+
+    test('a probe that THROWS is reported as every requirement missing, with the raw cause kept -- never a rejected promise', async () => {
+        const check = await checkProjectFolderIdentity({
+            cwd: ROOT,
+            probe: async () => { throw new Error('spawn bd ENOENT'); },
+        });
+        assert.equal(check.ok, false);
+        assert.deepEqual(check.missing, ['beadsDir', 'prefix', 'syncRemote', 'repoRemote']);
+        assert.equal(check.detail, 'spawn bd ENOENT');
+        assert.ok(check.error.includes('spawn bd ENOENT'), check.error);
+        assert.ok(check.error.includes(ROOT), check.error);
+    });
+
+    test('a partially resolved folder names only what is missing, and the message is generic (no product paths)', async () => {
+        const check = await checkProjectFolderIdentity({
+            cwd: ROOT,
+            probe: async () => ({ ...COMPLETE, syncRemote: '' }),
+        });
+        assert.equal(check.ok, false);
+        assert.deepEqual(check.missing, ['syncRemote']);
+        assert.match(check.error, /bd config set sync\.remote <url>/);
+        assert.ok(!check.error.includes('bd init'), check.error);
+        assert.ok(!/apra-fleet/i.test(check.error), `the operator-facing text must stay generic: ${check.error}`);
+    });
+
+    test('the injected execBd/execGit reach the real probe -- no bd or git is ever needed', async () => {
+        const calls = [];
+        const execBd = async (args) => {
+            calls.push(['bd', ...args].join(' '));
+            if (args[0] === 'where') return { stdout: JSON.stringify({ path: '/p/.beads', prefix: 'p1' }) };
+            return { stdout: JSON.stringify({ key: 'sync.remote', value: 'https://example.invalid/acme/demo.git' }) };
+        };
+        const execGit = async (file, args) => {
+            calls.push([file, ...args].join(' '));
+            return { stdout: 'https://example.invalid/acme/demo.git\n' };
+        };
+        const check = await checkProjectFolderIdentity({ cwd: ROOT, execBd, execGit });
+        assert.equal(check.ok, true, check.error ?? '');
+        assert.deepEqual(calls, [
+            'bd where --json',
+            'bd config get sync.remote --json',
+            'git remote get-url origin',
+        ]);
     });
 });

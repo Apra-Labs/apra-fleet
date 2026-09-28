@@ -29,8 +29,22 @@
 //     route / dashboard header / spawner (`--expect-beads`), re-probeable on
 //     demand (GET /api/health?refresh=1).
 //
-// Deliberately NOT here: setting BEADS_DIR, or any persisted config file.
-// The operator's cwd (or an explicit `--beads-dir`) is the one input.
+//   - resolveProjectDir(): the PRECEDENCE that decides which folder the above
+//     run against -- `--beads-dir`, else the persisted project folder, else
+//     the cwd walk-up. See its own comment for the severity asymmetry.
+//
+// Deliberately still NOT here: setting BEADS_DIR. That remains bd's own
+// environment knob and nothing in the supervisor sets it; the resolved folder
+// is expressed by chdir'ing into it, exactly as `--beads-dir` always has.
+//
+// NOTE (history): this header used to say no persisted config file was
+// consulted either, and that the operator's cwd or an explicit `--beads-dir`
+// was the ONE input. That stopped being true when the supervisor's project
+// folder became a persisted setting: a service's working directory is the
+// installed engine path, which has no relationship to any user project, so
+// resolution could never reach a real project out of the box. The persisted
+// folder is read through ./project-config.mjs (the only owner of that file);
+// this module only sequences the three sources.
 // =============================================================================
 
 import fs from 'node:fs';
@@ -39,6 +53,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { execBdAsync } from './lib/exec-bd.mjs';
 import { parseBeadsIdentity } from '../../fleet-sprint/beads-identity.mjs';
+import { readSupervisorConfig } from './project-config.mjs';
 
 const nodeExecFileAsync = promisify(nodeExecFile);
 
@@ -173,6 +188,272 @@ export async function probeBeadsIdentity(opts = {}) {
 // dashboard header. Generic on purpose: no product paths.
 const FIX_TAIL = 'then GET /api/health?refresh=1.';
 
+// =============================================================================
+// PROJECT-FOLDER USABILITY -- the four fields a folder must resolve before a
+// sprint can run against it, and the operator-facing text for each.
+// =============================================================================
+//
+// The fleet-sprint engine's own precondition compares a member's identity
+// against the orchestrator's on ../../fleet-sprint/beads-identity.mjs's
+// COMPARED_FIELDS and treats an INCOMPLETE identity as FATAL
+// (isCompleteIdentity() there is the same predicate `missingIdentityFields()`
+// below inverts -- the parity is asserted by a test, not restated by hand).
+// A folder that cannot produce all four therefore cannot run a sprint at all,
+// which is why setting one is refused at SET time rather than discovered at
+// launch time by an operator who has already walked away.
+//
+// Each requirement carries BOTH what is missing and the single command that
+// fixes it. Deliberately generic: no product name, no repository layout, no
+// path of ours -- these strings are read by an operator pointing this
+// supervisor at THEIR project.
+
+/** @type {ReadonlyArray<{ field: string, label: string, fix: string }>} */
+export const PROJECT_FOLDER_REQUIREMENTS = Object.freeze([
+    Object.freeze({
+        field: 'beadsDir',
+        label: 'an initialised beads database (.beads)',
+        fix: "run 'bd init' in that folder",
+    }),
+    Object.freeze({
+        field: 'prefix',
+        label: 'a beads issue prefix',
+        fix: "run 'bd init' in that folder so its tracker has a prefix",
+    }),
+    Object.freeze({
+        field: 'syncRemote',
+        label: "the beads 'sync.remote' setting",
+        fix: "run 'bd config set sync.remote <url>' in that folder",
+    }),
+    Object.freeze({
+        field: 'repoRemote',
+        label: "a git 'origin' remote",
+        fix: "run 'git remote add origin <url>' in that folder",
+    }),
+]);
+
+/**
+ * Which of PROJECT_FOLDER_REQUIREMENTS an identity record failed to resolve.
+ * Empty exactly when isCompleteIdentity() would say true (pinned by a test).
+ * @param {object|null} identity
+ * @returns {string[]}
+ */
+export function missingIdentityFields(identity) {
+    return PROJECT_FOLDER_REQUIREMENTS
+        .filter((req) => !(identity && identity[req.field]))
+        .map((req) => req.field);
+}
+
+/** @param {string[]} missing */
+function requirementsFor(missing) {
+    return PROJECT_FOLDER_REQUIREMENTS.filter((req) => missing.includes(req.field));
+}
+
+/**
+ * The SET-time refusal: why this folder cannot be adopted, and how to fix it.
+ * `detail` (optional) is the raw probe failure -- 'bd' not on PATH, no
+ * reachable database -- kept verbatim so the operator sees the real cause
+ * rather than only our summary of it.
+ * @param {string} projectDir
+ * @param {string[]} missing
+ * @param {string|null} [detail]
+ * @returns {string}
+ */
+export function formatUnusableProjectFolderError(projectDir, missing, detail = null) {
+    const reqs = requirementsFor(missing);
+    const what = reqs.map((r) => r.label).join(', ');
+    const verb = reqs.length === 1 ? 'is' : 'are';
+    return `project folder '${projectDir}' cannot be used by sprints: ${what} ${verb} missing`
+        + `${detail ? ` (${detail})` : ''}. To fix: ${reqs.map((r) => r.fix).join('; ')}.`;
+}
+
+/**
+ * The STARTUP warning for a folder that was already adopted (configured, or
+ * walked up to) and whose probe SUCCEEDED but came back incomplete. Never a
+ * startup error -- the console must stay reachable so the setting can be
+ * corrected -- but loud enough on GET /api/health that the operator is not
+ * left to discover it when the first sprint dies on its identity check.
+ * @param {string} repoRoot
+ * @param {string[]} missing
+ * @returns {string}
+ */
+export function formatIncompleteIdentityWarning(repoRoot, missing) {
+    const reqs = requirementsFor(missing);
+    const what = reqs.map((r) => r.label).join(', ');
+    const verb = reqs.length === 1 ? 'is' : 'are';
+    return `the beads identity under ${repoRoot} is incomplete: ${what} ${verb} missing. `
+        + 'Sprints launched against this project folder will fail their beads identity check. '
+        + `To fix: ${reqs.map((r) => r.fix).join('; ')}, then restart the supervisor (or ${FIX_TAIL})`;
+}
+
+/**
+ * Probe `cwd` and report whether it is a project folder a sprint could
+ * actually run against. TOTAL: a probe that throws (no bd on PATH, no
+ * reachable database) is reported as "everything missing" plus the raw
+ * `detail`, never as a rejected promise -- the callers are a request handler
+ * and a startup path, and neither may turn an unusable folder into a crash.
+ *
+ * `execBd`/`execGit` are forwarded to probeBeadsIdentity() so a test can
+ * drive every branch with no real bd or git; `probe` itself is injectable for
+ * the handful of cases that want to skip the parsing layer entirely.
+ * @param {{ cwd?: string, execBd?: Function, execGit?: Function, probe?: Function }} [opts]
+ * @returns {Promise<{ ok: boolean, identity: object|null, missing: string[], detail: string|null, error: string|null }>}
+ */
+export async function checkProjectFolderIdentity(opts = {}) {
+    const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const probe = opts.probe ?? probeBeadsIdentity;
+    let identity = null;
+    let detail = null;
+    try {
+        identity = await probe({ cwd, execBd: opts.execBd, execGit: opts.execGit });
+    } catch (err) {
+        detail = err && err.message ? err.message : String(err);
+    }
+    const missing = missingIdentityFields(identity);
+    return {
+        ok: missing.length === 0,
+        identity,
+        missing,
+        detail,
+        error: missing.length === 0 ? null : formatUnusableProjectFolderError(cwd, missing, detail),
+    };
+}
+
+/**
+ * The three sources a project folder can come from, in precedence order.
+ * Reported on startup and on GET /api/health as `projectDirSource`.
+ */
+export const PROJECT_DIR_SOURCE = Object.freeze({
+    FLAG: 'flag',
+    CONFIG: 'config',
+    WALK_UP: 'walk-up',
+});
+
+/**
+ * A persisted project folder that is no longer usable (moved checkout,
+ * unmounted volume, reimaged machine). Deliberately a WARNING, never a
+ * startup error -- see resolveProjectDir().
+ * @param {string} projectDir
+ * @param {string} configPath
+ * @returns {string}
+ */
+export function formatStaleConfiguredProjectWarning(projectDir, configPath) {
+    return `the configured project folder ${projectDir} does not exist or is not a directory ` +
+        `(configured in ${configPath}). ` +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
+        "To fix: point the setting at the project folder from the console's project setting " +
+        '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor -- the setting is read ' +
+        'only at startup, so GET /api/health?refresh=1 re-probes this same path and cannot pick up a new one.';
+}
+
+/**
+ * Decide WHICH project folder this supervisor runs against, by precedence:
+ *
+ *   1. `--beads-dir` (the operator said so on this launch),
+ *   2. the persisted `supervisor.config.json` project folder,
+ *   3. the cwd walk-up (unchanged legacy behaviour).
+ *
+ * SEVERITY ASYMMETRY -- deliberate, not an oversight:
+ *
+ *   An explicit `--beads-dir` that does not exist THROWS (the caller turns
+ *   that into a non-zero exit). An operator typed it on this very launch, and
+ *   a typo must never be silently ignored in favour of some other folder.
+ *
+ *   A CONFIGURED folder that does not exist does NOT throw: it comes back
+ *   `usable: false` with a warning, and the supervisor starts anyway. A
+ *   persisted setting can go stale for reasons the operator is not present to
+ *   fix -- a moved checkout, an unmounted volume, a reimaged machine -- and a
+ *   supervisor that refuses to boot cannot serve the very console page that
+ *   would let them correct it.
+ *
+ *   An unusable configured folder also does NOT fall through to the walk-up.
+ *   Falling back would re-create exactly the bug the persisted setting exists
+ *   to fix: the walk-up silently winning from the installed engine tree and
+ *   the supervisor serving an unrelated tracker as if it were the project.
+ *   A stale setting must fail loudly-but-softly, not resolve to the wrong
+ *   thing quietly.
+ *
+ * Returns `chdir` = the folder the caller should chdir into (null when there
+ * is nothing to change to: the walk-up case, or an unusable configured
+ * folder), since bd resolves by walking up from the process cwd.
+ *
+ * `readConfig` and `fs` are injectable so a test can drive every branch
+ * without a real data dir or real directories on disk.
+ * @param {{
+ *   flag?: string,
+ *   cwd?: string,
+ *   fs?: object,
+ *   readConfig?: () => Promise<{ configured: boolean, projectDir: string|null, reason: string|null, path: string }>,
+ * }} [opts]
+ * @returns {Promise<{ projectDir: string, source: string, chdir: string|null, usable: boolean, warning: string|null, configReason: string|null }>}
+ */
+export async function resolveProjectDir(opts = {}) {
+    const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const fsImpl = opts.fs ?? fs;
+    const flag = opts.flag;
+
+    // 1. The flag. resolveBeadsDirArg() throws on a nonexistent path -- that
+    //    throw IS the typo-is-fatal half of the asymmetry above.
+    if (flag !== undefined && flag !== null) {
+        const dir = resolveBeadsDirArg(flag, { fs: fsImpl });
+        return {
+            projectDir: dir,
+            source: PROJECT_DIR_SOURCE.FLAG,
+            chdir: dir,
+            usable: true,
+            warning: null,
+            configReason: null,
+        };
+    }
+
+    // 2. The persisted setting. Reading is total (project-config.mjs never
+    //    throws), so a malformed config simply behaves as "not configured".
+    const readConfig = opts.readConfig ?? (() => readSupervisorConfig({ cwd }));
+    const config = await readConfig();
+    if (config && config.configured && config.projectDir) {
+        const configured = config.projectDir;
+        let isDir = false;
+        try {
+            isDir = fsImpl.existsSync(configured)
+                && (!fsImpl.statSync || fsImpl.statSync(configured).isDirectory());
+        } catch {
+            isDir = false;
+        }
+        if (!isDir) {
+            return {
+                projectDir: configured,
+                source: PROJECT_DIR_SOURCE.CONFIG,
+                chdir: null,
+                usable: false,
+                warning: formatStaleConfiguredProjectWarning(configured, config.path),
+                configReason: null,
+            };
+        }
+        // Accept a `.beads` path as well as a project path, exactly as the
+        // flag does, so the two inputs cannot disagree about the same folder.
+        const normalized = path.basename(configured) === BEADS_DIR_NAME ? path.dirname(configured) : configured;
+        return {
+            projectDir: normalized,
+            source: PROJECT_DIR_SOURCE.CONFIG,
+            chdir: normalized,
+            usable: true,
+            warning: null,
+            configReason: null,
+        };
+    }
+
+    // 3. The walk-up: byte-identical to the pre-setting behaviour -- no chdir,
+    //    resolution happens from the process cwd as it always did.
+    return {
+        projectDir: cwd,
+        source: PROJECT_DIR_SOURCE.WALK_UP,
+        chdir: null,
+        usable: true,
+        warning: null,
+        configReason: config ? config.reason : null,
+    };
+}
+
 /** No `.beads` reachable by walking up from `cwd`. */
 export function formatNoBeadsWarning(cwd) {
     return `no beads database found walking up from ${cwd}. ` +
@@ -210,10 +491,22 @@ export function createBeadsIdentityState(deps = {}) {
     const probe = deps.probe ?? probeBeadsIdentity;
     let current = deps.initial ?? null;
     let warning = current ? null : (deps.warning ?? null);
+    // An identity that RESOLVED can still be unusable: bd answered, but the
+    // record is missing a field the engine's own precondition treats as
+    // fatal. That case used to report no warning at all (the old rule was
+    // "a record means nothing to say"), so Health looked healthy right up
+    // until the first sprint died on its identity check. The warning is
+    // therefore DERIVED from the held record rather than only carried from
+    // startup, which also means refresh() cannot leave a stale one behind.
+    const warningFor = (id) => {
+        if (!id) return warning;
+        const missing = missingIdentityFields(id);
+        return missing.length ? formatIncompleteIdentityWarning(cwd, missing) : null;
+    };
     return {
         cwd,
         get() { return current; },
-        getWarning() { return current ? null : warning; },
+        getWarning() { return warningFor(current); },
         async refresh() {
             let next;
             try {

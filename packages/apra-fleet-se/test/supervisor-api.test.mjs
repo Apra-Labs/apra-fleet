@@ -18,6 +18,7 @@ import {
     formatMemberConflict,
     ApiError,
 } from '../src/supervisor/api.mjs';
+import { createBeadsIdentityState } from '../src/supervisor/beads-identity.mjs';
 import { createTestSupervisor } from './helpers/supervisor-harness.mjs';
 
 // apra-fleet-eft.4.4 -- supervisor HTTP endpoints: members, backlog,
@@ -1397,6 +1398,25 @@ describe('api -- /api/health beads identity', () => {
         assert.equal(payloadOf(res).beads.prefix, 'proj');
         assert.equal('beadsWarning' in payloadOf(res), false);
         assert.equal('beadsRefreshError' in payloadOf(res), false);
+    });
+
+    // An identity that RESOLVED can still be unusable: the engine's own
+    // precondition treats a missing prefix / sync.remote / git origin as
+    // fatal, so health must say so rather than reporting only `beads`.
+    // Driven through the REAL createBeadsIdentityState(), not a stub, so the
+    // handle's rule and the route's rendering of it cannot drift apart.
+    test('identity resolved but INCOMPLETE: beads is reported AND beadsWarning names the missing fields + fix', async () => {
+        const beadsIdentity = createBeadsIdentityState({
+            cwd: '/proj',
+            initial: { beadsDir: '/proj/.beads', prefix: 'proj', syncRemote: '', repoRemote: '' },
+        });
+        const res = mockRes();
+        await createSupervisor({ port: 0, beadsIdentity }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).beads.prefix, 'proj', 'the resolved identity is still reported');
+        assert.match(payloadOf(res).beadsWarning, /incomplete/);
+        assert.match(payloadOf(res).beadsWarning, /bd config set sync\.remote <url>/);
+        assert.match(payloadOf(res).beadsWarning, /git remote add origin <url>/);
     });
 
     test('?refresh=1 re-probes before answering; a failed re-probe keeps the last identity and reports beadsRefreshError', async () => {

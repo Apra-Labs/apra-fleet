@@ -41,7 +41,12 @@
 
 import { buildManifest } from './manifest.mjs';
 
-const PLACEHOLDER_HTML = `<!doctype html>
+// Exported (not just module-private) so a sibling page module that swaps in
+// real content for ONE manifest path via the staticHandler seam below (e.g.
+// apra-fleet-i9ag.17.2.2's ../supervisor -> project-page.mjs, for
+// PROJECTS_UI_PATH) can delegate every OTHER path back to the same
+// placeholder byte-for-byte, instead of hand-copying this HTML.
+export const PLACEHOLDER_HTML = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>fleet-supervisor UI</title></head>
 <body>
@@ -60,7 +65,10 @@ function sendHtml(res, status, html) {
     res.end(html);
 }
 
-function defaultPlaceholderHandler(req, res) {
+// Exported for the same reason PLACEHOLDER_HTML is above -- a caller that
+// swaps in a staticHandler override for one path needs the ORIGINAL
+// placeholder behaviour for every other path, unchanged.
+export function defaultPlaceholderHandler(req, res) {
     sendHtml(res, 200, PLACEHOLDER_HTML);
 }
 

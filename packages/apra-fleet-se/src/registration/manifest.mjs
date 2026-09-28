@@ -49,6 +49,15 @@ export const APRA_FLEET_API_RANGE = '>=0.4.0 <0.6.0';
  */
 export const SPRINTS_UI_PATH = '/ui/sprints';
 
+/**
+ * (apra-fleet-i9ag.17.2.2) The manifest's Projects nav path -- exported for
+ * the same reason SPRINTS_UI_PATH is: so bin/serve.mjs's UI static-handler
+ * swap (registration/project-page.mjs) and buildManifest() below both read
+ * one declaration instead of hand-copying the '/ui/projects' literal in two
+ * places that could silently drift apart.
+ */
+export const PROJECTS_UI_PATH = '/ui/projects';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** packages/apra-fleet-se/package.json -- two levels up from this file
@@ -95,7 +104,7 @@ export function buildManifest({ baseUrl, version } = {}) {
         baseUrl,
         health: '/api/health',
         nav: [
-            { label: 'Projects', path: '/ui/projects' },
+            { label: 'Projects', path: PROJECTS_UI_PATH },
             // (apra-fleet-i9ag.3.3) Unscoped -- unlike KB/Code below, the
             // Sprints dashboard has no project-context dependency, so it
             // must render in the shell header even with no project
