@@ -44,6 +44,22 @@ async function withServer(server, fn) {
     }
 }
 
+// apra-fleet-i9ag.15.10: attempt a rival HTTP listener on the SAME loopback
+// port the viewer already owns. Resolves { code: 'EADDRINUSE', close } if the
+// bind was correctly refused (the exclusive-bind contract holding), or
+// { code: null, close } if the rival's bind unexpectedly succeeded (the
+// silent port-hijack condition apra-fleet-i9ag.15.9 fixed).
+function tryRivalLoopbackBind(port) {
+    return new Promise((resolve) => {
+        const rival = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
+        rival.once('error', (err) => resolve({ code: err.code, close: async () => {} }));
+        rival.listen({ port, host: '127.0.0.1' }, () => resolve({
+            code: null,
+            close: () => new Promise((done) => rival.close(done))
+        }));
+    });
+}
+
 // createDashboardViewer() persists sprint state under process.cwd() -- run
 // every test in this file against a fresh temp cwd so nothing is written
 // into the real repo checkout.
@@ -138,6 +154,41 @@ describe('apra-fleet-eft.37.4: GET /extensions/:extId/detail/:itemId (generic ho
             assert.equal(JSON.parse(body).text, 'domain-agnostic text for x');
         });
     });
+
+    // apra-fleet-i9ag.15.10: generalization half of the apra-fleet-i9ag.15.9
+    // pin. The triage that closed apra-fleet-i9ag.15.9 proved the fix is a
+    // LISTENER-level guard (exclusive loopback bind in createDashboardViewer,
+    // see src/viewer/index.mjs), not a per-route patch -- so it must cover
+    // every route the viewer serves, not just the alias below. This is the
+    // "natural sibling" route named in apra-fleet-i9ag.15.10's task
+    // description: GET /extensions/:extId/detail/:itemId.
+    test('apra-fleet-i9ag.15.9: the generic detail route also survives a rival wildcard bind on the same port -- the exclusive-bind guard is listener-level, not alias-specific', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const stuffExtension = {
+            id: 'stuff',
+            title: 'Stuff',
+            js: '',
+            detailLookup(state, id) { return id === 'item-1' ? { text: 'the full text', updatedAt: 'v1' } : null; }
+        };
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook Bind Hijack Test', dashboardExtensions: [stuffExtension] });
+
+        await withServer(server, async (port) => {
+            const rival = await tryRivalLoopbackBind(port);
+            try {
+                assert.equal(
+                    rival.code,
+                    'EADDRINUSE',
+                    'a rival loopback bind on the viewer\'s live port must be refused -- see the alias test below for ' +
+                    'why an unrefused rival bind means routes can silently answer from the wrong socket'
+                );
+                const { statusCode, body } = await httpGetFull(port, '/extensions/stuff/detail/item-1');
+                assert.equal(statusCode, 200, 'the generic detail route must still be answered by the real viewer');
+                assert.equal(JSON.parse(body).text, 'the full text');
+            } finally {
+                await rival.close();
+            }
+        });
+    });
 });
 
 describe('apra-fleet-eft.37.4: GET /beads/:id/description (BOUNDARY-COMPAT one-release alias)', () => {
@@ -161,6 +212,60 @@ describe('apra-fleet-eft.37.4: GET /beads/:id/description (BOUNDARY-COMPAT one-r
             const { statusCode, headers } = await httpGetFull(port, '/beads/bd-1/description');
             assert.equal(statusCode, 302);
             assert.equal(headers.location, '/extensions/beads/detail/bd-1');
+        });
+    });
+
+    // apra-fleet-i9ag.15.10: pins the mechanism apra-fleet-i9ag.15.9's
+    // triage named for the intermittent "404 instead of 302" seen here under
+    // full-suite concurrency.
+    //
+    // MECHANISM (from apra-fleet-i9ag.15.9's fix, src/viewer/index.mjs): the
+    // 404 provably could not come from this alias route -- it is an
+    // unconditional `else if` in one synchronous http.createServer handler,
+    // with no route table and no async registration, so it answers 302 from
+    // the very first accepted connection. That ruled out a registration or
+    // readiness race; 'listening' was never the wrong signal here. The real
+    // cause was the LISTENER'S BIND: createDashboardViewer() used to call
+    // `server.listen(port, cb)` with no host, which binds the OS WILDCARD
+    // address. A wildcard bind does not give a process exclusive ownership
+    // of 127.0.0.1:<port> -- a second process can still bind that exact port
+    // on the loopback address specifically (both sockets carry
+    // SO_REUSEADDR), and the kernel's most-specific-match routing then hands
+    // the newcomer every loopback connection meant for the real viewer.
+    // Neither side errors: the real viewer stays "listening" on a port it no
+    // longer serves, and this alias request below would silently reach the
+    // impostor instead and get its 404. The fix binds
+    // `{ port, host: '127.0.0.1', exclusive: true }`, so a second loopback
+    // bind on this port now fails loudly with EADDRINUSE and cannot steal
+    // the connection below.
+    //
+    // Revert-check: reverting src/viewer/index.mjs's
+    // `server.listen({ port, host, exclusive: true }, ...)` back to the
+    // pre-fix `server.listen(port, cb)` makes the rival bind below succeed
+    // (code stays `null` instead of 'EADDRINUSE'), which fails this test's
+    // first assertion immediately -- confirmed by hand against the pre-fix
+    // source while writing this test.
+    test('apra-fleet-i9ag.15.9: the alias survives a rival wildcard bind attempt on the same port -- it never answers a stolen-socket 404', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Alias Bind Hijack Test' });
+
+        await withServer(server, async (port) => {
+            const rival = await tryRivalLoopbackBind(port);
+            try {
+                assert.equal(
+                    rival.code,
+                    'EADDRINUSE',
+                    'a rival process must not be able to grab the viewer\'s live loopback port -- if it can, the ' +
+                    'viewer is bound to the wildcard address again and this alias request is no longer guaranteed ' +
+                    'to reach it (the intermittent-404 bug apra-fleet-i9ag.15.9 fixed)'
+                );
+
+                const { statusCode, headers } = await httpGetFull(port, '/beads/bd-1/description');
+                assert.equal(statusCode, 302, 'the alias must still answer 302, never the stolen-socket 404');
+                assert.equal(headers.location, '/extensions/beads/detail/bd-1');
+            } finally {
+                await rival.close();
+            }
         });
     });
 });
