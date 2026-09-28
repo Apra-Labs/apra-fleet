@@ -287,3 +287,235 @@ describe('launch-form -- mount-aware fetch targets (apra-fleet-i9ag.3.2)', () =>
         assert.ok(html.includes("fetch('/api/members')"), 'a rejected prefix falls back to serve-direct paths');
     });
 });
+
+// =============================================================================
+// apra-fleet-i9ag.18.1: the selection-hint (#launch-selected-issues) must
+// track selection state and never silently stop updating. There is no jsdom/
+// browser dependency in this repo -- same technique as 4yr-stop-modal.test.mjs
+// and supervisor-dashboard-live-refresh.test.mjs: extract the ACTUAL client
+// script verbatim out of renderLaunchFormHtml()'s emitted <script> tag and
+// execute it against a minimal hand-rolled DOM stub, rather than
+// reimplementing the selection logic here (which would drift out of sync with
+// the real client code and stop catching regressions like a reintroduced
+// #backlog-scoped listener or the old "below" wording).
+// =============================================================================
+
+function makeClassList(initial) {
+    const set = new Set(initial || []);
+    return {
+        add: (c) => { set.add(c); },
+        remove: (c) => { set.delete(c); },
+        contains: (c) => set.has(c),
+        toggle: (c, force) => {
+            if (force === undefined) {
+                if (set.has(c)) set.delete(c); else set.add(c);
+            } else if (force) {
+                set.add(c);
+            } else {
+                set.delete(c);
+            }
+            return set.has(c);
+        },
+    };
+}
+
+function makeLaunchFormContainer(id) {
+    return {
+        id,
+        textContent: '',
+        innerHTML: '',
+        style: {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        appendChild: () => {},
+    };
+}
+
+/** A Backlog-row-style checkbox (class bead-select-checkbox) plus its <tr>. */
+function makeCheckboxRow({ beadId, depthPx = 8, checked = false }) {
+    const checkbox = {
+        checked,
+        classList: makeClassList(['bead-select-checkbox']),
+        getAttribute: (name) => (name === 'data-bead-id' ? beadId : null),
+    };
+    const row = {
+        nextElementSibling: null,
+        matches: (sel) => sel === 'tr[data-bead-id]',
+        classList: makeClassList(),
+        querySelector: (sel) => {
+            if (sel === 'td') return { style: { paddingLeft: `${depthPx}px` } };
+            if (sel === '.bead-select-checkbox') return checkbox;
+            return null;
+        },
+    };
+    checkbox.closest = (sel) => (sel === 'tr[data-bead-id]' ? row : null);
+    return { checkbox, row };
+}
+
+/**
+ * Extracts the ACTUAL client script from renderLaunchFormHtml()'s emitted
+ * HTML and executes it against a minimal hand-rolled DOM stub -- exercising
+ * the exact code shipped to the browser, never a re-implementation of it.
+ * Deliberately never registers a '#backlog' element anywhere: the whole point
+ * of apra-fleet-i9ag.18.1 is that selection must keep updating the hint with
+ * no #backlog element resolvable at script-execution time at all (the prior
+ * #backlog-scoped listener silently never fired in that case).
+ */
+function buildLaunchFormSandbox({ includeHintEl = true, includeForm = false, memberCheckboxes = [] } = {}) {
+    const html = renderLaunchFormHtml();
+    const scriptStart = html.indexOf('<script>') + '<script>'.length;
+    const scriptEnd = html.indexOf('</script>', scriptStart);
+    assert.ok(scriptStart > -1 && scriptEnd > -1, 'renderLaunchFormHtml must emit a <script> block');
+    const script = html.slice(scriptStart, scriptEnd);
+
+    const changeHandlers = [];
+    const membersContainer = makeLaunchFormContainer('launch-members');
+    membersContainer.querySelectorAll = (sel) => (sel === '.launch-member-checkbox' ? memberCheckboxes : []);
+
+    const elementsById = {
+        'launch-members': membersContainer,
+        'launch-result': makeLaunchFormContainer('launch-result'),
+    };
+    if (includeHintEl) {
+        elementsById['launch-selected-issues'] = makeLaunchFormContainer('launch-selected-issues');
+    }
+
+    let submitHandler = null;
+    if (includeForm) {
+        elementsById['launch-sprint-form'] = {
+            addEventListener: (type, handler) => { if (type === 'submit') submitHandler = handler; },
+        };
+        elementsById['launch-goal'] = { value: 'P1' };
+        elementsById['launch-branch'] = { value: 'feat/x' };
+        elementsById['launch-base'] = { value: 'main' };
+    }
+
+    const fetchCalls = [];
+    const fetchStub = async (url) => {
+        fetchCalls.push({ url });
+        if (url === '/api/sprints') {
+            return { status: 201, json: async () => ({ sprintId: 's-1' }) };
+        }
+        return { json: async () => ({ members: [] }) };
+    };
+
+    const mockDocument = {
+        getElementById: (id) => elementsById[id] || null,
+        addEventListener: (type, handler) => { if (type === 'change') changeHandlers.push(handler); },
+        querySelectorAll: () => [],
+    };
+
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('document', 'fetch', 'window', script);
+    fn(mockDocument, fetchStub, {});
+
+    return {
+        hintEl: elementsById['launch-selected-issues'] || null,
+        fetchCalls,
+        fireChange(target) {
+            for (const h of changeHandlers) h({ target });
+        },
+        submit() {
+            assert.ok(submitHandler, 'submit handler must be wired when the form element is present');
+            submitHandler({ preventDefault() {} });
+        },
+    };
+}
+
+describe('launch-form -- client-side selection-hint binding (apra-fleet-i9ag.18.1)', () => {
+    test('a bead-select-checkbox change delivered at DOCUMENT level updates the hint; unchecking restores the no-selection text', () => {
+        const sandbox = buildLaunchFormSandbox();
+        assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+
+        const { checkbox } = makeCheckboxRow({ beadId: 'apra-fleet-x.1', checked: true });
+        sandbox.fireChange(checkbox);
+        assert.equal(sandbox.hintEl.textContent, 'Selected issue(s): apra-fleet-x.1');
+
+        checkbox.checked = false;
+        sandbox.fireChange(checkbox);
+        assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+    });
+
+    test('with no #backlog element present in the stub at all, selection still updates the hint (regression: the old #backlog-scoped listener never fired)', () => {
+        // No entry named 'backlog' is ever added to elementsById in
+        // buildLaunchFormSandbox() -- this is the exact regression case.
+        const sandbox = buildLaunchFormSandbox();
+        const { checkbox } = makeCheckboxRow({ beadId: 'apra-fleet-y.1', checked: true });
+        sandbox.fireChange(checkbox);
+        assert.equal(sandbox.hintEl.textContent, 'Selected issue(s): apra-fleet-y.1');
+    });
+
+    test('a launch-member-checkbox change (not bead-select-checkbox) does not alter the hint', () => {
+        const sandbox = buildLaunchFormSandbox();
+        const memberCheckbox = {
+            checked: true,
+            classList: makeClassList(['launch-member-checkbox']),
+            getAttribute: () => null,
+        };
+        sandbox.fireChange(memberCheckbox);
+        assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+    });
+
+    test('neither the static intro paragraph nor the dynamic hint text says "below"; both say "above"', () => {
+        const html = renderLaunchFormHtml();
+        const introMatch = html.match(/<p[^>]*>([^<]*)<\/p>/);
+        assert.ok(introMatch, 'intro paragraph must exist');
+        assert.ok(!/below/i.test(introMatch[1]), 'intro paragraph must not say "below"');
+        assert.ok(/above/i.test(introMatch[1]), 'intro paragraph must say "above"');
+
+        const sandbox = buildLaunchFormSandbox();
+        assert.ok(!/below/i.test(sandbox.hintEl.textContent));
+        assert.ok(/above/i.test(sandbox.hintEl.textContent));
+
+        const { checkbox } = makeCheckboxRow({ beadId: 'apra-fleet-z.1', checked: true });
+        sandbox.fireChange(checkbox);
+        assert.ok(!/below/i.test(sandbox.hintEl.textContent));
+    });
+
+    test('a missing #launch-selected-issues element logs a console.error at script init, not a silent no-op', () => {
+        const originalError = console.error;
+        const calls = [];
+        console.error = (...args) => { calls.push(args.join(' ')); };
+        try {
+            buildLaunchFormSandbox({ includeHintEl: false });
+        } finally {
+            console.error = originalError;
+        }
+        assert.ok(calls.length >= 1, 'expected at least one console.error call when the hint element is missing');
+        assert.ok(calls.some((c) => /launch-selected-issues/.test(c)), 'console.error must name the missing element id');
+    });
+
+    test('descendant-row cascade selection updates the hint for every cascaded row', () => {
+        const sandbox = buildLaunchFormSandbox();
+        const { checkbox: parentCb, row: parentRow } = makeCheckboxRow({ beadId: 'parent-1', depthPx: 8, checked: true });
+        const { checkbox: childCb, row: childRow } = makeCheckboxRow({ beadId: 'child-1', depthPx: 28, checked: false });
+        parentRow.nextElementSibling = childRow;
+
+        sandbox.fireChange(parentCb);
+
+        assert.equal(childCb.checked, true, 'cascade must check the descendant checkbox');
+        assert.ok(sandbox.hintEl.textContent.includes('parent-1'));
+        assert.ok(sandbox.hintEl.textContent.includes('child-1'), 'the cascaded child selection must also be reflected in the hint');
+    });
+
+    test('the post-launch reset (after a successful submit) clears the hint back to the no-selection text', async () => {
+        const memberCheckbox = { checked: true, value: 'alice' };
+        const sandbox = buildLaunchFormSandbox({ includeForm: true, memberCheckboxes: [memberCheckbox] });
+
+        const { checkbox } = makeCheckboxRow({ beadId: 'apra-fleet-reset.1', checked: true });
+        sandbox.fireChange(checkbox);
+        assert.equal(sandbox.hintEl.textContent, 'Selected issue(s): apra-fleet-reset.1');
+
+        sandbox.submit();
+        // Flush the fetch(...).then().then() microtask chain the submit
+        // handler kicks off (never a raw sleep -- just enough ticks for
+        // promises already scheduled to settle).
+        for (let i = 0; i < 10; i += 1) {
+            // eslint-disable-next-line no-await-in-loop
+            await Promise.resolve();
+        }
+
+        assert.ok(sandbox.fetchCalls.some((c) => c.url === '/api/sprints'), 'submit must POST /api/sprints');
+        assert.equal(sandbox.hintEl.textContent, 'No issue selected -- check a Backlog row above to select one.');
+    });
+});
