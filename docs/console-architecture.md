@@ -102,6 +102,133 @@ Both credential paths are checked against a path normalised through the same
 `normalizePath()` helper the router uses, so the guard and the dispatcher can
 never disagree about which route a URL names.
 
+## Console-hosted secret entry (apra-fleet-i9ag.11)
+
+`credential_store_set`'s `return_url` collection path hands back a URL for a
+human to open and type a secret into -- the tool call itself never blocks on
+that human, and the secret never enters the AI's context (see
+`docs/adr-oob-password.md` for the collection mechanism this reuses). Before
+this decision, that URL was a loopback ephemeral-port web server
+(`src/services/auth-web.ts`'s `launchAuthWeb`): `http://127.0.0.1:<random
+port>/<token>`. A browser that is not on the server machine -- a LAN client, an
+SSH tunnel forwarding only the console's port, or any remote install -- cannot
+reach a random loopback port on a different machine, so "set a secret from the
+console" simply failed off-box. Adding a second listener per secret entry also
+meant a second thing to guard, firewall, and reason about alongside the
+console's own port.
+
+**Decision: serve the one-time entry page on the console itself, at
+`/ui/#/secret-entry/<token>`, backed by two console API routes.** The shape:
+
+- `src/services/secret-entry.ts` is a plain, `src/console/**`-independent
+  registry (`createSecretEntry` / `getSecretEntryPrompt` / `submitSecretEntry`)
+  that hands out a single-use token good for a 10-minute TTL (`SECRET_ENTRY_TTL_MS`)
+  and a console-relative path (never a scheme, host, or port). Token lookup
+  compares candidates with `crypto.timingSafeEqual` over fixed-length buffers,
+  and every outcome -- unknown token, expired token, already-consumed token --
+  answers the same "not found," never a distinguishable oracle.
+- `src/console/routes/secret-entry.ts` exposes `POST /api/secret-entry/prompt`
+  (token in, `{name, prompt}` metadata out) and `POST /api/secret-entry/submit`
+  (token + value in, `{ok: true}` or an error out). Both are ordinary routes
+  under the `/api` namespace, so `handleConsoleRequest`'s guard covers them
+  automatically -- no separate guard list to maintain, and no code in this
+  module needs to know how the guard works.
+- The token lives in the URL **fragment** (`#/secret-entry/<token>`), not the
+  path or a query string, deliberately: a fragment is never sent by the
+  browser to any server, so the token cannot land in a server access log or in
+  a `Referer` header the way a path segment or query parameter would. The
+  shell's client-side router reads the token out of `location.hash` and POSTs
+  it in the request body instead.
+- The browser's `/api/secret-entry/*` POSTs carry the same
+  `apra_console_token` cookie every other console call already uses (set on
+  every `GET /ui`; see "Auth guard and console cookie" above), `SameSite=Strict`.
+  That cookie is CSRF / same-site protection, not network authentication: a
+  cross-site POST -- e.g. a malicious page trying to drive the submit
+  endpoint on someone else's behalf -- carries no cookie and is refused by the
+  guard before this route's handler ever runs. But `GET /ui` is itself
+  unguarded and hands a valid cookie to any client that can reach the console
+  port, so that reachability -- not possession of the cookie -- is the real
+  trust boundary here, exactly as for every other console route (see "Auth
+  guard and console cookie" above; this is pre-existing console behaviour,
+  not something the secret-entry routes introduced). The security these
+  routes actually rest on is the single-use, unguessable 64-hex token
+  (`src/services/secret-entry.ts`) plus its short TTL.
+- The entry is single-use: `submitSecretEntry` deletes the registry entry and
+  clears its timer on a successful submit, so a second POST with the same
+  token answers "not found" like any other unknown token.
+
+**Property preserved end to end:** the secret value never appears in a tool
+result, a console response body, or a log line. `credential_store_set`'s
+`onOobSubmit` callback is the only place the value is ever handled outside the
+browser's own POST body, and it is passed straight into `credentialSet()` --
+never returned, never logged. `src/console/routes/secret-entry.ts`'s submit
+handler logs only a fixed set of enum-literal outcomes (`ok=<bool>
+status=<status>`), never the token or the value, and never a thrown
+`onSubmit`'s message (which could itself be derived from the submitted
+secret).
+
+### Printing an absolute URL for a headless return_url caller
+
+`credential_store_set`'s `return_url` collection mode (a headless/service
+caller that cannot block on a human at a terminal) hands back the
+console-relative path described above, but a human still needs a clickable,
+absolute URL to open it from wherever they actually are. Resolving that
+origin cannot be a guess: the server's own bind address
+(`APRA_FLEET_HOST`) is frequently `0.0.0.0` or a bare LAN interface address,
+neither of which a browser can be pointed at directly. `resolveConsoleBaseUrl`
+(`src/paths.ts`) resolves the origin from an explicit operator opt-in,
+`APRA_FLEET_CONSOLE_BASE_URL`, falling back only to the server's own bound
+origin when unset (correct for an on-box/loopback reader, not necessarily
+reachable off-box). A value that is *set but invalid* fails loudly rather
+than silently falling back, on the reasoning that an operator who mistyped
+the variable needs to know the printed URL is wrong, not receive one that
+quietly points somewhere else.
+
+Joining that origin to the console-relative path cannot use a plain
+`new URL(relativePath, baseUrl)` resolve: per RFC 3986/WHATWG URL
+resolution, a root-relative path (one starting with `/`) *replaces* the
+base's entire path rather than appending to it, so any reverse-proxy
+sub-path in the operator-declared origin (e.g. `https://fleet.example.com/fleet`)
+would be silently discarded from the printed link. `joinConsoleUrl`
+(`src/paths.ts`) preserves the base's path component instead, which is the
+property that makes a console mounted under a reverse-proxy sub-path an
+actually-supported deployment shape rather than one that quietly breaks
+only the printed-URL feature. The tool result carries both the
+console-relative `url` (for a caller resolving it against a different origin
+of its own, e.g. an SSH tunnel or LAN address) and the resolved
+`absoluteUrl` (the rendered, clickable link) side by side, rather than only
+one or the other.
+
+**What deliberately did not change:** `src/services/auth-web.ts`'s loopback
+ephemeral-port server is still there, and still the right tool for the
+BLOCKING on-box flow's "no terminal available" fallback -- the case where a
+human is sitting at a terminal on the server machine itself and the process
+just could not spawn a terminal emulator for them. That browser is, by
+construction, on the server machine, so a loopback URL is reachable there and
+introduces no off-box gap. Only the `return_url` (headless/service-caller)
+path needed to change.
+
+**Rejected alternatives:**
+
+- **Proxy the ephemeral loopback collector under `/ext`.** Rejected: this
+  still runs a second listener per secret entry (the thing actually causing
+  the guard/firewall surface area), and now also needs `/ext`'s per-package
+  credential-derivation and health-check machinery wired up for a listener
+  that only ever serves one token once -- a second moving part in exchange for
+  nothing the console-hosted route does not already give for free.
+- **Serve the entry page under a guard-exempt path class (like `GET /ui`
+  itself).** Rejected: it would need a `src/console/server.ts` guard carve-out
+  (a second place that decides which paths skip the credential check), and it
+  makes the token itself the only thing standing between an attacker and
+  submitting a secret -- today the token AND the `apra_console_token` cookie
+  are both required, which is a strictly stronger property to keep.
+- **Keep the loopback URL and document an SSH tunnel per secret entry.**
+  Rejected: that is an operator workaround an operator has to remember and
+  redo for every single credential, not a fix -- it does not help a LAN client
+  or any install where tunneling per-token is not practical, and per this
+  repo's "fix the product, not the environment" rule a repeated manual
+  workaround is unshipped product work, not a documented procedure.
+
 ## The `/ext` reverse proxy and the per-package upstream credential
 
 `/ext/<package id>/*` is a **proxy mount, not a route table**: no route

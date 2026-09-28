@@ -20,18 +20,25 @@ import {
   OOB_URL_LISTEN_TIMEOUT_MS,
 } from '../src/services/auth-socket.js';
 import { TTL_MS as AUTH_WEB_TTL_MS } from '../src/services/auth-web.js';
+import {
+  submitSecretEntry,
+  SECRET_ENTRY_TTL_MS,
+  isConsoleHosted,
+  __setConsoleHostedForTest,
+} from '../src/services/secret-entry.js';
 
 // Hoisted so the vi.mock factory below (which runs before the rest of this
 // file, per Vitest's hoisting) can reference it. Only launchAuthWeb is
 // swapped out; everything else (TTL_MS, escapeHtml-driven HTML, etc.) is the
-// real module -- this lets the return_url:true tests below control exactly
-// when/whether the "browser" opens, and capture the onSubmit callback wired
-// into it, without actually spawning an HTTP server or a real browser.
+// real module -- this lets the BLOCKING no-terminal fallback tests below
+// control exactly when/whether the "browser" opens, without actually
+// spawning an HTTP server or a real browser. The return_url:true path only
+// touches launchAuthWeb when the console is NOT hosted in this process
+// (stdio transport); the console-hosted tests assert it is never called.
 // Default to 'unavailable' so any test that reaches the terminal-fallback
 // browser path (auth-socket.ts collectOobInput, which dereferences
 // web.kind) behaves like a headless environment instead of throwing a
-// TypeError on an undefined return value. Per-test overrides in the
-// return_url describe block still take precedence via mockImplementation.
+// TypeError on an undefined return value.
 const { mockLaunchAuthWeb } = vi.hoisted(() => ({
   mockLaunchAuthWeb: vi.fn(() => ({ kind: 'unavailable' as const })),
 }));
@@ -611,13 +618,99 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('collectOobUrl (return_url:true) -- via collectOobApiKey/collectOobConfirm', () => {
+  describe('collectOobUrl (return_url:true), console hosted -- via collectOobApiKey/collectOobConfirm', () => {
     beforeEach(() => {
       mockLaunchAuthWeb.mockReset();
+      mockLaunchAuthWeb.mockReturnValue({ kind: 'unavailable' as const });
+      // HTTP transport: this process serves the console, so the
+      // console-relative secret-entry path is reachable.
+      __setConsoleHostedForTest(true);
+    });
+
+    afterEach(async () => {
+      __setConsoleHostedForTest(false);
+      await cleanupAuthSocket();
+    });
+
+    it('resolves immediately with a console-relative secret-entry url and an expiresAt derived from SECRET_ENTRY_TTL_MS, without touching launchAuthWeb', async () => {
+      const before = Date.now();
+      const result = await collectOobApiKey('url-member', 'credential_store_set', { returnUrl: true });
+      const after = Date.now();
+
+      expect(result.url).toMatch(/^\/ui\/#\/secret-entry\/[0-9a-f]{64}$/);
+      expect(result.url).not.toContain('127.0.0.1');
+      expect(result.url).not.toContain('localhost');
+      expect(result.password).toBeUndefined();
+      expect(result.fallback).toBeUndefined();
+      expect(result.expiresAt).toBeDefined();
+      const expiresAtMs = new Date(result.expiresAt as string).getTime();
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + SECRET_ENTRY_TTL_MS);
+      expect(expiresAtMs).toBeLessThanOrEqual(after + SECRET_ENTRY_TTL_MS);
+      expect(mockLaunchAuthWeb).not.toHaveBeenCalled();
+    });
+
+    it('wires the registry submission to submitPassword by default when no onOobSubmit is given', async () => {
+      const result = await collectOobApiKey('default-submit-member', 'credential_store_set', { returnUrl: true });
+      const token = (result.url as string).split('/').pop() as string;
+
+      // The return_url path never calls createPendingAuth for this member, so
+      // if the default submit handler really is submitPassword (not a no-op
+      // stub), it reports "no pending auth" -- proving the default fallback
+      // is wired.
+      const submitResult = submitSecretEntry(token, 'the-secret-value');
+      expect(submitResult).toMatchObject({ status: 'rejected' });
+      if (submitResult.status === 'rejected') {
+        expect(submitResult.error).toContain('No pending auth');
+      }
+    });
+
+    it('wires a caller-supplied onOobSubmit into the registry instead of the default', async () => {
+      const customSubmit = vi.fn().mockReturnValue({ ok: true });
+
+      const result = await collectOobApiKey('custom-submit-member', 'credential_store_set', {
+        returnUrl: true,
+        onOobSubmit: customSubmit,
+      });
+      const token = (result.url as string).split('/').pop() as string;
+
+      const submitResult = submitSecretEntry(token, 'the-secret-value');
+      expect(customSubmit).toHaveBeenCalledWith('the-secret-value');
+      expect(submitResult).toEqual({ status: 'ok' });
+    });
+
+    it('confirm mode short-circuits to the not-supported fallback without launching anything', async () => {
+      const launchFn = vi.fn();
+      // collectOobConfirm's public type never exposes returnUrl (no caller
+      // opts a confirm prompt into it today) -- cast to reach the same
+      // defensive branch collectOobUrl documents for mode === 'confirm'.
+      const confirmWithReturnUrl = collectOobConfirm as unknown as (
+        name: string,
+        opts?: { launchFn?: typeof launchFn; returnUrl?: boolean },
+      ) => Promise<{ confirmed: boolean; terminalUnavailable: boolean }>;
+
+      const result = await confirmWithReturnUrl('confirm-url-member', { launchFn, returnUrl: true });
+
+      expect(mockLaunchAuthWeb).not.toHaveBeenCalled();
+      expect(launchFn).not.toHaveBeenCalled();
+      expect(result).toEqual({ confirmed: false, terminalUnavailable: true });
+    });
+  });
+
+  // Stdio transport: no console is mounted in this process, so a
+  // console-relative secret-entry path would resolve to nothing. collectOobUrl
+  // must fall back to the in-process loopback launchAuthWeb page.
+  describe('collectOobUrl (return_url:true), console NOT hosted (stdio transport)', () => {
+    beforeEach(() => {
+      mockLaunchAuthWeb.mockReset();
+      __setConsoleHostedForTest(false);
     });
 
     afterEach(async () => {
       await cleanupAuthSocket();
+    });
+
+    it('is not console-hosted unless something marks it', () => {
+      expect(isConsoleHosted()).toBe(false);
     });
 
     it('resolves with {url, expiresAt} as soon as the server is listening, expiresAt derived from auth-web TTL_MS', async () => {
@@ -629,6 +722,9 @@ describe('auth-socket', () => {
       const before = Date.now();
       const result = await collectOobApiKey('url-member', 'credential_store_set', { returnUrl: true });
       const after = Date.now();
+
+      expect(mockLaunchAuthWeb).toHaveBeenCalledTimes(1);
+      expect(result.url).not.toContain('/secret-entry/');
 
       expect(result.url).toBe('http://127.0.0.1:54321/tok3n');
       expect(result.password).toBeUndefined();
@@ -673,23 +769,6 @@ describe('auth-socket', () => {
       });
 
       expect(capturedOnSubmit).toBe(customSubmit);
-    });
-
-    it('confirm mode short-circuits to the not-supported fallback without launching anything', async () => {
-      const launchFn = vi.fn();
-      // collectOobConfirm's public type never exposes returnUrl (no caller
-      // opts a confirm prompt into it today) -- cast to reach the same
-      // defensive branch collectOobUrl documents for mode === 'confirm'.
-      const confirmWithReturnUrl = collectOobConfirm as unknown as (
-        name: string,
-        opts?: { launchFn?: typeof launchFn; returnUrl?: boolean },
-      ) => Promise<{ confirmed: boolean; terminalUnavailable: boolean }>;
-
-      const result = await confirmWithReturnUrl('confirm-url-member', { launchFn, returnUrl: true });
-
-      expect(mockLaunchAuthWeb).not.toHaveBeenCalled();
-      expect(launchFn).not.toHaveBeenCalled();
-      expect(result).toEqual({ confirmed: false, terminalUnavailable: true });
     });
 
     it('returns the fallback string (rather than hanging) when launchAuthWeb reports unavailable', async () => {
