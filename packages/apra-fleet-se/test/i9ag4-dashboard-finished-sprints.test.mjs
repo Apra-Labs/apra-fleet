@@ -214,6 +214,34 @@ describe('apra-fleet-i9ag.4: finished-sprints list and verdict/PR on sprint card
         assert.equal(passRows[0].hasTerminalState, true);
     });
 
+    test('apra-fleet-i9ag.15.4: a terminal state file that exists but fails to parse still surfaces via LAUNCH_FAILED synthesis', async () => {
+        // 'broken.json' (content '{not json') is written in this describe's
+        // own before() fixture specifically to prove skip-unparseable-file
+        // handling never crashes the list; reused here as the unreadable
+        // terminal state this bead calls out. Its sprintId ('broken') IS in
+        // the raw file scan (byId), but produces no summary -- pre-fix, that
+        // alone suppressed LAUNCH_FAILED synthesis too, and the run vanished
+        // from the Finished list entirely.
+        const history = {
+            list: () => [
+                { sprintId: 'sprint-pass', event: HISTORY_EVENTS.FINISHED, verdict: 'PASS' },
+                { sprintId: 'sprint-fail', event: HISTORY_EVENTS.FINISHED, verdict: 'FAIL' },
+                {
+                    sprintId: 'broken',
+                    event: HISTORY_EVENTS.LAUNCH_FAILED,
+                    reason: 'watchdog: child exited within launch window (exited 1)',
+                    at: '2026-09-27T00:00:00.000Z',
+                },
+            ],
+        };
+        const rows = await createFinishedRunsIndex({ env, history, logger: { error() {} } }).list();
+        const brokenRows = rows.filter((r) => r.sprintId === 'broken');
+        assert.equal(brokenRows.length, 1, 'exactly one row for the sprint whose terminal file exists but is unparseable');
+        assert.equal(brokenRows[0].status, 'launch-failed');
+        assert.equal(brokenRows[0].hasTerminalState, false);
+        assert.equal(brokenRows[0].reason, 'watchdog: child exited within launch window (exited 1)');
+    });
+
     test('apra-fleet-i9ag.16.1: with no history collaborator injected, no launch-failed rows are synthesized', async () => {
         const rows = await createFinishedRunsIndex({ env, logger: { error() {} } }).list();
         assert.deepEqual(rows.map((r) => r.sprintId), ['sprint-fail', 'sprint-pass']);

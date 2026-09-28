@@ -438,11 +438,19 @@ export function createFinishedRunsIndex(deps = {}) {
             // data dir with hundreds of old runs costs one stat each, not one
             // full JSON parse each.
             .slice(0, limit);
+        // Ids that actually produced a usable file-backed summary -- NOT the
+        // same as `byId`'s keys (apra-fleet-i9ag.15.4): a terminal state file
+        // can exist on disk (so `byId.has(sprintId)` is true) yet still fail
+        // JSON.parse below, in which case the file-backed row is dropped and
+        // this id must remain a candidate for LAUNCH_FAILED synthesis, not be
+        // treated as "already covered by a file". Gating synthesis on THIS
+        // set instead of on `byId` is exactly the fix.
+        const producedIds = new Set();
         const summaries = [];
         for (const f of files) {
             const key = f.mtimeMs + ':' + f.size;
             const hit = cache.get(f.filePath);
-            if (hit && hit.key === key) { summaries.push(hit.summary); continue; }
+            if (hit && hit.key === key) { summaries.push(hit.summary); producedIds.add(f.sprintId); continue; }
             let state;
             try {
                 state = JSON.parse(await fs.readFile(f.filePath, 'utf-8'));
@@ -453,6 +461,7 @@ export function createFinishedRunsIndex(deps = {}) {
             const summary = summarizeFinishedRun(f.sprintId, state, f.mtimeMs);
             cache.set(f.filePath, { key, summary });
             summaries.push(summary);
+            producedIds.add(f.sprintId);
         }
         // Every file-backed row (has a terminal state file, however stale)
         // gets the SAME three constant fields so consumers branch on one
@@ -470,15 +479,19 @@ export function createFinishedRunsIndex(deps = {}) {
         // LAUNCH_FAILED event for it. Only possible when a history
         // collaborator is injected (without one this whole block is skipped,
         // so the no-history behaviour is byte-for-byte what it was before this
-        // change). `byId` is the FULL (unsliced-by-limit) file scan, so a
-        // file-backed row always wins over a synthesized one for the same id,
-        // per this task's acceptance criteria.
+        // change). Gated on `producedIds` (apra-fleet-i9ag.15.4), NOT on
+        // `byId`: a file-backed row always wins over a synthesized one for the
+        // same id when the file actually parsed, but a terminal state file
+        // that exists yet fails JSON.parse produces no row at all in the loop
+        // above, so `byId.has(sprintId)` alone would wrongly suppress
+        // synthesis too -- the exact "operator sees nothing" outcome this
+        // block exists to eliminate, just reached through a narrower door.
         if (history) {
             const launchFailedBySprintId = new Map();
             for (const e of history.list()) {
                 if (!e || typeof e.sprintId !== 'string') continue;
                 if (e.event !== HISTORY_EVENTS.LAUNCH_FAILED) continue;
-                if (byId.has(e.sprintId)) continue;
+                if (producedIds.has(e.sprintId)) continue;
                 // history.list() is insertion order -- the last LAUNCH_FAILED
                 // event recorded for a given sprintId wins.
                 launchFailedBySprintId.set(e.sprintId, e);
