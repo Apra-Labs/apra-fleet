@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor project folder: persisted setting, console page, Health row, and install-time seeding
+
+- **The fleet-supervisor now resolves a persisted project folder instead of
+  always defaulting to its own installed engine path.** Precedence order:
+  an explicit `--beads-dir` flag, then the folder **persisted** in
+  `supervisor.config.json` under the supervisor's data dir, then the
+  `.beads` walk-up from the supervisor's working directory (unchanged
+  legacy behavior). A persisted folder that has since gone missing degrades
+  to a warning and an "unknown" beads status rather than refusing to start
+  -- deliberately asymmetric with a typo'd `--beads-dir`, which is still a
+  hard startup error. See
+  [`packages/apra-fleet-se/docs/project-model.md`](packages/apra-fleet-se/docs/project-model.md)
+  (rule 1) and [`docs/install.md`](docs/install.md)'s "Project folder" note.
+- **`apra-fleet install --project-dir <path>`** seeds that persisted folder
+  before the supervisor service is registered and started, so a fresh
+  install's first boot already resolves the right project without a
+  restart. The path is validated (must exist and be a directory) before
+  anything is written; omitting the flag changes nothing, including an
+  existing setting an operator already made from the console.
+- **Console: a guarded `GET`/`POST /api/project` route** on the supervisor,
+  and a real `/ui/projects` page (replacing the placeholder that used to
+  answer "fleet-supervisor UI arrives in a later sprint") showing the
+  current folder, its winning source, and whether a beads DB was found
+  there, with a form to save a new one and an inline rejection message on a
+  bad path. A save states plainly whether a restart is required.
+- **Console Health page:** a new "Project folder" row, fetched independently
+  of the existing status row so a supervisor outage degrades only that row,
+  distinguishing configured / not-configured / unknown states.
+
 ## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
 
 Sprint goal: finish shipping the `/ui` console shell that a prior sprint
