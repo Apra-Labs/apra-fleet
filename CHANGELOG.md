@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] -- Supervisor project folder: persisted setting, console page, Health row, and install-time seeding
 
+Sprint goal: the installed supervisor had no way to pick a project -- it read
+beads from wherever its service's working directory happened to walk up
+from, and the console's Projects page was a placeholder -- so "browse the
+backlog, launch a sprint" had no supported way to point at a project. Fix
+the M1-minimal gap: a persisted project-folder setting, a real console page
+to set it, its surfacing on Health, and an install-time way to seed it.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $22.5452.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2083 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
 - **The fleet-supervisor now resolves a persisted project folder instead of
   always defaulting to its own installed engine path.** Precedence order:
   an explicit `--beads-dir` flag, then the folder **persisted** in
@@ -30,6 +46,29 @@ All notable changes to this project will be documented in this file.
 - **Console Health page:** a new "Project folder" row, fetched independently
   of the existing status row so a supervisor outage degrades only that row,
   distinguishing configured / not-configured / unknown states.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open for a future sprint at P2/P3, none blocking this sprint's goal):
+- The install-time `supervisor.config.json` writer drops unknown top-level
+  keys and is not atomic, diverging from the runtime writer's documented
+  preserve-unknown-keys/atomic-write guarantee -- harmless today (the file
+  has one key) but a latent trap once a second key exists. See
+  [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md).
+- The walk-up source reports the process's working directory as the project
+  folder rather than the `.beads` folder actually discovered by walking up
+  from it.
+- The stale-configured-folder warning tells an operator to use Health's
+  refresh, which only re-probes a folder that is already valid again; a
+  genuinely wrong path still needs a console/flag change plus a restart.
+- `POST /api/project`'s response omits `source`, so the console's Source row
+  reads "unknown" immediately after a successful save until the next reload.
+- The console's path-rejection message names the `--beads-dir` flag, which
+  the browser operator submitting the form never typed.
+- A sprint launched against a since-gone-stale project folder fails with
+  only a logged spawn error, no surfaced console message.
+- The M2 route guard that keeps `/api/projects` (the separate sqlite-backed
+  multi-project store) out of scope matches on comment text, not just code
+  references, and is worth hardening before M2 work begins.
 
 ## [Unreleased] -- Console shell ships in the npm package and the SEA binary; Windows test-home isolation fixed
 
