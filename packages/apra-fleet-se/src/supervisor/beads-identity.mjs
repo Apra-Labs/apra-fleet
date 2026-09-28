@@ -29,8 +29,22 @@
 //     route / dashboard header / spawner (`--expect-beads`), re-probeable on
 //     demand (GET /api/health?refresh=1).
 //
-// Deliberately NOT here: setting BEADS_DIR, or any persisted config file.
-// The operator's cwd (or an explicit `--beads-dir`) is the one input.
+//   - resolveProjectDir(): the PRECEDENCE that decides which folder the above
+//     run against -- `--beads-dir`, else the persisted project folder, else
+//     the cwd walk-up. See its own comment for the severity asymmetry.
+//
+// Deliberately still NOT here: setting BEADS_DIR. That remains bd's own
+// environment knob and nothing in the supervisor sets it; the resolved folder
+// is expressed by chdir'ing into it, exactly as `--beads-dir` always has.
+//
+// NOTE (history): this header used to say no persisted config file was
+// consulted either, and that the operator's cwd or an explicit `--beads-dir`
+// was the ONE input. That stopped being true when the supervisor's project
+// folder became a persisted setting: a service's working directory is the
+// installed engine path, which has no relationship to any user project, so
+// resolution could never reach a real project out of the box. The persisted
+// folder is read through ./project-config.mjs (the only owner of that file);
+// this module only sequences the three sources.
 // =============================================================================
 
 import fs from 'node:fs';
@@ -39,6 +53,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { execBdAsync } from './lib/exec-bd.mjs';
 import { parseBeadsIdentity } from '../../fleet-sprint/beads-identity.mjs';
+import { readSupervisorConfig } from './project-config.mjs';
 
 const nodeExecFileAsync = promisify(nodeExecFile);
 
@@ -172,6 +187,140 @@ export async function probeBeadsIdentity(opts = {}) {
 // (`[supervisor] WARNING: ...`), GET /api/health (`beadsWarning`) and the
 // dashboard header. Generic on purpose: no product paths.
 const FIX_TAIL = 'then GET /api/health?refresh=1.';
+
+/**
+ * The three sources a project folder can come from, in precedence order.
+ * Reported on startup and on GET /api/health as `projectDirSource`.
+ */
+export const PROJECT_DIR_SOURCE = Object.freeze({
+    FLAG: 'flag',
+    CONFIG: 'config',
+    WALK_UP: 'walk-up',
+});
+
+/**
+ * A persisted project folder that is no longer usable (moved checkout,
+ * unmounted volume, reimaged machine). Deliberately a WARNING, never a
+ * startup error -- see resolveProjectDir().
+ * @param {string} projectDir
+ * @param {string} configPath
+ * @returns {string}
+ */
+export function formatStaleConfiguredProjectWarning(projectDir, configPath) {
+    return `the configured project folder ${projectDir} does not exist or is not a directory ` +
+        `(configured in ${configPath}). ` +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
+        `To fix: point the setting at the project folder from the console's project setting (or pass --beads-dir <project-or-.beads-path>), ${FIX_TAIL}`;
+}
+
+/**
+ * Decide WHICH project folder this supervisor runs against, by precedence:
+ *
+ *   1. `--beads-dir` (the operator said so on this launch),
+ *   2. the persisted `supervisor.config.json` project folder,
+ *   3. the cwd walk-up (unchanged legacy behaviour).
+ *
+ * SEVERITY ASYMMETRY -- deliberate, not an oversight:
+ *
+ *   An explicit `--beads-dir` that does not exist THROWS (the caller turns
+ *   that into a non-zero exit). An operator typed it on this very launch, and
+ *   a typo must never be silently ignored in favour of some other folder.
+ *
+ *   A CONFIGURED folder that does not exist does NOT throw: it comes back
+ *   `usable: false` with a warning, and the supervisor starts anyway. A
+ *   persisted setting can go stale for reasons the operator is not present to
+ *   fix -- a moved checkout, an unmounted volume, a reimaged machine -- and a
+ *   supervisor that refuses to boot cannot serve the very console page that
+ *   would let them correct it.
+ *
+ *   An unusable configured folder also does NOT fall through to the walk-up.
+ *   Falling back would re-create exactly the bug the persisted setting exists
+ *   to fix: the walk-up silently winning from the installed engine tree and
+ *   the supervisor serving an unrelated tracker as if it were the project.
+ *   A stale setting must fail loudly-but-softly, not resolve to the wrong
+ *   thing quietly.
+ *
+ * Returns `chdir` = the folder the caller should chdir into (null when there
+ * is nothing to change to: the walk-up case, or an unusable configured
+ * folder), since bd resolves by walking up from the process cwd.
+ *
+ * `readConfig` and `fs` are injectable so a test can drive every branch
+ * without a real data dir or real directories on disk.
+ * @param {{
+ *   flag?: string,
+ *   cwd?: string,
+ *   fs?: object,
+ *   readConfig?: () => Promise<{ configured: boolean, projectDir: string|null, reason: string|null, path: string }>,
+ * }} [opts]
+ * @returns {Promise<{ projectDir: string, source: string, chdir: string|null, usable: boolean, warning: string|null, configReason: string|null }>}
+ */
+export async function resolveProjectDir(opts = {}) {
+    const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const fsImpl = opts.fs ?? fs;
+    const flag = opts.flag;
+
+    // 1. The flag. resolveBeadsDirArg() throws on a nonexistent path -- that
+    //    throw IS the typo-is-fatal half of the asymmetry above.
+    if (flag !== undefined && flag !== null) {
+        const dir = resolveBeadsDirArg(flag, { fs: fsImpl });
+        return {
+            projectDir: dir,
+            source: PROJECT_DIR_SOURCE.FLAG,
+            chdir: dir,
+            usable: true,
+            warning: null,
+            configReason: null,
+        };
+    }
+
+    // 2. The persisted setting. Reading is total (project-config.mjs never
+    //    throws), so a malformed config simply behaves as "not configured".
+    const readConfig = opts.readConfig ?? (() => readSupervisorConfig({ cwd }));
+    const config = await readConfig();
+    if (config && config.configured && config.projectDir) {
+        const configured = config.projectDir;
+        let isDir = false;
+        try {
+            isDir = fsImpl.existsSync(configured)
+                && (!fsImpl.statSync || fsImpl.statSync(configured).isDirectory());
+        } catch {
+            isDir = false;
+        }
+        if (!isDir) {
+            return {
+                projectDir: configured,
+                source: PROJECT_DIR_SOURCE.CONFIG,
+                chdir: null,
+                usable: false,
+                warning: formatStaleConfiguredProjectWarning(configured, config.path),
+                configReason: null,
+            };
+        }
+        // Accept a `.beads` path as well as a project path, exactly as the
+        // flag does, so the two inputs cannot disagree about the same folder.
+        const normalized = path.basename(configured) === BEADS_DIR_NAME ? path.dirname(configured) : configured;
+        return {
+            projectDir: normalized,
+            source: PROJECT_DIR_SOURCE.CONFIG,
+            chdir: normalized,
+            usable: true,
+            warning: null,
+            configReason: null,
+        };
+    }
+
+    // 3. The walk-up: byte-identical to the pre-setting behaviour -- no chdir,
+    //    resolution happens from the process cwd as it always did.
+    return {
+        projectDir: cwd,
+        source: PROJECT_DIR_SOURCE.WALK_UP,
+        chdir: null,
+        usable: true,
+        warning: null,
+        configReason: config ? config.reason : null,
+    };
+}
 
 /** No `.beads` reachable by walking up from `cwd`. */
 export function formatNoBeadsWarning(cwd) {

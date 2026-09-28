@@ -146,6 +146,7 @@ function sendUnauthorized(res) {
  *   watchdog?: object,
  *   dashboard?: object,
  *   beadsIdentity?: { get: () => object|null, refresh: () => Promise<object> },
+ *   project?: { projectDir: string, source: string },
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  * }} [deps]
@@ -174,6 +175,14 @@ export function createSupervisor(deps = {}) {
     // The "identity unknown" warning (getWarning() is optional on the handle
     // so an older/test-only { get, refresh } stub still works).
     const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
+    // The resolved project folder and WHICH of the three sources won it
+    // (flag / config / walk-up -- see resolveProjectDir() in
+    // ./beads-identity.mjs). Reported on GET /api/health so the console and
+    // the operator can both see which project this supervisor actually
+    // adopted, including when the answer came from a persisted setting they
+    // cannot see in the process's command line. Absent (null) for the inert
+    // skeleton and for tests that wire no project dep.
+    const project = deps.project && typeof deps.project.projectDir === 'string' ? deps.project : null;
 
     // The shared bearer service token guarding the `/api/` surface and the
     // live-sprint mutating routes (see auth.mjs's requiresAuth). Either
@@ -343,6 +352,13 @@ export function createSupervisor(deps = {}) {
                 Object.entries(seams).map(([k, v]) => [k, v.name ?? 'wired']),
             ),
             beads: beadsIdentity ? toBeadsSummary(beadsIdentity.get()) : null,
+            // An ADDITION alongside `beads`/`beadsWarning`, not a rename:
+            // `beads` stays the resolved tracker identity (null when unknown),
+            // while these two say which FOLDER was adopted and how it was
+            // chosen -- a supervisor can have a project folder but no usable
+            // beads in it, and the pair has to be able to say exactly that.
+            projectDir: project ? project.projectDir : null,
+            projectDirSource: project ? project.source : null,
             ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
         });

@@ -53,9 +53,11 @@ import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-m
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 import {
-    discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState,
+    discoverBeadsDir, probeBeadsIdentity, createBeadsIdentityState,
     formatNoBeadsWarning, formatProbeFailedWarning,
+    resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE,
 } from '../src/supervisor/beads-identity.mjs';
+import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 import { buildManifest, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { startRegistrationConvergence } from '../src/registration/register.mjs';
@@ -77,12 +79,28 @@ termination signal (Ctrl-C / SIGTERM).
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
-                            this supervisor runs against. Default: discovered by
-                            walking up from the current directory, exactly like
-                            bd does. None found: the supervisor still starts,
+                            this supervisor runs against. A path that does not
+                            exist is an error.
+                            Not passed, the folder is resolved in this order:
+                              1. this flag;
+                              2. the project folder persisted in the
+                                 supervisor's own config file, under the data
+                                 dir below -- this is what a service-started
+                                 supervisor uses, since its working directory is
+                                 the installed engine path rather than any
+                                 project. A persisted folder that no longer
+                                 exists is NOT a startup error: the supervisor
+                                 starts, WARNs naming that path and the fix, and
+                                 does not fall back to step 3 (so it can never
+                                 silently adopt an unrelated tracker);
+                              3. walking up from the current directory, exactly
+                                 like bd does.
+                            No beads database found: the supervisor still starts,
                             logs a WARNING and reports beads as unknown until
-                            GET /api/health?refresh=1 finds one. A path that
-                            does not exist is an error.
+                            GET /api/health?refresh=1 finds one. The resolved
+                            folder and which of the three sources it came from
+                            are logged once at startup and reported on
+                            GET /api/health.
   -h, --help                Show this help message.
 
 Environment:
@@ -237,34 +255,75 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // from the wrong folder says so loudly instead of silently serving an
     // empty backlog or dispatching sprints at an unrelated tracker. Every bd
     // the supervisor itself runs (backlog/scope-overlap) resolves by walking
-    // up from process.cwd(), so `--beads-dir` is honored by chdir'ing there
-    // (nothing sets BEADS_DIR, nothing is persisted); the sprint children
-    // below then get repoRoot as their cwd and the resolved identity as
-    // --expect-beads.
+    // up from process.cwd(), so a resolved project folder is honored by
+    // chdir'ing there (nothing sets BEADS_DIR); the sprint children below then
+    // get repoRoot as their cwd and the resolved identity as --expect-beads.
     //
-    // Severity: a `--beads-dir` that does not exist is an operator typo and
-    // still a startup ERROR. No .beads reachable from cwd, or a failing
-    // identity probe, is an environment condition: a WARNING (with the fix),
-    // the identity stays "unknown" (health `beads: null` + `beadsWarning`,
-    // amber dashboard header, no --expect-beads handed to sprints -- the
-    // engine then verifies members against the orchestrator's own beads),
-    // and GET /api/health?refresh=1 can recover it without a restart.
-    if (values['beads-dir'] !== undefined) {
-        let target;
+    // PRECEDENCE (resolveProjectDir() in ../src/supervisor/beads-identity.mjs
+    // owns it): `--beads-dir`, else the project folder PERSISTED in
+    // supervisor.config.json (read only through
+    // ../src/supervisor/project-config.mjs), else the cwd walk-up. The
+    // persisted step is why this is no longer "nothing is persisted": a
+    // service's working directory is the installed engine path, which has no
+    // relationship to any user project, so flag-or-cwd alone could never reach
+    // a real project's beads DB out of the box. Exactly one startup line below
+    // reports which of the three sources won.
+    //
+    // Severity, and its deliberate ASYMMETRY:
+    //   - a `--beads-dir` that does not exist is an operator typo on THIS
+    //     launch and still a startup ERROR (non-zero exit, message unchanged);
+    //   - a CONFIGURED folder that does not exist is NOT a startup error. A
+    //     persisted setting goes stale for reasons the operator is not present
+    //     to fix (moved checkout, unmounted volume, reimaged machine), and a
+    //     supervisor that refuses to boot cannot serve the console page that
+    //     would let them correct it. It degrades to the SAME warning path as
+    //     everything below, naming the offending path and the fix -- and
+    //     deliberately does NOT fall back to the walk-up, which would
+    //     re-create the original bug (the installed engine tree silently
+    //     winning and an unrelated tracker being served as the project).
+    //   - no .beads reachable from cwd, or a failing identity probe, is an
+    //     environment condition: a WARNING (with the fix), the identity stays
+    //     "unknown" (health `beads: null` + `beadsWarning`, amber dashboard
+    //     header, no --expect-beads handed to sprints -- the engine then
+    //     verifies members against the orchestrator's own beads), and GET
+    //     /api/health?refresh=1 can recover it without a restart.
+    let project;
+    try {
+        project = await resolveProjectDir({ flag: values['beads-dir'], cwd: process.cwd() });
+    } catch (err) {
+        // Only the flag branch throws -- the typo-is-fatal half above.
+        console.error(`Error: ${err && err.message ? err.message : err}`);
+        return { exitCode: 1 };
+    }
+    if (project.chdir) {
         try {
-            target = resolveBeadsDirArg(values['beads-dir']);
-            process.chdir(target);
+            process.chdir(project.chdir);
         } catch (err) {
-            console.error(`Error: ${err && err.message ? err.message : err}`);
-            return { exitCode: 1 };
+            if (project.source === PROJECT_DIR_SOURCE.FLAG) {
+                console.error(`Error: ${err && err.message ? err.message : err}`);
+                return { exitCode: 1 };
+            }
+            // A configured folder that vanished between the stat and the chdir
+            // takes the same staleness-tolerant path as a missing one.
+            project = {
+                ...project,
+                chdir: null,
+                usable: false,
+                warning: formatStaleConfiguredProjectWarning(project.projectDir, supervisorConfigPath()),
+            };
         }
     }
-    const discovered = discoverBeadsDir({ cwd: process.cwd() });
-    const repoRoot = discovered ? discovered.repoRoot : process.cwd();
+    console.log(`[supervisor] project folder: ${project.projectDir} (source: ${project.source})`);
+
+    // An unusable configured folder must not run the walk-up at all (see the
+    // asymmetry comment above), so the discovery is skipped and its warning
+    // stands in for the no-beads one.
+    const discovered = project.usable ? discoverBeadsDir({ cwd: process.cwd() }) : null;
+    const repoRoot = discovered ? discovered.repoRoot : (project.usable ? process.cwd() : project.projectDir);
     let beadsIdentityRecord = null;
     let beadsWarning = null;
     if (!discovered) {
-        beadsWarning = formatNoBeadsWarning(process.cwd());
+        beadsWarning = project.warning ?? formatNoBeadsWarning(process.cwd());
     } else {
         try {
             beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
@@ -492,7 +551,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, token: serviceToken, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
+    const supervisor = createSupervisor({
+        port, token: serviceToken, ledger, spawner, watchdog, dashboard, idAllocator,
+        doltMutex, doltOrphanSweep, beadsIdentity,
+        // The project-folder resolution decided at the top of serveMain, so
+        // GET /api/health can report the folder AND which source won it.
+        project: { projectDir: project.projectDir, source: project.source },
+    });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
