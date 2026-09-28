@@ -49,6 +49,11 @@ import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
 // against the already-rendered HTML string, exactly like proxy.mjs does for
 // the live view.
 import { injectLiveViewBackLink, renderLiveViewBackLinkHtml } from './proxy.mjs';
+// (apra-fleet-i9ag.16.1) LAUNCH_FAILED is the one history event kind this
+// module synthesizes a finished-runs row for -- a sprint whose child died in
+// its launch window before ever writing a terminal state file (see
+// history.mjs's HISTORY_EVENTS doc comment / watchdog.mjs's classifySprint()).
+import { HISTORY_EVENTS } from './history.mjs';
 // (apra-fleet-i9ag.3.9) The DEDICATED History route (`GET /sprints/:id/history`,
 // `handleGet` below) is entered directly, so nothing threads a mount prefix
 // into it the way bin/serve.mjs threads the live proxy's own resolved value
@@ -343,25 +348,35 @@ export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
  * The finished-sprints index behind the dashboard's History list
  * (apra-fleet-i9ag.4): every persisted terminal run under old_runs/ (plus the
  * legacy old_sprints/), newest first, each summarized by
- * summarizeFinishedRun(). Only runs that HAVE a terminal state file are
- * listed, so every row's GET /sprints/:id/history link resolves.
+ * summarizeFinishedRun(). File-backed rows get GET /sprints/:id/history links
+ * that resolve, `status: 'finished'`, `reason: null`, and
+ * `hasTerminalState: true`.
  *
  * old_runs/ lives in the shared fleet data dir, so other workflows' runs land
  * there too. When a `history` collaborator (history.mjs's sprint-history log)
  * is injected, the list is narrowed to run ids this supervisor has recorded a
  * terminal event for; without one every terminal run is listed.
  *
+ * apra-fleet-i9ag.16.1: when a `history` collaborator IS injected, a sprint
+ * that died in its launch window (a LAUNCH_FAILED event, history.mjs's
+ * HISTORY_EVENTS) with NO terminal state file also gets a synthesized row --
+ * `{ sprintId, verdict: null, prUrl: null, endedAt: <event's `at`>, goal:
+ * null, workflowName: null, status: 'launch-failed', reason: <event's
+ * reason>, hasTerminalState: false }` -- merged and deduped by sprintId with
+ * the file-backed row always winning when both exist. With no `history`
+ * collaborator injected, no launch-failed rows are ever synthesized.
+ *
  * Parsed summaries are cached per file keyed by mtime+size, so a dashboard
  * poll re-reads only files that changed since the last call.
  *
  * @param {{
  *   env?: NodeJS.ProcessEnv,
- *   history?: { list: () => Array<{ sprintId: string, verdict?: string|null }> }|null,
+ *   history?: { list: () => Array<{ sprintId: string, event?: string, verdict?: string|null, reason?: string|null, at?: string }> }|null,
  *   limit?: number,
  *   fs?: { readdir: Function, stat: Function, readFile: Function },
  *   logger?: { log?: Function, error?: Function },
  * }} [deps]
- * @returns {{ list: () => Promise<ReturnType<typeof summarizeFinishedRun>[]> }}
+ * @returns {{ list: () => Promise<Array<ReturnType<typeof summarizeFinishedRun> & { status: string, reason: string|null, hasTerminalState: boolean }>> }}
  */
 export function createFinishedRunsIndex(deps = {}) {
     const env = deps.env ?? process.env;
@@ -439,14 +454,54 @@ export function createFinishedRunsIndex(deps = {}) {
             cache.set(f.filePath, { key, summary });
             summaries.push(summary);
         }
+        // Every file-backed row (has a terminal state file, however stale)
+        // gets the SAME three constant fields so consumers branch on one
+        // explicit `status` instead of inferring "launch-failed" from an
+        // absent verdict.
         const rows = summaries.map((s) => {
-            if (s.verdict || !historyVerdicts) return { ...s };
-            return { ...s, verdict: historyVerdicts.get(s.sprintId) ?? null };
+            const withVerdict = s.verdict || !historyVerdicts ? s : { ...s, verdict: historyVerdicts.get(s.sprintId) ?? null };
+            return { ...withVerdict, status: 'finished', reason: null, hasTerminalState: true };
         });
+
+        // apra-fleet-i9ag.16.1: a sprint that died in its launch window NEVER
+        // writes a terminal state file, so it never appears in `byId` above --
+        // without this, the operator sees nothing at all for a failed launch,
+        // even though the watchdog's own history log already carries a
+        // LAUNCH_FAILED event for it. Only possible when a history
+        // collaborator is injected (without one this whole block is skipped,
+        // so the no-history behaviour is byte-for-byte what it was before this
+        // change). `byId` is the FULL (unsliced-by-limit) file scan, so a
+        // file-backed row always wins over a synthesized one for the same id,
+        // per this task's acceptance criteria.
+        if (history) {
+            const launchFailedBySprintId = new Map();
+            for (const e of history.list()) {
+                if (!e || typeof e.sprintId !== 'string') continue;
+                if (e.event !== HISTORY_EVENTS.LAUNCH_FAILED) continue;
+                if (byId.has(e.sprintId)) continue;
+                // history.list() is insertion order -- the last LAUNCH_FAILED
+                // event recorded for a given sprintId wins.
+                launchFailedBySprintId.set(e.sprintId, e);
+            }
+            for (const e of launchFailedBySprintId.values()) {
+                rows.push({
+                    sprintId: e.sprintId,
+                    verdict: null,
+                    prUrl: null,
+                    endedAt: typeof e.at === 'string' && e.at.length > 0 ? e.at : null,
+                    goal: null,
+                    workflowName: null,
+                    status: 'launch-failed',
+                    reason: typeof e.reason === 'string' && e.reason.length > 0 ? e.reason : null,
+                    hasTerminalState: false,
+                });
+            }
+        }
+
         // Newest first by the run's own endedAt (summarizeFinishedRun() falls
         // back to the file mtime when absent); ISO-8601 strings sort lexically.
         rows.sort((a, b) => String(b.endedAt ?? '').localeCompare(String(a.endedAt ?? '')));
-        return rows;
+        return rows.slice(0, limit);
     }
 
     return { list };
