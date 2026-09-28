@@ -161,6 +161,49 @@ first; comparing them raw is expected to always show noise. Treating this as
 "expected volatility, normalize before compare" rather than "make recording
 deterministic" avoids fighting the nature of the data.
 
+## The response-conformance lane: a live, per-tool coverage-accounted check that the round-trip harness alone cannot give you
+
+The round-trip harness (above) validates each fixture's recorded response
+against its schema, but a fixture corpus can still be structurally thin in a
+way schema validation alone never notices: a tool's fixture can exist and
+"pass" while never actually reaching into the nested decoded body a schema
+types in detail, contributing zero real coverage of that body's shape. A
+schema-drift regression can ship silently through exactly that gap -- the
+corpus technically has a fixture for the tool, but nothing in the suite ever
+asserts the fixture reaches far enough into the response to catch the drift.
+
+The response-conformance lane closes this by driving every inventoried
+tool's real handler once, live, and recording -- per tool -- both whether its
+response validated and whether the validation actually reached that tool's
+declared response body (as opposed to trivially passing because the body is
+untyped/opaque for that tool, which is a legitimate state for some tools and
+an audited-and-allow-listed exception, never a silent pass). The lane's own
+report is then itself asserted on: every tool in the inventoried roster must
+be either covered or explicitly allow-listed with a documented reason, so
+the corpus cannot quietly regress back into having a tool that contributes
+nothing. This audit-of-the-audit is what makes "the corpus has a fixture for
+every tool" mean something stronger than it otherwise would.
+
+This lane is proven falsifiable by a companion suite that feeds it synthetic
+observations built from scratch copies of committed fixtures -- deliberately
+mutated to reproduce the specific class of drift that motivated building the
+lane -- and asserts the lane actually fails on them, with a positive control
+proving the same unmutated payload passes. A conformance check that has never
+been shown to fail on a real defect is not evidence it catches anything.
+
+The lane is wired into the same bounded test chain every other check in this
+repo runs through (never invoked as a separate, easy-to-forget step), so
+this class of drift is caught on every run, not only when someone remembers
+to run a special validation pass.
+
+This closes the specific handoff gap this document named earlier ("the
+correct owner for asserting [cross-call ordering, live response shape, etc.]
+is a behavioural conformance suite that can drive real call sequences and
+inspect real side effects, not the schema layer") for the response-shape
+slice of that list. The remaining items in that list -- cross-call ordering,
+provider-instance identity, and the rest -- are still owned by future
+behavioural-suite work, not by this lane.
+
 ## The handoff boundary between contract-skeleton work and downstream work is explicit, not implied
 
 A four-layer contract skeleton (prose spec, JSON Schema, wire bindings,

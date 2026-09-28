@@ -509,6 +509,34 @@ it is inspectable without watching process output -- `kb_stats` reports
 though the failing call itself threw rather than returning data. The warning
 re-arms on reconnect so a later drop is reported again rather than staying
 silent for the rest of the session (apra-fleet-i9ag.15.13, apra-fleet-i9ag.15.13.2).
+
+**Strict mode must also gate calls with no remote route of their own.** Not
+every operation the HTTP-backed provider exposes has a corresponding remote
+endpoint -- some (reading linked/related entries, promoting an entry's
+confidence) are answered by delegating straight to the local fallback store,
+because there is no server-side route for them at all. That delegation is
+exactly the "silently local" behavior strict mode exists to forbid, and a
+call with no remote route to fail against gets no free pass from the normal
+request/catch/fallback path that gates every other method. Each such
+delegation performs its own explicit live-reachability probe first when
+strict mode is on, so a caller reliably gets the strict-mode refusal instead
+of an answer it cannot tell apart from a team-shared one. The one deliberate
+exemption is best-effort delivery telemetry (recording that an entry was
+read, for staleness/promotion signal) -- it is fire-and-forget, a caller
+never branches on its result, so gating it would only turn a background
+counter update into a failure mode for the read path that happens to trigger
+it. Every other local-only delegation must be gated explicitly; it is never
+safe to assume "this call already goes through the normal path" without
+checking whether it actually has a remote route.
+
+Trade-off carried forward: each of these gated delegations spends one
+network round trip confirming reachability before serving the answer, even
+when the caller only wanted a local read. This is deliberate -- correctness
+(never silently answering from local data in strict mode) was chosen over
+avoiding that round trip -- but it is worth revisiting if these calls end up
+on a hot path, e.g. by caching a short-lived reachability result instead of
+probing on every call.
+
 Port: 7878 (default). Configurable in config.json or via `--port` flag.
 TLS: optional. Recommended for remote (non-localhost) deployments. Configured
 via `--tls-cert` and `--tls-key` flags.

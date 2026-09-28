@@ -136,6 +136,75 @@ contain). "Unknown" (missing branch/base metadata, or the git check failing
 because a ref cannot be resolved locally) is always rendered distinctly from
 a confirmed zero-drift result -- the two are never conflated.
 
+## Launch-failed visibility
+
+A sprint that dies before it ever produces a terminal state file (the
+child process crashed, or never started at all) previously vanished
+entirely from the operator's view: it never appears in the Sprint Stack
+(which only lists live, running sprints) and never appears in Finished
+Sprints (which is built by scanning terminal state files). The only trace
+was a line in the supervisor's own process log -- invisible unless an
+operator happened to be tailing it at the right moment.
+
+Finished Sprints closes that gap by treating a `LAUNCH_FAILED` history
+event as a second, synthetic source of finished-run rows, alongside the
+real terminal-state-file scan:
+
+- A `LAUNCH_FAILED` event only ever synthesizes a row when a history
+  collaborator is actually wired in (some call sites intentionally have no
+  history access and must not error just because they cannot check).
+- The gate for "was this run already accounted for by a real file" must be
+  the set of ids a run actually *produced* into the finished index, not the
+  raw file-scan result: a terminal state file can exist on disk yet still
+  fail to parse into a usable summary, and in that case the id must remain
+  eligible for launch-failed synthesis -- otherwise a genuinely-unparseable
+  run silently disappears instead of surfacing as a failure. Conversely, a
+  file that parsed successfully but fell outside the finished-list's
+  display window must not also get a duplicate synthetic row.
+- A synthesized row carries its own distinct status (never conflated with a
+  real completed/failed run that has an actual terminal state), the
+  failure reason (escaped before rendering), and a link to the sprint's raw
+  log file so an operator can go straight to the child process's actual
+  output.
+
+The launch form itself closes the other half of the gap: after submitting
+a launch, it watches the *new* run's state for a bounded window (tens of
+seconds, not indefinitely) rather than declaring success the instant the
+HTTP request that started the sprint returns 200. Every poll tick is
+guarded by a generation counter captured when the watch started, so a
+user launching a second sprint (or navigating away and back) can never
+have a stale, superseded watch overwrite the current one's result -- the
+watch either confirms the run is alive, reports a launch failure it
+actually observed, or times out inconclusively; it never *invents* a
+failure it didn't see.
+
+Because the launch-failed badge renderer participates in the same
+`.toString()`-embedded client script described above, any helper *it*
+calls must itself be embedded the same way -- a renderer that looks correct
+in a server-side unit test can still ship a `ReferenceError` to the browser
+if one of its callees was left out of the embedding list. This is guarded
+structurally (every helper reachable from an embedded renderer is checked
+to be itself embedded) rather than by trusting each new renderer's author
+to remember the rule.
+
+## Selection-hint binding: bind to the mutation, not to a specific ancestor container
+
+A UI element that reflects "what is currently selected" must update on
+every mutation of the selection state, from wherever in the DOM that
+mutation happens to originate -- not just from inside whichever container
+the element's author happened to be thinking about when they wrote the
+listener. Binding a selection-change listener under a specific container
+element silently stops working the moment that container is absent (a
+different tab, a different page composition, a test harness stub without
+it) -- and the failure mode is not an error, it is a hint that just never
+updates, which is far harder to notice. The durable fix is to route every
+mutation of selection state through one small set of setter functions and
+bind the listener at the document level (or otherwise structurally
+guaranteed to be present) rather than to a specific ancestor. Where the
+hint element itself is genuinely expected to always exist, its absence
+should log loudly rather than fail silently -- a UI element that stops
+being found is a signal worth surfacing, not swallowing.
+
 ## Testing implication
 
 Every dashboard client-side behavior (button handlers, the live-refresh

@@ -418,6 +418,17 @@ remote client's `HttpKbProvider` gets `ECONNREFUSED` (see
 Architecture"). Run `node dist/index.js kb-server --help` for the full flag
 reference.
 
+**Upgrade note for an existing team-shared install:** if a prior version of
+`kb-server` bound the OS wildcard address and was reachable from other
+machines without `--host` set explicitly, upgrading to a version that
+defaults to loopback-only is a breaking change for that install -- team
+members who relied on the old wildcard default will start getting
+`ECONNREFUSED` until the server operator adds an explicit `--host`. The flag
+reference documents the requirement, but nothing at startup currently warns
+an operator who upgrades without re-reading it; treat re-checking `--host`
+as a required step of any `kb-server` upgrade on a team-shared install until
+a startup-time warning exists for this case.
+
 On each client machine, configure the provider. This is per fleet install,
 not per repo: every repo that install serves switches to the central server.
 
