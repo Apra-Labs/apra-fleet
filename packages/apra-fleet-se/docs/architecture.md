@@ -1501,6 +1501,64 @@ drawer, and a project export/import CLI. See `docs/project-overview-domain.md`
 in this folder for that domain's design, its cross-shell command-quoting
 invariant, and the trade-offs behind it.
 
+## Supervisor: single-project bootstrap setting vs. the project store
+
+A third, smaller and deliberately separate piece of durable state sits below
+both of the above: `supervisor.config.json`, a single JSON file (owned
+end-to-end by `src/supervisor/project-config.mjs`) holding nothing but the
+one project folder a `fleet-supervisor` instance is bootstrapped against --
+the folder whose `.beads` tracker it resolves the Backlog/Sprints pages from.
+This is not a smaller version of the `node:sqlite` project store described
+above; it exists specifically to answer a question that store cannot answer
+for itself, because it is resolved at the very top of `serve.mjs`'s startup,
+before any store -- reservation ledger, project store, or otherwise -- has
+been opened, and before the port is bound. A setting that determined
+*which* project matters at that point cannot depend on a data layer that
+might fail to open on that exact runtime (the `node:sqlite` store requires
+Node 22.13.0+ and the server has an explicit degraded mode for when it
+cannot open). Plain `fs` read/write against a JSON file has no such
+runtime floor, so the bootstrap setting is guaranteed to be legible on every
+build the released binary supports, independent of whether the richer store
+comes up at all.
+
+Resolution is a three-step precedence, cheapest/most-explicit first: an
+explicit `--beads-dir` flag on this launch, else the folder persisted in
+`supervisor.config.json`, else the legacy `.beads` walk-up from the process's
+working directory. The two outer cases are held to different failure
+severities on purpose: a flag typed on this exact launch that does not
+resolve to a real directory is a hard startup error (the operator is right
+there to see it), while a *persisted* folder that has since gone stale --
+a moved checkout, an unmounted volume, a reimaged machine -- degrades to a
+startup warning and an "unknown" beads status rather than refusing to boot,
+specifically so the supervisor can still serve the console page (Health,
+and the Projects page's `GET`/`POST /api/project`) an operator would need to
+fix the setting from. A stale persisted folder deliberately does not fall
+through to the walk-up either -- doing so would silently resurrect the exact
+bug the setting exists to close (the supervisor adopting an unrelated
+tracker it happens to be sitting near). The setting can be seeded once at
+install time (`apra-fleet install --project-dir <path>`, validated the same
+way and applied before the service is registered) or changed later from the
+console; either path is a restart-to-apply setting, not a live one, because
+it is only ever read once, at the startup resolution above.
+
+See `docs/install.md`'s "Project folder" note and this folder's
+`docs/project-model.md` for the full precedence/staleness contract an
+integrator needs, and `../../../docs/console-architecture.md`'s Health
+section for how the resolved folder and its source surface in the shell.
+
+**Known latent gap:** the install-time seeding path and the runtime
+`writeSupervisorConfig()` path are two different writers of the same file.
+The runtime writer explicitly preserves unknown top-level keys across a
+write (a newer supervisor may add a field this build has never heard of);
+the install-time writer does not carry that same guarantee and is not
+atomic the way the runtime writer is (temp-file-then-rename). This is
+harmless today because the file has exactly one key, but a future second
+top-level key would silently survive a console-triggered write and be
+destroyed by an install-triggered one, and the client/server parity test
+covering this file's shape cannot catch that divergence because it only
+asserts the reader accepts what the writer already produces, not that two
+writers agree with each other.
+
 ## Dashboard
 
 The supervisor serves exactly one index page. It renders, in order: one
