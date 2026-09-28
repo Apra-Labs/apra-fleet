@@ -692,33 +692,33 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
     // surface); no credential -> 401, cookie-only -> 200 and the reservation
     // is actually released (this IS the Sprint Stack's Stop button's real
     // route -- see dashboard.mjs's SPRINT_STOP_SCRIPT).
+    //
+    // apra-fleet-i9ag.11.16: the precondition ("sprintId still holds a
+    // reservation") must NOT be inherited from the setup test's real spawned
+    // child staying alive for the rest of this describe block -- under
+    // full-suite concurrency the background watchdog (started by
+    // supervisor.start() above, default 5s tick) or real resource contention
+    // can legitimately classify that child CRASHED and auto-release its
+    // reservation between tests, which used to make this test flake on an
+    // unrelated precondition rather than the auth behaviour it exists to
+    // check. Re-claim the SAME sprintId here, directly and deterministically,
+    // with childPid: process.pid (this test process itself -- always
+    // "alive", so isPidAlive()/the watchdog can never classify it gone for
+    // the rest of this test). This is safe: `reconciler` above was built with
+    // `killPid: () => true`, a no-op stub, so forceRelease()'s kill(childPid)
+    // call never sends a real signal to this process.
     // -------------------------------------------------------------------------
     test('POST /api/reservations/:sprintId/force-release: no credential -> 401; se_token cookie ALONE -> 200 and releases', async () => {
-        // apra-fleet-i9ag.12.7: the preceding tests' GET / request already
-        // exercised the REAL dashboard render, which calls
-        // watchdog.classifySprint() on every live ledger entry (dashboard.mjs's
-        // buildSprintViews()) to compute status badges -- entirely independent
-        // of watchdog's own background poll interval. On a loaded run a
-        // transient PID/port-lookup miss for the still-genuinely-alive fixture
-        // child can misclassify it as gone and auto-release its reservation
-        // via that render, well before this test ever runs (confirmed
-        // reproducible: `isChildAlive: async () => false` on this fixture
-        // makes this exact assertion fail, even with the background poll
-        // above disabled entirely). That auto-release is a real, separate
-        // code path this test is not exercising -- re-assert the reservation
-        // deterministically here so this test verifies ITS OWN claim ("an
-        // unauthenticated force-release cannot release a held reservation")
-        // rather than depending on an earlier test's launch still being live.
-        if (!ledger.get(sprintId)) {
-            await ledger.claim(sprintId, {
-                members: ['alice'],
-                issueRoots: [],
-                childPid,
-                branch: 'feat/50j6-2-2',
-                base: 'main',
-                goal: 'auth itest',
-            });
-        }
+        if (ledger.get(sprintId)) await ledger.release(sprintId);
+        await ledger.claim(sprintId, {
+            members: ['alice'],
+            issueRoots: ['x1'],
+            childPid: process.pid,
+            branch: 'feat/50j6-2-2',
+            base: 'main',
+            goal: 'auth itest',
+        });
+        assert.ok(ledger.get(sprintId), 'precondition: sprintId must hold a reservation before the auth checks below');
 
         const noCred = await httpPostWithHeaders(port, `/api/reservations/${sprintId}/force-release`, {});
         assert.equal(noCred.status, 401, noCred.body);

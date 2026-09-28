@@ -364,11 +364,13 @@ Secrets are encrypted in the fleet credential store. They never appear in
 workflow code, config files, or environment variables.
 
 On a headless server (no terminal attached), or by passing `return_url:
-true` explicitly, `credential_store_set` returns a one-time browser URL
-(`{url, expiresAt}`) instead of blocking on terminal input -- open the URL
-to submit the secret; it is stored automatically, with no follow-up call
-needed. See [docs/secret-variables.md](docs/secret-variables.md) for the
-full behavior.
+true` explicitly, `credential_store_set` returns a one-time, console-hosted
+browser URL (`{url, expiresAt, absoluteUrl}`) instead of blocking on
+terminal input -- open the URL to submit the secret; it is stored
+automatically, with no follow-up call needed. The URL works from wherever a
+browser can reach the console (LAN, an SSH tunnel, a remote install), not
+only from the server's own machine. See
+[docs/secret-variables.md](docs/secret-variables.md) for the full behavior.
 
 ### Sending email from a workflow
 
@@ -449,6 +451,11 @@ Members, Secrets and Health pages with drawer actions and an add-member
 wizard, built on a shared `@apralabs/apra-fleet-ui-kit` primitives package,
 and is guarded end to end: every `/api/*` request and every mutating
 `/ext/*` request requires the fleet key (bearer) or the console cookie,
+adding a credential from the Secrets page opens a one-time, single-use entry
+page hosted on the console itself (not a separate loopback listener), so
+submitting a secret value works from any browser that can reach the console
+-- see [docs/console-architecture.md](docs/console-architecture.md)'s
+"Console-hosted secret entry" section,
 third-party workflow packages can be registered and reached through a
 `/ext/<package id>/*` reverse proxy (SSE included) using a per-package
 derived upstream credential rather than the raw fleet key, and

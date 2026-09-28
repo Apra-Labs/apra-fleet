@@ -35,6 +35,72 @@ export function isNonDefaultInstance(): boolean {
  */
 export const DEFAULT_HOST = process.env.APRA_FLEET_HOST?.trim() || '127.0.0.1';
 
+/**
+ * Resolve the absolute origin a human should open to reach this server's
+ * console (apra-fleet-i9ag.11.9). The server binds to DEFAULT_HOST, which is
+ * frequently 0.0.0.0 or a LAN interface -- not something a browser can be
+ * pointed at directly -- so an out-of-band collection link (credential_store_set
+ * return_url) needs an EXPLICIT, operator-declared origin rather than a
+ * guess. APRA_FLEET_CONSOLE_BASE_URL is that explicit opt-in; unset, this
+ * falls back to the server's own bound origin (DEFAULT_HOST:DEFAULT_PORT),
+ * which is at least correct for an on-box/loopback reader even if it is not
+ * reachable off-box.
+ *
+ * A SET-BUT-INVALID value fails loudly (ok: false) rather than silently
+ * falling back -- an operator who mistyped the variable needs to know their
+ * printed URL is wrong, not receive a URL that quietly points somewhere else.
+ */
+export function resolveConsoleBaseUrl(): { ok: true; baseUrl: string } | { ok: false; error: string } {
+  const raw = process.env.APRA_FLEET_CONSOLE_BASE_URL?.trim();
+  if (raw) {
+    const stripped = raw.replace(/\/+$/, '');
+    let parsed: URL;
+    try {
+      parsed = new URL(stripped);
+    } catch {
+      return { ok: false, error: `APRA_FLEET_CONSOLE_BASE_URL "${raw}" is not a valid URL` };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return {
+        ok: false,
+        error: `APRA_FLEET_CONSOLE_BASE_URL "${raw}" has unsupported scheme "${parsed.protocol}" (only http: and https: are supported)`,
+      };
+    }
+    return { ok: true, baseUrl: stripped };
+  }
+  return { ok: true, baseUrl: `http://${DEFAULT_HOST}:${DEFAULT_PORT}` };
+}
+
+/**
+ * Join a console base URL (from resolveConsoleBaseUrl(), which may include a
+ * reverse-proxy sub-path such as 'https://fleet.example.com/fleet') with a
+ * console-relative path (e.g. '/ui/#/secret-entry/<token>') into one absolute
+ * URL. Plain `new URL(relativePath, baseUrl)` cannot be used for this: per
+ * RFC 3986/WHATWG URL resolution, a root-relative path (one starting with
+ * '/') REPLACES the base's entire path rather than appending to it, so any
+ * sub-path segment in baseUrl (e.g. '/fleet') is silently discarded --
+ * 'https://fleet.example.com/fleet' + '/ui/#/x' would resolve to
+ * 'https://fleet.example.com/ui/#/x', losing '/fleet'. A reverse proxy
+ * mounting the console under a sub-path is an explicitly supported,
+ * documented deployment (docs/console-architecture.md's 'Console-hosted
+ * secret entry' section), so this join preserves the base's path instead
+ * (apra-fleet-i9ag.11.18). Sole caller: src/tools/credential-store-set.ts.
+ *
+ * If relativePath is already an absolute http(s) URL (defensive: callers are
+ * documented to always hand back a console-relative path, but a future
+ * regression here should still resolve to something sane rather than
+ * double-origin garbage), it is returned as-is.
+ */
+export function joinConsoleUrl(baseUrl: string, relativePath: string): string {
+  if (/^https?:\/\//i.test(relativePath)) {
+    return new URL(relativePath).toString();
+  }
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.replace(/\/+$/, '');
+  const rel = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+  return `${base.origin}${basePath}${rel}`;
+}
+
 export const SERVER_INFO_PATH = path.join(FLEET_DIR, 'server.json');
 
 export const LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet.log');

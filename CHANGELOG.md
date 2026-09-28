@@ -85,6 +85,71 @@ open for a future sprint):
   classifier) -- that underlying breakage still carries over to a future
   sprint.
 
+## [Unreleased] -- Console-hosted secret entry: "Add credential" now works off-box
+
+Sprint goal: fix the console's "Add credential" flow so setting a secret
+from `/ui` no longer requires the browser to be on the same machine as the
+fleet server. The prior one-time collection URL bound to the server's own
+loopback interface on a random ephemeral port, so any browser on a LAN, an
+SSH tunnel forwarding only the console's port, or any remote install could
+not open it -- the M1 demo claim "set a secret from the console" failed
+unless the operator was physically at the server.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.7586.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3278 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 13 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The one-time secret-entry collection page is now hosted on the console
+  itself**, at `/ui/#/secret-entry/<token>`, backed by two new console API
+  routes (`POST /api/secret-entry/prompt` and `/submit`) instead of a
+  separate loopback web server on a random port. The returned URL is
+  console-relative -- no scheme, host, or port -- so it resolves wherever the
+  console itself is reachable: on-box, LAN, an SSH tunnel, or a remote
+  install.
+- **`credential_store_set`'s `return_url` response now also carries an
+  `absoluteUrl`** alongside the existing console-relative `url`, resolved
+  against an operator-declared origin (`APRA_FLEET_CONSOLE_BASE_URL`) or the
+  server's own bound origin, correctly preserving a reverse-proxy sub-path
+  when joining the two.
+- **The token lives in the URL fragment**, never a path segment or query
+  string, so it can never reach a server access log or a `Referer` header.
+  Token lookup is constant-time; unknown, expired, and already-consumed
+  tokens all answer an identical response, so there is no oracle for
+  guessing a valid token faster than brute force.
+- **The entry is single-use and short-lived** (10-minute TTL); a second
+  submission of the same token is refused exactly like an unknown token. A
+  throwing `onSubmit` callback answers a fixed error and never echoes its
+  own message, closing a possible value-derived leak.
+- **The original loopback web server is unchanged and still used** for its
+  original, narrower purpose: the blocking on-box terminal fallback when no
+  terminal emulator could be spawned for a human already sitting at the
+  server's own machine. Only the headless/service-caller (`return_url`)
+  collection path moved.
+- Documentation (`docs/console-architecture.md`, `docs/adr-oob-password.md`,
+  `docs/features/oob-auth.md`) now states plainly that the console's own
+  session cookie is CSRF/same-site protection, not network authentication --
+  the real trust boundary is whether a caller can reach the console port at
+  all, which was already true of every other console route and is now
+  called out explicitly rather than implied.
+
+Carried forward (filed as follow-up work, not fixed this sprint, all left
+open at low priority as backlog for a future sprint):
+- The Secrets page renders the raw one-time secret-entry token directly in
+  the DOM rather than only inside the link `href`, which is unnecessary
+  exposure of an otherwise short-lived, single-use value.
+- `resolveConsoleBaseUrl` can print an origin a browser cannot actually use
+  when the server is bound to a wildcard address and no explicit
+  `APRA_FLEET_CONSOLE_BASE_URL` is set.
+- A couple of small hygiene items: a stale test title in
+  `tests/credential-store-set.test.ts`, and pre-existing non-ASCII
+  characters in `tests/auth-socket.test.ts` that predate this sprint and
+  were reduced, not introduced, by it.
+
 ## [Unreleased] -- apra-fleet supervisor launcher and named OS-service registration (sprint FAILED -- doc regression left open)
 
 Sprint goal: let the fleet-supervisor OS service start on a machine that has
