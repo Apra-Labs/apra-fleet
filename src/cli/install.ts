@@ -86,6 +86,26 @@ function probeBdVersion(): string | null {
   }
 }
 
+/**
+ * Renders the bd part of the installer's `fleet-se: ready (...)` summary line,
+ * which prefixes it with a literal `bd `.
+ *
+ * probeBdVersion() above returns the RAW `bd --version` output, and bd names
+ * itself there ('bd version 1.3.0 (f45b249c)'), so interpolating it after that
+ * literal rendered 'bd bd version 1.3.0 (f45b249c)' -- found by the fresh-install
+ * smoke for apra-fleet-i9ag.13. Stripping ONE leading 'bd ' keeps the line to a
+ * single program name whatever bd's own wording is, rather than pattern-matching
+ * bd's current version format. The non-version fallback summaries ('installed',
+ * 'not available') carry no such prefix and pass through untouched, so they still
+ * read as 'bd installed' / 'bd not available'.
+ *
+ * Exported for direct unit testing -- the doubling was only ever observable in
+ * the fully-composed summary string.
+ */
+export function formatFleetSeBdPart(beadsSummary: string): string {
+  return beadsSummary.replace(/^bd\s+/, '');
+}
+
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
 // The dolt install step below does a REAL network download (~40MB from
@@ -1016,7 +1036,8 @@ Options:
 Services (SEA + --transport http):
   Two OS services are registered, each with its own unit/task and its own
   start/stop/status reporting: the apra-fleet MCP server, and the fleet-sprint
-  supervisor (workflows/fleet-sprint/bin/serve.mjs, skipped with --workflows none).`);
+  supervisor, registered as the binary's own 'apra-fleet supervisor' subcommand
+  (needs no separate node on PATH; skipped with --workflows none).`);
     process.exit(0);
     return;
   }
@@ -1959,7 +1980,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // without the opt-in env var), fleetSePrereqs is null and node/npm versions
   // are reported as 'n/a' rather than fabricated.
   const fleetSeLine = installWorkflows
-    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${beadsSummary})`
+    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
     : `\n  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.

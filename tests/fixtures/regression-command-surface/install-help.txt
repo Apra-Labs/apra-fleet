@@ -32,4 +32,5 @@ Options:
 Services (SEA + --transport http):
   Two OS services are registered, each with its own unit/task and its own
   start/stop/status reporting: the apra-fleet MCP server, and the fleet-sprint
-  supervisor (workflows/fleet-sprint/bin/serve.mjs, skipped with --workflows none).
+  supervisor, registered as the binary's own 'apra-fleet supervisor' subcommand
+  (needs no separate node on PATH; skipped with --workflows none).

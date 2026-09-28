@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   runInstall,
+  formatFleetSeBdPart,
   _setSeaOverride,
   _setManifestOverride,
   _setFleetSePrereqStepDeps,
@@ -13,6 +14,7 @@ import {
 import { extractWorkflowSubsystemAssets } from '../src/cli/workflow-assets.js';
 import { MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from '../src/cli/fleet-se-prereqs.js';
 import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
+import { SUPERVISOR_SUBCOMMAND } from '../src/services/supervisor-service.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 
 // apra-fleet-i9ag.13.7.3 -- pins the fix for gap bug apra-fleet-i9ag.13.7 (the
@@ -255,6 +257,49 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     exitSpy.mockRestore();
   });
 
+  // The Services block used to tell operators the supervisor service runs
+  // 'workflows/fleet-sprint/bin/serve.mjs'. src/services/supervisor-service.ts
+  // stopped registering it that way (the unit runs the binary's own
+  // SUPERVISOR_SUBCOMMAND, so a fresh machine needs no node on PATH to boot
+  // it), which is exactly what the fresh-install smoke on apra-fleet-i9ag.13
+  // exercises -- so the help was describing a shape the installer no longer
+  // produces.
+  it('`install --help` describes the supervisor service as the binary subcommand, not a serve.mjs path', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as any);
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+
+    const help = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    const svcStart = help.indexOf('Services (SEA');
+    expect(svcStart).toBeGreaterThan(-1);
+    const servicesSection = help.slice(svcStart);
+    expect(servicesSection).toContain(`'apra-fleet ${SUPERVISOR_SUBCOMMAND}'`);
+    expect(servicesSection).not.toContain('serve.mjs');
+    expect(servicesSection).toContain('--workflows none');
+
+    exitSpy.mockRestore();
+  });
+
+  // The pure renderer behind the ready line, tested directly: the doubling was
+  // only ever visible in the fully-composed summary string.
+  describe('formatFleetSeBdPart()', () => {
+    it("strips bd's own leading name from the raw `bd --version` output", () => {
+      expect(formatFleetSeBdPart('bd version 1.3.0 (f45b249ce)')).toBe('version 1.3.0 (f45b249ce)');
+      expect(formatFleetSeBdPart('bd 1.3.0')).toBe('1.3.0');
+    });
+
+    it('passes the non-version fallback summaries through untouched', () => {
+      expect(formatFleetSeBdPart('installed')).toBe('installed');
+      expect(formatFleetSeBdPart('not available')).toBe('not available');
+    });
+
+    it('strips only ONE leading name, so a version that itself starts with bd survives', () => {
+      expect(formatFleetSeBdPart('bd bd-next 2.0.0')).toBe('bd-next 2.0.0');
+    });
+  });
+
   // apra-fleet-i9ag.13 / apra-fleet-i9ag.12.15: the gate used to run MID-
   // install -- after the fleet.key mint, the binary copy, hooks, scripts and
   // settings had already been written -- so a machine missing Node was left
@@ -328,7 +373,12 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     // The bd version on the ready line is the one this install actually
     // probed, never the placeholder 'not available' (apra-fleet-i9ag.13.7.2):
     // 'ready' and 'bd not available' must not be able to co-occur.
-    expect(logs).toMatch(/fleet-se:\s+ready \(node 22\.16\.0, npm 10\.5\.0, bd bd 1\.3\.0\)/);
+    // The literal 'bd ' prefix on this line plus bd's own self-naming
+    // `--version` output used to render 'bd bd 1.3.0' (the real binary prints
+    // 'bd version <v> (<sha>)', so a fresh install read 'bd bd version ...').
+    // formatFleetSeBdPart() strips the duplicate, so bd is named exactly once.
+    expect(logs).toMatch(/fleet-se:\s+ready \(node 22\.16\.0, npm 10\.5\.0, bd 1\.3\.0\)/);
+    expect(logs).not.toContain('bd bd');
     expect(logs).not.toContain('bd not available');
     // bd was already present, so no npm install was attempted.
     const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
