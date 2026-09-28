@@ -236,7 +236,6 @@ function clientScriptSource(mountPrefix) {
     var selectedIssuesEl = document.getElementById('launch-selected-issues');
     var resultEl = document.getElementById('launch-result');
     var form = document.getElementById('launch-sprint-form');
-    var backlogEl = document.getElementById('backlog');
     var roleOptions = ${roleOptionsJson};
     // buildLaunchRequestBody (embedded below via .toString()) references
     // the module-level GOAL_OPTIONS by name -- it must exist in this
@@ -244,10 +243,18 @@ function clientScriptSource(mountPrefix) {
     // above stands in for FORM_ROLE_OPTIONS.
     var GOAL_OPTIONS = ${goalOptionsJson};
 
+    // apra-fleet-i9ag.18.1: a missing hint element must be reported loudly,
+    // never degrade to a silent no-op (CLAUDE.md "Fix the product, not the
+    // environment": implicit environment deciding behaviour with a silent
+    // failure is exactly the shape to avoid).
     function renderSelectedIssues() {
+        if (!selectedIssuesEl) {
+            console.error('[launch-form] missing required element #launch-selected-issues; cannot render the selection hint');
+            return;
+        }
         selectedIssuesEl.textContent = selectedRoots.length > 0
             ? 'Selected issue(s): ' + selectedRoots.join(', ')
-            : 'No issue selected -- click a Backlog row below to select one.';
+            : 'No issue selected -- check a Backlog row above to select one.';
     }
     renderSelectedIssues();
 
@@ -267,10 +274,21 @@ function clientScriptSource(mountPrefix) {
         isSelected: function (id) { return selectedRoots.indexOf(id) !== -1; },
     };
 
+    // apra-fleet-i9ag.18.1: the ONE function that mutates selection state.
+    // Every mutation path -- a row checkbox, the cascade to descendant rows,
+    // and the post-launch reset (see clearSelection(), next) -- funnels
+    // through here (or clearSelection()) so no future path can change
+    // selectedRoots without also re-rendering the hint.
     function setSelected(id, checked) {
         var idx = selectedRoots.indexOf(id);
         if (checked && idx === -1) selectedRoots.push(id);
         else if (!checked && idx !== -1) selectedRoots.splice(idx, 1);
+        renderSelectedIssues();
+    }
+
+    function clearSelection() {
+        selectedRoots = [];
+        renderSelectedIssues();
     }
 
     // A row's nesting depth is encoded in its first <td>'s inline
@@ -304,18 +322,25 @@ function clientScriptSource(mountPrefix) {
         }
     }
 
-    if (backlogEl) {
-        backlogEl.addEventListener('change', function (ev) {
-            var cb = ev.target;
-            if (!cb || !cb.classList || !cb.classList.contains('bead-select-checkbox')) return;
-            var id = cb.getAttribute('data-bead-id');
-            var row = cb.closest('tr[data-bead-id]');
-            setSelected(id, cb.checked);
-            if (row) row.classList.toggle('bead-row-selected', cb.checked);
-            if (row) cascadeToDescendants(row, cb.checked);
-            renderSelectedIssues();
-        });
-    }
+    // apra-fleet-i9ag.18.1: delegated at DOCUMENT level, not '#backlog' --
+    // a checkbox change bubbles to document from ANY container, including a
+    // '#backlog-table' that backlog.mjs's own script has re-rendered, and
+    // keeps working even when '#backlog' itself is not resolvable at
+    // script-execution time. Binding to a possibly-absent element behind a
+    // silent if (backlogEl) guard (the prior shape) meant the listener was
+    // simply never registered with nothing reported anywhere -- exactly the
+    // "implicit environment decides behaviour, failure is silent" pattern
+    // CLAUDE.md calls out. The 'bead-select-checkbox' class guard in this same
+    // listener still ignores this form's OWN member checkboxes.
+    document.addEventListener('change', function (ev) {
+        var cb = ev.target;
+        if (!cb || !cb.classList || !cb.classList.contains('bead-select-checkbox')) return;
+        var id = cb.getAttribute('data-bead-id');
+        var row = cb.closest('tr[data-bead-id]');
+        setSelected(id, cb.checked);
+        if (row) row.classList.toggle('bead-row-selected', cb.checked);
+        if (row) cascadeToDescendants(row, cb.checked);
+    });
 
     function memberRow(m) {
         var name = typeof m === 'string' ? m : (m && m.name) || '';
@@ -418,8 +443,7 @@ function clientScriptSource(mountPrefix) {
                     resultEl.style.color = '#22c55e';
                     resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.'
                         + (r.json.buildVersionWarning ? ' Warning: ' + r.json.buildVersionWarning : '');
-                    selectedRoots = [];
-                    renderSelectedIssues();
+                    clearSelection();
                     document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
                         tr.classList.remove('bead-row-selected');
                     });
@@ -454,7 +478,7 @@ export function renderLaunchFormHtml(mountPrefix) {
         .map((g) => '<option value="' + escapeHtml(g) + '">' + escapeHtml(g) + '</option>')
         .join('');
     return (
-        '<p style="color:#a1a1aa; font-size: 13px;">Click one Backlog row above to select the issue to launch, ' +
+        '<p style="color:#a1a1aa; font-size: 13px;">Check a Backlog row\'s checkbox above to select the issue to launch, ' +
         'choose members/roles, a goal, and branch names, then submit.</p>' +
         '<div id="launch-selected-issues" style="margin-bottom: 8px; font-size: 13px; color:#a1a1aa;"></div>' +
         '<div id="launch-members" style="margin-bottom: 12px; font-size: 13px;">Loading members...</div>' +
