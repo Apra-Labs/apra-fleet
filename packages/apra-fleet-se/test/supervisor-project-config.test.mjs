@@ -1,5 +1,6 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,8 +29,20 @@ import { defaultDataDir } from '../src/supervisor/ledger.mjs';
 /** Temp dirs created by this file, removed in afterEach. */
 const tmpDirs = [];
 
+/**
+ * mkdtemp under a REALPATH'd root. os.tmpdir() is itself a symlink on some
+ * hosts (macOS: /var/folders/... -> /private/var/folders/...), and a spawned
+ * supervisor reports its cwd already resolved, so an un-resolved fixture path
+ * would not compare equal to what the process reports. Resolving once at
+ * creation keeps both sides of every path assertion in the same spelling.
+ * The `.native` variant also expands a Windows 8.3 short name.
+ */
+async function mkRealTmp(prefix) {
+    return fs.realpathSync.native(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
 async function mkTmp(prefix = 'apra-fleet-project-config-') {
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+    const dir = await mkRealTmp(prefix);
     tmpDirs.push(dir);
     return dir;
 }

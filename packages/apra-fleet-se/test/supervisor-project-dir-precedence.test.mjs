@@ -2,6 +2,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,12 +78,24 @@ after(async () => {
 });
 
 /**
+ * mkdtemp under a REALPATH'd root. os.tmpdir() is itself a symlink on some
+ * hosts (macOS: /var/folders/... -> /private/var/folders/...), and a spawned
+ * supervisor reports its cwd already resolved, so an un-resolved fixture path
+ * would not compare equal to what the process reports. Resolving once at
+ * creation keeps both sides of every path assertion in the same spelling.
+ * The `.native` variant also expands a Windows 8.3 short name.
+ */
+async function mkRealTmp(prefix) {
+    return fs.realpathSync.native(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
+/**
  * One isolated fixture root with every folder shape these tests need.
  * `projB` is the TRAP: an unrelated folder that has its own `.beads`, standing
  * in for the installed engine tree the walk-up used to win from.
  */
 async function makeFixture() {
-    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-projdir-'));
+    const root = await mkRealTmp('apra-fleet-projdir-');
     tmpRoots.add(root);
     const dirs = {
         root,

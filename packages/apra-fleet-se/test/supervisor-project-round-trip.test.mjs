@@ -2,6 +2,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,6 +70,18 @@ after(async () => {
 });
 
 /**
+ * mkdtemp under a REALPATH'd root. os.tmpdir() is itself a symlink on some
+ * hosts (macOS: /var/folders/... -> /private/var/folders/...), and a spawned
+ * supervisor reports its cwd already resolved, so an un-resolved fixture path
+ * would not compare equal to what the process reports. Resolving once at
+ * creation keeps both sides of every path assertion in the same spelling.
+ * The `.native` variant also expands a Windows 8.3 short name.
+ */
+async function mkRealTmp(prefix) {
+    return fs.realpathSync.native(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
+/**
  * One isolated fixture root. `cwdTrap` is the walk-up TRAP -- an unrelated
  * folder with its own `.beads`, standing in for the installed engine tree
  * the walk-up used to win from -- so "survives restart" genuinely proves
@@ -76,7 +89,7 @@ after(async () => {
  * precedence.test.mjs's own "config beats walk-up" case does.
  */
 async function makeFixture() {
-    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-projroundtrip-'));
+    const root = await mkRealTmp('apra-fleet-projroundtrip-');
     tmpRoots.add(root);
     const dirs = {
         root,
