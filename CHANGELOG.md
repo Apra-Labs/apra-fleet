@@ -58,7 +58,11 @@ What shipped and is verified working:
   ("Central Service Architecture").
 - **The KB server's loopback-only bind default is now documented as an
   upgrade consideration** for an existing team-shared install that relied
-  on the old wildcard-bind default. See
+  on the old wildcard-bind default. `kb-server` now binds `127.0.0.1`
+  explicitly; a team-shared install opts back into a reachable address by
+  passing `--host <lan-or-vpn-address>` (or `--host 0.0.0.0`) on the
+  `kb-server` command line, without which remote clients get
+  `ECONNREFUSED`. See
   [docs/knowledge-layer.md](docs/knowledge-layer.md).
 - **The memory-contract test suite gained a live response-conformance
   lane** with per-tool coverage accounting, proven falsifiable against the
@@ -66,14 +70,23 @@ What shipped and is verified working:
   bounded test chain. See
   [docs/memory-contract-v1-roundtrip-and-handoff.md](docs/memory-contract-v1-roundtrip-and-handoff.md).
 
+Also fixed after the acceptance re-smoke: on a host with no Node.js on
+PATH the launch API returned the opaque 500 "internal supervisor error"
+rather than the resolver's actionable 503, because the beads-backed
+pre-launch scope-overlap guard shells out to the npm-installed `bd`
+(`#!/usr/bin/env node`) and died first. The launch now resolves the sprint
+runner before any other pre-launch work, and a failed resolution is logged
+to the supervisor's own log with the full resolver message instead of
+being visible only in the HTTP response. The launch form's post-launch
+reset is now document-level and unchecks the Backlog row checkboxes, so a
+row can be re-selected without a page reload.
+
 Carried forward (filed as backlog, not blocking this sprint's goal): a
 sprint-runner candidate that resolves via a Windows shim can still fail at
-the actual (non-shell) spawn; the launch form's post-launch UI reset still
-depends on a container element that may not be present and does not clear
-row checkboxes; duplicated launch-form test coverage across two files; and
-each KB strict-mode delegation with no remote route spends a network round
-trip confirming reachability on every call, which is worth revisiting if
-those calls end up on a hot path.
+the actual (non-shell) spawn; duplicated launch-form test coverage across
+two files; and each KB strict-mode delegation with no remote route spends
+a network round trip confirming reachability on every call, which is worth
+revisiting if those calls end up on a hot path.
 
 ## [Unreleased] -- Supervisor project folder: persisted setting, console page, Health row, and install-time seeding
 
