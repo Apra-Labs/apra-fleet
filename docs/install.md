@@ -33,6 +33,33 @@ To install only the core console -- no Node.js/npm requirement at all -- pass
 supervisor, and the `bd` install entirely; the installer reports fleet-se as
 `NOT INSTALLED` in its summary and exits 0.
 
+**Design note:** an earlier approach shipped `bd` as a standalone
+release-binary download (mirroring how Dolt is installed), specifically to
+avoid a Node.js dependency for `bd` itself. That approach was deliberately
+abandoned: fleet-se already requires Node.js/npm for the supervisor and the
+fleet-sprint engine, so a binary-only `bd` would only avoid the dependency
+for one of three fleet-se components while still requiring it for the other
+two -- removing a real benefit while adding a second install mechanism (and a
+second checksum-verification surface) to maintain. `bd` installs as an npm
+global instead, gated behind the same node/npm prerequisite check as the
+rest of fleet-se. The version pin (`@beads/bd@1.3.0`) has exactly one
+TypeScript owner (`src/cli/beads-pin.ts`) that every other consumer imports;
+the one unavoidable duplicate is the separate, dependency-free `apra-pm`
+installer (plain Node with no build step, so it cannot import a TypeScript
+module) -- its copy of the pin is held equal to the owner by a dedicated
+equality test that fails the moment the two disagree. Any future pinned
+version constant that needs a duplicate outside the TypeScript build should
+follow this pattern: one canonical owner plus an equality test pinning every
+duplicate, rather than a bare literal copied by hand into each consumer.
+
+**Known gap:** the prerequisite gate runs after several install steps
+(binary copy, hooks, scripts, settings, skills) have already completed but
+before the workflow runtime, Dolt, KB setup, and service registration. On a
+machine with no Node.js and the default `--workflows all`, a failed gate
+therefore exits non-zero having already written some files, rather than
+either leaving the machine untouched or completing a working core-only
+install. Passing `--workflows none` explicitly avoids this gap entirely.
+
 ## Quick install
 
 Installation is the default action -- just run the binary with no arguments (or double-click it
