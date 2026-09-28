@@ -58,7 +58,7 @@ import {
 } from '../src/supervisor/beads-identity.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 import { buildManifest, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
-import { createRegistration } from '../src/registration/register.mjs';
+import { startRegistrationConvergence } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
 import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
@@ -417,24 +417,26 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // tracker minus claimed scope look like right now" implementation.
     const backlog = createBacklog({ ledger, watchdog });
 
-    // (apra-fleet-i9ag.5.1) Resolve the apra-fleet server connection ONCE,
-    // here -- reused below both for the dashboard's header "Console" back-
-    // link (this origin, or nothing when unresolved) and further down for
-    // workflow-package registration (apra-fleet-g6ap.2.1), so the two can
-    // never disagree about where this supervisor's console actually is.
-    // Gated on the SAME fleet-key requirement registration itself has (see
-    // that block below for why): with no fleet.key present, neither the
-    // dashboard link nor registration should even attempt a connection.
-    // Resolution failures are swallowed here -- the dashboard link is
-    // cosmetic; the registration block below still performs its own checks
-    // and logs its own loud warning against the same resolved value.
+    // (apra-fleet-i9ag.5.1) Resolve the apra-fleet server connection once here
+    // for the dashboard's header "Console" back-link (this origin, or nothing
+    // when unresolved). Gated on the same fleet-key requirement registration
+    // has: with no fleet.key present there is no point attempting a connection.
+    // Resolution failures are swallowed -- the dashboard link is cosmetic.
+    //
+    // (apra-fleet-i9ag.12.2) This value is NO LONGER shared with
+    // workflow-package registration. Registration now runs a convergence loop
+    // that re-resolves the token, the connection and the origin on every pass,
+    // because on a fresh machine all three are null/unusable at this point in
+    // startup and a one-shot observation can never see them appear. The two can
+    // therefore legitimately differ: the link shows where the server was at
+    // startup, registration tracks where it actually is. Anything that needs the
+    // LIVE origin must re-resolve, not read this constant.
     let fleetServerConnection = null;
-    let fleetServerConnectionError = null;
     if (serviceTokenSource === 'fleet-key') {
         try {
             fleetServerConnection = await resolveFleetServerConnection();
-        } catch (err) {
-            fleetServerConnectionError = err;
+        } catch {
+            // Cosmetic link only -- see above.
         }
     }
     // `connection.url` is the MCP endpoint (e.g. 'http://127.0.0.1:PORT/mcp')
@@ -672,64 +674,47 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // (src/console/server.ts's requiresConsoleGuard) only accepts the raw
     // fleet key on the bearer path, never the private/token fallback -- and a
     // reachable apra-fleet HTTP singleton. Either missing is an expected,
-    // loudly-logged skip, not a supervisor startup failure. register() runs
-    // unawaited in the background: it retries with capped backoff while the
-    // server is unreachable/5xx, so a supervisor started before the
-    // apra-fleet server is up still converges once it comes online.
+    // loudly-logged WAIT -- never a supervisor startup failure, and (since
+    // apra-fleet-i9ag.12.2) never a permanent skip either. The whole loop runs
+    // unawaited in the background so startup is not blocked on it.
     // unregister() runs once shutdown completes, below -- covers both the
     // signal path (onSignal -> supervisor.stop()) and the in-band
     // POST /api/shutdown path (server.mjs's own route also calls stop()),
     // since both resolve the SAME supervisor.shutdownRequested promise.
-    // (apra-fleet-i9ag.5.1) `fleetServerConnection` (and its resolution
-    // error, if any) was already resolved ONCE, above, before the dashboard
-    // was constructed -- reused verbatim here rather than a second
-    // resolveFleetServerConnection() call, so registration and the
-    // dashboard's "Console" back-link can never resolve to different
-    // connections.
-    let registration = null;
-    if (serviceTokenSource !== 'fleet-key') {
-        console.warn(
-            '[registration] WARNING: no fleet.key found at ~/.apra-fleet/fleet.key (service token source '
-            + `'${serviceTokenSource}'); skipping workflow-package registration. Run any apra-fleet CLI `
-            + 'command once to mint fleet.key, then restart the supervisor to register.',
+    //
+    // (apra-fleet-i9ag.12.2) CONVERGENCE, not a one-shot check. This block used
+    // to be a three-way if/else that logged "skipping workflow-package
+    // registration" and gave up for the life of the process when (a) the token
+    // was not fleet.key-sourced, (b) connection resolution threw, or (c) the
+    // connection was not a usable http url. On a fresh machine those are
+    // STAGES, not errors -- the machine passes (a) -> (c) -> registerable -- so
+    // skipping once left Sprints missing from the console until a manual
+    // supervisor restart.
+    //
+    // The values resolved at startup (serviceToken/serviceTokenSource,
+    // fleetServerConnection, consoleOrigin) are deliberately NOT passed in:
+    // each is a point-in-time observation that the loop must take again itself.
+    // In particular consoleOrigin above is null on a fresh machine, and reusing
+    // it could never yield a valid serverUrl. See startRegistrationConvergence()
+    // in src/registration/register.mjs for the full why-re-resolve rationale
+    // (including why an absent fleet.key pins the token source, and why the
+    // registry must be posted to the server's ORIGIN and not its MCP endpoint).
+    //
+    // The dashboard's "Console" back-link still uses the startup-time
+    // consoleOrigin: the dashboard is constructed once, and that link is
+    // cosmetic. That is the pre-existing behaviour and is unchanged here.
+    const registrationConvergence = startRegistrationConvergence({
+        resolveToken: () => resolveServiceToken(dataDir),
+        resolveConnection: () => resolveFleetServerConnection(),
+        buildManifest: () => buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` }),
+        shutdownRequested: supervisor.shutdownRequested,
+    });
+    registrationConvergence.done.catch((err) => {
+        console.error(
+            '[registration] convergence loop failed unexpectedly (it should catch its own errors):',
+            err,
         );
-    } else if (fleetServerConnectionError) {
-        console.warn(`[registration] WARNING: could not resolve the apra-fleet server connection; skipping workflow-package registration: ${fleetServerConnectionError && fleetServerConnectionError.message ? fleetServerConnectionError.message : fleetServerConnectionError}`);
-    } else if (fleetServerConnection && fleetServerConnection.mode === 'http'
-        && typeof fleetServerConnection.url === 'string' && fleetServerConnection.url !== '') {
-        const manifest = buildManifest({ baseUrl: `http://127.0.0.1:${supervisor.port}` });
-        // (apra-fleet-i9ag.3.4) The registry's REST surface hangs off the
-        // apra-fleet server's ORIGIN ('<origin>/api/workflow-packages/...',
-        // src/console/routes/workflow-packages.ts), NOT off its MCP endpoint
-        // path. `fleetServerConnection.url` is the MCP endpoint --
-        // 'http://127.0.0.1:<port>/mcp', because src/index.ts writes
-        // createHttpTransport()'s `handle.url` into server.json verbatim and
-        // the client's checkRunningInstance() hands that value straight back.
-        // Passing it through unchanged made createRegistration() POST to
-        // '<origin>/mcp/api/workflow-packages/register', which the real server
-        // answers 404 (not a console path per src/console/server.ts's
-        // isConsolePath, and not '/mcp' either, so http-transport.ts's
-        // fall-through 404s it). register() treats 404 as retryable, so the
-        // supervisor retried with capped backoff FOREVER and never registered
-        // against a real apra-fleet server -- the whole Sprints-in-the-console
-        // hop was dead, loudly logged but never fatal. `consoleOrigin` above
-        // already reduces the same resolved connection to scheme://host:port
-        // for the dashboard's "Console" back-link; reused here so registration
-        // and that link can never disagree about where the server is.
-        registration = createRegistration({ serverUrl: consoleOrigin, token: serviceToken, manifest });
-        registration.register().catch((err) => {
-            console.error(
-                '[registration] register() failed unexpectedly (it should catch its own errors):',
-                err,
-            );
-        });
-    } else {
-        console.warn(
-            '[registration] WARNING: no apra-fleet HTTP server URL configured; skipping workflow-package '
-            + "registration. Start the apra-fleet server ('apra-fleet start') or configure "
-            + 'APRA_FLEET_TRANSPORT=http, then restart the supervisor to register.',
-        );
-    }
+    });
 
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
     // seam has now loaded from disk. Start the history log, then PID-probe
@@ -751,6 +736,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // (ledger/history/watchdog/etc, all inside supervisor.stop()) has already
     // completed -- see the comment above register()'s call site for why this
     // one hook covers both the signal and /api/shutdown stop paths.
+    // (apra-fleet-i9ag.12.2) Whichever registration instance the convergence
+    // loop finally CONSTRUCTED is the one to unregister -- the loop builds a
+    // fresh one per pass (the token is fixed at construction), so there is no
+    // single startup-time instance to reach for. Null when the loop never got
+    // past its preconditions, in which case nothing was ever registered.
+    // stop() also releases the loop if it is mid-backoff, so a shutdown racing
+    // an un-converged supervisor does not wait out the remaining interval.
+    registrationConvergence.stop();
+    const registration = registrationConvergence.currentRegistration();
     if (registration) {
         await registration.unregister();
     }

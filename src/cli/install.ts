@@ -25,7 +25,86 @@ import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transfo
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { BEADS_PACKAGE } from './beads-pin.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
+import { detectFleetSePrereqs, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
+
+// --- fleet-se prerequisite gate: injectable deps + explicit test-mode gate ---
+//
+// Mirrors the dolt CLI install step's pattern immediately below (same
+// rationale): detectFleetSePrereqs() spawns real `node --version` / `npm
+// --version` child processes, which is fast and safe in production but would
+// spuriously fail under every existing unit test that mocks node:child_process
+// without also stubbing those two calls (an automocked execFileSync returns
+// undefined, which looks like "prerequisite absent"). So:
+// 1. Dependency injection: fleetSePrereqStepDeps.detectFleetSePrereqs defaults
+//    to the real implementation but can be swapped for a fake in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts), the
+//    check is skipped (prerequisites assumed satisfied) UNLESS
+//    APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK=1 is also set -- an explicit,
+//    opt-in escape hatch for tests that specifically want to exercise this
+//    gate (and are expected to inject a fake detector via
+//    _setFleetSePrereqStepDeps when they do).
+export interface FleetSePrereqStepDeps {
+  detectFleetSePrereqs: typeof detectFleetSePrereqs;
+}
+const realFleetSePrereqStepDeps: FleetSePrereqStepDeps = { detectFleetSePrereqs };
+let fleetSePrereqStepDeps: FleetSePrereqStepDeps = realFleetSePrereqStepDeps;
+/** Test-only: inject a fake detector for the fleet-se prerequisite gate. */
+export function _setFleetSePrereqStepDeps(overrides: Partial<FleetSePrereqStepDeps>): void {
+  fleetSePrereqStepDeps = { ...realFleetSePrereqStepDeps, ...overrides };
+}
+/** Test-only: restore the real (non-mocked) fleet-se prerequisite gate deps. */
+export function _resetFleetSePrereqStepDeps(): void {
+  fleetSePrereqStepDeps = realFleetSePrereqStepDeps;
+}
+
+function fleetSePrereqCheckEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK === '1';
+}
+
+/**
+ * Probes whether `bd` is actually RUNNABLE on this machine, returning its
+ * reported version string, '' when it runs but prints nothing recognizable,
+ * or null when it cannot be run at all.
+ *
+ * "npm install -g succeeded" and "bd is runnable" are two different facts: the
+ * npm global bin directory is routinely absent from PATH under nvm/volta and
+ * on Windows. The installer must never report fleet-se "ready" off the first
+ * fact alone (apra-fleet-i9ag.13.7.2) -- it probes here, once, and both the
+ * Beads step and the final summary use THIS result so the two can never
+ * disagree. shell: true because bd resolves through a shim on Windows.
+ */
+function probeBdVersion(): string | null {
+  try {
+    const out = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    return out === undefined || out === null ? '' : String(out).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Renders the bd part of the installer's `fleet-se: ready (...)` summary line,
+ * which prefixes it with a literal `bd `.
+ *
+ * probeBdVersion() above returns the RAW `bd --version` output, and bd names
+ * itself there ('bd version 1.3.0 (f45b249c)'), so interpolating it after that
+ * literal rendered 'bd bd version 1.3.0 (f45b249c)' -- found by the fresh-install
+ * smoke for apra-fleet-i9ag.13. Stripping ONE leading 'bd ' keeps the line to a
+ * single program name whatever bd's own wording is, rather than pattern-matching
+ * bd's current version format. The non-version fallback summaries ('installed',
+ * 'not available') carry no such prefix and pass through untouched, so they still
+ * read as 'bd installed' / 'bd not available'.
+ *
+ * Exported for direct unit testing -- the doubling was only ever observable in
+ * the fully-composed summary string.
+ */
+export function formatFleetSeBdPart(beadsSummary: string): string {
+  return beadsSummary.replace(/^bd\s+/, '');
+}
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -951,12 +1030,14 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
+                          fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
 
 Services (SEA + --transport http):
   Two OS services are registered, each with its own unit/task and its own
   start/stop/status reporting: the apra-fleet MCP server, and the fleet-sprint
-  supervisor (workflows/fleet-sprint/bin/serve.mjs, skipped with --workflows none).`);
+  supervisor, registered as the binary's own 'apra-fleet supervisor' subcommand
+  (needs no separate node on PATH; skipped with --workflows none).`);
     process.exit(0);
     return;
   }
@@ -1079,14 +1160,62 @@ Services (SEA + --transport http):
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
   const installWorkflows = workflowsMode === 'all';
+
+  // --- fleet-se prerequisite gate (apra-fleet-i9ag.13, apra-fleet-i9ag.12.15) ---
+  // fleet-se (fleet-sprint engine, fleet supervisor, bd) requires Node.js
+  // 22.16+ and npm by design (owner re-scope recorded on apra-fleet-i9ag.13).
+  // This gate runs FIRST -- before the running-process guard stops anything,
+  // before the fleet.key mint, and before a single file is written -- so a
+  // machine that cannot support fleet-se is left exactly as it was found
+  // rather than half-installed. (It used to sit further down, after the key
+  // mint, binary copy, hooks and settings had already run.) A missing
+  // prerequisite fails loudly here instead of silently skipping bd (the
+  // original apra-fleet-i9ag.13.7 defect); `--workflows none` opts out of
+  // fleet-se entirely and skips this gate. fleetSePrereqs stays in scope for
+  // the final summary line's fleet-se row.
+  let fleetSePrereqs: FleetSePrereqResult | null = null;
+  if (installWorkflows && fleetSePrereqCheckEnabled()) {
+    fleetSePrereqs = fleetSePrereqStepDeps.detectFleetSePrereqs();
+    if (!fleetSePrereqs.ok) {
+      const reasons: string[] = [];
+      if (!fleetSePrereqs.node.present) {
+        reasons.push('node: NOT INSTALLED');
+      } else if (!fleetSePrereqs.node.satisfiesMin) {
+        reasons.push(`node: ${fleetSePrereqs.node.version} (requires ${MIN_NODE_VERSION}+)`);
+      }
+      if (!fleetSePrereqs.npm.present) {
+        reasons.push('npm: NOT INSTALLED');
+      }
+      console.error(`\nError: fleet-se prerequisite check failed -- ${reasons.join(', ')}\n${FLEET_SE_PREREQ_FIX_LINE}\n`);
+      process.exit(1);
+    }
+  }
+
   const serviceStep = isSea() && transport === 'http';
-  let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  // Base counts no longer bake in an always-on Beads slot (apra-fleet-i9ag.13.7.2):
+  // bd is part of fleet-se under the owner re-scope on apra-fleet-i9ag.13, so its
+  // step (like the workflow-runtime step) is only counted when installWorkflows.
+  let totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
   if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
-  totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional, mirrors Beads step
+  if (installWorkflows) totalSteps++; // Beads install step -- bd is part of fleet-se, only attempted with workflows
+  totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional
   totalSteps++; // KB + code intelligence setup -- unconditional, runs after Beads
   if (serviceStep) totalSteps++;
+
+  // --- Step-number derivation for the fleet-se tail of the pipeline ---
+  // (workflow runtime -> dolt -> beads -> KB -> [service]). The fleet-se
+  // prereq gate is deliberately NOT in this list: it runs before any step is
+  // printed and consumes no step number.
+  // kb is always second-to-last-or-last; dolt/beads/workflow-runtime step
+  // backward from kb. beads and workflow-runtime are only PRINTED when
+  // installWorkflows is true, so dolt sits one slot earlier than kb when
+  // beads is skipped, two slots earlier when it runs.
+  const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
+  const doltStep = installWorkflows ? kbStep - 2 : kbStep - 1;
+  const beadsStep = kbStep - 1;
+  const workflowsStepNum = doltStep - 1;
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
   //
@@ -1178,6 +1307,40 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
+
+  // --- Fleet key mint (apra-fleet-i9ag.12.1) ---
+  //
+  // Runs BEFORE every numbered step on purpose: ~/.apra-fleet/fleet.key is the
+  // HS256 secret behind both the JWT issuer and the loopback bearer check, and
+  // several later paths are gated on it -- most importantly the supervisor
+  // service this install may register and START as its final step, which needs
+  // the key to register its workflow package. Before this step NO install-time
+  // or CLI-startup path minted the key (getOrCreateKey() had zero call sites in
+  // this file), so on a fresh machine the key only appeared the first time some
+  // request happened to need it -- and a supervisor that started earlier had
+  // already skipped registration.
+  //
+  // Deliberately UNNUMBERED: it is a sub-second local file write, not a
+  // user-visible install stage, and numbering it would renumber every step
+  // below (and the totalSteps arithmetic each one derives from).
+  //
+  // getOrCreateKey() is already mint-or-reuse: it returns an existing 64-char
+  // key untouched and only writes (mode 0600, via mkdir -p) when the file is
+  // missing, unreadable or the wrong length. So re-running install is a no-op
+  // on the key bytes. The key VALUE is never logged -- only its path.
+  try {
+    getOrCreateKey();
+    console.log(`  Fleet key ready at ${fleetKeyPath()}`);
+  } catch (err) {
+    // Non-fatal, but LOUD: naming the path and the reason. An unwritable home
+    // must not silently produce an install whose key-gated features fail later
+    // with an unrelated-looking error.
+    console.warn(
+      `  [WARN] Could not create the fleet key at ${fleetKeyPath()}: ${(err as Error).message}\n` +
+        `         Features that need it (workflow-package registration, console auth) will fail\n` +
+        `         until this path is writable. Fix the permissions and re-run 'apra-fleet install'.`,
+    );
+  }
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';
@@ -1557,8 +1720,6 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{fleet-sprint,hello-world}}.
   // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
   if (installWorkflows) {
-    // Two steps follow workflows (dolt, then Beads) before the optional service step.
-    const workflowsStepNum = serviceStep ? totalSteps - 4 : totalSteps - 3;
     console.log(`  [${workflowsStepNum}/${totalSteps}] Installing workflow runtime...`);
     // Extraction itself (node_modules / schemas / built-in workflows / .installed.json)
     // lives in workflow-assets.ts -- the SAME code path workflow.ts's self-heal
@@ -1573,9 +1734,8 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // --- Dolt CLI install step (apra-fleet-ire.3) ---
   // Portable dolt binary, downloaded straight into BIN_DIR (never system PATH).
   // Mirrors the Beads install step immediately below: already-installed check
-  // first, download+extract+verify otherwise. NON-FATAL, same as Beads -- a
-  // missing/broken dolt must never fail "apra-fleet install".
-  const doltStep = serviceStep ? totalSteps - 3 : totalSteps - 2;
+  // first, download+extract+verify otherwise. NON-FATAL for dolt (unlike
+  // Beads below) -- a missing/broken dolt must never fail "apra-fleet install".
   console.log(`  [${doltStep}/${totalSteps}] Installing Dolt CLI...`);
   let doltVersion = 'not available';
   if (doltStepEnabled()) {
@@ -1607,30 +1767,69 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // --- Beads install step ---
   // shell:true required on Windows - npm global packages install as .cmd wrappers
-  // that cannot be directly spawned by Node without a shell
-  // KB + code intelligence is the final step (before the optional service step),
-  // so Beads sits one slot earlier than it does on main.
-  const beadsStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
-  console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
-  try {
-    // Check if already installed
-    try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed - skip
-    } catch {
-      // not installed - install it
-      // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
-      // pin -- see that file's comment for why (schema v66 compatibility).
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
+  // that cannot be directly spawned by Node without a shell.
+  // bd is part of fleet-se under the owner re-scope on apra-fleet-i9ag.13, so
+  // this step is only attempted when --workflows all (installWorkflows), and
+  // only reached once the fleet-se prerequisite gate above has already passed
+  // (or was bypassed under NODE_ENV=test -- see fleetSePrereqCheckEnabled()).
+  // A genuine install failure here is now FATAL (apra-fleet-i9ag.13.7.2):
+  // silently skipping bd is exactly the defect apra-fleet-i9ag.13.7 fixes.
+  // beadsVersion stays null until something has actually probed bd, so the
+  // final summary can tell "the Beads step ran and this is what it found" from
+  // "the step never ran (--workflows none)" instead of re-probing and printing
+  // a version the step never saw.
+  let beadsVersion: string | null = null;
+  if (installWorkflows) {
+    console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
+    beadsVersion = probeBdVersion();
+    if (beadsVersion === null) {
+      // not installed - install it. The pin comes from BEADS_PACKAGE
+      // (src/cli/beads-pin.ts), never a literal here: a second copy of the
+      // version string in this file is how apra-fleet-i9ag.12.4's drift
+      // happened.
+      try {
+        // stdio 'pipe' + echo, NOT 'inherit': with 'inherit' npm's diagnostics
+        // go straight to the terminal and execFileSync's thrown error carries
+        // only 'Command failed: ...', so the error report below could not
+        // surface npm's own text (and could surface nothing at all when stderr
+        // is not a terminal, e.g. under a CI log capture or a wrapper script).
+        const out = execFileSync('npm', ['install', '-g', BEADS_PACKAGE], {
+          stdio: 'pipe',
+          encoding: 'utf-8',
+          shell: true,
+        });
+        if (out) process.stdout.write(String(out));
+      } catch (err) {
+        const e = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
+        const npmOutput = [e.stdout, e.stderr]
+          .filter(v => v !== undefined && v !== null)
+          .map(v => String(v))
+          .join('')
+          .trim();
+        console.error(
+          `\nError: failed to install Beads (${BEADS_PACKAGE}):\n${npmOutput || e.message}\n`,
+        );
+        process.exit(1);
+      }
+      // npm exiting 0 does NOT mean bd is usable: the npm global bin directory
+      // is frequently not on PATH (nvm, volta, and most Windows setups). Left
+      // unchecked, the installer would go on to print 'fleet-se: ready (... bd
+      // not available)' and exit 0 -- a false success of exactly the shape
+      // apra-fleet-i9ag.13.7 exists to remove. Fail loudly instead.
+      beadsVersion = probeBdVersion();
+      if (beadsVersion === null) {
+        console.error(
+          `\nError: ${BEADS_PACKAGE} was installed but 'bd' cannot be run.\n` +
+            `       This usually means npm's global bin directory is not on PATH.\n` +
+            `       Add it (npm prefix -g) to PATH and re-run 'apra-fleet install'.\n`,
+        );
+        process.exit(1);
+      }
     }
-  } catch (err) {
-    // non-fatal: warn but don't fail the install
-    console.warn('  - Beads install skipped - npm not available or install failed');
   }
 
   // --- KB + code intelligence setup step ---
   // Only runs when the installer is invoked from inside a git repository.
-  const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
   console.log(`  [${kbStep}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
   const repoCwd = process.cwd();
   if (fs.existsSync(path.join(repoCwd, '.git'))) {
@@ -1757,13 +1956,15 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // --- Done ---
-  let beadsVersion = 'installed';
-  try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
-    beadsVersion = (versionOut as string).trim() || 'installed';
-  } catch {
-    beadsVersion = 'not available';
-  }
+  // When the Beads step ran (--workflows all) it has ALREADY probed bd and
+  // exited non-zero if bd was not runnable, so beadsVersion is a fact this
+  // install established, not a fresh guess -- 'ready ... bd not available' is
+  // therefore unreachable rather than merely unlikely (apra-fleet-i9ag.13.7.2).
+  // Only the --workflows none path, where the step was skipped by design,
+  // probes here -- and reports honestly, without failing, because bd is part
+  // of the fleet-se the user explicitly opted out of.
+  if (beadsVersion === null) beadsVersion = probeBdVersion();
+  const beadsSummary = beadsVersion === null ? 'not available' : beadsVersion || 'installed';
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
@@ -1772,14 +1973,23 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const supervisorLine = supervisorServiceAttempted
     ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and running' : 'registration skipped'}`
     : '';
+  // fleet-se summary line (apra-fleet-i9ag.13.7.2): "ready" with the detected
+  // node/npm/bd versions when --workflows all, else NOT INSTALLED with the
+  // fix line -- the --workflows none case is a legitimate, documented opt-out,
+  // not a silent gap. When the prereq gate itself was bypassed (NODE_ENV=test
+  // without the opt-in env var), fleetSePrereqs is null and node/npm versions
+  // are reported as 'n/a' rather than fabricated.
+  const fleetSeLine = installWorkflows
+    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
+    : `\n  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
-  Beads:       ${beadsVersion}
-  Dolt:        ${doltVersion}${serviceLine}${supervisorLine}
+  Beads:       ${beadsSummary}
+  Dolt:        ${doltVersion}${serviceLine}${supervisorLine}${fleetSeLine}
 
 ${instructions}${forceNote}
 `);

@@ -29,6 +29,19 @@ export interface FleetStatusPayload {
    *  off this to recover the data dir; kept only as a legacy fallback for a
    *  console talking to an older server whose payload has no dataDir. */
   logFile?: string;
+  /** apra-fleet-i9ag.12.9: pre-rendered by the server from
+   *  src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- e.g.
+   *  "ready (node 22.16.0, npm 10.5.0)" or "NOT INSTALLED (node: NOT
+   *  INSTALLED) -- <fix line>". Rendered here VERBATIM: the browser bundle
+   *  cannot import that module itself (it shells out via node:child_process,
+   *  which has no browser build), so the server is the single place that
+   *  computes this text -- this lane must never restate the minimum version
+   *  or the fix line as its own literal. When this field is absent (older
+   *  server, or the server-side probe threw), Health.tsx renders an explicit
+   *  "unknown" fleet-se row rather than omitting the row (apra-fleet-
+   *  i9ag.13.9) -- omitting it silently collapsed "prerequisites fine" and
+   *  "not reported" into one indistinguishable state. */
+  fleetSePrereqs?: string;
 }
 
 /** Recovers the fleet data directory from the active log file path

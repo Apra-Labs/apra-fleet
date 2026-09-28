@@ -550,6 +550,16 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             resolvePort,
             logger: silentLogger,
+            // apra-fleet-i9ag.12.7: this suite verifies the Stop/force-release
+            // AUTH GUARD, not watchdog reap behavior -- watchdog is only present
+            // here because createDashboard() requires it as a collaborator. The
+            // default 5s background poll is an independent source of the SAME
+            // auto-release race the force-release test's own setup below
+            // guards against (see its comment) -- a day-long interval means
+            // that background tick can never fire during this suite (only the
+            // harmless start()-time initial classify(), which runs before the
+            // sprint is even launched, ever does).
+            intervalMs: 24 * 60 * 60 * 1000,
         });
 
         backlog = createBacklog({

@@ -114,6 +114,13 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+The standalone installer binary needs no Node.js at all for the core console
+and MCP server. Sprint automation (`fleet-sprint`, the always-on supervisor,
+and `bd`) is the one part that needs Node.js 22.16+ and npm; `install` checks
+for them up front and fails loudly with the fix if they're missing, or you
+can pass `--workflows none` for a Node-free, core-only install. See
+[docs/install.md](docs/install.md#prerequisites).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
@@ -1088,6 +1095,56 @@ which skills are installed, uninstalling, and self-updating.
   Antigravity (agy), Codex, Copilot, or OpenCode.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
+
+## Prerequisites
+
+Apra Fleet core -- the console, the MCP server, and Dolt -- needs no Node.js
+at all; it runs from the installed binary alone.
+
+fleet-se (the fleet-sprint engine, the fleet supervisor, and `bd`) is
+different: it requires **Node.js 22.16.0 or newer, plus npm**, by design. `bd`
+is installed as an npm global package pinned to `@beads/bd@1.3.0` -- it does
+not ship as a standalone binary, and installing does not skip it silently.
+
+If Node.js or npm is missing (or Node.js is older than 22.16.0) when you run
+`install` with the default `--workflows all`, the installer stops with a
+non-zero exit and prints:
+
+```
+fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only
+```
+
+To install only the core console -- no Node.js/npm requirement at all -- pass
+`--workflows none`. This skips the fleet-se workflow assets, the fleet
+supervisor, and the `bd` install entirely; the installer reports fleet-se as
+`NOT INSTALLED` in its summary and exits 0.
+
+**Design note:** an earlier approach shipped `bd` as a standalone
+release-binary download (mirroring how Dolt is installed), specifically to
+avoid a Node.js dependency for `bd` itself. That approach was deliberately
+abandoned: fleet-se already requires Node.js/npm for the supervisor and the
+fleet-sprint engine, so a binary-only `bd` would only avoid the dependency
+for one of three fleet-se components while still requiring it for the other
+two -- removing a real benefit while adding a second install mechanism (and a
+second checksum-verification surface) to maintain. `bd` installs as an npm
+global instead, gated behind the same node/npm prerequisite check as the
+rest of fleet-se. The version pin (`@beads/bd@1.3.0`) has exactly one
+TypeScript owner (`src/cli/beads-pin.ts`) that every other consumer imports;
+the one unavoidable duplicate is the separate, dependency-free `apra-pm`
+installer (plain Node with no build step, so it cannot import a TypeScript
+module) -- its copy of the pin is held equal to the owner by a dedicated
+equality test that fails the moment the two disagree. Any future pinned
+version constant that needs a duplicate outside the TypeScript build should
+follow this pattern: one canonical owner plus an equality test pinning every
+duplicate, rather than a bare literal copied by hand into each consumer.
+
+**Ordering:** the prerequisite gate runs first -- before the installer stops
+any running server, before it mints `fleet.key`, and before it writes a
+single file. On a machine with no Node.js and the default `--workflows all`,
+a failed gate exits non-zero leaving the machine exactly as it was found; it
+is safe to install Node.js and re-run. (This was previously a known gap: the
+gate used to run mid-install, after the binary copy, hooks, scripts, settings
+and skills had already been written.)
 
 ## Quick install
 

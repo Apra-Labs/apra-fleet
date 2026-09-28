@@ -616,6 +616,49 @@ link) -- a single resolved origin cannot let those two consumers disagree
 about what the console's address is, where two independent derivations could
 drift.
 
+### Registration convergence, not a one-shot attempt
+
+Self-registration cannot assume its two dependencies -- a signed credential
+(`~/.apra-fleet/fleet.key`) and a reachable console -- are both present the
+moment the supervisor process starts. On a fresh install the two are minted
+and started by independent steps that can run in either order (the
+supervisor can come up before the key exists, or before the console is
+listening, or both). A registration attempt that runs once at startup and
+gives up ("skipping registration") on either dependency being absent leaves
+the workflow package permanently unregistered until something restarts it by
+hand -- and because absence looks identical to "already registered and
+fine," nothing surfaces the gap to an operator.
+
+The fix is a convergence loop, not a retried one-shot call: on every pass it
+re-resolves the token, the connection, and the console origin from scratch
+(rather than caching values from the first pass), so an interleaving where
+the key appears seconds after the supervisor started is picked up on the
+very next attempt instead of requiring a process restart. This also matters
+for correctness, not just liveness: an absent `fleet.key` pins where the
+registration token comes from (falling back to a private/token credential),
+and an unset transport-mode env var must resolve to the `stdio` default
+rather than throwing -- both of those are per-attempt facts, not one-time
+facts computed at process start. Shutdown correctness follows the same
+pattern: stopping the loop mid-backoff must release the wait, unregister
+before the process exits, and never let the loop's own promise reject
+unhandled once a caller has already told it to stop.
+
+**Known asymmetry (open, tracked separately):** the convergence fix above
+covers registration credential resolution -- the *outbound* direction (the
+supervisor as an HTTP client, registering itself with the console). The
+supervisor's *inbound* HTTP guard (deciding whether a bearer token on an
+incoming request is valid) is a separate code path that still resolves its
+accepted credential once at process start and never re-reads it. In the
+ordering the installer guarantees today (mint the key, then start and
+register the supervisor) this is not reachable, but it is a latent trap for
+any other startup ordering (a key deleted and recreated later, or a
+supervisor started by hand before install has run) -- the supervisor would
+converge and successfully register outbound while still 401ing every
+inbound console request, which reads as "registered but unreachable" and is
+strictly harder to diagnose than "not registered at all." Do not assume
+fixing the outbound resolution also fixed the inbound one -- they are
+different call sites with different lifetimes.
+
 ### The mount-path header: how an embedded package learns its own mount point
 
 A workflow package's pages are served two ways -- directly, at the package's

@@ -4,6 +4,18 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereqs.js';
+import type { FleetSePrereqResult } from './fleet-se-prereqs.js';
+
+/**
+ * Injection seam for the fleet-se prerequisite probe (apra-fleet-i9ag.13.8).
+ * Defaults to the real, live detector so callers that pass nothing see
+ * byte-identical output to before this seam existed. Tests supply a fake
+ * here instead of relying on the host's actual node/npm.
+ */
+export interface RunStatusDeps {
+  detectFleetSePrereqs: () => FleetSePrereqResult;
+}
 
 interface HealthResponse {
   version?: string;
@@ -83,10 +95,32 @@ function runStateFor(status: ServiceStatus): string {
   return status.running ? ', running' : ', stopped';
 }
 
-export async function runStatus(_args: string[]): Promise<void> {
+export async function runStatus(
+  _args: string[],
+  deps: Partial<RunStatusDeps> = {},
+): Promise<void> {
   const instance = await checkRunningInstance();
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
+
+  // apra-fleet-i9ag.12.9: fleet-se's prerequisite (Node.js 22.16+ and npm) is
+  // otherwise only ever checked once, at install time (src/cli/install.ts) --
+  // an operator whose Node.js is later downgraded or removed gets no signal
+  // at all. This is a host-level check, independent of whether the MCP
+  // server/service is currently running, so it is probed and shown
+  // unconditionally, in both branches below.
+  //
+  // apra-fleet-i9ag.13.8: the detector is injectable (defaults to the real,
+  // live probe) and wrapped so an unexpected throw degrades to a single
+  // "unknown" line instead of taking down the rest of `apra-fleet status`.
+  const detect = deps.detectFleetSePrereqs ?? detectFleetSePrereqs;
+  const fleetSeLine = (() => {
+    try {
+      return `  fleet-se: ${summarizeFleetSePrereqs(detect())}`;
+    } catch {
+      return '  fleet-se: unknown';
+    }
+  })();
 
   // The fleet-sprint supervisor is a SEPARATE OS service with its own
   // unit/plist/task -- reported on its own line so an operator can tell which
@@ -103,6 +137,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log(`  State:    stopped`);
     console.log(`  Service (MCP server):       ${serviceLabel}`);
     console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
+    console.log(fleetSeLine);
     return;
   }
 
@@ -119,4 +154,5 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (health?.sessions !== undefined) console.log(`  Sessions: ${health.sessions}`);
   console.log(`  Service (MCP server):       ${serviceLabel}`);
   console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
+  console.log(fleetSeLine);
 }

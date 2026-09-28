@@ -249,4 +249,117 @@ describe("Health screen (apra-fleet-9h9j.3.3)", () => {
     expect(items[1]).toContain("1.2.3");
     expect(container.textContent ?? "").not.toContain("no workflow packages registered");
   });
+
+  // apra-fleet-i9ag.12.9: the server pre-renders this text from
+  // src/cli/fleet-se-prereqs.ts's summarizeFleetSePrereqs() -- the Health
+  // screen must render it VERBATIM (it cannot import that module itself; see
+  // FleetStatusPayload.fleetSePrereqs's doc comment in api/health.ts). When
+  // the field is absent, see the sibling case below (apra-fleet-i9ag.13.9):
+  // an explicit "unknown" fleet-se row is shown instead of hiding the row.
+  it("renders the server-provided fleet-se prerequisite summary verbatim", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") {
+          return jsonResponse(200, {
+            ...STATUS_FIXTURE,
+            fleetSePrereqs: "NOT INSTALLED (npm: NOT INSTALLED) -- fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only"
+          });
+        }
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("fleet-se");
+    expect(text).toContain(
+      "NOT INSTALLED (npm: NOT INSTALLED) -- fleet-se requires Node.js 22.16+ and npm: install them and re-run, or use --workflows none for the core console only"
+    );
+  });
+
+  // apra-fleet-i9ag.13.9: an operator must be able to tell "prerequisites
+  // fine" apart from "not reported" -- hiding the row entirely (the old
+  // behaviour this case used to pin) collapses those two states into one.
+  // The row is now always rendered, with an explicit unknown value when the
+  // server omits the field.
+  //
+  // REVERT CHECK (apra-fleet-i9ag.13.10 criterion 8): reverting Health.tsx's
+  // unknown branch back to the old status.payload.fleetSePrereqs ? ... : null
+  // guard makes this canary case -- "shows an explicit unknown fleet-se row
+  // when the server omits the field (older server / probe failed)" (below) --
+  // FAIL, because the fixture omits the field so no fleet-se dt would render.
+  // Verified via git stash and restored.
+  it("shows an explicit unknown fleet-se row when the server omits the field (older server / probe failed)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(200, STATUS_FIXTURE);
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).toContain("fleet-se");
+    const text = container.textContent ?? "";
+    expect(text).toContain("unknown");
+    expect(text).toContain("Version");
+    expect(text).toContain("Data dir");
+    expect(text).toContain("Update available");
+    expect(text).toContain("Fleet status");
+    expect(text).toContain("Workflow packages");
+  });
+
+  // apra-fleet-i9ag.12.11: none of the cases above drive the status-fetch
+  // failure branch (Health.tsx:70). The always-render change from
+  // apra-fleet-i9ag.13.9 makes the loaded-vs-error distinction load-bearing --
+  // the fleet-se row must appear in the loaded state and must NEVER leak
+  // into the error state, since the whole <dl> (including the fleet-se dt)
+  // only renders when status.kind === "loaded".
+  it("shows the alert and no fleet-se row when the status fetch rejects at the network level", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") throw new Error("network down");
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent ?? "").toContain("Failed to load status");
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).not.toContain("fleet-se");
+  });
+
+  it("shows the alert and no fleet-se row when the status fetch resolves non-ok", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url === "/api/fleet/status") return jsonResponse(500, { error: "boom" });
+        if (url === "/api/workflow-packages") return jsonResponse(404, {});
+        throw new Error(`unexpected fetch: ${url}`);
+      })
+    );
+
+    await renderHealth();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent ?? "").toContain("Failed to load status");
+    const dts = Array.from(container.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(dts).not.toContain("fleet-se");
+  });
 });
