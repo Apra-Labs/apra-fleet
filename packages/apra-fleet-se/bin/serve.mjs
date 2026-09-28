@@ -64,6 +64,7 @@ import { startRegistrationConvergence } from '../src/registration/register.mjs';
 import { registerHoldsRoute } from '../src/registration/holds.mjs';
 import { registerOwnerRefsRoute } from '../src/registration/owner-refs.mjs';
 import { registerUiRoutes } from '../src/registration/ui-placeholder.mjs';
+import { registerProjectFolderRoutes } from '../src/supervisor/project-route.mjs';
 import { openStore, NodeSqliteUnavailableError } from '../src/projects/store/db.mjs';
 import { registerProjectRoutes } from '../src/projects/routes/projects.mjs';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
@@ -560,6 +561,21 @@ export async function serveMain(argv = process.argv.slice(2)) {
     });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
+
+    // apra-fleet-i9ag.17.2.1: guarded GET/POST /api/project -- read/write the
+    // supervisor's persisted project folder for the console Projects page
+    // (apra-fleet-i9ag.17.2.2). `project`/`dataDir` are the SAME values GET
+    // /api/health already reports (this route registers no second copy of
+    // the startup resolution above); `flagActive` mirrors that resolution's
+    // own precedence decision rather than re-deriving it from the raw flag.
+    registerProjectFolderRoutes(supervisor, {
+        projectDir: project.projectDir,
+        source: project.source,
+        flagActive: project.source === PROJECT_DIR_SOURCE.FLAG,
+        dataDir,
+        readJsonBody,
+        sendJson,
+    });
 
     // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
     // (apra-fleet-i9ag.3.3) Also mounted at the manifest's Sprints nav path
