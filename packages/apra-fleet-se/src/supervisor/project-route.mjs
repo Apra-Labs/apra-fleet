@@ -134,12 +134,17 @@ export function registerProjectFolderRoutes(supervisor, deps) {
         }
         let resolved;
         try {
-            // Throws (a message naming the path) for anything that does not
-            // exist or is not a directory -- nothing is persisted below in
-            // that case.
+            // Throws for anything that does not exist or is not a directory
+            // -- nothing is persisted below in that case.
             resolved = resolveBeadsDirArg(body.projectDir, { fs: fsImpl });
-        } catch (err) {
-            sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+        } catch {
+            // The validator phrases its own failures in terms of the
+            // `--beads-dir` flag, because that is its other caller. A
+            // console operator never typed a flag and has no way to act on
+            // one, so the message is re-wrapped in this surface's own terms
+            // rather than leaking the CLI's vocabulary into the page.
+            const shown = path.resolve(body.projectDir.trim());
+            sendJson(res, 400, { error: `project folder '${shown}' does not exist or is not a directory` });
             return;
         }
         // The folder exists; can a sprint actually RUN there? See this

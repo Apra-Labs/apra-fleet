@@ -192,6 +192,13 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         await supervisor.handleRequest(mockReq('POST', '/api/project', { headers: AUTH(token), body: { projectDir: bogus } }), res);
         assert.equal(res.statusCode, 400);
         assert.ok(payloadOf(res).error.includes(bogus), `expected the rejection message to name the path, got: ${payloadOf(res).error}`);
+        // The console operator never typed a flag; the shared validator's
+        // `--beads-dir` phrasing must not leak into the page.
+        assert.ok(
+            !payloadOf(res).error.includes('--beads-dir'),
+            `the console rejection must not name a CLI flag, got: ${payloadOf(res).error}`,
+        );
+        assert.match(payloadOf(res).error, /project folder/);
 
         const config = await readSupervisorConfig({ dataDir });
         assert.equal(config.configured, false, 'a rejected write must never persist');
