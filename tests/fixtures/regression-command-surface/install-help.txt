@@ -26,4 +26,5 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
+                          fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
