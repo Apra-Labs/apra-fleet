@@ -66,6 +66,7 @@ import { fileURLToPath } from 'node:url';
 
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
+import { buildIsolatedHomeEnv } from '../../../tests/helpers/isolated-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVE_BIN = path.join(__dirname, '../bin/serve.mjs');
@@ -245,11 +246,9 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
         cwd: workDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-            ...childEnv,
+            ...buildIsolatedHomeEnv(homeDir, childEnv),
             APRA_FLEET_DATA_DIR: dataDir,
             FLEET_SE_DATA_DIR: seDataDir,
-            HOME: homeDir,
-            USERPROFILE: homeDir,
             ...env,
         },
     });

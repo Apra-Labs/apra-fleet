@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 // apra-fleet-i9ag.12.1 -- `apra-fleet install` must MINT ~/.apra-fleet/fleet.key.
 //
@@ -47,21 +48,17 @@ describe('install mints fleet.key (apra-fleet-i9ag.12.1)', () => {
   let tmpHome: string;
   let tmpCwd: string;
   let savedCwd: string;
-  let savedHome: string | undefined;
-  let savedUserProfile: string | undefined;
+  let home: Awaited<ReturnType<typeof applyIsolatedHome>>;
   let logged: string[];
   let installMod: typeof import('../src/cli/install.js');
 
   beforeEach(async () => {
-    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-key-install-home-'));
+    home = await applyIsolatedHome('fleet-key-install-home-');
+    tmpHome = home.tempHome;
     // A cwd with NO .git, so install.ts's KB/code-intelligence step takes its
     // "not in a git repository" branch instead of touching this repo's .mcp.json.
     tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-key-install-cwd-'));
     savedCwd = process.cwd();
-    savedHome = process.env.HOME;
-    savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = tmpHome;
-    process.env.USERPROFILE = tmpHome;
     process.chdir(tmpCwd);
 
     vi.resetModules();
@@ -92,23 +89,20 @@ describe('install mints fleet.key (apra-fleet-i9ag.12.1)', () => {
     vi.spyOn(console, 'error').mockImplementation(sink);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     process.chdir(savedCwd);
     installMod?._setManifestOverride(null);
     installMod?._setSeaOverride(null);
     vi.doUnmock('node:os');
     vi.resetModules();
     vi.restoreAllMocks();
-    if (savedHome !== undefined) process.env.HOME = savedHome; else delete process.env.HOME;
-    if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-    else delete process.env.USERPROFILE;
-    fs.rmSync(tmpHome, { recursive: true, force: true });
+    await home.restore();
     fs.rmSync(tmpCwd, { recursive: true, force: true });
   });
 
   it('creates HOME/.apra-fleet/fleet.key as 64 lowercase hex chars, mode 0600, without logging the key or touching the real HOME', async () => {
     const keyPath = path.join(tmpHome, '.apra-fleet', 'fleet.key');
-    expect(fs.existsSync(keyPath)).toBe(false); // fresh HOME: nothing there yet
+    expect(fs.existsSync(keyPath)).toBe(false); // fresh home -- nothing there yet
     const realHomeBefore = realHomeFingerprint();
 
     await installMod.runInstall([]);

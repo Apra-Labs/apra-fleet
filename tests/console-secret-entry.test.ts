@@ -23,9 +23,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type http from 'node:http';
 import { Readable } from 'node:stream';
-import fsp from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 import { handleConsoleRequest } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
@@ -113,12 +111,16 @@ function bearerHeaders(): Record<string, string> {
 }
 
 /** Derives the real console cookie via the real GET /ui code path -- the
- *  cookie is set unconditionally at the top of the /ui branch in
- *  handleConsoleRequest, before any static-serving happens, so this works
- *  even with no shell dist present in this test environment. */
+ *  cookie is set at the top of the /ui branch in handleConsoleRequest,
+ *  before any static-serving happens, so this works even with no shell dist
+ *  present in this test environment. The cookie is only issued to a
+ *  loopback socket peer (fail-closed on a missing peer address), so the fake
+ *  request carries a loopback remoteAddress, as a real local browser would. */
 async function fetchConsoleCookie(): Promise<string> {
   const out = fakeRes();
-  const handled = await handleConsoleRequest(fakeReq('/ui', 'GET', undefined, {}), out.res, {});
+  const req = fakeReq('/ui', 'GET', undefined, {});
+  Object.defineProperty(req, 'socket', { value: { remoteAddress: '127.0.0.1' } });
+  const handled = await handleConsoleRequest(req, out.res, {});
   expect(handled).toBe(true);
   const raw = out.setHeaders['Set-Cookie'];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -137,27 +139,19 @@ function makeEntry(onSubmit: (value: string) => { ok: boolean; error?: string } 
 // getOrCreateKey() here is never the real developer's key -- same pattern as
 // tests/console-routes-fleet.test.ts and tests/console-auth.test.ts.
 // -----------------------------------------------------------------------------
-let realHome: string | undefined;
-let realUserProfile: string | undefined;
-let tempHome: string;
+let home: Awaited<ReturnType<typeof applyIsolatedHome>>;
 
 beforeEach(async () => {
   vi.clearAllMocks();
   __resetSecretEntriesForTest();
-  realHome = process.env.HOME;
-  realUserProfile = process.env.USERPROFILE;
-  tempHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'console-secret-entry-home-'));
-  process.env.HOME = tempHome;
-  process.env.USERPROFILE = tempHome;
+  home = await applyIsolatedHome('console-secret-entry-home-');
 });
 
 afterEach(async () => {
   __resetSecretEntriesForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
-  process.env.HOME = realHome;
-  process.env.USERPROFILE = realUserProfile;
-  await fsp.rm(tempHome, { recursive: true, force: true }).catch(() => {});
+  await home.restore();
 });
 
 // ---------------------------------------------------------------------------
