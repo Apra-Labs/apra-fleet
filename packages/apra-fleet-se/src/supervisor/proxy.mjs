@@ -61,7 +61,15 @@ import { withTimestamps } from './log-timestamp.mjs';
 // boundary.md) -- the child viewer must never learn its HTML is being
 // served through a dashboard.
 import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
-import { sprintCardAnchorId } from './sprint-anchor.mjs';
+// (apra-fleet-i9ag.5) The back-link's ONE definition plus the gate that
+// re-reads the finished page the way a browser does -- every viewer route
+// below runs assertViewerBackLink() before it writes a response, so a page
+// that lost its link fails loud instead of stranding the operator.
+import {
+    assertViewerBackLink,
+    injectViewerBackLink,
+    renderViewerBackLinkHtml,
+} from './viewer-back-link.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -112,37 +120,37 @@ export function rewriteChildHtml(html, prefix) {
 }
 
 /**
- * Renders the back-link injected into the live-proxied child HTML, pointing
- * at the dashboard's card anchor for this sprint (dashboard.mjs's
- * renderSprintSection(), same id derived via sprintCardAnchorId()).
- * `target="_top"` so a click from inside the console's /ext iframe navigates
- * the whole browser tab back to the dashboard, not just the iframe.
+ * Renders the back-link every viewer page carries, pointing at the dashboard's
+ * card anchor for this sprint (dashboard.mjs's renderSprintSection(), same id
+ * derived via sprintCardAnchorId()).
+ *
+ * Thin alias for viewer-back-link.mjs's renderViewerBackLinkHtml() -- that
+ * module owns the one definition (href, text and the enforcement that reads it
+ * back); this export is kept because it is the name the supervisor's other
+ * modules and tests already call.
  * @param {string} mountPrefix - resolveMountPrefix()'s per-request result, or ''
  * @param {string} sprintId
  * @returns {string}
  */
 export function renderLiveViewBackLinkHtml(mountPrefix, sprintId) {
-    const href = mountHref(mountPrefix, '/#' + sprintCardAnchorId(sprintId));
-    return '<p class="live-view-back-link"><a href="' + href + '" target="_top">&larr; Back to dashboard</a></p>';
+    return renderViewerBackLinkHtml(mountPrefix, sprintId);
 }
 
 /**
- * Inserts `backLinkHtml` immediately after the child HTML's opening `<body>`
- * tag (matched permissively -- any attributes) so it appears at the very top
- * of the rendered page. Falls back to prepending the whole document when no
- * `<body>` tag is found (should not happen for the real viewer's HTML, but
- * keeps this a no-throw transform for any input). No-op on non-string input,
- * matching rewriteChildHtml()'s own contract.
+ * Splices the back-link in as the first BODY CONTENT of a viewer page.
+ *
+ * (apra-fleet-i9ag.5) THROWS for a page it cannot inject -- it used to
+ * first-match `/<body[^>]*>/` and silently prepend when that missed, which is
+ * exactly how a linkless viewer shipped: the generic viewer template's `<head>`
+ * `<style>` block contains the literal text `<body>` in a CSS comment ~12.5KB
+ * ahead of the real tag, so the anchor was spliced into CSS and never entered
+ * the DOM. See viewer-back-link.mjs's doc comment; callers answer a loud 5xx.
  * @param {string} html
  * @param {string} backLinkHtml
  * @returns {string}
  */
 export function injectLiveViewBackLink(html, backLinkHtml) {
-    if (typeof html !== 'string') return html;
-    const match = /<body[^>]*>/i.exec(html);
-    if (!match) return backLinkHtml + html;
-    const insertAt = match.index + match[0].length;
-    return html.slice(0, insertAt) + backLinkHtml + html.slice(insertAt);
+    return injectViewerBackLink(html, backLinkHtml);
 }
 
 /** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
@@ -243,9 +251,25 @@ function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logErr
             up.on('end', () => {
                 if (settled) return;
                 settled = true;
-                const rewritten = rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix);
-                const html = injectLiveViewBackLink(rewritten, renderLiveViewBackLinkHtml(mountPrefix, sprintId));
-                const body = Buffer.from(html, 'utf-8');
+                // (apra-fleet-i9ag.5) The back-link is NOT best-effort: a live
+                // viewer page with no way back to the dashboard strands the
+                // operator in a new tab that has no other navigation at all.
+                // Inject, then re-read the finished document the way a browser
+                // would (assertViewerBackLink()); either step throwing means
+                // this child did not serve an injectable HTML page, which is a
+                // loud 502 rather than a silently linkless 200.
+                let body;
+                try {
+                    const rewritten = rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix);
+                    const html = injectViewerBackLink(rewritten, renderViewerBackLinkHtml(mountPrefix, sprintId));
+                    assertViewerBackLink(html, { mountPrefix, sprintId, where: 'GET /sprints/:id/live (live proxy)' });
+                    body = Buffer.from(html, 'utf-8');
+                } catch (err) {
+                    logError?.('[proxy] refusing to serve a live view with no dashboard back-link:', err);
+                    if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
+                    sendPlain(res, 502, `live view for '${sprintId}' could not be served with a back-link to the supervisor dashboard: ${err.message}`);
+                    return;
+                }
                 if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
                 res.writeHead(up.statusCode || 200, {
                     'content-type': 'text/html; charset=utf-8',
@@ -295,12 +319,14 @@ export async function defaultRenderHistory(sprintId, env, readFile, mountPrefix)
  * NO `/events` (SSE) or `/stop` controls -- it is a static, process-free view,
  * so nothing here re-enters the proxy or targets a now-dead child port.
  *
- * The back-link is built through mountHref()/resolveMountPrefix() (apra-fleet-i9ag.3.6),
- * same as renderLiveViewBackLinkHtml() above -- `GET /sprints/:id/live` falls
- * through to this page once a sprint finishes, so inside the console's
- * `/ext/<id>` iframe an unprefixed `href="/"` resolves against the console
- * root rather than this package's mount point. `target="_top"` so the click
- * navigates the whole browser tab, not just the iframe.
+ * The back-link is the SAME one every other viewer page carries
+ * (viewer-back-link.mjs's renderViewerBackLinkHtml(), apra-fleet-i9ag.5): it
+ * targets this sprint's own dashboard CARD anchor rather than the bare
+ * dashboard root, so an operator who followed `GET /sprints/:id/live` after the
+ * sprint finished lands back on the row they came from, and it is threaded
+ * through mountHref() (apra-fleet-i9ag.3.6) so inside the console's `/ext/<id>`
+ * iframe it resolves against this package's mount point rather than the console
+ * root. `target="_top"` so the click navigates the whole browser tab.
  * @param {string} sprintId
  * @param {object|null} state - parsed terminal state (old_runs/, or legacy
  *   old_sprints/, apra-fleet-eft.37.1) <sprintId>.json, if available
@@ -314,7 +340,6 @@ export function renderReadOnlyHistoryHtml(sprintId, state, mountPrefix) {
     const startedAt = s.startedAt ? escapeHtml(String(s.startedAt)) : 'unknown';
     const endedAt = s.endedAt ? escapeHtml(String(s.endedAt)) : 'unknown';
     const status = s.status ? escapeHtml(String(s.status)) : 'unknown';
-    const backHref = mountHref(mountPrefix ?? '', '/');
     return (
         '<!DOCTYPE html>\n' +
         '<html lang="en">\n' +
@@ -325,7 +350,7 @@ export function renderReadOnlyHistoryHtml(sprintId, state, mountPrefix) {
         'a{color:#60a5fa;}.tag{color:#a1a1aa;}</style>\n' +
         '</head>\n' +
         '<body data-view="history" data-sprint-id="' + id + '">\n' +
-        '<p><a href="' + backHref + '" target="_top">&larr; Back to supervisor</a></p>\n' +
+        renderViewerBackLinkHtml(mountPrefix ?? '', sprintId) + '\n' +
         '<h1>Sprint ' + id + '</h1>\n' +
         '<p><strong>Historical, read-only view.</strong> This sprint has finished; ' +
         'its live process is gone, so there is nothing to stream.</p>\n' +
@@ -402,7 +427,18 @@ export function createLiveProxy(deps = {}) {
         }
     }
 
-    /** Render + send the read-only historical view; 404 when no history exists. */
+    /**
+     * Render + send the read-only historical view; 404 when no history exists.
+     *
+     * (apra-fleet-i9ag.5) The rendered page is gated on actually carrying the
+     * dashboard back-link before it is written -- this is the OTHER page the
+     * `/sprints/:id/live` URL serves (a sprint that has finished), reached from
+     * the same new-tab link, so it strands the operator the same way if the
+     * link is missing. The `renderHistory` seam is responsible for injecting
+     * it (bin/serve.mjs wires history-view.mjs's renderForSprint() in, and this
+     * module's own defaultRenderHistory() renders it directly); a seam that
+     * does not is a loud 500, never a silently linkless 200.
+     */
     async function serveHistory(sprintId, res, mountPrefix) {
         let html = null;
         try {
@@ -412,6 +448,13 @@ export function createLiveProxy(deps = {}) {
         }
         if (html == null) {
             sendPlain(res, 404, `No live sprint or history for '${sprintId}'.`);
+            return;
+        }
+        try {
+            assertViewerBackLink(html, { mountPrefix: mountPrefix ?? '', sprintId, where: 'GET /sprints/:id/live (history fallthrough)' });
+        } catch (err) {
+            logError('[proxy] refusing to serve a history fallthrough with no dashboard back-link:', err);
+            sendPlain(res, 500, `history for '${sprintId}' could not be served with a back-link to the supervisor dashboard: ${err.message}`);
             return;
         }
         const body = Buffer.from(html, 'utf-8');

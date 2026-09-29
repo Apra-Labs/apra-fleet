@@ -48,7 +48,18 @@ import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
 // boundary.md) -- the injection happens IN THIS SUPERVISOR-ONLY module,
 // against the already-rendered HTML string, exactly like proxy.mjs does for
 // the live view.
-import { injectLiveViewBackLink, renderLiveViewBackLinkHtml } from './proxy.mjs';
+// (apra-fleet-i9ag.5) ...and its ENFORCEMENT: injectViewerBackLink() throws
+// for a page it cannot splice the anchor into as real body content, and
+// assertViewerBackLink() re-reads the finished document the way a browser does
+// before handleGet() writes it. The generic HTML_TEMPLATE's own <style> block
+// contains the literal text '<body>' in a CSS comment ~12.5KB ahead of the
+// real tag, which is precisely how this page shipped with the anchor buried in
+// CSS and no link in the DOM -- see viewer-back-link.mjs's doc comment.
+import {
+    assertViewerBackLink,
+    injectViewerBackLink,
+    renderViewerBackLinkHtml,
+} from './viewer-back-link.mjs';
 // (apra-fleet-i9ag.16.1) LAUNCH_FAILED is the one history event kind this
 // module synthesizes a finished-runs row for -- a sprint whose child died in
 // its launch window before ever writing a terminal state file (see
@@ -253,7 +264,7 @@ export function createHistoryView(deps = {}) {
         const state = await loadOldSprintState(sprintId, env, readFile);
         if (state == null) return null;
         const html = renderHistoryPageHtml(state, dashboardExtensions);
-        return injectLiveViewBackLink(html, renderLiveViewBackLinkHtml(mountPrefix ?? '', sprintId));
+        return injectViewerBackLink(html, renderViewerBackLinkHtml(mountPrefix ?? '', sprintId));
     }
 
     // GET /sprints/:id/history -- the dedicated "History" link (apra-fleet-eft.6,
@@ -272,15 +283,16 @@ export function createHistoryView(deps = {}) {
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);
             return;
         }
+        // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
+        // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
+        // handleBase: one rendered page answers both the direct-on-port hit and
+        // the console's /ext/<id> iframe hop. A hostile or malformed header
+        // fails closed to '' in resolveMountPrefix(), which is exactly the
+        // serve-direct render.
+        const mountPrefix = resolveMountPrefix(req);
         let html;
         try {
-            // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
-            // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
-            // handleBase: one rendered page answers both the direct-on-port
-            // hit and the console's /ext/<id> iframe hop. A hostile or
-            // malformed header fails closed to '' in resolveMountPrefix(),
-            // which is exactly the serve-direct render.
-            html = await renderForSprint(sprintId, resolveMountPrefix(req));
+            html = await renderForSprint(sprintId, mountPrefix);
         } catch (err) {
             logError('[history-view] failed to load state for', sprintId, err);
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);
@@ -288,6 +300,17 @@ export function createHistoryView(deps = {}) {
         }
         if (html == null) {
             sendPlain(res, 404, `No history for '${sprintId}'.`);
+            return;
+        }
+        // (apra-fleet-i9ag.5) This page opens in a NEW TAB from the Finished
+        // Sprints card's History link and carries no other navigation, so a
+        // missing back-link is a dead end. Gate on the rendered document
+        // really having it -- a loud 500 beats a silently linkless 200.
+        try {
+            assertViewerBackLink(html, { mountPrefix, sprintId, where: 'GET /sprints/:id/history' });
+        } catch (err) {
+            logError('[history-view] refusing to serve a History page with no dashboard back-link:', err);
+            sendPlain(res, 500, `history for '${sprintId}' could not be served with a back-link to the supervisor dashboard: ${err.message}`);
             return;
         }
         const body = Buffer.from(html, 'utf-8');
