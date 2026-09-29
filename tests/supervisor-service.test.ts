@@ -37,6 +37,7 @@ vi.mock('../src/services/singleton.js', () => ({
   checkRunningInstance: mockCheckRunning,
 }));
 vi.mock('node:child_process');
+import { execFileSync, spawn } from 'node:child_process';
 
 import {
   SUPERVISOR_SUBCOMMAND,
@@ -51,7 +52,7 @@ import {
 import { SUPERVISOR_LOG_FILE_PATH } from '../src/paths.js';
 import { WORKFLOWS_DIR } from '../src/cli/config.js';
 import { runStart } from '../src/cli/start.js';
-import { runStop } from '../src/cli/stop.js';
+import { runStop, stopSupervisorServiceIfInstalled } from '../src/cli/stop.js';
 import { runRestart } from '../src/cli/restart.js';
 import { runStatus } from '../src/cli/status.js';
 
@@ -263,6 +264,70 @@ describe('CLI supervisor wiring', () => {
       await expect(runStop([])).resolves.toBeUndefined();
       expect(mcpMgr.stop).toHaveBeenCalled();
     });
+  });
+
+  // A sandboxed stop/restart (non-default data dir or port) must never reach
+  // the machine-global supervisor registration: on Windows its stop is a
+  // taskkill /T of the production supervisor plus schtasks /end.
+  describe('sandboxed instance never touches the registered supervisor', () => {
+    const savedPort = process.env.APRA_FLEET_PORT;
+    afterEach(() => {
+      if (savedPort === undefined) delete process.env.APRA_FLEET_PORT;
+      else process.env.APRA_FLEET_PORT = savedPort;
+    });
+
+    function expectSupervisorUntouched() {
+      expect(mockGetSvcMgr).not.toHaveBeenCalledWith('fleet-supervisor');
+      expect(supervisorMgr.isInstalled).not.toHaveBeenCalled();
+      expect(supervisorMgr.stop).not.toHaveBeenCalled();
+      expect(supervisorMgr.start).not.toHaveBeenCalled();
+      expect(mcpMgr.stop).not.toHaveBeenCalled();
+      expect(mcpMgr.start).not.toHaveBeenCalled();
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        const [cmd, args] = call as unknown as [string, string[] | undefined];
+        expect(cmd).not.toBe('schtasks');
+        expect(args ?? []).not.toContain('/T');
+      }
+    }
+
+    const cases: Array<[string, () => void]> = [
+      ['APRA_FLEET_DATA_DIR set', () => { process.env.APRA_FLEET_DATA_DIR = '/tmp/sandboxed'; delete process.env.APRA_FLEET_PORT; }],
+      ['non-default APRA_FLEET_PORT only', () => { delete process.env.APRA_FLEET_DATA_DIR; process.env.APRA_FLEET_PORT = '18800'; }],
+    ];
+
+    for (const [label, apply] of cases) {
+      it(`runStop (${label})`, async () => {
+        apply();
+        supervisorMgr.isInstalled.mockResolvedValue(true);
+        mcpMgr.isInstalled.mockResolvedValue(true);
+        await runStop([]);
+        expectSupervisorUntouched();
+      });
+
+      it(`stopSupervisorServiceIfInstalled (${label}) is a no-op even when strict`, async () => {
+        apply();
+        supervisorMgr.isInstalled.mockResolvedValue(true);
+        await expect(stopSupervisorServiceIfInstalled({ strict: true })).resolves.toBeUndefined();
+        expectSupervisorUntouched();
+      });
+
+      it(`runRestart (${label}) -- strict supervisor path is skipped, not failed`, async () => {
+        apply();
+        supervisorMgr.isInstalled.mockResolvedValue(true);
+        supervisorMgr.query.mockResolvedValue({ installed: true, running: true });
+        mcpMgr.isInstalled.mockResolvedValue(true);
+        vi.mocked(spawn).mockReturnValue({ unref: vi.fn() } as any);
+        mockCheckRunning
+          .mockResolvedValueOnce({ running: false })
+          .mockResolvedValueOnce({ running: false })
+          .mockResolvedValueOnce({ running: true, url: 'http://127.0.0.1:18800/mcp', pid: 1 });
+        vi.useFakeTimers();
+        const p = runRestart([]);
+        await vi.advanceTimersByTimeAsync(2001);
+        await expect(p).resolves.toBeUndefined();
+        expectSupervisorUntouched();
+      });
+    }
   });
 
   describe('runRestart', () => {
