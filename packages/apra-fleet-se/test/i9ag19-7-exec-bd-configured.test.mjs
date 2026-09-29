@@ -396,6 +396,39 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
         }
     });
 
+    // apra-fleet-i9ag.19.28 AC1 CONTROL (sync): the IDENTICAL stub and the
+    // IDENTICAL node-less PATH as the end-to-end case immediately above, but
+    // with nodePath NOT configured -- this must FAIL with the exact env/127
+    // shape D1 was filed against. Without this control, a passing end-to-end
+    // case above could just as easily be an accident of the test harness's
+    // own PATH still having a node on it somewhere; this proves the PASS
+    // above is actually caused by the PATH-prepend fix.
+    test('CONTROL (sync): the SAME node-shebang stub with NO configured nodePath FAILS under the SAME node-less PATH (env: node: No such file, exit 127)', { skip: process.platform === 'win32' ? 'POSIX shebang script' : false }, () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'exec-bd-node-shebang-control-sync-'));
+        const scriptPath = path.join(dir, 'fake-bd');
+        writeFileSync(scriptPath, '#!/usr/bin/env node\nconsole.log("bd-fake-output-sync");\n');
+        chmodSync(scriptPath, 0o755);
+        const originalPath = process.env.PATH;
+        try {
+            // Deliberately no nodePath configured this time -- everything
+            // else (the stub, the restricted PATH) is identical to the A1
+            // end-to-end (sync) case above.
+            configureBdInvocation({ bdPath: scriptPath });
+            process.env.PATH = '/usr/bin:/bin';
+            assert.throws(
+                () => execBdSync([], { encoding: 'utf-8' }),
+                (err) => {
+                    assert.equal(err.status, 127, 'exit code must be the exact env-cannot-find-interpreter code');
+                    assert.match(String(err.stderr), /env: node: No such file or directory/);
+                    return true;
+                },
+            );
+        } finally {
+            process.env.PATH = originalPath;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     test('A1 end-to-end (async): the same node-shebang script is invocable via execBdAsync with PATH emptied of node', { skip: process.platform === 'win32' ? 'POSIX shebang script' : false }, async () => {
         const dir = mkdtempSync(path.join(tmpdir(), 'exec-bd-node-shebang-async-'));
         const scriptPath = path.join(dir, 'fake-bd');
@@ -410,6 +443,54 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
         } finally {
             process.env.PATH = originalPath;
             rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    // apra-fleet-i9ag.19.28 AC1 CONTROL (async): same reasoning as the sync
+    // control above, for execBdAsync. execBdAsync always forces
+    // { shell: true }, so the failure surfaces through the shell's own exit
+    // code (execFileAsync's promisified err.code) rather than execFileSync's
+    // err.status -- both are the same underlying 127.
+    test('CONTROL (async): the SAME node-shebang script with NO configured nodePath FAILS under the SAME node-less PATH (env: node: No such file, exit 127)', { skip: process.platform === 'win32' ? 'POSIX shebang script' : false }, async () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'exec-bd-node-shebang-control-async-'));
+        const scriptPath = path.join(dir, 'fake-bd');
+        writeFileSync(scriptPath, '#!/usr/bin/env node\nconsole.log("bd-fake-output-async");\n');
+        chmodSync(scriptPath, 0o755);
+        const originalPath = process.env.PATH;
+        try {
+            configureBdInvocation({ bdPath: scriptPath });
+            process.env.PATH = '/usr/bin:/bin';
+            await assert.rejects(
+                () => execBdAsync([], { encoding: 'utf-8' }),
+                (err) => {
+                    assert.equal(err.code, 127, 'exit code must be the exact env-cannot-find-interpreter code');
+                    assert.match(String(err.stderr), /env: node: No such file or directory/);
+                    return true;
+                },
+            );
+        } finally {
+            process.env.PATH = originalPath;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    // WHAT TO TEST bullet: "a configured bdPath that is a real native binary
+    // (not a node script) still runs shell-less and unchanged". A real
+    // shebang-less-relevant POSIX binary (/bin/echo -- present on every
+    // macOS/Linux CI runner this suite targets, never a node script) proves
+    // the PATH-prepend fix is harmless to a bdPath that never shells out to
+    // `env`: execBdSync's configured-fallback branch never sets
+    // `shell: true` on POSIX (see the byte-for-byte AC1/A3 argv/opts pins
+    // above), so a real absolute-path binary invocation via execFileSync
+    // never even consults PATH -- this is the end-to-end proof that holds
+    // regardless, complementing (not duplicating) those opts-shape pins.
+    test('a configured bdPath that is a real native binary (not a node script) still runs, unaffected by an ALSO-configured nodePath\'s PATH-prepend', { skip: process.platform === 'win32' ? 'POSIX-only /bin/echo binary' : false }, () => {
+        configureBdInvocation({ bdPath: '/bin/echo', nodePath: process.execPath });
+        try {
+            const out = execBdSync(['bd-fake-output-native'], { encoding: 'utf-8' });
+            assert.equal(String(out).trim(), 'bd-fake-output-native');
+        } finally {
+            configureBdInvocation({});
         }
     });
 });
