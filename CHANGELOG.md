@@ -2,6 +2,100 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet_status is cwd-independent; KB scope refusal, member-local MCP, and a Knowledge/Code-Intelligence viewer land, but the epic's own acceptance run was never executed (sprint FAILED)
+
+Sprint goal: finish making the knowledge bank correct for a remote fleet
+member, whose work folder lives on the far side of an SSH connection from the
+fleet server process. The defect this whole line of work exists to fix was
+proven empirically on a real remote member, whose KB lookup silently resolved
+against the wrong (empty) database because it trusted the server's own
+working directory instead of an explicit repo scope.
+
+What shipped this round:
+
+- **`fleet_status` no longer derives a project from the server's own working
+  directory.** It enumerates every KB scope actually present on disk and
+  reports one line per non-empty scope (plus a rollup for empty ones); a new
+  optional repo-path argument adds that repo's code-intelligence index health
+  and canonical-bible drift on top, but the KB and code-intelligence sections
+  it always shows are fleet-wide by construction, not tied to wherever the
+  process happens to be running.
+- **Every server-handled knowledge-bank call now refuses to run unscoped**
+  instead of silently falling back to the server's own working directory: a
+  call that names no repo (by local path or by remote git URL) is rejected
+  before any database is opened, with a machine-readable reason and a
+  regression tripwire covering every in-repo call site so a future change
+  cannot reintroduce a bare, unscoped call.
+- **Each fleet member now runs its own knowledge-bank and code-intelligence
+  tools locally**, over a stdio MCP server scoped to a small, fixed
+  read/contribute tool set -- never the admin or fleet-management surface --
+  instead of calling back into a central server over the network. This
+  removes the network hop (and the wrong-cwd failure mode) from the
+  remote-member case entirely, at the cost of a new registration
+  prerequisite: a member needs its own compatible install before it gets
+  knowledge or code-intelligence tools at all, with the missing/outdated
+  cases always named and never silently swallowed.
+- **A Windows probe used to verify a member's native helper executable now
+  detects a failing helper correctly.** The prior form silently produced no
+  usable signal on failure; the fix checks the shell's own last-exit-code
+  variable, which is the only reliable failure signal PowerShell gives for
+  this kind of call.
+- **A per-member preflight now runs at the start of every sprint**, for every
+  participating member including local ones: it starts that member's own
+  code index (fire-and-forget, never awaited, never claimed to be current),
+  primes its knowledge scope and prints the real entry count, and makes one
+  trivial probe call asserting the code-intelligence tool actually answers.
+  Results are recorded per member from a closed set of outcomes rather than
+  left implicit.
+- **A dedicated Knowledge and Code-Intelligence panel** in the sprint viewer
+  now shows this preflight data plus per-dispatch knowledge-bank call
+  activity (call totals, captures kept vs. rejected with cause, and a
+  distinct "not observable" marker for the code-intelligence family the
+  engine cannot currently observe per dispatch) -- a separate tab, not a
+  section grafted onto the existing activity or task views.
+- **The planner/reviewer/deployer role-prompt family was corrected** where
+  five of them claimed a knowledge-bank contribution step was required when
+  their own dispatch shape gives them no path to actually apply one --
+  language that had been fixed once already but regressed back to its
+  incorrect form; a regression test now pins the correct set going forward.
+
+**Verdict: the epic is not done.** Every item above is validated only by
+mock and unit-level tests. The end-to-end acceptance run against a real
+remote member -- the only evidence that would demonstrate the redesign
+actually fixes the empirically-proven defect this epic exists for -- was
+never executed across this sprint's cycles. Root cause, confirmed by reading
+the routing classifier alongside the beads graph rather than either in
+isolation: a childless leaf bead whose entire purpose is "run the proof and
+record the evidence" can only ever be routed to normal development, never to
+verification (a bead with no children is ineligible), and its parent can
+never become verification-eligible either as long as that leaf -- or any
+other child -- stays open. The decomposition therefore made the acceptance
+criterion structurally unreachable regardless of how many times the leaf was
+recreated. This is documented as its own case study, with two candidate
+fixes, in the fleet-sprint phase-routing design notes.
+
+Carried forward, not closed by this pass:
+- The end-to-end remote-member acceptance run itself, and the verdict bead
+  that exists solely to record its outcome.
+- A capture-rejection case for a remote-member `kb_capture` call, still
+  citing a stale error path.
+- A read failure for a remote-member `kb_export` call.
+- A backlog grooming pass over beads that implement now-superseded designs
+  from earlier chapters of this same epic.
+- An audit of role-prompt language claiming a knowledge-bank step is
+  "required" against the actual, current per-role dispatch contract.
+- A build-artifact drift issue between a generated schema directory and its
+  gitignored counterpart.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $70.2830.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $1.1693 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 57 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Each member now serves its own KB and code-intelligence tools over local stdio
 
 `compose_permissions` now resolves and enables a member-LOCAL `apra-fleet` MCP

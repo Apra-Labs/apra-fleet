@@ -456,7 +456,8 @@ third-party verticals.
 | Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
-| Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
+| Knowledge Layer (setup, usage, provider swap, per-repo scope enforcement) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
+| Least-privilege permission delivery, and each member's own local KB/code-intelligence MCP server | [docs/compose-permissions-design.md](docs/compose-permissions-design.md) |
 | Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
