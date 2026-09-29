@@ -15,6 +15,17 @@ import {
   SUPERVISOR_DATA_DIR,
 } from '../src/cli/supervisor.js';
 import type { FleetSeToolchainPaths } from '../src/cli/fleet-se-prereqs.js';
+// The REAL apra-fleet-se reader -- a DIFFERENT package from this one (this
+// writer is TypeScript in the core package; that reader is ESM in
+// packages/apra-fleet-se, and the two cannot import each other's types). The
+// parity test below asserts against this real reader, not a restated literal
+// shape, so a drift between what this writer emits and what that reader
+// expects fails here instead of only surfacing once the two are wired
+// together at supervisor startup (apra-fleet-i9ag.19.10). Mirrors the same
+// pattern tests/install-supervisor-service.test.ts already uses for
+// projectDir (see its own "seeded" test and the comment on its import of the
+// same reader).
+import { readSupervisorConfig } from '../packages/apra-fleet-se/src/supervisor/project-config.mjs';
 
 const DATA_DIR = '/mock/data-dir';
 const CONFIG_PATH = supervisorConfigPath(DATA_DIR);
@@ -168,5 +179,31 @@ describe('seedSupervisorToolchain()', () => {
     const { fsImpl, files } = makeFsDouble();
     seedSupervisorToolchain(RESOLVED, undefined, fsImpl as any);
     expect(files.has(supervisorConfigPath(SUPERVISOR_DATA_DIR))).toBe(true);
+  });
+
+  it('parity (apra-fleet-i9ag.19.4): the REAL apra-fleet-se reader accepts exactly what this writer wrote, round-tripping real values', async () => {
+    const { fsImpl, files } = makeFsDouble();
+    const result = seedSupervisorToolchain(RESOLVED, DATA_DIR, fsImpl as any);
+    expect(result.ok).toBe(true);
+    const written = files.get(CONFIG_PATH)!;
+
+    // The real reader's own `fs` is only ever `node:fs/promises` (a separate
+    // specifier from the `node:fs`-shaped `fsImpl` double this writer takes),
+    // so this override is real disk I/O either way -- injected here purely so
+    // the exact bytes THIS WRITER produced are what gets parsed, without a
+    // second, restated copy of the JSON shape standing in for them.
+    const parsed = await readSupervisorConfig({
+      dataDir: DATA_DIR,
+      fs: { readFile: async () => written },
+    });
+
+    expect(parsed.toolchainReason).toBeNull();
+    expect(parsed.toolchain).not.toBeNull();
+    expect(parsed.toolchain?.nodePath).toBe(RESOLVED.node.path);
+    expect(parsed.toolchain?.nodeVersion).toBe(RESOLVED.node.version);
+    expect(parsed.toolchain?.bdPath).toBe(RESOLVED.bd.path);
+    expect(parsed.toolchain?.bdVersion).toBe(RESOLVED.bd.version);
+    expect(typeof parsed.toolchain?.recordedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(parsed.toolchain!.recordedAt as string))).toBe(false);
   });
 });
