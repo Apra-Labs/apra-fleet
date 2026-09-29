@@ -1,18 +1,31 @@
-// apra-fleet-i9ag.19.7 -- packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs's
-// configured bd invocation: configureBdInvocation()/resolvedBdInvocation()
-// plus the CONFIGURED branches of execBdSync/execBdAsync and
+// apra-fleet-i9ag.19.7 (and consolidated i9ag.19.8, apra-fleet-i9ag.19.17) --
+// packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs's bd invocation:
+// configureBdInvocation()/resolvedBdInvocation() plus the UNCONFIGURED and
+// CONFIGURED branches of execBdSync/execBdAsync and
 // resolveConfiguredWindowsBdScript(). A service started by launchd or a
 // Windows task does not inherit the login PATH, so this module accepts an
 // explicit, one-time configured { bdPath, nodePath } (set by the supervisor's
 // startup, apra-fleet-i9ag.19.10) so bd can still be found and run.
 //
-// This suite pins two things per acceptance criterion:
+// exec-bd.mjs is used by every supervisor bd call site (backlog.mjs,
+// scope-overlap.mjs, sandbox-seed-beads.mjs et al.), so a regression here is
+// a silent supervisor-wide failure. This single suite (i9ag.19.7 and
+// i9ag.19.8 were merged by i9ag.19.17 to remove duplicate coverage) pins:
 //   1. UNCONFIGURED behaviour is asserted exactly (file/args/options), not
 //      just "it still works", so a future change cannot silently alter it.
 //   2. CONFIGURED behaviour (POSIX, win32 shim, win32 non-shim fallback,
 //      assertSafeArgs, the large-output warning, resolvedBdInvocation()) is
 //      asserted with the same rigor, using injected platform/exists/readFile
 //      deps so every case runs on any host.
+//   3. Configured POSIX bdPath invocation with an emptied process.env.PATH,
+//      proving the configured branch never falls back to a PATH scan.
+//   4. assertSafeArgs and the large-output warning are pinned in BOTH modes
+//      (unconfigured and configured) for both execBdSync and execBdAsync,
+//      including a below-threshold negative case that stays silent.
+//
+// This file does not require a real bd install or a real Windows host: every
+// exec call is injected, and win32-only branches are exercised via the
+// injectable `platform` parameter.
 
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -151,6 +164,21 @@ describe('apra-fleet-i9ag.19.7: execBdSync() unconfigured (AC2 -- byte-for-byte 
             opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', encoding: 'utf-8', shell: process.platform === 'win32' },
         });
     });
+
+    test('(i9ag.19.8 bullet 6) the large-output warning still fires in the unconfigured path', () => {
+        const big = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES + 1);
+        const fakeExecFileSync = () => big;
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (msg) => warnings.push(msg);
+        try {
+            execBdSync(['list', '--json'], {}, fakeExecFileSync, () => null);
+        } finally {
+            console.warn = originalWarn;
+        }
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /bd list --json/);
+    });
 });
 
 describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => {
@@ -171,6 +199,29 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
             args: ['list', '--json'],
             opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
         });
+    });
+
+    test('AC1 (i9ag.19.8 bullet 2): configured bdPath is invoked directly while process.env.PATH is actually emptied (never consults PATH)', () => {
+        const originalPath = process.env.PATH;
+        process.env.PATH = '';
+        try {
+            configureBdInvocation({ bdPath: '/opt/apra-fleet/bin/bd' });
+            const calls = [];
+            const fakeExecFileSync = (cmd, args, opts) => {
+                calls.push({ cmd, args, opts });
+                return 'fake-output';
+            };
+            const result = execBdSync(['list', '--json'], { cwd: '/repo' }, fakeExecFileSync, () => null, () => null);
+            assert.equal(result, 'fake-output');
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0], {
+                cmd: '/opt/apra-fleet/bin/bd',
+                args: ['list', '--json'],
+                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
+            });
+        } finally {
+            process.env.PATH = originalPath;
+        }
     });
 
     test('AC3: configured win32 .cmd shim resolves to its bd.js and is invoked with the configured nodePath, NOT process.execPath', () => {
@@ -257,6 +308,25 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() unconfigured (AC2 -- byte-for-byte
             opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', encoding: 'utf-8', shell: true },
         });
     });
+
+    test('(i9ag.19.8 bullet 5) throws synchronously (before any exec) for an unsafe arg', () => {
+        let execCalled = false;
+        const fakeExecFileAsync = async () => {
+            execCalled = true;
+            return { stdout: '', stderr: '' };
+        };
+        assert.throws(() => execBdAsync(['list', '--parent', 'a & echo INJECTED'], {}, fakeExecFileAsync), TypeError);
+        assert.equal(execCalled, false, 'exec must never run once an unsafe arg is rejected');
+    });
+
+    test('(i9ag.19.8 bullet 6) the large-output warning still fires in the unconfigured path', async () => {
+        const big = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES + 1);
+        const fakeExecFileAsync = async () => ({ stdout: big, stderr: '' });
+        const warnings = [];
+        await execBdAsync(['list', '--json'], {}, fakeExecFileAsync, (msg) => warnings.push(msg));
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /bd list --json/);
+    });
 });
 
 describe('apra-fleet-i9ag.19.7: execBdAsync() configured (AC1, AC4)', () => {
@@ -275,6 +345,29 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() configured (AC1, AC4)', () => {
             args: ['list', '--json'],
             opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: true },
         });
+    });
+
+    test('AC1 (i9ag.19.8 bullet 2): configured bdPath is used as the file argument while process.env.PATH is actually emptied (never consults PATH)', async () => {
+        const originalPath = process.env.PATH;
+        process.env.PATH = '';
+        try {
+            configureBdInvocation({ bdPath: '/opt/apra-fleet/bin/bd' });
+            const calls = [];
+            const fakeExecFileAsync = async (cmd, args, opts) => {
+                calls.push({ cmd, args, opts });
+                return { stdout: 'fake-output', stderr: '' };
+            };
+            const result = await execBdAsync(['list', '--json'], { cwd: '/repo' }, fakeExecFileAsync, undefined, 'linux');
+            assert.equal(result.stdout, 'fake-output');
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0], {
+                cmd: '/opt/apra-fleet/bin/bd',
+                args: ['list', '--json'],
+                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: true },
+            });
+        } finally {
+            process.env.PATH = originalPath;
+        }
     });
 
     test('AC4: assertSafeArgs still throws synchronously for an unsafe arg in the configured path', () => {
@@ -347,5 +440,55 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() configured (AC1, AC4)', () => {
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+// i9ag.19.8's original version of this case asserted "in both modes" but
+// only actually exercised sync-unconfigured and async-configured (plus a
+// dead execBdSync call made before console.warn was even patched, whose
+// result was discarded and never asserted on -- a copy-paste artifact).
+// Fixed here (apra-fleet-i9ag.19.17) to genuinely cover all four
+// combinations: both entry points, both configuration modes.
+describe('apra-fleet-i9ag.19.8 bullet 6 (fixed): stays silent just below BD_LARGE_OUTPUT_WARN_BYTES, in all four sync/async x configured/unconfigured combinations', () => {
+    test('execBdSync unconfigured stays silent just below the threshold', () => {
+        const justUnder = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES);
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (msg) => warnings.push(msg);
+        try {
+            execBdSync(['list'], {}, () => justUnder, () => null);
+        } finally {
+            console.warn = originalWarn;
+        }
+        assert.equal(warnings.length, 0);
+    });
+
+    test('execBdSync configured stays silent just below the threshold', () => {
+        configureBdInvocation({ bdPath: '/opt/bd/bd' });
+        const justUnder = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES);
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (msg) => warnings.push(msg);
+        try {
+            execBdSync(['list'], {}, () => justUnder, () => null, () => null);
+        } finally {
+            console.warn = originalWarn;
+        }
+        assert.equal(warnings.length, 0);
+    });
+
+    test('execBdAsync unconfigured stays silent just below the threshold', async () => {
+        const justUnder = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES);
+        const warnings = [];
+        await execBdAsync(['list'], {}, async () => ({ stdout: justUnder, stderr: '' }), (msg) => warnings.push(msg));
+        assert.equal(warnings.length, 0);
+    });
+
+    test('execBdAsync configured stays silent just below the threshold', async () => {
+        configureBdInvocation({ bdPath: '/opt/bd/bd' });
+        const justUnder = 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES);
+        const warnings = [];
+        await execBdAsync(['list'], {}, async () => ({ stdout: justUnder, stderr: '' }), (msg) => warnings.push(msg));
+        assert.equal(warnings.length, 0);
     });
 });
