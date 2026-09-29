@@ -270,7 +270,8 @@ export function buildSprintArgv(opts = {}) {
  * @param {{
  *   basePort?: number,
  *   command?: string,
- *   resolveRunner?: () => { command: string, source: string, version: string },
+ *   resolveRunner?: (deps?: { configuredNodePath?: string }) => { command: string, source: string, version: string },
+ *   configuredNodePath?: string,
  *   cliPath?: string,
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
@@ -322,6 +323,17 @@ export function createSpawner(deps = {}) {
     // succeeding resolution without touching the real environment/PATH.
     const commandOverride = deps.command;
     const resolveRunner = deps.resolveRunner ?? resolveSprintRunnerCommand;
+    // apra-fleet-i9ag.19.5: the recorded toolchain's absolute node path (read
+    // and validated by the caller -- bin/serve.mjs, once it consults the
+    // installed toolchain -- and handed in here so this module stays
+    // filesystem-free). Threaded into every resolveRunner() call below so the
+    // real resolveSprintRunnerCommand() can apply its CONFIGURED tier, which
+    // MUST beat current-runtime/PATH: a supervisor service with no usable
+    // PATH has no other way to launch a sprint. Harmless to pass to an
+    // injected `resolveRunner` too -- every existing test's injected resolver
+    // is a zero-arg closure that ignores whatever argument it is called
+    // with, so this cannot change any existing test's behaviour.
+    const configuredNodePath = deps.configuredNodePath;
     // A SUCCESSFUL resolution is cached for this process's lifetime -- the
     // Node.js runtime available to this supervisor process cannot change
     // while it is up. A FAILURE is deliberately NEVER cached, so a transient
@@ -343,7 +355,7 @@ export function createSpawner(deps = {}) {
     function resolveCommand() {
         if (commandOverride !== undefined) return commandOverride;
         if (cachedRunner) return cachedRunner.command;
-        const resolved = resolveRunner();
+        const resolved = resolveRunner({ configuredNodePath });
         cachedRunner = resolved;
         logger.log?.(
             `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,

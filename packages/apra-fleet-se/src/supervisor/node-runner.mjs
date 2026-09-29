@@ -18,16 +18,28 @@
 // (apra-fleet-i9ag.15.2), deliberately kept separate so this resolver is
 // independently testable.
 //
-// RESOLUTION ORDER (fixed):
+// RESOLUTION ORDER (fixed, apra-fleet-i9ag.19.5 inserts CONFIGURED as tier 2):
 //   1. `FLEET_SE_NODE` env override -- an explicit operator escape hatch.
 //      Probed with `--version`; a SET-BUT-UNUSABLE override is a HARD ERROR
 //      (never a silent fall-through to the next tier -- the operator asked
 //      for THIS interpreter by name).
-//   2. The current process's own execPath -- but ONLY when this process is a
+//   2. `configuredNodePath` -- the absolute node path the installer recorded
+//      into supervisor.config.json's toolchain block (read and validated by
+//      the caller, injected here so this resolver stays synchronous and
+//      filesystem-free). This is what makes a launchd/Windows-service
+//      supervisor -- whose PATH the login shell never populates, and whose
+//      own execPath is the apra-fleet SEA binary, not node -- able to launch
+//      a sprint at all. Probed with `--version` and gated at >=
+//      MIN_NODE_VERSION exactly like the PATH tier; a SET-BUT-UNUSABLE
+//      configured path is a HARD ERROR for the same reason the override is:
+//      a skipped check is indistinguishable from a passed one, and this tier
+//      MUST beat current-runtime and PATH so a service with no usable PATH
+//      never silently falls through to a PATH lookup that cannot succeed.
+//   3. The current process's own execPath -- but ONLY when this process is a
 //      real Node.js runtime, i.e. NOT a single-executable app (node:sea's
 //      isSea() === false). This preserves today's behaviour for a plain
 //      `node bin/serve.mjs` supervisor.
-//   3. `node` resolved from PATH, gated at >= MIN_NODE_VERSION.
+//   4. `node` resolved from PATH, gated at >= MIN_NODE_VERSION.
 //   Otherwise: throw a SprintRunnerResolutionError naming every candidate
 //   tried, the resolved-but-too-old version when that is the reason, and the
 //   operator fix line.
@@ -82,9 +94,11 @@ export const SPRINT_RUNNER_FIX_LINE =
 export const SPRINT_RUNNER_SOURCE = Object.freeze({
     /** Tier 1: the FLEET_SE_NODE env override. */
     OVERRIDE: 'FLEET_SE_NODE',
-    /** Tier 2: this process's own execPath (a real Node.js runtime, not a SEA binary). */
+    /** Tier 2 (apra-fleet-i9ag.19.5): the recorded toolchain's node path. */
+    CONFIGURED: 'configured',
+    /** Tier 3: this process's own execPath (a real Node.js runtime, not a SEA binary). */
     CURRENT_RUNTIME: 'current-runtime',
-    /** Tier 3: `node` resolved from PATH. */
+    /** Tier 4: `node` resolved from PATH. */
     PATH: 'path',
 });
 
@@ -223,7 +237,7 @@ function probeVersion(exec, platform, file, args) {
 /**
  * Resolves the Node.js command line the supervisor should spawn a sprint's
  * fleet-sprint CLI child process with. See the file-level doc comment above
- * for the fixed 3-tier resolution order and rationale.
+ * for the fixed 4-tier resolution order and rationale.
  *
  * @param {{
  *   env?: NodeJS.ProcessEnv,
@@ -231,6 +245,7 @@ function probeVersion(exec, platform, file, args) {
  *   isSea?: () => boolean,
  *   exec?: (file: string, args: string[], options?: object) => string|Buffer,
  *   platform?: NodeJS.Platform,
+ *   configuredNodePath?: string,
  * }} [deps]
  * @returns {{ command: string, source: string, version: string }}
  * @throws {SprintRunnerResolutionError} when no tier resolves to a usable Node.js runtime
@@ -246,7 +261,7 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // Honored even below MIN_NODE_VERSION (the operator asked for THIS
     // interpreter by name); this resolver's only job for this tier is to
     // confirm the override is a real, spawnable Node.js runtime, never a
-    // silent fall-through to tier 2/3 when it is not.
+    // silent fall-through to a later tier when it is not.
     const override = typeof env.FLEET_SE_NODE === 'string' ? env.FLEET_SE_NODE.trim() : '';
     if (override.length > 0) {
         const version = probeVersion(exec, platform, override, ['--version']);
@@ -260,9 +275,44 @@ export function resolveSprintRunnerCommand(deps = {}) {
         return { command: override, source: SPRINT_RUNNER_SOURCE.OVERRIDE, version };
     }
 
+    // Tier 2 (apra-fleet-i9ag.19.5): the recorded toolchain's node path, read
+    // and validated by the caller and handed in here so this resolver stays
+    // synchronous and filesystem-free (its existing all-inputs-injectable
+    // contract). This MUST be consulted before tier 3/4 -- a service whose
+    // PATH the login shell never populates, and whose own execPath is the
+    // apra-fleet SEA binary rather than node, has no other way to reach a
+    // usable Node.js runtime. Gated at >= MIN_NODE_VERSION exactly like the
+    // PATH tier, and -- like the FLEET_SE_NODE override above -- a
+    // configured-but-unusable path is a HARD ERROR, never a silent
+    // fall-through to current-runtime/PATH: a skipped check here is
+    // indistinguishable from a passed one, and letting resolution continue
+    // would risk silently falling through to a PATH lookup that cannot
+    // succeed on exactly the service that needed this tier in the first
+    // place. probeVersion() already handles win32 shell-quoting for a path
+    // containing spaces (e.g. the default `C:\Program Files\nodejs\node.exe`)
+    // the same way it does for execPath/FLEET_SE_NODE.
+    const configuredNodePath = typeof deps.configuredNodePath === 'string' ? deps.configuredNodePath.trim() : '';
+    if (configuredNodePath.length > 0) {
+        const version = probeVersion(exec, platform, configuredNodePath, ['--version']);
+        if (version === null) {
+            throw new SprintRunnerResolutionError(
+                `Recorded node path ${JSON.stringify(configuredNodePath)} does not resolve to a usable Node.js runtime ` +
+                `(probed '${configuredNodePath} --version' and it failed, or returned no parseable version). ` +
+                `Fix the recorded toolchain (reinstall, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with). ${SPRINT_RUNNER_FIX_LINE}`,
+            );
+        }
+        if (compareVersions(version, MIN_NODE_VERSION) < 0) {
+            throw new SprintRunnerResolutionError(
+                `Recorded node path ${JSON.stringify(configuredNodePath)} resolved to Node.js ${version}, ` +
+                `which is older than the required ${MIN_NODE_VERSION}. Fix the recorded toolchain (reinstall, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with). ${SPRINT_RUNNER_FIX_LINE}`,
+            );
+        }
+        return { command: configuredNodePath, source: SPRINT_RUNNER_SOURCE.CONFIGURED, version };
+    }
+
     const candidates = [];
 
-    // Tier 2: this process's own execPath -- only when it is a real Node.js
+    // Tier 3: this process's own execPath -- only when it is a real Node.js
     // runtime, i.e. NOT a single-executable app. Never fall back to
     // process.execPath when isSea() is true: that silent fallback IS the bug
     // this module exists to fix.
@@ -276,7 +326,7 @@ export function resolveSprintRunnerCommand(deps = {}) {
         candidates.push(`current runtime (${execPath}) -- skipped: running as a single-executable binary (node:sea isSea() is true)`);
     }
 
-    // Tier 3: node resolved from PATH, gated at >= MIN_NODE_VERSION.
+    // Tier 4: node resolved from PATH, gated at >= MIN_NODE_VERSION.
     const pathVersion = probeVersion(exec, platform, 'node', ['--version']);
     if (pathVersion === null) {
         candidates.push("'node' on PATH -- not found");
