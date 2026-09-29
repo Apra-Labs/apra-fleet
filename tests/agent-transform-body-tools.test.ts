@@ -189,7 +189,13 @@ describe('the Claude path is not regressed by the conditional mechanism', () => 
       const output = transformAgentForClaude(content, `${role}.md`);
       expect(output).toMatch(/^## Step 0[a-z]? -- Knowledge Bank/m);
       // The discovery step and its query survive intact on the Claude path.
-      const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(output);
+      // Case-insensitive on the verb: this assertion is about the conditional-marker
+      // transform not eating the if-branch query, NOT about how the sentence is
+      // phrased. The five wrapper-injection roles whose KB step is deliberately
+      // optional (apra-fleet-9jmc.3.1) word it mid-sentence as "... run ToolSearch
+      // with query", so a capital-R-only match would fail them for the wrong reason
+      // -- their optional phrasing is pinned in agent-contracts-kb-wiring.test.ts.
+      const query = /[Rr]un ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(output);
       expect(query, `${role}: Claude output lost its Step 0 tool-discovery query`).not.toBeNull();
       expect(query![1]).toContain('mcp__apra-fleet__kb_');
       // Every KB tool the source names is still named after transformation.
