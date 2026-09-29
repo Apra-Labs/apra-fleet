@@ -182,6 +182,44 @@ describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
         assert.equal(result.source, SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME);
     });
 
+    test('apra-fleet-i9ag.19.24: an async exec handed to resolveSprintRunnerCommand() FAILS LOUDLY, never silently returns { version: undefined }', () => {
+        // resolveSprintRunnerCommand() is a synchronous-only caller of the
+        // shared probeVersion() helper (node-version.mjs) -- it never passes
+        // { async: true }. Before this fix, an async `exec` (only reachable
+        // via test/dependency injection, never in production) would make
+        // probeVersion() return its in-flight Promise itself; destructuring
+        // `{ version }` off that Promise silently reads `undefined` (not
+        // `=== null`), which the null-guard then treated as a SUCCESS. The
+        // fix makes probeVersion() throw ProbeVersionAsyncContractError the
+        // instant a thenable result is observed by a caller that never
+        // opted into the async contract, so this must fail loudly instead.
+        const asyncExec = async () => 'v22.16.0\n';
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: { FLEET_SE_NODE: '/custom/node' },
+                execPath: '/usr/bin/node-under-test',
+                isSea: () => false,
+                exec: asyncExec,
+                platform: 'linux',
+            }),
+            (err) => {
+                assert.equal(err.name, 'ProbeVersionAsyncContractError');
+                assert.ok(
+                    !(err instanceof SprintRunnerResolutionError),
+                    'must NOT be a SprintRunnerResolutionError -- api.mjs maps that type to an HTTP 503 ' +
+                    '("no runtime found"), and this contract violation must surface as an unmistakable ' +
+                    'crash rather than being silently absorbed into that user-facing path',
+                );
+                assert.match(
+                    err.message,
+                    /did not opt into the async contract/,
+                    'message must name the actual defect (unopted-into async contract), not just "it threw"',
+                );
+                return true;
+            },
+        );
+    });
+
     test('nothing in node-runner.mjs imports from outside packages/apra-fleet-se', async () => {
         const fs = await import('node:fs/promises');
         const url = await import('node:url');

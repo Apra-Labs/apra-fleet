@@ -388,7 +388,13 @@ export async function validateRecordedToolchain(deps = {}) {
     // `bdProbePromise` is `null` (never even started) when nothing was
     // recorded for bd at all -- exactly the existing "only the node probe
     // ran" contract, unaffected by running concurrently.
-    const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true };
+    // apra-fleet-i9ag.19.24: `async: true` -- this module's own `exec`
+    // (default or injected) always returns a thenable, so this is the one
+    // caller that genuinely opts into probeVersion()'s async contract (see
+    // ./node-version.mjs's file header). Without this, probeVersion() would
+    // throw ProbeVersionAsyncContractError the instant either probe's exec
+    // resolved, since node-runner.mjs's sync-only contract is the default.
+    const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true, async: true };
     const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version'], probeOptions);
     // apra-fleet-i9ag.19.30: probe bd THROUGH the recorded node (see
     // withNodeFirstBdExec()'s doc comment) so a node-less service PATH

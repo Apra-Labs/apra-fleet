@@ -176,12 +176,31 @@ describe('apra-fleet-i9ag.19.16: probeVersion failure surfacing', () => {
             if (file === 'node') return 'v22.16.0\n';
             throw new Error(`spawn ENOENT: ${file}`);
         };
-        const ok = probeVersion(exec, 'linux', 'node', ['--version'], {});
+        // apra-fleet-i9ag.19.24: the thenable half of the dual contract now
+        // requires an explicit { async: true } opt-in -- without it,
+        // probeVersion() throws ProbeVersionAsyncContractError rather than
+        // silently returning the in-flight Promise as if it were the result
+        // object (see node-version.mjs's file header and the dedicated
+        // apra-fleet-i9ag.19.24 case in test/i9ag15-node-runner.test.mjs for
+        // the loud-failure side of this contract).
+        const ok = probeVersion(exec, 'linux', 'node', ['--version'], { async: true });
         assert.ok(typeof ok.then === 'function', 'an async exec must yield a genuine Promise, not a plain object');
         assert.deepEqual(await ok, { version: '22.16.0', incomplete: null });
 
-        const failed = probeVersion(exec, 'linux', 'missing', ['--version'], {});
+        const failed = probeVersion(exec, 'linux', 'missing', ['--version'], { async: true });
         assert.deepEqual(await failed, { version: null, incomplete: null });
+    });
+
+    test('apra-fleet-i9ag.19.24: an async exec handed to probeVersion() WITHOUT { async: true } throws ProbeVersionAsyncContractError, never a silent success', () => {
+        const exec = async () => 'v22.16.0\n';
+        assert.throws(
+            () => probeVersion(exec, 'linux', 'node', ['--version'], {}),
+            (err) => {
+                assert.equal(err.name, 'ProbeVersionAsyncContractError');
+                assert.match(err.message, /did not opt into the async contract/);
+                return true;
+            },
+        );
     });
 });
 

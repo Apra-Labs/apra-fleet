@@ -60,6 +60,30 @@
 // test/i9ag19-9-toolchain.test.mjs keep observing the exact same sequence of
 // `exec()` calls and settle at the exact same wall-clock point as before.
 //
+// apra-fleet-i9ag.19.24 -- CLOSING THE ONE UNGUARDED INPUT SHAPE: before this,
+// the sync-vs-async branch above was inferred ENTIRELY from what `exec(...)`
+// happened to return (thenable or not), with no explicit signal from the
+// caller at all. That is fine for the two REAL call sites (node-runner.mjs's
+// default exec is execFileSync-based and never thenable; toolchain.mjs's
+// default exec is execFileAsync-based and always thenable) -- but node-runner.mjs's
+// `resolveSprintRunnerCommand()` destructures `const { version } =
+// sharedProbeVersion(...)` synchronously, un-awaited, exactly as its own
+// contract requires. If a TEST (the only place `deps.exec` is ever injected;
+// no production path constructs one) ever handed it an async exec by
+// mistake, `probeVersion()` would happily return the in-flight Promise
+// ITSELF as if it were the `{ version, incomplete }` result object --
+// destructuring a Promise's `.version` property is simply `undefined`, which
+// is NOT `=== null`, so every caller's own null-guard would pass and
+// resolution would return `{ command, source, version: undefined }` as a
+// SILENT SUCCESS instead of the loud `SprintRunnerResolutionError` the exact
+// same input produced before the apra-fleet-i9ag.19.15 dedupe (which turned
+// the injected Promise into `String(Promise)`, parsed no version, and threw).
+// `options.async` (below) closes this: a caller opts into the async contract
+// explicitly, and `probeVersion()` now THROWS a named, loud
+// `ProbeVersionAsyncContractError` the instant `exec(...)` returns a thenable
+// while that opt-in is absent -- never silently returning an
+// under-specified result for the caller to misinterpret as success.
+//
 // `retry` (in the `options` bag, default `false`) is the only behavioral
 // switch a caller opts into:
 //   - unset/false (node-runner.mjs's tiers 1/3/4 contract): a single
@@ -77,9 +101,27 @@
 //     "could not be probed" message, so a retry-opted-in caller never has to
 //     hand-copy that sentence.
 //
-// This is a pure dedupe, not a redesign: every existing pre-this-task test
-// for both `resolveSprintRunnerCommand()` and `validateRecordedToolchain()`
-// passes unmodified against this module.
+// `async` (in the `options` bag, default `false`, apra-fleet-i9ag.19.24) is
+// the explicit opt-in into the thenable half of the dual contract described
+// above:
+//   - unset/false (node-runner.mjs's contract, every tier): `exec(...)` is
+//     expected to resolve synchronously. If it ever returns a thenable
+//     anyway, `probeVersion()` throws `ProbeVersionAsyncContractError`
+//     immediately, synchronously, rather than returning that Promise as if
+//     it were the `{ version, incomplete }` result object.
+//   - `true` (toolchain.mjs's contract, both its node and bd probes): a
+//     thenable `exec(...)` result is expected and awaited exactly as before;
+//     a caller opting in this way is unaffected by the new check in every
+//     way -- a synchronous (non-thenable) result under `{ async: true }`
+//     still flows through `onSuccess()` exactly as it always has, so
+//     toolchain.mjs's own synchronous test fakes keep working unmodified.
+//
+// This was a pure dedupe with no behavioral change for the two original
+// callers (apra-fleet-i9ag.19.15); apra-fleet-i9ag.19.24 above is the one
+// deliberate behavioral addition since -- every pre-existing test for both
+// `resolveSprintRunnerCommand()` and `validateRecordedToolchain()` still
+// passes unmodified, because neither ever exercised the one input shape this
+// closes (a sync caller handed a thenable exec with no async opt-in).
 //
 // Everything here is a pure function of its arguments -- no filesystem, no
 // real `child_process` import -- matching both original copies' contract.
@@ -137,6 +179,30 @@ export function compareVersions(a, b) {
 export function quoteForWindowsShell(token) {
     if (!/\s/.test(token)) return token;
     return `"${token.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Thrown by `probeVersion()` (apra-fleet-i9ag.19.24) when `exec(...)` returns
+ * a thenable (a Promise) but the caller did not opt into the async contract
+ * via `{ async: true }`. See this module's own file-level doc comment
+ * ("PROBEVERSION'S DUAL CONTRACT" / the apra-fleet-i9ag.19.24 section) for
+ * the full rationale: without this, a synchronous caller (node-runner.mjs's
+ * `resolveSprintRunnerCommand()`) accidentally handed an async `exec` would
+ * destructure `{ version: undefined }` from the in-flight Promise itself and
+ * silently treat that as a SUCCESS, rather than the loud resolution failure
+ * the identical input produced before probeVersion() was deduped into this
+ * shared module. Deliberately a DIFFERENT error type from
+ * `SprintRunnerResolutionError` (node-runner.mjs) -- this is a programmer/
+ * test-harness contract violation, never a legitimate "no runtime found"
+ * outcome, and must never be caught by api.mjs's `instanceof
+ * SprintRunnerResolutionError` 503-mapping check; it is meant to surface as
+ * an unmistakable crash.
+ */
+export class ProbeVersionAsyncContractError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ProbeVersionAsyncContractError';
+    }
 }
 
 /**
@@ -211,19 +277,41 @@ export function formatIncompleteProbeProblem(label, recordedPath, incomplete, ti
  * See this module's file-level doc comment for the full sync-vs-async and
  * retry-vs-no-retry contract this function serves for its two callers.
  *
+ * SYNC VS. ASYNC CONTRACT (apra-fleet-i9ag.19.24 -- read before injecting a
+ * custom `exec`): whether this function returns a plain object or a Promise
+ * is controlled by `options.async`, NOT merely inferred from what `exec(...)`
+ * happens to return:
+ *   - `options.async` unset/`false` (node-runner.mjs's contract, EVERY
+ *     tier): `exec(...)` MUST resolve synchronously. If it ever returns a
+ *     thenable anyway (a caller/test mistake -- no production `exec` does
+ *     this), `probeVersion()` throws `ProbeVersionAsyncContractError`
+ *     immediately and synchronously, rather than returning that Promise as
+ *     if it were the `{ version, incomplete }` result object (which a
+ *     careless `const { version } = probeVersion(...)` destructure would
+ *     read as `undefined` -- NOT `=== null` -- and silently treat as
+ *     success).
+ *   - `options.async: true` (toolchain.mjs's contract, opted into by BOTH
+ *     its node and bd probes): `exec(...)` is expected to return a thenable,
+ *     and this function itself returns a genuine `Promise` of the result. A
+ *     synchronous (non-thenable) `exec(...)` return under this option is
+ *     still accepted unchanged -- opting into async only relaxes the
+ *     contract, it never requires a thenable.
+ *
  * @param {(file: string, args: string[], options?: object) => string|Buffer|Promise<string|Buffer>} exec
  * @param {NodeJS.Platform} platform
  * @param {string} file
  * @param {string[]} args
- * @param {{ timeoutMs?: number, retry?: boolean }} [options]
+ * @param {{ timeoutMs?: number, retry?: boolean, async?: boolean }} [options]
  * @returns {{ version: string|null, incomplete: string|null }
  *   | Promise<{ version: string|null, incomplete: string|null }>}
- *   A plain object when `exec` resolves synchronously (node-runner.mjs's
- *   contract); a genuine Promise of the same shape when `exec` returns a
- *   thenable (toolchain.mjs's contract).
+ *   A plain object when `options.async` is unset/false (node-runner.mjs's
+ *   contract); a genuine Promise of the same shape when `options.async` is
+ *   `true` (toolchain.mjs's contract).
+ * @throws {ProbeVersionAsyncContractError} when `exec(...)` returns a
+ *   thenable while `options.async` is not `true`.
  */
 export function probeVersion(exec, platform, file, args, options = {}) {
-    const { timeoutMs, retry = false } = options;
+    const { timeoutMs, retry = false, async = false } = options;
     const isWin32Shell = platform === 'win32';
     const probeTarget = isWin32Shell ? quoteForWindowsShell(file) : file;
     const execOptions = { shell: isWin32Shell, timeout: timeoutMs };
@@ -261,7 +349,26 @@ export function probeVersion(exec, platform, file, args, options = {}) {
         } catch (err) {
             return onFailure(err, attempt);
         }
-        if (result && typeof result.then === 'function') {
+        const isThenable = Boolean(result) && typeof result.then === 'function';
+        if (isThenable && !async) {
+            // apra-fleet-i9ag.19.24: a genuine, synchronous THROW -- never a
+            // rejected Promise (that would still let a synchronous caller's
+            // un-awaited destructure silently read `undefined`) and never
+            // folded into onFailure()'s "not usable" result shape (that
+            // would still be swallowed by a caller's `=== null` guard as a
+            // legitimate probe failure rather than a contract violation).
+            // See ProbeVersionAsyncContractError's own doc comment for why
+            // this must be a distinct error type from
+            // SprintRunnerResolutionError.
+            throw new ProbeVersionAsyncContractError(
+                `probeVersion(): exec(${JSON.stringify(probeTarget)}, ...) returned a thenable (Promise) but ` +
+                `the caller did not opt into the async contract via { async: true }. This caller's contract is ` +
+                `synchronous-only (see node-version.mjs's file header); an async exec would otherwise make it ` +
+                `silently destructure { version: undefined } as a success. Pass { async: true } if this call ` +
+                `site genuinely wants the async contract, or fix the injected exec to resolve synchronously.`,
+            );
+        }
+        if (isThenable) {
             return result.then(onSuccess, (err) => onFailure(err, attempt));
         }
         return onSuccess(result);
