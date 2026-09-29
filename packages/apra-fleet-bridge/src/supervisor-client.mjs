@@ -93,6 +93,8 @@ function isRelaunchGateConflict(body) {
  *   postSprint: (body: object) => Promise<object>,
  *   stopSprint: (sprintId: string) => Promise<object|boolean>,
  *   getLog: (sprintId: string, opts?: { tail?: number }) => Promise<string>,
+ *   getActivityOutput: (sprintId: string, activityId: string) => Promise<object|null>,
+ *   getExtensionDetail: (sprintId: string, extId: string, itemId: string) => Promise<object|null>,
  *   forceRelease: (sprintId: string, opts?: { by?: string, reason?: string }) => Promise<object|boolean>,
  * }}
  */
@@ -346,6 +348,31 @@ export function createSupervisorClient(opts = {}) {
     throw unmappedError(status, text);
   }
 
+  /**
+   * GET /sprints/:id/live/activities/:activityId/output -- the FULL output of
+   * one activity of a running sprint, which the lean /state payload carries
+   * only truncated. `{ id, output?, error? }`. 404 (no such activity, or the
+   * sprint's child is gone) is an answer, not a failure: returns null.
+   */
+  async function getActivityOutput(sprintId, activityId) {
+    const { status, json, text } = await request(`/sprints/${encodeURIComponent(sprintId)}/live/activities/${encodeURIComponent(activityId)}/output`);
+    if (status === 404) return null;
+    if (status >= 200 && status < 300) return json ?? null;
+    throw unmappedError(status, text);
+  }
+
+  /**
+   * GET /sprints/:id/live/extensions/:extId/detail/:itemId -- one
+   * extension item's on-demand detail (e.g. a bead description) for a
+   * running sprint. `{ id, text, updatedAt }`. 404 returns null.
+   */
+  async function getExtensionDetail(sprintId, extId, itemId) {
+    const { status, json, text } = await request(`/sprints/${encodeURIComponent(sprintId)}/live/extensions/${encodeURIComponent(extId)}/detail/${encodeURIComponent(itemId)}`);
+    if (status === 404) return null;
+    if (status >= 200 && status < 300) return json ?? null;
+    throw unmappedError(status, text);
+  }
+
   // -- cleanup calls: swallow and log, return false -------------------------
 
   /** POST /api/sprints/:id/stop. Cleanup-class: never throws. */
@@ -389,6 +416,8 @@ export function createSupervisorClient(opts = {}) {
     postSprint,
     stopSprint,
     getLog,
+    getActivityOutput,
+    getExtensionDetail,
     forceRelease,
   };
 }

@@ -558,3 +558,24 @@ describe('getLog', () => {
     assert.strictEqual(result, null);
   });
 });
+
+// -- live per-item detail (the public viewer's mirrored files) ----------------
+
+describe('getActivityOutput / getExtensionDetail', () => {
+  test('read the live routes, with every path segment encoded', async () => {
+    const fetchImpl = makeFakeFetch((url) => jsonRes(200, url.includes('/activities/') ? { id: 'a 1', output: 'full' } : { id: 'b/1', text: 'desc', updatedAt: 't' }));
+    const client = createSupervisorClient({ baseUrl: BASE, fetch: fetchImpl, readTokenFile: () => null });
+    assert.deepStrictEqual(await client.getActivityOutput('run 1', 'a 1'), { id: 'a 1', output: 'full' });
+    assert.deepStrictEqual(await client.getExtensionDetail('run 1', 'beads', 'b/1'), { id: 'b/1', text: 'desc', updatedAt: 't' });
+    assert.strictEqual(fetchImpl.calls[0].url, `${BASE}/sprints/run%201/live/activities/a%201/output`);
+    assert.strictEqual(fetchImpl.calls[1].url, `${BASE}/sprints/run%201/live/extensions/beads/detail/b%2F1`);
+  });
+
+  test('a 404 is an answer (null), a 5xx is thrown', async () => {
+    const notFound = createSupervisorClient({ baseUrl: BASE, fetch: makeFakeFetch(() => jsonRes(404, { error: 'x' })), readTokenFile: () => null });
+    assert.strictEqual(await notFound.getActivityOutput('r', 'a'), null);
+    assert.strictEqual(await notFound.getExtensionDetail('r', 'beads', 'b'), null);
+    const down = createSupervisorClient({ baseUrl: BASE, fetch: makeFakeFetch(() => jsonRes(503, { error: 'x' })), readTokenFile: () => null });
+    await assert.rejects(down.getActivityOutput('r', 'a'), /HTTP 503/);
+  });
+});

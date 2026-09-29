@@ -614,6 +614,7 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
   // The public blob viewer's live state (sprints/<id>/state.json), published
   // to the same container as the log. watch.mjs runs it only when the gate
   // keeps the shared sinks, so the claim holder is its single writer.
+  const supervisorClient = await ctx.supervisorClient(flags);
   const liveStatePublisher = blob
     ? createLiveStatePublisher({
       accountUrl: blob.accountUrl,
@@ -622,11 +623,14 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
       http: ctx.blobHttp(),
       now: ctx.clock.now,
       log: ctx.log,
+      // The per-item files the viewer's "more..." and detail clicks read.
+      fetchActivityOutput: (id, activityId) => supervisorClient.getActivityOutput(id, activityId),
+      fetchExtensionDetail: (id, extId, itemId) => supervisorClient.getExtensionDetail(id, extId, itemId),
     })
     : null;
 
   return {
-    supervisorClient: await ctx.supervisorClient(flags),
+    supervisorClient,
     sinks,
     liveStatePublisher,
     spool: await ctx.spool(flags),
