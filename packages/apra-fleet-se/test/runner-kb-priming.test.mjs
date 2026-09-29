@@ -902,15 +902,21 @@ describe('regression tripwire: every in-repo engine kb_* call carries a scope ke
         // these four tools resolve a LOCAL filesystem repo path in their own
         // implementation, so repo_remote_url alone cannot tell them which
         // directory to use -- the guard still refuses them without repo_path/repo.
-        // Keep this set in sync with the guard's own list; a call site that
-        // passed only repo_remote_url to one of these would pass a looser
-        // tripwire here and then fail in production with repo_scope_required.
+        // Keep this set in sync with the guard's own list (cross-checked against the
+        // real, exported set by tests/knowledge/kb-scope-guard.test.ts, since this
+        // workspace cannot import the TS module directly without coupling to the root
+        // dist build) -- a call site that passed only repo_remote_url to one of these
+        // would pass a looser tripwire here and then fail in production with
+        // repo_scope_required.
         const NEEDS_LOCAL_REPO_PATH = new Set(['kb_export', 'kb_import', 'kb_stats', 'kb_session_prime']);
 
         for (const c of kbCalls) {
-            const hasPath = (typeof c.args?.repo_path === 'string' && c.args.repo_path.length > 0)
-                || (typeof c.args?.repo === 'string' && c.args.repo.length > 0);
-            const hasRemote = typeof c.args?.repo_remote_url === 'string' && c.args.repo_remote_url.length > 0;
+            // trim() matches the guard's own present() semantics (kb-scope-guard.ts):
+            // a whitespace-only repo_path/repo passes production's tripwire only to be
+            // refused server-side, so this copy must treat it as absent too.
+            const hasPath = (typeof c.args?.repo_path === 'string' && c.args.repo_path.trim().length > 0)
+                || (typeof c.args?.repo === 'string' && c.args.repo.trim().length > 0);
+            const hasRemote = typeof c.args?.repo_remote_url === 'string' && c.args.repo_remote_url.trim().length > 0;
             const acceptsRemote = !NEEDS_LOCAL_REPO_PATH.has(c.name);
             const scoped = hasPath || (acceptsRemote && hasRemote);
             const how = acceptsRemote

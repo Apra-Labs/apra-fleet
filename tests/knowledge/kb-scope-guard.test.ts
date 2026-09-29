@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { registerAllTools } from '../../src/services/tool-registry.js';
-import { kbScopeRefusal, KB_SCOPE_REQUIRED_REASON } from '../../src/services/knowledge/kb-scope-guard.js';
+import {
+  kbScopeRefusal,
+  KB_SCOPE_REQUIRED_REASON,
+  NEEDS_LOCAL_REPO_PATH,
+} from '../../src/services/knowledge/kb-scope-guard.js';
 import { FLEET_DIR } from '../../src/paths.js';
 
 // Server-handled kb_* calls must name their repo. The fleet server is one
@@ -100,7 +104,7 @@ describe('kbScopeRefusal()', () => {
     expect(kbScopeRefusal('kb_capture', { repo_remote_url: 'git@example.com:acme/widgets.git' })).toBeNull();
   });
 
-  it.each(['kb_export', 'kb_import', 'kb_stats', 'kb_session_prime'])(
+  it.each([...NEEDS_LOCAL_REPO_PATH])(
     '%s needs a local repo path: repo_remote_url alone is refused',
     (name) => {
       const r = kbScopeRefusal(name, { repo_remote_url: 'https://example.com/acme/widgets.git' });
@@ -139,5 +143,29 @@ describe('CLI `apra-fleet kb invalidate` still resolves the project from cwd', (
     });
     expect(out).toContain('Invalidated 0 entries.');
     expect(fs.existsSync(path.join(data, 'knowledge', 'githubcom-acme-cli-scope-probe', 'kb.sqlite'))).toBe(true);
+  });
+});
+
+// apra-fleet-b4g.39: packages/apra-fleet-se/test/runner-kb-priming.test.mjs runs under
+// node:test in a separate npm workspace and cannot import this TS module directly
+// (that would couple its tests to the root dist build), so it keeps its own literal
+// copy of NEEDS_LOCAL_REPO_PATH, held in sync only by a comment. Rather than accept
+// that silent-drift risk, this reads the .mjs source and cross-checks its literal
+// against this file's real, exported set -- so a tool added to one and not the other
+// fails a test instead of quietly reopening the hole apra-fleet-b4g.36 closed.
+describe('the apra-fleet-se workspace copy of NEEDS_LOCAL_REPO_PATH stays in sync', () => {
+  it('runner-kb-priming.test.mjs literal matches the guard\'s exported set', () => {
+    const mjsPath = path.join(
+      process.cwd(),
+      'packages',
+      'apra-fleet-se',
+      'test',
+      'runner-kb-priming.test.mjs',
+    );
+    const source = fs.readFileSync(mjsPath, 'utf-8');
+    const m = /NEEDS_LOCAL_REPO_PATH\s*=\s*new Set\(\[([^\]]*)\]\)/.exec(source);
+    expect(m, 'runner-kb-priming.test.mjs no longer declares its NEEDS_LOCAL_REPO_PATH copy in the expected shape -- update this cross-check alongside that change').not.toBeNull();
+    const copy = [...m![1].matchAll(/'([^']+)'/g)].map((mm) => mm[1]).sort();
+    expect(copy).toEqual([...NEEDS_LOCAL_REPO_PATH].sort());
   });
 });

@@ -24,7 +24,16 @@ export const KB_SCOPE_REQUIRED_CODE = 'E-REPO-SCOPE-REQUIRED';
 // Tools whose own implementation resolves a LOCAL filesystem repo path (bible
 // read/write, drift, cold-seed). repo_remote_url alone cannot tell them which
 // directory to use, so they need repo_path (or its `repo` alias).
-const NEEDS_LOCAL_REPO_PATH = new Set(['kb_export', 'kb_import', 'kb_stats', 'kb_session_prime']);
+//
+// Exported so every copy of this set (tests/knowledge/kb-scope-guard.test.ts,
+// packages/apra-fleet-se/test/runner-kb-priming.test.mjs) can assert against
+// this one source of truth instead of drifting literals -- see apra-fleet-b4g.39.
+export const NEEDS_LOCAL_REPO_PATH: ReadonlySet<string> = new Set([
+  'kb_export',
+  'kb_import',
+  'kb_stats',
+  'kb_session_prime',
+]);
 
 export interface KbScopeRefusal {
   [key: string]: unknown;
