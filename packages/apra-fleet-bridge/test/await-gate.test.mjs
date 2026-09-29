@@ -515,3 +515,77 @@ describe('source-scan guard (FIX 5)', () => {
     );
   });
 });
+
+// -- a transient supervisor error while polling is waited out, not fatal --------
+//
+// Observed live: launch polled the sprint in the second after spawn, before
+// its dashboard bound a port; the supervisor answered 500 and launch exited 8
+// (infrastructure) while the sprint ran fine -- a red pipeline for a healthy
+// sprint. A 5xx or a connection failure is a temporary condition of a real
+// sprint and is polled through until the gate's own timeout.
+
+function supervisorDown(status) {
+  return () => {
+    throw new BridgeError(
+      BRIDGE_ERROR_CODES.SUPERVISOR_UNAVAILABLE,
+      status ? `supervisor returned HTTP ${status}: {"error":"x"}` : 'supervisor unreachable: connect ECONNREFUSED 127.0.0.1:8787',
+      status ? { status } : {},
+    );
+  };
+}
+
+describe('transient supervisor errors while polling', () => {
+  const reachedPlan = liveSprint({ extensions: { plan: planExtension({ planningRounds: 1, verdict: 'CHANGES_NEEDED' }) } });
+
+  test('a 500 and a 503 before the milestone are polled through', async () => {
+    const client = makeFakeSupervisorClient([supervisorDown(500), supervisorDown(503), reachedPlan]);
+    const clock = makeFakeClock();
+    const result = await awaitMilestone(HANDLE, parseAwaitUntil('plan-round'), {
+      supervisorClient: client, sleep: clock.sleep, now: clock.now,
+    }, { timeoutMs: 100000 });
+    assert.strictEqual(result.outcome, 'reached');
+    assert.strictEqual(client.calls.length, 3);
+  });
+
+  test('a connection failure (no HTTP status) is polled through too', async () => {
+    const client = makeFakeSupervisorClient([supervisorDown(null), reachedPlan]);
+    const clock = makeFakeClock();
+    const result = await awaitMilestone(HANDLE, parseAwaitUntil('plan-round'), {
+      supervisorClient: client, sleep: clock.sleep, now: clock.now,
+    }, { timeoutMs: 100000 });
+    assert.strictEqual(result.outcome, 'reached');
+  });
+
+  test('a supervisor that never recovers ends in timeout, naming the last error', async () => {
+    const client = makeFakeSupervisorClient([supervisorDown(503)]);
+    const clock = makeFakeClock();
+    const result = await awaitMilestone(HANDLE, parseAwaitUntil('plan-round'), {
+      supervisorClient: client, sleep: clock.sleep, now: clock.now,
+    }, { timeoutMs: 30000 });
+    assert.strictEqual(result.outcome, 'timeout');
+    assert.match(result.reason, /HTTP 503/, 'the timeout must say the supervisor was failing, not that the milestone was merely slow');
+  });
+
+  test('a non-transient supervisor error (4xx) still fails at once', async () => {
+    const client = makeFakeSupervisorClient([supervisorDown(401), reachedPlan]);
+    const clock = makeFakeClock();
+    await assert.rejects(
+      awaitMilestone(HANDLE, parseAwaitUntil('plan-round'), {
+        supervisorClient: client, sleep: clock.sleep, now: clock.now,
+      }, { timeoutMs: 100000 }),
+      /HTTP 401/,
+    );
+    assert.strictEqual(client.calls.length, 1);
+  });
+
+  test('an error that is not a supervisor error (a defect) still fails at once', async () => {
+    const client = makeFakeSupervisorClient([() => { throw new TypeError('boom'); }, reachedPlan]);
+    const clock = makeFakeClock();
+    await assert.rejects(
+      awaitMilestone(HANDLE, parseAwaitUntil('plan-round'), {
+        supervisorClient: client, sleep: clock.sleep, now: clock.now,
+      }, { timeoutMs: 100000 }),
+      /boom/,
+    );
+  });
+});

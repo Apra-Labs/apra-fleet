@@ -769,6 +769,20 @@ async function runArchiveExport(sprintId, sprint, d) {
     || (result && Array.isArray(result.failures) && result.failures.length > 0
       ? `${result.failures.length} of ${result.attempted} file(s) failed; first: ${result.failures[0].path} (${result.failures[0].reason})`
       : 'no files were uploaded');
+  // The advice must match the stage that failed. A bundle that could not be
+  // built never reached storage, so pointing at the SAS sends the operator
+  // after the one thing that is fine (observed live, on a killed sprint).
+  const fixLines = result && result.stage === 'bundle'
+    ? [
+      '  Fix: the supervisor returned no engine state for this sprint, so there was nothing to render.',
+      '  It ended before recording one, or an older supervisor answered from history alone (it',
+      '  does not return a released sprint\'s persisted state). Update the supervisor, then re-run',
+      '  finalize for this sprint -- the export overwrites and is safe to repeat.',
+    ]
+    : [
+      '  Fix: check the SAS expiry and write permission (the archive needs create/write on the container),',
+      '  then re-run finalize for this sprint -- the export overwrites and is safe to repeat.',
+    ];
   d.log([
     rule,
     `  SPRINT ARCHIVE EXPORT FAILED: ${sprintId}`,
@@ -777,8 +791,7 @@ async function runArchiveExport(sprintId, sprint, d) {
     '  An archive destination IS configured, so this is a real failure, not a skipped optional step.',
     '  The sprint result itself is unaffected: carry-over and the final comment are unchanged,',
     '  and the local JSONL mirror remains the complete record of this sprint.',
-    '  Fix: check the SAS expiry and write permission (the archive needs create/write on the container),',
-    '  then re-run finalize for this sprint -- the export overwrites and is safe to repeat.',
+    ...fixLines,
     rule,
   ].join('\n'));
   return result;

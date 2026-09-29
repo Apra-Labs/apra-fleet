@@ -34,8 +34,9 @@
 // -----------------------------------------------------------------------------
 //
 // 1. PER-SPRINT ISOLATION. Every sprint's worker runs inside its own
-//    try/catch (`runWorker`); a thrown error there is captured into
-//    `spool.fail()` and logged, never allowed to reach the scan loop or any
+//    try/catch (`runWorker`); a thrown error there is recorded as a
+//    scheduled retry (`watchError`, never a terminal state -- see
+//    TERMINAL_STATES) and logged, never allowed to reach the scan loop or any
 //    other sprint's worker. `scanOnce()` wraps each spool entry's own
 //    consideration in a try/catch too, so a single malformed/corrupt entry
 //    (the spool module already quarantines genuinely corrupt files on disk,
@@ -58,7 +59,7 @@
 //
 // 3. RESTART RECOVERY. `start()` runs exactly one scan (`scanOnce`) to
 //    completion BEFORE returning -- this IS the recovery pass: it lists
-//    every non-terminal (not completed/failed) spool entry, and for each:
+//    every non-terminal (not completed) spool entry, and for each:
 //      - already being tracked by THIS daemon instance -> left alone (no-op);
 //      - carrying a claim whose owner `deps.isAlive()` reports alive (or
 //        unresolvable, see 2 above) -> left alone, owned elsewhere;
@@ -124,11 +125,34 @@ import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
 /** Default cadence for the spool scan, per fleet-bridge-implementation-plan.md Part B. */
 export const DEFAULT_SCAN_INTERVAL_MS = 10 * 1000; // 10s
 
-/** Spool doc states this daemon never (re-)claims or works. */
-const TERMINAL_STATES = Object.freeze(['completed', 'failed']);
+/**
+ * Spool doc states this daemon never (re-)claims or works.
+ *
+ * WHY 'failed' IS NOT HERE. A worker throwing means the BRIDGE could not
+ * watch or finalize the sprint -- a fleet server restart, a supervisor
+ * outage, a tracker 5xx -- never that the SPRINT ended. It used to be written
+ * as terminal 'failed', and observed live that orphaned a healthy running
+ * sprint for good: one routine redeploy, and nothing ever watched it,
+ * mirrored its log, finalized it or published its carry-over, silently. A
+ * worker failure now schedules a retry instead (see WORKER_RETRY_*), and a
+ * 'failed' doc left by an older daemon -- this daemon was the only writer of
+ * that state -- is picked up again like any retry that is due.
+ */
+const TERMINAL_STATES = Object.freeze(['completed']);
 
 function isTerminalState(state) {
   return TERMINAL_STATES.includes(state);
+}
+
+/** First retry delay after a worker failure; doubles per consecutive failure. */
+export const WORKER_RETRY_BASE_MS = 30 * 1000;
+/** Ceiling on the retry delay: a long outage is retried every 15 minutes, never abandoned. */
+export const WORKER_RETRY_MAX_MS = 15 * 60 * 1000;
+
+/** @param {number} attempts consecutive failures so far (>= 1) */
+export function workerRetryDelayMs(attempts) {
+  const n = Math.max(1, Math.floor(attempts));
+  return Math.min(WORKER_RETRY_BASE_MS * 2 ** (n - 1), WORKER_RETRY_MAX_MS);
 }
 
 function safeMessage(err) {
@@ -297,6 +321,10 @@ async function considerDoc(doc, ctx) {
 
   if (ctx.workers.has(sprintId)) return; // already being worked by us
 
+  // A worker failure scheduled a retry; not due yet.
+  const retry = doc.watchError;
+  if (retry && typeof retry.nextAttemptAt === 'number' && retry.nextAttemptAt > ctx.now()) return;
+
   const existingClaim = doc.claim;
   if (existingClaim) {
     let alive;
@@ -360,7 +388,7 @@ function startWorker(doc, ctx) {
 
   const promise = runWorker(doc, record, ctx, controller.signal)
     .catch((err) => {
-      // runWorker() isolates every business failure itself (spool.fail +
+      // runWorker() isolates every business failure itself (scheduled retry +
       // release, see below) and does not rethrow -- reaching this catch
       // means a defect in that isolation itself, which is worth a loud,
       // distinct log line rather than silently vanishing.
@@ -377,7 +405,7 @@ function startWorker(doc, ctx) {
  * Runs one sprint's worker to completion: watch-then-finalize (resuming at
  * watch for any non-`finalizing` recorded state) or finalize-only (resuming
  * at `finalizing`). Never rejects -- every failure is captured, recorded on
- * `record`, reported via `spool.fail()`, and the claim released, so ONE
+ * `record`, recorded as a scheduled retry, and the claim released, so ONE
  * sprint's failure can never affect any other (behaviour 1).
  *
  * `signal` is this worker's own `AbortController.signal` (see
@@ -407,7 +435,13 @@ async function runWorker(doc, record, ctx, signal) {
   try {
     if (!resumeAtFinalizeOnly) {
       record.state = 'watching';
-      await safePatch(sprintId, (draft) => { draft.state = 'watching'; }, ctx);
+      await safePatch(sprintId, (draft) => {
+        draft.state = 'watching';
+        // An older daemon recorded a watcher error as a failed finalize. It
+        // was never a finalize result, and status.mjs reads that field as
+        // "the sprint failed" -- drop it now that the sprint is watched again.
+        if (draft.finalize && draft.finalize.outcome === 'failed') draft.finalize = null;
+      }, ctx);
 
       const snapshot = await ctx.runWatch(handle, signal);
       record.lastSnapshot = snapshot ?? null;
@@ -442,6 +476,9 @@ async function runWorker(doc, record, ctx, signal) {
 
     await ctx.runFinalize(handle);
     record.state = 'completed';
+    if (doc.watchError) {
+      await safePatch(sprintId, (draft) => { delete draft.watchError; }, ctx);
+    }
     // Deliberately no spool.complete() call here -- the real runFinalize
     // already performs it as its own step 7 (finalize.mjs), and a fake
     // runFinalize used in a daemon test is expected to do the same if the
@@ -449,13 +486,33 @@ async function runWorker(doc, record, ctx, signal) {
     // daemon.test.mjs). Duplicating it here would be a second writer to the
     // very field claim/complete exist to protect.
   } catch (err) {
-    record.state = 'failed';
+    // The bridge failed to watch or finalize; the sprint did not end. Keep the
+    // phase it failed in (so finalize-stage failures resume at finalize, never
+    // re-watch a finished sprint) and schedule a retry -- see TERMINAL_STATES.
+    const resumeState = record.state === 'finalizing' ? 'finalizing' : 'watching';
+    const attempts = (doc.watchError && Number.isFinite(doc.watchError.attempts) ? doc.watchError.attempts : 0) + 1;
+    const delayMs = workerRetryDelayMs(attempts);
+    const at = ctx.now();
+    record.state = 'retrying';
     record.error = safeMessage(err);
-    ctx.log(`[daemon] worker for "${sprintId}" failed (isolated -- no other sprint is affected): ${safeMessage(err)}`);
+    ctx.log(
+      `[daemon] worker for "${sprintId}" failed in '${resumeState}' (isolated -- no other sprint is affected; `
+      + `the sprint itself is NOT marked finished): ${safeMessage(err)} -- attempt ${attempts}, `
+      + `retrying in ${Math.round(delayMs / 1000)}s`,
+    );
     try {
-      await ctx.spool.fail(sprintId, err);
+      await ctx.spool.patch(sprintId, (draft) => {
+        draft.state = resumeState;
+        draft.watchError = {
+          message: safeMessage(err),
+          code: err && err.code ? String(err.code) : null,
+          attempts,
+          at,
+          nextAttemptAt: at + delayMs,
+        };
+      });
     } catch (err2) {
-      ctx.log(`[daemon] spool.fail("${sprintId}") itself failed: ${safeMessage(err2)}`);
+      ctx.log(`[daemon] could not record the retry for "${sprintId}" (it is retried on the next scan instead): ${safeMessage(err2)}`);
     }
     try {
       await ctx.spool.release(sprintId);

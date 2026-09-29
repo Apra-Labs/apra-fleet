@@ -595,6 +595,7 @@ export async function runLaunch(opts, deps) {
         supervisorClient: d.supervisorClient,
         sleep: d.sleep,
         now: d.now,
+        log: d.log,
         fetchLogTail: typeof d.supervisorClient.getLog === 'function'
           ? (sprintId) => d.supervisorClient.getLog(sprintId, { tail: DEFAULT_LOG_TAIL_LINES })
           : undefined,

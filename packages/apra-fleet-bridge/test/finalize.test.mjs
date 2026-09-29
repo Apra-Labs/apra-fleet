@@ -906,6 +906,34 @@ describe('runFinalize archive export', () => {
     assert.match(deps.adapter.commentCalls[0], /Archive: export FAILED/);
   });
 
+  // Observed live: a sprint whose process was killed had no engine state in
+  // the supervisor's answer, the bundle could not be built, and the banner
+  // told the operator to check the SAS -- which was fine. The advice has to
+  // match the stage that failed.
+  test('a bundle that could not be built says the state was missing, not to check the SAS', async () => {
+    const logs = [];
+    const deps = baseDeps({
+      log: (m) => logs.push(String(m)),
+      archive: { publish: async () => ({ attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, partial: false, stage: 'bundle', error: 'archive: could not build the bundle: buildArchiveBundle received a malformed `state`: expected an object, got null.' }) },
+    });
+    await runFinalize({ handle: makeHandle(), secretName: 's' }, deps);
+    const banner = logs.find((l) => l.includes('SPRINT ARCHIVE EXPORT FAILED'));
+    assert.ok(banner);
+    assert.doesNotMatch(banner, /SAS/, 'nothing was uploaded, so storage is not the suspect');
+    assert.match(banner, /no engine state/);
+  });
+
+  test('an upload failure still points at the storage credential', async () => {
+    const logs = [];
+    const deps = baseDeps({
+      log: (m) => logs.push(String(m)),
+      archive: { publish: async () => ({ attempted: 4, uploaded: 0, failures: [{ path: 'index.html', reason: 'status 403' }], indexUrl: null, ok: false, partial: false, stage: 'upload', error: null }) },
+    });
+    await runFinalize({ handle: makeHandle(), secretName: 's' }, deps);
+    const banner = logs.find((l) => l.includes('SPRINT ARCHIVE EXPORT FAILED'));
+    assert.match(banner, /SAS/);
+  });
+
   test('a publisher that throws anyway is absorbed and reported, never propagated', async () => {
     const deps = baseDeps({ archive: { publish: async () => { throw new Error('unexpected'); } } });
     const result = await runFinalize({ handle: makeHandle(), secretName: 's' }, deps);

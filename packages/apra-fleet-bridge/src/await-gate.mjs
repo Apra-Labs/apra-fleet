@@ -159,6 +159,18 @@ function planMilestoneReached(spec, planState) {
   }
 }
 
+/**
+ * True for a supervisor failure worth polling through: the supervisor answered
+ * 5xx, or could not be reached at all (SUPERVISOR_UNAVAILABLE with no HTTP
+ * status). A 4xx or any other error is a real answer and stays fatal.
+ * @param {unknown} err @returns {boolean}
+ */
+export function isTransientSupervisorError(err) {
+  if (!(err instanceof BridgeError) || err.code !== BRIDGE_ERROR_CODES.SUPERVISOR_UNAVAILABLE) return false;
+  const status = err.details && Number.isFinite(err.details.status) ? err.details.status : null;
+  return status === null || status >= 500;
+}
+
 function buildTimeoutReason(spec, observedPhaseTitles) {
   const desc = describeSpec(spec);
   let reason = `milestone '${desc}' not reached, now detached`;
@@ -250,10 +262,33 @@ export async function awaitMilestone(handle, spec, deps, opts = {}) {
   const startedAt = now();
   const observedPhaseTitles = new Set();
   let lastSnapshot = null;
+  let lastSupervisorError = null;
 
   for (;;) {
-    // eslint-disable-next-line no-await-in-loop
-    const sprint = await supervisorClient.getSprint(handle.sprintId);
+    let sprint = null;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      sprint = await supervisorClient.getSprint(handle.sprintId);
+      lastSupervisorError = null;
+    } catch (err) {
+      // A 5xx or a connection failure is a temporary condition of a real
+      // sprint -- observed live: the poll in the second after spawn, before
+      // the sprint's dashboard bound its port, got a 500 and launch exited 8
+      // while the sprint ran fine. Poll through it until the gate's own
+      // timeout; anything else (a 4xx, a defect) is still fatal at once.
+      if (!isTransientSupervisorError(err)) {
+        if (err instanceof BridgeError) throw err;
+        throw new BridgeError(
+          BRIDGE_ERROR_CODES.SUPERVISOR_UNAVAILABLE,
+          `reading sprint "${handle.sprintId}" from the supervisor failed unexpectedly: ${err && err.message ? err.message : String(err)}`,
+          { sprintId: handle.sprintId },
+        );
+      }
+      lastSupervisorError = err;
+      if (deps && typeof deps.log === 'function') {
+        deps.log(`[await] supervisor error while polling "${handle.sprintId}" (transient, still waiting): ${err.message}`);
+      }
+    }
     if (sprint) {
       lastSnapshot = sprint;
 
@@ -284,7 +319,10 @@ export async function awaitMilestone(handle, spec, deps, opts = {}) {
     }
 
     if (now() - startedAt >= timeoutMs) {
-      return { outcome: 'timeout', milestone, reason: buildTimeoutReason(spec, observedPhaseTitles), snapshot: lastSnapshot };
+      const reason = lastSupervisorError
+        ? `${buildTimeoutReason(spec, observedPhaseTitles)}; the supervisor was still failing when the wait ran out: ${lastSupervisorError.message}`
+        : buildTimeoutReason(spec, observedPhaseTitles);
+      return { outcome: 'timeout', milestone, reason, snapshot: lastSnapshot };
     }
 
     // eslint-disable-next-line no-await-in-loop

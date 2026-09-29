@@ -15,6 +15,7 @@ import {
   verdictFromSprint,
   prUrlFromSprint,
   spendUsdFromSprint,
+  isSprintTerminal,
   UNKNOWN_PHASE,
 } from '../src/snapshot.mjs';
 import { BridgeError, BRIDGE_ERROR_CODES } from '../src/errors.mjs';
@@ -640,5 +641,45 @@ describe('createPhaseGate', () => {
     const gate = createPhaseGate();
     gate.shouldAnnounce({ phase: 'Plan', cycle: 1 });
     assert.equal(gate.shouldAnnounce({ phase: 'Plan', cycle: 2 }), true);
+  });
+});
+
+// -- isSprintTerminal: finalize's gate, and its agreement with watch ------------
+//
+// Observed live: a sprint whose process was killed was recorded by the
+// supervisor's watchdog as `auto-released` ("classified crashed (pid gone)").
+// watch (toProgressSnapshot) called it terminal; finalize (isSprintTerminal)
+// refused it as "not confirmed finished" -- forever, so it was never
+// finalized and its carry-over never published.
+
+describe('isSprintTerminal', () => {
+  // The exact record the supervisor returned in that run.
+  const killedSprint = {
+    sprintId: 'ado_toy-m9h-eecdc0b3',
+    live: false,
+    history: [{
+      sprintId: 'ado_toy-m9h-eecdc0b3', event: 'auto-released', reason: 'watchdog: classified crashed (pid gone)',
+      by: null, members: ['aztoy'], issueRoots: ['ado_toy-m9h'], at: '2026-09-29T04:02:52.646Z',
+      exitCode: null, signal: null, logPath: null, terminalReason: null, verdict: null,
+    }],
+  };
+  killedSprint.latest = killedSprint.history[0];
+
+  test('a watchdog auto-release (crashed / finished / launch-failed) is terminal', () => {
+    assert.equal(isSprintTerminal(killedSprint), true);
+  });
+
+  test('finalize and watch agree on the killed sprint', () => {
+    assert.equal(isSprintTerminal(killedSprint), toProgressSnapshot(killedSprint).health === 'terminal');
+  });
+
+  test('an operator force-release alone is NOT terminal: the process may still be running', () => {
+    const forced = { sprintId: 's', live: false, history: [{ event: 'force-released', at: '2026-09-29T04:00:00Z' }] };
+    assert.equal(isSprintTerminal(forced), false);
+  });
+
+  test('a live sprint is not terminal, and the supervisor saying terminal is believed', () => {
+    assert.equal(isSprintTerminal({ sprintId: 's', live: true, state: {} }), false);
+    assert.equal(isSprintTerminal({ sprintId: 's', live: false, terminal: true, state: {} }), true);
   });
 });

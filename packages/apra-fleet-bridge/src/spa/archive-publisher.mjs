@@ -111,11 +111,11 @@ export function createArchivePublisher(deps = {}) {
      * @returns {Promise<{
      *   attempted: number, uploaded: number,
      *   failures: Array<{ path: string, reason: string }>,
-     *   indexUrl: string|null, ok: boolean, partial: boolean, error: string|null,
+     *   indexUrl: string|null, ok: boolean, partial: boolean, stage: 'bundle'|'upload'|null, error: string|null,
      * }>}
      */
     async publish({ sprintId, state } = {}) {
-      const empty = { attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, partial: false, error: null };
+      const empty = { attempted: 0, uploaded: 0, failures: [], indexUrl: null, ok: false, partial: false, stage: null, error: null };
       if (typeof sprintId !== 'string' || sprintId.length === 0) {
         return { ...empty, error: 'archive: no sprintId was supplied; nothing was uploaded' };
       }
@@ -126,7 +126,7 @@ export function createArchivePublisher(deps = {}) {
       } catch (err) {
         // A malformed terminal state is worth reporting, never worth
         // failing an otherwise-successful finalize over.
-        return { ...empty, error: `archive: could not build the bundle: ${safeMessage(err)}` };
+        return { ...empty, stage: 'bundle', error: `archive: could not build the bundle: ${safeMessage(err)}` };
       }
 
       const prefix = `${ARCHIVE_PREFIX}/${encodeURIComponent(sprintId)}`;
@@ -193,6 +193,9 @@ export function createArchivePublisher(deps = {}) {
         indexUrl,
         ok,
         partial,
+        // Which stage the result describes, so a caller can give advice that
+        // fits: 'bundle' (nothing reached storage) vs 'upload'.
+        stage: 'upload',
         error: null,
       };
     },

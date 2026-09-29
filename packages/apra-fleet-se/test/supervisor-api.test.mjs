@@ -1011,6 +1011,92 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // The OTHER side of the same closed-port window: a sprint that is live and
+    // NOT terminal, whose child dashboard is not listening yet (the seconds
+    // between spawn and the viewer binding its port) or has just exited ahead
+    // of the watchdog. Observed live: a caller polling right after launch got
+    // the generic 500 and gave up on a sprint that was running fine. It is a
+    // temporary condition of a real sprint, so it is a 503, never a 500.
+    test('GET /api/sprints/:id over HTTP for a live child whose dashboard is not answering is a 503, never the generic 500', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 503);
+        const payload = payloadOf(res);
+        assert.notEqual(payload.error, 'internal supervisor error', 'must say what is wrong, not the generic wrapper text');
+        assert.match(payload.error, /not answering/);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id still surfaces a non-connection proxy failure as an error (not masked as 503)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('child /state returned invalid JSON: Unexpected token'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 500);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // A sprint whose reservation is already released answers from history
+    // only -- and used to carry NO engine state at all, so anything built from
+    // it (fleet-bridge's archived dashboard) failed for every sprint the
+    // watchdog released before the caller got there: every crash, and every
+    // normal finish once the watchdog tick beat the caller. Observed live on a
+    // killed sprint. The engine's final state is still on disk; return it.
+    test('GET /api/sprints/:id for a released sprint returns its persisted final state beside the history', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({ sprintId: 's1', event: 'auto-released', reason: 'watchdog: classified crashed (pid gone)', members: ['a'], issueRoots: ['R'] });
+        const seen = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            readFinalState: (id) => { seen.push(id); return { status: 'failed', terminalReason: 'watchdog: crashed', tree: [] }; },
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, false);
+        assert.equal(out.latest.event, 'auto-released');
+        assert.deepEqual(out.state, { status: 'failed', terminalReason: 'watchdog: crashed', tree: [] });
+        assert.deepEqual(seen, ['s1']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id for a released sprint with no persisted state keeps the history-only shape', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({ sprintId: 's1', event: 'auto-released', reason: 'watchdog: classified crashed (pid gone)', members: ['a'], issueRoots: ['R'] });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            readFinalState: () => null,
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, false);
+        assert.equal('state' in out, false);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('GET /api/sprints lists live reservations with resolved ports', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);

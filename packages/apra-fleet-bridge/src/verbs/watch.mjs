@@ -423,7 +423,7 @@ export async function runWatch(opts, deps) {
   const { supervisorClient, sinkEntries, sleep, now, adapter, spool, log, signal, pid, host } = validateWatchDeps(deps);
 
   const gatedEntries = await applySinkGate(sinkEntries, { sprintId }, { spool, log, pid, host });
-  const sinkFan = createSinkFan({ sinks: gatedEntries, log });
+  const sinkFan = createSinkFan({ sinks: gatedEntries, log, now });
 
   // WHY A HEALTH MONITOR AND NOT JUST THE FAN'S stats(): the fan counts an
   // emit as a success the moment the sink accepts the record, and a

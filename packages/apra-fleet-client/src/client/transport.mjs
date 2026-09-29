@@ -116,6 +116,58 @@ export class StreamableHttpTransport extends EventEmitter {
         this.controller = new AbortController();
         try {
             // 1. Send the initialize request via POST to get session ID
+            await this._initSession();
+
+            // 2. Open the persistent SSE stream via GET using the session ID.
+            // Run it as a self-reconnecting background loop rather than a
+            // single fetch: this stream is normally SILENT (JSON-RPC
+            // responses arrive over each POST's own SSE response, not here),
+            // and Node's built-in fetch (undici) enforces a default
+            // ~300s idle bodyTimeout on response bodies -- so a single-shot
+            // GET stream deterministically dies ~5 minutes into every
+            // session, which used to emit 'close' and reject EVERY in-flight
+            // request (observed live killing auto-sprint runs mid-dispatch,
+            // always at start+~304s). An idle timeout on a keepalive channel
+            // is an expected, recoverable event: quietly reopen the stream
+            // and only surface 'close'/'error' on deliberate stop() or
+            // persistent (5x consecutive) reconnect failure.
+            this._runPersistentStream().catch(() => { /* loop handles its own errors */ });
+
+            this.emit('ready');
+        } catch (error) {
+            this.emit('error', error);
+        }
+    }
+
+    /**
+     * Re-run the initialize handshake after the server has forgotten our
+     * session. A server restart invalidates every session it issued and then
+     * answers any request on one with HTTP 404; the MCP Streamable HTTP rule
+     * is that the client MUST start a new session. Without this, one routine
+     * restart (an `install --force`) left every long-lived client failing
+     * every call forever.
+     *
+     * Single-flight: a burst of concurrent 404s (every in-flight caller hits
+     * the dead session at once) shares ONE handshake instead of opening one
+     * session per request.
+     *
+     * @param {string|null} staleSessionId the session the caller saw rejected;
+     *   if another caller already replaced it, no second handshake is made.
+     */
+    async _resetSession(staleSessionId) {
+        if (this.sessionId !== staleSessionId) return;
+        if (!this._resetting) {
+            this._resetting = this._initSession().finally(() => { this._resetting = null; });
+        }
+        await this._resetting;
+    }
+
+    /** One initialize POST; sets `this.sessionId`. Throws on any failure. */
+    async _initSession() {
+        {
+            // The init POST honours stop() through the controller; a reset
+            // requested after stop() has nothing to reconnect.
+            if (!this.controller) throw new Error('Transport stopped');
             const initMsg = {
                 jsonrpc: '2.0',
                 id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
@@ -145,32 +197,14 @@ export class StreamableHttpTransport extends EventEmitter {
                 throw new Error(`Init POST error! status: ${postResponse.status}`);
             }
 
-            this.sessionId = postResponse.headers.get('mcp-session-id');
-            if (!this.sessionId) {
+            const sessionId = postResponse.headers.get('mcp-session-id');
+            if (!sessionId) {
                 throw new Error('No mcp-session-id returned by server during initialization');
             }
 
             // Read the init response body so fetch doesn't hold the connection
-            const initResponseText = await postResponse.text();
-            
-            // 2. Open the persistent SSE stream via GET using the session ID.
-            // Run it as a self-reconnecting background loop rather than a
-            // single fetch: this stream is normally SILENT (JSON-RPC
-            // responses arrive over each POST's own SSE response, not here),
-            // and Node's built-in fetch (undici) enforces a default
-            // ~300s idle bodyTimeout on response bodies -- so a single-shot
-            // GET stream deterministically dies ~5 minutes into every
-            // session, which used to emit 'close' and reject EVERY in-flight
-            // request (observed live killing auto-sprint runs mid-dispatch,
-            // always at start+~304s). An idle timeout on a keepalive channel
-            // is an expected, recoverable event: quietly reopen the stream
-            // and only surface 'close'/'error' on deliberate stop() or
-            // persistent (5x consecutive) reconnect failure.
-            this._runPersistentStream().catch(() => { /* loop handles its own errors */ });
-
-            this.emit('ready');
-        } catch (error) {
-            this.emit('error', error);
+            await postResponse.text();
+            this.sessionId = sessionId;
         }
     }
 
@@ -178,16 +212,25 @@ export class StreamableHttpTransport extends EventEmitter {
         let consecutiveFailures = 0;
         while (this.controller && !this.controller.signal.aborted) {
             try {
+                const streamSessionId = this.sessionId;
                 const getResponse = await undiciFetch(this.url, {
                     method: 'GET',
                     headers: {
                         'Accept': 'text/event-stream',
-                        'mcp-session-id': this.sessionId,
+                        'mcp-session-id': streamSessionId,
                         ...(this.options.headers || {})
                     },
                     signal: this.controller.signal,
                     dispatcher: sseDispatcher
                 });
+                if (getResponse.status === 404) {
+                    // The server forgot our session (it restarted). Start a
+                    // new one; the stream reopens on it after the backoff
+                    // below. Counted as a failure so a server that 404s
+                    // every fresh session still ends in 'error', not a loop.
+                    await this._resetSession(streamSessionId);
+                    throw new Error('Stream GET error! status: 404 (session re-initialized)');
+                }
                 if (!getResponse.ok) {
                     throw new Error(`Stream GET error! status: ${getResponse.status}`);
                 }
@@ -267,11 +310,39 @@ export class StreamableHttpTransport extends EventEmitter {
         if (!this.sessionId) {
             throw new Error('Transport not ready (no session ID)');
         }
-        
+
+        let { response, sentSessionId } = await this._post(message);
+
+        // HTTP 404 on a request carrying a session id means the server does
+        // not know that session -- it restarted -- so it never processed this
+        // request, and re-sending it once on a new session is safe. Exactly
+        // once: a 404 that survives a fresh handshake is surfaced below.
+        if (response.status === 404) {
+            await response.body?.cancel?.().catch(() => {});
+            await this._resetSession(sentSessionId);
+            ({ response } = await this._post(message));
+        }
+
+        if (!response.ok) {
+            throw new Error(`Failed to send message: HTTP ${response.status}`);
+        }
+
+        // The server sends the JSON-RPC response over an SSE stream in the POST response
+        this.readStream(response.body).catch(err => {
+            if (err.name !== 'AbortError') {
+                this.emit('error', err);
+            }
+        });
+    }
+
+    /** POST one JSON-RPC message on the current session. Returns the fetch
+     *  Response and the session id it was sent on. */
+    async _post(message) {
+        const sentSessionId = this.sessionId;
         const headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream',
-            'mcp-session-id': this.sessionId,
+            'mcp-session-id': sentSessionId,
             'mcp-protocol-version': '2024-11-05',
             ...(this.options.headers || {})
         };
@@ -305,17 +376,7 @@ export class StreamableHttpTransport extends EventEmitter {
                 await new Promise((resolve) => setTimeout(resolve, SEND_RETRY_DELAYS_MS[attempt]));
             }
         }
-        
-        if (!response.ok) {
-            throw new Error(`Failed to send message: HTTP ${response.status}`);
-        }
-        
-        // The server sends the JSON-RPC response over an SSE stream in the POST response
-        this.readStream(response.body).catch(err => {
-            if (err.name !== 'AbortError') {
-                this.emit('error', err);
-            }
-        });
+        return { response, sentSessionId };
     }
     
     stop() {

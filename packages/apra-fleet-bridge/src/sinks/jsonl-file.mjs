@@ -83,7 +83,7 @@ function safeMessage(err) {
  *   `setTimeout`/`clearTimeout` those are used for `stop()`'s bounded wait, so a caller can
  *   drive that wait without a real timer; otherwise the global timers are used.
  * @param {number} [deps.stopTimeoutMs] - default DEFAULT_STOP_TIMEOUT_MS.
- * @returns {{ start: () => void, emit: (record: any) => void, flushNow: () => void, stop: () => Promise<void>, health: () => object }}
+ * @returns {{ start: () => void, emit: (record: any, meta?: { receivedAt?: number }) => void, flushNow: () => void, stop: () => Promise<void>, health: () => object }}
  * @throws {BridgeError} CONFIG_MISSING if any required dependency is absent, CONFIG_INVALID for a bad stopTimeoutMs
  */
 export function createJsonlFileSink({ path, openAppendStream, redact, clock, stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS } = {}) {
@@ -191,7 +191,7 @@ export function createJsonlFileSink({ path, openAppendStream, redact, clock, sto
      * `health()` can say how much of the mirror is missing.
      * @param {any} record
      */
-    emit(record) {
+    emit(record, meta) {
       if (stopped) return;
       ensureStarted();
       if (failed) {
@@ -199,7 +199,7 @@ export function createJsonlFileSink({ path, openAppendStream, redact, clock, sto
         return;
       }
       try {
-        stream.write(stampAndSerialize(record, redact, clock));
+        stream.write(stampAndSerialize(record, redact, clock, meta && meta.receivedAt));
         writesOk += 1;
         lastSuccessAt = clock.now();
       } catch (err) {

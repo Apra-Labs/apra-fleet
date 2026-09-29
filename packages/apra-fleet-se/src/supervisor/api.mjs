@@ -46,7 +46,7 @@ import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.j
 import { validateCredentialStoreName } from '../../fleet-sprint/contracts.mjs';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
-import { defaultHasTerminalState } from './watchdog.mjs';
+import { defaultHasTerminalState, defaultReadFinalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
@@ -298,6 +298,14 @@ export function proxyChildState(port, opts = {}) {
     });
 }
 
+/** True when a child proxy call failed because nothing answered on the port. */
+function isChildUnreachable(err) {
+    const code = err && err.code;
+    if (code === 'ECONNREFUSED' || code === 'ECONNRESET') return true;
+    const msg = err && err.message ? String(err.message) : '';
+    return /ECONNREFUSED|ECONNRESET|child \/state timed out/.test(msg);
+}
+
 /** Default child HTTP proxy: POST the child's cooperative `/stop` endpoint. */
 export function proxyChildStop(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
@@ -363,6 +371,9 @@ export function defaultBuildVersion() {
  *   proxyStop?: (port: number) => Promise<object>,
  *   resolvePort?: (pid: number|null) => number|undefined,
  *   hasTerminalState?: (sprintId: string, branch: string|null) => object|null,
+ *   readFinalState?: (sprintId: string, branch: string|null) => object|null,
+ *     the persisted final state for a sprint answered from history (released
+ *     reservation); defaults to watchdog.mjs's defaultReadFinalState().
  *     apra-fleet-2l4.1: defaults to watchdog.mjs's defaultHasTerminalState()
  *     (a pure on-disk read of the engine's own persisted old_runs/<runId>.json
  *     terminal record). getSprint()/stopSprint() consult this BEFORE
@@ -428,6 +439,7 @@ export function createSprintController(deps = {}) {
     // stopSprint() can detect "already terminal" independently of PID
     // liveness, before ever touching the child's viewer port.
     const hasTerminalState = deps.hasTerminalState ?? defaultHasTerminalState;
+    const readFinalState = deps.readFinalState ?? defaultReadFinalState;
     const getBuildVersion = deps.getBuildVersion ?? defaultBuildVersion;
     // apra-fleet-gey.2: stamped ONCE, at controller creation (supervisor
     // startup) -- deliberately never re-read afterward, so this stays "what
@@ -735,14 +747,35 @@ export function createSprintController(deps = {}) {
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
-                const state = await proxyState(port);
+                let state;
+                try {
+                    state = await proxyState(port);
+                } catch (err) {
+                    // A live, non-terminal sprint whose dashboard is not
+                    // listening: the seconds between spawn and the viewer
+                    // binding its port, or a child that just exited ahead of
+                    // the watchdog. Temporary, so 503 -- the generic 500 made
+                    // a caller polling right after launch give up on a sprint
+                    // that was running fine. Anything else still bubbles.
+                    if (isChildUnreachable(err)) {
+                        throw new ApiError(503, `sprint '${id}' is live but its dashboard on port ${port} is not answering yet (still starting, or its process just exited); retry shortly: ${err && err.message ? err.message : String(err)}`);
+                    }
+                    throw err;
+                }
                 return { sprintId: id, live: true, state };
             }
         }
         // Not live (finished/gone, or port unknown): return the historical record.
         const latest = history.latestFor(id);
         if (latest) {
-            return { sprintId: id, live: false, history: history.forSprint(id), latest };
+            // The engine's final state, when it persisted one: a released
+            // sprint used to answer with history alone, so a caller that
+            // needs the state (an archived dashboard) got nothing for every
+            // sprint the watchdog released first. Best effort: history stays
+            // the answer if the read fails.
+            let state = null;
+            try { state = readFinalState(id, latest.branch ?? null); } catch { state = null; }
+            return { sprintId: id, live: false, history: history.forSprint(id), latest, ...(state ? { state } : {}) };
         }
         throw new ApiError(404, `no sprint '${id}' is live or in history`);
     }

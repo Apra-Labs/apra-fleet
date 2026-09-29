@@ -15,7 +15,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createDaemon, validateDaemonOpts, DEFAULT_SCAN_INTERVAL_MS } from '../src/verbs/daemon.mjs';
+import {
+  createDaemon, validateDaemonOpts, DEFAULT_SCAN_INTERVAL_MS,
+  workerRetryDelayMs, WORKER_RETRY_BASE_MS, WORKER_RETRY_MAX_MS,
+} from '../src/verbs/daemon.mjs';
 import { BridgeError, BRIDGE_ERROR_CODES } from '../src/errors.mjs';
 import { assertThrows } from './helpers.mjs';
 
@@ -254,7 +257,9 @@ describe('createDaemon behaviour', () => {
     // at the last checkpoint the daemon itself writes: 'finalizing'.
     assert.equal(spool.docs.get('s1').state, 'finalizing');
     assert.equal(spool.docs.get('s3').state, 'finalizing');
-    assert.equal(spool.docs.get('s2').state, 'failed');
+    assert.equal(spool.docs.get('s2').state, 'watching', 'a watcher failure is never terminal: s2 stays where it failed');
+    assert.equal(spool.docs.get('s2').watchError.attempts, 1);
+    assert.equal(spool.calls.fail.length, 0, 'a worker failure must never be recorded as a failed sprint');
     assert.equal(spool.docs.get('s2').claim, null, 'the failed sprint\'s claim is released');
     assert.equal(spool.docs.get('s1').claim !== null, true, 's1 completed normally and keeps its claim');
     assert.equal(spool.docs.get('s3').claim !== null, true, 's3 completed normally and keeps its claim');
@@ -338,7 +343,7 @@ describe('createDaemon behaviour', () => {
     await daemon.stop();
 
     assert.deepEqual(Object.keys(daemon.tracked), [], 'nothing is tracked once stop() has drained');
-    assert.equal(spool.docs.get('s1').state, 'failed');
+    assert.equal(spool.docs.get('s1').state, 'finalizing', 'a finalize-stage failure resumes at finalize, never re-watches');
     assert.equal(spool.docs.get('s1').claim, null, 'released cleanly after the failure');
     assert.deepEqual(spool.docs.get('s1').progress, { phase: 'watching', cycle: 2 }, 'the watch snapshot was persisted before finalize ran');
   });
@@ -455,7 +460,8 @@ describe('createDaemon behaviour', () => {
     await stopPromise;
 
     assert.equal(spool.docs.get('s1').claim, null, 'claim released once the worker genuinely stopped (its failure path ran)');
-    assert.equal(spool.docs.get('s1').state, 'failed');
+    assert.equal(spool.docs.get('s1').state, 'finalizing');
+    assert.ok(spool.docs.get('s1').watchError, 'the failure is recorded as a scheduled retry');
   });
 
   test('start() is idempotent and stop() before start() is a safe no-op', async () => {
@@ -474,5 +480,80 @@ describe('createDaemon behaviour', () => {
     await daemon.stop();
 
     assert.deepEqual(runWatch.calls, ['s1']);
+  });
+});
+
+// -- worker failure is a scheduled retry, never a terminal state -----------------
+//
+// Observed live: a fleet server redeploy made the watcher's first call fail,
+// the daemon wrote the handle as terminal 'failed', and a healthy running
+// sprint was never watched, mirrored, finalized or carried over again.
+
+describe('worker failure retry', () => {
+  test('the retry delay doubles per consecutive failure and is capped', () => {
+    assert.equal(workerRetryDelayMs(1), WORKER_RETRY_BASE_MS);
+    assert.equal(workerRetryDelayMs(2), WORKER_RETRY_BASE_MS * 2);
+    assert.equal(workerRetryDelayMs(3), WORKER_RETRY_BASE_MS * 4);
+    assert.equal(workerRetryDelayMs(50), WORKER_RETRY_MAX_MS);
+  });
+
+  test('a retry that is not yet due is left alone; once due it is claimed and watched', async () => {
+    const doc = { ...makeDoc('s1', { state: 'watching' }), watchError: { message: 'boom', attempts: 1, at: 0, nextAttemptAt: 5_000 } };
+    const spool = makeFakeSpool([doc]);
+    const clock = makeFakeClock(1_000);
+    const runWatch = makeRecordingVerb({ s1: { health: 'terminal' } });
+    const runFinalize = makeRecordingVerb({});
+
+    const early = createDaemon(BASE_OPTS, { spool, runWatch, runFinalize, sleep: clock.sleep, now: clock.now, log: makeLog() });
+    await early.start();
+    await early.stop();
+    assert.deepEqual(runWatch.calls, [], 'not due yet: must not be claimed');
+    assert.equal(spool.calls.claim.length, 0);
+
+    const later = makeFakeClock(6_000);
+    const due = createDaemon(BASE_OPTS, { spool, runWatch, runFinalize, sleep: later.sleep, now: later.now, log: makeLog() });
+    await due.start();
+    await due.stop();
+    assert.deepEqual(runWatch.calls, ['s1'], 'due: claimed and watched again');
+    assert.deepEqual(runFinalize.calls, ['s1']);
+    assert.equal(spool.docs.get('s1').watchError, undefined, 'a successful finalize clears the retry record');
+  });
+
+  test('consecutive failures count up and push the next attempt out', async () => {
+    const doc = { ...makeDoc('s1', { state: 'watching' }), watchError: { message: 'old', attempts: 2, at: 0, nextAttemptAt: 0 } };
+    const spool = makeFakeSpool([doc]);
+    const clock = makeFakeClock(10_000);
+    const runWatch = makeRecordingVerb({}, { shouldThrow: () => true });
+    const log = makeLog();
+    const daemon = createDaemon(BASE_OPTS, { spool, runWatch, runFinalize: makeRecordingVerb({}), sleep: clock.sleep, now: clock.now, log });
+
+    await daemon.start();
+    await daemon.stop();
+
+    const retry = spool.docs.get('s1').watchError;
+    assert.equal(retry.attempts, 3);
+    assert.equal(retry.nextAttemptAt, retry.at + workerRetryDelayMs(3));
+    assert.equal(retry.message, 'boom: s1');
+    assert.ok(log.lines.some((l) => l.includes('attempt 3') && l.includes('NOT marked finished')), 'the failure is logged loudly with the attempt count');
+  });
+
+  test('a handle an older daemon wrote as failed is picked up again, and the bogus failed finalize is dropped', async () => {
+    const legacy = {
+      ...makeDoc('s1', { state: 'failed' }),
+      finalize: { outcome: 'failed', error: { message: 'Failed to send message: HTTP 404', code: null } },
+    };
+    const spool = makeFakeSpool([legacy]);
+    const clock = makeFakeClock();
+    let finalizeSawDoc = null;
+    const runWatch = makeRecordingVerb({ s1: { health: 'terminal' } });
+    const runFinalize = async (handle) => { finalizeSawDoc = { ...spool.docs.get(handle.sprintId) }; return {}; };
+
+    const daemon = createDaemon(BASE_OPTS, { spool, runWatch, runFinalize, sleep: clock.sleep, now: clock.now, log: makeLog() });
+    await daemon.start();
+    await daemon.stop();
+
+    assert.deepEqual(runWatch.calls, ['s1'], 'the legacy failed handle is watched again');
+    assert.ok(finalizeSawDoc, 'and finalized');
+    assert.equal(finalizeSawDoc.finalize, null, 'the watcher error recorded as a failed finalize is cleared before finalize runs');
   });
 });

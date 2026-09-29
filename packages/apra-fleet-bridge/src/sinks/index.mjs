@@ -22,6 +22,9 @@ import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
 /**
  * @param {object} deps
  * @param {SinkEntry[]} deps.sinks - non-empty; each entry names a sink for `stats()`/log messages.
+ * @param {() => number} [deps.now] - injected; stamps each record ONCE, and
+ *   every sink receives that same `receivedAt` so their lines are identical.
+ *   Omitted: each sink falls back to its own clock.
  * @param {(message: string) => void} [deps.log] - injected; defaults to `console.error`. Never `console.log`
  *   directly imported elsewhere in this module -- this is the one, explicit logging seam.
  * @returns {{
@@ -32,7 +35,7 @@ import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
  * }}
  * @throws {BridgeError} CONFIG_MISSING/CONFIG_INVALID for a missing or malformed `sinks` list
  */
-export function createSinkFan({ sinks, log } = {}) {
+export function createSinkFan({ sinks, log, now } = {}) {
   if (!Array.isArray(sinks) || sinks.length === 0) {
     throw new BridgeError(BRIDGE_ERROR_CODES.CONFIG_MISSING, 'createSinkFan requires a non-empty array of { name, sink } entries', {});
   }
@@ -81,9 +84,9 @@ export function createSinkFan({ sinks, log } = {}) {
     return err && err.message ? err.message : String(err);
   }
 
-  async function emitOne(rec, record) {
+  async function emitOne(rec, record, meta) {
     try {
-      await rec.entry.sink.emit(record);
+      await rec.entry.sink.emit(record, meta);
       rec.success += 1;
     } catch (err) {
       rec.failure += 1;
@@ -104,7 +107,8 @@ export function createSinkFan({ sinks, log } = {}) {
      * @returns {Promise<void>}
      */
     async emit(record) {
-      await Promise.all([...records.values()].map((rec) => emitOne(rec, record)));
+      const meta = typeof now === 'function' ? { receivedAt: now() } : undefined;
+      await Promise.all([...records.values()].map((rec) => emitOne(rec, record, meta)));
     },
 
     /**

@@ -598,17 +598,26 @@ export function isSprintTerminal(sprint) {
   if (sprint.terminal === true) return true;
   // Shape 1: definitively still running.
   if (sprint.live === true) return false;
-  // Shape 3: believe it only on an explicit end-of-life event. `auto-released`
-  // and `force-released` are reservation bookkeeping -- they say the slot was
-  // freed, which can also happen to a sprint nobody ever confirmed finished --
-  // so they do NOT count on their own.
+  // Shape 3: believe it only on an explicit end-of-life event.
+  //
+  // `auto-released` IS one: the supervisor's watchdog emits it only from
+  // releaseTerminalReservation(), AFTER classifySprint() decided the sprint
+  // crashed (its process is gone), finished, or failed at launch
+  // (apra-fleet-se history.mjs AUTO_RELEASED, watchdog.mjs). It used to be
+  // lumped in with `force-released` and ignored, and observed live that made
+  // finalize refuse, forever, a sprint whose process had been killed -- while
+  // watch (toProgressSnapshot) had already called it terminal.
+  //
+  // `force-released` is NOT: an operator can free the slot of a sprint whose
+  // process is still running, so on its own it proves nothing.
   const history = Array.isArray(sprint.history) ? sprint.history : [];
   return history.some(
     (entry) => entry
       && (entry.event === 'finished'
         || entry.event === 'child-exited'
         || entry.event === 'launch-failed'
-        || entry.event === 'aborted-by-restart'),
+        || entry.event === 'aborted-by-restart'
+        || entry.event === 'auto-released'),
   );
 }
 

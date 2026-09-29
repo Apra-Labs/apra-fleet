@@ -164,7 +164,7 @@ export function manifestBlobNameFor(sprintId) {
  *   this no longer gets NO redaction at all. A value that IS provided but is not a function
  *   is still a caller mistake worth a loud CONFIG_MISSING.
  * @param {{ info?: Function, warn?: Function, error?: Function }} [deps.logger] - defaults to no-ops.
- * @returns {{ start: () => void, emit: (record: any) => void, flushNow: () => Promise<void>, stop: () => Promise<void>, cursor: object }}
+ * @returns {{ start: () => void, emit: (record: any, meta?: { receivedAt?: number }) => void, flushNow: () => Promise<void>, stop: () => Promise<void>, cursor: object }}
  * @throws {BridgeError} CONFIG_MISSING / CONFIG_INVALID
  */
 export function createAppendBlobSink(deps = {}) {
@@ -558,10 +558,10 @@ export function createAppendBlobSink(deps = {}) {
      * "batch, never per-record" rule.
      * @param {any} record
      */
-    emit(record) {
+    emit(record, meta) {
       if (stopped) return;
       ensureStarted();
-      buffer.push(stampAndSerialize(record, redact, clock));
+      buffer.push(stampAndSerialize(record, redact, clock, meta && meta.receivedAt));
     },
 
     /** Force an out-of-band flush now (e.g. at a phase transition), independent of the timer. Never throws. */
