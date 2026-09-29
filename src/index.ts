@@ -24,9 +24,9 @@ Usage:
   apra-fleet run              Start MCP server (HTTP, default) -- used by LLM providers after install
   apra-fleet run --transport stdio   Start MCP server (stdio)
   apra-fleet --stdio          Alias for run --transport stdio (backward compat for existing MCP configs)
-  apra-fleet start            Start the fleet server service
-  apra-fleet stop             Stop the fleet server service
-  apra-fleet restart          Restart the fleet server service
+  apra-fleet start            Start the fleet server (MCP) and fleet supervisor services
+  apra-fleet stop             Stop the fleet server (MCP) and fleet supervisor services
+  apra-fleet restart          Restart the fleet server (MCP) and fleet supervisor services
   apra-fleet status           Show server and service status
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
