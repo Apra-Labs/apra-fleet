@@ -217,7 +217,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': '/opt/nvm/versions/node/v22.16.0/bin/node\n',
       'node --version': 'v22.16.0\n',
       'which bd': '/usr/local/bin/bd\n',
-      'bd --version': 'bd version 1.2.3\n',
+      '/usr/local/bin/bd --version': 'bd version 1.2.3\n',
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
@@ -234,6 +234,14 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       ok: true,
       reason: null,
     });
+    // apra-fleet-i9ag.19.27 AC2/AC3: the version probe used the just-resolved
+    // absolute bdPath, never a fresh bare-'bd' PATH lookup that could
+    // silently resolve to a different binary.
+    expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
+    expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
   });
 
   // NOTE (apra-fleet-i9ag.19.1 judge D2, 2026-09-29 review fix): this case's
@@ -250,7 +258,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
       'where bd': '\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\other\\bd.cmd\n',
-      'bd --version': '1.2.3\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
     });
 
     const win32Result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
@@ -283,7 +291,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
       'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
-      'bd --version': '1.2.3\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
@@ -300,13 +308,13 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
       'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
-      'bd --version': '1.2.3\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
     });
     const execCmdFirst = makeArgvExec({
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
       'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd\n',
-      'bd --version': '1.2.3\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
     });
 
     const shimFirstResult = resolveFleetSeToolchainPaths({ exec: execShimFirst, platform: 'win32' });
@@ -322,7 +330,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
       'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\tools\\bd\\bd.exe\n',
-      'bd --version': '1.2.3\n',
+      'C:\\tools\\bd\\bd.exe --version': '1.2.3\n',
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
@@ -353,7 +361,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': '/usr/bin/node\n',
       'node --version': 'v22.16.0\n',
       'which bd': '\n/usr/local/bin/bd\n/opt/other/bd\n',
-      'bd --version': '1.2.3\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
@@ -366,7 +374,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     const exec = makeArgvExec({
       'node --version': 'v22.16.0\n',
       'which bd': '/usr/local/bin/bd\n',
-      'bd --version': '1.2.3\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
     });
 
     let result: ReturnType<typeof resolveFleetSeToolchainPaths> | undefined;
@@ -384,7 +392,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node -p process.execPath': '/usr/bin/node\n',
       'node --version': 'v22.9.0\n',
       'which bd': '/usr/local/bin/bd\n',
-      'bd --version': '1.2.3\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
@@ -415,12 +423,19 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     });
   });
 
-  it('bd found on PATH but "bd --version" throws -> bd.ok stays true (path is what matters), version is null', () => {
+  // apra-fleet-i9ag.19.27: resolveBdPath() used to compute `reason` for this
+  // exact case (bdPath resolved, `bd --version` throws) and then
+  // unconditionally discard it via `reason: bdPath !== null ? null : reason`
+  // -- so bdVersion:null shipped with ok:true and NO explanation why. This
+  // pins the fix: the version-probe failure is now surfaced in `reason`
+  // (asserted by exact field value, not just non-null) while `ok` stays
+  // true, since bd is genuinely non-fatal at install time.
+  it('bd found on PATH but "bd --version" throws -> bd.ok stays true (path is what matters), version is null, and the failure reason is surfaced (not silently discarded)', () => {
     const exec = makeArgvExec({
       'node -p process.execPath': '/usr/bin/node\n',
       'node --version': 'v22.16.0\n',
       'which bd': '/usr/local/bin/bd\n',
-      'bd --version': Object.assign(new Error('spawn bd ENOENT'), { code: 'ENOENT' }),
+      '/usr/local/bin/bd --version': Object.assign(new Error('spawn bd ENOENT'), { code: 'ENOENT' }),
     });
 
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
@@ -430,5 +445,19 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     expect(result.bd.path).toBe('/usr/local/bin/bd');
     expect(result.bd.ok).toBe(true);
     expect(result.bd.version).toBeNull();
+    // The diagnostic is no longer discarded: it names the resolved path and
+    // the underlying spawn failure, asserted by exact value.
+    expect(result.bd.reason).toBe(
+      'bd --version failed for /usr/local/bin/bd: spawn bd ENOENT',
+    );
+    // AC2/AC3: the version probe was made against the just-resolved absolute
+    // bdPath, never a fresh bare-'bd' PATH lookup -- so the recorded
+    // bdVersion (or, here, the reason it is null) provably describes the
+    // recorded bdPath.
+    expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
+    expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
   });
 });

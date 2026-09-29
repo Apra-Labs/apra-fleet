@@ -224,7 +224,15 @@ export interface FleetSeToolchainProbe {
   version: string | null;
   /** True only when the path was resolved (and, for node, satisfies MIN_NODE_VERSION). */
   ok: boolean;
-  /** Human-readable reason ok is false; null when ok is true. */
+  /**
+   * Human-readable diagnostic. For node, non-null exactly when ok is false
+   * (why resolution/the version gate failed). For bd, resolution failing
+   * (ok:false) sets this the same way, but a resolved bdPath whose OWN
+   * version probe then failed also sets this to a non-null advisory while
+   * ok stays true (apra-fleet-i9ag.19.27) -- bd's version is diagnostic
+   * only, never load-bearing for `ok`. Always check `ok` first; a non-null
+   * `reason` under `ok:true` is advisory, not a failure.
+   */
   reason: string | null;
 }
 
@@ -316,10 +324,23 @@ function pickWindowsBdLine(lines: string[]): { path: string | null; reason: stri
 /**
  * Resolves bd's absolute path via a platform lookup ('where bd' on win32,
  * preferring the .cmd/.exe candidate; 'which bd' elsewhere, first non-empty
- * line) and its version via `bd --version`. bd being absent is NOT an error
- * here -- unlike node, bd is not a hard fleet-se prerequisite this module
- * enforces (see the module doc comment's SCOPE NOTE) -- it just yields
- * ok:false plus a reason. Never throws.
+ * line) and its version by probing THAT resolved path directly (never a
+ * fresh bare-'bd' PATH lookup, which could silently resolve to a different
+ * binary than the one just picked -- e.g. a PATH ordering difference between
+ * the lookup and the probe, or a shell function/alias named `bd`). bd being
+ * absent is NOT an error here -- unlike node, bd is not a hard fleet-se
+ * prerequisite this module enforces (see the module doc comment's SCOPE
+ * NOTE) -- it just yields ok:false plus a reason.
+ *
+ * ok reflects PATH resolution only: once an absolute bdPath is found, ok
+ * stays true even if the version probe against that path then fails (bd's
+ * version is diagnostic, not load-bearing for the install to proceed).
+ * apra-fleet-i9ag.19.27: that failure is no longer silently dropped -- it is
+ * surfaced in `reason` alongside `ok:true`, which is why this probe's
+ * `reason` is NOT exclusively "why ok is false" the way resolveNodePath()'s
+ * is; a caller must check `ok` first and treat a non-null `reason` under
+ * `ok:true` as an advisory (bd's version could not be confirmed), not a
+ * failure. Never throws.
  */
 function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSeToolchainProbe {
   const lookupFile = platform === 'win32' ? 'where' : 'which';
@@ -346,14 +367,15 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
   }
 
   let version: string | null = null;
+  let versionProbeReason: string | null = null;
   if (bdPath !== null) {
     try {
-      const raw = exec('bd', ['--version'], { ...PROBE_OPTIONS });
+      const raw = exec(bdPath, ['--version'], { ...PROBE_OPTIONS });
       const parsed = parseVersionString(raw);
       const trimmed = String(raw).trim();
       version = parsed ?? (trimmed.length > 0 ? trimmed : null);
     } catch (err) {
-      reason = `bd --version failed: ${errorMessage(err)}`;
+      versionProbeReason = `bd --version failed for ${bdPath}: ${errorMessage(err)}`;
     }
   }
 
@@ -361,7 +383,10 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
     path: bdPath,
     version,
     ok: bdPath !== null,
-    reason: bdPath !== null ? null : reason,
+    // Path resolution failing is fatal to this probe (reason names why);
+    // a resolved path whose version probe then failed is NOT fatal (ok
+    // stays true) but the diagnostic is still surfaced, never discarded.
+    reason: bdPath !== null ? versionProbeReason : reason,
   };
 }
 
