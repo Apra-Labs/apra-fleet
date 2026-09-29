@@ -1096,6 +1096,48 @@ export function renderBeadsHeaderHtml(beads, warning) {
 }
 
 /**
+ * apra-fleet-i9ag.19.12: the "which node and bd is this supervisor actually
+ * using" header line, directly below the Beads identity line -- an operator
+ * who just hit a 503 (node-runner.mjs's CONFIGURED-tier hard error) has no
+ * other way to see the recorded pair without reading the service log.
+ *
+ * Renders nothing when there is no report at all (`toolchain` null/absent --
+ * the inert skeleton, or a test that wires no toolchain dep) OR when the
+ * report says nothing was ever recorded (`toolchain.configured === false`,
+ * e.g. an older install or a foreground dev run) -- there is nothing an
+ * operator needs to see in either case, matching `renderBeadsHeaderHtml()`'s
+ * own "nothing to say -> nothing rendered" default just above.
+ *
+ * When there IS a recording, this always shows the resolved node/bd paths
+ * and versions -- and additionally renders the SAME amber "problem" treatment
+ * `renderBeadsHeaderHtml()` gives an unresolved beads identity whenever
+ * `toolchain.problems` is non-empty (a broken node OR a broken bd; not
+ * `!toolchain.ok` alone, which -- per toolchain.mjs's own contract -- tracks
+ * NODE health only and would silently hide a bd-only problem from the
+ * dashboard even though it is still real and still worth an operator's
+ * attention, just not the launch-blocking severity that ALSO trips a 503 and
+ * GET /api/health's `toolchainWarning`). The report's own `fixLine` is reused
+ * verbatim -- never a second, hand-copied fix sentence here.
+ * @param {{ configured?: boolean, nodePath?: string|null, nodeVersion?: string|null, bdPath?: string|null, bdVersion?: string|null, source?: string, ok?: boolean, problems?: string[], fixLine?: string }|null|undefined} toolchain
+ * @returns {string}
+ */
+export function renderToolchainHeaderHtml(toolchain) {
+    if (!toolchain || typeof toolchain !== 'object' || !toolchain.configured) return '';
+    const node = escapeHtml(toolchain.nodePath || '(unknown)');
+    const nodeVer = escapeHtml(toolchain.nodeVersion || '?');
+    const bd = escapeHtml(toolchain.bdPath || '(unknown)');
+    const bdVer = escapeHtml(toolchain.bdVersion || '?');
+    const statusLine = '<div class="toolchain-status" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' +
+        'Toolchain: node <span style="color:#d4d4d8;">' + node + '</span> (v' + nodeVer + ')' +
+        ' | bd <span style="color:#d4d4d8;">' + bd + '</span> (v' + bdVer + ')</div>\n';
+    if (!Array.isArray(toolchain.problems) || toolchain.problems.length === 0) return statusLine;
+    const problemText = [...toolchain.problems, toolchain.fixLine].filter(Boolean).join(' ');
+    return statusLine +
+        '<div class="toolchain-status toolchain-status-warning" style="font-size: 12px; color: #f59e0b; padding: 4px 16px;">' +
+        '<strong>Toolchain problem:</strong> ' + escapeHtml(problemText) + '</div>\n';
+}
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -1109,11 +1151,15 @@ export function renderBeadsHeaderHtml(beads, warning) {
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
- * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null, consoleOrigin?: string|null, mountPrefix?: string, finishedRuns?: Array<object> }} [opts]
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null, consoleOrigin?: string|null, mountPrefix?: string, finishedRuns?: Array<object>, toolchain?: object|null }} [opts]
  *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
  *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
  *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
  *   amber warning line in its place).
+ *   `toolchain`: (apra-fleet-i9ag.19.12) the startup toolchain-validation
+ *   report (./toolchain.mjs's validateRecordedToolchain() result, the SAME
+ *   object GET /api/health projects) -- rendered as its own header line via
+ *   renderToolchainHeaderHtml() above, directly below the Beads line.
  *   `consoleOrigin`: (apra-fleet-i9ag.5.1) the console's own origin, rendered
  *   as a "Console" header link via renderConsoleLinkHtml() above -- omitted
  *   entirely when not a non-empty string.
@@ -1157,6 +1203,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<a href="' + mountHref(mountPrefix, '/supervisor/log') + '" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
+        renderToolchainHeaderHtml(opts && opts.toolchain) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -1353,6 +1400,11 @@ export function createDashboard(deps = {}) {
     // non-empty string or null, once, so renderIndexPage() below can pass it
     // straight through without re-validating.
     const consoleOrigin = typeof deps.consoleOrigin === 'string' && deps.consoleOrigin.length > 0 ? deps.consoleOrigin : null;
+    // apra-fleet-i9ag.19.12: the SAME startup toolchain-validation report
+    // GET /api/health projects (server.mjs's `deps.toolchain`) -- read on
+    // every renderIndexPage() for the header line below. `null` (the default)
+    // renders nothing, exactly like `beadsIdentity` absent above.
+    const toolchain = deps.toolchain && typeof deps.toolchain === 'object' ? deps.toolchain : null;
     // apra-fleet-c4s.1: `deps.expandScope`, when injected, is called verbatim
     // (the pre-existing test seam -- see the module doc comment above). When
     // absent (production default, bin/serve.mjs), buildSprintViews() below
@@ -1636,7 +1688,7 @@ export function createDashboard(deps = {}) {
                 }
             }
             const finished = await buildFinishedRuns();
-            return renderIndexPageHtml(await buildSprintViews(finished), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix, finishedRuns: finished });
+            return renderIndexPageHtml(await buildSprintViews(finished), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix, finishedRuns: finished, toolchain });
         },
     };
 }

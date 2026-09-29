@@ -633,7 +633,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // apra-fleet-i9ag.4: finished-sprints list (old runs this supervisor has
     // a sprint-history.json event for), newest first, with verdict/PR.
     const finishedRuns = createFinishedRunsIndex({ history });
-    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity, consoleOrigin, finishedRuns });
+    // apra-fleet-i9ag.19.12: the SAME startup toolchain-validation report
+    // GET /api/health projects (see the `toolchain` deps comment on
+    // createSupervisor({ ... toolchain }) below) -- threaded into the
+    // dashboard too so its header line and the health JSON can never
+    // disagree about the recorded node/bd.
+    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity, consoleOrigin, finishedRuns, toolchain });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a

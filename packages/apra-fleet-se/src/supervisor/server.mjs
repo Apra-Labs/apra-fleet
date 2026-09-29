@@ -181,6 +181,36 @@ export function createSupervisor(deps = {}) {
     // because a record exists made Health read healthy right up to the first
     // failed launch. The handle decides whether there is anything to say.
     const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' ? (h.getWarning() || null) : null);
+    // apra-fleet-i9ag.19.12: the GET /api/health-facing projection of the
+    // startup toolchain report (see the `deps.toolchain` comment below) --
+    // `null` when this supervisor holds no report at all (no toolchain dep
+    // wired: the inert skeleton, or any test that does not pass one). This is
+    // deliberately NOT the raw report object: it omits `configured`/`reason`/
+    // `nodeOk`/`bdOk`/`fixLine` (internal-only fields this task's own FILES
+    // list never asked Health to expose) and keeps exactly the shape the
+    // acceptance criteria names -- { nodePath, nodeVersion, bdPath, bdVersion,
+    // source, ok, problems }.
+    const toolchainSummaryOf = (tc) => (tc ? {
+        nodePath: tc.nodePath,
+        nodeVersion: tc.nodeVersion,
+        bdPath: tc.bdPath,
+        bdVersion: tc.bdVersion,
+        source: tc.source,
+        ok: tc.ok,
+        problems: tc.problems,
+    } : null);
+    // The SAME sentence and fix line bin/serve.mjs's own startup ERROR line
+    // printed for a broken recorded node (`${problems.join(' ')} ${fixLine}`)
+    // -- reusing the report's OWN `problems`/`fixLine` fields (never a second,
+    // hand-copied literal here), so Health and the startup log can never say
+    // two different things about the same failure. Gated on `!ok` exactly
+    // like that ERROR line was: `ok` tracks NODE health only
+    // (toolchain.mjs's own contract), the one condition serious enough to
+    // hard-fail a launch (503) and therefore the one this key exists to
+    // surface to an operator who just hit that 503 with no service-log access.
+    const toolchainWarningOf = (tc) => (
+        tc && tc.ok === false ? [...(tc.problems ?? []), tc.fixLine].filter(Boolean).join(' ') : null
+    );
     // The resolved project folder and WHICH of the three sources won it
     // (flag / config / walk-up -- see resolveProjectDir() in
     // ./beads-identity.mjs). Reported on GET /api/health so the console and
@@ -383,6 +413,15 @@ export function createSupervisor(deps = {}) {
             projectDirSource: project ? project.source : null,
             ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
+            // apra-fleet-i9ag.19.12: an ADDITION alongside `beads`/`projectDir`/
+            // `projectDirSource` above, never a rename -- `null` when this
+            // supervisor holds no startup toolchain report at all (see
+            // `deps.toolchain`'s own doc comment). `toolchainWarning` is
+            // OMITTED (not present as `null`) whenever there is nothing to
+            // warn about, matching `beadsWarning`'s own omit-not-null contract
+            // just above.
+            toolchain: toolchainSummaryOf(toolchain),
+            ...(toolchainWarningOf(toolchain) ? { toolchainWarning: toolchainWarningOf(toolchain) } : {}),
         });
     });
 
