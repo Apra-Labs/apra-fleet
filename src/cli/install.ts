@@ -7,7 +7,7 @@ import type { LlmProvider } from '../types.js';
 import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { registerSupervisorService } from '../services/supervisor-service.js';
-import { seedSupervisorProjectDir, validateProjectDirPreflight } from './supervisor.js';
+import { seedSupervisorProjectDir, validateProjectDirPreflight, seedSupervisorToolchain } from './supervisor.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
 import {
@@ -29,7 +29,7 @@ import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { BEADS_PACKAGE } from './beads-pin.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
-import { detectFleetSePrereqs, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
+import { detectFleetSePrereqs, resolveFleetSeToolchainPaths, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
 
 // --- fleet-se prerequisite gate: injectable deps + explicit test-mode gate ---
 //
@@ -64,6 +64,38 @@ export function _resetFleetSePrereqStepDeps(): void {
 function fleetSePrereqCheckEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
   return process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK === '1';
+}
+
+// --- fleet-se toolchain-seed step: injectable deps + explicit test-mode gate ---
+//
+// apra-fleet-i9ag.19.2: mirrors the fleet-se prerequisite gate immediately
+// above (same rationale). resolveFleetSeToolchainPaths() spawns real `node -p
+// process.execPath` / bd-lookup child processes, which is fast and safe in
+// production but would spuriously resolve to garbage (or collide with an
+// unrelated execFileSync mock, e.g. one that answers every call the same way
+// regardless of the command spawned) under the many existing unit tests that
+// exercise runInstall() without caring about this step at all. So:
+// 1. Dependency injection: fleetSeToolchainStepDeps.resolveFleetSeToolchainPaths
+//    defaults to the real implementation but can be swapped for a fake.
+// 2. Explicit gate: in NODE_ENV=test, the whole step is skipped UNLESS
+//    APRA_FLEET_ENABLE_FLEET_SE_TOOLCHAIN_SEED=1 is also set -- an explicit,
+//    opt-in escape hatch for tests that specifically want to exercise it.
+export interface FleetSeToolchainStepDeps {
+  resolveFleetSeToolchainPaths: typeof resolveFleetSeToolchainPaths;
+}
+const realFleetSeToolchainStepDeps: FleetSeToolchainStepDeps = { resolveFleetSeToolchainPaths };
+let fleetSeToolchainStepDeps: FleetSeToolchainStepDeps = realFleetSeToolchainStepDeps;
+/** Test-only: inject a fake resolver for the fleet-se toolchain-seed step. */
+export function _setFleetSeToolchainStepDeps(overrides: Partial<FleetSeToolchainStepDeps>): void {
+  fleetSeToolchainStepDeps = { ...realFleetSeToolchainStepDeps, ...overrides };
+}
+/** Test-only: restore the real (non-mocked) fleet-se toolchain-seed step deps. */
+export function _resetFleetSeToolchainStepDeps(): void {
+  fleetSeToolchainStepDeps = realFleetSeToolchainStepDeps;
+}
+function fleetSeToolchainStepEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_TOOLCHAIN_SEED === '1';
 }
 
 /**
@@ -1982,6 +2014,37 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     const seedResult = seedSupervisorProjectDir(projectDirArg);
     if (!seedResult.ok) {
       console.error(`Error: --project-dir: ${seedResult.error}.`);
+      process.exit(1);
+    }
+  }
+
+  // --- Record the resolved node/bd toolchain into supervisor.config.json ---
+  // (apra-fleet-i9ag.19.2) Placed HERE, after the Beads step above (so bd's
+  // resolved path reflects what the Beads step actually provisioned rather
+  // than an ordering artefact) and before the supervisor service is
+  // registered below (so the service's very first start already reads a
+  // recorded toolchain). Only attempted when the workflow assets that
+  // contain the supervisor were installed (installWorkflows) -- `--workflows
+  // none` writes nothing here, same as the project-dir seed above.
+  //
+  // Node unresolved is a LOUD, fatal install failure: the fleet-se
+  // prerequisite gate above has already confirmed node is present and
+  // satisfies MIN_NODE_VERSION, so a node whose absolute path still could not
+  // be resolved is a genuine defect, not an environment condition. bd
+  // unresolved is NOT a failure -- seedSupervisorToolchain() records a null
+  // bdPath and this step continues, matching install's existing "bd not
+  // available" tolerance elsewhere.
+  if (installWorkflows && fleetSeToolchainStepEnabled()) {
+    const toolchain = fleetSeToolchainStepDeps.resolveFleetSeToolchainPaths();
+    const toolchainResult = seedSupervisorToolchain(toolchain);
+    if (!toolchainResult.ok) {
+      console.error(
+        `\nError: could not resolve node's absolute path for the fleet-supervisor service: ` +
+          `${toolchainResult.error}.\n` +
+          `       This is required so the always-on supervisor can find node without depending on\n` +
+          `       the service manager's inherited PATH. Resolve the reason above and re-run\n` +
+          `       'apra-fleet install'.\n`,
+      );
       process.exit(1);
     }
   }

@@ -45,6 +45,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { WORKFLOWS_DIR, SCHEMAS_DIR } from './config.js';
+import type { FleetSeToolchainPaths } from './fleet-se-prereqs.js';
 
 /** Workflow directory name the installer stages packages/apra-fleet-se under. */
 export const SUPERVISOR_WORKFLOW_NAME = 'fleet-sprint';
@@ -462,4 +463,97 @@ export function seedSupervisorProjectDir(
   fsImpl.writeFileSync(tmpPath, `${JSON.stringify({ ...existing, projectDir: resolvedPath }, null, 2)}\n`, 'utf-8');
   fsImpl.renameSync(tmpPath, configPath);
   return { ok: true, resolvedPath };
+}
+
+export interface SeedSupervisorToolchainResult {
+  ok: boolean;
+  /** Present only when `ok` is false -- always node's unresolved reason,
+   *  since a missing bd never fails this function (see below). */
+  error?: string;
+}
+
+/**
+ * Records the ABSOLUTE node and bd paths the installer itself resolved
+ * (`resolveFleetSeToolchainPaths()` in ./fleet-se-prereqs.ts,
+ * apra-fleet-i9ag.19.1) into `supervisor.config.json` under a top-level
+ * `toolchain` key: `{ nodePath, nodeVersion, bdPath, bdVersion, recordedAt }`,
+ * with `null` for anything unresolved.
+ *
+ * WHY: an installed supervisor started under a service manager (macOS
+ * launchd, a Windows scheduled task) does not inherit the login shell's
+ * PATH, so a node installed via nvm/fnm/volta -- or bd installed to npm's
+ * global bin directory -- is invisible to it. Recording the absolute paths
+ * the installer itself successfully resolved at install time is useless
+ * unless the supervisor can read them back after a reboot; this is the
+ * writer half of that contract (the reader is apra-fleet-i9ag.19.3).
+ *
+ * NODE UNRESOLVED IS A REAL DEFECT, NOT AN ENVIRONMENT CONDITION: by the
+ * time install.ts calls this, the fleet-se prerequisite gate has already
+ * confirmed node is present and satisfies MIN_NODE_VERSION, so a node whose
+ * absolute path still could not be resolved here is a genuine bug, not a
+ * missing-tool condition. This function refuses to write ANYTHING and
+ * returns `ok: false` with `toolchain.node.reason` as `error` -- the caller
+ * (install.ts) is expected to treat that as fatal and exit non-zero.
+ *
+ * BD UNRESOLVED IS TOLERATED: bd is not a hard fleet-se prerequisite (see
+ * resolveBdPath()'s doc comment in fleet-se-prereqs.ts) -- install already
+ * tolerates "bd not available" elsewhere, so a missing bd here is recorded
+ * as `bdPath: null` (with its own reason folded into nothing more than that
+ * null -- the human-readable reason lives in the toolchain probe, not in
+ * this config file) and the write still proceeds.
+ *
+ * Reuses seedSupervisorProjectDir()'s two write guarantees exactly, because
+ * the two writers touch the SAME file and honouring only one of them would
+ * silently undo the other's work:
+ *   - UNKNOWN TOP-LEVEL KEYS ARE PRESERVED (a `projectDir` set from the
+ *     console or by `--project-dir` survives a toolchain write, and a later
+ *     `--project-dir` write must never clobber `toolchain`).
+ *   - THE WRITE IS ATOMIC: temp file in the SAME directory, then rename.
+ *
+ * `fsImpl` is injectable purely for tests -- production callers always use
+ * the real `node:fs`.
+ */
+export function seedSupervisorToolchain(
+  toolchain: FleetSeToolchainPaths,
+  dataDir: string = SUPERVISOR_DATA_DIR,
+  fsImpl: Pick<typeof fs, 'existsSync' | 'mkdirSync' | 'writeFileSync' | 'readFileSync' | 'renameSync'> = fs,
+): SeedSupervisorToolchainResult {
+  if (!toolchain.node.ok) {
+    return {
+      ok: false,
+      error: toolchain.node.reason ?? 'node could not be resolved to an absolute path',
+    };
+  }
+
+  fsImpl.mkdirSync(dataDir, { recursive: true });
+  const configPath = supervisorConfigPath(dataDir);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(String(fsImpl.readFileSync(configPath, 'utf-8')));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // No file, unreadable, or not JSON -- there is nothing to preserve, and
+    // a corrupt file is replaced by a good one rather than blocking the
+    // write (the same total-read stance seedSupervisorProjectDir() takes).
+    existing = {};
+  }
+
+  const toolchainRecord = {
+    nodePath: toolchain.node.path,
+    nodeVersion: toolchain.node.version,
+    bdPath: toolchain.bd.path,
+    bdVersion: toolchain.bd.version,
+    recordedAt: new Date().toISOString(),
+  };
+
+  const tmpPath = `${configPath}.tmp`;
+  fsImpl.writeFileSync(
+    tmpPath,
+    `${JSON.stringify({ ...existing, toolchain: toolchainRecord }, null, 2)}\n`,
+    'utf-8',
+  );
+  fsImpl.renameSync(tmpPath, configPath);
+  return { ok: true };
 }
