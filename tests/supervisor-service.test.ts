@@ -52,6 +52,7 @@ import { SUPERVISOR_LOG_FILE_PATH } from '../src/paths.js';
 import { WORKFLOWS_DIR } from '../src/cli/config.js';
 import { runStart } from '../src/cli/start.js';
 import { runStop } from '../src/cli/stop.js';
+import { runRestart } from '../src/cli/restart.js';
 import { runStatus } from '../src/cli/status.js';
 
 function resetMgrMocks() {
@@ -261,6 +262,55 @@ describe('CLI supervisor wiring', () => {
       mcpMgr.isInstalled.mockResolvedValue(true);
       await expect(runStop([])).resolves.toBeUndefined();
       expect(mcpMgr.stop).toHaveBeenCalled();
+    });
+  });
+
+  describe('runRestart', () => {
+    beforeEach(() => {
+      supervisorMgr.isInstalled.mockResolvedValue(true);
+      mcpMgr.isInstalled.mockResolvedValue(true);
+      // start: not running; verify-after-2s: running
+      mockCheckRunning
+        .mockResolvedValueOnce({ running: false })
+        .mockResolvedValueOnce({ running: true, url: 'http://127.0.0.1:7523/mcp', pid: 1 });
+    });
+
+    it('stops then actually starts the supervisor (start is not skipped as already running)', async () => {
+      supervisorMgr.query.mockResolvedValue({ installed: true, running: false });
+      vi.useFakeTimers();
+      const p = runRestart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(supervisorMgr.stop).toHaveBeenCalled();
+      expect(supervisorMgr.start).toHaveBeenCalled();
+      expect(supervisorMgr.stop.mock.invocationCallOrder[0])
+        .toBeLessThan(supervisorMgr.start.mock.invocationCallOrder[0]);
+      const out = vi.mocked(console.log).mock.calls.map(c => c.join(' ')).join('\n');
+      expect(out).toContain('Fleet supervisor service stopped.');
+      expect(out).toContain('Fleet supervisor service starting...');
+      expect(out).not.toContain('already running');
+    });
+
+    it('fails loud naming the supervisor when its stop throws', async () => {
+      supervisorMgr.stop.mockRejectedValue(new Error('schtasks access denied'));
+      await expect(runRestart([])).rejects.toThrow(/Fleet supervisor service could not be confirmed stopped/);
+      expect(supervisorMgr.start).not.toHaveBeenCalled();
+      const out = vi.mocked(console.log).mock.calls.map(c => c.join(' ')).join('\n');
+      expect(out).not.toContain('already running');
+    });
+
+    it('fails loud when the supervisor is still reported running after stop', async () => {
+      supervisorMgr.query.mockResolvedValue({ installed: true, running: true });
+      await expect(runRestart([])).rejects.toThrow(/Fleet supervisor service.*still reported running/);
+      expect(supervisorMgr.start).not.toHaveBeenCalled();
+      const out = vi.mocked(console.log).mock.calls.map(c => c.join(' ')).join('\n');
+      expect(out).not.toContain('already running');
+    });
+
+    it('--help describes restart as covering the supervisor', () => {
+      const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+      const line = src.split('\n').find(l => l.includes('apra-fleet restart '));
+      expect(line).toMatch(/supervisor/i);
     });
   });
 
