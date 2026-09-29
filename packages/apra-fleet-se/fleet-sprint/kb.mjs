@@ -20,7 +20,7 @@
 // site this module owns.
 
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
-import { toolErrorText } from './mcp-result.mjs';
+import { isToolError, toolErrorText } from './mcp-result.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
 // pattern (kb.mjs does not import runner.js's private helper, to avoid a
@@ -96,14 +96,11 @@ export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
 export const KB_MIN_PROMOTE_REASON = 20;
 export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook']);
 
-/**
- * True when an MCP tool result represents a tool-level failure. The MCP client
- * resolves such results instead of throwing (apra-fleet-23c), so callers that
- * only catch exceptions silently treat failures as successes.
- */
-function isToolError(res) {
-    return !!(res && typeof res === 'object' && res.isError === true);
-}
+// isToolError moved to mcp-result.mjs (apra-fleet-23c's rule: the MCP client
+// RESOLVES a tool-level failure instead of throwing, so catching exceptions
+// alone treats failures as successes). It is imported above rather than kept
+// as a second private copy, so the Sprint Setup preflight and this module
+// cannot drift on what counts as a tool failure.
 
 export function vetKbWork(role, result) {
     const captures = [];
@@ -454,9 +451,17 @@ export function createKbPrimingClient(opts = {}) {
         // absent one is normal and must stay absent rather than be derived here.
         const folder = detail && (detail.folder || (detail.member && detail.member.folder));
         const url = detail && (detail.repo_remote_url || (detail.member && detail.member.repo_remote_url));
+        // member_detail also reports the STRUCTURED record of whether this
+        // member has its own fleet MCP server and, when it does not, the named
+        // reason plus the remediation (compose_permissions persists it). It is
+        // read on this SAME round trip rather than by a second member_detail
+        // call -- and never by re-probing the member's install -- because the
+        // Sprint Setup preflight must carry that upstream reason verbatim.
+        const mcpScope = detail && (detail.mcp_scope || (detail.member && detail.member.mcp_scope));
         return {
             folder: (typeof folder === 'string' && folder.length > 0) ? folder : null,
             remoteUrl: (typeof url === 'string' && url.length > 0) ? url : null,
+            mcpScope: (mcpScope && typeof mcpScope === 'object') ? mcpScope : null,
         };
     }
 
@@ -493,6 +498,30 @@ export function createKbPrimingClient(opts = {}) {
     // the same shape of fix that made kb_promotions reachable.
     const knowledge = new Map();
 
+    // member -> the number of entries kb_session_prime reported for it. Kept
+    // SEPARATE from `knowledge` above, which is capped at
+    // KB_MAX_KNOWLEDGE_ENTRIES for prompt-budget reasons and is empty both when
+    // the scope held nothing and when the call never landed. The Sprint Setup
+    // preflight has to tell those two apart -- "the scope resolved and is
+    // empty" and "the tool did not answer" are different failures with
+    // different fixes -- so the raw count and the outcome below are recorded
+    // for every member, including the ones with zero.
+    const entryCounts = new Map();
+
+    // member -> one of 'ok' | 'kb-empty-or-ok' | 'no-folder' | 'no-transport'
+    // | 'tool-unavailable'. The single machine-readable answer to "what
+    // happened when we primed this member". 'no-folder' means the call was
+    // never made because nothing scoped it; 'tool-unavailable' means it was
+    // made and did not answer.
+    const primeOutcomes = new Map();
+
+    // member -> the error text behind a 'tool-unavailable' outcome, so a
+    // warning can name the CAUSE rather than just the category.
+    const primeErrors = new Map();
+
+    // member -> the structured fleet-MCP scope record member_detail reported.
+    const mcpScopes = new Map();
+
     return {
         folderOf(member) {
             return folders.get(member) || null;
@@ -519,15 +548,48 @@ export function createKbPrimingClient(opts = {}) {
         knowledgeOf(member) {
             return knowledge.get(member) || [];
         },
+        /** Raw primed-entry count for `member` (0 when nothing was primed). */
+        entryCountOf(member) {
+            const n = entryCounts.get(member);
+            return Number.isFinite(n) ? n : 0;
+        },
+        /** Machine-readable per-member prime outcome, or null if never run. */
+        primeOutcomeOf(member) {
+            return primeOutcomes.get(member) || null;
+        },
+        /** Error text behind a 'tool-unavailable' outcome, when there is one. */
+        primeErrorOf(member) {
+            return primeErrors.get(member) || null;
+        },
+        /**
+         * The structured fleet-MCP scope record member_detail reported for
+         * `member` ({ scoped, reason?, remediation?, ... }), or null when the
+         * server does not report one. An UNSCOPED member's named reason and
+         * remediation are carried from here verbatim -- never re-derived.
+         */
+        mcpScopeOf(member) {
+            return mcpScopes.get(member) || null;
+        },
         async primeAll() {
-            if (!active) return { primed: 0, skipped: members.length };
+            if (!active) {
+                // No transport (or no members): record the outcome per member
+                // anyway. The Sprint Setup preflight reports EVERY member, and
+                // a member that was never asked must not read as a clean pass.
+                for (const member of members) {
+                    primeOutcomes.set(member, 'no-transport');
+                    entryCounts.set(member, 0);
+                }
+                return { primed: 0, skipped: members.length };
+            }
             let primed = 0;
             let skipped = 0;
             for (const member of members) {
+                entryCounts.set(member, 0);
                 try {
-                    const { folder: repoPath, remoteUrl } = await scopeFor(member);
+                    const { folder: repoPath, remoteUrl, mcpScope } = await scopeFor(member);
                     if (repoPath) folders.set(member, repoPath);
                     if (remoteUrl) remoteUrls.set(member, remoteUrl);
+                    if (mcpScope) mcpScopes.set(member, mcpScope);
                     if (repoPath && remoteUrl) {
                         const known = urlByFolder.get(repoPath);
                         if (known !== undefined && known !== remoteUrl) {
@@ -541,6 +603,7 @@ export function createKbPrimingClient(opts = {}) {
                         // No folder means no repo to scope the KB to. Priming without
                         // one would read the fleet server's own KB, so skip instead.
                         log(`[kb-prime] no work folder for member '${member}' -- skipping (KB stays cold)`);
+                        primeOutcomes.set(member, 'no-folder');
                         skipped++;
                         continue;
                     }
@@ -578,14 +641,32 @@ export function createKbPrimingClient(opts = {}) {
                         log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
                     }
 
-                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) }));
+                    const rawPrime = await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) });
+                    if (isToolError(rawPrime)) {
+                        // The MCP client RESOLVES a tool-level failure rather
+                        // than throwing, so without this branch a rejected
+                        // prime is indistinguishable from an empty scope --
+                        // which is precisely the conflation the Sprint Setup
+                        // preflight must not make.
+                        const detail = toolErrorText(rawPrime);
+                        log(`[kb-prime] kb_session_prime rejected for '${member}' (non-fatal): ${detail}`);
+                        primeOutcomes.set(member, 'tool-unavailable');
+                        primeErrors.set(member, detail);
+                        skipped++;
+                        continue;
+                    }
+                    const primeResult = parseResult(rawPrime);
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
                         ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
                         : [];
                     if (entries.length > 0) knowledge.set(member, entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES));
+                    entryCounts.set(member, entries.length);
+                    primeOutcomes.set(member, 'ok');
                     primed++;
                 } catch (err) {
                     log(`[kb-prime] failed for member '${member}' (non-fatal): ${err.message}`);
+                    primeOutcomes.set(member, 'tool-unavailable');
+                    primeErrors.set(member, err.message);
                     skipped++;
                 }
             }

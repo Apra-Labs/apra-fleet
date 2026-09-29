@@ -55,6 +55,20 @@ export function resultText(result) {
 }
 
 /**
+ * True when an MCP tool result represents a TOOL-LEVEL failure. The MCP client
+ * RESOLVES such results instead of throwing, so a caller that only catches
+ * exceptions silently treats a failure as a success -- the exact reason this
+ * predicate exists rather than being inlined as a `res.isError` check at each
+ * site. Lives here, next to toolErrorText(), because the two are always used
+ * as a pair: this one decides, that one explains.
+ * @param {any} res
+ * @returns {boolean}
+ */
+export function isToolError(res) {
+    return !!(res && typeof res === 'object' && res.isError === true);
+}
+
+/**
  * Best-effort human-readable text out of an MCP error result, for logging.
  * Skips any display banner the same way resultText() does (apra-fleet-3swo.63):
  * content[0] is not reliably the tool's error text -- wrapTool() may prepend a

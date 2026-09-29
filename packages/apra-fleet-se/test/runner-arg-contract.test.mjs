@@ -10,6 +10,9 @@ import {
     validateBranchName,
 } from '../fleet-sprint/runner.js';
 import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+// Sprint Setup's detached code-index launch is recognised by the sentinel its
+// one-liner prints; imported from production so this filter cannot drift.
+import { INDEX_LAUNCH_SENTINEL } from '../fleet-sprint/member-preflight.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -572,7 +575,15 @@ describe('runner.js mock-level execution', () => {
         assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
         const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
+        // Sprint Setup's per-member knowledge/code-intelligence preflight issues
+        // ONE member command of its own in this window -- the DETACHED code-
+        // index launch (fleet-sprint/member-preflight.mjs). It is fire-and-
+        // forget and touches neither beads nor git, so it is filtered out here
+        // for the same reason the identity probes are skipped above: what this
+        // assertion pins is that no BEADS or GIT work sneaks in ahead of the
+        // beads-health gate.
         for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
+            if (pre.includes(INDEX_LAUNCH_SENTINEL)) continue;
             assert.match(
                 pre,
                 /^bd /,

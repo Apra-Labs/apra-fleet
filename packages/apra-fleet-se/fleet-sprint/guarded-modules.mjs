@@ -377,6 +377,12 @@ export const GUARDED_MODULES = [
     'beads-identity.mjs',
     'beads-identity-check.mjs',
     'vcs-module.mjs',
+    // The Sprint Setup per-member knowledge/code-intelligence preflight. It
+    // carries ONE member_name-bearing command() call site -- the detached
+    // code-index launch -- which is exactly the construct dispatch-safety-guard
+    // and shell-command-guard exist to scan, so it is registered as part of the
+    // bead that introduces it rather than as a follow-up.
+    'member-preflight.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',

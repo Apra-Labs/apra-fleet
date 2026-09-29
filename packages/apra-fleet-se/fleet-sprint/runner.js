@@ -222,6 +222,13 @@ import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
+// Sprint Setup's per-member knowledge/code-intelligence preflight: start the
+// member's code index detached, prime its knowledge scope and PRINT the entry
+// count, probe one code tool, and warn visibly on every failure WITHOUT ever
+// failing the sprint. It owns the per-member priming pass now (it calls
+// primeAll() itself and reads the per-member results back), so the runner
+// wires the priming client into it instead of calling primeAll() directly.
+import { createMemberPreflight } from './member-preflight.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
 // duplicated), the `bd list --all --limit 0 --json` snapshot, and the
@@ -392,6 +399,10 @@ export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 };
+// Re-exported alongside the KB surface above for the same reason: member-
+// preflight.mjs is the single source of truth, and runner.js stays the facade
+// importers reach it through.
+export { createMemberPreflight };
 // Re-exported so importers of the verify-set classifier from runner.js keep
 // working; beads-scope.mjs is the single source of truth for its
 // implementation, and for the BFS scope-discovery rule it now shares with
@@ -1265,7 +1276,6 @@ async function runSprintCycle(context) {
         members: physicalMembers,
         log,
     });
-    await kbPriming.primeAll();
 
     // The role output schemas are shared with apra-pm, so every role dispatched
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
@@ -1391,6 +1401,34 @@ async function runSprintCycle(context) {
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
     });
+
+    // Sprint Setup preflight -- knowledge and code intelligence, per member.
+    // This is what CALLS the KB priming pass now: the three per-member checks
+    // (start the member's code index DETACHED, prime its knowledge scope and
+    // PRINT the entry count, probe one code tool) are reported as one
+    // structured per-member record, and every failure raises a visible warning
+    // WITHOUT failing the sprint -- there is no blocking gate here.
+    //
+    // Sits immediately AFTER the beads identity precondition, and before any
+    // dispatch, deliberately. The identity probes must still be the first
+    // member commands this sprint issues (that is the invariant the comment
+    // above states and the mock-sprint identity scenarios pin); this preflight
+    // issues one member command of its own -- the detached index launch -- so
+    // putting it any earlier would open the command log with something other
+    // than the identity probe. Everything it primes is consumed by dispatch
+    // prompts, and the first dispatch is still far below.
+    //
+    // Injectable so a test can drive the wiring with no live fleet server, no
+    // member connection and no real index run.
+    const memberPreflight = context.memberPreflight ?? createMemberPreflight({
+        members: physicalMembers,
+        command,
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        kbPriming,
+        log,
+        publishState,
+    });
+    await memberPreflight.runAll();
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of

@@ -62,6 +62,18 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // unreachable. Absent when the member was registered without an explicit
     // git_access (the engine then falls back to its provisioning default).
     gitAccess: agent.gitAccess ?? undefined,
+    // The structured record of whether this member has its OWN fleet MCP
+    // server and, when it does not, the machine-readable reason plus the
+    // user-actionable remediation (compose_permissions resolves and persists
+    // it as Agent.memberMcpScope). Surfaced for the same reason as
+    // repo_remote_url and gitAccess above: the fleet-sprint engine has no
+    // registry of its own, so member_detail is its ONLY source for member
+    // facts. Its Sprint Setup preflight must report an unscoped member with
+    // the named reason RATHER than re-probing the member's install, and the
+    // Knowledge and Code Intelligence panel renders the same record. Absent
+    // when compose_permissions has never run for this member -- which the
+    // preflight treats as "nothing is known to be unscoped", not as a failure.
+    mcp_scope: agent.memberMcpScope ?? undefined,
   };
 
   // -- Cloud Info (parallel with connectivity check) --

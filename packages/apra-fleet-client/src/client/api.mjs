@@ -251,6 +251,11 @@
  *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
  *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
  *   exactly for the members at risk.
+ * @property {Object} [mcp_scope] - Structured record of whether this member has its own fleet MCP
+ *   server: `{ scoped, serverName?, version?, reason?, remediation?, detail?, resolvedAt }`.
+ *   `scoped: false` is a normal, non-fatal state and always carries a machine-readable `reason`
+ *   plus a user-actionable `remediation`. Consumers must report that reason VERBATIM rather than
+ *   re-probing the member's install. Absent until compose_permissions has run for this member.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")

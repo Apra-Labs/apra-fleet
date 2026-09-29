@@ -6,6 +6,10 @@ import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
 import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
+// The sentinel Sprint Setup's detached code-index launch prints, imported from
+// production rather than re-spelled here so the intercept below cannot drift
+// away from the command it is meant to catch.
+import { INDEX_LAUNCH_SENTINEL } from '../../fleet-sprint/member-preflight.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1273,6 +1277,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 if (branch) prExistsState.add(branch);
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
+            }
+
+            // Sprint Setup's detached code-index launch. Intercepted for the
+            // same hermeticity reason as the git/gh block below, but the stakes
+            // are higher: run for real this would spawn a DETACHED background
+            // indexer per member per mock sprint, outliving the test process
+            // and chewing the machine's CPU long after the suite has exited.
+            // The launch is fire-and-forget by contract -- the engine only ever
+            // observes whether the LAUNCH was issued -- so answering with the
+            // command's own success shape exercises the real code path without
+            // starting anything. Matched on the sentinel the launch one-liner
+            // prints, which is exported from fleet-sprint/member-preflight.mjs.
+            if (opts.command.includes(INDEX_LAUNCH_SENTINEL)) {
+                return mockCmdResult(0, `${INDEX_LAUNCH_SENTINEL}:4242`, '');
             }
 
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push
