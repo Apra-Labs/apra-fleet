@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSprintRunnerCommand } from './node-runner.mjs';
+import { prependToPathEnv } from './lib/child-path-env.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -467,12 +468,40 @@ export function createSpawner(deps = {}) {
             // apra-fleet-50j6.2.1: compose env with serviceToken. Base is
             // deps.env (if provided) or process.env (the implicit default).
             // If serviceToken is set, overlay it on the base env as
-            // FLEET_SE_SERVICE_TOKEN. Omit env entirely if no token and no
-            // deps.env -- match today's behavior exactly.
+            // FLEET_SE_SERVICE_TOKEN. Omit env entirely if no token, no
+            // deps.env, and no configured node path -- match today's
+            // behavior exactly (AC3).
             const baseEnv = deps.env ?? process.env;
-            const spawnEnv = serviceToken
-                ? { ...baseEnv, FLEET_SE_SERVICE_TOKEN: serviceToken }
-                : baseEnv;
+            let spawnEnv = baseEnv;
+            if (serviceToken) {
+                spawnEnv = { ...spawnEnv, FLEET_SE_SERVICE_TOKEN: serviceToken };
+            }
+            // apra-fleet-i9ag.19.32: the child-env half of the same defect
+            // exec-bd.mjs (apra-fleet-i9ag.19.7) fixes for the supervisor's
+            // OWN `bd` invocations. Spawning the sprint child with the
+            // recorded node fixes which interpreter the CHILD runs under,
+            // but the child inherits this env and shells out to `bd` (an
+            // npm `'#!/usr/bin/env node'` script) on its own -- under a
+            // launchd/Windows-task PATH with no `node` on it, that first
+            // `bd` call dies with `env: node: No such file or directory`
+            // (exit 127) unless the recorded node's directory is already on
+            // the search path this child inherits. Prepending (never
+            // replacing) dirname(configuredNodePath) here fixes that, while
+            // leaving every pre-existing entry in place and in order (AC1).
+            // Uses prependToPathEnv() (src/supervisor/lib/child-path-env.mjs)
+            // for the case-correct 'PATH' vs 'Path' key lookup -- writing
+            // `spawnEnv.PATH` directly would silently create a SECOND
+            // variable on Windows and drop every real entry (AC2). Operates
+            // on `spawnEnv`, never `baseEnv`/`process.env` directly (AC4):
+            // when neither serviceToken nor configuredNodePath applies,
+            // `spawnEnv` is still exactly `baseEnv` by reference, so the
+            // `spawnEnv !== process.env` check below is unaffected.
+            if (typeof configuredNodePath === 'string' && configuredNodePath.trim().length > 0) {
+                if (spawnEnv === baseEnv) {
+                    spawnEnv = { ...spawnEnv };
+                }
+                prependToPathEnv(spawnEnv, path.dirname(configuredNodePath.trim()));
+            }
             child = spawnImpl(command, args, {
                 detached: true,
                 stdio: ['ignore', logFd, logFd],
