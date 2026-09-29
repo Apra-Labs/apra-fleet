@@ -1618,6 +1618,64 @@ per-sprint firewall holes. Live-streamed updates (Server-Sent Events) are
 proxied with no buffering and no compression, so the live view stays live
 through the proxy hop.
 
+### Theme tokens: one shared module, not a per-page copy
+
+The dashboard's CSS custom properties (`--bg`, `--text`, `--accent`, etc.) and
+base rules live in a single exported string (`theme.mjs`), imported by both
+the main dashboard page and every other console-embedded page the supervisor
+serves (e.g. the Projects settings page). Earlier revisions defined the same
+token block inline inside the dashboard's own module and left every other
+page -- anything rendered by a route module other than the dashboard itself --
+with no styling at all, so it inherited the browser's default black-on-white
+(or black-on-dark-shell) rendering instead of the shared theme. The fix is
+structural, not a per-page patch: a page gets the theme by importing the one
+module, so a new page cannot ship unstyled by omission the way copy-paste
+inline CSS allowed. Any future console-embedded page under this package
+should import from this same module rather than defining its own token block,
+even a page that only needs a couple of the tokens.
+
+### Header running-counter must read the same array the stack renders
+
+The dashboard header's running-sprint counter and the sprint-stack list below
+it are two independent DOM regions fed by the same poll response, and they
+must never be allowed to diverge -- a counter and a list that disagree about
+how many sprints are running is confusing regardless of which one is
+"right." The fix that holds this invariant is structural: both the initial
+server-side render and every subsequent client-side poll derive the counter
+from `data.sprints.length` -- the exact same array `renderSprintStackFromState`
+iterates to build the stack rows, not a separately-tracked count. There is
+only one client-side render path (poll, invoked by both the SSE message
+handler and the heartbeat-interval fallback); there is no second code path
+that could recompute or cache a stale count independently.
+
+**Known latent risk in this shape:** the poll handler renders the stack
+first and updates the counter second, both inside one `try`/`catch` that only
+logs to the console on failure. If rendering the stack throws partway through
+(e.g. one malformed sprint view in the array), the counter update below it
+never runs and the header keeps its last-good value while the stack has
+already partially re-rendered -- reintroducing a header/stack disagreement on
+the failure path even though the success path is provably consistent. Fixing
+this requires writing the counter from the same array before (or independently
+of) the stack render, not after it, so the two writes cannot be separated by
+an exception in between.
+
+### Surfacing a failure reason depends on correctly classifying the terminal state first
+
+A sprint that fails after its initial launch window (rather than failing to
+launch at all) reaches a different code path than a launch failure, and that
+path does not currently thread the failure reason through to either the
+sprint-stack row or the finished-sprint card -- both currently render an empty
+reason string for any status other than the explicit launch-failed state, even
+when the underlying run record does carry a reason. The reason itself is not
+lost -- it is visible on the live viewer and in the standalone History page --
+so this is a rendering/classification gap on the dashboard's own summary
+surfaces, not a data-loss bug. Any fix here has two independent parts that
+both have to land together: detecting the terminal state promptly (rather
+than only when the child process's own dashboard exits, which can lag the
+actual failure by minutes), and actually rendering the carried reason once
+that state is detected -- fixing only one without the other still leaves an
+operator looking at a stack row or finished card with no explanation.
+
 ## Embedding the dashboard in the console: mount-prefix resolution and cross-links
 
 The supervisor is a self-registering workflow package in the fleet console
