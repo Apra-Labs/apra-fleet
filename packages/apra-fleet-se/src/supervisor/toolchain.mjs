@@ -135,6 +135,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
 
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
@@ -204,6 +205,63 @@ async function defaultExec(file, args, options = {}) {
 // apra-fleet-i9ag.19.18/19.20, is unchanged); `classifyIncompleteProbe()`
 // and `TRANSIENT_SPAWN_ERRNOS` moved into the shared module alongside it,
 // since they exist only to support that retry decision.
+
+/**
+ * apra-fleet-i9ag.19.30 -- composes the bd probe's `exec` so it runs THROUGH
+ * the recorded node, mirroring exec-bd.mjs's `withConfiguredNodeDirOnPath()`
+ * (apra-fleet-i9ag.19.7 amended AC A1/A2, PR #561 judge defect D1): ONE
+ * strategy in the codebase, not two. A recorded `bd` installed by npm is
+ * typically a `#!/usr/bin/env node` shebang script; probing it directly
+ * (`probeVersion(exec, platform, bdPath, ...)`) under a service PATH that
+ * carries no `node` at all makes `env` fail synchronously with `env: node:
+ * No such file or directory` (exit 127) before `bd` itself ever runs,
+ * reporting a perfectly good recording as a broken bd -- exactly the
+ * implicit-environment-decides-behaviour shape CLAUDE.md targets.
+ *
+ * CHOSEN STRATEGY (same as exec-bd.mjs, named here so this module's own
+ * choice never drifts from it): prepend `dirname(nodePath)` to the child's
+ * PATH rather than invoking bd as `<nodePath> <bdPath>`. This works whether
+ * the recorded `bdPath` is a shebang script (its `env node` lookup now finds
+ * the recorded node) OR a real native binary (the PATH addition is inert for
+ * a binary that never shells out to `env`), without this module having to
+ * sniff which kind `bdPath` is -- see exec-bd.mjs's own doc comment for the
+ * full rationale, which applies unchanged here.
+ *
+ * Wraps the `exec` FUNCTION handed to `probeVersion()`, never its `options`
+ * bag shape (`{ timeoutMs, retry }`) -- so `./node-version.mjs` needs no
+ * change at all to express this (apra-fleet-i9ag.19.30 AC 3): the wrapped
+ * exec receives exactly the `execOptions` (`{ shell, timeout }`) probeVersion
+ * always builds, adds `env` on top, and forwards to the real `exec`
+ * unchanged otherwise. Modeled with `path.posix.*` and a literal `:`
+ * delimiter (not the bare `path` module, which follows the host's real
+ * `process.platform`) -- same reasoning as exec-bd.mjs's own composition:
+ * `nodePath` here has already been validated absolute by
+ * `readToolchainBlock()` (project-config.mjs), and this repo's recorded
+ * toolchain paths are POSIX-shaped even under an injected win32 `platform`
+ * in tests (see this file's win32 describe block).
+ *
+ * Only ever applied to the bd probe (node's own probe is unchanged -- node
+ * is a real binary, never a shebang script, so it never needs this), and
+ * only when a recorded `nodePath` is present -- `validateRecordedToolchain()`
+ * only calls this once it has already confirmed `toolchain` (and therefore
+ * `nodePath`, format-validated non-blank/absolute by `readToolchainBlock()`)
+ * is present; with no recorded toolchain at all, the bd probe never runs in
+ * the first place (see the `!toolchain` early return above), so there is no
+ * separate "recorded bd but no recorded node" case to compose for.
+ *
+ * @param {(file: string, args: string[], options?: object) => unknown} exec - the real probe exec (injected or defaultExec).
+ * @param {string} nodePath - the recorded, already-format-validated node path.
+ * @returns {(file: string, args: string[], options?: object) => unknown}
+ */
+function withNodeFirstBdExec(exec, nodePath) {
+    const nodeDir = path.posix.dirname(nodePath);
+    return (file, args, options = {}) => {
+        const baseEnv = options.env ?? process.env;
+        const currentPath = baseEnv.PATH ?? baseEnv.Path ?? '';
+        const env = { ...baseEnv, PATH: currentPath ? `${nodeDir}:${currentPath}` : nodeDir };
+        return exec(file, args, { ...options, env });
+    };
+}
 
 /**
  * Words a "the probe could not complete" problem entry for `label` (`'node'`
@@ -308,7 +366,13 @@ export async function validateRecordedToolchain(deps = {}) {
     // ran" contract, unaffected by running concurrently.
     const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true };
     const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version'], probeOptions);
-    const bdProbePromise = bdRecorded ? probeVersion(exec, platform, bdPath, ['--version'], probeOptions) : null;
+    // apra-fleet-i9ag.19.30: probe bd THROUGH the recorded node (see
+    // withNodeFirstBdExec()'s doc comment) so a node-less service PATH
+    // cannot fake a broken bd. `nodePath` is guaranteed present here --
+    // `toolchain` (and therefore `nodePath`) was already confirmed truthy by
+    // the `!toolchain` early return above.
+    const bdExec = bdRecorded ? withNodeFirstBdExec(exec, nodePath) : exec;
+    const bdProbePromise = bdRecorded ? probeVersion(bdExec, platform, bdPath, ['--version'], probeOptions) : null;
     const [nodeProbe, bdProbe] = await Promise.all([nodeProbePromise, bdProbePromise]);
 
     // Node: the ONLY input to `ok` (see this file's header for why) --
