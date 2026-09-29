@@ -258,6 +258,34 @@ export interface ParseResponseContext {
   agentOs?: 'linux' | 'macos' | 'windows';
 }
 
+/**
+ * apra-fleet-b4g.23.1: per-file instructions for reconciling composed config with
+ * what is already on the member's disk.
+ */
+export interface PermissionConfigMergeRule {
+  /**
+   * Key paths to DELETE from the on-disk content before merging, e.g.
+   * `[['mcpServers', 'apra-fleet']]`.
+   *
+   * A config key a provider has RETIRED survives on an already-configured
+   * member's disk merely by not being written any more, because a deep merge can
+   * only add or overwrite. Without an explicit prune a member keeps being listed
+   * as both enabled and disabled at once.
+   */
+  pruneKeys?: string[][];
+  /**
+   * Key paths whose ARRAY value must be unioned with the on-disk array instead of
+   * replacing it, e.g. `[['permissions', 'deny']]`.
+   *
+   * Needed where fleet contributes entries to a list a HUMAN also edits: replacing
+   * that array wholesale would silently delete their entries, which this repo
+   * forbids. Scoped per key rather than per file on purpose -- `permissions.allow`
+   * is recomputed from profiles plus the ledger on every run and MUST replace, or
+   * a permission removed from a profile could never be withdrawn from a member.
+   */
+  unionArrayPaths?: string[][];
+}
+
 /** Extra inputs to composePermissionConfig; providers that do not need them
  *  ignore them. */
 export interface ComposePermissionOptions {
@@ -266,6 +294,18 @@ export interface ComposePermissionOptions {
   /** Receives lines for grants that could not be expressed and were dropped;
    *  compose_permissions shows them in its result. */
   warnings?: string[];
+  /**
+   * apra-fleet-b4g.23.1: the member's OWN apra-fleet install, already RESOLVED
+   * AND VERIFIED on that member by resolveMemberFleetInstall, or a structured
+   * reason it could not be. A provider uses the descriptor VERBATIM when
+   * `scoped` is true and writes NO fleet MCP entry at all when it is false --
+   * it must never construct a launch path itself, because any path it could
+   * derive locally would be the ORCHESTRATOR's, not the member's.
+   *
+   * Absent (undefined) means the caller did not resolve one, which providers
+   * treat exactly like the unscoped case: write no entry.
+   */
+  fleetInstall?: import('../services/member-fleet-install.js').MemberFleetInstall;
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -471,6 +511,25 @@ export interface ProviderAdapter {
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
+  /**
+   *  MCP server names a HUMAN explicitly disabled for this member, read from the
+   *  member's own config BEFORE anything is written (apra-fleet-b4g.23.1
+   *  criterion 8).
+   *
+   *  A value a human set is authoritative and is never overwritten, so this is
+   *  checked up front: a disabled name makes the member unscoped with
+   *  `human-disabled` as the named reason, and NO entry is written for it --
+   *  rather than fleet writing one and relying on the provider to ignore it.
+   *  Never throws; an unreadable config means "nothing explicitly disabled".
+   *  Optional: a provider with no disable list omits it. */
+  readMemberMcpDisabled?(
+    agent: import('../types.js').Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+    agentOs?: 'linux' | 'macos' | 'windows',
+    shell?: MemberShell,
+  ): Promise<string[]>;
+
   /** Optional hook called during compose_permissions before config delivery; returns
    *  warnings to surface in the tool result (e.g. AGY's global-skills check). */
   preparePermissionsDelivery?(
@@ -484,7 +543,43 @@ export interface ProviderAdapter {
   // Permission configuration
   /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
    *  Parallel to the array returned by composePermissionConfig(). */
-  permissionConfigPaths(agent?: import('../types.js').Agent): string[];
+  /**
+   *  Config files this provider writes for a compose_permissions run.
+   *
+   *  `opts` MUST be the same options object passed to composePermissionConfig:
+   *  a provider whose file set depends on whether the member has a usable
+   *  apra-fleet install (claude adds `.mcp.json`, agy adds its mcp config) would
+   *  otherwise return a path list that is not index-parallel with the configs,
+   *  and the wrong config would be written to the wrong file
+   *  (apra-fleet-b4g.23.1). */
+  permissionConfigPaths(
+    agent?: import('../types.js').Agent,
+    opts?: ComposePermissionOptions,
+  ): string[];
+
+  /**
+   *  How to reconcile each config file with what is already on the member's
+   *  disk, parallel to permissionConfigPaths() (apra-fleet-b4g.23.1).
+   *
+   *  Both directives exist because deepMerge/deepMergeUnion are the wrong tool
+   *  on their own: the first can only ADD or OVERWRITE keys, and the second
+   *  unions EVERY array in the file.
+   *
+   *  Optional: a provider needing neither directive omits this. */
+  permissionConfigMergeRules?(
+    agent?: import('../types.js').Agent,
+    opts?: ComposePermissionOptions,
+  ): PermissionConfigMergeRule[];
+
+  /**
+   *  Whether this provider can run the member's own apra-fleet MCP server over
+   *  stdio from a config file fleet writes.
+   *
+   *  Required rather than optional so a newly added provider must state its
+   *  stance instead of silently defaulting to "unreachable member"
+   *  (apra-fleet-b4g.23.1). `false` makes compose_permissions record the member
+   *  as unscoped with a named reason -- never a silent skip and never an abort. */
+  supportsMemberMcp(): boolean;
   /** Returns provider-native permission config for the given role.
    *  Each element corresponds to the path at the same index in permissionConfigPaths().
    *  JSON providers return Record<string, unknown>; TOML providers return a string. */

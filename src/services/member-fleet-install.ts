@@ -97,7 +97,14 @@ export type FleetInstallUnscopedReason =
   | 'probe-failed'
   /** Engine invariant tripwire: a descriptor for a REMOTE member was built from
    *  an orchestrator-derived value. Never reachable on the correct path. */
-  | 'orchestrator-path-leak';
+  | 'orchestrator-path-leak'
+  /** The member's LLM provider cannot run an MCP server fleet configures, so
+   *  there is nothing to enable regardless of what is installed
+   *  (apra-fleet-b4g.23.1 criterion 10). Named rather than silently skipped. */
+  | 'provider-unsupported'
+  /** A human explicitly disabled the fleet MCP server for this member. Honoured,
+   *  never overridden -- reported as the reason the member is unscoped. */
+  | 'human-disabled';
 
 /** How the descriptor was arrived at. Exposed so callers (and tests) can see
  *  that a local member took the local branch DELIBERATELY rather than falling
@@ -225,8 +232,8 @@ function unusable(binPath: string, agent: Agent, detail: string): FleetInstallUn
     remediation:
       `Member "${agent.friendlyName}" has a file at ${binPath} but it did not report an ` +
       `apra-fleet version. Log in to that machine as ${agent.username ?? 'the member account'}, ` +
-      `run "${binPath} --version" to see the real error, and re-run "apra-fleet install" there ` +
-      `to repair the install.`,
+      `run "${binPath} --version" to see what it reports, and re-run "apra-fleet install" ` +
+      `there to repair the install.`,
     detail,
   };
 }
@@ -240,6 +247,43 @@ function probeFailed(agent: Agent, detail: string): FleetInstallUnscoped {
       `exists is unknown. Check that the member is powered on and reachable (check_member_health ` +
       `reports its connectivity), then retry. No configuration was changed for this member.`,
     detail,
+  };
+}
+
+/**
+ * The member's LLM provider has no MCP surface fleet can configure, so no
+ * install could help (apra-fleet-b4g.23.1 criterion 10). A named outcome rather
+ * than a silently unreachable member, and non-fatal like every other unscoped
+ * reason.
+ */
+export function providerUnsupportedUnscoped(providerName: string, friendlyName: string): FleetInstallUnscoped {
+  return {
+    scoped: false,
+    reason: 'provider-unsupported',
+    remediation:
+      `Member "${friendlyName}" runs the "${providerName}" agent CLI, which apra-fleet cannot ` +
+      `configure an MCP server for, so it cannot use the KB or code-intelligence tools. To give ` +
+      `this member those tools, re-register it with a provider that supports MCP (claude or agy). ` +
+      `Everything else about this member is unaffected.`,
+    detail: `provider "${providerName}" reports supportsMemberMcp() === false`,
+  };
+}
+
+/**
+ * A human explicitly turned the fleet MCP server off for this member. Their
+ * choice is authoritative and is never overwritten (apra-fleet-b4g.23.1
+ * criterion 8); it becomes the named reason the member is unscoped.
+ */
+export function humanDisabledUnscoped(friendlyName: string, whereFound: string): FleetInstallUnscoped {
+  return {
+    scoped: false,
+    reason: 'human-disabled',
+    remediation:
+      `The apra-fleet MCP server is explicitly disabled for member "${friendlyName}" in ` +
+      `${whereFound}. apra-fleet does not override that. Remove the server from that ` +
+      `disabled list on the member and re-run compose_permissions to give it the KB and ` +
+      `code-intelligence tools.`,
+    detail: `human-set disable found in ${whereFound}`,
   };
 }
 
@@ -333,7 +377,7 @@ async function verifyOnMember(
         scoped: false,
         reason: 'orchestrator-path-leak',
         remediation:
-          `Internal error: the launch command resolved for member "${agent.friendlyName}" contains a ` +
+          `Internal fault: the launch command resolved for member "${agent.friendlyName}" contains a ` +
           `path belonging to the orchestrator (${leaked}), which cannot be valid on the member. This ` +
           `is an apra-fleet bug -- please report it. No configuration was changed for this member.`,
         detail: `leaked value: ${leaked}`,

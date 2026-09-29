@@ -10,11 +10,25 @@ import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
-import type { Agent } from '../types.js';
+import type { Agent, MemberMcpScope } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
+import type { ComposePermissionOptions, PermissionConfigMergeRule } from '../providers/provider.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { updateAgent } from '../services/registry.js';
+import { logWarn } from '../utils/log-helpers.js';
+import type { MemberFleetInstall } from '../services/member-fleet-install.js';
+import {
+  humanDisabledUnscoped,
+  providerUnsupportedUnscoped,
+  resolveMemberFleetInstall,
+} from '../services/member-fleet-install.js';
+import {
+  MEMBER_ALLOWED_TOOLS,
+  MEMBER_MCP_SERVER_ALIASES,
+  MEMBER_MCP_SERVER_NAME,
+} from '../providers/member-tool-scope.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
@@ -482,6 +496,59 @@ function resolveRemotePath(
   return `${base}/${relPath}`;
 }
 
+/**
+ * Delete `keyPath` (e.g. `['mcpServers', 'apra-fleet']`) from `obj`, in place.
+ *
+ * Walks only through plain objects and is a no-op when any segment is missing, so
+ * pruning a key a member never had costs nothing and changes nothing (which is
+ * what keeps a re-run byte-identical). After removing the leaf, an ancestor left
+ * EMPTY by the removal is dropped too -- otherwise retiring the only entry under
+ * `mcpServers` would leave `"mcpServers": {}` behind, which is a visible diff on
+ * every member and a second thing to explain (apra-fleet-b4g.23.1).
+ */
+export function deleteKeyPath(obj: Record<string, unknown>, keyPath: string[]): void {
+  if (keyPath.length === 0) return;
+  const chain: Array<Record<string, unknown>> = [obj];
+  let cursor: Record<string, unknown> = obj;
+  for (let i = 0; i < keyPath.length - 1; i++) {
+    const next = cursor[keyPath[i]];
+    if (!isPlainObject(next)) return;
+    cursor = next;
+    chain.push(cursor);
+  }
+  const leaf = keyPath[keyPath.length - 1];
+  if (!(leaf in cursor)) return;
+  delete cursor[leaf];
+  // Drop ancestors the removal emptied, deepest first. `obj` itself (index 0) is
+  // never removed -- an empty config file is still a valid config file.
+  for (let i = chain.length - 1; i >= 1; i--) {
+    if (Object.keys(chain[i]).length > 0) break;
+    delete chain[i - 1][keyPath[i - 1]];
+  }
+}
+
+/** Value at `keyPath`, or undefined when any segment is missing. */
+function readKeyPath(obj: unknown, keyPath: string[]): unknown {
+  let cursor: unknown = obj;
+  for (const key of keyPath) {
+    if (!isPlainObject(cursor)) return undefined;
+    cursor = cursor[key];
+  }
+  return cursor;
+}
+
+/** Set `keyPath` to `value`, creating intermediate plain objects as needed. */
+function writeKeyPath(obj: Record<string, unknown> | string, keyPath: string[], value: unknown): void {
+  if (typeof obj === 'string' || keyPath.length === 0) return;
+  let cursor: Record<string, unknown> = obj;
+  for (let i = 0; i < keyPath.length - 1; i++) {
+    const next = cursor[keyPath[i]];
+    if (!isPlainObject(next)) return;
+    cursor = next;
+  }
+  cursor[keyPath[keyPath.length - 1]] = value;
+}
+
 async function deliverConfigFile(
   strategy: Awaited<ReturnType<typeof getStrategy>>,
   agentOs: string,
@@ -490,7 +557,7 @@ async function deliverConfigFile(
   content: Record<string, unknown> | string,
   shell?: MemberShell,
   homeDir?: string | null,
-  opts: { unionArrays?: boolean } = {},
+  opts: { unionArrays?: boolean; mergeRule?: PermissionConfigMergeRule } = {},
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
   const posix = isPosixShell(isWindows, shell);
@@ -524,7 +591,31 @@ async function deliverConfigFile(
     } catch {
       // file missing, empty, or not JSON -- start from an empty object
     }
+    // apra-fleet-b4g.23.1: PRUNE retired keys out of what is already on disk
+    // BEFORE merging. deepMerge/deepMergeUnion can only add or overwrite, so a
+    // switch a provider has stopped writing survives on an existing member's
+    // disk forever -- leaving it both enabled (by the new form) and disabled (by
+    // the old one). Pruning the existing object also makes the read-back below
+    // verify the ABSENCE of the retired key, since mergedContent is what we
+    // compare against.
+    for (const keyPath of opts.mergeRule?.pruneKeys ?? []) {
+      deleteKeyPath(existing, keyPath);
+    }
+    // Capture the on-disk arrays that must be PRESERVED before the merge
+    // overwrites them, then union them back in afterwards. Read before the
+    // merge, applied after, because deepMerge replaces arrays wholesale.
+    const preserved = (opts.mergeRule?.unionArrayPaths ?? []).map(
+      keyPath => [keyPath, readKeyPath(existing, keyPath)] as const,
+    );
     mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMerge(existing, content);
+    for (const [keyPath, before] of preserved) {
+      if (!Array.isArray(before)) continue;
+      const after = readKeyPath(mergedContent, keyPath);
+      if (!Array.isArray(after)) continue;
+      // Order-stable union: the human's existing entries keep their positions and
+      // fleet's are appended, so a re-run is byte-identical (criterion 9).
+      writeKeyPath(mergedContent, keyPath, [...new Set([...before, ...after])]);
+    }
   }
 
   const contentStr = typeof mergedContent === 'string'
@@ -580,6 +671,87 @@ async function deliverConfigFile(
   }
 }
 
+/**
+ * apra-fleet-b4g.23.1: decide whether this member gets its own apra-fleet MCP
+ * server, in the ONE place both write paths read from.
+ *
+ * Three ways to come back unscoped, each NAMED and each non-fatal:
+ *   1. the provider cannot host an MCP server fleet configures at all;
+ *   2. a human explicitly disabled the server for this member -- checked BEFORE
+ *      anything is written, so their choice is honoured rather than overridden
+ *      and then ignored;
+ *   3. the member has no usable install of its own (resolveMemberFleetInstall).
+ */
+async function resolveMemberMcpScope(
+  agent: Agent,
+  provider: ReturnType<typeof getProvider>,
+  strategy: ReturnType<typeof getStrategy>,
+  memberHomeDir: string | null,
+): Promise<MemberFleetInstall> {
+  if (!provider.supportsMemberMcp()) {
+    return providerUnsupportedUnscoped(provider.name, agent.friendlyName);
+  }
+
+  if (provider.readMemberMcpDisabled) {
+    // Best effort: an unreadable member config must not block composing
+    // permissions, it just means nothing is known to be explicitly disabled.
+    try {
+      const disabled = await provider.readMemberMcpDisabled(
+        agent,
+        (cmd, t) => strategy.execCommand(cmd, t),
+        memberHomeDir,
+        agent.os ?? 'linux',
+        getAgentShell(agent),
+      );
+      const hit = disabled.find(name => MEMBER_MCP_SERVER_ALIASES.includes(name));
+      if (hit) {
+        return humanDisabledUnscoped(
+          agent.friendlyName,
+          `the member's own ~/.claude.json (disabledMcpjsonServers for ${agent.workFolder} lists "${hit}")`,
+        );
+      }
+    } catch {
+      // fall through to the install probe
+    }
+  }
+
+  return resolveMemberFleetInstall(agent);
+}
+
+/**
+ * Persist the outcome in the structured form later phases read back (Sprint Setup
+ * preflight, the panel) instead of leaving it in a log line that disappears.
+ */
+function recordMemberMcpScope(agent: Agent, fleetInstall: MemberFleetInstall): MemberMcpScope {
+  const resolvedAt = new Date().toISOString();
+  const scope: MemberMcpScope = fleetInstall.scoped
+    ? { scoped: true, serverName: MEMBER_MCP_SERVER_NAME, version: fleetInstall.version, resolvedAt }
+    : {
+        scoped: false,
+        reason: fleetInstall.reason,
+        remediation: fleetInstall.remediation,
+        detail: fleetInstall.detail,
+        resolvedAt,
+      };
+  try {
+    updateAgent(agent.id, { memberMcpScope: scope });
+  } catch (e: any) {
+    // The registry write is a convenience for later phases; failing it must not
+    // fail the compose run, whose real product is the config on the member.
+    logWarn('compose_permissions', `could not persist member MCP scope for ${agent.friendlyName}: ${e?.message ?? String(e)}`);
+  }
+  return scope;
+}
+
+/** The scope outcome as the operator sees it in the tool result -- an unscoped
+ *  member names its reason AND its remediation, never just "skipped". */
+function formatMcpScopeLine(scope: MemberMcpScope): string {
+  if (scope.scoped) {
+    return `\n  Fleet MCP: enabled as "${scope.serverName}" (member-local stdio, apra-fleet ${scope.version}); tools limited to ${MEMBER_ALLOWED_TOOLS.length} kb/code tools`;
+  }
+  return `\n  Fleet MCP: NOT scoped (${scope.reason}) -- no entry written.\n    ${scope.remediation}`;
+}
+
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -628,9 +800,22 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   // getMemberHomeDir, and null for a member whose probe fails -- in which case
   // resolveRemotePath raises a ConfigDeliveryError rather than silently writing
   // a home-anchored file to the wrong place.
-  const memberHomeDir = provider.permissionConfigPaths(agent).some(isHomeAnchored)
+  // apra-fleet-b4g.23.1: a provider that can host the member's own apra-fleet MCP
+  // server also needs the member's home dir -- agy's mcp config is home-anchored,
+  // and Claude reads the member's ~/.claude.json to honour a human-set disable.
+  const memberHomeDir = (provider.permissionConfigPaths(agent).some(isHomeAnchored) || provider.supportsMemberMcp())
     ? await getMemberHomeDir(agent)
     : null;
+
+  // apra-fleet-b4g.23.1: resolve ONCE, before either write path, whether this
+  // member gets its own apra-fleet MCP server over stdio. Never throws and never
+  // aborts: an unscoped member is a normal, named, non-fatal outcome, because
+  // compose_permissions has to keep working for every member that has no
+  // member-side install (which is all of them until operators install one).
+  const fleetInstall = await resolveMemberMcpScope(agent, provider, strategy, memberHomeDir);
+  const composeOpts: ComposePermissionOptions = { memberHomeDir, fleetInstall };
+  const mcpScope = recordMemberMcpScope(agent, fleetInstall);
+  const mcpScopeLine = formatMcpScopeLine(mcpScope);
   const profilesDir = findProfilesDir();
   const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
 
@@ -679,9 +864,14 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       }
     }
     const composeWarnings: string[] = [];
-    const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+    const grantOpts: ComposePermissionOptions = { ...composeOpts, warnings: composeWarnings };
+    const configs = provider.composePermissionConfig(mode, allow, agent, grantOpts);
     deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
-    const paths = provider.permissionConfigPaths(agent);
+    // Paths MUST be derived from the SAME opts as the configs, or the two lists
+    // stop being index-parallel and a config lands in the wrong file
+    // (apra-fleet-b4g.23.1).
+    const paths = provider.permissionConfigPaths(agent, grantOpts);
+    const mergeRules = provider.permissionConfigMergeRules?.(agent, grantOpts) ?? [];
     // A grant ADDS to what the member already has. Claude's allow list was
     // merged above; agy's rules are unioned into the project file's existing
     // allow/deny arrays instead of replacing them (a plain deepMerge would
@@ -689,7 +879,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     const unionArrays = provider.name === 'agy';
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir, { unionArrays });
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir, { unionArrays, mergeRule: mergeRules[i] });
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -718,7 +908,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
     const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${warningsBlock}`;
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${mcpScopeLine}${warningsBlock}`;
   }
 
   // Proactive compose mode
@@ -737,13 +927,16 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
   }
   const composeWarnings: string[] = [];
-  const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+  const proactiveOpts: ComposePermissionOptions = { ...composeOpts, warnings: composeWarnings };
+  const configs = provider.composePermissionConfig(mode, allow, agent, proactiveOpts);
   deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
-  const paths = provider.permissionConfigPaths(agent);
+  // Same opts as the configs above -- see the grant-mode note.
+  const paths = provider.permissionConfigPaths(agent, proactiveOpts);
+  const mergeRules = provider.permissionConfigMergeRules?.(agent, proactiveOpts) ?? [];
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir, { mergeRule: mergeRules[i] });
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {
@@ -768,5 +961,5 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';
   const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${warningsBlock}`;
+  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${mcpScopeLine}${warningsBlock}`;
 }

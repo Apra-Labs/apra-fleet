@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionConfigMergeRule, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -10,6 +10,13 @@ import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
+import {
+  MEMBER_ALLOWED_TOOLS,
+  MEMBER_DENIED_TOOLS,
+  MEMBER_MCP_SERVER_NAME,
+  memberMcpServerEntry,
+  renderAgyMemberMcpRules,
+} from './member-tool-scope.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -416,12 +423,46 @@ export class AgyProvider implements ProviderAdapter {
   /** The member's own agy project file, named by the id `agy --new-project`
    *  created for it (Agent.agyProjectId). ensureAgyProject must have run first;
    *  a member without an id has no file fleet may write. */
-  permissionConfigPaths(agent?: Agent): string[] {
+  supportsMemberMcp(): boolean {
+    return true;
+  }
+
+  /**
+   * apra-fleet-b4g.23.1: agy's MCP servers live in a single machine-global
+   * `~/.gemini/config/mcp_config.json` -- agy has no `agy mcp` CLI verb and no
+   * project/user scope distinction (live-verified, docs/member-onboarding-journey.md
+   * section 3a), which is exactly why that file is agy's ONE authoritative
+   * switch. It joins the path list only when the member has a verified install,
+   * so an unscoped member gets no entry written at all.
+   *
+   * Home-anchored on purpose: deliverConfigFile resolves `~/` against the
+   * MEMBER's probed home dir, never emitting a literal `~` or `$HOME` for the
+   * member's shell to expand.
+   */
+  permissionConfigPaths(agent?: Agent, opts: ComposePermissionOptions = {}): string[] {
     const id = agent?.agyProjectId;
     if (!id) {
       throw new Error('agy: member has no agy project id -- provision it (ensureAgyProject) before composing permissions');
     }
-    return [`~/.gemini/config/projects/${id}.json`];
+    const paths = [`~/.gemini/config/projects/${id}.json`];
+    if (opts.fleetInstall?.scoped) paths.push('~/.gemini/config/mcp_config.json');
+    return paths;
+  }
+
+  /**
+   * apra-fleet-b4g.23.1: prune the SUPERSEDED `apra-fleet-member` entry from
+   * agy's mcp config. It was written by registerMcpEndpoint under the old
+   * central-server design as `{ type: 'http', url, headers: { Authorization } }` --
+   * an endpoint URL plus a bearer credential, both of which the member-local
+   * stdio design removes. deepMerge cannot delete keys, so a member configured
+   * under the old design keeps that entry (and stays reachable by URL+JWT) unless
+   * it is explicitly pruned.
+   */
+  permissionConfigMergeRules(_agent?: Agent, opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
+    // agy's project file already rides the caller's `unionArrays` path in grant
+    // mode, so its allow/deny need no per-key directive here.
+    if (!opts.fleetInstall?.scoped) return [{}];
+    return [{}, { pruneKeys: [['mcpServers', 'apra-fleet-member']] }];
   }
 
   /** Only `permissionGrants.permissionGrants.{allow,deny}` -- deliverConfigFile
@@ -433,20 +474,41 @@ export class AgyProvider implements ProviderAdapter {
     agent?: Agent,
     opts: ComposePermissionOptions = {},
   ): Array<Record<string, unknown> | string> {
-    this.permissionConfigPaths(agent);
-    const agyAllow = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow, {
+    this.permissionConfigPaths(agent, opts);
+    const converted = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(allow, {
       os: agent?.os,
       homeDir: opts.memberHomeDir,
       warnings: opts.warnings,
     }));
-    return [{
+
+    // apra-fleet-b4g.23.1: the member-MCP allow rules come pre-rendered in agy's
+    // own `mcp(<server>/<tool>)` syntax from the single shared definition, so they
+    // are appended AFTER conversion rather than round-tripped through the Claude
+    // mapper. Deduplicated and order-stable so a re-run is byte-identical.
+    const fleetInstall = opts.fleetInstall;
+    const scoped = fleetInstall?.scoped === true;
+    const mcpRules = renderAgyMemberMcpRules();
+    const agyAllow = [...new Set([...converted, ...(scoped ? mcpRules.allow : [])])];
+
+    const projectConfig = {
       permissionGrants: {
         permissionGrants: {
           allow: agyAllow,
           deny: AGY_ORCHESTRATOR_DENY_RULES,
         },
       },
-    }];
+    };
+
+    if (!scoped) return [projectConfig];
+
+    return [
+      projectConfig,
+      {
+        mcpServers: {
+          [MEMBER_MCP_SERVER_NAME]: memberMcpServerEntry(fleetInstall.descriptor, { includeType: true }),
+        },
+      },
+    ];
   }
 
   async preparePermissionsDelivery(
@@ -736,31 +798,21 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
   return { actions, denials, suggestedGrants, hint, signals };
 }
 
-export const AGY_MEMBER_ALLOWED_TOOLS = [
-  'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
-  'code_flow', 'code_tests', 'kb_session_prime', 'kb_query', 'kb_stats',
-  'kb_capture', 'kb_feedback', 'kb_list',
-];
+/**
+ * apra-fleet-b4g.23.1: these two lists were DEFINED here, when agy was the only
+ * provider that scoped MCP tools per member. Claude now needs the identical
+ * logical scope in its own rule syntax, so the arrays were promoted to
+ * src/providers/member-tool-scope.ts and these names are now ALIASES of the one
+ * definition -- not a second copy. Keeping the names means the tool-registry
+ * coverage tripwire in tests/unit/agy-provider-fixes.test.ts (every tool in
+ * src/services/tool-registry.ts sits in exactly one of the two lists) keeps
+ * policing the real definition rather than a stale duplicate.
+ */
+export const AGY_MEMBER_ALLOWED_TOOLS = MEMBER_ALLOWED_TOOLS;
 
-export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
-  'register_member', 'list_members', 'get_member_model_pricing', 'remove_member',
-  'update_member', 'dolt_push_mutex', 'child_id_allocator', 'member_reservation',
-  'send_files', 'receive_files', 'execute_prompt', 'execute_command',
-  'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
-  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
-  'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
-  'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
-  'credential_store_list', 'credential_store_delete', 'credential_store_update',
-  'send_email', 'send_message', 'report_status', 'respond_to_message',
-  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
-  'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
-  'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
-];
+export const AGY_ORCHESTRATOR_DENIED_TOOLS = MEMBER_DENIED_TOOLS;
 
-export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [
-  `mcp(apra-fleet/${tool})`,
-  `mcp(apra-fleet-member/${tool})`
-]);
+export const AGY_ORCHESTRATOR_DENY_RULES: string[] = renderAgyMemberMcpRules().deny;
 
 export interface AgySkillsCheckResult {
   installed: string[];

@@ -383,16 +383,26 @@ describe('ClaudeProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
+  // apra-fleet-b4g.23.1 retired the #151 `mcpServers['apra-fleet'].disabled`
+  // switch (reported as ignored by remote Claude). With no resolved member
+  // install in `opts`, the member is unscoped: NO fleet MCP entry is written at
+  // all, and the admin tools are denied by name instead.
+  it('composePermissionConfig writes no fleet MCP entry for an unscoped doer', () => {
     const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+    expect(settings.mcpServers).toBeUndefined();
+    const permissions = settings.permissions as Record<string, string[]>;
+    expect(permissions.deny).toContain('mcp__apra-fleet__shutdown_server');
+    expect(permissions.deny).toContain('mcp__apra-fleet__version');
+    // A member never gets the ADMIN kb tools, only read/contribute.
+    expect(permissions.deny).toContain('mcp__apra-fleet__kb_export');
+    expect(permissions.allow).not.toContain('mcp__apra-fleet__kb_query');
   });
 
-  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
+  it('composePermissionConfig writes no fleet MCP entry for an unscoped reviewer', () => {
     const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+    expect(settings.mcpServers).toBeUndefined();
+    expect((settings.permissions as Record<string, string[]>).deny)
+      .toContain('mcp__apra-fleet__shutdown_server');
   });
 });
 

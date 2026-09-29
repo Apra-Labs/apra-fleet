@@ -361,9 +361,15 @@ describe('composePermissions -- Claude proactive', () => {
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toContain('"permissions"');
     expect(writeCmd).toContain('"allow"');
-    // settings.local.json must suppress fleet-mcp (#151)
+    // apra-fleet-b4g.23.1 RETIRED the #151 `mcpServers['apra-fleet'].disabled`
+    // switch: it is reported as ignored by remote Claude, so it was replaced by
+    // the live-verified .mcp.json + enabledMcpjsonServers pair. settings.local.json
+    // now carries the per-tool DENY rules instead, and must not reintroduce the
+    // old switch.
     expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('disabled');
+    expect(writeCmd).toContain('"deny"');
+    expect(writeCmd).toContain('mcp__apra-fleet__shutdown_server');
+    expect(writeCmd).not.toContain('"disabled"');
   });
 
   it('delivers reviewer config with restricted allow list', async () => {
@@ -541,10 +547,12 @@ describe('composePermissions -- Claude reactive grant', () => {
     addAgent(member);
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(git:*)'] } });
-    // First call is the read of existing settings.local.json
-    mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
-    // mkdir + write calls
-    installFsMock();
+    // Seeded into the stateful fs mock rather than queued as a one-shot
+    // execCommand response: compose_permissions now issues earlier member probes
+    // (home dir, human-set MCP disable, apra-fleet install) before it reads
+    // settings.local.json, so "the first exec call is the settings read" is no
+    // longer true. Seeding is keyed by PATH and therefore order-independent.
+    installFsMock({ '"/home/testuser/project/.claude/settings.local.json"': existing });
 
     const result = await composePermissions({
       member_id: member.id,
@@ -610,11 +618,16 @@ describe('composePermissions -- no llmProvider defaults to Claude', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #151 -- fleet-mcp disabled in member config
+// Issue #151's `mcpServers['apra-fleet'].disabled` switch, RETIRED by
+// apra-fleet-b4g.23.1. #151's intent (a member must not reach the
+// orchestrator's fleet MCP) is now served by the per-tool DENY rules plus the
+// member running its OWN apra-fleet over stdio. The old switch is not written
+// any more, and a stale one already on a member's disk is pruned -- otherwise a
+// member reads as both enabled and disabled at once.
 // ---------------------------------------------------------------------------
 
-describe('composePermissions -- fleet-mcp disabled in member config (#151)', () => {
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
+describe('composePermissions -- retired fleet-mcp disable switch (#151 -> apra-fleet-b4g.23.1)', () => {
+  it('writes per-tool deny rules instead of mcpServers.apra-fleet.disabled (proactive)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
     installFsMock();
@@ -624,12 +637,36 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
-    expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('"disabled":');
+    const written = JSON.parse(writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+    expect(written.mcpServers?.['apra-fleet']).toBeUndefined();
+    // The admin tools are denied by name, in Claude's own rule syntax.
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__shutdown_server');
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__version');
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__kb_setup');
   });
 
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (reactive grant)', async () => {
+  it('PRUNES a stale mcpServers.apra-fleet.disabled that is already on the member disk', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // A member configured by an OLDER apra-fleet: the retired switch is already
+    // on disk. A deep merge alone cannot remove it, so without the explicit
+    // prune it survives forever.
+    installFsMock({
+      '"/home/testuser/project/.claude/settings.local.json"': JSON.stringify({
+        mcpServers: { 'apra-fleet': { disabled: true } },
+      }),
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    const written = JSON.parse(writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+    expect(written.mcpServers?.['apra-fleet']).toBeUndefined();
+  });
+
+  it('does not reintroduce the retired switch on a reactive grant', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
 
@@ -642,8 +679,9 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
-    expect(writeCmd).toContain('apra-fleet');
+    const written = JSON.parse(writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+    expect(written.mcpServers?.['apra-fleet']).toBeUndefined();
+    expect(written.permissions.deny).toContain('mcp__apra-fleet__execute_prompt');
   });
 });
 
@@ -684,8 +722,11 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
       url: 'http://localhost:1234/mcp?member=abc-123',
       headers: { Authorization: 'Bearer super-secret-jwt' },
     });
-    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
-    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
+    // apra-fleet-b4g.23.1: compose_permissions no longer writes (and actively
+    // prunes) its own mcpServers['apra-fleet'].disabled switch. The
+    // register_member entry above is a DIFFERENT key and is still preserved --
+    // which is what 2xs.1 is about.
+    expect(written.mcpServers['apra-fleet']).toBeUndefined();
   });
 });
 

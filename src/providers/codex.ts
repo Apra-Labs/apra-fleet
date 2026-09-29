@@ -192,6 +192,14 @@ export class CodexProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  /** apra-fleet-b4g.23.1: fleet writes codex's permissions as `.codex/config.toml`
+   *  and has no verified mechanism for declaring an MCP server there that codex
+   *  will launch. Declared false so compose_permissions records such a member as
+   *  unscoped with a named reason instead of silently skipping it. */
+  supportsMemberMcp(): boolean {
+    return false;
+  }
+
   permissionConfigPaths(): string[] {
     return ['.codex/config.toml'];
   }

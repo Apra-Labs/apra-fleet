@@ -130,6 +130,12 @@ export class NoneProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  /** apra-fleet-b4g.23.1: a 'none' member runs no agent CLI at all, so there is
+   *  no MCP host to configure. Reported unscoped with a named reason. */
+  supportsMemberMcp(): boolean {
+    return false;
+  }
+
   permissionConfigPaths(): string[] {
     return [];
   }

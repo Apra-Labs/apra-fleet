@@ -230,6 +230,13 @@ export class OpenCodeProvider implements ProviderAdapter {
     };
   }
 
+  /** apra-fleet-b4g.23.1: no verified mechanism for fleet to declare a
+   *  stdio MCP server in opencode's settings file, so an opencode member is
+   *  reported unscoped with a named reason rather than silently skipped. */
+  supportsMemberMcp(): boolean {
+    return false;
+  }
+
   permissionConfigPaths(): string[] {
     return ['.opencode/settings.json'];
   }

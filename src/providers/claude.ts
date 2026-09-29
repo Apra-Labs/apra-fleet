@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ComposePermissionOptions, PermissionConfigMergeRule, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
-import type { LlmProvider, SSHExecResult } from '../types.js';
+import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -10,6 +10,11 @@ import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { transformAgentForClaude } from '../cli/agent-transform.js';
+import {
+  MEMBER_MCP_SERVER_NAME,
+  memberMcpServerEntry,
+  renderClaudeMemberMcpRules,
+} from './member-tool-scope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -498,12 +503,146 @@ export class ClaudeProvider implements ProviderAdapter {
     return classifyPromptError(output);
   }
 
-  permissionConfigPaths(): string[] {
-    return ['.claude/settings.local.json'];
+  supportsMemberMcp(): boolean {
+    return true;
   }
 
-  composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+  /**
+   * apra-fleet-b4g.23.1: `.mcp.json` joins the list whenever the member has a
+   * VERIFIED apra-fleet install of its own, because that file is half of
+   * Claude's one authoritative switch (see composePermissionConfig). When the
+   * member is unscoped the file is not written at all, so no empty or bogus
+   * entry is left behind.
+   */
+  permissionConfigPaths(_agent?: Agent, opts: ComposePermissionOptions = {}): string[] {
+    const paths = ['.claude/settings.local.json'];
+    if (opts.fleetInstall?.scoped) paths.push('.mcp.json');
+    return paths;
+  }
+
+  /**
+   * The RETIRED switch, pruned explicitly (apra-fleet-b4g.23.1 criterion 5).
+   *
+   * `mcpServers['apra-fleet'].disabled = true` in settings.local.json is the form
+   * this provider used to write, and it is reported as IGNORED by remote Claude
+   * anyway. deepMerge can only add or overwrite keys, so simply not writing it
+   * any more leaves a stale copy on the disk of every member already configured,
+   * and that member reads as both enabled (via .mcp.json +
+   * enabledMcpjsonServers) and disabled at once. Deleting the whole
+   * `mcpServers.apra-fleet` object -- not just the `disabled` flag -- means no
+   * fragment of the old switch survives.
+   */
+  permissionConfigMergeRules(_agent?: Agent, opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
+    const rules: PermissionConfigMergeRule[] = [{
+      pruneKeys: [['mcpServers', MEMBER_MCP_SERVER_NAME]],
+      // `permissions.deny` is a list a HUMAN also edits, so fleet's MCP deny
+      // rules are UNIONED into it -- replacing the array would silently delete
+      // whatever they put there (criterion 8). `permissions.allow` is NOT
+      // unioned: it is recomputed from profiles plus the ledger on every run and
+      // must replace, or a withdrawn permission could never actually be removed.
+      unionArrayPaths: [['permissions', 'deny']],
+    }];
+    if (opts.fleetInstall?.scoped) rules.push({});
+    return rules;
+  }
+
+  /**
+   * ONE authoritative switch, in two halves that are the SAME switch
+   * (apra-fleet-b4g.23.1 criteria 1, 4, 5, 6):
+   *
+   *  - the project's `.mcp.json` DECLARES the server with the member's own
+   *    verified launch descriptor, and
+   *  - `ensureWorkspaceTrusted` adds every name declared there to
+   *    `~/.claude.json` projects[<workFolder>].enabledMcpjsonServers.
+   *
+   * That pair is the form this repo has LIVE-VERIFIED on real members (see
+   * ensureWorkspaceTrusted's own notes: enabledMcpjsonServers +
+   * hasTrustDialogAccepted is the mechanism Claude actually honours), which is
+   * why it is chosen over the `mcpServers.x.disabled` form this method used to
+   * write -- that one is reported as IGNORED by remote Claude, so keeping it
+   * would be choosing a switch on assumption. The ordering already works:
+   * compose_permissions delivers these configs and only then calls
+   * seedWorkspaceTrust, so the freshly written `.mcp.json` is what gets read.
+   *
+   * The per-tool rules ride along in `permissions.allow` / `permissions.deny`,
+   * rendered from the single shared definition in member-tool-scope.ts. They are
+   * written even when the member is unscoped: denying a server that is not
+   * enabled is harmless, and it means a member can never reach an admin tool
+   * through a fleet MCP entry some other path left behind.
+   */
+  composePermissionConfig(
+    _role: 'doer' | 'reviewer',
+    allow: string[] = [],
+    _agent?: Agent,
+    opts: ComposePermissionOptions = {},
+  ): Array<Record<string, unknown> | string> {
+    const mcpRules = renderClaudeMemberMcpRules();
+    const fleetInstall = opts.fleetInstall;
+    const scoped = fleetInstall?.scoped === true;
+
+    // Deduplicated and order-stable so a re-run is byte-identical (criterion 9).
+    const mergedAllow = [...new Set([...allow, ...(scoped ? mcpRules.allow : [])])];
+
+    const settings: Record<string, unknown> = {
+      permissions: { allow: mergedAllow, deny: mcpRules.deny },
+      skillOverrides: { pm: 'off', fleet: 'off' },
+    };
+
+    if (!scoped) return [settings];
+
+    return [
+      settings,
+      { mcpServers: { [MEMBER_MCP_SERVER_NAME]: memberMcpServerEntry(fleetInstall.descriptor) } },
+    ];
+  }
+
+  /**
+   * apra-fleet-b4g.23.1 criterion 8: MCP server names a human explicitly
+   * disabled for this member's project, read from the MEMBER's `~/.claude.json`
+   * at `projects[<workFolder>].disabledMcpjsonServers` -- the same field
+   * `ensureWorkspaceTrusted` already treats as deny-wins when it seeds
+   * `enabledMcpjsonServers`. Read here BEFORE anything is written so a
+   * human-disabled member is reported unscoped instead of having an entry
+   * written for it at all.
+   *
+   * Never throws: a missing, unreadable or unparseable `~/.claude.json` means
+   * nothing has been explicitly disabled.
+   */
+  async readMemberMcpDisabled(
+    agent: Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+    agentOs: 'linux' | 'macos' | 'windows' = 'linux',
+    shell?: MemberShell,
+  ): Promise<string[]> {
+    // Same normalization ensureWorkspaceTrusted uses: live-verified that project
+    // keys are absolute paths with FORWARD slashes, even on Windows.
+    const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const usePosix = isPosixShell(agentOs, shell);
+    const resolvedHome = memberHomeDir ? memberHomeDir.trim() : null;
+    // No probed home dir means no path can be built without guessing at the
+    // member's own shell expansion, which this repo forbids. Treat as "nothing
+    // explicitly disabled" -- the caller's own probe failure is reported instead.
+    if (!resolvedHome) return [];
+
+    const homeFile = usePosix
+      ? `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude.json`
+      : `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\.claude.json`;
+
+    const readCmd = usePosix
+      ? `cat "${homeFile}" 2>/dev/null || true`
+      : `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`;
+
+    try {
+      const result = await execCommand(readCmd, 10000);
+      const parsed = JSON.parse(result.stdout.trim());
+      const entry = parsed?.projects?.[key];
+      const disabled = entry?.disabledMcpjsonServers;
+      if (!Array.isArray(disabled)) return [];
+      return disabled.filter((n: unknown): n is string => typeof n === 'string');
+    } catch {
+      return [];
+    }
   }
 
   supportsOAuthCopy(): boolean {

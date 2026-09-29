@@ -116,9 +116,14 @@ describe('Claude Integration Suite (claude-integration-tests)', () => {
       // (unlike AGY's convertClaudeAllowToAgyPermissions), so the composed config
       // must carry the exact same entries the caller passed in.
       expect(cfg.permissions.allow).toEqual(allow);
-      // The dispatched agent must never call back into its own fleet MCP server
-      // mid-task, and the pm/fleet skills must stay off during a headless dispatch.
-      expect(cfg.mcpServers).toEqual({ 'apra-fleet': { disabled: true } });
+      // apra-fleet-b4g.23.1: with no resolved member install in `opts` the member
+      // is unscoped, so NO fleet MCP entry is written (the retired
+      // `mcpServers['apra-fleet'].disabled` switch is gone). The admin/execute
+      // tools are denied by name instead, and the pm/fleet skills stay off for a
+      // headless dispatch.
+      expect(cfg.mcpServers).toBeUndefined();
+      expect(cfg.permissions.deny).toContain('mcp__apra-fleet__execute_prompt');
+      expect(cfg.permissions.deny).toContain('mcp__apra-fleet__shutdown_server');
       expect(cfg.skillOverrides).toEqual({ pm: 'off', fleet: 'off' });
     });
   });

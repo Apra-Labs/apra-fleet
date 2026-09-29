@@ -187,6 +187,13 @@ export class CopilotProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  /** apra-fleet-b4g.23.1: no verified mechanism for fleet to declare a
+   *  stdio MCP server in copilot's settings file, so a copilot member is
+   *  reported unscoped with a named reason rather than silently skipped. */
+  supportsMemberMcp(): boolean {
+    return false;
+  }
+
   permissionConfigPaths(): string[] {
     return ['.github/copilot/settings.local.json'];
   }

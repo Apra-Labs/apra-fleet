@@ -3,6 +3,32 @@ import type { CloudConfig } from './services/cloud/types.js';
 
 export type LlmProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
+/**
+ * apra-fleet-b4g.23.1: the structured, read-back form of "does this member have
+ * its own apra-fleet MCP server, and if not, why not".
+ *
+ * Deliberately NOT a bare boolean plus a log line: an unscoped member must carry
+ * a machine-readable `reason` a caller can branch on and a `remediation` a human
+ * can act on, so the failure is surfaced rather than advisory.
+ */
+export interface MemberMcpScope {
+  /** True only when an ENABLED entry pointing at the member's own verified
+   *  install was written. */
+  scoped: boolean;
+  /** MCP server name the entry was written under (scoped runs only). */
+  serverName?: string;
+  /** Version the member's own install reported (scoped runs only). */
+  version?: string;
+  /** Machine-readable reason, from FleetInstallUnscopedReason (unscoped only). */
+  reason?: string;
+  /** User-actionable remediation for `reason` (unscoped only). */
+  remediation?: string;
+  /** Diagnostic context for `reason` (unscoped only). */
+  detail?: string;
+  /** ISO 8601 timestamp of the run that produced this record. */
+  resolvedAt: string;
+}
+
 export interface Agent {
   id: string;
   friendlyName: string;
@@ -67,6 +93,18 @@ export interface Agent {
    *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
    *  this field only introduces and persists the value. */
   reservedBy?: string | null;
+  /**
+   * apra-fleet-b4g.23.1: outcome of the last attempt to scope this member's OWN
+   * apra-fleet MCP server (member-local stdio, kb_* / code_* tools only).
+   *
+   * Persisted rather than kept in memory because the readers are OTHER
+   * processes/phases -- Sprint Setup preflight and the panel -- which need to
+   * know, without re-probing every member, whether a member has the KB and
+   * code-intelligence tools and, when it does not, the named reason and the
+   * remediation to show. `scoped: false` is a normal, non-fatal state: it never
+   * means compose_permissions failed.
+   */
+  memberMcpScope?: MemberMcpScope;
   /** This member fills a role (e.g. fleet-sprint's `orchestrator`) that is
    *  designed to be shared by more than one sprint at once, so it can never
    *  be exclusively reserved: reserve/release/force_release are no-op
