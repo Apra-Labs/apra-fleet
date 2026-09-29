@@ -35,6 +35,18 @@
 //      a skipped check is indistinguishable from a passed one, and this tier
 //      MUST beat current-runtime and PATH so a service with no usable PATH
 //      never silently falls through to a PATH lookup that cannot succeed.
+//      apra-fleet-i9ag.19.35: this tier's probe opts into `{ retry: true }`
+//      (one bounded retry on a timeout/transient spawn errno, exactly
+//      toolchain.mjs's own policy for the SAME recorded path at startup) --
+//      before this, a probe that merely could not COMPLETE under host load
+//      collapsed straight into "does not resolve to a usable Node.js
+//      runtime", the wording reserved for a genuinely broken recording, and
+//      did so on a single attempt where startup validation had already
+//      survived the identical transient failure on its retry. A probe that
+//      times out even on the retry is still a HARD ERROR (same severity as
+//      today), just worded distinguishably (`formatIncompleteProbeProblem()`,
+//      ./node-version.mjs) so an operator is never told a node that merely
+//      could not be probed in time "does not resolve".
 //   3. The current process's own execPath -- but ONLY when this process is a
 //      real Node.js runtime, i.e. NOT a single-executable app (node:sea's
 //      isSea() === false). This preserves today's behaviour for a plain
@@ -59,7 +71,7 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
-import { probeVersion as sharedProbeVersion, compareVersions } from './node-version.mjs';
+import { probeVersion as sharedProbeVersion, compareVersions, formatIncompleteProbeProblem } from './node-version.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -202,7 +214,19 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // the same way it does for execPath/FLEET_SE_NODE.
     const configuredNodePath = typeof deps.configuredNodePath === 'string' ? deps.configuredNodePath.trim() : '';
     if (configuredNodePath.length > 0) {
-        const { version } = sharedProbeVersion(exec, platform, configuredNodePath, ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
+        // apra-fleet-i9ag.19.35: `{ retry: true }` -- see this file's header
+        // for why this ONE tier opts in where tiers 1/3/4 do not.
+        const { version, incomplete } = sharedProbeVersion(
+            exec, platform, configuredNodePath, ['--version'],
+            { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS, retry: true },
+        );
+        if (incomplete) {
+            throw new SprintRunnerResolutionError(
+                `${formatIncompleteProbeProblem('node', configuredNodePath, incomplete, SPRINT_RUNNER_PROBE_TIMEOUT_MS)} ` +
+                `This may be transient host load rather than a broken recording -- retry the launch, or fix the recorded ` +
+                `toolchain (reinstall, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with). ${SPRINT_RUNNER_FIX_LINE}`,
+            );
+        }
         if (version === null) {
             throw new SprintRunnerResolutionError(
                 `Recorded node path ${JSON.stringify(configuredNodePath)} does not resolve to a usable Node.js runtime ` +

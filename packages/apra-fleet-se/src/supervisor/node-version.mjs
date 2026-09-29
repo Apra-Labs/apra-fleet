@@ -24,9 +24,23 @@
 //   - node-runner.mjs's `resolveSprintRunnerCommand()` is fully SYNCHRONOUS --
 //     it spawns via `execFileSync`, and its own test suite calls it
 //     un-awaited, asserting synchronous return values and synchronous throws
-//     (`assert.throws(() => resolveSprintRunnerCommand(...))`). It always
-//     probed once, with no retry, and only ever consumed the parsed version
-//     (or `null` on any failure, whatever the cause).
+//     (`assert.throws(() => resolveSprintRunnerCommand(...))`). Tiers 1
+//     (FLEET_SE_NODE), 3 (current runtime) and 4 (PATH) still probe once,
+//     with no retry, and only ever consume the parsed version (or `null` on
+//     any failure, whatever the cause). Tier 2 (CONFIGURED, the recorded
+//     toolchain's node path) is the ONE exception (apra-fleet-i9ag.19.35):
+//     it opts into `{ retry: true }` -- see below -- because that exact same
+//     recorded path was already re-probed WITH retry, moments earlier in the
+//     same process, by toolchain.mjs's startup validation
+//     (`validateRecordedToolchain()`). Before apra-fleet-i9ag.19.35, tier 2's
+//     single-attempt, no-retry probe could disagree with a startup check
+//     that had just passed the identical binary: a transient timeout/spawn
+//     errno under host load survived toolchain.mjs's retry but not
+//     node-runner.mjs's bare attempt, so a supervisor could log a healthy
+//     toolchain at boot and still hard-refuse (503) the very next launch
+//     over the SAME node. Tier 2 now carries the identical bounded-retry,
+//     transient-vs-genuine classification toolchain.mjs's startup check
+//     already has, so the two never disagree on the same input again.
 //   - toolchain.mjs's `validateRecordedToolchain()` is ASYNC -- it spawns via
 //     `execFileAsync` so node's and bd's probes can run CONCURRENTLY
 //     (`Promise.all`, apra-fleet-i9ag.19.20) and retries a probe exactly
@@ -48,16 +62,20 @@
 //
 // `retry` (in the `options` bag, default `false`) is the only behavioral
 // switch a caller opts into:
-//   - unset/false (node-runner.mjs's contract): a single attempt; ANY
-//     failure (thrown or rejected, whatever it is) collapses to
+//   - unset/false (node-runner.mjs's tiers 1/3/4 contract): a single
+//     attempt; ANY failure (thrown or rejected, whatever it is) collapses to
 //     `{ version: null, incomplete: null }`, matching node-runner.mjs's
 //     original catch-returns-null semantics exactly -- it only ever read the
 //     parsed version, never inspected why a probe failed.
-//   - `true` (toolchain.mjs's contract): up to one bounded retry on a
-//     timeout (`err.killed === true`) or a transient spawn errno (one of
-//     EAGAIN/ENOMEM/EMFILE/ENFILE) -- mirrors toolchain.mjs's original `for`
-//     loop's exact retry/give-up decisions and `incomplete` wording contract
-//     byte for byte.
+//   - `true` (toolchain.mjs's contract, and node-runner.mjs's tier 2/
+//     CONFIGURED contract as of apra-fleet-i9ag.19.35): up to one bounded
+//     retry on a timeout (`err.killed === true`) or a transient spawn errno
+//     (one of EAGAIN/ENOMEM/EMFILE/ENFILE) -- mirrors toolchain.mjs's
+//     original `for` loop's exact retry/give-up decisions and `incomplete`
+//     wording contract byte for byte. `formatIncompleteProbeProblem()` below
+//     is the single shared wording both callers use for the resulting
+//     "could not be probed" message, so a retry-opted-in caller never has to
+//     hand-copy that sentence.
 //
 // This is a pure dedupe, not a redesign: every existing pre-this-task test
 // for both `resolveSprintRunnerCommand()` and `validateRecordedToolchain()`
@@ -151,6 +169,31 @@ function classifyIncompleteProbe(err) {
     if (err.killed === true) return 'timeout';
     if (typeof err.code === 'string' && TRANSIENT_SPAWN_ERRNOS.has(err.code)) return err.code;
     return null;
+}
+
+/**
+ * Words a "the probe could not complete" problem entry for `label` (e.g.
+ * `'node'` or `'bd'`) -- deliberately distinct from a "does not resolve to a
+ * usable ..." finding (see `probeVersion()`'s own doc comment above): a probe
+ * that never got to run to completion, twice, is a different finding from
+ * one that ran and genuinely found nothing, and a consumer/operator must
+ * never have to guess which of the two a caller means. Single shared source
+ * for this sentence (apra-fleet-i9ag.19.35) -- toolchain.mjs's
+ * `validateRecordedToolchain()` and node-runner.mjs's `resolveSprintRunnerCommand()`
+ * (its CONFIGURED tier) both opt into `{ retry: true }` above and both use
+ * this exact wording rather than each hand-copying its own version.
+ * @param {string} label
+ * @param {string} recordedPath
+ * @param {string} incomplete `'timeout'` or a transient errno code
+ * @param {number} timeoutMs the per-attempt wall-clock ceiling the caller probed with
+ * @returns {string}
+ */
+export function formatIncompleteProbeProblem(label, recordedPath, incomplete, timeoutMs) {
+    const cause = incomplete === 'timeout'
+        ? `the probe was killed after exceeding that timeout, even on a retry`
+        : `a transient spawn error (${incomplete}) persisted even on a retry`;
+    return `Recorded ${label} path ${JSON.stringify(recordedPath)} could not be probed within `
+        + `${timeoutMs / 1_000}s (${cause}).`;
 }
 
 /**

@@ -131,6 +131,50 @@
 // mock here keeps working unchanged: a synchronous mock that returns a
 // plain value or throws still behaves identically whether or not its result
 // is `await`ed by `validateRecordedToolchain()` below.
+//
+// apra-fleet-i9ag.19.35 -- RECORDED NODE PROBE FAILS UNDER SUITE LOAD AND
+// 503s A LAUNCH THE STARTUP CHECK JUST PASSED. Evidence: on a loaded host,
+// this module's OWN real-exec test (test/i9ag19-9-toolchain.test.mjs, "the
+// REAL default exec (execFileSync) resolves a real absolute node path when
+// no exec is injected") and node-runner.mjs's real-launch tests both failed.
+// Two independent findings, two independent fixes:
+//   (1) THE PRODUCT DEFECT: this module's `validateRecordedToolchain()`
+//       already retries a probe once (apra-fleet-i9ag.19.18); the resolver
+//       that actually launches a sprint against the SAME recorded path
+//       (node-runner.mjs's `resolveSprintRunnerCommand()` CONFIGURED tier)
+//       did not -- a single-attempt, no-retry probe, worded identically to a
+//       genuinely broken recording either way. So a transient timeout/spawn
+//       errno under load could survive THIS module's retry at startup (a
+//       healthy "[supervisor] toolchain: ..." line) and still fail
+//       node-runner's bare attempt moments later, hard-refusing (503) a
+//       launch over a node the supervisor had just reported as fine. Fixed
+//       by giving node-runner.mjs's CONFIGURED tier the identical
+//       `{ retry: true }` policy and `formatIncompleteProbeProblem()`
+//       wording this module already uses (see node-version.mjs's file-level
+//       doc comment) -- ONE retry/classification strategy in the codebase,
+//       not two, and a probe that could not complete now reads as
+//       distinguishable from "does not resolve" everywhere it can occur.
+//   (2) TOOLCHAIN_PROBE_TIMEOUT_MS ITSELF: reviewed, deliberately left
+//       UNSCALED (still a flat 15s), unlike test/helpers/scaled-timeout.mjs's
+//       APRA_FLEET_TEST_CONCURRENCY-driven budgets for this suite's OWN
+//       boot/HTTP-request deadlines. Those helper-scaled budgets bound how
+//       long a TEST waits for the real system under test to finish; this
+//       constant instead bounds a wall-clock SLA a real operator's supervisor
+//       promises for detecting a wedged interpreter, and it is passed
+//       straight through to `child_process`'s own `timeout` option (the
+//       thing that actually SIGTERMs a hung probe) -- scaling it via a
+//       test-only, unset-in-production env var would either do nothing for
+//       the real guarantee (in production, where the var is never set) or,
+//       if ever wired to read anything at runtime, would silently teach a
+//       real installed supervisor to wait 3x longer to report a wedged node
+//       -- an implicit-environment-decides-behaviour regression CLAUDE.md
+//       flags directly. The retry in (1)/(19.18) is the intended, already-
+//       reviewed answer to host-load flakiness for this specific budget: it
+//       re-tries the SAME 15s-bounded attempt once rather than lengthening
+//       what "15s" is promised to mean. A probe that cannot complete twice
+//       in a row, even against artificial multi-suite contention, is worth
+//       surfacing loudly (see this file's own header on why `incomplete`
+//       still gates `nodeOk`/hard-errors exactly like a genuine failure).
 // =============================================================================
 
 import { execFile } from 'node:child_process';
@@ -139,7 +183,7 @@ import path from 'node:path';
 
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
-import { compareVersions, probeVersion } from './node-version.mjs';
+import { compareVersions, probeVersion, formatIncompleteProbeProblem } from './node-version.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -264,26 +308,6 @@ function withNodeFirstBdExec(exec, nodePath) {
 }
 
 /**
- * Words a "the probe could not complete" problem entry for `label` (`'node'`
- * or `'bd'`) -- deliberately distinct from this module's "does not resolve
- * to a usable ..." wording (see `probeVersion()`'s own doc comment for why):
- * a probe that never got to run to completion, twice, is a different finding
- * from one that ran and genuinely found nothing, and a consumer/operator
- * must never have to guess which of the two this module means.
- * @param {string} label
- * @param {string} recordedPath
- * @param {string} incomplete `'timeout'` or a transient errno code
- * @returns {string}
- */
-function formatIncompleteProbeProblem(label, recordedPath, incomplete) {
-    const cause = incomplete === 'timeout'
-        ? `the probe was killed after exceeding that timeout, even on a retry`
-        : `a transient spawn error (${incomplete}) persisted even on a retry`;
-    return `Recorded ${label} path ${JSON.stringify(recordedPath)} could not be probed within `
-        + `${TOOLCHAIN_PROBE_TIMEOUT_MS / 1_000}s (${cause}).`;
-}
-
-/**
  * Re-probes the toolchain recorded in `supervisor.config.json` (read ONLY
  * through `readSupervisorConfig()` -- see this file's header) and reports
  * exactly what is wrong with it, if anything. Never throws.
@@ -398,7 +422,7 @@ export async function validateRecordedToolchain(deps = {}) {
     let nodeOk;
     if (nodeProbe.incomplete) {
         nodeOk = false;
-        problems.push(formatIncompleteProbeProblem('node', nodePath, nodeProbe.incomplete));
+        problems.push(formatIncompleteProbeProblem('node', nodePath, nodeProbe.incomplete, TOOLCHAIN_PROBE_TIMEOUT_MS));
     } else if (nodeVersion === null) {
         nodeOk = false;
         problems.push(
@@ -432,7 +456,7 @@ export async function validateRecordedToolchain(deps = {}) {
         bdVersion = bdProbe.version;
         if (bdProbe.incomplete) {
             bdOk = false;
-            problems.push(formatIncompleteProbeProblem('bd', bdPath, bdProbe.incomplete));
+            problems.push(formatIncompleteProbeProblem('bd', bdPath, bdProbe.incomplete, TOOLCHAIN_PROBE_TIMEOUT_MS));
         } else if (bdVersion === null) {
             bdOk = false;
             problems.push(
