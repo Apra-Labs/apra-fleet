@@ -1,7 +1,7 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "cc712c9493a1c2f89a756f5171a9746c2775ae6b",
+    "commit": "14a1450af71920be9af9acfc9d38159ee2dafa36",
     "branch": "fix/fleet-status-cwd-independent",
     "entry_count": 257
   },
@@ -1900,6 +1900,21 @@
       "updated_at": "2026-09-29T06:16:05.371Z"
     },
     {
+      "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
+      "type": "knowledge",
+      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
+      "summary": "execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
+      "symbols": [],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "tests/execute-prompt.test.ts",
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T06:24:09.270Z"
+    },
+    {
       "id": "589cae8c-4b30-4561-bc80-6e5cb2fd77be",
       "type": "knowledge",
       "title": "The regression playbook 18300-series port claim came from a test-only base port, not a product constant",
@@ -3382,6 +3397,23 @@
       "updated_at": "2026-09-25T22:26:36.279Z"
     },
     {
+      "id": "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf",
+      "type": "knowledge",
+      "title": "ClaudeProvider.detectUsageLimit treats a bare 429 as a usage limit without the limit-message",
+      "summary": "A 429 apiErrorStatus is classified as a usage limit on its own; the 'hit your <...> limit' message is only required for the non-429 terminalReason==='api_error' path.",
+      "symbols": [
+        "parseClaudeResetTime",
+        "ClaudeProvider.detectUsageLimit",
+        "guessedUsageLimitSignal"
+      ],
+      "source_files": [
+        "src/providers/claude.ts",
+        "src/providers/provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T06:24:09.365Z"
+    },
+    {
       "id": "b8154d4c-c1ba-4ef4-af64-6a966b1ddb82",
       "type": "knowledge",
       "title": "test/helpers/dispatch-pin-scanner.mjs has its own maskComments that does not model regex literals",
@@ -3613,21 +3645,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.420Z"
-    },
-    {
-      "id": "c785ff16-763d-4705-b0d9-e1bf414d342c",
-      "type": "knowledge",
-      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
-      "summary": "As of commit ad1146ac on hzeb-onto-refactor, execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
-      "symbols": [],
-      "source_files": [
-        "src/tools/execute-prompt.ts",
-        "packages/apra-fleet-workflow/src/workflow/index.mjs",
-        "tests/execute-prompt.test.ts",
-        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:42.183Z"
     },
     {
       "id": "c791fcf0-48c2-4a17-a247-ea634fec70b3",
@@ -4420,23 +4437,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
-    },
-    {
-      "id": "f1324044-8b7b-4fd7-8cb9-3dad95fd6594",
-      "type": "knowledge",
-      "title": "ClaudeProvider.detectUsageLimit treats a bare 429 as a usage limit without the limit-message",
-      "summary": "After hzeb.1.4.1, a 429 apiErrorStatus is classified as a usage limit on its own; the 'hit your <...> limit' message is only required for the non-429 terminalReason==='api_error' path.",
-      "symbols": [
-        "parseClaudeResetTime",
-        "ClaudeProvider.detectUsageLimit",
-        "guessedUsageLimitSignal"
-      ],
-      "source_files": [
-        "src/providers/claude.ts",
-        "src/providers/provider.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:42.242Z"
     },
     {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
