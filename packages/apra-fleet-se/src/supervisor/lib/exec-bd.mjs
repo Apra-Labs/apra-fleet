@@ -580,7 +580,11 @@ function quoteShellFile(file, platform) {
         // as one token. cmd.exe has no standard way to escape a literal '"'
         // inside a quoted token; a configured absolute path is not expected
         // to contain one (same assumption quoteForWindowsShell() in
-        // node-runner.mjs makes for the equivalent node-path case).
+        // src/supervisor/node-version.mjs makes for the equivalent node-path
+        // case). NOTE: quoteShellFile() is deliberately NOT quoteForWindowsShell():
+        // it adds a POSIX single-quoting branch (below) and does not double
+        // embedded double quotes on win32 (unlike quoteForWindowsShell), so they
+        // must not be accidentally merged.
         return `"${file}"`;
     }
     // POSIX sh: single quotes suppress all interpretation except of a
