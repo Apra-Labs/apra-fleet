@@ -91,6 +91,18 @@ const nodeExecFileAsync = promisify(nodeExecFile);
 // as they did before this change -- the PATH lookup, the win32 shim
 // handling, the shell rules, assertSafeArgs, the maxBuffer ceiling and the
 // large-output warning are all untouched for the unconfigured case.
+//
+// D1 fix (bead reopened after judge of PR #561, verified on fleet-mac1 with
+// `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin`): a configured `bdPath` is
+// typically npm's `'#!/usr/bin/env node'` bin script, and a bare configured-
+// path invocation on POSIX depends on `env` finding `node` on the CHILD
+// PROCESS's PATH -- which a launchd/Windows-task PATH does not have either,
+// so the configured fix above was not sufficient by itself. Both
+// `execBdSync()`'s configured POSIX branch and `execBdAsync()` now also
+// prepend `dirname(configured nodePath)` to that child PATH when a
+// `nodePath` is configured (`withConfiguredNodeDirOnPath()`, defined just
+// above `execBdSync()`) -- see that function's doc comment for the chosen
+// strategy and why.
 
 /** @type {{ bdPath: string|null, nodePath: string|null }} */
 let configuredInvocation = { bdPath: null, nodePath: null };
@@ -202,6 +214,56 @@ export function warnIfLargeBdOutput(args, out, warn = console.warn) {
         }
     }
     return bytes;
+}
+
+/**
+ * POSIX-only chosen composition strategy for apra-fleet-i9ag.19.7's D1 fix
+ * (see the bead's NOTES: PR #561 judge report, verified on fleet-mac1 with
+ * `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin`): a configured `bdPath` is
+ * typically an npm-installed `#!/usr/bin/env node` script, and under a
+ * service's PATH (launchd, a Windows task) that PATH may contain no `node`
+ * at all -- `env` then fails synchronously with `env: node: No such file or
+ * directory` (exit 127) before this module's own shell-less/argv-array
+ * invocation ever gets a chance to run `bd` itself.
+ *
+ * CHOSEN STRATEGY (apra-fleet-i9ag.19.7 AC A2 -- "one strategy, named, not
+ * both"): prepend `dirname(configured nodePath)` to the PATH used for the bd
+ * child process, rather than invoking bd as `<nodePath> <realpath(bdPath)>`.
+ * Chosen because it works identically whether the configured `bdPath` is a
+ * shebang script (its `env node` lookup now finds the recorded node) OR a
+ * real native binary (AC A4: the PATH addition is inert for a binary that
+ * never shells out to `env`) -- without this module having to sniff which
+ * kind `bdPath` is. The `<nodePath> <script>` alternative would only work
+ * for the script case and would actively break a native-binary `bdPath`
+ * (you cannot run a native ELF/Mach-O binary as an argument to `node`).
+ * Modeled with `path.posix.*` and a literal `:` delimiter (not the bare
+ * `path` module, which follows the host's real `process.platform`) so this
+ * composition is correct regardless of the host running the code -- same
+ * reasoning as `resolveWindowsBdScript()`'s use of `path.win32.*` above.
+ *
+ * Applies only where callers invoke it for POSIX: win32's configured-shim
+ * case already invokes the resolved `bd.js` with the configured `nodePath`
+ * directly (no PATH lookup involved at all), and its non-shim fallback goes
+ * through `{ shell: true }` cmd.exe semantics this PATH-based fix does not
+ * target -- callers below guard the call accordingly.
+ *
+ * A no-op (returns `baseEnv` unchanged) when no `nodePath` is configured, so
+ * the unconfigured case and a configured-without-nodePath case are both
+ * untouched (AC A4 / A5): no `env` key is ever added when this returns its
+ * input unchanged, since callers only assign the result when `nodePath` is
+ * present.
+ *
+ * @param {NodeJS.ProcessEnv|undefined} baseEnv - the options.env a caller passed, if any; falls back to `process.env`.
+ * @param {string|null} nodePath - the configured nodePath, or null/undefined.
+ * @returns {NodeJS.ProcessEnv|undefined}
+ */
+function withConfiguredNodeDirOnPath(baseEnv, nodePath) {
+    if (!nodePath) return baseEnv;
+    const env = { ...(baseEnv ?? process.env) };
+    const nodeDir = path.posix.dirname(nodePath);
+    const currentPath = env.PATH ?? env.Path ?? '';
+    env.PATH = currentPath ? `${nodeDir}:${currentPath}` : nodeDir;
+    return env;
 }
 
 /**
@@ -335,7 +397,12 @@ export function resolveConfiguredWindowsBdScript(bdPath, deps = {}) {
  *     invokes the configured `bdPath` directly via `execFileSync`, shell-less
  *     on POSIX and `{ shell: true }` on win32 -- the same documented
  *     unconfigured fallback below, just against the configured path instead
- *     of a bare `'bd'`.
+ *     of a bare `'bd'`. On that POSIX shell-less path, when a `nodePath` is
+ *     ALSO configured, `dirname(nodePath)` is prepended to the child's PATH
+ *     (`withConfiguredNodeDirOnPath()`) so a configured `bdPath` that is a
+ *     `#!/usr/bin/env node` script still resolves `node` even when the
+ *     process's own PATH has none (apra-fleet-i9ag.19.7 amended AC A1/A2,
+ *     PR #561 judge defect D1) -- a no-op when no `nodePath` is configured.
  *   - UNCONFIGURED (no `bdPath` configured -- today's behaviour, byte for
  *     byte): win32 resolves the real `.../bin/bd.js` script `bd.cmd` wraps by
  *     scanning PATH (`resolveWindowsBdScript()`) and invokes it directly via
@@ -377,7 +444,16 @@ export function execBdSync(
         // win32 still needs `{ shell: true }` to get past CreateProcess's
         // cannot-exec-a-shebang-script limitation).
         const needsShellConfigured = (process.platform === 'win32');
-        const outConfigured = execFileSyncImpl(configuredInvocation.bdPath, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShellConfigured });
+        const execOptionsConfigured = { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShellConfigured };
+        // D1 fix (apra-fleet-i9ag.19.7 amended AC A1): on POSIX, when a
+        // nodePath is also configured, prepend its directory to the child's
+        // PATH -- see withConfiguredNodeDirOnPath()'s doc comment for why.
+        // No-op (no `env` key added at all) when nodePath is not configured,
+        // so that case stays byte-for-byte what it already was (AC A4).
+        if (!needsShellConfigured && configuredInvocation.nodePath) {
+            execOptionsConfigured.env = withConfiguredNodeDirOnPath(options.env, configuredInvocation.nodePath);
+        }
+        const outConfigured = execFileSyncImpl(configuredInvocation.bdPath, args, execOptionsConfigured);
         warnIfLargeBdOutput(args, outConfigured);
         return outConfigured;
     }
@@ -495,15 +571,24 @@ function quoteShellFile(file, platform) {
  * (unconditionally, on every platform, exactly as the unconfigured case
  * always has been: this function's own `.cmd`-resolution constraint above
  * applies regardless of `bdPath`'s origin, so there is no shell-less
- * configured path here the way `execBdSync()` has one). No `nodePath` is
- * needed in this configured case: the shell (not this module) is what
- * ultimately execs a `.cmd` shim, which is what makes `{ shell: true }`
- * necessary here in the first place. A configured `bdPath` containing
- * whitespace (e.g. an npm-global install under a spaced home directory) is
- * quoted via `quoteShellFile()` before being handed to the shell -- see that
- * function's doc comment for why an unquoted spaced `file` breaks under
- * `shell: true`; the unconfigured `'bd'` literal never contains whitespace,
- * so this is a no-op there.
+ * configured path here the way `execBdSync()` has one). A configured `bdPath`
+ * containing whitespace (e.g. an npm-global install under a spaced home
+ * directory) is quoted via `quoteShellFile()` before being handed to the
+ * shell -- see that function's doc comment for why an unquoted spaced `file`
+ * breaks under `shell: true`; the unconfigured `'bd'` literal never contains
+ * whitespace, so this is a no-op there.
+ *
+ * D1 fix (amended AC A1/A2, PR #561 judge report): on a non-win32 platform,
+ * when a `nodePath` is ALSO configured, `dirname(nodePath)` is prepended to
+ * the child's PATH (`withConfiguredNodeDirOnPath()`, the same strategy
+ * `execBdSync()`'s configured POSIX path uses) before the shell is invoked --
+ * `{ shell: true }` still just joins `file` + args into one command line and
+ * hands it to `/bin/sh -c`, so a configured `bdPath` that is a
+ * `#!/usr/bin/env node` script still needs `node` resolvable on ITS PATH to
+ * run at all, and a service's inherited PATH may contain none. A no-op (no
+ * `env` key added) when no `nodePath` is configured, or on win32 (there the
+ * shell exec's a `.cmd` file, not a POSIX shebang script, so this fix does
+ * not apply).
  *
  * @param {string[]} args - argv passed to `bd` (e.g. ['list', '--json', '--limit', '0']); every element must match `SAFE_ARG_PATTERN`.
  * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is always forced to `true` regardless of what is passed here.
@@ -528,7 +613,21 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
     // maxBuffer first so an explicit caller-supplied value still wins; without
     // it Node's 1MiB default kills the child on a large `bd list` (see the
     // BD_MAX_BUFFER_BYTES block above).
-    return Promise.resolve(execFileAsyncImpl(shellFile, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
+    const asyncOptions = { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true };
+    // D1 fix (apra-fleet-i9ag.19.7 amended AC A1): same POSIX PATH-prepend
+    // strategy as execBdSync's configured branch (see
+    // withConfiguredNodeDirOnPath()'s doc comment) -- a configured bdPath
+    // invoked via `{ shell: true }` still resolves a `#!/usr/bin/env node`
+    // shebang through the child's PATH, so it fails the same way without
+    // this. Guarded on `configuredInvocation.bdPath` (only meaningful when
+    // configured) and `platform !== 'win32'` (win32 goes through cmd.exe
+    // semantics this fix does not target); a no-op (no `env` key added)
+    // otherwise, so the unconfigured and no-nodePath-configured cases stay
+    // byte-for-byte unchanged (AC A4 / A5).
+    if (configuredInvocation.bdPath && platform !== 'win32' && configuredInvocation.nodePath) {
+        asyncOptions.env = withConfiguredNodeDirOnPath(options.env, configuredInvocation.nodePath);
+    }
+    return Promise.resolve(execFileAsyncImpl(shellFile, args, asyncOptions))
         .then((res) => {
             warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
             return res;

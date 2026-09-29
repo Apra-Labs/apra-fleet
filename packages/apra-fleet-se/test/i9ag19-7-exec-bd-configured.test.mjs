@@ -292,6 +292,128 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
     });
 });
 
+// D1 fix (bead reopened after judge of PR #561): a configured bdPath is
+// typically an npm-installed '#!/usr/bin/env node' script, and under a
+// service's PATH (launchd, a Windows task) that PATH may contain no `node`
+// at all -- `env` then fails with 'env: node: No such file or directory'
+// (exit 127), verified on fleet-mac1 with
+// `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin`. These pin the chosen fix
+// (amended AC A1-A3, A6): on POSIX, when a nodePath is ALSO configured,
+// dirname(nodePath) is prepended to the child's PATH.
+describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured nodePath', () => {
+    test('A1/A3: execBdSync configured bdPath+nodePath on POSIX prepends dirname(nodePath) to PATH; every other option is untouched', { skip: process.platform === 'win32' ? 'POSIX-only PATH-prepend fix' : false }, () => {
+        configureBdInvocation({ bdPath: '/opt/apra-fleet/bin/bd', nodePath: '/opt/apra-fleet/node/bin/node' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'fake-output';
+        };
+        const originalPath = process.env.PATH;
+        process.env.PATH = '/usr/bin:/bin';
+        try {
+            const result = execBdSync(['list', '--json'], { cwd: '/repo' }, fakeExecFileSync, () => null, () => null);
+            assert.equal(result, 'fake-output');
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0], {
+                cmd: '/opt/apra-fleet/bin/bd',
+                args: ['list', '--json'],
+                opts: {
+                    maxBuffer: BD_MAX_BUFFER_BYTES,
+                    cwd: '/repo',
+                    shell: false,
+                    env: { ...process.env, PATH: '/opt/apra-fleet/node/bin:/usr/bin:/bin' },
+                },
+            });
+        } finally {
+            process.env.PATH = originalPath;
+        }
+    });
+
+    test('A4/A5: without a configured nodePath, the configured POSIX path stays exactly as before -- no env key added at all', () => {
+        configureBdInvocation({ bdPath: '/opt/apra-fleet/bin/bd' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'fake-output';
+        };
+        execBdSync(['list', '--json'], { cwd: '/repo' }, fakeExecFileSync, () => null, () => null);
+        assert.deepEqual(calls[0], {
+            cmd: '/opt/apra-fleet/bin/bd',
+            args: ['list', '--json'],
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
+        });
+        assert.ok(!('env' in calls[0].opts), 'no env key must be added when nodePath is not configured');
+    });
+
+    test('A6: execBdAsync mirrors the same POSIX PATH-prepend strategy for a configured bdPath+nodePath', async () => {
+        configureBdInvocation({ bdPath: '/opt/apra-fleet/bin/bd', nodePath: '/opt/apra-fleet/node/bin/node' });
+        const calls = [];
+        const fakeExecFileAsync = async (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return { stdout: 'fake-output', stderr: '' };
+        };
+        await execBdAsync(['list', '--json'], { cwd: '/repo', env: { PATH: '/usr/bin:/bin' } }, fakeExecFileAsync, undefined, 'linux');
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0], {
+            cmd: '/opt/apra-fleet/bin/bd',
+            args: ['list', '--json'],
+            opts: {
+                maxBuffer: BD_MAX_BUFFER_BYTES,
+                cwd: '/repo',
+                shell: true,
+                env: { PATH: '/opt/apra-fleet/node/bin:/usr/bin:/bin' },
+            },
+        });
+    });
+
+    test('execBdAsync configured with nodePath on injected win32 adds no env key (this fix targets POSIX only)', async () => {
+        configureBdInvocation({ bdPath: 'C:\\a\\bd', nodePath: 'C:\\recorded\\node.exe' });
+        const calls = [];
+        const fakeExecFileAsync = async (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return { stdout: '', stderr: '' };
+        };
+        await execBdAsync(['--version'], {}, fakeExecFileAsync, undefined, 'win32');
+        assert.ok(!('env' in calls[0].opts), 'no env key must be added on win32');
+    });
+
+    test('A1 end-to-end (sync): a real "#!/usr/bin/env node" script is invoked successfully via execBdSync with PATH emptied of node', { skip: process.platform === 'win32' ? 'POSIX shebang script' : false }, () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'exec-bd-node-shebang-sync-'));
+        const scriptPath = path.join(dir, 'fake-bd');
+        writeFileSync(scriptPath, '#!/usr/bin/env node\nconsole.log("bd-fake-output-sync");\n');
+        chmodSync(scriptPath, 0o755);
+        const originalPath = process.env.PATH;
+        try {
+            configureBdInvocation({ bdPath: scriptPath, nodePath: process.execPath });
+            // Deliberately no directory containing `node` on PATH -- the exact
+            // launchd-style broken-PATH shape D1 was filed against.
+            process.env.PATH = '/usr/bin:/bin';
+            const out = execBdSync([], { encoding: 'utf-8' });
+            assert.equal(String(out).trim(), 'bd-fake-output-sync');
+        } finally {
+            process.env.PATH = originalPath;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('A1 end-to-end (async): the same node-shebang script is invocable via execBdAsync with PATH emptied of node', { skip: process.platform === 'win32' ? 'POSIX shebang script' : false }, async () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'exec-bd-node-shebang-async-'));
+        const scriptPath = path.join(dir, 'fake-bd');
+        writeFileSync(scriptPath, '#!/usr/bin/env node\nconsole.log("bd-fake-output-async");\n');
+        chmodSync(scriptPath, 0o755);
+        const originalPath = process.env.PATH;
+        try {
+            configureBdInvocation({ bdPath: scriptPath, nodePath: process.execPath });
+            process.env.PATH = '/usr/bin:/bin';
+            const { stdout } = await execBdAsync([], { encoding: 'utf-8' });
+            assert.equal(String(stdout).trim(), 'bd-fake-output-async');
+        } finally {
+            process.env.PATH = originalPath;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
 describe('apra-fleet-i9ag.19.7: execBdAsync() unconfigured (AC2 -- byte-for-byte regression pin)', () => {
     test('invokes "bd" with the exact args/options, shell: true, maxBuffer defaulted', async () => {
         const calls = [];
