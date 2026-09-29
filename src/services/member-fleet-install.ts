@@ -185,9 +185,11 @@ export function buildFleetVersionProbe(
       `if [ -x ${posixPath} ]; then ${posixPath} --version 2>/dev/null || ` +
       `printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; else printf '%s\\n' '${NO_INSTALL_SENTINEL}'; fi`,
     powershell:
-      `if (Test-Path -LiteralPath ${psPath}) { try { & ${psPath} --version } catch ` +
+      `if (Test-Path -LiteralPath ${psPath}) { try { $out = & ${psPath} --version; ` +
+      `if ($LASTEXITCODE -ne 0) { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } ` +
+      `else { [Console]::Out.Write(($out | Out-String)) } } catch ` +
       `{ [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } } else ` +
-      `{ [Console]::Out.Write('${NO_INSTALL_SENTINEL}') }`,
+      `{ [Console]::Out.Write('${NO_INSTALL_SENTINEL}') }; exit 0`,
   });
 }
 
