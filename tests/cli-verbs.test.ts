@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Hoisted mock refs — local modules only (these are safe; factory mocks for
@@ -302,6 +302,61 @@ describe('runStop', () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);
     expect(fs.unlinkSync).toHaveBeenCalledTimes(2);
+  });
+
+  // Sandboxed (non-default) instance: stop must never touch registered OS
+  // services -- symmetric with runStart's isNonDefaultInstance() guard.
+  describe('non-default instance', () => {
+    const saved = { dir: process.env.APRA_FLEET_DATA_DIR, port: process.env.APRA_FLEET_PORT };
+    afterEach(() => {
+      if (saved.dir === undefined) delete process.env.APRA_FLEET_DATA_DIR; else process.env.APRA_FLEET_DATA_DIR = saved.dir;
+      if (saved.port === undefined) delete process.env.APRA_FLEET_PORT; else process.env.APRA_FLEET_PORT = saved.port;
+      mockSvcMgr.isInstalled.mockResolvedValue(false);
+    });
+
+    function expectNoServiceTouched() {
+      expect(mockGetSvcMgr).not.toHaveBeenCalled();
+      expect(mockSvcMgr.isInstalled).not.toHaveBeenCalled();
+      expect(mockSvcMgr.stop).not.toHaveBeenCalled();
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        const [cmd, args] = call as [string, string[] | undefined];
+        expect(cmd).not.toBe('schtasks');
+        expect(args ?? []).not.toContain('/T');
+      }
+    }
+
+    it('APRA_FLEET_DATA_DIR set: never stops the registered service, stops own server', async () => {
+      process.env.APRA_FLEET_DATA_DIR = '/tmp/sandbox-data';
+      delete process.env.APRA_FLEET_PORT;
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue(RUNNING);
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+
+    it('non-7523 APRA_FLEET_PORT: never stops the registered service, stops own server', async () => {
+      delete process.env.APRA_FLEET_DATA_DIR;
+      process.env.APRA_FLEET_PORT = '18800';
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue({ ...RUNNING, url: 'http://127.0.0.1:18800/mcp' });
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+
+    it('non-7523 APRA_FLEET_PORT: does not shut down a different-port server from the shared server.json', async () => {
+      delete process.env.APRA_FLEET_DATA_DIR;
+      process.env.APRA_FLEET_PORT = '18800';
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue(RUNNING); // production on 7523
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).not.toHaveBeenCalled();
+      expect(process.kill).not.toHaveBeenCalledWith(1234, 'SIGKILL');
+    });
   });
 });
 
