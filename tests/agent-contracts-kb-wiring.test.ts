@@ -71,6 +71,70 @@ describe('every role contract carries working KB wiring', () => {
 });
 
 /**
+ * apra-fleet-b4g.38: since cc712c94 the fleet server refuses any kb_* call that names
+ * no repo_path (repo_scope_required / E-REPO-SCOPE-REQUIRED) before opening a KB. Nine
+ * of the eleven role prompts carry a call to some kb_* tool beyond kb_session_prime
+ * (which already takes repo_path as an input the priming test above pins); those calls
+ * are silently dropped unless the prompt tells the agent to carry repo_path forward.
+ * b4g.35 and this bead patched the five prompts an audit had under-counted, but nothing
+ * asserted the instruction itself -- the sentence could be deleted from every prompt and
+ * the priming test above would stay green. This pins it at the class level so the next
+ * regression fails a test instead of silently dropping captures again.
+ *
+ * ci-watcher is correctly exempt: kb_session_prime is its only kb_* call (asserted
+ * above), so there is no further call site to scope. kb-reconciler carries no verbatim
+ * scope sentence but names `repo_path` explicitly at its own "Repo scope" instruction
+ * covering every kb_* call it makes -- satisfies the requirement the other way.
+ */
+const KB_SCOPE_SENTENCE =
+  'Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.';
+
+function callsKbBeyondSessionPrime(content: string): boolean {
+  return /mcp__apra-fleet__kb_(?!session_prime\b)[a-z_]+/.test(content);
+}
+
+// The full sweep from apra-fleet-b4g.38: every role that calls a kb_* tool beyond
+// kb_session_prime must carry the verbatim scope sentence, EXCEPT kb-reconciler, which
+// states its own repo-scope rule and repeats repo_path at every one of its call sites
+// instead. ci-watcher has no kb_* call beyond kb_session_prime at all (asserted below),
+// so it needs neither.
+const SCOPE_SENTENCE_ROLES = [
+  'backlog-groomer',
+  'deployer',
+  'doer',
+  'harvester',
+  'integ-test-runner',
+  'planner',
+  'plan-reviewer',
+  'regression-test-runner',
+  'reviewer',
+];
+
+describe('every kb_* call beyond priming is pinned to its repo_path scope', () => {
+  const byRole = assetsByRole();
+
+  it('the scope-sentence role set is exactly ROLES minus the two documented exemptions', () => {
+    expect([...SCOPE_SENTENCE_ROLES].sort()).toEqual(
+      ROLES.filter((r) => r !== 'ci-watcher' && r !== 'kb-reconciler').sort()
+    );
+  });
+
+  it.each(SCOPE_SENTENCE_ROLES)('%s carries the verbatim repo_path scope sentence', (role) => {
+    expect(byRole.get(role)!).toContain(KB_SCOPE_SENTENCE);
+  });
+
+  it('ci-watcher has no kb_* call beyond kb_session_prime, so nothing needs scoping', () => {
+    expect(callsKbBeyondSessionPrime(byRole.get('ci-watcher')!)).toBe(false);
+  });
+
+  it('kb-reconciler names repo_path at its own repo-scope instruction instead of the sentence', () => {
+    const content = byRole.get('kb-reconciler')!;
+    expect(content).not.toContain(KB_SCOPE_SENTENCE);
+    expect(content).toMatch(/Repo scope[^\n]*repo_path/);
+  });
+});
+
+/**
  * KB audit 2026-08-11: the seven code_* tools ship in the same MCP server as
  * the kb_* tools and had 0 calls across six sprint batches. Deferred MCP tools
  * load only when a ToolSearch query NAMES them, and every contract's Step 0

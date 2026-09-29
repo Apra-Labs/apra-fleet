@@ -100,6 +100,7 @@ Step 0a while any permission is missing.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
    and `hint_modules` naming the deploy targets in `deploy.md`. Trust CONFIRMED entries
    fully. Use INFERRED entries as hints, not facts.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out to
    be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook" or
    "learning". A deploy gotcha you had to discover is exactly what the next deploy needs.

@@ -74,6 +74,7 @@ from and does not gate yours.
    `hint_symbols`/`hint_modules` relevant to the features you were handed. Trust CONFIRMED
    entries fully. Use INFERRED entries as hints, not facts. An entry recording that a test
    is environment-sensitive changes how you read a single red run.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a step
    the playbook does not record, call `mcp__apra-fleet__kb_capture` with type "knowledge" or
    "learning".
