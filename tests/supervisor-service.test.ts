@@ -108,7 +108,7 @@ describe('registerSupervisorService', () => {
     expect(mockGetSvcMgr).toHaveBeenCalledWith('fleet-supervisor');
     expect(supervisorMgr.register).toHaveBeenCalledWith(
       BINARY,
-      [SUPERVISOR_SUBCOMMAND],
+      [SUPERVISOR_SUBCOMMAND, '--managed-service'],
       SUPERVISOR_LOG_FILE_PATH,
       { workingDirectory: SUPERVISOR_WORKING_DIR },
     );
@@ -123,7 +123,7 @@ describe('registerSupervisorService', () => {
     await registerSupervisorService(BINARY);
     const [execArg, argsArg] = supervisorMgr.register.mock.calls[0];
     expect(String(execArg)).toBe(BINARY);
-    expect(argsArg).toEqual(['supervisor']);
+    expect(argsArg).toEqual(['supervisor', '--managed-service']);
     expect(JSON.stringify([execArg, argsArg])).not.toContain('serve.mjs');
   });
 

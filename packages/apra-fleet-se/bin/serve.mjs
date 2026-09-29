@@ -55,7 +55,7 @@ import { resolveFleetServerConnection } from './cli.mjs';
 import {
     discoverBeadsDir, probeBeadsIdentity, createBeadsIdentityState,
     formatNoBeadsWarning, formatProbeFailedWarning,
-    resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE,
+    resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE, LAUNCH_MODE,
 } from '../src/supervisor/beads-identity.mjs';
 import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -80,6 +80,9 @@ termination signal (Ctrl-C / SIGTERM).
 
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --managed-service     Set by the installed OS service registration: this
+                            supervisor is restarted by 'apra-fleet restart', and
+                            restart guidance says so. Standalone launches omit it.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. A path that does not
                             exist is an error.
@@ -214,6 +217,7 @@ export function parseServeArgs(argv) {
             options: {
                 port: { type: 'string' },
                 'beads-dir': { type: 'string' },
+                'managed-service': { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -226,6 +230,9 @@ export function parseServeArgs(argv) {
 
 export async function serveMain(argv = process.argv.slice(2)) {
     const { values } = parseServeArgs(argv);
+    // Explicit launch-mode signal (never guessed from the environment): the
+    // installed service registration passes --managed-service.
+    const launchMode = values['managed-service'] ? LAUNCH_MODE.INSTALLED_SERVICE : LAUNCH_MODE.STANDALONE;
 
     if (values.help) {
         console.log(SERVE_USAGE);
@@ -291,7 +298,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     //     /api/health?refresh=1 can recover it without a restart.
     let project;
     try {
-        project = await resolveProjectDir({ flag: values['beads-dir'], cwd: process.cwd() });
+        project = await resolveProjectDir({ flag: values['beads-dir'], cwd: process.cwd(), launchMode });
     } catch (err) {
         // Only the flag branch throws -- the typo-is-fatal half above.
         console.error(`Error: ${err && err.message ? err.message : err}`);
@@ -311,7 +318,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
                 ...project,
                 chdir: null,
                 usable: false,
-                warning: formatStaleConfiguredProjectWarning(project.projectDir, supervisorConfigPath()),
+                warning: formatStaleConfiguredProjectWarning(project.projectDir, supervisorConfigPath(), { launchMode }),
             };
         }
     }
@@ -345,7 +352,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
             beadsWarning = formatProbeFailedWarning(repoRoot, err);
         }
     }
-    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning, launchMode });
     if (beadsIdentityRecord) {
         console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
     }
@@ -591,6 +598,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // the startup resolution above); `flagActive` mirrors that resolution's
     // own precedence decision rather than re-deriving it from the raw flag.
     registerProjectFolderRoutes(supervisor, {
+        launchMode,
         projectDir: project.projectDir,
         source: project.source,
         flagActive: project.source === PROJECT_DIR_SOURCE.FLAG,

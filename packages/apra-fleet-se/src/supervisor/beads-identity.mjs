@@ -163,6 +163,33 @@ function textOf(v) {
  * }} [opts]
  * @returns {Promise<{ beadsDir: string, prefix: string, databasePath: string, syncRemote: string, repoRemote: string }>}
  */
+export const PROBE_CAUSE_GIT_NOT_FOUND = 'git-not-found';
+
+/** A child-process failure that means "executable not found", not "ran and exited non-zero". */
+function isSpawnNotFound(err) {
+    return Boolean(err) && (err.code === 'ENOENT' || /\bspawn \S+ ENOENT\b/.test(String(err.message ?? '')));
+}
+
+/**
+ * How the supervisor was launched, from an EXPLICIT startup signal (serve's
+ * --managed-service flag, passed by the installed service registration) --
+ * never guessed from the environment.
+ */
+export const LAUNCH_MODE = Object.freeze({ INSTALLED_SERVICE: 'installed-service', STANDALONE: 'standalone' });
+
+/**
+ * The restart step that actually cycles THIS supervisor. 'apra-fleet restart'
+ * only covers the installed service; a standalone fleet-se/serve launch is a
+ * plain process the operator restarts themselves.
+ * @param {string} [launchMode]
+ * @returns {string}
+ */
+export function restartInstruction(launchMode) {
+    return launchMode === LAUNCH_MODE.INSTALLED_SERVICE
+        ? "run 'apra-fleet restart'"
+        : 'restart the supervisor process yourself -- apra-fleet restart does not manage a standalone launch';
+}
+
 export async function probeBeadsIdentity(opts = {}) {
     const cwd = path.resolve(opts.cwd ?? process.cwd());
     const execBd = opts.execBd ?? execBdAsync;
@@ -174,6 +201,10 @@ export async function probeBeadsIdentity(opts = {}) {
         where = textOf((await execBd(['where', '--json'], execOpts)).stdout);
     } catch (err) {
         const detail = textOf(err && (err.stderr || err.stdout)).trim() || (err && err.message) || String(err);
+        if (isSpawnNotFound(err)) {
+            throw new Error(`'bd' was not found on the supervisor's PATH (running 'bd where --json' in '${cwd}' failed: ${detail}). `
+                + 'Install bd; if it was just installed, restart the supervisor so it picks up the new PATH.');
+        }
         throw new Error(`'bd where --json' failed in '${cwd}': ${detail}`);
     }
 
@@ -185,13 +216,22 @@ export async function probeBeadsIdentity(opts = {}) {
     }
 
     let repoRemote = '';
+    /** @type {{ repoRemote?: string }} */
+    const probeCauses = {};
     try {
         repoRemote = textOf((await execGit('git', ['remote', 'get-url', 'origin'], execOpts)).stdout);
-    } catch {
+    } catch (err) {
         repoRemote = '';
+        // A git that could not even be SPAWNED (not on the supervisor's PATH)
+        // is a different problem from a non-zero exit (no origin remote), and
+        // must not be reported with the same "git remote add origin" advice.
+        if (isSpawnNotFound(err)) probeCauses.repoRemote = PROBE_CAUSE_GIT_NOT_FOUND;
     }
 
     const identity = parseBeadsIdentity({ where, syncRemote, repoRemote });
+    // Non-enumerable so the identity's own shape (display summary, deep
+    // equality, JSON) is unchanged; only the message formatters read it.
+    Object.defineProperty(identity, 'probeCauses', { value: probeCauses, enumerable: false });
     if (!identity.beadsDir) {
         throw new Error(`'bd where --json' in '${cwd}' returned no .beads path: ${where.trim() || '(empty output)'}`);
     }
@@ -260,8 +300,17 @@ export function missingIdentityFields(identity) {
 }
 
 /** @param {string[]} missing */
-function requirementsFor(missing) {
-    return PROJECT_FOLDER_REQUIREMENTS.filter((req) => missing.includes(req.field));
+function requirementsFor(missing, causes = {}, launchMode) {
+    return PROJECT_FOLDER_REQUIREMENTS.filter((req) => missing.includes(req.field)).map((req) => {
+        if (req.field === 'repoRemote' && causes && causes.repoRemote === PROBE_CAUSE_GIT_NOT_FOUND) {
+            return {
+                field: req.field,
+                label: "the git executable (git was not found on the supervisor's PATH, so the 'origin' remote could not be read)",
+                fix: `install git so it is on the supervisor's PATH; if git was just installed, ${restartInstruction(launchMode)} so it picks up the new PATH`,
+            };
+        }
+        return req;
+    });
 }
 
 /**
@@ -274,8 +323,8 @@ function requirementsFor(missing) {
  * @param {string|null} [detail]
  * @returns {string}
  */
-export function formatUnusableProjectFolderError(projectDir, missing, detail = null) {
-    const reqs = requirementsFor(missing);
+export function formatUnusableProjectFolderError(projectDir, missing, detail = null, opts = {}) {
+    const reqs = requirementsFor(missing, opts.causes, opts.launchMode);
     const what = reqs.map((r) => r.label).join(', ');
     const verb = reqs.length === 1 ? 'is' : 'are';
     return `project folder '${projectDir}' cannot be used by sprints: ${what} ${verb} missing`
@@ -292,13 +341,13 @@ export function formatUnusableProjectFolderError(projectDir, missing, detail = n
  * @param {string[]} missing
  * @returns {string}
  */
-export function formatIncompleteIdentityWarning(repoRoot, missing) {
-    const reqs = requirementsFor(missing);
+export function formatIncompleteIdentityWarning(repoRoot, missing, opts = {}) {
+    const reqs = requirementsFor(missing, opts.causes, opts.launchMode);
     const what = reqs.map((r) => r.label).join(', ');
     const verb = reqs.length === 1 ? 'is' : 'are';
     return `the beads identity under ${repoRoot} is incomplete: ${what} ${verb} missing. `
         + 'Sprints launched against this project folder will fail their beads identity check. '
-        + `To fix: ${reqs.map((r) => r.fix).join('; ')}, then restart the supervisor (or ${FIX_TAIL})`;
+        + `To fix: ${reqs.map((r) => r.fix).join('; ')}, then ${restartInstruction(opts.launchMode)} (or ${FIX_TAIL})`;
 }
 
 /**
@@ -330,7 +379,9 @@ export async function checkProjectFolderIdentity(opts = {}) {
         identity,
         missing,
         detail,
-        error: missing.length === 0 ? null : formatUnusableProjectFolderError(cwd, missing, detail),
+        error: missing.length === 0 ? null : formatUnusableProjectFolderError(cwd, missing, detail, {
+            causes: identity && identity.probeCauses, launchMode: opts.launchMode,
+        }),
     };
 }
 
@@ -352,13 +403,13 @@ export const PROJECT_DIR_SOURCE = Object.freeze({
  * @param {string} configPath
  * @returns {string}
  */
-export function formatStaleConfiguredProjectWarning(projectDir, configPath) {
+export function formatStaleConfiguredProjectWarning(projectDir, configPath, opts = {}) {
     return `the configured project folder ${projectDir} does not exist or is not a directory ` +
         `(configured in ${configPath}). ` +
         "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
         'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
         "To fix: point the setting at the project folder from the console's project setting " +
-        '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor -- the setting is read ' +
+        '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor: ' + restartInstruction(opts.launchMode) + ' -- the setting is read ' +
         'only at startup, so GET /api/health?refresh=1 re-probes this same path and cannot pick up a new one.';
 }
 
@@ -441,7 +492,7 @@ export async function resolveProjectDir(opts = {}) {
                 source: PROJECT_DIR_SOURCE.CONFIG,
                 chdir: null,
                 usable: false,
-                warning: formatStaleConfiguredProjectWarning(configured, config.path),
+                warning: formatStaleConfiguredProjectWarning(configured, config.path, { launchMode: opts.launchMode }),
                 configReason: null,
             };
         }
@@ -517,7 +568,9 @@ export function createBeadsIdentityState(deps = {}) {
     const warningFor = (id) => {
         if (!id) return warning;
         const missing = missingIdentityFields(id);
-        return missing.length ? formatIncompleteIdentityWarning(cwd, missing) : null;
+        return missing.length
+            ? formatIncompleteIdentityWarning(cwd, missing, { causes: id.probeCauses, launchMode: deps.launchMode })
+            : null;
     };
     return {
         cwd,
