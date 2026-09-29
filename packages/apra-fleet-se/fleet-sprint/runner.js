@@ -57,6 +57,7 @@ import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
+import { createDispatchAccounting } from './dispatch-accounting.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
 // boundary and for why resolveSettleShell travelled with them). The four
@@ -1277,6 +1278,13 @@ async function runSprintCycle(context) {
         log,
     });
 
+    // apra-fleet-b4g.33: per-dispatch kb_*/preflight accounting, the
+    // data-collection half of the Knowledge and Code Intelligence panel
+    // (apra-fleet-b4g.21). ONE store for the whole sprint, threaded into
+    // kbWork below so every kb.mjs call site it makes is counted as a side
+    // effect of the call actually happening.
+    const dispatchAccounting = context.dispatchAccounting ?? createDispatchAccounting({ log });
+
     // The role output schemas are shared with apra-pm, so every role dispatched
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
     // This is the consumer: without it those fields would be gathered and
@@ -1294,6 +1302,7 @@ async function runSprintCycle(context) {
         // context.kbPriming above is an injection seam; a stub that predates
         // remoteUrlForPath degrades to no scope rather than crashing a sprint.
         remoteUrlFor: (repoPath) => (typeof kbPriming.remoteUrlForPath === 'function' ? kbPriming.remoteUrlForPath(repoPath) : null),
+        accounting: dispatchAccounting,
     });
     // A member named in ANY roleMap value is a "specialist" for whatever
     // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been
@@ -1428,7 +1437,11 @@ async function runSprintCycle(context) {
         log,
         publishState,
     });
-    await memberPreflight.runAll();
+    const memberPreflightRecords = await memberPreflight.runAll();
+    // apra-fleet-b4g.33 AC5: the panel's ONE structured store also carries the
+    // per-member preflight records this run just produced, unchanged -- no
+    // field renamed, dropped or invented.
+    dispatchAccounting.setPreflightRecords(memberPreflightRecords);
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of
@@ -1546,7 +1559,7 @@ async function runSprintCycle(context) {
             // one implementation serves the harvester, the doer, the per-round
             // reviewer and the final review alike.
             'kb-apply': async ({ policy, value, member }) => {
-                await kbWork.apply(policy.agentType, kbPriming.folderOf(member), value);
+                await kbWork.apply(policy.agentType, kbPriming.folderOf(member), value, { member });
             },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
@@ -1765,14 +1778,15 @@ async function runSprintCycle(context) {
         // folder (same source kbWork.apply uses to route the writes), and
         // best-effort: a cold KB must not fail the review.
         const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
-        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
+        const reviewerDispatch = { role: ROLE_REVIEWER, member: reviewerPool[0] };
+        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath, reviewerDispatch);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
-        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
+        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds), reviewerDispatch);
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);

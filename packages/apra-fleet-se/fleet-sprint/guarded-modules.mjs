@@ -383,6 +383,12 @@ export const GUARDED_MODULES = [
     // and shell-command-guard exist to scan, so it is registered as part of the
     // bead that introduces it rather than as a follow-up.
     'member-preflight.mjs',
+    // apra-fleet-b4g.33: per-dispatch kb_*/preflight accounting store. It
+    // issues no command()/agent() call of its own (pure in-memory
+    // bookkeeping), so it scans clean under every guard -- registered
+    // normally rather than needing a GUARD_REGISTRATION_EXEMPT carve-out,
+    // matching explicit-id-create-guard.mjs's precedent above.
+    'dispatch-accounting.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',

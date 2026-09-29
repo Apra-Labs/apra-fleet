@@ -527,7 +527,11 @@ export async function runDevelopPhase({
                 // that call is what traverses the refines/contradiction_of
                 // edges.
                 const doerRepoPath = kbPriming.folderOf(doerMember);
-                const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                const doerKnowledge = await kbWork.relevantKnowledge(
+                    doerRepoPath,
+                    kbQueryTerms(streak, actualBeadIds),
+                    { role: 'doer', member: doerMember }
+                );
                 const basePrompt = buildDoerPrompt({
                     beadIds: actualBeadIds,
                     branch: validated.branch,

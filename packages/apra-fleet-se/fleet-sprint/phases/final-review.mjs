@@ -200,7 +200,8 @@ export async function runFinalReviewPhase({
     // and resume paths reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
     const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
-    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
+    const finalReviewDispatch = { role: 'reviewer', member: getMemberForRole('reviewer') };
+    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath, finalReviewDispatch);
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
@@ -269,7 +270,7 @@ export async function runFinalReviewPhase({
     // of the run, so the bible carries every CONFIRMED entry including the ones
     // minted a line above. Without this the sprint's knowledge never left the
     // member's local sqlite store -- see createKbWorkClient.exportBible.
-    await kbWork.exportBible(finalReviewRepoPath);
+    await kbWork.exportBible(finalReviewRepoPath, finalReviewDispatch);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

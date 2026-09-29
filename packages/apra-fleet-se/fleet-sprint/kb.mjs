@@ -162,8 +162,44 @@ export function vetKbWork(role, result) {
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
 
 export function createKbWorkClient(opts = {}) {
-    const { callTool, log = () => {}, remoteUrlFor } = opts;
+    const { callTool, log = () => {}, remoteUrlFor, accounting } = opts;
     const active = typeof callTool === 'function';
+
+    /**
+     * Counts one kb_* call attempt against the (role, member) dispatch it
+     * belongs to. `accounting` is an optional injected
+     * sprint-state.mjs#createDispatchAccounting() instance (apra-fleet-b4g.33)
+     * -- absent by default, so every call site below stays a no-op for any
+     * caller that does not wire one. Best-effort and non-fatal on its own
+     * terms (accounting's own methods already swallow their failures), and
+     * ALSO guarded here in case a caller injects a malformed accounting
+     * stub: a broken accounting object must never fail the kb_* call it is
+     * merely counting.
+     * @param {{role?: string, member?: string}|undefined} dispatch
+     * @param {string} toolName
+     * @returns {object|null} the dispatch record, for a caller that also
+     *   needs to record a capture outcome against it.
+     */
+    function accountCall(dispatch, toolName) {
+        if (!accounting) return null;
+        try {
+            const record = accounting.forDispatch(dispatch || {});
+            accounting.recordKbCall(record, toolName);
+            return record;
+        } catch (err) {
+            log(`[kb-work] dispatch accounting failed for ${toolName} (non-fatal): ${err.message}`);
+            return null;
+        }
+    }
+
+    function accountCapture(record, outcome) {
+        if (!accounting || !record) return;
+        try {
+            accounting.recordCaptureOutcome(record, outcome);
+        } catch (err) {
+            log(`[kb-work] dispatch accounting failed for a capture outcome (non-fatal): ${err.message}`);
+        }
+    }
 
     /**
      * The URL-based KB scope for a repo path, resolved through the injected
@@ -205,18 +241,23 @@ export function createKbWorkClient(opts = {}) {
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
          */
-        async promotionCandidates(repoPath) {
+        async promotionCandidates(repoPath, dispatch) {
             // Without a repo path kb_list would resolve against the fleet
             // server's cwd and offer entries from an unrelated project's KB
             // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
             if (!active || !repoPath) return [];
             try {
-                const parsed = parseResult(await callTool('kb_list', {
+                const raw = await callTool('kb_list', {
                     repo_path: repoPath,
                     ...scopeOf(repoPath),
                     confidence: 'INFERRED',
                     limit: KB_MAX_PROMOTION_CANDIDATES,
-                }));
+                });
+                // apra-fleet-b4g.33: the count is a side effect of the call
+                // actually happening, regardless of outcome -- an attempt that
+                // is later found to be a tool-level rejection still counts.
+                accountCall(dispatch, 'kb_list');
+                const parsed = parseResult(raw);
                 const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
                 return results
                     // promote() refuses type='user-directive' outright (activation
@@ -225,6 +266,7 @@ export function createKbWorkClient(opts = {}) {
                     .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive')
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
             } catch (err) {
+                accountCall(dispatch, 'kb_list');
                 log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
                 return [];
             }
@@ -251,7 +293,7 @@ export function createKbWorkClient(opts = {}) {
          * cold KB or an unreachable one all degrade to "no knowledge", never to
          * a failed dispatch.
          */
-        async relevantKnowledge(repoPath, terms) {
+        async relevantKnowledge(repoPath, terms, dispatch) {
             if (!active || !repoPath || !Array.isArray(terms) || terms.length === 0) return [];
             const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
             if (!query) return [];
@@ -263,6 +305,9 @@ export function createKbWorkClient(opts = {}) {
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
                 });
+                // apra-fleet-b4g.33: counted once the call has actually
+                // happened, regardless of outcome (isError below or not).
+                accountCall(dispatch, 'kb_query');
                 // apra-fleet-23c: an MCP callTool RESOLVES with {isError:true}
                 // for a tool-level failure rather than throwing, so this was
                 // the one kb_* failure path in this module that stayed
@@ -296,11 +341,12 @@ export function createKbWorkClient(opts = {}) {
                 }
                 return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
             } catch (err) {
+                accountCall(dispatch, 'kb_query');
                 log(`[kb-work] kb_query failed for ${repoPath} (non-fatal): ${err.message}`);
                 return [];
             }
         },
-        async apply(role, repoPath, result) {
+        async apply(role, repoPath, result, dispatch) {
             const { captures, promotions, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
@@ -317,22 +363,37 @@ export function createKbWorkClient(opts = {}) {
                 return { captured: 0, promoted: 0, refused: refused.length };
             }
 
+            // apra-fleet-b4g.33: one record per (role, member) for every kb_*
+            // attempt this apply() makes below. dispatch?.member is optional --
+            // an omitted one still accounts under this role with no member key,
+            // same degrade as accountCall's own malformed-input guard.
+            const dispatchInfo = { role, member: dispatch && dispatch.member };
+
             let captured = 0;
             let promoted = 0;
             for (const c of captures) {
                 try {
                     const res = await callTool('kb_capture', { ...c, repo_path: repoPath, ...scopeOf(repoPath) });
+                    const rec = accountCall(dispatchInfo, 'kb_capture');
                     // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
                     // tool-level failure rather than throwing, so counting every
                     // non-throwing call as a success reported captures that never
                     // persisted ("captured 3" against a KB that stayed empty).
                     if (isToolError(res)) {
-                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${toolErrorText(res)}`);
+                        const cause = toolErrorText(res);
+                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${cause}`);
+                        // apra-fleet-b4g.33 AC4: a rejected capture must not
+                        // vanish into the count -- kept vs rejected, with cause.
+                        accountCapture(rec, { title: c.title, outcome: 'rejected', cause, source: 'isError' });
                         continue;
                     }
                     captured++;
+                    accountCapture(rec, { title: c.title, outcome: 'kept' });
                 } catch (err) {
+                    const rec = accountCall(dispatchInfo, 'kb_capture');
                     log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
+                    // AC4: the THROW path is covered too, not just isError.
+                    accountCapture(rec, { title: c.title, outcome: 'rejected', cause: err.message, source: 'throw' });
                 }
             }
             for (const p of promotions) {
@@ -345,12 +406,14 @@ export function createKbWorkClient(opts = {}) {
                     // apra-fleet-tm7 repo-blindness class, fixed for capture
                     // but missed here).
                     const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath, ...scopeOf(repoPath) });
+                    accountCall(dispatchInfo, 'kb_promote');
                     if (isToolError(res)) {
                         log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
                         continue;
                     }
                     promoted++;
                 } catch (err) {
+                    accountCall(dispatchInfo, 'kb_promote');
                     log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
                 }
             }
@@ -379,13 +442,14 @@ export function createKbWorkClient(opts = {}) {
          * decision (kb_export's own autoCommit config) -- this does not widen
          * the engine's git authority.
          */
-        async exportBible(repoPath) {
+        async exportBible(repoPath, dispatch) {
             // Same repo-blindness guard as every other call here: without a
             // path kb_export would resolve against the fleet server's cwd and
             // write an unrelated project's bible.
             if (!active || !repoPath) return false;
             try {
                 const res = await callTool('kb_export', { repo_path: repoPath, ...scopeOf(repoPath) });
+                accountCall(dispatch, 'kb_export');
                 if (isToolError(res)) {
                     log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
                     return false;
@@ -393,6 +457,7 @@ export function createKbWorkClient(opts = {}) {
                 log(`[kb-work] exported the canonical bible for ${repoPath}`);
                 return true;
             } catch (err) {
+                accountCall(dispatch, 'kb_export');
                 log(`[kb-work] kb_export failed for ${repoPath} (non-fatal): ${err.message}`);
                 return false;
             }
