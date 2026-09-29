@@ -63,7 +63,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
@@ -71,6 +71,7 @@ import { writeSupervisorToolchain, supervisorConfigPath } from '../src/superviso
 import { TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
 import { prependToPathEnv } from './helpers/child-path-env.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SE_ROOT = path.resolve(__dirname, '..');
@@ -243,32 +244,19 @@ function writeBdStub(filePath, { versionOk }) {
 
 /**
  * Builds the fixture tools shared by every scenario below: a REAL recorded
- * node (a distinct hard link/copy of this test runner's own node) and the
- * `--require` preload that turns a spawned sprint CLI (argv[1] matching
- * `cli.mjs`) into a stub that records its own interpreter and exits 0 --
- * identical technique to i9ag19-14's own fixture, trimmed to only what this
- * file needs (no recorded bd here; each scenario below writes its own bd
- * stub(s) at the path(s) it needs).
+ * node (see ./helpers/recorded-node-fixture.mjs for the exact shape and why)
+ * and the `--require` preload that turns a spawned sprint CLI (argv[1]
+ * matching `cli.mjs`) into a stub that records its own interpreter and exits
+ * 0 -- identical technique to i9ag19-14's own fixture, trimmed to only what
+ * this file needs (no recorded bd here; each scenario below writes its own
+ * bd stub(s) at the path(s) it needs).
  */
 async function buildFixtureTools(label) {
     const toolDir = await mkTmp(`i9ag19-11-${label}-tools-`);
     const recordDir = path.join(toolDir, 'spawn-records');
     fs.mkdirSync(recordDir, { recursive: true });
-    const isWin = process.platform === 'win32';
 
-    const realNode = fs.realpathSync(process.execPath);
-    const recordedNode = path.join(toolDir, isWin ? 'recorded-node.exe' : 'recorded-node');
-    try {
-        fs.linkSync(realNode, recordedNode);
-    } catch {
-        fs.copyFileSync(realNode, recordedNode);
-    }
-    assert.notEqual(
-        recordedNode, process.execPath,
-        'the recorded node must be a DIFFERENT path from the test runner/supervisor own execPath',
-    );
-    const probe = spawnSync(recordedNode, ['--version'], { encoding: 'utf-8' });
-    assert.equal(probe.status, 0, `the recorded node copy is not executable: ${probe.error ? probe.error.message : probe.stderr}`);
+    const recordedNode = buildRecordedNode(toolDir);
 
     const preload = path.join(toolDir, 'record-cli-spawn.cjs');
     fs.writeFileSync(

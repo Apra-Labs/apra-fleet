@@ -91,6 +91,7 @@ import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { writeSupervisorToolchain } from '../src/supervisor/project-config.mjs';
 import { pathEnvKey } from './helpers/child-path-env.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SE_ROOT = path.resolve(__dirname, '..');
@@ -237,10 +238,11 @@ async function waitFor(probe, timeoutMs, describeFailure) {
 }
 
 /**
- * Writes the recorded-toolchain fixture: a REAL node (a distinct hard
- * link/copy of this test runner's own node, so the recorded path is never
- * `process.execPath` itself), a tiny recorded `bd`, and the `--require`
- * preload that turns the spawned sprint CLI into a recording stub.
+ * Writes the recorded-toolchain fixture: a REAL node (see
+ * ./helpers/recorded-node-fixture.mjs for the exact shape and why -- the
+ * recorded path is never `process.execPath` itself), a tiny recorded `bd`,
+ * and the `--require` preload that turns the spawned sprint CLI into a
+ * recording stub.
  *
  * Every path here is resolved in JavaScript -- nothing is left to shell-level
  * expansion, and the two stub scripts are written per-platform (`bd.cmd` for
@@ -253,25 +255,7 @@ async function buildToolchainFixture(label) {
     fs.mkdirSync(recordDir, { recursive: true });
     const isWin = process.platform === 'win32';
 
-    // --- the recorded node: a REAL node runtime at a path of our choosing.
-    // A hard link is preferred (instant, no 100MB copy) with a copy as the
-    // fallback for a tmpdir on another volume. Either way the result is a
-    // separate absolute path that reports ITSELF as process.execPath, which
-    // is what makes "the child ran the RECORDED node" checkable at all.
-    const realNode = fs.realpathSync(process.execPath);
-    const recordedNode = path.join(toolDir, isWin ? 'recorded-node.exe' : 'recorded-node');
-    try {
-        fs.linkSync(realNode, recordedNode);
-    } catch {
-        fs.copyFileSync(realNode, recordedNode);
-    }
-    assert.notEqual(
-        recordedNode, process.execPath,
-        'the recorded node must be a DIFFERENT path from the test runner/supervisor own execPath, '
-        + 'or a launch resolved from the current runtime would be indistinguishable from one resolved from the recording',
-    );
-    const probe = spawnSync(recordedNode, ['--version'], { encoding: 'utf-8' });
-    assert.equal(probe.status, 0, `the recorded node copy is not executable: ${probe.error ? probe.error.message : probe.stderr}`);
+    const recordedNode = buildRecordedNode(toolDir);
 
     // --- the recorded bd: answers the two invocations this test's launch
     // path actually makes -- `--version` (startup validation) and a `list`
