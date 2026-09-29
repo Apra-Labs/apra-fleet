@@ -170,29 +170,105 @@ function quoteForWindowsShell(token) {
 }
 
 /**
+ * Transient spawn errno codes worth one bounded retry before this module
+ * concludes a probe genuinely failed -- these mean the OS could not even
+ * START the child process (resource exhaustion under load), never that the
+ * target binary itself is broken. `ENOENT` (the binary genuinely does not
+ * exist) is deliberately NOT included: a missing binary is a genuine finding
+ * on the very first attempt, and a retry could never change that.
+ */
+const TRANSIENT_SPAWN_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE']);
+
+/**
+ * Classifies a probe failure as one that could not COMPLETE -- the child was
+ * killed (`options.timeout` firing is this module's own
+ * `TOOLCHAIN_PROBE_TIMEOUT_MS` ceiling; Node reports this as `err.killed:
+ * true` plus `err.signal` set) or the OS itself transiently failed to spawn
+ * it (`err.code` one of `TRANSIENT_SPAWN_ERRNOS`) -- versus one that
+ * completed and genuinely found nothing (a missing binary/`ENOENT`, a
+ * permission error, output with no parseable version). Only the former is
+ * worth a bounded retry and this module's own distinct "could not be probed"
+ * wording (see `probeVersion()`); the latter is unchanged from this module's
+ * original, pre-apra-fleet-i9ag.19.18 behavior.
+ * @param {unknown} err
+ * @returns {string|null} `'timeout'`, a transient errno code, or `null` for
+ *   a genuine (non-retryable) failure.
+ */
+function classifyIncompleteProbe(err) {
+    if (!err || typeof err !== 'object') return null;
+    if (err.killed === true || (typeof err.signal === 'string' && err.signal.length > 0)) return 'timeout';
+    if (typeof err.code === 'string' && TRANSIENT_SPAWN_ERRNOS.has(err.code)) return err.code;
+    return null;
+}
+
+/**
  * Probes `file --version` (well, `file`, `args`), returning the parsed
- * version or null when the probe fails or its output carries no
- * version-like substring. `shell: true` on win32 only, with `file` quoted
- * first when it contains whitespace -- a local copy of node-runner.mjs's
- * identically-named, identically-behaved helper; see this file's header for
- * why it is duplicated rather than imported.
+ * version, or a reason the probe never produced one. `shell: true` on win32
+ * only, with `file` quoted first when it contains whitespace -- a local copy
+ * of node-runner.mjs's identically-named, identically-behaved helper; see
+ * this file's header for why it is duplicated rather than imported.
+ *
+ * apra-fleet-i9ag.19.18: a probe that could not COMPLETE (killed at
+ * `TOOLCHAIN_PROBE_TIMEOUT_MS`, or a transient spawn errno such as `EAGAIN`
+ * under load) is retried exactly ONCE, bounded, before this function gives
+ * up -- a single kill/transient errno on a busy machine must never be
+ * indistinguishable from a binary that resolved and genuinely said no. If
+ * the SAME class of failure persists through the retry, that is reported
+ * back as `incomplete` (a distinct reason a caller can word differently from
+ * "does not resolve to a usable runtime") rather than folded into a plain
+ * `null`. A genuine failure (a missing binary, a permission error, output
+ * with no parseable version) is never retried -- a retry could never change
+ * that outcome -- and returns `incomplete: null` exactly as this function
+ * always has.
  * @param {(file: string, args: string[], options?: object) => string|Buffer} exec
  * @param {NodeJS.Platform} platform
  * @param {string} file
  * @param {string[]} args
- * @returns {string|null}
+ * @returns {{ version: string|null, incomplete: string|null }}
  */
 function probeVersion(exec, platform, file, args) {
     const isWin32Shell = platform === 'win32';
-    try {
-        const raw = exec(isWin32Shell ? quoteForWindowsShell(file) : file, args, {
-            shell: isWin32Shell,
-            timeout: TOOLCHAIN_PROBE_TIMEOUT_MS,
-        });
-        return parseVersionString(raw);
-    } catch {
-        return null;
+    const execFile = isWin32Shell ? quoteForWindowsShell(file) : file;
+    const options = { shell: isWin32Shell, timeout: TOOLCHAIN_PROBE_TIMEOUT_MS };
+
+    let incomplete = null;
+    // MAX_ATTEMPTS = 2: the original attempt plus exactly one bounded retry
+    // -- never a bare retry-until-pass loop.
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+            const raw = exec(execFile, args, options);
+            return { version: parseVersionString(raw), incomplete: null };
+        } catch (err) {
+            incomplete = classifyIncompleteProbe(err);
+            if (!incomplete) {
+                // A genuine failure -- never worth a retry.
+                return { version: null, incomplete: null };
+            }
+            // Fall through and retry exactly once on a timeout/transient
+            // spawn errno before concluding anything.
+        }
     }
+    return { version: null, incomplete };
+}
+
+/**
+ * Words a "the probe could not complete" problem entry for `label` (`'node'`
+ * or `'bd'`) -- deliberately distinct from this module's "does not resolve
+ * to a usable ..." wording (see `probeVersion()`'s own doc comment for why):
+ * a probe that never got to run to completion, twice, is a different finding
+ * from one that ran and genuinely found nothing, and a consumer/operator
+ * must never have to guess which of the two this module means.
+ * @param {string} label
+ * @param {string} recordedPath
+ * @param {string} incomplete `'timeout'` or a transient errno code
+ * @returns {string}
+ */
+function formatIncompleteProbeProblem(label, recordedPath, incomplete) {
+    const cause = incomplete === 'timeout'
+        ? `the probe was killed after exceeding that timeout, even on a retry`
+        : `a transient spawn error (${incomplete}) persisted even on a retry`;
+    return `Recorded ${label} path ${JSON.stringify(recordedPath)} could not be probed within `
+        + `${TOOLCHAIN_PROBE_TIMEOUT_MS / 1_000}s (${cause}).`;
 }
 
 /**
@@ -270,9 +346,27 @@ export async function validateRecordedToolchain(deps = {}) {
     // moment this recording turns out to be unusable, so this is the one
     // condition serious enough to gate this module's single pass/fail
     // signal.
-    const nodeVersion = probeVersion(exec, platform, nodePath, ['--version']);
+    //
+    // apra-fleet-i9ag.19.18: `probeVersion()` already retries once, bounded,
+    // on a timeout/transient spawn errno before giving up -- so by the time
+    // `incomplete` is still set here, the SAME class of failure survived a
+    // retry. That is deliberately still treated as `nodeOk: false` (today's
+    // exact severity, gating exactly like a genuinely broken recording
+    // does) -- a probe that cannot complete twice in a row on a machine that
+    // is otherwise able to run this process at all is a real finding worth
+    // surfacing loudly, not a coin flip to shrug off. What changes is ONLY
+    // the wording: `formatIncompleteProbeProblem()`'s distinct sentence,
+    // never this module's "does not resolve to a usable Node.js runtime"
+    // line, so a consumer/operator is never told a node that merely could
+    // not be probed in time "does not resolve" -- those are different
+    // findings and must read as different findings.
+    const nodeProbe = probeVersion(exec, platform, nodePath, ['--version']);
+    const nodeVersion = nodeProbe.version;
     let nodeOk;
-    if (nodeVersion === null) {
+    if (nodeProbe.incomplete) {
+        nodeOk = false;
+        problems.push(formatIncompleteProbeProblem('node', nodePath, nodeProbe.incomplete));
+    } else if (nodeVersion === null) {
         nodeOk = false;
         problems.push(
             `Recorded node path ${JSON.stringify(nodePath)} does not resolve to a usable Node.js runtime `
@@ -302,8 +396,12 @@ export async function validateRecordedToolchain(deps = {}) {
         bdOk = false;
         problems.push('No bd path was recorded for this installation.');
     } else {
-        bdVersion = probeVersion(exec, platform, bdPath, ['--version']);
-        if (bdVersion === null) {
+        const bdProbe = probeVersion(exec, platform, bdPath, ['--version']);
+        bdVersion = bdProbe.version;
+        if (bdProbe.incomplete) {
+            bdOk = false;
+            problems.push(formatIncompleteProbeProblem('bd', bdPath, bdProbe.incomplete));
+        } else if (bdVersion === null) {
             bdOk = false;
             problems.push(
                 `Recorded bd path ${JSON.stringify(bdPath)} does not resolve to a usable bd `

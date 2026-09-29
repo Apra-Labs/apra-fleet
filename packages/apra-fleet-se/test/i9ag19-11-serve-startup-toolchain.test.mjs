@@ -41,20 +41,6 @@
 // for "did toolchain.mjs report a problem", never a substring collision with
 // that unrelated beads warning.
 //
-// CONTENTION NOTE (apra-fleet-i9ag.19.18): the "good recording" and
-// "bdbroken" cases below boot a real child supervisor over a node path this
-// file already proved executable via a direct spawnSync(). Under the full
-// bounded suite's sibling-test load, toolchain.mjs's fixed-ceiling probe can
-// still be killed before it completes and folds that into the same "does
-// not resolve to a usable Node.js runtime" ERROR as a genuinely broken path
-// -- a real, observed, load-dependent failure whose durable fix belongs in
-// toolchain.mjs itself (tracked separately as apra-fleet-i9ag.19.18, not
-// this test-type bead's FILES). Both of those two cases boot through
-// bootServeToleratingNodeProbeContention() (see its own doc comment), which
-// retries the WHOLE boot exactly once, loudly, and ONLY when the failure is
-// diagnosably this exact symptom -- it never retries, weakens, or masks any
-// other assertion in this file.
-//
 // FIXTURES: a REAL node (a distinct hard link/copy of this test runner's own
 // node -- never `process.execPath` itself, so "the recording was honored" is
 // never confused with "the current runtime happened to work") plus small,
@@ -430,75 +416,6 @@ async function stopSupervisor(supervisor) {
     }
 }
 
-/**
- * apra-fleet-i9ag.19.18 tracks the PRODUCT-level fix for a real, observed
- * failure mode this file is exposed to but cannot itself repair (that bead's
- * FILES are toolchain.mjs, not this test file): toolchain.mjs's
- * `probeVersion()` kills its child probe at a FIXED `TOOLCHAIN_PROBE_TIMEOUT_MS`
- * (15s) and folds a probe that could not COMPLETE in time (a kill, or a
- * transient EAGAIN/ENOMEM spawn failure under load) into the exact same
- * `null` as a probe that completed and genuinely found nothing -- so a
- * supervisor booted here, under the full bounded suite's sibling-test
- * contention, can falsely print "[supervisor] ERROR: ... does not resolve
- * to a usable Node.js runtime" naming a node path THIS FILE'S OWN
- * `buildFixtureTools()` already proved executable via a direct
- * `spawnSync()` moments earlier in the very same test. That is not this
- * file boring a hole through toolchain.mjs's contract to make itself pass
- * -- it is recognizing one exact, narrow, provably-impossible-to-be-a-real-
- * regression symptom (an ERROR against a path this test itself just proved
- * good) and retrying the boot ONCE, loudly, rather than failing on a
- * scheduling artifact neither this file nor apra-fleet-i9ag.19.11's own
- * acceptance criteria are about.
- *
- * This is a single, BOUNDED, LOUD retry of the WHOLE boot+assertion --
- * never a bare sleep/retry-until-pass loop, and it never weakens any
- * assertion this file makes:
- *   - it only fires when the failure is diagnosably THIS symptom (an ERROR
- *     line naming `knownGoodNodePath` AND carrying `TOOLCHAIN_FIX_LINE` --
- *     the exact shape toolchain.mjs's node-probe-failed branch produces);
- *   - any OTHER assertion failure (a real regression in the startup wiring,
- *     a wrong path in the message, a missing WARNING, a bad launch status,
- *     etc.) propagates on the FIRST attempt with NO retry at all;
- *   - it retries at most once total, so a genuine regression that happens
- *     to also match this exact symptom shape still fails the test outright
- *     on the second attempt, never silently passing.
- *
- * Once apra-fleet-i9ag.19.18 lands (distinguishing "could not complete" from
- * "completed and said no" inside toolchain.mjs itself), this helper's retry
- * branch should simply stop firing -- it is deliberately narrow enough that
- * removing it entirely, once the product no longer needs it, changes
- * nothing about what this file asserts.
- *
- * @param {string} label
- * @param {object} opts - forwarded to bootServe()
- * @param {string} knownGoodNodePath - the recorded node path THIS caller
- *   already proved executable (e.g. via buildFixtureTools()'s own
- *   spawnSync() check) before booting the supervisor over it.
- */
-async function bootServeToleratingNodeProbeContention(label, opts, knownGoodNodePath) {
-    const MAX_ATTEMPTS = 2; // the original attempt plus exactly one bounded retry
-    for (let attempt = 1; ; attempt += 1) {
-        // eslint-disable-next-line no-await-in-loop
-        const supervisor = await bootServe(label, opts);
-        const falseNodeErrorLine = findLines(supervisor.getOutput(), /^\[supervisor\] ERROR: /)
-            .find((line) => line.includes(knownGoodNodePath) && line.includes(TOOLCHAIN_FIX_LINE));
-
-        if (!falseNodeErrorLine || attempt >= MAX_ATTEMPTS) {
-            return supervisor;
-        }
-
-        console.error(
-            `[test:${label}] apra-fleet-i9ag.19.18 contention symptom detected on attempt ${attempt}: `
-            + `the supervisor reported the known-good recorded node "${knownGoodNodePath}" as broken, `
-            + 'which this test already proved executable via a direct spawnSync() before booting. '
-            + 'Retrying the boot once (bounded), not treating it as a regression on this attempt. '
-            + `Offending line: ${falseNodeErrorLine}`,
-        );
-        // eslint-disable-next-line no-await-in-loop
-        await stopSupervisor(supervisor);
-    }
-}
-
 function readSpawnRecords(recordDir) {
     let names;
     try {
@@ -538,9 +455,9 @@ describe('apra-fleet-i9ag.19.11: a GOOD recording produces exactly one informati
 
         let supervisor;
         try {
-            supervisor = await bootServeToleratingNodeProbeContention('good', {
+            supervisor = await bootServe('good', {
                 toolchainConfig: { nodePath: fixture.recordedNode, bdPath: recordedBd },
-            }, fixture.recordedNode);
+            });
 
             const toolchainLines = findLines(supervisor.getOutput(), /^\[supervisor\] toolchain: /);
             assert.equal(
@@ -618,11 +535,11 @@ describe('apra-fleet-i9ag.19.11: a broken recorded BD with a FINE node -- its ow
 
         let supervisor;
         try {
-            supervisor = await bootServeToleratingNodeProbeContention('bdbroken', {
+            supervisor = await bootServe('bdbroken', {
                 toolchainConfig: { nodePath: fixture.recordedNode, bdPath: recordedBrokenBd },
                 preload: fixture.preload,
                 extraPathDir: pathBdDir,
-            }, fixture.recordedNode);
+            });
 
             // Node reported on its OWN line (the node-is-fine/bd-is-not
             // branch), never the combined "node ..., bd ..." good-recording

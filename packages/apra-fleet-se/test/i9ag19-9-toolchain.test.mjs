@@ -314,6 +314,144 @@ describe('apra-fleet-i9ag.19.9: validateRecordedToolchain() -- never throws on a
     });
 });
 
+// apra-fleet-i9ag.19.18: a probe that could not COMPLETE (killed at the
+// TOOLCHAIN_PROBE_TIMEOUT_MS ceiling, or a transient OS spawn errno under
+// load) must never be folded into the same "does not resolve to a usable
+// Node.js runtime"/"does not resolve to a usable bd" wording as a probe that
+// ran and genuinely found nothing -- see toolchain.mjs's probeVersion() and
+// formatIncompleteProbeProblem() doc comments for the full rationale. Every
+// case below drives this via a fake exec whose thrown error shape mimics
+// Node's own timeout-kill (`err.killed: true`, `err.signal` set) or a
+// transient spawn errno (`err.code` one of EAGAIN/ENOMEM/EMFILE/ENFILE).
+describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.18: validateRecordedToolchain() -- a probe that cannot COMPLETE is distinguished from one that completed and said no', () => {
+    /** A fake exec whose call `n` (1-based) throws (if `failures[n-1]` is
+     * set) or succeeds with `success` (once `n` exceeds `failures.length`).
+     * Records every call so a test can assert the retry actually happened. */
+    function fakeExecWithFailures(failures, success) {
+        const calls = [];
+        let n = 0;
+        const exec = (file, args, options) => {
+            n += 1;
+            calls.push({ file, args, options });
+            const failure = failures[n - 1];
+            if (failure) throw failure;
+            return success;
+        };
+        return { exec, calls };
+    }
+
+    function timeoutError() {
+        const err = new Error('spawnSync /opt/toolchain/node ETIMEDOUT');
+        err.killed = true;
+        err.signal = 'SIGTERM';
+        return err;
+    }
+
+    function transientErrnoError(code) {
+        const err = new Error(`spawn ${code}`);
+        err.code = code;
+        return err;
+    }
+
+    test('a node probe killed by the timeout ONCE then succeeding on retry yields nodeOk:true, the parsed version, and exactly 2 exec calls', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' }, { filePath });
+        const { exec, calls } = fakeExecWithFailures([timeoutError()], `v${MIN_NODE_VERSION}`);
+        // bd's own exec is a separate fake so its single call is not
+        // confused with node's retried calls.
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+            return exec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.ok, true);
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.nodeVersion, MIN_NODE_VERSION);
+        assert.deepEqual(result.problems, [], 'a probe that succeeds on its bounded retry reports no problem at all');
+        assert.equal(calls.length, 2, 'the node probe was retried exactly once after the timeout-shaped failure');
+    });
+
+    test('a node probe killed by the timeout on BOTH attempts yields nodeOk:false with distinct "could not be probed" wording, never the "does not resolve" sentence', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' }, { filePath });
+        const { exec, calls } = fakeExecWithFailures([timeoutError(), timeoutError()], null);
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+            return exec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.nodeOk, false);
+        assert.equal(result.nodeVersion, null);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /\/opt\/toolchain\/node/);
+        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/, 'a probe that never completed is a DIFFERENT finding from one that resolved and said no');
+        assert.equal(calls.length, 2, 'exactly one bounded retry, never more');
+        // bd stayed fine and is reported separately.
+        assert.equal(result.bdOk, true);
+    });
+
+    test('a node probe hit by a transient spawn errno (EAGAIN) on both attempts yields nodeOk:false naming the errno, with the same distinct wording', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node' }, { filePath });
+        const { exec, calls } = fakeExecWithFailures([transientErrnoError('EAGAIN'), transientErrnoError('EAGAIN')], null);
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.nodeOk, false);
+        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.match(result.problems[0], /EAGAIN/);
+        assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/);
+        assert.equal(calls.length, 2);
+    });
+
+    test('a genuinely missing node (ENOENT) is NEVER retried and keeps today\'s exact "does not resolve" wording', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/does/not/exist/node' }, { filePath });
+        const enoent = new Error('spawn ENOENT');
+        enoent.code = 'ENOENT';
+        const { exec, calls } = fakeExecWithFailures([enoent], null);
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.nodeOk, false);
+        assert.match(result.problems[0], /does not resolve to a usable Node\.js runtime/);
+        assert.doesNotMatch(result.problems[0], /could not be probed within/);
+        assert.equal(calls.length, 1, 'a genuine failure (ENOENT) is never retried');
+    });
+
+    test('a bd probe that cannot complete (timeout twice) yields bdOk:false with the same distinct wording, naming bd (not node), while node stays fine', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' }, { filePath });
+        const { exec: bdExec, calls: bdCalls } = fakeExecWithFailures([timeoutError(), timeoutError()], null);
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/node') return `v${MIN_NODE_VERSION}`;
+            return bdExec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.ok, true, '"ok" tracks node only -- bd never flips it, even for this new problem shape');
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.bdOk, false);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /\/opt\/toolchain\/bd/);
+        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.doesNotMatch(result.problems[0], /Node\.js/);
+        assert.equal(bdCalls.length, 2, 'bd\'s own probe was retried exactly once');
+    });
+});
+
 // apra-fleet-i9ag.19.11 AC6: branches of validateRecordedToolchain() this
 // file's own AC1-AC6 coverage above did not yet exercise -- every case above
 // drives it through `filePath` plus an injected `exec`/`platform`; the four
