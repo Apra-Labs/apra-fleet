@@ -1,6 +1,6 @@
 import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
-﻿import { execSync } from 'node:child_process';
+﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
@@ -52,6 +52,9 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIG
  * the parent's file handles (including the stdout pipe fleet's Node.js set up).
  * This works in both interactive and headless (GitHub Actions) environments.
  */
+// Normally ~1s; generous headroom for AV-scanned or loaded hosts.
+const CLEAN_ENV_TIMEOUT_MS = 30_000;
+
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
   '$m=New-Object MI+MS',
@@ -84,7 +87,23 @@ export class WindowsCommands implements OsCommands {
       sessionBlock,
       '$a|ConvertTo-Json -Compress',
     ].join('; ');
-    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe', windowsHide: true });
+    // -EncodedCommand, not an inline `-c` string: on some hosts PowerShell 5.1
+    // hangs forever (0 CPU) on an inline command of ~2000+ chars, and this
+    // script is ~2300. A blocking execSync with no timeout then freezes the
+    // whole fleet server. -NoProfile keeps profile output out of the JSON.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    let result: string;
+    try {
+      result = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        { encoding: 'utf-8', windowsHide: true, timeout: CLEAN_ENV_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      const reason = e.code === 'ETIMEDOUT' ? `timed out after ${CLEAN_ENV_TIMEOUT_MS}ms` : e.message;
+      throw new Error(`Failed to read the Windows environment via powershell.exe: ${reason}`);
+    }
     this.cachedEnv = JSON.parse(result.trim());
     return this.cachedEnv!;
   }
