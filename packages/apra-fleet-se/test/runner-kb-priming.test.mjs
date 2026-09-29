@@ -898,11 +898,25 @@ describe('regression tripwire: every in-repo engine kb_* call carries a scope ke
             assert.ok(names.has(expected), `sweep scenario never exercised ${expected} -- extend it before trusting this test`);
         }
 
+        // Mirrors src/services/knowledge/kb-scope-guard.ts's NEEDS_LOCAL_REPO_PATH:
+        // these four tools resolve a LOCAL filesystem repo path in their own
+        // implementation, so repo_remote_url alone cannot tell them which
+        // directory to use -- the guard still refuses them without repo_path/repo.
+        // Keep this set in sync with the guard's own list; a call site that
+        // passed only repo_remote_url to one of these would pass a looser
+        // tripwire here and then fail in production with repo_scope_required.
+        const NEEDS_LOCAL_REPO_PATH = new Set(['kb_export', 'kb_import', 'kb_stats', 'kb_session_prime']);
+
         for (const c of kbCalls) {
-            const scoped = (typeof c.args?.repo_path === 'string' && c.args.repo_path.length > 0)
-                || (typeof c.args?.repo === 'string' && c.args.repo.length > 0)
-                || (typeof c.args?.repo_remote_url === 'string' && c.args.repo_remote_url.length > 0);
-            assert.ok(scoped, `${c.name} call carries no repo_path/repo/repo_remote_url -- ` +
+            const hasPath = (typeof c.args?.repo_path === 'string' && c.args.repo_path.length > 0)
+                || (typeof c.args?.repo === 'string' && c.args.repo.length > 0);
+            const hasRemote = typeof c.args?.repo_remote_url === 'string' && c.args.repo_remote_url.length > 0;
+            const acceptsRemote = !NEEDS_LOCAL_REPO_PATH.has(c.name);
+            const scoped = hasPath || (acceptsRemote && hasRemote);
+            const how = acceptsRemote
+                ? 'repo_path/repo/repo_remote_url'
+                : 'repo_path/repo (repo_remote_url alone is not enough for this tool)';
+            assert.ok(scoped, `${c.name} call carries no ${how} -- ` +
                 'the server-side guard (kb-scope-guard.ts) would refuse this with repo_scope_required');
         }
     });
