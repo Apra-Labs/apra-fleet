@@ -955,6 +955,11 @@ const sprintStackLiveScript = (mountPrefix) => `
             var res = await fetch('${mountHref(mountPrefix, '/state')}?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
             renderSprintStackFromState(data.sprints);
+            var counterEl = document.getElementById('running-counter');
+            if (counterEl) {
+                var running = Array.isArray(data.sprints) ? data.sprints.length : 0;
+                counterEl.innerHTML = '<strong>' + running + '</strong> running';
+            }
             // apra-fleet-i9ag.4: the finished-sprints list rides the SAME
             // poll, so a sprint that just left the stack above shows up
             // below (with its verdict/PR) without a page reload.
@@ -1110,7 +1115,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<body>\n' +
         '<div class="header">' +
         '<h1>Fleet-Sprint Supervisor</h1>' +
-        '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
+        '<div class="header-actions"><div class="stats-banner"><span id="running-counter"><strong>' + runningCount + '</strong> running</span></div>' +
         renderConsoleLinkHtml(opts && opts.consoleOrigin) +
         '<a href="' + mountHref(mountPrefix, '/supervisor/log') + '" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
