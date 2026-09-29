@@ -346,6 +346,16 @@ class MockFinishedContainer {
     }
 }
 
+/** The `#running-counter` element poll() updates via .innerHTML (apra-fleet-i9ag.21.1/2). */
+class MockCounterElement {
+    constructor(initialHtml) {
+        this.innerHTML = initialHtml ?? '';
+    }
+    get textContent() {
+        return this.innerHTML.replace(/<[^>]*>/g, '').trim();
+    }
+}
+
 /**
  * Runs the actual SPRINT_STACK_LIVE_SCRIPT (renderSprintStackFromState() +
  * schedulePoll()/poll() + the EventSource/heartbeat wiring) against mocked
@@ -360,13 +370,18 @@ class MockFinishedContainer {
  * as it would on a page render with no finished-sprints element (poll()'s own
  * `if (finishedEl && ...)` guard skips that branch, matching every
  * pre-i9ag.16.2 test in this file that never touched it).
+ *
+ * `counterContainer` (apra-fleet-i9ag.21.2), when supplied, is returned for
+ * `document.getElementById('running-counter')` -- the header stats banner
+ * counter updated on every poll.
  */
-function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer }) {
+function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer, counterContainer }) {
     const script = extractLiveRefreshScript();
     const mockDocument = {
         getElementById: (id) => {
             if (id === 'sprint-stack') return container;
             if (id === 'finished-sprints') return finishedContainer ?? null;
+            if (id === 'running-counter') return counterContainer ?? null;
             return null;
         },
     };
@@ -814,3 +829,103 @@ describe('apra-fleet-i9ag.15.6: every helper called by a toString-embedded dashb
         assert.deepEqual(missing, [], missing.join('\n'));
     });
 });
+
+describe('apra-fleet-i9ag.21.2: header running counter agrees with the rendered sprint stack across live polls', () => {
+    test('renderIndexPageHtml emits stats-banner with id="running-counter" matching initial views length', () => {
+        const html0 = renderIndexPageHtml([]);
+        assert.match(html0, /<span id="running-counter"><strong>0<\/strong> running<\/span>/);
+
+        const sprintView = {
+            sprintId: 'sprint-1', branch: 'b',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: [], beadCount: 0,
+        };
+        const html1 = renderIndexPageHtml([sprintView]);
+        assert.match(html1, /<span id="running-counter"><strong>1<\/strong> running<\/span>/);
+    });
+
+    test('a poll with one sprint leaves header reading 1 running AND stack showing one sprint row', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const counterContainer = new MockCounterElement('<strong>0</strong> running');
+            const sprintView = {
+                sprintId: 'sprint-1', branch: 'feat/one', goal: 'test',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r1'], beadCount: 1,
+                progress: null, members: [{ name: 'alice' }], base: 'main', baseDrift: 0,
+            };
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([sprintView]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '1 running', 'header counter must reflect 1 running sprint');
+            assert.equal(counterContainer.innerHTML, '<strong>1</strong> running');
+            assert.equal(container.children.length, 1, 'stack must render exactly one sprint row');
+            assert.equal(container.children[0].getAttribute('data-sprint-id'), 'sprint-1');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a poll whose payload drops from one to zero sprints updates header to 0 running AND stack to empty state (screenshot 42 regression)', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const sprintView = {
+                sprintId: 'sprint-1', branch: 'feat/one', goal: 'test',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r1'], beadCount: 1,
+                progress: null, members: [{ name: 'alice' }], base: 'main', baseDrift: 0,
+            };
+            const container = new MockContainer();
+            container.insertAdjacentHTML('beforeend', renderSprintSection(sprintView));
+            const counterContainer = new MockCounterElement('<strong>1</strong> running');
+
+            // Now /state returns zero running sprints
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '0 running', 'header counter must update from 1 to 0 running');
+            assert.equal(counterContainer.innerHTML, '<strong>0</strong> running');
+            assert.equal(container.children.length, 0, 'stack must have zero sprint rows');
+            assert.ok(container.innerHTML.includes('No sprints are currently running'), 'stack must show empty state message');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a page first painted with zero sprints updates header to 1 running AND stack to 1 row when poll returns a sprint (screenshot 31c regression)', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const counterContainer = new MockCounterElement('<strong>0</strong> running');
+
+            const sprintView = {
+                sprintId: 'sprint-2', branch: 'feat/two', goal: 'test2',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r2'], beadCount: 2,
+                progress: null, members: [{ name: 'bob' }], base: 'main', baseDrift: 1,
+            };
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([sprintView]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '1 running', 'header counter must update from 0 to 1 running');
+            assert.equal(counterContainer.innerHTML, '<strong>1</strong> running');
+            assert.equal(container.children.length, 1, 'stack must render exactly one sprint row');
+            assert.equal(container.children[0].getAttribute('data-sprint-id'), 'sprint-2');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
