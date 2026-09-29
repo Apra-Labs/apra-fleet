@@ -48,6 +48,7 @@ import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { isNoBeadsDirectoryError } from './backlog.mjs';
+import { SPRINT_SPAWN_FAILED } from './spawner.mjs';
 import { SprintRunnerResolutionError } from './node-runner.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
@@ -385,6 +386,11 @@ export function createSprintController(deps = {}) {
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
+    // Optional: () => string|null|undefined. A non-empty return refuses the
+    // launch up front (409) with that message -- serve wires it to "the launch
+    // cwd is an unusable project folder". A null beads identity is NOT a
+    // refusal (sprints then verify against the orchestrator member's beads).
+    const launchGuard = typeof deps.launchGuard === 'function' ? deps.launchGuard : () => null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
         try {
@@ -527,6 +533,11 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
+        const launchRefusal = launchGuard();
+        if (launchRefusal) {
+            console.error(`[launch] refused: ${launchRefusal}`);
+            throw new ApiError(409, launchRefusal);
+        }
         // apra-fleet-i9ag.15: resolve the sprint runner BEFORE anything else
         // this function does -- before validation, before the listMembers()
         // fetch, and above all before beforeLaunch. A node-less host cannot
@@ -676,6 +687,10 @@ export function createSprintController(deps = {}) {
         } catch (err) {
             if (err instanceof SprintRunnerResolutionError) {
                 throw runnerResolutionApiError(err);
+            }
+            if (err && err.code === SPRINT_SPAWN_FAILED) {
+                console.error(`[spawner] sprint child could not be spawned -- launch refused: ${err.message}`);
+                throw new ApiError(500, err.message);
             }
             throw err;
         }

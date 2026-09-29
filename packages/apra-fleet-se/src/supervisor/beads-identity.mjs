@@ -414,6 +414,20 @@ export function formatStaleConfiguredProjectWarning(projectDir, configPath, opts
 }
 
 /**
+ * The launch refusal for a supervisor whose project folder is unusable (a
+ * configured folder that no longer exists / is not a directory): sprint
+ * children run with that folder as their cwd, so spawning one could only fail.
+ * @param {string} projectDir
+ * @param {{ launchMode?: string }} [opts]
+ * @returns {string}
+ */
+export function formatUnusableLaunchFolderError(projectDir, opts = {}) {
+    return `sprint launch refused: the supervisor's project folder ${projectDir} does not exist or is not a directory, ` +
+        "so a sprint child cannot be started in it. To fix: point the setting at the project folder from the console's " +
+        `project setting (or pass --beads-dir <project-or-.beads-path>), then ${restartInstruction(opts.launchMode)}.`;
+}
+
+/**
  * Decide WHICH project folder this supervisor runs against, by precedence:
  *
  *   1. `--beads-dir` (the operator said so on this launch),

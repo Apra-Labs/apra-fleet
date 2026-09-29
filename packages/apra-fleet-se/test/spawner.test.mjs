@@ -919,3 +919,31 @@ describe('createSpawner -- lazy runner resolution (apra-fleet-i9ag.15.2)', () =>
         assert.equal(attempt, 2, 'a failed resolution must never be cached');
     });
 });
+
+describe('createSpawner -- unspawnable cwd surfaces to the caller', () => {
+    test('a REAL spawn with a nonexistent cwd rejects the launch with the cause, not only a log line', async () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-spawner-nocwd-'));
+        const missing = path.join(dataDir, 'no-such-project-folder');
+        try {
+            const spawner = createSpawner({
+                cwd: missing,
+                command: process.execPath,
+                basePort: 19000 + Math.floor(Math.random() * 200),
+                dataDir,
+                logger: { log() {}, error() {} },
+            });
+            await assert.rejects(
+                () => spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main', runId: 'nocwd-1' }),
+                (err) => {
+                    assert.equal(err.code, 'SPRINT_SPAWN_FAILED');
+                    assert.match(err.message, /ENOENT/);
+                    assert.ok(err.message.includes(missing), err.message);
+                    return true;
+                },
+            );
+            assert.equal(spawner.liveCount, 0);
+        } finally {
+            fs.rmSync(dataDir, { recursive: true, force: true });
+        }
+    });
+});

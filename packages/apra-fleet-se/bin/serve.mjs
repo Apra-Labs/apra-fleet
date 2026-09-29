@@ -56,6 +56,7 @@ import {
     discoverBeadsDir, probeBeadsIdentity, createBeadsIdentityState,
     formatNoBeadsWarning, formatProbeFailedWarning,
     resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE, LAUNCH_MODE,
+    formatUnusableLaunchFolderError,
 } from '../src/supervisor/beads-identity.mjs';
 import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -225,6 +226,26 @@ export function parseServeArgs(argv) {
         });
     } catch (err) {
         throw new Error(`Invalid command-line arguments: ${err.message}\n\n${SERVE_USAGE}`);
+    }
+}
+
+/**
+ * Can a sprint child be started with `cwd` as its working directory? False
+ * for an unusable configured project folder (resolveProjectDir usable:false)
+ * or a cwd that no longer exists / is not a directory. Deliberately NOT keyed
+ * on the beads identity: having no local beads is a designed fallback
+ * (sprints verify against the orchestrator member's beads).
+ * @param {{ usable?: boolean }} project
+ * @param {string} cwd
+ * @param {{ existsSync: Function, statSync: Function }} [fsImpl]
+ * @returns {boolean}
+ */
+export function launchFolderUsable(project, cwd, fsImpl = fs) {
+    if (project && project.usable === false) return false;
+    try {
+        return fsImpl.existsSync(cwd) && fsImpl.statSync(cwd).isDirectory();
+    } catch {
+        return false;
     }
 }
 
@@ -653,6 +674,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
         spawner,
         history,
         listMembers: listMembersForLaunch,
+        // Refuse a launch whose cwd (repoRoot) is unusable -- see api.mjs's
+        // launchGuard. Keyed on the LAUNCH CWD, never on a null beads identity.
+        launchGuard: () => (launchFolderUsable(project, repoRoot)
+            ? null
+            : formatUnusableLaunchFolderError(repoRoot, { launchMode })),
         getBacklog: async () => (backlog.hasProject()
             ? { tree: await backlog.buildTree() }
             : { tree: [], noProject: true }),
