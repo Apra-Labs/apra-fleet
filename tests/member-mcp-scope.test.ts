@@ -21,7 +21,8 @@
  * config, no real member machine and no real KB is touched.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
@@ -55,7 +56,17 @@ vi.mock('../src/services/strategy.js', () => ({
 
 const MEMBER_HOME = '/home/testuser';
 const MEMBER_BIN = `${MEMBER_HOME}/.apra-fleet/bin/apra-fleet`;
+/** What the mocked member shell answers for a Windows member's home probe, and
+ *  the bin path the resolver must therefore build for it: joined with the
+ *  MEMBER's separator and suffixed .exe, never the orchestrator's POSIX shape. */
+const MEMBER_HOME_WIN = 'C:\\Users\\testuser';
+const MEMBER_BIN_WIN = `${MEMBER_HOME_WIN}\\.apra-fleet\\bin\\apra-fleet.exe`;
 const GOOD_VERSION = '9.9.9';
+
+/** The member-side executable path expected for a member on `memberOs`. */
+function expectedMemberBin(memberOs: 'linux' | 'macos' | 'windows'): string {
+  return memberOs === 'windows' ? MEMBER_BIN_WIN : MEMBER_BIN;
+}
 
 /** Decode a `powershell -EncodedCommand <base64>` string back to its script, so
  *  a Windows member's command can be asserted on rather than taken on trust. */
@@ -121,13 +132,18 @@ function makeMemberFs(opts: MemberFsOptions = {}) {
 
     // --- member home probe ---
     if (cmd === 'printf \'%s\' "$HOME"') return { stdout: MEMBER_HOME, stderr: '', code: 0 };
-    if (script.includes('$env:USERPROFILE')) return { stdout: 'C:\\Users\\testuser', stderr: '', code: 0 };
+    if (script.includes('$env:USERPROFILE')) return { stdout: MEMBER_HOME_WIN, stderr: '', code: 0 };
 
     // --- writes ---
     let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
     if (m) { files.set(m[1], m[2]); return { stdout: '', stderr: '', code: 0 }; }
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
-    if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
+    // Keyed WITH the surrounding quotes, exactly as the read branch below keys
+    // its lookup: the POSIX read/write commands both embed the quotes in their
+    // captured group, the Windows pair does not, so without re-adding them here
+    // a Windows member's read-BACK would miss the file it had just written and
+    // deliverConfigFile's verification would fail as a phantom silent-no-op.
+    if (m) { files.set(`"${m[1]}"`, m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
 
     // --- reads (merge-read and read-back share the same command) ---
     const serve = (key: string): SSHExecResult => {
@@ -146,8 +162,19 @@ function makeMemberFs(opts: MemberFsOptions = {}) {
     m = cmd.match(/Get-Content -Raw "(.+?)"/);
     if (m) return serve(`"${m[1]}"`);
 
-    // --- agy project probe ---
-    if (cmd.includes('FLEET_AGY_PROBE_EOF')) {
+    // --- agy project probe. Two envelopes, per buildAgyNodeCommand: the POSIX
+    //     heredoc pipe into node, and (for a Windows member) a base64-wrapped
+    //     `$code = @'...'@ | node` script with no EOF marker in it at all.
+    //     Recognising only the first makes an agy WINDOWS member fail project
+    //     provisioning before compose is ever reached, which is exactly how that
+    //     path stayed unexercised. `FLEET_AGY_PROJECT:` is the probe's own reply
+    //     marker; the delete script uses FLEET_AGY_PROJECT_DELETE: and must not
+    //     be swallowed by this branch. ---
+    const isAgyProbe = cmd.includes('FLEET_AGY_PROBE_EOF')
+      || (script.includes('node --input-type=commonjs')
+          && script.includes('FLEET_AGY_PROJECT:')
+          && !script.includes('FLEET_AGY_PROJECT_DELETE:'));
+    if (isAgyProbe) {
       return { stdout: 'FLEET_AGY_PROJECT:' + JSON.stringify({ state: 'ok' }), stderr: '', code: 0 };
     }
 
@@ -164,19 +191,50 @@ function install(opts: MemberFsOptions = {}) {
   return fsMock;
 }
 
-/** Parse the JSON a POSIX heredoc write persisted for `pathFragment`. */
+/**
+ * One config write the mocked member shell received, split into its target path
+ * and the content it persisted. Understands BOTH member write shapes -- the
+ * POSIX heredoc (`cat > "<p>" << 'FLEET_PERMS_EOF'`) and the Windows
+ * `[System.IO.File]::WriteAllText("<p>", '<c>', UTF8Encoding($false))` form --
+ * and normalises the path separator to `/`, so ONE assertion can be written and
+ * then run for a member on any supported OS. Matching a fragment against the raw
+ * command instead (what this file used to do) silently never fires for a Windows
+ * member, whose paths are backslash-separated: that is how the Windows compose
+ * path went unexercised.
+ */
+function parseConfigWrite(cmd: string): { path: string; content: string } | undefined {
+  let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
+  if (m) return { path: m[1].replace(/\\/g, '/'), content: m[2] };
+  m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
+  // A PowerShell single-quoted literal escapes one quote as two; undo that so
+  // the content compares byte-for-byte with the POSIX branch's.
+  if (m) return { path: m[1].replace(/\\/g, '/'), content: m[2].replace(/''/g, "'") };
+  return undefined;
+}
+
+/** Every config write whose (separator-normalised) path contains `pathFragment`,
+ *  oldest first. Pass `''` to get all of them. */
+function configWrites(pathFragment: string): Array<{ path: string; content: string }> {
+  return mockExecCommand.mock.calls
+    .map(c => parseConfigWrite(c[0] as string))
+    .filter((w): w is { path: string; content: string } => !!w && w.path.includes(pathFragment));
+}
+
+/** Parse the JSON the LAST write to `pathFragment` persisted, on any member OS. */
 function writtenJson(pathFragment: string): any {
-  const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-  const writes = cmds.filter(c => c.includes('cat >') && c.includes(pathFragment));
+  const writes = configWrites(pathFragment);
   if (writes.length === 0) return undefined;
-  const last = writes[writes.length - 1];
-  return JSON.parse(last.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+  return JSON.parse(writes[writes.length - 1].content);
 }
 
 function wroteTo(pathFragment: string): boolean {
-  return mockExecCommand.mock.calls
-    .map(c => c[0] as string)
-    .some(c => (c.includes('cat >') || c.includes('WriteAllText')) && c.includes(pathFragment));
+  return configWrites(pathFragment).length > 0;
+}
+
+/** Everything the run persisted to the member, concatenated -- for the "this
+ *  string appears in NO config we wrote" assertions, on a member of any OS. */
+function allWrittenContent(): string {
+  return configWrites('').map(w => w.content).join('\n');
 }
 
 beforeEach(() => {
@@ -336,6 +394,235 @@ describe('buildFleetVersionProbe -- member-bound command hygiene (assertion 3)',
   });
 });
 
+// ---------------------------------------------------------------------------
+// LIVE PowerShell: the emitted probe's BEHAVIOUR, not merely its shape
+// (assertion 3b -- apra-fleet-b4g.23.3 criterion 4 on a Windows member)
+//
+// The hygiene assertions above pattern-match the emitted PowerShell string. That
+// is not enough, and this file learned it the expensive way: the probe once used
+// `try { & $p --version } catch { <exec-failed sentinel> }`, which LOOKS correct
+// and passed every hygiene assertion, but PowerShell raises no terminating error
+// when a NATIVE executable exits non-zero -- so the catch never fired and a
+// Windows member with a present-but-broken install was reported as
+// probe-failed/unreachable instead of install-unusable. Nothing short of running
+// the real interpreter can catch that class of defect.
+//
+// Same precedent as buildWindowsDeleteFilesScript, which was extracted precisely
+// so a live-PowerShell test could execute the REAL emitted script instead of a
+// hand-copied lookalike: buildFleetVersionProbe is exported, so execute it.
+// ---------------------------------------------------------------------------
+
+/** A real PowerShell interpreter, or null. `pwsh` (PowerShell 7+, which is
+ *  cross-platform) is tried FIRST so these assertions also run on Linux/macOS
+ *  dev boxes and CI runners rather than only on windows-latest; `powershell`
+ *  (5.1) is the Windows-native fallback. That is sound here because the probe
+ *  script uses only portable PowerShell -- Test-Path -LiteralPath, the `&` call
+ *  operator, $LASTEXITCODE, [Console]::Out.Write -- with no cmd.exe and no
+ *  Windows-only construct, and the semantics under test (does a NATIVE non-zero
+ *  exit surface at all?) are identical on every platform. */
+const psExe: string | null = (() => {
+  for (const exe of ['pwsh', 'powershell']) {
+    const r = spawnSync(exe, ['-NoProfile', '-Command', 'exit 0'], { stdio: 'ignore' });
+    if (!r.error && r.status === 0) return exe;
+  }
+  return null;
+})();
+
+/** Run the module's OWN emitted probe command through a real interpreter. Only
+ *  the executable NAME is substituted (this box may have `pwsh` rather than
+ *  `powershell`); the base64 -EncodedCommand payload is passed through
+ *  untouched, and that is asserted, so what executes is byte-for-byte the script
+ *  a Windows member would be sent. */
+function runEmittedProbe(cmd: string): { code: number; stdout: string; stderr: string } {
+  const m = /^powershell -EncodedCommand (\S+)$/.exec(cmd);
+  expect(m, 'the probe for a PowerShell member must be an -EncodedCommand string').not.toBeNull();
+  const r = spawnSync(psExe!, ['-NoProfile', '-EncodedCommand', m![1]], { encoding: 'utf-8' });
+  return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+/** Write a stand-in `apra-fleet` that prints `out` then exits `code`, in the
+ *  shape THIS platform can actually execute: a POSIX shell script under pwsh on
+ *  Linux/macOS, a .cmd batch file on Windows. Either way PowerShell's `&`
+ *  operator invokes it as a NATIVE executable, which is the case that matters --
+ *  a native non-zero exit is exactly what raises no terminating error. */
+function writeFakeFleetExe(dir: string, base: string, out: string, code: number): string {
+  if (process.platform === 'win32') {
+    const p = path.join(dir, `${base}.cmd`);
+    fs.writeFileSync(p, `@echo off\r\n${out ? `echo ${out}\r\n` : ''}exit /b ${code}\r\n`);
+    return p;
+  }
+  const p = path.join(dir, base);
+  fs.writeFileSync(p, `#!/bin/sh\n${out ? `echo "${out}"\n` : ''}exit ${code}\n`, { mode: 0o755 });
+  return p;
+}
+
+/** Fixture directories the live-PowerShell blocks create. Drained by ONE
+ *  afterAll registered at collection time below -- never from inside a running
+ *  it() body, where a hook silently fails to attach to the file suite and leaks
+ *  every fixture while the suite still reports green (the lesson recorded in
+ *  tests/windows-powershell-error-handling.test.ts). */
+const liveTempDirs: string[] = [];
+
+describe.runIf(psExe)('buildFleetVersionProbe -- LIVE PowerShell behaviour (assertion 3b)', () => {
+  // Fixtures live under os.tmpdir(), NOT the operator's home directory.
+  let dir: string;
+  let healthy: string;
+  let broken: string;
+  let absent: string;
+  let quoted: string;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-probe-live-'));
+    healthy = writeFakeFleetExe(dir, 'healthy', `apra-fleet ${GOOD_VERSION}`, 0);
+    // Prints partial output and THEN fails, which is the realistic corrupt-install
+    // shape and the one that used to slip through with no sentinel at all.
+    broken = writeFakeFleetExe(dir, 'broken', 'apra-fleet: error while loading shared libraries', 3);
+    absent = path.join(dir, 'definitely-not-here', 'apra-fleet.exe');
+    const quotedDir = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-probe-o'live-"));
+    quoted = writeFakeFleetExe(quotedDir, 'quoted', `apra-fleet ${GOOD_VERSION}`, 0);
+    liveTempDirs.push(dir, quotedDir);
+  });
+
+  it('a present executable that exits NON-ZERO yields the exec-failed sentinel, and exit 0', () => {
+    const live = runEmittedProbe(buildFleetVersionProbe(broken, 'windows', 'powershell5'));
+
+    // THE regression assertion. Before the $LASTEXITCODE fix this produced the
+    // executable's partial stdout with NO sentinel and propagated exit 3, which
+    // verifyOnMember reads as probe-failed ("is the member powered on?") for a
+    // perfectly reachable machine. Reverting that fix fails this line.
+    expect(live.stdout).toContain('__APRA_FLEET_EXEC_FAILED__');
+    expect(live.code).toBe(0);
+    // The module's documented invariant: the outcome is TAGGED in stdout, so a
+    // non-zero exit can mean nothing but "the shell/transport itself failed".
+    expect(live.stdout).not.toContain('__APRA_FLEET_NO_INSTALL__');
+    expect(parseFleetVersion(live.stdout)).toBeNull();
+  });
+
+  it('an ABSENT path yields the no-install sentinel, and exit 0', () => {
+    const live = runEmittedProbe(buildFleetVersionProbe(absent, 'windows', 'powershell5'));
+
+    expect(live.stdout).toContain('__APRA_FLEET_NO_INSTALL__');
+    expect(live.stdout).not.toContain('__APRA_FLEET_EXEC_FAILED__');
+    expect(live.code).toBe(0);
+  });
+
+  it('a healthy executable passes its version straight through, and exit 0', () => {
+    const live = runEmittedProbe(buildFleetVersionProbe(healthy, 'windows', 'powershell5'));
+
+    // Parsed by the REAL parser, so the PowerShell branch's own output framing
+    // (Out-String, CRLF, trailing newline) has to survive it -- a sentinel-only
+    // assertion would not notice if it did not.
+    expect(parseFleetVersion(live.stdout)).toBe(GOOD_VERSION);
+    expect(live.stdout).not.toContain('__APRA_FLEET_');
+    expect(live.code).toBe(0);
+  });
+
+  it("a path containing a single quote survives the PowerShell escaping intact", () => {
+    // escapePowerShellArgInner doubles the quote; if that ever broke, the script
+    // would either be a syntax error or probe the wrong path -- both of which
+    // look like "no install" to a caller, i.e. a silent misdiagnosis.
+    expect(quoted).toContain("o'live");
+    const live = runEmittedProbe(buildFleetVersionProbe(quoted, 'windows', 'powershell5'));
+
+    expect(parseFleetVersion(live.stdout)).toBe(GOOD_VERSION);
+    expect(live.stdout).not.toContain('__APRA_FLEET_NO_INSTALL__');
+    expect(live.code).toBe(0);
+  });
+});
+
+describe.runIf(psExe)('resolveMemberFleetInstall -- a REAL PowerShell probe result is classified correctly (assertion 2b)', () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-probe-classify-'));
+    liveTempDirs.push(dir);
+  });
+
+  /** Drive the resolver for a WINDOWS member, answering its probe with a result
+   *  a real interpreter actually produced for `exePath`. Nothing here hand-copies
+   *  a sentinel string, which is what made the earlier version of this suite
+   *  blind: it fed the resolver the POSIX-shaped sentinel that the PowerShell
+   *  branch provably never emitted. */
+  async function resolveWithLiveProbe(exePath: string) {
+    const live = runEmittedProbe(buildFleetVersionProbe(exePath, 'windows', 'powershell5'));
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const script = decodePowerShell(cmd);
+      if (script.includes('--version')) {
+        return { stdout: live.stdout, stderr: live.stderr, code: live.code };
+      }
+      if (script.includes('$env:USERPROFILE')) return { stdout: MEMBER_HOME_WIN, stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    });
+    const member = makeTestAgent({ friendlyName: 'win-box', os: 'windows', shell: 'powershell5' });
+    return { live, result: await resolveMemberFleetInstall(member) };
+  }
+
+  it('a present-but-broken install is install-unusable, NOT probe-failed or unreachable', async () => {
+    const broken = writeFakeFleetExe(dir, 'broken', 'apra-fleet: bad image', 3);
+    const { result } = await resolveWithLiveProbe(broken);
+
+    expect(result.scoped).toBe(false);
+    if (result.scoped) return;
+    // The distinction criterion 4 requires. probe-failed here would send the
+    // operator to "check that the member is powered on and reachable" for a
+    // machine that is reachable and whose install is the actual problem.
+    expect(result.reason).toBe('install-unusable');
+    expect(result.reason).not.toBe('probe-failed');
+    expect(result.remediation).toContain('win-box');
+    expect(result.remediation).toContain('apra-fleet install');
+  });
+
+  it('an absent install is no-install-found, distinct from both of the above', async () => {
+    const { result } = await resolveWithLiveProbe(path.join(dir, 'nothing-here.exe'));
+
+    expect(result.scoped).toBe(false);
+    if (result.scoped) return;
+    expect(result.reason).toBe('no-install-found');
+  });
+
+  it('a healthy install resolves SCOPED with the version the real probe reported', async () => {
+    const healthy = writeFakeFleetExe(dir, 'healthy', `apra-fleet ${GOOD_VERSION}`, 0);
+    const { result } = await resolveWithLiveProbe(healthy);
+
+    expect(result.scoped).toBe(true);
+    if (!result.scoped) return;
+    expect(result.version).toBe(GOOD_VERSION);
+    expect(result.descriptor.args).toEqual(['run', '--transport', 'stdio']);
+  });
+
+  it('COUNTERFACTUAL: the pre-fix probe SHAPE (partial stdout, no sentinel, non-zero exit) is what collapses the two reasons', async () => {
+    // Pins the misdiagnosis the fix removed, so the test above cannot be read as
+    // a tautology: this is exactly what the old try/catch branch produced live
+    // (measured: exit 3, stdout "partial junk", no sentinel), and the resolver
+    // can only call it probe-failed. The live assertions above prove the real
+    // interpreter no longer produces this shape for a broken install.
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const script = decodePowerShell(cmd);
+      if (script.includes('--version')) {
+        return { stdout: 'apra-fleet: error while loading shared libraries\n', stderr: '', code: 3 };
+      }
+      if (script.includes('$env:USERPROFILE')) return { stdout: MEMBER_HOME_WIN, stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const member = makeTestAgent({ friendlyName: 'win-box', os: 'windows', shell: 'powershell5' });
+    const result = await resolveMemberFleetInstall(member);
+
+    expect(result.scoped).toBe(false);
+    if (result.scoped) return;
+    expect(result.reason).toBe('probe-failed');
+  });
+});
+
+// Registered at collection time (module top level, not inside any it() body), so
+// it reliably attaches to this file's suite and removes every live-PowerShell
+// fixture regardless of which block created it. The suite must leave os.tmpdir()
+// exactly as it found it -- "tests pass" is not "tests clean up".
+afterAll(() => {
+  for (const d of liveTempDirs) fs.rmSync(d, { recursive: true, force: true });
+  liveTempDirs.length = 0;
+});
+
 describe('resolveMemberFleetInstall -- local vs remote take different paths (assertion 4)', () => {
   it('a local member resolves via its agentType branch, a remote one via the member probe', async () => {
     // Identical host data; ONLY agentType differs.
@@ -403,7 +690,11 @@ describe('resolveMemberFleetInstall -- caching discipline (assertion 5)', () => 
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- ENABLED member-local stdio entry when the install is there (assertion 6)', () => {
-  const oses: Array<'linux' | 'macos' | 'windows'> = ['linux', 'macos'];
+  // EVERY supported member OS, which is what both beads say. `windows` was
+  // declared in this list but not populated, so the Windows compose path -- a
+  // different write command (WriteAllText), a different read-back command and a
+  // backslash-joined member bin path -- was never exercised at all.
+  const oses: Array<'linux' | 'macos' | 'windows'> = ['linux', 'macos', 'windows'];
 
   for (const memberOs of oses) {
     it(`claude/${memberOs}: enables an apra-fleet entry built from the resolver's descriptor`, async () => {
@@ -414,41 +705,104 @@ describe('composePermissions -- ENABLED member-local stdio entry when the instal
       const result = await composePermissions({ member_id: member.id, role: 'doer' });
       expect(result).toContain('Fleet MCP: enabled');
 
+      // The member's OWN write shape was taken, so this case cannot pass
+      // vacuously by having a Windows member quietly travel the POSIX branch (or
+      // by the assertion helpers reading a path they never actually matched).
+      const rawWrites = mockExecCommand.mock.calls
+        .map(c => c[0] as string)
+        .filter(c => c.includes('cat >') || c.includes('WriteAllText'));
+      expect(rawWrites.length).toBeGreaterThan(0);
+      for (const w of rawWrites) {
+        if (memberOs === 'windows') {
+          expect(w).toContain('WriteAllText');
+          expect(w).not.toContain('cat >');
+        } else {
+          expect(w).toContain('cat >');
+          expect(w).not.toContain('WriteAllText');
+        }
+      }
+
       // The ENABLED entry lives in the project .mcp.json (half of Claude's one
       // authoritative switch); it is NOT a disabled entry.
       const mcpJson = writtenJson('.mcp.json');
       expect(mcpJson.mcpServers[MEMBER_MCP_SERVER_NAME]).toEqual({
-        command: MEMBER_BIN,
+        command: expectedMemberBin(memberOs),
         args: ['run', '--transport', 'stdio'],
       });
       expect(mcpJson.mcpServers[MEMBER_MCP_SERVER_NAME].disabled).toBeUndefined();
 
       // No endpoint URL, host, port or credential anywhere in ANY written config.
-      const allWrites = mockExecCommand.mock.calls.map(c => c[0] as string).filter(c => c.includes('cat >')).join('\n');
+      const allWrites = allWrittenContent();
       expect(allWrites).not.toMatch(/https?:\/\//);
       expect(allWrites.toLowerCase()).not.toContain('bearer ');
       expect(allWrites).not.toContain('?member=');
     });
   }
 
-  it('agy: enables the entry in agy\'s machine-global mcp_config.json', async () => {
-    const member = makeTestAgent({
-      friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux', agyProjectId: 'proj-1',
+  for (const memberOs of ['linux', 'windows'] as const) {
+    it(`agy/${memberOs}: enables the entry in agy's machine-global mcp_config.json`, async () => {
+      const member = makeTestAgent({
+        friendlyName: 'agy-doer', llmProvider: 'agy', os: memberOs, agyProjectId: 'proj-1',
+      });
+      addAgent(member);
+      install({ probe: { kind: 'version', version: GOOD_VERSION } });
+
+      const result = await composePermissions({ member_id: member.id, role: 'doer' });
+      expect(result).toContain('Fleet MCP: enabled');
+
+      const mcpConfig = writtenJson('.gemini/config/mcp_config.json');
+      expect(mcpConfig.mcpServers[MEMBER_MCP_SERVER_NAME]).toEqual({
+        type: 'stdio',
+        command: expectedMemberBin(memberOs),
+        args: ['run', '--transport', 'stdio'],
+      });
+      expect(JSON.stringify(mcpConfig)).not.toMatch(/https?:\/\//);
+      expect(JSON.stringify(mcpConfig).toLowerCase()).not.toContain('bearer');
     });
-    addAgent(member);
+  }
+
+  it('the per-tool rules land for a WINDOWS member too, in both providers', async () => {
+    // The rules are rendered from the shared definition, but they still have to
+    // survive the Windows write path's PowerShell quoting to reach the member.
+    const claudeMember = makeTestAgent({ friendlyName: 'claude-win', llmProvider: 'claude', os: 'windows' });
+    addAgent(claudeMember);
     install({ probe: { kind: 'version', version: GOOD_VERSION } });
+    await composePermissions({ member_id: claudeMember.id, role: 'doer' });
+
+    const permissions = writtenJson('.claude/settings.local.json').permissions;
+    for (const tool of MEMBER_ALLOWED_TOOLS) {
+      expect(permissions.allow).toContain(`mcp__apra-fleet__${tool}`);
+    }
+    expect(permissions.deny).toContain('mcp__apra-fleet__version');
+    expect(permissions.deny).toContain('mcp__apra-fleet__kb_setup');
+
+    const agyMember = makeTestAgent({
+      friendlyName: 'agy-win', llmProvider: 'agy', os: 'windows', agyProjectId: 'proj-win',
+    });
+    addAgent(agyMember);
+    install({ probe: { kind: 'version', version: GOOD_VERSION } });
+    await composePermissions({ member_id: agyMember.id, role: 'doer' });
+
+    const grants = writtenJson('.gemini/config/projects/proj-win.json').permissionGrants.permissionGrants;
+    for (const tool of MEMBER_ALLOWED_TOOLS) {
+      expect(grants.allow).toContain(`mcp(apra-fleet/${tool})`);
+    }
+    expect(grants.deny).toContain('mcp(apra-fleet/version)');
+    expect(grants.allow).not.toContain('mcp(apra-fleet)');
+  });
+
+  it('a WINDOWS member with NO install stays usable and is NAMED, exactly as a POSIX one', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-win', llmProvider: 'claude', os: 'windows' });
+    addAgent(member);
+    install({ probe: { kind: 'no-install' } });
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
-    expect(result).toContain('Fleet MCP: enabled');
 
-    const mcpConfig = writtenJson('.gemini/config/mcp_config.json');
-    expect(mcpConfig.mcpServers[MEMBER_MCP_SERVER_NAME]).toEqual({
-      type: 'stdio',
-      command: MEMBER_BIN,
-      args: ['run', '--transport', 'stdio'],
-    });
-    expect(JSON.stringify(mcpConfig)).not.toMatch(/https?:\/\//);
-    expect(JSON.stringify(mcpConfig).toLowerCase()).not.toContain('bearer');
+    expect(result).toContain('Permissions composed');
+    expect(result).not.toContain('Failed to persist');
+    expect(result).toContain('Fleet MCP: NOT scoped (no-install-found)');
+    expect(wroteTo('.mcp.json')).toBe(false);
+    expect(getAgent(member.id)!.memberMcpScope!.reason).toBe('no-install-found');
   });
 
   it('uses the descriptor VERBATIM -- the command is never rebuilt from orchestrator state', async () => {
