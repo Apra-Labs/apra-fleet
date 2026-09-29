@@ -850,3 +850,60 @@ describe('the work client resolves its own scope from the repo path it is given'
         assert.ok(!('repo_remote_url' in argsFor(calls, 'kb_export')));
     });
 });
+
+// ---------------------------------------------------------------------------
+// apra-fleet-b4g.24.2: server-handled kb_* calls with no repo_path/repo (and
+// no repo_remote_url where accepted) are refused by the guard in
+// src/services/knowledge/kb-scope-guard.ts (repo_scope_required /
+// E-REPO-SCOPE-REQUIRED). Every test above already pins ONE call site's scope
+// at a time -- this one exercises the same production clients end to end
+// (prime -> promotion candidates -> per-dispatch query -> capture/promote ->
+// bible export) against a single stub callTool and asserts GENERICALLY over
+// every recorded kb_* invocation. A brand-new call site added later that
+// forgets to spread repo_path/scopeOf() would pass every per-site test above
+// (there being none written for it yet) but fails this one, because the sweep
+// below does not know the call types in advance -- it only knows every kb_*
+// call recorded must carry a scope key.
+// ---------------------------------------------------------------------------
+describe('regression tripwire: every in-repo engine kb_* call carries a scope key', () => {
+    test('primeAll + work-client calls all carry repo_path/repo or repo_remote_url', async () => {
+        const REPO = '/srv/sweep/repo';
+        const calls = [];
+        const callTool = async (name, args) => {
+            calls.push({ name, args });
+            if (name === 'member_detail') return { folder: REPO };
+            if (name === 'kb_session_prime') return { top_entries: [] };
+            if (name === 'kb_list') return { results: [] };
+            if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: [], related_claims: [] }) }] };
+            return {};
+        };
+
+        const primingClient = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+        await primingClient.primeAll();
+
+        const workClient = createKbWorkClient({ callTool, log: () => {}, remoteUrlFor: primingClient.remoteUrlForPath });
+        await workClient.promotionCandidates(REPO);
+        await workClient.relevantKnowledge(REPO, ['resolveZoneBinding']);
+        await workClient.apply('reviewer', REPO, {
+            kb_captures: [GOOD_CAPTURE],
+            kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+        await workClient.exportBible(REPO);
+
+        const kbCalls = calls.filter((c) => typeof c.name === 'string' && c.name.startsWith('kb_'));
+        // Sanity check on the scenario itself: if a call type this engine owns
+        // is missing here, the sweep below silently never exercises it.
+        const names = new Set(kbCalls.map((c) => c.name));
+        for (const expected of ['kb_import', 'kb_session_prime', 'kb_list', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export']) {
+            assert.ok(names.has(expected), `sweep scenario never exercised ${expected} -- extend it before trusting this test`);
+        }
+
+        for (const c of kbCalls) {
+            const scoped = (typeof c.args?.repo_path === 'string' && c.args.repo_path.length > 0)
+                || (typeof c.args?.repo === 'string' && c.args.repo.length > 0)
+                || (typeof c.args?.repo_remote_url === 'string' && c.args.repo_remote_url.length > 0);
+            assert.ok(scoped, `${c.name} call carries no repo_path/repo/repo_remote_url -- ` +
+                'the server-side guard (kb-scope-guard.ts) would refuse this with repo_scope_required');
+        }
+    });
+});
