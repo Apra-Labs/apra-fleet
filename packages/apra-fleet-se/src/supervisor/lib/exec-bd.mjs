@@ -429,6 +429,47 @@ function assertSafeArgs(args) {
 }
 
 /**
+ * Quotes the `file` value `execBdAsync` hands to a `{ shell: true }`
+ * invocation, when (and only when) it contains whitespace.
+ *
+ * Node's `shell: true` does NOT quote `file`/args for you: on POSIX it joins
+ * `file` and every arg with a single literal space and passes the result
+ * as one string to `/bin/sh -c '<that string>'`; on win32 it does the same
+ * for `cmd.exe /d /s /c "<that string>"`. Neither shell knows where one
+ * "word" ends and the next begins except by whitespace, so an unquoted
+ * `file` containing a space (a configured absolute `bdPath` under, e.g.,
+ * `/Users/Jane Doe/...` on macOS or `C:\Users\Jane Doe\...` on Windows -- the
+ * common npm-global-install case) is word-split into multiple shell tokens
+ * and fails to resolve, even though the exact same path execs fine when
+ * passed as an argv-array `file` without a shell (as `execBdSync`'s
+ * configured path already does). `args` themselves never need this:
+ * `assertSafeArgs()` above already rejects any arg containing whitespace (or
+ * any other shell metacharacter) before this function is ever reached, and
+ * the unconfigured `'bd'` literal never contains whitespace either, so this
+ * function is a no-op for every previously-existing call shape -- it only
+ * changes behaviour for a configured `bdPath` that itself contains a space.
+ *
+ * @param {string} file
+ * @param {NodeJS.Platform} platform
+ * @returns {string}
+ */
+function quoteShellFile(file, platform) {
+    if (!/\s/.test(file)) return file;
+    if (platform === 'win32') {
+        // cmd.exe: wrapping in double quotes keeps embedded spaces together
+        // as one token. cmd.exe has no standard way to escape a literal '"'
+        // inside a quoted token; a configured absolute path is not expected
+        // to contain one (same assumption quoteForWindowsShell() in
+        // node-runner.mjs makes for the equivalent node-path case).
+        return `"${file}"`;
+    }
+    // POSIX sh: single quotes suppress all interpretation except of a
+    // literal single quote itself, which must be closed, escaped (via an
+    // adjacent double-quoted single quote), and reopened.
+    return `'${file.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Async counterpart to `execBdSync`, for the `execFileAsync`-based callers
  * (apra-fleet-xuo.2): `packages/apra-fleet-se/src/supervisor/backlog.mjs`'s
  * `fetchAllBeadsRaw()` and `scope-overlap.mjs`'s `bdListChildren()` previously
@@ -457,15 +498,21 @@ function assertSafeArgs(args) {
  * configured path here the way `execBdSync()` has one). No `nodePath` is
  * needed in this configured case: the shell (not this module) is what
  * ultimately execs a `.cmd` shim, which is what makes `{ shell: true }`
- * necessary here in the first place.
+ * necessary here in the first place. A configured `bdPath` containing
+ * whitespace (e.g. an npm-global install under a spaced home directory) is
+ * quoted via `quoteShellFile()` before being handed to the shell -- see that
+ * function's doc comment for why an unquoted spaced `file` breaks under
+ * `shell: true`; the unconfigured `'bd'` literal never contains whitespace,
+ * so this is a no-op there.
  *
  * @param {string[]} args - argv passed to `bd` (e.g. ['list', '--json', '--limit', '0']); every element must match `SAFE_ARG_PATTERN`.
  * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is always forced to `true` regardless of what is passed here.
  * @param {typeof nodeExecFileAsync} [execFileAsyncImpl] - injectable for tests (same signature as `promisify(require('node:child_process').execFile)`); defaults to the real one.
  * @param {(msg: string) => void} [warn] - injectable warn sink for the large-output line.
+ * @param {NodeJS.Platform} [platform] - injectable for tests, so the win32-vs-POSIX shell-quoting branch is exercisable on any host.
  * @returns {Promise<{stdout: string|Buffer, stderr: string|Buffer}>}
  */
-export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync, warn = console.warn) {
+export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync, warn = console.warn, platform = process.platform) {
     // Deliberately NOT an `async function`: both argument-shape rejections
     // below must throw SYNCHRONOUSLY (they are programmer errors, and callers
     // /tests rely on it), so the promise chain only starts once the args are
@@ -477,10 +524,11 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
     // CONFIGURED: use the configured bdPath in place of the bare 'bd' PATH
     // lookup; UNCONFIGURED (bdPath is null): unchanged from before this fix.
     const bdFile = configuredInvocation.bdPath ?? 'bd';
+    const shellFile = quoteShellFile(bdFile, platform);
     // maxBuffer first so an explicit caller-supplied value still wins; without
     // it Node's 1MiB default kills the child on a large `bd list` (see the
     // BD_MAX_BUFFER_BYTES block above).
-    return Promise.resolve(execFileAsyncImpl(bdFile, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
+    return Promise.resolve(execFileAsyncImpl(shellFile, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
         .then((res) => {
             warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
             return res;
