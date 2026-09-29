@@ -71,6 +71,81 @@ import path from 'node:path';
 const nodeExecFileAsync = promisify(nodeExecFile);
 
 // ---------------------------------------------------------------------------
+// Configured bd invocation (apra-fleet-i9ag.19.7)
+// ---------------------------------------------------------------------------
+//
+// A service started by launchd or a Windows task does not inherit the login
+// PATH, so a bare `bd` (the PATH-lookup behaviour below) or a PATH scan for
+// `bd.cmd` (resolveWindowsBdScript()) cannot find anything there -- the same
+// root cause src/supervisor/node-runner.mjs's sprint-runner resolver exists
+// to fix for `node`. This module accepts the equivalent for `bd`: an
+// EXPLICIT, one-time configuration call the supervisor's startup makes once
+// it has already validated the recorded toolchain (project-config.mjs's
+// `toolchain` block) -- never an implicit environment read here.
+//
+// configureBdInvocation() is deliberately NOT wired to any caller in this
+// change (that is the supervisor-startup task, apra-fleet-i9ag.19.10); this
+// module only has to accept and act on the configuration once it is set.
+// Until something calls configureBdInvocation(), `resolvedBdInvocation()`
+// reports `configured: false` and execBdSync()/execBdAsync() behave EXACTLY
+// as they did before this change -- the PATH lookup, the win32 shim
+// handling, the shell rules, assertSafeArgs, the maxBuffer ceiling and the
+// large-output warning are all untouched for the unconfigured case.
+
+/** @type {{ bdPath: string|null, nodePath: string|null }} */
+let configuredInvocation = { bdPath: null, nodePath: null };
+
+/**
+ * Normalizes a candidate path value: a non-empty (after trim) string passes
+ * through unchanged (untrimmed -- callers pass an already-validated absolute
+ * path, this only guards against blank/non-string junk), anything else
+ * (undefined, null, '', whitespace-only, non-string) becomes `null` so the
+ * rest of this module has one canonical "not configured" value to check.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeConfiguredPath(value) {
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * Explicit, one-time configuration of the bd invocation this module should
+ * use, called by the supervisor's startup once it has already validated the
+ * recorded toolchain -- this function does no validation of its own beyond
+ * "is this a usable string", by design (WHAT TO DO in apra-fleet-i9ag.19.7:
+ * explicit configuration, not an implicit environment read).
+ *
+ * Passing an empty object (or omitting the argument) clears any previously
+ * configured invocation, reverting execBdSync()/execBdAsync() to the
+ * unconfigured PATH-lookup behaviour -- useful for tests that need isolation
+ * between cases.
+ *
+ * @param {{ bdPath?: string|null, nodePath?: string|null }} [config]
+ */
+export function configureBdInvocation(config = {}) {
+    const { bdPath, nodePath } = config ?? {};
+    configuredInvocation = {
+        bdPath: normalizeConfiguredPath(bdPath),
+        nodePath: normalizeConfiguredPath(nodePath),
+    };
+}
+
+/**
+ * Reports the bd invocation currently in effect, so a health surface does
+ * not have to guess: `configured: true` once a non-blank `bdPath` has been
+ * set via configureBdInvocation(), `false` otherwise (the PATH-lookup
+ * default).
+ * @returns {{ bdPath: string|null, nodePath: string|null, configured: boolean }}
+ */
+export function resolvedBdInvocation() {
+    return {
+        bdPath: configuredInvocation.bdPath,
+        nodePath: configuredInvocation.nodePath,
+        configured: configuredInvocation.bdPath !== null,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Child-process stdout buffer (dolt sync budget review round 2, item 1)
 // ---------------------------------------------------------------------------
 //
@@ -185,20 +260,87 @@ export function resolveWindowsBdScript(deps = {}) {
         } catch {
             continue;
         }
-        const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
-        if (!match) continue;
-        return path.win32.join(dir, match[1]);
+        const scriptName = extractNpmShimScriptName(content);
+        if (!scriptName) continue;
+        return path.win32.join(dir, scriptName);
     }
     return null;
 }
 
 /**
+ * Shared regex used by both `resolveWindowsBdScript()` (PATH scan for an
+ * unconfigured `bd.cmd`) and `resolveConfiguredWindowsBdScript()` (a specific
+ * configured `bdPath`) to pull the wrapped `.../bin/bd.js`-shaped relative
+ * path out of an npm-generated Windows shim's content. See
+ * `resolveWindowsBdScript()`'s doc comment above for why this shape (a
+ * double-quoted path ending in `.js` immediately followed by `%*`) is stable
+ * across both of the shim's own branches.
+ * @param {string} content
+ * @returns {string|null} the matched `<...>.js` relative path, or null if `content` does not match npm's shim shape.
+ */
+function extractNpmShimScriptName(content) {
+    const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Resolves the `.../bin/bd.js` script a SPECIFIC configured `bdPath` wraps,
+ * when that `bdPath` is an npm-generated Windows `.cmd` shim -- the
+ * configured-invocation counterpart to `resolveWindowsBdScript()`'s PATH
+ * scan (apra-fleet-i9ag.19.7): rather than searching PATH for `bd.cmd`, this
+ * checks the ONE file the supervisor was told about. Reuses the same
+ * shim-shape match (`extractNpmShimScriptName()`) so a configured `.cmd`
+ * resolves identically to an unconfigured one found on PATH. Returns `null`
+ * (never throws) when: not on win32, `bdPath` does not exist, it cannot be
+ * read, or its content does not match npm's shim shape -- callers treat
+ * `null` as "keep today's documented fallback" (see `execBdSync()`'s doc
+ * comment for what that fallback is in the configured case).
+ * @param {string} bdPath - the configured bd path (expected to be a `.cmd` shim on win32).
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps] - injectable for tests, so this is testable on any host platform.
+ * @returns {string|null}
+ */
+export function resolveConfiguredWindowsBdScript(bdPath, deps = {}) {
+    const platform = deps.platform ?? process.platform;
+    const existsFn = deps.existsFn ?? existsSync;
+    const readFileFn = deps.readFileFn ?? readFileSync;
+    if (platform !== 'win32') return null;
+    if (typeof bdPath !== 'string' || bdPath.length === 0 || !existsFn(bdPath)) return null;
+    let content;
+    try {
+        content = readFileFn(bdPath, 'utf-8');
+    } catch {
+        return null;
+    }
+    const scriptName = extractNpmShimScriptName(content);
+    if (!scriptName) return null;
+    return path.win32.join(path.win32.dirname(bdPath), scriptName);
+}
+
+/**
  * Runs `bd <args>`, safely and cross-platform (see module doc above for the
  * full rationale):
- *   - win32: resolves the real `.../bin/bd.js` script `bd.cmd` wraps
- *     (`resolveWindowsBdScript()`) and invokes it directly via
+ *   - CONFIGURED (a `bdPath` set via `configureBdInvocation()`): on win32,
+ *     when that `bdPath` is itself an npm-shim `.cmd`
+ *     (`resolveConfiguredWindowsBdScript()`), resolves the real
+ *     `.../bin/bd.js` it wraps and invokes it via
+ *     `execFileSync(configuredNodePath, [scriptPath, ...args])` -- the
+ *     CONFIGURED `nodePath`, never `process.execPath` (under the installed
+ *     SEA binary `process.execPath` is the apra-fleet binary, not node, the
+ *     same defect class apra-fleet-i9ag.19 exists to fix). Otherwise (non-
+ *     win32, or a `.cmd` whose content does not match npm's shim shape):
+ *     invokes the configured `bdPath` directly via `execFileSync`, shell-less
+ *     on POSIX and `{ shell: true }` on win32 -- the same documented
+ *     unconfigured fallback below, just against the configured path instead
+ *     of a bare `'bd'`.
+ *   - UNCONFIGURED (no `bdPath` configured -- today's behaviour, byte for
+ *     byte): win32 resolves the real `.../bin/bd.js` script `bd.cmd` wraps by
+ *     scanning PATH (`resolveWindowsBdScript()`) and invokes it directly via
  *     `execFileSync(process.execPath, [scriptPath, ...args])` -- no shell.
- *   - everywhere else, or if that resolution fails: `execFileSync('bd', args)`
+ *     Everywhere else, or if that resolution fails: `execFileSync('bd', args)`
  *     directly (POSIX) / with `{ shell: true }` (the pre-fix Windows
  *     fallback, only reached if `bd.cmd` could not be resolved).
  *
@@ -206,12 +348,41 @@ export function resolveWindowsBdScript(deps = {}) {
  * @param {import('node:child_process').ExecFileSyncOptions} [options] - forwarded as-is (cwd, encoding, stdio, ...).
  * @param {typeof nodeExecFileSync} [execFileSyncImpl] - injectable for tests (same signature as `node:child_process`'s `execFileSync`); defaults to the real one.
  * @param {typeof resolveWindowsBdScript} [resolveWindowsBd] - injectable for tests, so the win32-only resolution path is exercisable/deterministic on any host platform.
+ * @param {typeof resolveConfiguredWindowsBdScript} [resolveConfiguredWindowsBd] - injectable for tests, same reason, for the CONFIGURED win32 shim-resolution path.
  * @returns {Buffer|string}
  */
-export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSync, resolveWindowsBd = resolveWindowsBdScript) {
+export function execBdSync(
+    args,
+    options = {},
+    execFileSyncImpl = nodeExecFileSync,
+    resolveWindowsBd = resolveWindowsBdScript,
+    resolveConfiguredWindowsBd = resolveConfiguredWindowsBdScript,
+) {
     if (!Array.isArray(args)) {
         throw new TypeError('execBdSync requires args to be an array of strings');
     }
+
+    if (configuredInvocation.bdPath) {
+        const scriptPath = resolveConfiguredWindowsBd(configuredInvocation.bdPath);
+        if (scriptPath) {
+            const nodeCmd = configuredInvocation.nodePath ?? process.execPath;
+            const out = execFileSyncImpl(nodeCmd, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
+            warnIfLargeBdOutput(args, out);
+            return out;
+        }
+        // Configured fallback: the configured bdPath is not a win32 npm-shim
+        // `.cmd` (or we are not on win32 at all) -- invoke it directly, same
+        // shell rule as the unconfigured fallback just below (a real bd
+        // binary/symlink execs fine shell-less on POSIX; a non-shim file on
+        // win32 still needs `{ shell: true }` to get past CreateProcess's
+        // cannot-exec-a-shebang-script limitation).
+        const needsShellConfigured = (process.platform === 'win32');
+        const outConfigured = execFileSyncImpl(configuredInvocation.bdPath, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShellConfigured });
+        warnIfLargeBdOutput(args, outConfigured);
+        return outConfigured;
+    }
+
+    // Unconfigured (unchanged from before this fix).
     const scriptPath = resolveWindowsBd();
     if (scriptPath) {
         const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
@@ -277,6 +448,17 @@ function assertSafeArgs(args) {
  * call site remembering to validate its own caller-controlled values (as
  * `scope-overlap.mjs` already did for `parentId` via `validateIssueId()`).
  *
+ * CONFIGURED (apra-fleet-i9ag.19.7): when a `bdPath` has been set via
+ * `configureBdInvocation()`, that path is used as the file argument in place
+ * of the bare `'bd'` literal below -- still through `{ shell: true }`
+ * (unconditionally, on every platform, exactly as the unconfigured case
+ * always has been: this function's own `.cmd`-resolution constraint above
+ * applies regardless of `bdPath`'s origin, so there is no shell-less
+ * configured path here the way `execBdSync()` has one). No `nodePath` is
+ * needed in this configured case: the shell (not this module) is what
+ * ultimately execs a `.cmd` shim, which is what makes `{ shell: true }`
+ * necessary here in the first place.
+ *
  * @param {string[]} args - argv passed to `bd` (e.g. ['list', '--json', '--limit', '0']); every element must match `SAFE_ARG_PATTERN`.
  * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is always forced to `true` regardless of what is passed here.
  * @param {typeof nodeExecFileAsync} [execFileAsyncImpl] - injectable for tests (same signature as `promisify(require('node:child_process').execFile)`); defaults to the real one.
@@ -292,10 +474,13 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
         throw new TypeError('execBdAsync requires args to be an array of strings');
     }
     assertSafeArgs(args);
+    // CONFIGURED: use the configured bdPath in place of the bare 'bd' PATH
+    // lookup; UNCONFIGURED (bdPath is null): unchanged from before this fix.
+    const bdFile = configuredInvocation.bdPath ?? 'bd';
     // maxBuffer first so an explicit caller-supplied value still wins; without
     // it Node's 1MiB default kills the child on a large `bd list` (see the
     // BD_MAX_BUFFER_BYTES block above).
-    return Promise.resolve(execFileAsyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
+    return Promise.resolve(execFileAsyncImpl(bdFile, args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
         .then((res) => {
             warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
             return res;
