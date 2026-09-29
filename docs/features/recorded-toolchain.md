@@ -110,6 +110,61 @@ path and version string it renders (paths and `bd`/node output are
 effectively free-form operator/environment-controlled text, not something to
 trust as pre-sanitized HTML).
 
+## The bd-is-a-node-script problem: PATH-prepending
+
+A recorded `bd` is almost always an npm-installed script starting with
+`#!/usr/bin/env node` -- not a native binary. `env node <script>` only works
+if `node` itself resolves on **whatever PATH the process invoking `bd`
+inherited**. A PATH-less/minimal service environment (the exact environment
+this whole feature exists to route around) has no `node` on it at all, so
+running the recorded `bd` directly fails with `env: node: No such file or
+directory` (exit 127) -- even though the recording is perfectly correct and
+the interpreter it names would work fine if only it could be found. Recording
+`bd`'s own absolute path alone does not fix this: the *script* was found, but
+the *interpreter its shebang line asks the OS to find* still is not.
+
+This surfaces at three independent call sites, all fixed the same way rather
+than three different ways:
+- The supervisor's own `bd` invocations (`exec-bd.mjs`'s `execBdSync`/
+  `execBdAsync`) -- the supervisor process itself shells out to `bd` for the
+  worklist backlog, scope-overlap checks, etc.
+- The startup validator's own re-probe of the recorded `bd` path
+  (`toolchain.mjs`'s `validateRecordedToolchain()`) -- probing the recorded
+  `bd` directly, under a node-less PATH, would report a perfectly good
+  recording as a broken `bd`.
+- The spawned **sprint child's** own `bd` calls (`spawner.mjs`'s
+  `spawnSprint()`) -- fixing which interpreter the child process itself runs
+  under (the CONFIGURED tier, above) does not fix what the child inherits as
+  *its own* environment: the child shells out to `bd` independently, and
+  without this fix its first `bd` call fails with the identical exit 127,
+  the very failure mode this whole feature exists to eliminate, just one
+  process hop later.
+
+**The one chosen strategy, used at all three sites:** prepend
+`dirname(nodePath)` to the child/probe's own search path, rather than
+invoking `bd` as `<nodePath> <bdPath>`. This works identically whether the
+recorded `bd` is a shebang script (its own `env node` lookup now finds the
+recorded node on the amended PATH) or a real native binary (the PATH addition
+is inert -- a native binary never shells out to `env`) -- without any call
+site having to sniff which kind `bdPath` actually is. The alternative
+(`<nodePath> <bdPath>` as the invocation itself) would only work for the
+script case and would actively break a native-binary `bdPath` (a native
+ELF/Mach-O binary cannot be run as an argument to `node`).
+
+**Case-correct key, always.** The search-path variable is spelled `PATH` on
+POSIX and `Path` on Windows. A plain object spread (`{ ...process.env }`)
+throws away `process.env`'s case-insensitive lookup, so writing `env.PATH`
+unconditionally on Windows creates a **second**, all-caps variable holding
+only the prepended entry -- silently dropping every real entry the OS-spelled
+`Path` still carried. `src/supervisor/lib/child-path-env.mjs` (`pathEnvKey()`/
+`prependToPathEnv()`) is the one shared implementation that resolves the
+actual key first, so every call site prepends onto the SAME variable the
+child/probe will actually consult, never a shadow copy.
+
+**Prepend, never replace.** Every existing search-path entry is preserved,
+in order, behind the new one -- this fixes `node` resolution without taking
+away anything the process already had.
+
 ## Why two different fallback philosophies for node vs. bd
 
 This is the one deliberate asymmetry running through the whole feature, and

@@ -327,16 +327,23 @@ export function createSpawner(deps = {}) {
     // succeeding resolution without touching the real environment/PATH.
     const commandOverride = deps.command;
     const resolveRunner = deps.resolveRunner ?? resolveSprintRunnerCommand;
-    // apra-fleet-i9ag.19.5: the recorded toolchain's absolute node path (read
-    // and validated by the caller -- bin/serve.mjs, once it consults the
-    // installed toolchain -- and handed in here so this module stays
-    // filesystem-free). Threaded into every resolveRunner() call below so the
-    // real resolveSprintRunnerCommand() can apply its CONFIGURED tier, which
-    // MUST beat current-runtime/PATH: a supervisor service with no usable
-    // PATH has no other way to launch a sprint. Harmless to pass to an
-    // injected `resolveRunner` too -- every existing test's injected resolver
-    // is a zero-arg closure that ignores whatever argument it is called
-    // with, so this cannot change any existing test's behaviour.
+    // apra-fleet-i9ag.19.5: the recorded toolchain's absolute node path --
+    // read by the caller (bin/serve.mjs, once it consults the installed
+    // toolchain) and handed in here so this module stays filesystem-free.
+    // NOT gated on that caller's own validation of it (2026-09-29 review
+    // fix -- see this value's second use, the PATH-prepend guard below, for
+    // why that distinction matters): bin/serve.mjs deliberately forwards the
+    // recorded path REGARDLESS of whether its own probe found it usable, so
+    // an unvalidated recording still reaches resolveRunner() below and is
+    // rejected LOUDLY, by name, through node-runner.mjs's own re-probing
+    // CONFIGURED tier -- never silently discarded to a PATH-lookup fallback.
+    // Threaded into every resolveRunner() call below so the real
+    // resolveSprintRunnerCommand() can apply that CONFIGURED tier, which MUST
+    // beat current-runtime/PATH: a supervisor service with no usable PATH has
+    // no other way to launch a sprint. Harmless to pass to an injected
+    // `resolveRunner` too -- every existing test's injected resolver is a
+    // zero-arg closure that ignores whatever argument it is called with, so
+    // this cannot change any existing test's behaviour.
     const configuredNodePath = deps.configuredNodePath;
     // A SUCCESSFUL resolution is cached for this process's lifetime -- the
     // Node.js runtime available to this supervisor process cannot change
@@ -496,6 +503,22 @@ export function createSpawner(deps = {}) {
             // when neither serviceToken nor configuredNodePath applies,
             // `spawnEnv` is still exactly `baseEnv` by reference, so the
             // `spawnEnv !== process.env` check below is unaffected.
+            //
+            // WHAT THIS GUARD ACTUALLY CHECKS (2026-09-29 review fix): "a
+            // non-blank string", nothing more -- it does NOT require that
+            // `configuredNodePath` passed `validateRecordedToolchain()`'s own
+            // probe. bin/serve.mjs deliberately hands this the recorded
+            // `toolchain.nodePath` REGARDLESS of `nodeOk` (see its own
+            // `configuredNodePath: toolchain.nodePath ?? undefined` comment):
+            // an unvalidated recording is meant to surface as a loud,
+            // path-naming 503 from node-runner.mjs's CONFIGURED tier, not to
+            // silently fall through to a PATH lookup. That means this PATH
+            // prepend can run against a node path that never resolved to a
+            // usable runtime -- harmless in practice today because that same
+            // CONFIGURED tier hard-errors resolveCommand() before spawnImpl()
+            // is ever reached, so this line never executes for a broken
+            // recording -- but a future change must not assume this guard
+            // implies validity.
             if (typeof configuredNodePath === 'string' && configuredNodePath.trim().length > 0) {
                 if (spawnEnv === baseEnv) {
                     spawnEnv = { ...spawnEnv };

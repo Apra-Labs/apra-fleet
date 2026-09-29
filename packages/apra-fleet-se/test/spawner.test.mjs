@@ -1032,6 +1032,155 @@ describe('createSpawner -- configured node path threading (apra-fleet-i9ag.19.5)
     });
 });
 
+// apra-fleet-i9ag.19.32 -- spawnSprint() prepends dirname(configuredNodePath)
+// onto the sprint CHILD's own search path: fixing which interpreter the
+// child process runs under (the configured-node-path threading tests above)
+// does not fix what the child inherits as ITS OWN environment, and the
+// child shells out to `bd` (an npm '#!/usr/bin/env node' script)
+// independently -- under a launchd/Windows-task PATH with no `node` on it,
+// that first `bd` call would die with `env: node: No such file or
+// directory` (exit 127) without this. This is the child-env half of the
+// same defect exec-bd.mjs (apra-fleet-i9ag.19.7) fixes for the supervisor's
+// OWN `bd` invocations -- see docs/features/recorded-toolchain.md's "The
+// bd-is-a-node-script problem" section for the full shared rationale. Every
+// case below asserts on the EXACT env handed to the injected spawn (the
+// makeFakeSpawn()/calls[0].opts.env seam), per this bead's own AC wording.
+describe('createSpawner -- recorded node directory on the sprint child\'s PATH (apra-fleet-i9ag.19.32)', () => {
+    test('AC1: a configured node path prepends dirname(nodePath) as the FIRST search-path entry, preserving every pre-existing entry in order', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([701]);
+        const originalEnv = { PATH: '/usr/bin:/bin', FOO: 'bar' };
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            // deps.command bypasses resolveRunner() entirely (see the
+            // "lazy runner resolution" describe block above) -- this
+            // describe block is only about the child-env PATH prepend,
+            // which reads `deps.configuredNodePath` directly and does not
+            // depend on how the spawn COMMAND itself was resolved.
+            command: '/fake/runner-command',
+            configuredNodePath: '/opt/toolchain/node',
+            env: originalEnv,
+            basePort: 9400,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.deepEqual(calls[0].opts.env, {
+            PATH: `/opt/toolchain${path.delimiter}/usr/bin:/bin`,
+            FOO: 'bar',
+        }, 'dirname(nodePath) must be the FIRST PATH entry, with every pre-existing entry (including non-PATH keys) preserved');
+    });
+
+    test('AC2: an env spelling the search-path key "Path" (Windows shape) gains no second "PATH" key and loses no entry', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([702]);
+        const originalEnv = { Path: 'C:\\Windows\\System32;C:\\Windows' };
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/fake/runner-command',
+            configuredNodePath: '/opt/toolchain/node',
+            env: originalEnv,
+            basePort: 9401,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        const env = calls[0].opts.env;
+        assert.equal('PATH' in env, false, 'writing to a case-mismatched "PATH" key would create a SECOND variable -- it must not exist');
+        assert.equal(env.Path, `/opt/toolchain${path.delimiter}C:\\Windows\\System32;C:\\Windows`, 'the prepend must land on the EXISTING "Path" key, not a new one');
+        assert.equal(
+            Object.keys(env).filter((k) => k.toLowerCase() === 'path').length,
+            1,
+            'exactly one search-path key must survive, whatever case it started in',
+        );
+    });
+
+    test('AC3: with no configured node path, no serviceToken and no deps.env, spawn receives no env key at all (today\'s exact behavior)', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([703]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9402,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.equal('env' in calls[0].opts, false, 'no configuredNodePath, no serviceToken, no deps.env: env must be omitted entirely');
+    });
+
+    test('AC3: with no configured node path but a supplied deps.env, that exact env is passed through byte-for-byte unchanged', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([704]);
+        const originalEnv = { PATH: '/usr/bin:/bin', FOO: 'bar' };
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            env: originalEnv,
+            basePort: 9403,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.equal(calls[0].opts.env, originalEnv, 'with no configuredNodePath and no serviceToken, spawnEnv must stay the SAME object as deps.env -- byte for byte unchanged, not merely deep-equal');
+    });
+
+    test('AC4: deps.env is the base that gets the prepend (process.env is not consulted), the original deps.env object is never mutated, and a second launch does not compound the prepend', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([705, 706]);
+        const originalEnv = { PATH: '/usr/bin:/bin' };
+        const snapshotBefore = { ...originalEnv };
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/fake/runner-command',
+            configuredNodePath: '/opt/toolchain/node',
+            env: originalEnv,
+            basePort: 9404,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        await spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' });
+
+        assert.deepEqual(originalEnv, snapshotBefore, 'the ORIGINAL deps.env object must never be mutated by the prepend');
+        assert.notEqual(calls[0].opts.env, originalEnv, 'the env handed to spawn must be a clone, never the original deps.env object itself');
+        const expected = { PATH: `/opt/toolchain${path.delimiter}/usr/bin:/bin` };
+        assert.deepEqual(calls[0].opts.env, expected);
+        assert.deepEqual(calls[1].opts.env, expected, 'a second launch reading the SAME unmutated deps.env must not compound the prepend -- PATH must not grow one entry per launch');
+    });
+
+    test('AC5: the service-token overlay and the node-path prepend compose correctly when both are configured', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([707]);
+        const originalEnv = { PATH: '/usr/bin:/bin', FOO: 'bar' };
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/fake/runner-command',
+            configuredNodePath: '/opt/toolchain/node',
+            serviceToken: 'test-token-xyz',
+            env: originalEnv,
+            basePort: 9405,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.deepEqual(calls[0].opts.env, {
+            PATH: `/opt/toolchain${path.delimiter}/usr/bin:/bin`,
+            FOO: 'bar',
+            FLEET_SE_SERVICE_TOKEN: 'test-token-xyz',
+        }, 'both the service-token overlay and the node-path PATH-prepend must apply together, without either one dropping the other');
+    });
+});
+
 describe('createSpawner -- unspawnable cwd surfaces to the caller', () => {
     test('a REAL spawn with a nonexistent cwd rejects the launch with the cause, not only a log line', async () => {
         const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-spawner-nocwd-'));
