@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "56c71ac62961670210d6e06949805d37ea6a22e7",
+    "commit": "9eb97b3c06e7669b4c8f1d8e41c5e3a62a98040c",
     "branch": "chore/v05-kb-superset",
-    "entry_count": 364
+    "entry_count": 355
   },
   "entries": [
     {
@@ -209,24 +209,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.121Z"
-    },
-    {
-      "id": "08651a2b-ab8c-40bd-91cc-107520fff15a",
-      "type": "knowledge",
-      "title": "The Claude agent-install path is not a passthrough and must strip conditional markers",
-      "summary": "install.ts routes every agent asset through a transform, including Claude; transformAgentForClaude resolves conditional markers with all tools available so markers never ship verbatim.",
-      "symbols": [
-        "transformAgentForClaude",
-        "resolveConditionalBody",
-        "toolAvailability",
-        "loadAgentAssets"
-      ],
-      "source_files": [
-        "src/cli/agent-transform.ts",
-        "src/cli/install.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.311Z"
     },
     {
       "id": "08bf486a-ad04-434c-b24d-5f9dd5531c98",
@@ -1116,22 +1098,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.535Z"
-    },
-    {
-      "id": "22dd4e68-3702-4ecd-a500-df6e9b27f4b3",
-      "type": "knowledge",
-      "title": "check-generic-boundary.mjs does not scan fleet-sprint/skills/*.md",
-      "summary": "ENGINE_FILE_SET covers only js/mjs/cjs under fleet-sprint and md under apra-pm/agents, so SKILL.md files shipped with the engine are never checked for target-specific content.",
-      "symbols": [
-        "ENGINE_FILE_SET",
-        "SIGNAL_PATTERNS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs",
-        "packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:11.489Z"
     },
     {
       "id": "22e52be3-d44c-4c71-ae51-9f25a498af40",
@@ -2262,28 +2228,6 @@
       "updated_at": "2026-09-25T22:26:43.177Z"
     },
     {
-      "id": "4d57347c-81ee-4139-93f4-c05ca705422c",
-      "type": "learning",
-      "title": "Changing ProviderStats silently drifts the kb_stats memory contract",
-      "summary": "ProviderStats flows unfiltered into the kb_stats MCP response, whose contract schema closes parsed with additionalProperties false, so adding a provider field breaks the published contract while contract:check stays green.",
-      "symbols": [
-        "ProviderStats",
-        "kbStats",
-        "HttpKbProvider"
-      ],
-      "source_files": [
-        "src/tools/kb-stats.ts",
-        "src/services/knowledge/types.ts",
-        "src/services/knowledge/http-provider.ts",
-        "memory-contract/v1/schemas/kb_stats.response.json",
-        "memory-contract/v1/fixtures/kb_stats/happy.json",
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-fixture-response-schema.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.836Z"
-    },
-    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -2457,26 +2401,6 @@
       "updated_at": "2026-09-25T22:26:30.391Z"
     },
     {
-      "id": "51cd7ddf-a178-4fd3-8095-c42a8e049f69",
-      "type": "knowledge",
-      "title": "Regression phase must never abort the sprint, but pre-dispatch provisioning runs outside dispatchRole's catch-all",
-      "summary": "The regression-test-runner's soft-fail is the role-policies catch-all degrade inside dispatchRole. Anything awaited in runRegressionTestPhase before dispatchRole, such as ensureUnattendedAuto or ensureDeployPermissions, escapes that degrade and becomes a terminal ABORTED that skips Harvest and Publish PR.",
-      "symbols": [
-        "runRegressionTestPhase",
-        "createDeployPermissionsProvisioner",
-        "dispatchRole",
-        "runSprintCycle"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/phases/regression-test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:04.048Z"
-    },
-    {
       "id": "54594a50-c325-4889-8164-d275ecb01ae9",
       "type": "knowledge",
       "title": "A sync.remote URL outside SAFE_REMOTE_URL_RE silently disables the dolt remote-tip fingerprint instead of erroring",
@@ -2531,6 +2455,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:16:05.371Z"
+    },
+    {
+      "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
+      "type": "knowledge",
+      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
+      "summary": "execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
+      "symbols": [],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "tests/execute-prompt.test.ts",
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T06:24:09.270Z"
     },
     {
       "id": "589cae8c-4b30-4561-bc80-6e5cb2fd77be",
@@ -2609,24 +2548,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:27.422Z"
-    },
-    {
-      "id": "5b8dec9a-f054-4867-8422-a7cb3e008952",
-      "type": "learning",
-      "title": "dist-pm does not prune orphaned dist/agents schemas, so the dist staleness guard can fail in a way dist-pm cannot fix",
-      "summary": "The dist/agents/schemas staleness guard tells you to run npm run dist-pm, but dist-pm copies without pruning, so a dist-only orphan left by another branch survives the refresh and the guard keeps failing until the file is deleted by hand.",
-      "symbols": [
-        "DIST_BUNDLED_SCHEMAS_DIR",
-        "PACKAGE_LOCAL_SCHEMAS_DIR",
-        "resolveSchemasDir"
-      ],
-      "source_files": [
-        "scripts/dist-pm.mjs",
-        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:11.708Z"
     },
     {
       "id": "5b9c01be-35e1-4885-a67e-9b77aff230e0",
@@ -2761,21 +2682,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.482Z"
-    },
-    {
-      "id": "65688ff3-63b2-4d8d-8772-9767a7008a59",
-      "type": "knowledge",
-      "title": "Installer step labels are derived by arithmetic offsets from totalSteps, so inserting a step misnumbers silently",
-      "summary": "src/cli/install.ts computes late step labels (workflows, Dolt, Beads, KB) as offsets from totalSteps, with nothing cross-checking them against a counter.",
-      "symbols": [
-        "totalSteps",
-        "doltStepDeps"
-      ],
-      "source_files": [
-        "src/cli/install.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.782Z"
     },
     {
       "id": "66ab34e7-0092-4be5-b77d-17453ddc46c9",
@@ -3143,19 +3049,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:28.936Z"
-    },
-    {
-      "id": "749f0f0d-ff2e-48ec-8482-9e2155ca3f36",
-      "type": "learning",
-      "title": "Windows symlinkSync with type dir fails EPERM without symlink privilege; junction works",
-      "summary": "On this Windows dev box fs.symlinkSync(target, path, 'dir') throws EPERM while type 'junction' succeeds, so apra-fleet-se falsification tests that symlink node_modules into a temp sandbox fail under npm test.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
-        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T00:42:43.451Z"
     },
     {
       "id": "75cbd929-e560-423f-b90b-220e01148861",
@@ -4388,22 +4281,6 @@
       "updated_at": "2026-09-25T22:26:35.300Z"
     },
     {
-      "id": "a95b9663-7487-45c1-b916-b25b4857cbf2",
-      "type": "knowledge",
-      "title": "install --force restarts a service it stopped, once the binary copy finishes",
-      "summary": "If the --force guard stopped a registered service, install restarts it after the binary copy (or lets the final service step re-register/start it), and always prints the restart command.",
-      "symbols": [
-        "serviceRestartCommand",
-        "registeredServiceManager"
-      ],
-      "source_files": [
-        "src/cli/install.ts",
-        "docs/install.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.856Z"
-    },
-    {
       "id": "a96e64d8-e304-4a46-baeb-d36fe1371a94",
       "type": "knowledge",
       "title": "Lockfile drift is invisible to npm test",
@@ -4756,6 +4633,23 @@
       "updated_at": "2026-09-29T06:13:24.009Z"
     },
     {
+      "id": "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf",
+      "type": "knowledge",
+      "title": "ClaudeProvider.detectUsageLimit treats a bare 429 as a usage limit without the limit-message",
+      "summary": "A 429 apiErrorStatus is classified as a usage limit on its own; the 'hit your <...> limit' message is only required for the non-429 terminalReason==='api_error' path.",
+      "symbols": [
+        "parseClaudeResetTime",
+        "ClaudeProvider.detectUsageLimit",
+        "guessedUsageLimitSignal"
+      ],
+      "source_files": [
+        "src/providers/claude.ts",
+        "src/providers/provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T06:24:09.365Z"
+    },
+    {
       "id": "b8154d4c-c1ba-4ef4-af64-6a966b1ddb82",
       "type": "knowledge",
       "title": "test/helpers/dispatch-pin-scanner.mjs has its own maskComments that does not model regex literals",
@@ -4774,22 +4668,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:10.894Z"
-    },
-    {
-      "id": "b8c8e412-3274-40fe-a166-7a9fcfcc89a2",
-      "type": "knowledge",
-      "title": "The client package carries a second hand-maintained copy of every tool field description",
-      "summary": "packages/apra-fleet-client/docs/api-reference.md has its own hand-written per-field glosses for tool parameters; nothing generates or tests it, so it drifts silently.",
-      "symbols": [
-        "executePromptSchema"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/docs/api-reference.md",
-        "packages/apra-fleet-client/src/client/api.mjs",
-        "src/tools/execute-prompt.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.389Z"
     },
     {
       "id": "babb6682-bde3-49f3-9441-77a078f082a7",
@@ -5088,21 +4966,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.420Z"
-    },
-    {
-      "id": "c785ff16-763d-4705-b0d9-e1bf414d342c",
-      "type": "knowledge",
-      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
-      "summary": "As of commit ad1146ac on hzeb-onto-refactor, execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
-      "symbols": [],
-      "source_files": [
-        "src/tools/execute-prompt.ts",
-        "packages/apra-fleet-workflow/src/workflow/index.mjs",
-        "tests/execute-prompt.test.ts",
-        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:42.183Z"
     },
     {
       "id": "c791fcf0-48c2-4a17-a247-ea634fec70b3",
@@ -6326,23 +6189,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-27T02:53:31.025Z"
-    },
-    {
-      "id": "f1324044-8b7b-4fd7-8cb9-3dad95fd6594",
-      "type": "knowledge",
-      "title": "ClaudeProvider.detectUsageLimit treats a bare 429 as a usage limit without the limit-message",
-      "summary": "After hzeb.1.4.1, a 429 apiErrorStatus is classified as a usage limit on its own; the 'hit your <...> limit' message is only required for the non-429 terminalReason==='api_error' path.",
-      "symbols": [
-        "parseClaudeResetTime",
-        "ClaudeProvider.detectUsageLimit",
-        "guessedUsageLimitSignal"
-      ],
-      "source_files": [
-        "src/providers/claude.ts",
-        "src/providers/provider.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:42.242Z"
     },
     {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
