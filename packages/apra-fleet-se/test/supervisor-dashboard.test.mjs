@@ -1160,6 +1160,11 @@ describe('dashboard -- buildStatePayload', () => {
             // apra-fleet-i9ag.4: terminal outcome, null while unknown.
             verdict: null,
             prUrl: null,
+            // apra-fleet-i9ag.16.7: WHY the run ended, once it has ended badly.
+            // Null for this healthy row -- carried on every row so
+            // renderSprintSection() can render it identically in the server's
+            // first paint and after a /state poll.
+            reason: null,
         }]);
     });
 });

@@ -21,7 +21,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { classifyLaunchWatch, renderLaunchFormHtml } from '../src/supervisor/launch-form.mjs';
+import { classifyLaunchWatch, classifyLaunchFollow, renderLaunchFormHtml } from '../src/supervisor/launch-form.mjs';
 
 // =============================================================================
 // Layer 1: classifyLaunchWatch() -- pure classifier unit table
@@ -118,8 +118,15 @@ function makeContainer(id) {
  * `launchSprintId` picks the sprintId the mocked POST /api/sprints 201
  * returns -- either a fixed string, or a function of the 0-based POST call
  * index (for the "second submit" scenario, which must launch a DIFFERENT id).
+ *
+ * `stateResponder(url)` (apra-fleet-i9ag.16.8) answers the FOLLOW phase's GET
+ * /state polls -- apra-fleet-i9ag.16.7's post-launch-window watch, which
+ * tracks the launched run through the SAME payload the Sprint Stack renders
+ * from. Omitted -> /state falls through to the generic default response below,
+ * which classifies 'unknown' (keep following), exactly as every pre-i9ag.16.8
+ * test in this file expects.
  */
-function buildLaunchWatchSandbox({ pollResponder, launchSprintId, mountPrefix } = {}) {
+function buildLaunchWatchSandbox({ pollResponder, launchSprintId, mountPrefix, stateResponder } = {}) {
     const html = renderLaunchFormHtml(mountPrefix);
     const scriptStart = html.indexOf('<script>') + '<script>'.length;
     const scriptEnd = html.indexOf('</script>', scriptStart);
@@ -158,6 +165,10 @@ function buildLaunchWatchSandbox({ pollResponder, launchSprintId, mountPrefix } 
         // GET /api/members on script init, or watchLaunch()'s own GET poll.
         if (typeof pollResponder === 'function' && url.indexOf('/api/sprints/') !== -1) {
             return pollResponder(url);
+        }
+        // followLaunch()'s GET /state poll (apra-fleet-i9ag.16.7).
+        if (typeof stateResponder === 'function' && url.indexOf('/state') !== -1) {
+            return stateResponder(url);
         }
         return { ok: true, json: async () => ({ members: [] }) };
     };
@@ -365,6 +376,220 @@ describe('launch-form-launch-failure-watch: the REAL extracted client script', (
 
             assert.equal(sandbox.resultEl.children.length, 1, 'a raw-log anchor must be appended');
             assert.equal(sandbox.resultEl.children[0].href, '/ext/se/sprints/s-1/log', 'the raw-log href must carry the mount prefix');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.16.8 -- the launch form stops showing a green 'Launched' for
+// a run that fails AFTER the launch window
+// =============================================================================
+//
+// The final M1 acceptance run launched a sprint that failed MINUTES later, in
+// its Plan phase, and the form was still reading 'Launched sprint <id>.' --
+// because the watch above only ever covered the launch window (WATCH_WINDOW_MS)
+// and stopped the moment the child was confirmed live. apra-fleet-i9ag.16.7's
+// follow phase hands off at that point and tracks the run through the SAME
+// GET /state payload the Sprint Stack renders from.
+
+describe('apra-fleet-i9ag.16.8: classifyLaunchFollow() classifier table', () => {
+    const FAILED_FINISHED = {
+        sprintId: 's-1', verdict: 'ABORTED', status: 'finished',
+        reason: 'uncaughtException: claude: command not found',
+    };
+
+    test('a run that reached Finished Sprints with a failed verdict classifies failed, carrying its reason', () => {
+        const r = classifyLaunchFollow({ sprints: [], finished: [FAILED_FINISHED] }, 's-1');
+        assert.deepEqual(r, { status: 'failed', reason: 'uncaughtException: claude: command not found' });
+    });
+
+    test('a failed run with no recorded reason still classifies failed, with a non-empty fallback', () => {
+        const r = classifyLaunchFollow({ sprints: [], finished: [{ ...FAILED_FINISHED, reason: null }] }, 's-1');
+        assert.equal(r.status, 'failed');
+        assert.ok(r.reason.length > 0, 'the form must never render "failed: " with nothing after it');
+    });
+
+    test('a still-listed stack row that ended badly (crashed) classifies failed from the stack, without waiting for the finished list', () => {
+        const r = classifyLaunchFollow({
+            sprints: [{ sprintId: 's-1', status: 'crashed', verdict: null, reason: 'exited 1 at 2026-09-28T12:00:00.000Z' }],
+        }, 's-1');
+        assert.deepEqual(r, { status: 'failed', reason: 'exited 1 at 2026-09-28T12:00:00.000Z' });
+    });
+
+    test('a confirmed-healthy run classifies healthy -- the launch really did succeed, so following stops', () => {
+        const r = classifyLaunchFollow({ sprints: [{ sprintId: 's-1', status: 'running-healthy', verdict: null }] }, 's-1');
+        assert.deepEqual(r, { status: 'healthy', sprintStatus: 'running-healthy' });
+    });
+
+    test('a paused run is healthy too -- a deliberate live state, never a failure', () => {
+        assert.equal(classifyLaunchFollow({ sprints: [{ sprintId: 's-1', status: 'paused' }] }, 's-1').status, 'healthy');
+    });
+
+    test('an unresponsive run is still unsettled: keep following, never declare it failed', () => {
+        const r = classifyLaunchFollow({ sprints: [{ sprintId: 's-1', status: 'running-unresponsive' }] }, 's-1');
+        assert.deepEqual(r, { status: 'running', sprintStatus: 'running-unresponsive' });
+    });
+
+    test('a cleanly-finished run classifies finished with its verdict, not failed', () => {
+        const r = classifyLaunchFollow({
+            sprints: [],
+            finished: [{ sprintId: 's-1', verdict: 'PASS', status: 'finished', reason: 'success' }],
+        }, 's-1');
+        assert.deepEqual(r, { status: 'finished', verdict: 'PASS' });
+    });
+
+    test('another sprint failing is never attributed to this one', () => {
+        const r = classifyLaunchFollow({ sprints: [], finished: [{ ...FAILED_FINISHED, sprintId: 's-other' }] }, 's-1');
+        assert.equal(r.status, 'unknown');
+    });
+
+    test('a 404 / empty / garbage payload classifies unknown -- never invents a failure', () => {
+        assert.equal(classifyLaunchFollow(null, 's-1').status, 'unknown');
+        assert.equal(classifyLaunchFollow(undefined, 's-1').status, 'unknown');
+        assert.equal(classifyLaunchFollow({}, 's-1').status, 'unknown');
+        assert.equal(classifyLaunchFollow('not an object', 's-1').status, 'unknown');
+        assert.equal(classifyLaunchFollow({ sprints: [], finished: [] }, 's-1').status, 'unknown');
+        assert.equal(classifyLaunchFollow({ sprints: [{ sprintId: 's-1' }] }, '').status, 'unknown');
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: the REAL client script follows a launched run past the launch window', () => {
+    test('submit -> 201 (green) -> child confirmed live -> the run later ABORTS: the line flips to red with the reason and a raw-log anchor', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            // The run is healthy-looking within the launch window, then ends
+            // badly well after it -- exactly the acceptance-run scenario.
+            let runEnded = false;
+            const sandbox = buildLaunchWatchSandbox({
+                pollResponder: async () => ({ ok: true, json: async () => ({ sprintId: 's-1', live: true, state: {} }) }),
+                stateResponder: async () => ({
+                    ok: true,
+                    json: async () => (runEnded
+                        ? {
+                            sprints: [],
+                            finished: [{
+                                sprintId: 's-1', verdict: 'ABORTED', status: 'finished',
+                                reason: 'uncaughtException: claude: command not found',
+                            }],
+                        }
+                        : { sprints: [{ sprintId: 's-1', status: 'running-unresponsive', verdict: null, reason: null }], finished: [] }),
+                }),
+            });
+            sandbox.selectIssue('apra-fleet-i9ag.16.8');
+            sandbox.submit();
+            await flushMicrotasks();
+            assert.equal(sandbox.resultEl.textContent, 'Launched sprint s-1.');
+            assert.equal(sandbox.resultEl.style.color, '#22c55e');
+
+            // First launch-window tick: the child answers live, so the watch
+            // concludes and hands off to the follow phase.
+            t.mock.timers.tick(2000);
+            await flushMicrotasks();
+            assert.equal(sandbox.resultEl.textContent, 'Launched sprint s-1.', 'a live child does not change the line');
+
+            // A follow tick while the run is merely unresponsive must NOT
+            // invent a failure.
+            t.mock.timers.tick(7000);
+            await flushMicrotasks();
+            assert.equal(sandbox.resultEl.textContent, 'Launched sprint s-1.', 'an unsettled run must never be reported as failed');
+            assert.ok(
+                sandbox.fetchCalls.some((u) => u.indexOf('/state') !== -1),
+                `the follow phase must poll /state, got: ${JSON.stringify(sandbox.fetchCalls)}`
+            );
+
+            // Now the run ends badly, minutes after the launch window closed.
+            runEnded = true;
+            t.mock.timers.tick(7000);
+            await flushMicrotasks();
+
+            assert.equal(sandbox.resultEl.style.color, '#ef4444', 'the green launched line must flip to red once the run has failed');
+            assert.ok(sandbox.resultEl.textContent.includes('s-1'), sandbox.resultEl.textContent);
+            assert.ok(sandbox.resultEl.textContent.includes('uncaughtException: claude: command not found'), sandbox.resultEl.textContent);
+            assert.ok(!sandbox.resultEl.textContent.includes('failed to launch'), 'this run DID launch -- it failed later, and the line must not misreport which happened');
+            assert.equal(sandbox.resultEl.children.length, 1, 'a raw-log anchor must be appended');
+            assert.ok(sandbox.resultEl.children[0].href.endsWith('/sprints/s-1/log'), sandbox.resultEl.children[0].href);
+
+            // Following stops at the first settled observation.
+            const stateCallsAtFailure = sandbox.fetchCalls.filter((u) => u.indexOf('/state') !== -1).length;
+            t.mock.timers.tick(7000 * 3);
+            await flushMicrotasks();
+            assert.equal(
+                sandbox.fetchCalls.filter((u) => u.indexOf('/state') !== -1).length,
+                stateCallsAtFailure,
+                'no /state poll after the outcome was already reported'
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a run confirmed running-healthy stops the follow and leaves the green line standing', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const sandbox = buildLaunchWatchSandbox({
+                pollResponder: async () => ({ ok: true, json: async () => ({ sprintId: 's-1', live: true, state: {} }) }),
+                stateResponder: async () => ({
+                    ok: true,
+                    json: async () => ({ sprints: [{ sprintId: 's-1', status: 'running-healthy', verdict: null, reason: null }], finished: [] }),
+                }),
+            });
+            sandbox.selectIssue('apra-fleet-i9ag.16.8');
+            sandbox.submit();
+            await flushMicrotasks();
+            t.mock.timers.tick(2000);
+            await flushMicrotasks();
+            t.mock.timers.tick(7000);
+            await flushMicrotasks();
+
+            assert.equal(sandbox.resultEl.textContent, 'Launched sprint s-1.');
+            assert.equal(sandbox.resultEl.style.color, '#22c55e');
+            const stateCalls = sandbox.fetchCalls.filter((u) => u.indexOf('/state') !== -1).length;
+            t.mock.timers.tick(7000 * 3);
+            await flushMicrotasks();
+            assert.equal(
+                sandbox.fetchCalls.filter((u) => u.indexOf('/state') !== -1).length,
+                stateCalls,
+                'a confirmed-healthy run needs no further following'
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a second submit cancels the first launch\'s follow, so an old run\'s outcome can never overwrite the new line', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const sandbox = buildLaunchWatchSandbox({
+                launchSprintId: (i) => `s-${i + 1}`,
+                pollResponder: async () => ({ ok: true, json: async () => ({ sprintId: 's-1', live: true, state: {} }) }),
+                stateResponder: async () => ({
+                    ok: true,
+                    json: async () => ({
+                        sprints: [],
+                        finished: [{ sprintId: 's-1', verdict: 'FAIL', status: 'finished', reason: 'old run failed' }],
+                    }),
+                }),
+            });
+            sandbox.selectIssue('apra-fleet-i9ag.16.8');
+            sandbox.submit();
+            await flushMicrotasks();
+            t.mock.timers.tick(2000);
+            await flushMicrotasks(); // s-1's follow is now armed
+
+            sandbox.selectIssue('apra-fleet-i9ag.16.8');
+            sandbox.submit();
+            await flushMicrotasks();
+            assert.equal(sandbox.resultEl.textContent, 'Launched sprint s-2.');
+
+            t.mock.timers.tick(7000 * 3);
+            await flushMicrotasks();
+            assert.ok(
+                !sandbox.resultEl.textContent.includes('old run failed'),
+                `the superseded launch's outcome must never land on the new launch's line, got: ${sandbox.resultEl.textContent}`
+            );
+            assert.ok(!sandbox.resultEl.textContent.includes('s-1'), sandbox.resultEl.textContent);
         } finally {
             t.mock.timers.reset();
         }
