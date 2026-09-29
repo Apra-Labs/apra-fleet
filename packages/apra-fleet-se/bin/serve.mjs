@@ -497,7 +497,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog section (below) AND as GET /api/backlog's real listing (see the
     // sprint controller wiring below), so there is exactly one "what does the
     // tracker minus claimed scope look like right now" implementation.
-    const backlog = createBacklog({ ledger, watchdog });
+    const backlog = createBacklog({ ledger, watchdog, hasProject: () => discovered !== null });
 
     // (apra-fleet-i9ag.5.1) Resolve the apra-fleet server connection once here
     // for the dashboard's header "Console" back-link (this origin, or nothing
@@ -645,7 +645,9 @@ export async function serveMain(argv = process.argv.slice(2)) {
         spawner,
         history,
         listMembers: listMembersForLaunch,
-        getBacklog: async () => ({ tree: await backlog.buildTree() }),
+        getBacklog: async () => (backlog.hasProject()
+            ? { tree: await backlog.buildTree() }
+            : { tree: [], noProject: true }),
         beforeLaunch,
         beadsIdentity,
     });

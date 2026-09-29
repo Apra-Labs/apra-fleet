@@ -60,6 +60,9 @@ const nodeExecFileAsync = promisify(nodeExecFile);
 /** Directory name bd discovers by walking up from its cwd. */
 export const BEADS_DIR_NAME = '.beads';
 
+/** File a real project .beads always holds (bd init) and bd's global-state ~/.beads never does. */
+export const PROJECT_DB_MARKER = 'metadata.json';
+
 /**
  * Walks up from `cwd` (inclusive) to the filesystem root looking for the
  * first directory that contains a `.beads` entry -- the same discovery bd
@@ -72,19 +75,32 @@ export const BEADS_DIR_NAME = '.beads';
  * @param {{ cwd?: string, fs?: { existsSync: (p: string) => boolean, statSync?: (p: string) => { isDirectory(): boolean } } }} [opts]
  * @returns {{ beadsDir: string, repoRoot: string }|null}
  */
+/**
+ * The ONE definition of "this .beads directory holds a project database".
+ * bd keeps machine-global state (eventsData, machine-id) in ~/.beads, which
+ * must never be mistaken for a project; a real project's .beads always holds
+ * metadata.json (written by bd init). Shared by discoverBeadsDir() and
+ * project-route.mjs's hasBeadsDb report so the two can never disagree.
+ * @param {string} beadsDir - the candidate .beads directory path
+ * @param {{ existsSync: (p: string) => boolean, statSync?: (p: string) => { isDirectory(): boolean } }} [fsImpl]
+ * @returns {boolean}
+ */
+export function isProjectBeadsDir(beadsDir, fsImpl = fs) {
+    try {
+        return fsImpl.existsSync(beadsDir)
+            && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(beadsDir).isDirectory())
+            && fsImpl.existsSync(path.join(beadsDir, PROJECT_DB_MARKER));
+    } catch {
+        return false;
+    }
+}
+
 export function discoverBeadsDir(opts = {}) {
     const fsImpl = opts.fs ?? fs;
     let dir = path.resolve(opts.cwd ?? process.cwd());
     for (;;) {
         const candidate = path.join(dir, BEADS_DIR_NAME);
-        let found = false;
-        try {
-            found = fsImpl.existsSync(candidate)
-                && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(candidate).isDirectory());
-        } catch {
-            found = false;
-        }
-        if (found) return { beadsDir: candidate, repoRoot: dir };
+        if (isProjectBeadsDir(candidate, fsImpl))  return { beadsDir: candidate, repoRoot: dir };
         const parent = path.dirname(dir);
         if (parent === dir) return null;
         dir = parent;

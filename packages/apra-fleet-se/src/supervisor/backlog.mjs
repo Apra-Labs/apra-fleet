@@ -828,6 +828,10 @@ export function registerBacklogRoutes(supervisor, backlog) {
             const result = await backlog.buildBacklogTasks(filters);
             sendJson(res, 200, result);
         } catch (err) {
+            if (isNoBeadsDirectoryError(err)) {
+                sendJson(res, 200, noProjectBacklogTasks());
+                return;
+            }
             sendJson(res, 500, { error: 'failed to build backlog tasks' });
         }
     });
@@ -854,6 +858,27 @@ export function registerBacklogRoutes(supervisor, backlog) {
  * `bd` subprocess calls, never the old per-node `expandScope()` (./scope-
  * overlap.mjs) subprocess walker.
  */
+/**
+ * True when `err` is bd's "no beads directory" failure (no project database
+ * reachable from the supervisor's cwd). That is the no-project state, not a
+ * server fault, so the Backlog routes degrade to the empty state on it.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isNoBeadsDirectoryError(err) {
+    const text = [err && err.code, err && err.message, err && err.stderr, err && err.stdout]
+        .filter((v) => typeof v === 'string').join(' ');
+    return /no_beads_directory|no beads directory/i.test(text);
+}
+
+/** The no-project empty state of GET /api/backlog/tasks (noProject is the marker). */
+export function noProjectBacklogTasks() {
+    return {
+        tasks: [], total: 0, noProject: true,
+        filterOptions: { type: [], status: [], priority: [], model: [] },
+    };
+}
+
 export function createBacklog(deps = {}) {
     const ledger = deps.ledger;
     if (!ledger || typeof ledger.list !== 'function') {
@@ -872,6 +897,9 @@ export function createBacklog(deps = {}) {
     // `bd` call per render either way -- never two.
     const listAllBeads = deps.listAllBeads ?? bdListAllBeadsRaw;
     const watchdog = deps.watchdog ?? null;
+    // Whether the supervisor resolved a project database at all. False (or a
+    // bd no_beads_directory failure) yields the empty state, never a 500.
+    const hasProject = typeof deps.hasProject === 'function' ? deps.hasProject : () => true;
 
     /**
      * The active (non-finished) reservations whose scopes are subtracted from
@@ -942,7 +970,14 @@ export function createBacklog(deps = {}) {
 
     /** Build the Backlog forest (full tracker minus live-claimed subtrees). */
     async function buildTree() {
-        const rawBeads = await listAllBeads();
+        if (!hasProject()) return [];
+        let rawBeads;
+        try {
+            rawBeads = await listAllBeads();
+        } catch (err) {
+            if (isNoBeadsDirectoryError(err)) return [];
+            throw err;
+        }
         const claimedBy = await buildClaimedBy(rawBeads);
         const beads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
         return buildBacklogTree(beads, claimedBy);
@@ -969,7 +1004,14 @@ export function createBacklog(deps = {}) {
      * @returns {Promise<{ tasks: object[], total: number, filterOptions: object }>}
      */
     async function buildBacklogTasks(filters) {
-        const rawBeads = await listAllBeads();
+        if (!hasProject()) return noProjectBacklogTasks();
+        let rawBeads;
+        try {
+            rawBeads = await listAllBeads();
+        } catch (err) {
+            if (isNoBeadsDirectoryError(err)) return noProjectBacklogTasks();
+            throw err;
+        }
         const claimedBy = await buildClaimedBy(rawBeads);
         const rows = (Array.isArray(rawBeads) ? rawBeads : [])
             .filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
@@ -991,6 +1033,7 @@ export function createBacklog(deps = {}) {
         buildClaimedBy,
         buildTree,
         buildBacklogTasks,
+        hasProject,
         renderHtml,
     };
 }

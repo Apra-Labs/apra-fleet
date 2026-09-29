@@ -58,7 +58,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import {
-    resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME, PROJECT_DIR_SOURCE,
+    resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME, PROJECT_DIR_SOURCE, isProjectBeadsDir,
 } from './beads-identity.mjs';
 import { writeSupervisorConfig } from './project-config.mjs';
 
@@ -73,13 +73,7 @@ import { writeSupervisorConfig } from './project-config.mjs';
  * @returns {boolean}
  */
 function hasBeadsDbAt(dir, fsImpl) {
-    const candidate = path.join(dir, BEADS_DIR_NAME);
-    try {
-        return fsImpl.existsSync(candidate)
-            && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(candidate).isDirectory());
-    } catch {
-        return false;
-    }
+    return isProjectBeadsDir(path.join(dir, BEADS_DIR_NAME), fsImpl);
 }
 
 /**

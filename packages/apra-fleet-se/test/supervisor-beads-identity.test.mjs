@@ -40,7 +40,7 @@ const ROOT = path.resolve('/proj');
 
 describe('discoverBeadsDir', () => {
     test('finds .beads directly in cwd', () => {
-        const fs = fakeFs([ROOT, path.join(ROOT, BEADS_DIR_NAME)]);
+        const fs = fakeFs([ROOT, path.join(ROOT, BEADS_DIR_NAME), path.join(ROOT, BEADS_DIR_NAME, 'metadata.json')]);
         assert.deepEqual(discoverBeadsDir({ cwd: ROOT, fs }), {
             beadsDir: path.join(ROOT, '.beads'),
             repoRoot: ROOT,
@@ -49,7 +49,7 @@ describe('discoverBeadsDir', () => {
 
     test('walks up to an ancestor holding .beads and reports that ancestor as repoRoot', () => {
         const deep = path.join(ROOT, 'packages', 'x', 'src');
-        const fs = fakeFs([ROOT, path.join(ROOT, '.beads'), deep]);
+        const fs = fakeFs([ROOT, path.join(ROOT, '.beads'), path.join(ROOT, '.beads', 'metadata.json'), deep]);
         assert.deepEqual(discoverBeadsDir({ cwd: deep, fs }), {
             beadsDir: path.join(ROOT, '.beads'),
             repoRoot: ROOT,

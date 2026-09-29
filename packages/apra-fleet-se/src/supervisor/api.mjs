@@ -47,6 +47,7 @@ import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { isNoBeadsDirectoryError } from './backlog.mjs';
 import { SprintRunnerResolutionError } from './node-runner.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
@@ -496,7 +497,14 @@ export function createSprintController(deps = {}) {
 
     // -- GET /api/backlog -----------------------------------------------------
     async function backlog() {
-        const result = await getBacklog();
+        let result;
+        try {
+            result = await getBacklog();
+        } catch (err) {
+            // No project resolved is the empty state, not a server fault.
+            if (!isNoBeadsDirectoryError(err)) throw err;
+            result = { tree: [], noProject: true };
+        }
         const freshness = ledger.getScopeFreshness();
         return { ...result, scopeFreshness: freshness };
     }
