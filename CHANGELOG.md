@@ -2,7 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- Sprint launches reliably from the installed binary, and a failed launch is now visible
+## [Unreleased] -- Project-folder resolution and service restart fail loudly with their real cause
+
+Sprint goal: close the remaining acceptance gaps in the console's
+project-folder handling. A home-folder `.beads` holding only bd global state
+is no longer mistaken for a project (the folder walk-up and the Projects page
+now share one predicate, and the backlog degrades to a no-project response
+instead of an error), `restart` now verifies that the service really stopped
+and started and exits non-zero otherwise, missing `git`/`bd` is reported as a
+PATH problem rather than misleading remote-setup advice, a launch with an
+unusable working directory is refused or surfaces its spawn failure, and the
+route-guard test matches real import/call sites. See
+docs/features/supervisor-project-folder-resolution.md.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $4.1306.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0406 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 11 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+Carried forward: the informational regression pass failed (real-bd suite
+failures led by the golden-transcript cascade, a slow-lane recording drift,
+and a smoke test blocked by the permission layer); all already tracked as
+open carry-over items. A bd worktree `.beads` containing only a redirect file
+may be skipped by the new project predicate.
+
+## Previous -- Sprint launches reliably from the installed binary, and a failed launch is now visible
 
 Sprint goal: fix three console launch-path defects found by an acceptance
 run in a fresh installed-binary Windows Sandbox -- launching a sprint from
