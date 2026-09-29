@@ -292,6 +292,80 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
     });
 });
 
+// apra-fleet-i9ag.19.26: execBdSync()'s CONFIGURED non-shim fallback (the
+// branch reached when resolveConfiguredWindowsBd() returns null -- a
+// recorded bdPath that is NOT an npm .cmd shim, e.g. a native bd.exe, or a
+// .cmd whose content does not match the shim regex) sets
+// { shell: true } on win32, and Node's shell:true joins file+args with plain
+// UNQUOTED spaces before handing the result to cmd.exe -- so a recorded
+// bdPath containing a space (the common npm-global-install "Jane Doe"
+// home-directory case, same as execBdAsync's already-fixed defect,
+// apra-fleet-i9ag.19.7 follow-up) used to be word-split into multiple shell
+// tokens and fail to resolve. This block pins the fix (quoteShellFile()
+// applied on that one shell:true branch) and the new injectable `platform`
+// parameter (mirroring execBdAsync's shape) that makes it exercisable here
+// on any host.
+describe('apra-fleet-i9ag.19.26: execBdSync() configured non-shim fallback quotes a spaced bdPath on win32', () => {
+    test('AC1/AC2/AC3: a spaced configured bdPath is double-quoted for the { shell: true } invocation on injected win32', () => {
+        configureBdInvocation({ bdPath: 'C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\bd.exe' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'fake-output';
+        };
+        // resolveConfiguredWindowsBd returns null -> falls through to the
+        // non-shim fallback branch this bead is about.
+        const result = execBdSync(['--version'], {}, fakeExecFileSync, () => null, () => null, 'win32');
+        assert.equal(result, 'fake-output');
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0], {
+            cmd: '"C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\bd.exe"',
+            args: ['--version'],
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, shell: true },
+        }, 'the quoted file must be handed to a { shell: true } invocation, matching execBdAsync\'s already-fixed shape');
+    });
+
+    test('a configured bdPath with no whitespace is passed through unquoted on injected win32 (quoteShellFile is a no-op)', () => {
+        configureBdInvocation({ bdPath: 'C:\\opt\\bd.exe' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'ok';
+        };
+        execBdSync(['--version'], {}, fakeExecFileSync, () => null, () => null, 'win32');
+        assert.equal(calls[0].cmd, 'C:\\opt\\bd.exe');
+        assert.equal(calls[0].opts.shell, true);
+    });
+
+    test('AC4: the SAME spaced bdPath on injected POSIX is passed through UNQUOTED, shell-less (byte-for-byte unchanged -- quoting a shell-less argv-array file would corrupt it)', () => {
+        configureBdInvocation({ bdPath: '/Users/Jane Doe/.npm-global/bin/bd' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'fake-output';
+        };
+        const result = execBdSync(['--version'], {}, fakeExecFileSync, () => null, () => null, 'darwin');
+        assert.equal(result, 'fake-output');
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0], {
+            cmd: '/Users/Jane Doe/.npm-global/bin/bd',
+            args: ['--version'],
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, shell: false },
+        });
+    });
+
+    test('AC2: omitting the platform argument defaults to process.platform, same as every other execBdSync param', () => {
+        configureBdInvocation({ bdPath: '/opt/bd/bd' });
+        const calls = [];
+        const fakeExecFileSync = (cmd, args, opts) => {
+            calls.push({ cmd, args, opts });
+            return 'ok';
+        };
+        execBdSync(['--version'], {}, fakeExecFileSync, () => null, () => null);
+        assert.equal(calls[0].opts.shell, process.platform === 'win32');
+    });
+});
+
 // D1 fix (bead reopened after judge of PR #561): a configured bdPath is
 // typically an npm-installed '#!/usr/bin/env node' script, and under a
 // service's PATH (launchd, a Windows task) that PATH may contain no `node`

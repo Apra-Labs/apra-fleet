@@ -423,11 +423,23 @@ export function resolveConfiguredWindowsBdScript(bdPath, deps = {}) {
  *     directly (POSIX) / with `{ shell: true }` (the pre-fix Windows
  *     fallback, only reached if `bd.cmd` could not be resolved).
  *
+ * apra-fleet-i9ag.19.26: the CONFIGURED non-shim fallback's `{ shell: true }`
+ * win32 invocation quotes `configuredInvocation.bdPath` via `quoteShellFile()`
+ * before handing it to `execFileSyncImpl` -- the same fix `execBdAsync()`
+ * already carries (apra-fleet-i9ag.19.7 follow-up), closing the one branch
+ * that was still the odd one out: an unquoted spaced path (e.g. a recorded
+ * `C:\Users\Jane Doe\...\bd.exe`) is word-split by cmd.exe and fails to
+ * resolve. A no-op (never quoted) on every other branch/platform, since
+ * quoting only makes sense for the one sub-branch that actually goes through
+ * a shell -- see `quoteShellFile()`'s own doc comment for why the win32-shim
+ * branch and every POSIX branch here are shell-less and must never be quoted.
+ *
  * @param {string[]} args - argv passed to `bd` (e.g. ['dolt', 'remote', 'list', '--json'])
  * @param {import('node:child_process').ExecFileSyncOptions} [options] - forwarded as-is (cwd, encoding, stdio, ...).
  * @param {typeof nodeExecFileSync} [execFileSyncImpl] - injectable for tests (same signature as `node:child_process`'s `execFileSync`); defaults to the real one.
  * @param {typeof resolveWindowsBdScript} [resolveWindowsBd] - injectable for tests, so the win32-only resolution path is exercisable/deterministic on any host platform.
  * @param {typeof resolveConfiguredWindowsBdScript} [resolveConfiguredWindowsBd] - injectable for tests, same reason, for the CONFIGURED win32 shim-resolution path.
+ * @param {NodeJS.Platform} [platform] - injectable for tests, same shape as `execBdAsync`'s, so every win32-vs-POSIX branch here (shell selection, path quoting) is exercisable on any host platform.
  * @returns {Buffer|string}
  */
 export function execBdSync(
@@ -436,6 +448,7 @@ export function execBdSync(
     execFileSyncImpl = nodeExecFileSync,
     resolveWindowsBd = resolveWindowsBdScript,
     resolveConfiguredWindowsBd = resolveConfiguredWindowsBdScript,
+    platform = process.platform,
 ) {
     if (!Array.isArray(args)) {
         throw new TypeError('execBdSync requires args to be an array of strings');
@@ -455,7 +468,7 @@ export function execBdSync(
         // binary/symlink execs fine shell-less on POSIX; a non-shim file on
         // win32 still needs `{ shell: true }` to get past CreateProcess's
         // cannot-exec-a-shebang-script limitation).
-        const needsShellConfigured = (process.platform === 'win32');
+        const needsShellConfigured = (platform === 'win32');
         const execOptionsConfigured = { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShellConfigured };
         // D1 fix (apra-fleet-i9ag.19.7 amended AC A1): on POSIX, when a
         // nodePath is also configured, prepend its directory to the child's
@@ -465,7 +478,17 @@ export function execBdSync(
         if (!needsShellConfigured && configuredInvocation.nodePath) {
             execOptionsConfigured.env = withConfiguredNodeDirOnPath(options.env, configuredInvocation.nodePath);
         }
-        const outConfigured = execFileSyncImpl(configuredInvocation.bdPath, args, execOptionsConfigured);
+        // apra-fleet-i9ag.19.26: quote a spaced configured bdPath for the
+        // { shell: true } win32 invocation, same as execBdAsync() already
+        // does -- see quoteShellFile()'s doc comment. Only when this branch
+        // is actually going through a shell (needsShellConfigured); the
+        // POSIX argv-array invocation below is shell-less and must never be
+        // quoted (quoting a file execFileSync passes directly, with no shell
+        // to strip the quote characters back off, would corrupt the path).
+        const configuredBdFile = needsShellConfigured
+            ? quoteShellFile(configuredInvocation.bdPath, platform)
+            : configuredInvocation.bdPath;
+        const outConfigured = execFileSyncImpl(configuredBdFile, args, execOptionsConfigured);
         warnIfLargeBdOutput(args, outConfigured);
         return outConfigured;
     }
@@ -482,8 +505,11 @@ export function execBdSync(
     // path is only reached when `bd.cmd` could not be resolved above, and
     // still needs `{ shell: true }` to get past Windows' cannot-exec-a-
     // shebang-script limitation -- see the module doc's fallback note for
-    // why this one remaining path still carries the quoting risk.
-    const needsShell = (process.platform === 'win32');
+    // why this one remaining path still carries the quoting risk. The bare
+    // `'bd'` literal here never contains whitespace, so quoting it would
+    // always be a no-op -- deliberately not applied, to keep this documented
+    // byte-for-byte-unchanged case exactly that.
+    const needsShell = (platform === 'win32');
     const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShell });
     warnIfLargeBdOutput(args, out);
     return out;
@@ -517,8 +543,11 @@ function assertSafeArgs(args) {
 }
 
 /**
- * Quotes the `file` value `execBdAsync` hands to a `{ shell: true }`
- * invocation, when (and only when) it contains whitespace.
+ * Quotes the `file` value handed to a `{ shell: true }` invocation, when
+ * (and only when) it contains whitespace. Shared by `execBdAsync()` (always
+ * shell:true, every platform) and `execBdSync()`'s CONFIGURED non-shim
+ * fallback branch on win32 only (apra-fleet-i9ag.19.26) -- the one place in
+ * `execBdSync()` that goes through a shell at all.
  *
  * Node's `shell: true` does NOT quote `file`/args for you: on POSIX it joins
  * `file` and every arg with a single literal space and passes the result
@@ -529,8 +558,11 @@ function assertSafeArgs(args) {
  * `/Users/Jane Doe/...` on macOS or `C:\Users\Jane Doe\...` on Windows -- the
  * common npm-global-install case) is word-split into multiple shell tokens
  * and fails to resolve, even though the exact same path execs fine when
- * passed as an argv-array `file` without a shell (as `execBdSync`'s
- * configured path already does). `args` themselves never need this:
+ * passed as an argv-array `file` without a shell (as every OTHER branch in
+ * `execBdSync()`'s configured path does: the win32 npm-shim branch invokes
+ * the resolved `.js` script via the configured node binary, and the POSIX
+ * fallback invokes `bdPath` directly -- neither ever sees `shell: true`, so
+ * neither is ever quoted here). `args` themselves never need this:
  * `assertSafeArgs()` above already rejects any arg containing whitespace (or
  * any other shell metacharacter) before this function is ever reached, and
  * the unconfigured `'bd'` literal never contains whitespace either, so this
