@@ -1091,6 +1091,189 @@ describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix
 });
 
 // =============================================================================
+// apra-fleet-i9ag.19.31 -- dedicated, comprehensive coverage for the
+// node-first bd probe composition apra-fleet-i9ag.19.30 introduced
+// (withNodeFirstBdExec(), above). The i9ag.19.30 describe block just above
+// carries only the MINIMAL set that bead's own acceptance criteria required
+// directly; every bullet below is its own named case with its own
+// assertion, so this strategy is pinned by ASSERTIONS ON THE EXACT
+// FILE/ARGS/ENV the injected exec receives, never "it passed".
+//
+// Bullet 2 ("with no recorded nodePath, the bd probe is the direct probe it
+// is today") describes a state project-config.mjs's readToolchainBlock()
+// can never produce standalone: `nodePath` is required for `toolchain` to be
+// non-null AT ALL (see that function's own doc comment), so "recorded bd,
+// no recorded node" cannot occur independently of "nothing recorded at
+// all". The case below is that state's one reachable analog: a raw config
+// carrying `toolchain.bdPath` with no `toolchain.nodePath` degrades the
+// WHOLE toolchain to unconfigured, so neither probe -- composed or direct --
+// ever runs at all. That IS "today's" (and every day's) behavior for this
+// shape, and is exactly what a bug that tried to apply the node-first
+// composition unconditionally (bypassing the `!toolchain` early return)
+// would break.
+// =============================================================================
+describe('apra-fleet-i9ag.19.31: dedicated coverage for the recorded bd probe running through the recorded node', () => {
+    test('bullet 1: with a recorded node and a recorded bd, the bd probe exec receives the EXACT node-first invocation -- pinning the chosen strategy explicitly, not "it passed"', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec, calls } = fakeExecCapturing({
+            [nodePath]: `v${MIN_NODE_VERSION}`,
+            [bdPath]: 'bd version 1.2.3',
+        });
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.bdOk, true);
+        assert.equal(calls.length, 2);
+        const bdCall = calls.find((c) => c.file === bdPath);
+        assert.ok(bdCall, 'bd is invoked as itself, never as "<nodePath> <bdPath>"');
+        assert.deepEqual(bdCall.args, ['--version']);
+        assert.deepEqual(bdCall.options, {
+            shell: false,
+            timeout: TOOLCHAIN_PROBE_TIMEOUT_MS,
+            env: { ...process.env, PATH: `${path.posix.dirname(nodePath)}${path.delimiter}${process.env.PATH}` },
+        }, 'the bd probe exec receives EXACTLY probeVersion\'s own {shell,timeout} plus dirname(nodePath) prepended onto PATH -- nothing else');
+    });
+
+    test('bullet 2: a recorded bdPath with NO recorded nodePath degrades the WHOLE toolchain to unconfigured -- neither the composed nor the direct bd probe ever runs', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await fsp.mkdir(path.dirname(filePath), { recursive: true });
+        await fsp.writeFile(
+            filePath,
+            JSON.stringify({ projectDir: '/some/project', toolchain: { bdPath: '/opt/toolchain/bd' } }),
+            'utf-8',
+        );
+        const { exec, calls } = fakeExecCapturing({ '/opt/toolchain/bd': 'bd version 1.2.3' });
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.configured, false, 'nodePath is required for readToolchainBlock() to produce a toolchain object at all -- a bdPath alone is not enough');
+        assert.equal(result.nodeOk, null);
+        assert.equal(result.bdOk, null);
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.problems, []);
+        assert.match(result.reason, /nodePath/);
+        assert.equal(calls.length, 0, 'without a recorded nodePath there is no toolchain object for the bd branch to reference -- bd is never probed, composed or direct');
+    });
+
+    test('bullet 3: a recorded node that itself fails validation does not stop bd from being composed against that exact recorded (still unvalidated) node path', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/does/not/exist/node';
+        const bdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec, calls } = fakeExecCapturing({ [bdPath]: 'bd version 1.2.3' }); // nodePath absent -> node's own probe fails
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        // Node genuinely failed to validate -- confirmed here so the next
+        // assertions are meaningfully testing "bd is composed against a
+        // BAD/unvalidated node", not a good one.
+        assert.equal(result.nodeOk, false);
+        assert.equal(result.ok, false, '"ok" tracks node alone');
+        assert.match(result.problems.find((p) => p.includes('node')), /does not resolve to a usable Node\.js runtime/);
+
+        // bd is STILL probed through the composed exec, using dirname() of
+        // the exact recorded (failing) nodePath -- the composition never
+        // waits for, or substitutes a different path for, node's own
+        // validation outcome.
+        assert.equal(result.bdOk, true, 'bd is its own separate finding, unaffected by node\'s failure');
+        const bdCall = calls.find((c) => c.file === bdPath);
+        assert.ok(bdCall, 'bd was probed as itself');
+        assert.ok(bdCall.options.env, 'bd was composed through the node-first wrapper even though node failed validation');
+        assert.equal(
+            bdCall.options.env.PATH.split(path.delimiter)[0],
+            path.posix.dirname(nodePath),
+            'bd\'s composed PATH is prefixed with dirname() of the exact RECORDED node path, unvalidated -- never a different/fallback path',
+        );
+    });
+
+    test('bullet 4: the node probe\'s own invocation is unchanged whether bd\'s recorded node validates or fails -- never wrapped, never given an env key', async () => {
+        const dataDir = await mkTmp();
+        const filePathGood = supervisorConfigPath({ dataDir: await mkTmp() });
+        const goodNodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath: goodNodePath, bdPath }, { filePath: filePathGood });
+        const { exec: goodExec, calls: goodCalls } = fakeExecCapturing({
+            [goodNodePath]: `v${MIN_NODE_VERSION}`,
+            [bdPath]: 'bd version 1.2.3',
+        });
+        const goodResult = await validateRecordedToolchain({ filePath: filePathGood, exec: goodExec, platform: 'linux' });
+        assert.equal(goodResult.nodeOk, true);
+        const goodNodeCall = goodCalls.find((c) => c.file === goodNodePath);
+        assert.ok(goodNodeCall);
+        assert.equal('env' in goodNodeCall.options, false, 'node\'s own probe never carries an env key, whether or not bd is recorded alongside it');
+        assert.deepEqual(goodNodeCall.args, ['--version']);
+
+        const filePathBad = supervisorConfigPath({ dataDir: await mkTmp() });
+        const badNodePath = '/does/not/exist/node';
+        await writeSupervisorToolchain({ nodePath: badNodePath, bdPath }, { filePath: filePathBad });
+        const { exec: badExec, calls: badCalls } = fakeExecCapturing({ [bdPath]: 'bd version 1.2.3' });
+        const badResult = await validateRecordedToolchain({ filePath: filePathBad, exec: badExec, platform: 'linux' });
+        assert.equal(badResult.nodeOk, false);
+        const badNodeCall = badCalls.find((c) => c.file === badNodePath);
+        assert.ok(badNodeCall);
+        assert.equal('env' in badNodeCall.options, false, 'node\'s own probe is unchanged even when it itself fails -- the fix only ever touches bd\'s exec');
+        assert.deepEqual(badNodeCall.args, ['--version']);
+    });
+
+    test('bullet 5: bd stays its own separately-worded problem, "ok" still tracks node alone, and nodeOk/bdOk keep their documented values across a good-node/bad-bd and a bad-node/good-bd case', async () => {
+        const nodePath = '/opt/toolchain/node';
+
+        // Good node, broken bd: ok/nodeOk stay true; bdOk flips false with its
+        // own distinct entry.
+        const dataDir1 = await mkTmp();
+        const filePath1 = supervisorConfigPath({ dataDir: dataDir1 });
+        const brokenBdPath = '/opt/toolchain/broken-bd';
+        await writeSupervisorToolchain({ nodePath, bdPath: brokenBdPath }, { filePath: filePath1 });
+        const { exec: exec1 } = fakeExecCapturing({ [nodePath]: `v${MIN_NODE_VERSION}` });
+        const result1 = await validateRecordedToolchain({ filePath: filePath1, exec: exec1, platform: 'linux' });
+        assert.equal(result1.ok, true, '"ok" tracks node alone -- a broken bd probed through the node-first wrapper still never flips it');
+        assert.equal(result1.nodeOk, true);
+        assert.equal(result1.bdOk, false);
+        assert.equal(result1.problems.length, 1);
+        assert.match(result1.problems[0], /does not resolve to a usable bd/);
+        assert.doesNotMatch(result1.problems[0], /Node\.js/, 'bd\'s problem entry is never confusable with a node one');
+
+        // Bad node, good bd (composed through it anyway): ok/nodeOk false;
+        // bdOk stays true and is unaffected.
+        const dataDir2 = await mkTmp();
+        const filePath2 = supervisorConfigPath({ dataDir: dataDir2 });
+        const badNodePath = '/does/not/exist/node';
+        const goodBdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath: badNodePath, bdPath: goodBdPath }, { filePath: filePath2 });
+        const { exec: exec2 } = fakeExecCapturing({ [goodBdPath]: 'bd version 1.2.3' });
+        const result2 = await validateRecordedToolchain({ filePath: filePath2, exec: exec2, platform: 'linux' });
+        assert.equal(result2.ok, false);
+        assert.equal(result2.nodeOk, false);
+        assert.equal(result2.bdOk, true, 'bd stays its own, independently-tracked finding');
+        assert.equal(result2.problems.length, 1);
+        assert.match(result2.problems[0], /does not resolve to a usable Node\.js runtime/);
+        assert.doesNotMatch(result2.problems[0], /does not resolve to a usable bd/);
+    });
+
+    test('bullet 6: the report still carries exactly one operator fix line, matched via the module\'s exported TOOLCHAIN_FIX_LINE, for a recording composed through the node-first wrapper', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/broken-bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec } = fakeExecCapturing({ [nodePath]: `v${MIN_NODE_VERSION}` });
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.bdOk, false, 'sanity: this case does exercise the node-first composed wrapper (a broken recorded bd)');
+        assert.equal(result.fixLine, TOOLCHAIN_FIX_LINE, 'the report\'s fix line must be the module\'s own exported constant, never a copied string literal');
+        assert.equal(typeof result.fixLine, 'string');
+    });
+});
+
+// =============================================================================
 // apra-fleet-i9ag.19.35 -- the recorded node that IS this process's own
 // interpreter is never probed with a child process.
 //
