@@ -1283,7 +1283,7 @@ async function runSprintCycle(context) {
     // (apra-fleet-b4g.21). ONE store for the whole sprint, threaded into
     // kbWork below so every kb.mjs call site it makes is counted as a side
     // effect of the call actually happening.
-    const dispatchAccounting = context.dispatchAccounting ?? createDispatchAccounting({ log });
+    const dispatchAccounting = context.dispatchAccounting ?? createDispatchAccounting({ log, publishState });
 
     // The role output schemas are shared with apra-pm, so every role dispatched
     // below is now asked for kb_captures (and the reviewer for kb_promotions).

@@ -1,5 +1,7 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { computeSprintProgress } from './sprint-progress.mjs';
+import { PREFLIGHT_STATE_NAMESPACE } from './member-preflight.mjs';
+import { DISPATCH_ACCOUNTING_STATE_NAMESPACE } from './dispatch-accounting.mjs';
 
 /**
  * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
@@ -1067,6 +1069,295 @@ export const beadsExtension = {
         // detail.
         document.addEventListener('workflow:result', (e) => {
             renderResultExtras(e.detail);
+        });
+    `
+};
+
+/**
+ * apra-fleet-b4g.21: pure HTML-string builder for the Knowledge and Code
+ * Intelligence panel -- a DISTINCT extension tab, never a section grafted
+ * onto beadsExtension's 'Tasks' tab (which already holds the unrelated
+ * Sprint/Backlog containment tree). Takes the two ALREADY-COMPUTED shapes
+ * apra-fleet-b4g.29/.33 publish and never re-derives a count or an outcome
+ * itself (AC6):
+ *
+ *   `preflight` -- member-preflight.mjs's own published shape, `{ members }`
+ *   where each member is exactly `{member, repoPath, remoteUrl, mcpScope,
+ *   kbEntryCount, checks: {index, kb, code}, warnings}` (member-preflight.mjs
+ *   :541-548). No field is renamed here.
+ *
+ *   `dispatches` -- dispatch-accounting.mjs's `dispatchRecords()` snapshot,
+ *   `{ dispatches: [{role, member, kbCounts, captureOutcomes, code}] }`.
+ *
+ * Both inputs degrade to an empty section rather than throwing when absent,
+ * malformed, or shaped unexpectedly (AC8) -- this function is wrapped in its
+ * own try/catch as a final backstop so a defect here can never take the rest
+ * of the dashboard down with it, matching renderBeadsHtml's own guard.
+ *
+ * Every literal string this function can produce is baked in ahead of time
+ * (a fixed vocabulary of outcome labels, plus member/role/cause/remediation
+ * values run through escapeHtml) -- never a target-repo command, env var,
+ * port or tracker id, so it carries no generic-engine-boundary risk (AC9).
+ *
+ * Same embed rule as renderBeadsHtml/renderBeadsIdentityHtml above: string
+ * concatenation only (no template literals in the body -- this source text
+ * is later embedded verbatim into a plain, non-module browser `<script>` tag
+ * via `.toString()`, see kbCodeIntelExtension's `js` below), every untrusted
+ * value through escapeHtml, and every helper nested INSIDE this function so
+ * one `.toString()` embed captures everything.
+ *
+ * @param {{ members?: object[] }|null|undefined} preflight
+ * @param {{ dispatches?: object[] }|null|undefined} dispatches
+ * @returns {string}
+ */
+export function renderKbCodeIntelHtml(preflight, dispatches) {
+    try {
+        // AC7: three DISTINCT states a caller must never conflate --
+        // 'not-observable' (a5f/AC2's named marker), an explicit numeric 0,
+        // and '(unknown)' for a missing/malformed value. Centralized here so
+        // every cell below renders the same vocabulary the same way.
+        function renderCount(value) {
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                return String(value);
+            }
+            return '<span data-kb-panel-unknown="true" style="color: #71717a;">(unknown)</span>';
+        }
+
+        function renderMemberHeaderRow() {
+            return '<tr>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">member</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">index</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">knowledge</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">code</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">kb entries</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">scope</th>' +
+                '</tr>';
+        }
+
+        // AC2: the index check renders as launch-issued / launch-failed-with-
+        // reason / index-not-ready -- NEVER a commit and NEVER a completion
+        // claim. member-preflight.mjs's PREFLIGHT_OUTCOMES has no completion
+        // kind at all (the launch is detached and never awaited), so there is
+        // nothing here that could even be mistaken for one.
+        function renderIndexCell(check) {
+            if (!check || typeof check !== 'object' || typeof check.outcome !== 'string') {
+                return '<td style="padding: 2px 8px; font-size: 11px; color: #71717a;">(unknown)</td>';
+            }
+            if (check.outcome === 'analyze-started') {
+                return '<td style="padding: 2px 8px; font-size: 11px; color: #a1a1aa;" title="the launch was issued; the indexer is never awaited, so this is not a claim that indexing has finished">launch issued (indexing continues in background)</td>';
+            }
+            if (check.outcome === 'analyze-not-started') {
+                const cause = escapeHtml(String(check.cause || '(no cause reported)'));
+                return '<td style="padding: 2px 8px; font-size: 11px; color: #f59e0b;">launch failed: ' + cause + '</td>';
+            }
+            return '<td style="padding: 2px 8px; font-size: 11px; color: #a1a1aa;">' + escapeHtml(String(check.outcome)) + '</td>';
+        }
+
+        // kb/code checks share the same closed outcome vocabulary
+        // (ok/tool-unavailable/kb-empty/unscoped, plus index-not-ready for
+        // code only) -- rendered plainly, amber when it is a warning kind.
+        const WARNING_OUTCOMES = { 'analyze-not-started': true, 'tool-unavailable': true, 'kb-empty': true, unscoped: true };
+        function renderOutcomeCell(check) {
+            if (!check || typeof check !== 'object' || typeof check.outcome !== 'string') {
+                return '<td style="padding: 2px 8px; font-size: 11px; color: #71717a;">(unknown)</td>';
+            }
+            const color = WARNING_OUTCOMES[check.outcome] ? '#f59e0b' : '#a1a1aa';
+            return '<td style="padding: 2px 8px; font-size: 11px; color: ' + color + ';">' + escapeHtml(String(check.outcome)) + '</td>';
+        }
+
+        function renderScopeCell(rec) {
+            if (rec.mcpScope && typeof rec.mcpScope === 'object' && rec.mcpScope.scoped === false) {
+                return '<td style="padding: 2px 8px; font-size: 11px; color: #f59e0b;">unscoped' +
+                    (rec.mcpScope.reason ? ': ' + escapeHtml(String(rec.mcpScope.reason)) : '') + '</td>';
+            }
+            if (typeof rec.repoPath === 'string' && rec.repoPath.length > 0) {
+                const remote = (typeof rec.remoteUrl === 'string' && rec.remoteUrl.length > 0)
+                    ? ' (' + escapeHtml(rec.remoteUrl) + ')' : '';
+                return '<td style="padding: 2px 8px; font-size: 11px; font-family: monospace;">' + escapeHtml(rec.repoPath) + remote + '</td>';
+            }
+            return '<td style="padding: 2px 8px; font-size: 11px; color: #71717a;">(unknown)</td>';
+        }
+
+        function renderMemberRow(rec) {
+            if (!rec || typeof rec !== 'object') return '';
+            const checks = (rec.checks && typeof rec.checks === 'object') ? rec.checks : {};
+            const member = escapeHtml(String(rec.member || '(unknown member)'));
+            return '<tr>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + member + '</td>' +
+                renderIndexCell(checks.index) +
+                renderOutcomeCell(checks.kb) +
+                renderOutcomeCell(checks.code) +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + renderCount(rec.kbEntryCount) + '</td>' +
+                renderScopeCell(rec) +
+                '</tr>';
+        }
+
+        // AC5: every warning names the member, the cause AND the remediation
+        // -- never just a bare failure flag.
+        function renderWarningRow(w) {
+            if (!w || typeof w !== 'object') return '';
+            const member = escapeHtml(String(w.member || '(unknown member)'));
+            const cause = escapeHtml(String(w.cause || '(no cause reported)'));
+            const remediation = escapeHtml(String(w.remediation || '(no remediation available)'));
+            return '<div data-kb-panel-warning="true" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">' +
+                'WARNING member \'' + member + '\': ' + cause + '. Fix: ' + remediation + '</div>';
+        }
+
+        function renderDispatchHeaderRow() {
+            return '<tr>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">role</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">member</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">kb_* calls</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">captures kept</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">captures rejected</th>' +
+                '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">code_*</th>' +
+                '</tr>';
+        }
+
+        // AC1/AC7: sums whatever kb_* tool keys the record actually carries --
+        // never a hardcoded tool list here, so this stays correct even if
+        // dispatch-accounting.mjs's KB_ACCOUNTING_TOOLS set ever grows. A
+        // missing/malformed kbCounts is the explicit '(unknown)' state, never
+        // a fabricated 0.
+        function kbCallTotal(kbCounts) {
+            if (!kbCounts || typeof kbCounts !== 'object') return null;
+            let total = 0;
+            for (const key of Object.keys(kbCounts)) {
+                const n = kbCounts[key];
+                if (typeof n === 'number' && Number.isFinite(n)) total += n;
+            }
+            return total;
+        }
+
+        function renderDispatchRow(rec) {
+            if (!rec || typeof rec !== 'object') return '';
+            const role = escapeHtml(String(rec.role || '(unknown role)'));
+            const member = escapeHtml(String(rec.member || '(unknown member)'));
+            const total = kbCallTotal(rec.kbCounts);
+            // AC4: a role/member pair that genuinely made ZERO kb calls is
+            // highlighted distinctly from both a normal non-zero count and an
+            // '(unknown)' missing record.
+            const isZero = total === 0;
+            const totalCell = isZero
+                ? '<span data-kb-panel-zero-calls="true" style="color: #f59e0b; font-weight: 700;">0 -- ZERO KB CALLS</span>'
+                : renderCount(total);
+            const outcomes = Array.isArray(rec.captureOutcomes) ? rec.captureOutcomes : [];
+            const kept = outcomes.filter(function (c) { return c && c.outcome === 'kept'; }).length;
+            const rejected = outcomes.filter(function (c) { return c && c.outcome === 'rejected'; }).length;
+            // AC2/AC3/AC4: the not-observable marker is its OWN third state --
+            // rendered plainly, with the short plain-language reason, and
+            // deliberately never fed into the zero-call highlight above (a
+            // marker is not a claim that zero code_* calls were made).
+            let codeCell;
+            if (rec.code && typeof rec.code === 'object' && rec.code.status === 'not-observable') {
+                codeCell = '<span data-kb-panel-not-observable="true" style="color: #71717a;" ' +
+                    'title="per-dispatch code_* calls happen inside this member\'s own install and are not visible to the engine">not observable</span>';
+            } else if (rec.code && typeof rec.code === 'object' && typeof rec.code.status === 'string') {
+                codeCell = escapeHtml(rec.code.status);
+            } else {
+                codeCell = '(unknown)';
+            }
+            return '<tr>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + role + '</td>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + member + '</td>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + totalCell + '</td>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + kept + '</td>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + rejected + '</td>' +
+                '<td style="padding: 2px 8px; font-size: 11px;">' + codeCell + '</td>' +
+                '</tr>';
+        }
+
+        const members = (preflight && typeof preflight === 'object' && Array.isArray(preflight.members))
+            ? preflight.members : [];
+        const dispatchRecords = (dispatches && typeof dispatches === 'object' && Array.isArray(dispatches.dispatches))
+            ? dispatches.dispatches : [];
+
+        let html = '<div data-kb-code-intel="true">';
+
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 2px 8px;">Per-member init</div>';
+        if (members.length === 0) {
+            html += '<div style="font-size: 11px; color: #71717a; padding: 2px 8px;">(no preflight data yet)</div>';
+        } else {
+            html += '<table style="border-collapse: collapse;">' + renderMemberHeaderRow() +
+                members.map(renderMemberRow).join('') + '</table>';
+            let warningsHtml = '';
+            for (const rec of members) {
+                const warnings = (rec && Array.isArray(rec.warnings)) ? rec.warnings : [];
+                for (const w of warnings) warningsHtml += renderWarningRow(w);
+            }
+            if (warningsHtml) html += warningsHtml;
+        }
+
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per-dispatch KB activity</div>';
+        if (dispatchRecords.length === 0) {
+            html += '<div style="font-size: 11px; color: #71717a; padding: 2px 8px;">(no dispatches recorded yet)</div>';
+        } else {
+            html += '<table style="border-collapse: collapse;">' + renderDispatchHeaderRow() +
+                dispatchRecords.map(renderDispatchRow).join('') + '</table>';
+        }
+
+        html += '</div>';
+        return html;
+    } catch (err) {
+        // AC8: a malformed/absent record renders an empty-but-valid panel,
+        // never throws -- the same "that would take the whole panel down
+        // with it" guard renderBeadsPanel() already applies for the beads
+        // extension.
+        return '<div data-kb-code-intel="true" data-kb-code-intel-error="true" ' +
+            'style="font-size: 11px; color: #71717a; padding: 8px;">(Knowledge and Code Intelligence panel unavailable)</div>';
+    }
+}
+
+/**
+ * apra-fleet-b4g.21: the Knowledge and Code Intelligence extension tab. A
+ * SEPARATE `dashboardExtensions` entry (its own tab id/title/js -- see
+ * packages/apra-fleet-workflow/src/viewer/index.mjs's `${dashboardExtensions
+ * .map(ext => ...)}` wiring), never a section grafted into beadsExtension's
+ * 'Tasks' tab -- that is what keeps it "separate from Activities and
+ * Backlog, not a new section inside either" (AC1). "Activities" is core's
+ * own fixed 'Activity Tree' tab (HTML_TEMPLATE, never an extension); "Tasks"
+ * (title 'Tasks', containing the Sprint/Backlog tree) is beadsExtension
+ * above. This is registered alongside it in bin/cli.mjs's
+ * `dashboardExtensions` array.
+ *
+ * Subscribes to the two publishState namespaces apra-fleet-b4g.29/.33
+ * already produce -- member-preflight.mjs's PREFLIGHT_STATE_NAMESPACE and
+ * dispatch-accounting.mjs's DISPATCH_ACCOUNTING_STATE_NAMESPACE -- so this
+ * extension introduces no third, competing publisher (AC6).
+ */
+export const kbCodeIntelExtension = {
+    id: 'kb-code-intel',
+    title: 'Knowledge & Code Intel',
+    js: `
+        ${escapeHtml.toString()}
+        ${renderKbCodeIntelHtml.toString()}
+
+        let lastKbPreflight = null;
+        let lastKbDispatches = null;
+
+        function renderKbCodeIntelPanel() {
+            const container = document.getElementById('extension-kb-code-intel');
+            if (!container) return;
+            container.innerHTML = renderKbCodeIntelHtml(lastKbPreflight, lastKbDispatches);
+        }
+
+        // shell-command-guard.mjs scans line-by-line and cannot see that this
+        // whole js field is itself one outer template literal: a bare
+        // \${NAMESPACE} written immediately after the 'workflow:state:'
+        // quote-close would read, ON THIS LINE ALONE, as "\${...} surviving
+        // inside a '...' string" -- its exact member-bound-command violation
+        // shape -- even though it is real, safe JS interpolation here. The
+        // JSON.stringify(...) + string-concat form keeps the interpolation
+        // OUTSIDE any quote on its own line, so it reads as plain code to
+        // that per-line scanner instead of a false positive.
+        document.addEventListener('workflow:state:' + ${JSON.stringify(PREFLIGHT_STATE_NAMESPACE)}, (e) => {
+            lastKbPreflight = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        document.addEventListener('workflow:state:' + ${JSON.stringify(DISPATCH_ACCOUNTING_STATE_NAMESPACE)}, (e) => {
+            lastKbDispatches = e.detail || null;
+            renderKbCodeIntelPanel();
         });
     `
 };

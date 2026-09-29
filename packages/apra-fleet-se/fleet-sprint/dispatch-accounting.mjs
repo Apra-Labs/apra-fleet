@@ -64,11 +64,23 @@ export const KB_ACCOUNTING_TOOLS = Object.freeze(['kb_list', 'kb_query', 'kb_cap
 export const CODE_CALLS_NOT_OBSERVABLE = 'not-observable';
 
 /**
+ * apra-fleet-b4g.21: the publishState namespace this store's per-dispatch
+ * snapshot is broadcast under, so the sprint viewer's Knowledge and Code
+ * Intelligence panel (viewer-extensions.mjs's kbCodeIntelExtension) can
+ * subscribe to `workflow:state:${DISPATCH_ACCOUNTING_STATE_NAMESPACE}`
+ * client-side rather than re-deriving counts of its own. The per-member
+ * preflight half is already published separately under
+ * member-preflight.mjs's own PREFLIGHT_STATE_NAMESPACE -- this module does
+ * not republish it, so there stays exactly one publisher per record kind.
+ */
+export const DISPATCH_ACCOUNTING_STATE_NAMESPACE = 'kb-dispatch-accounting';
+
+/**
  * Builds this store's per-dispatch accounting plus the per-member preflight
  * readback, as ONE object so the panel and the acceptance lane share a
  * single source.
  *
- * @param {{ log?: Function }} [opts]
+ * @param {{ log?: Function, publishState?: Function }} [opts]
  * @returns {{
  *   forDispatch: (info: { role?: string, member?: string }) => object|null,
  *   recordKbCall: (record: object|null, toolName: string) => void,
@@ -80,7 +92,7 @@ export const CODE_CALLS_NOT_OBSERVABLE = 'not-observable';
  *   preflightCodeOutcomeFor: (member: string) => string|null,
  * }}
  */
-export function createDispatchAccounting({ log = () => {} } = {}) {
+export function createDispatchAccounting({ log = () => {}, publishState } = {}) {
     /** @type {Map<string, object>} "role|member" -> record */
     const recordsByKey = new Map();
     const keyOrder = [];
@@ -94,6 +106,26 @@ export function createDispatchAccounting({ log = () => {} } = {}) {
 
     function keyOf(role, member) {
         return `${role || '(unknown role)'}|${member || '(unknown member)'}`;
+    }
+
+    /**
+     * Best-effort broadcast of the current per-dispatch snapshot, so the
+     * viewer panel (a browser page, which cannot reach into this in-process
+     * object directly) sees the SAME data the acceptance lane reads via
+     * dispatchRecords() -- never a second, re-derived copy. A caller that
+     * wires no `publishState` (every existing construction site before
+     * apra-fleet-b4g.21, and any unit test) gets exactly the pre-existing
+     * behavior: this is a silent no-op.
+     */
+    function publish() {
+        if (typeof publishState !== 'function') return;
+        try {
+            publishState(DISPATCH_ACCOUNTING_STATE_NAMESPACE, {
+                dispatches: keyOrder.map((k) => recordsByKey.get(k)),
+            });
+        } catch (err) {
+            log(`[dispatch-accounting] could not publish the dispatch snapshot (non-fatal): ${err.message}`);
+        }
     }
 
     /**
@@ -121,6 +153,7 @@ export function createDispatchAccounting({ log = () => {} } = {}) {
                 };
                 recordsByKey.set(key, rec);
                 keyOrder.push(key);
+                publish();
             }
             return rec;
         } catch (err) {
@@ -135,6 +168,7 @@ export function createDispatchAccounting({ log = () => {} } = {}) {
             if (!record) return;
             if (!(toolName in record.kbCounts)) record.kbCounts[toolName] = 0;
             record.kbCounts[toolName] += 1;
+            publish();
         } catch (err) {
             log(`[dispatch-accounting] could not record a ${toolName} call (non-fatal): ${err.message}`);
         }
@@ -145,6 +179,7 @@ export function createDispatchAccounting({ log = () => {} } = {}) {
         try {
             if (!record) return;
             record.captureOutcomes.push({ title: title || null, outcome, cause, source });
+            publish();
         } catch (err) {
             log(`[dispatch-accounting] could not record a capture outcome (non-fatal): ${err.message}`);
         }
