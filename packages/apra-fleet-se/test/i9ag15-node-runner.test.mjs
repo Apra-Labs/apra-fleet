@@ -340,6 +340,57 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
         });
     });
 
+    // apra-fleet-i9ag.19.6 bullet 1: "configured beats current-runtime; configured
+    // beats PATH" -- AC1 above only proves the configured tier resolves when
+    // the LATER tiers are absent/unusable; these two prove actual PRECEDENCE
+    // by making current-runtime and PATH each independently resolvable too
+    // (via a spy exec), and asserting neither probe ever ran once a
+    // configured path was present. That is the whole point of tier ordering:
+    // a later tier that would ALSO succeed must never even be consulted.
+    test('apra-fleet-i9ag.19.6: configured beats current-runtime, even when current-runtime would also resolve', () => {
+        const { exec, calls } = fakeExecCapturing({
+            '/opt/toolchain/node': 'v22.16.0',
+            '/usr/bin/node-under-test': 'v22.16.0',
+        });
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/usr/bin/node-under-test',
+            isSea: () => false, // current-runtime tier WOULD resolve if reached
+            exec,
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+        assert.deepEqual(result, {
+            command: '/opt/toolchain/node',
+            source: SPRINT_RUNNER_SOURCE.CONFIGURED,
+            version: '22.16.0',
+        });
+        assert.equal(calls.length, 1, 'current-runtime must never be probed once a configured path resolves');
+        assert.equal(calls[0].file, '/opt/toolchain/node');
+    });
+
+    test('apra-fleet-i9ag.19.6: configured beats PATH, even when PATH would also resolve', () => {
+        const { exec, calls } = fakeExecCapturing({
+            '/opt/toolchain/node': 'v22.16.0',
+            node: 'v22.16.0', // the PATH tier WOULD resolve if reached
+        });
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true, // skips current-runtime, would otherwise fall through to PATH
+            exec,
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+        assert.deepEqual(result, {
+            command: '/opt/toolchain/node',
+            source: SPRINT_RUNNER_SOURCE.CONFIGURED,
+            version: '22.16.0',
+        });
+        assert.equal(calls.length, 1, 'the PATH probe must never run once a configured path resolves');
+        assert.equal(calls[0].file, '/opt/toolchain/node');
+    });
+
     test('AC2: a broken configured path throws naming it, and neither current-runtime nor the PATH probe is ever invoked', () => {
         // Both the current-runtime execPath and 'node' on PATH would resolve
         // successfully if tried -- proving the configured-tier failure is a

@@ -981,4 +981,53 @@ describe('createSpawner -- configured node path threading (apra-fleet-i9ag.19.5)
         assert.equal(calls[0].command, '/explicit/override/node');
         assert.equal(resolverCalls, 0, 'deps.command must bypass resolveRunner -- and therefore configuredNodePath -- entirely');
     });
+
+    // apra-fleet-i9ag.19.6 bullet: "spawner spawns with the configured command
+    // and logs source 'configured' exactly once across repeated launches" --
+    // AC6 above proves the ordering/threading with a single launch; this
+    // proves the resolveCommand() success-cache/one-time-log behaviour
+    // (already pinned for source 'path' at apra-fleet-i9ag.15.2, line ~872
+    // above) holds identically for the CONFIGURED tier: every repeated
+    // spawnSprint() call actually spawns with the configured command, but
+    // the resolver is consulted -- and its 'configured' source logged -- only
+    // the first time.
+    test('apra-fleet-i9ag.19.6: repeated launches all spawn with the configured command, but resolveRunner runs once and logs source \'configured\' exactly once', async () => {
+        let resolverCalls = 0;
+        const logs = [];
+        const { spawnFn, calls } = makeFakeSpawn([888, 889, 890]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            configuredNodePath: '/opt/toolchain/node',
+            resolveRunner: (arg) => {
+                resolverCalls += 1;
+                return { command: arg.configuredNodePath, source: 'configured', version: '22.16.0' };
+            },
+            basePort: 9300,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log: (...a) => logs.push(a.join(' ')), error() {} },
+        });
+
+        const results = await Promise.all([
+            spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' }),
+            spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' }),
+            spawner.spawnSprint({ issue: 'i3', members: 'm1', branch: 'b3', base: 'main' }),
+        ]);
+
+        for (const result of results) {
+            assert.equal(result.command, '/opt/toolchain/node');
+        }
+        for (const call of calls) {
+            assert.equal(call.command, '/opt/toolchain/node', 'every spawn() call must use the configured command');
+        }
+        assert.equal(resolverCalls, 1, 'resolveRunner must be consulted once, then cached, across repeated launches');
+        const resolutionLogs = logs.filter((l) => l.includes('resolved sprint runner'));
+        assert.equal(resolutionLogs.length, 1, 'the resolved command/source must be logged exactly once across repeated launches');
+        assert.ok(
+            resolutionLogs[0].includes('/opt/toolchain/node') && resolutionLogs[0].includes('configured'),
+            resolutionLogs[0],
+        );
+    });
 });
