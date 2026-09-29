@@ -4,6 +4,10 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+// Sprint Setup's detached code-index launch is recognised by the sentinel its
+// own one-liner prints. Imported from production rather than re-spelled here so
+// the refusal in runCmd() below cannot drift away from the command it guards.
+import { INDEX_LAUNCH_SENTINEL } from '../../fleet-sprint/member-preflight.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -684,6 +688,23 @@ function replayBd(cmd, cwd) {
 // ---------------------------------------------------------------------------
 
 export function runCmd(cmd, cwd) {
+    // Sprint Setup's DETACHED code-index launch must NEVER really run under
+    // test, and this is the one seam that can guarantee it: every harness in
+    // this package (the mock-sprint harness, both golden-transcript suites, the
+    // live-budget suite) executes member commands through runCmd(). Run for
+    // real it would spawn a background indexer per member per scenario that
+    // OUTLIVES the test process -- it is detached and unref'd by design -- so a
+    // suite would strand real work on the machine, and a nested-sandbox
+    // teardown would race that grandchild's writes (observed as an
+    // intermittent ENOTEMPTY when the sandbox was removed). The launch is
+    // fire-and-forget by contract: the engine only ever observes whether the
+    // LAUNCH was ISSUED, never the indexing run, so answering with the
+    // command's own success output exercises the real production code path
+    // without starting anything. Deliberately NOT per-harness: a new test
+    // double that falls through to a real exec inherits the refusal.
+    if (cmd.includes(INDEX_LAUNCH_SENTINEL)) {
+        return Promise.resolve({ err: null, stdout: `${INDEX_LAUNCH_SENTINEL}:0`, stderr: '' });
+    }
     if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     const mode = bdMode();
     if (mode === 'real') {
