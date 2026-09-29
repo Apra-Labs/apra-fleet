@@ -960,6 +960,67 @@ describe('createSpawner -- configured node path threading (apra-fleet-i9ag.19.5)
         assert.equal(calls[0].command, '/opt/toolchain/node', 'spawnSprint must actually spawn with the resolved configured command');
     });
 
+    // apra-fleet-i9ag.19.35 -- createSpawner() also threads
+    // deps.configuredNodeVersion (the version bin/serve.mjs's startup
+    // validateRecordedToolchain() ACCEPTED for that exact recorded path, in
+    // this same process) so the real resolver's CONFIGURED tier can consume it
+    // INSTEAD of re-probing the same binary at every launch -- the fix for a
+    // supervisor that logged a healthy toolchain at boot and still 503'd the
+    // next launch over that node (see node-runner.mjs's "STARTUP AND LAUNCH
+    // MUST AGREE" header). The second case pins the shape guarantee that keeps
+    // every pre-existing injected resolver's argument identical.
+    test('apra-fleet-i9ag.19.35: configuredNodeVersion is threaded into resolveRunner() alongside the path', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([779]);
+        const fakeFs = makeFakeFs();
+        let receivedArg;
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            configuredNodePath: '/opt/toolchain/node',
+            configuredNodeVersion: '22.23.2',
+            resolveRunner: (arg) => {
+                receivedArg = arg;
+                return { command: arg.configuredNodePath, source: 'configured', version: arg.configuredNodeVersion };
+            },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        const result = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.deepEqual(receivedArg, { configuredNodePath: '/opt/toolchain/node', configuredNodeVersion: '22.23.2' });
+        assert.equal(result.command, '/opt/toolchain/node');
+        assert.equal(calls[0].command, '/opt/toolchain/node');
+    });
+
+    test('apra-fleet-i9ag.19.35: with no configuredNodeVersion the key is OMITTED from resolveRunner\'s argument, never passed as undefined', async () => {
+        const { spawnFn } = makeFakeSpawn([780]);
+        const fakeFs = makeFakeFs();
+        let receivedArg;
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            configuredNodePath: '/opt/toolchain/node',
+            resolveRunner: (arg) => {
+                receivedArg = arg;
+                return { command: arg.configuredNodePath, source: 'configured', version: '22.16.0' };
+            },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.deepEqual(
+            Object.keys(receivedArg), ['configuredNodePath'],
+            'an absent accepted version must not appear as an own property at all -- the resolver treats a present-but-unparseable value by falling through to a probe, and no caller should have to distinguish the two',
+        );
+    });
+
     test('an injected deps.command still wins unconditionally over configuredNodePath -- resolveRunner (and configuredNodePath) is never consulted', async () => {
         let resolverCalls = 0;
         const { spawnFn, calls } = makeFakeSpawn([778]);

@@ -528,6 +528,18 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchai
         // this test file's ONLY case that lets validateRecordedToolchain()
         // fall through to its own real defaultExec()/process.platform
         // instead of an injected fake.
+        //
+        // apra-fleet-i9ag.19.35: this case used to FAIL on a loaded host (a
+        // real `node --version` child that could not finish inside
+        // TOOLCHAIN_PROBE_TIMEOUT_MS on either attempt -- 30s, nodeOk:false).
+        // It no longer spawns anything for node at all: the recorded path IS
+        // this process's own interpreter, so the module reads
+        // process.versions.node directly (knownSelfNodeVersion(),
+        // node-version.mjs) -- which is why the version assertion below is an
+        // exact equality and can no longer be starved by host contention. The
+        // dedicated coverage for that shortcut (including the control proving
+        // any OTHER path still probes) is in the last describe block of this
+        // file.
         await writeSupervisorToolchain({ nodePath: process.execPath }, { filePath });
 
         const result = await validateRecordedToolchain({ filePath });
@@ -1075,5 +1087,99 @@ describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix
         const bdCall = calls.find((c) => c.file === bdPath);
         assert.ok(bdCall, 'the bd probe was still invoked with the unmodified bdPath as file');
         assert.ok(bdCall.options.env, 'the bd probe was composed through the node-first wrapper (env present) -- proves this exercises the FIXED code path, not the pre-fix direct probe');
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.19.35 -- the recorded node that IS this process's own
+// interpreter is never probed with a child process.
+//
+// A `--version` spawn can only fail for reasons that say nothing about the
+// recording (host load, fd/process exhaustion, a timeout); executing ON a
+// binary is strictly stronger evidence that it is a usable Node.js runtime of
+// that version than asking it. So when `nodePath` is literally
+// `process.execPath` and this process is not a SEA build,
+// validateRecordedToolchain() takes `process.versions.node` and spawns
+// nothing -- removing the single most load-sensitive step of supervisor
+// startup, and with it the "healthy at boot, 503 at launch" disagreement this
+// bead was filed for (see toolchain.mjs's and node-runner.mjs's headers).
+//
+// Every case below proves it the only way that counts: with an injected exec
+// that would FAIL the probe outright, so a result of nodeOk:true can only mean
+// the probe never ran.
+// =============================================================================
+describe('apra-fleet-i9ag.19.35: the recorded node that is this process\'s own interpreter is never probed', () => {
+    /** An exec that fails every probe of `file` with a timeout-shaped error
+     * (Node's own kill shape: `killed: true`), and records every call. Any
+     * result of nodeOk:true under this exec proves node was never probed. */
+    function poisonedExec(bdVersion = 'bd version 1.2.3') {
+        const calls = [];
+        const exec = (file, args, options) => {
+            calls.push({ file, args, options });
+            if (bdVersion !== null && file.includes('bd')) return Promise.resolve(bdVersion);
+            const err = new Error(`spawn ${file} ETIMEDOUT`);
+            err.killed = true;
+            err.signal = 'SIGTERM';
+            return Promise.reject(err);
+        };
+        return { exec, calls };
+    }
+
+    test('nodePath === process.execPath: nodeOk true with process.versions.node, and the injected exec is NEVER called for node', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: process.execPath }, { filePath });
+        const { exec, calls } = poisonedExec();
+
+        const result = await validateRecordedToolchain({ filePath, exec, isSea: () => false });
+
+        assert.equal(result.nodeOk, true, 'an exec that times out every probe cannot produce nodeOk:true unless node was never probed');
+        assert.equal(result.nodeVersion, process.versions.node);
+        assert.equal(result.ok, true);
+        assert.deepEqual(
+            calls.filter((c) => c.file === process.execPath), [],
+            'the recorded node is the binary this process is running on -- nothing may be spawned to ask it its version',
+        );
+        assert.doesNotMatch(result.problems.join(' '), PROBE_TIMEOUT_WORDING_RE, 'no probe ran, so no probe can have been incomplete');
+    });
+
+    test('CONTROL: any OTHER recorded path is still probed exactly as before -- the shortcut is not a blanket skip', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node' }, { filePath });
+        const { exec, calls } = poisonedExec();
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux', isSea: () => false });
+
+        assert.equal(result.nodeOk, false);
+        assert.equal(calls.filter((c) => c.file === '/opt/toolchain/node').length, 2, 'a path that is NOT this process\'s own interpreter is probed, and retried once');
+        assert.match(result.problems[0], PROBE_TIMEOUT_WORDING_RE);
+    });
+
+    test('CONTROL: under a SEA build (isSea true) process.execPath is the apra-fleet binary, not node -- so the shortcut is off and the probe runs', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: process.execPath }, { filePath });
+        const { exec, calls } = poisonedExec();
+
+        const result = await validateRecordedToolchain({ filePath, exec, isSea: () => true });
+
+        assert.equal(result.nodeOk, false, 'nothing may be concluded from execPath matching when execPath is not a node runtime');
+        assert.equal(calls.filter((c) => c.file === process.execPath).length, 2, 'the probe must run (and retry) exactly as it does for any other path');
+    });
+
+    test('the shortcut only ever covers node: a recorded bd is still probed normally alongside it', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const bdPath = path.join(await mkTmp(), 'bd');
+        await writeSupervisorToolchain({ nodePath: process.execPath, bdPath }, { filePath });
+        const { exec, calls } = poisonedExec();
+
+        const result = await validateRecordedToolchain({ filePath, exec, isSea: () => false });
+
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.bdOk, true);
+        assert.equal(result.bdVersion, '1.2.3');
+        assert.deepEqual(calls.map((c) => c.file), [bdPath], 'exactly one probe ran, and it was bd\'s');
     });
 });

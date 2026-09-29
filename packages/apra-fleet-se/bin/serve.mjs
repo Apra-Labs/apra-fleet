@@ -558,6 +558,20 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // node than the one the operator recorded. bd can fall back silently
         // because its fallback still works; node's cannot.
         configuredNodePath: toolchain.nodePath ?? undefined,
+        // apra-fleet-i9ag.19.35: the version the validation ABOVE accepted for
+        // that exact path, in this process -- passed ONLY when `nodeOk` was
+        // true, i.e. only when this supervisor has already seen that binary
+        // answer. node-runner.mjs's CONFIGURED tier consumes it instead of
+        // re-probing per launch, which is what makes it impossible for a
+        // launch to be 503'd over a node the startup line above just reported
+        // as healthy (see that module's "STARTUP AND LAUNCH MUST AGREE"
+        // header). Deliberately the exact opposite condition from
+        // `configuredNodePath` right above: the PATH is passed regardless of
+        // validation (an unusable recording must surface as a loud, path-naming
+        // 503, never a silent PATH fall-through), while the VERSION is an
+        // assertion that validation PASSED and must never be fabricated for a
+        // recording that did not.
+        configuredNodeVersion: toolchain.nodeOk ? (toolchain.nodeVersion ?? undefined) : undefined,
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {

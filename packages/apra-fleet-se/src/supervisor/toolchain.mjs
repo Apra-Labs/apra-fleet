@@ -147,13 +147,23 @@
 //       errno under load could survive THIS module's retry at startup (a
 //       healthy "[supervisor] toolchain: ..." line) and still fail
 //       node-runner's bare attempt moments later, hard-refusing (503) a
-//       launch over a node the supervisor had just reported as fine. Fixed
-//       by giving node-runner.mjs's CONFIGURED tier the identical
-//       `{ retry: true }` policy and `formatIncompleteProbeProblem()`
-//       wording this module already uses (see node-version.mjs's file-level
-//       doc comment) -- ONE retry/classification strategy in the codebase,
-//       not two, and a probe that could not complete now reads as
-//       distinguishable from "does not resolve" everywhere it can occur.
+//       launch over a node the supervisor had just reported as fine.
+//       CHOSEN STRATEGY, stated in full in node-runner.mjs's own header
+//       ("STARTUP AND LAUNCH MUST AGREE") and in node-version.mjs's:
+//       BOTH options -- (a) the launch path now CONSUMES this module's
+//       accepted result for the recorded node (`nodeOk`/`nodeVersion`,
+//       threaded bin/serve.mjs -> spawner.mjs -> that tier's
+//       `configuredNodeVersion`) and re-probes nothing startup accepted, so a
+//       launch can never be refused for a node this module passed in the same
+//       process; and (b) the re-probe that remains, for a path this module
+//       did NOT accept, carries the identical `{ retry: true }` policy and
+//       `formatIncompleteProbeProblem()` wording this module uses -- ONE
+//       retry/classification strategy in the codebase, not two, and a probe
+//       that could not complete reads as distinguishable from "does not
+//       resolve" everywhere it can occur.
+//       This module's own half of (a): when the recorded node IS this
+//       process's interpreter, it is not probed at all -- see the
+//       `knownSelfNodeVersion()` call in `validateRecordedToolchain()`.
 //   (2) TOOLCHAIN_PROBE_TIMEOUT_MS ITSELF: reviewed, deliberately left
 //       UNSCALED (still a flat 15s), unlike test/helpers/scaled-timeout.mjs's
 //       APRA_FLEET_TEST_CONCURRENCY-driven budgets for this suite's OWN
@@ -183,7 +193,13 @@ import path from 'node:path';
 
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
-import { compareVersions, probeVersion, formatIncompleteProbeProblem } from './node-version.mjs';
+import {
+    compareVersions,
+    probeVersion,
+    formatIncompleteProbeProblem,
+    knownSelfNodeVersion,
+    defaultIsSea,
+} from './node-version.mjs';
 import { prependToPathEnv } from './lib/child-path-env.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -347,6 +363,7 @@ function withNodeFirstBdExec(exec, nodePath, platform) {
  *   fs?: { readFile: Function },
  *   exec?: (file: string, args: string[], options?: object) => string|Buffer,
  *   platform?: NodeJS.Platform,
+ *   isSea?: () => boolean,
  * }} [deps]
  * @returns {Promise<{
  *   configured: boolean,
@@ -366,6 +383,7 @@ function withNodeFirstBdExec(exec, nodePath, platform) {
 export async function validateRecordedToolchain(deps = {}) {
     const exec = deps.exec ?? defaultExec;
     const platform = deps.platform ?? process.platform;
+    const isSea = deps.isSea ?? defaultIsSea;
 
     const config = await readSupervisorConfig({
         dataDir: deps.dataDir,
@@ -423,7 +441,25 @@ export async function validateRecordedToolchain(deps = {}) {
     // throw ProbeVersionAsyncContractError the instant either probe's exec
     // resolved, since node-runner.mjs's sync-only contract is the default.
     const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true, async: true };
-    const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version'], probeOptions);
+    // apra-fleet-i9ag.19.35: when the RECORDED node is literally the binary
+    // this supervisor process is running on -- the common `node bin/serve.mjs`
+    // / recorded-my-own-interpreter shape -- its version is already known with
+    // certainty (`process.versions.node`) and no `--version` child process is
+    // spawned at all. Executing on a binary is strictly stronger evidence that
+    // it is a usable runtime of that version than any probe could be, and the
+    // probe can only ADD failure modes that say nothing about the recording
+    // (host load, fd/process exhaustion, a timeout) -- exactly the conflation
+    // this bead exists to remove, and the one that made this module's own
+    // real-exec path flaky under a loaded, concurrent test run. Falls back to
+    // the real probe for every other path, and for a SEA build (where
+    // `process.execPath` is the apra-fleet binary, not node) -- see
+    // `knownSelfNodeVersion()` in ./node-version.mjs. Resolved into the same
+    // `{ version, incomplete }` shape the probe returns so everything below is
+    // untouched.
+    const selfNodeVersion = knownSelfNodeVersion(nodePath, { isSea });
+    const nodeProbePromise = selfNodeVersion !== null
+        ? Promise.resolve({ version: selfNodeVersion, incomplete: null })
+        : probeVersion(exec, platform, nodePath, ['--version'], probeOptions);
     // apra-fleet-i9ag.19.30: probe bd THROUGH the recorded node (see
     // withNodeFirstBdExec()'s doc comment) so a node-less service PATH
     // cannot fake a broken bd. `nodePath` is guaranteed present here --

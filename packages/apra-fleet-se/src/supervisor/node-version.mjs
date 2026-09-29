@@ -124,10 +124,19 @@
 // closes (a sync caller handed a thenable exec with no async opt-in).
 //
 // Everything here is a pure function of its arguments -- no filesystem, no
-// real `child_process` import -- matching both original copies' contract.
+// real `child_process` import -- matching both original copies' contract. The
+// two apra-fleet-i9ag.19.35 additions at the bottom (`defaultIsSea()`,
+// `knownSelfNodeVersion()`) are the one documented exception: they read this
+// PROCESS's own identity (`process.execPath`, `process.versions.node`,
+// `node:sea`), which is exactly the fact they exist to report, and still
+// spawn nothing and touch no filesystem.
 // NOTHING in this file imports from outside packages/apra-fleet-se, matching
 // node-runner.mjs's and toolchain.mjs's own standalone-package contract.
 // =============================================================================
+
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Parses a version string (with or without a leading 'v', tolerant of
@@ -260,6 +269,100 @@ export function formatIncompleteProbeProblem(label, recordedPath, incomplete, ti
         : `a transient spawn error (${incomplete}) persisted even on a retry`;
     return `Recorded ${label} path ${JSON.stringify(recordedPath)} could not be probed within `
         + `${timeoutMs / 1_000}s (${cause}).`;
+}
+
+// =============================================================================
+// apra-fleet-i9ag.19.35 -- "never spawn a probe whose answer this process
+// already knows", and the ONE agreement strategy the two callers share.
+// =============================================================================
+//
+// CHOSEN STRATEGY (stated here because both callers below import it from this
+// module; see each caller's own header for its half): BOTH of the options the
+// bead offered, because each closes a hole the other cannot.
+//   (1) node-runner.mjs's launch-time CONFIGURED tier CONSUMES the startup
+//       validation result for the recorded node (`deps.configuredNodeVersion`)
+//       instead of re-probing it per launch. A bounded retry alone can still
+//       lose twice in a row on a loaded host, and any re-probe at all leaves a
+//       launch refusable for a node `validateRecordedToolchain()` ALREADY
+//       accepted in this same process -- which is the exact outage this bead
+//       exists to remove. Consuming the accepted result makes that
+//       structurally impossible rather than merely unlikely.
+//   (2) When there is no accepted result to consume (nothing validated this
+//       path in this process), that tier still carries the SAME bounded retry
+//       plus transient-vs-genuine classification the startup check has, so the
+//       two can never disagree on the same input, and a probe that could not
+//       COMPLETE is still worded distinguishably from a genuinely broken
+//       recording (`formatIncompleteProbeProblem()` above, never "does not
+//       resolve to a usable Node.js runtime").
+// `knownSelfNodeVersion()` below is the third, cheapest leg of the same idea:
+// when the candidate path IS the binary this very process is running on, its
+// version is already known with certainty (`process.versions.node`) and
+// spawning a child to ask is strictly weaker evidence than simply executing.
+// Removing that spawn removes a 15s-bounded, timeout-capable child process
+// from supervisor startup and from the launch path on every host where the
+// recorded/current node is the interpreter in hand -- the single biggest
+// source of the "probe could not complete under load" failures this bead was
+// filed for. This is deliberately NOT a timeout that scales with host load
+// (see toolchain.mjs's header for why that budget stays a flat, honest SLA):
+// it is a probe that no longer needs to happen at all.
+
+/**
+ * Whether this process is a single-executable application (node:sea) rather
+ * than a real Node.js runtime. The default for every `isSea` dependency in
+ * this package -- owned here (apra-fleet-i9ag.19.35) rather than hand-copied
+ * per module, since `knownSelfNodeVersion()` below and node-runner.mjs's
+ * tier 3 both need exactly this check: under a SEA binary,
+ * `process.execPath` is the apra-fleet executable, NOT node, so nothing may
+ * be concluded about a node candidate from it.
+ * @returns {boolean}
+ */
+export function defaultIsSea() {
+    try {
+        const sea = require('node:sea');
+        return typeof sea.isSea === 'function' && sea.isSea();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The Node.js version of `candidatePath` when -- and ONLY when -- that path
+ * is the interpreter THIS process is itself running on, in which case it is
+ * known with certainty and needs no `--version` child process at all.
+ * Returns `null` for every other input, so a caller falls through to its
+ * normal probe unchanged.
+ *
+ * WHAT MAKES THIS SOUND: a process executing on a binary is strictly
+ * stronger evidence that the binary is a usable Node.js runtime of that
+ * version than any `--version` spawn could be -- the spawn can only fail for
+ * reasons that have nothing to do with the recording (host load, fd/process
+ * exhaustion, a timeout), which is exactly the conflation
+ * apra-fleet-i9ag.19.35 exists to eliminate.
+ *
+ * COMPARISON IS DELIBERATELY AGAINST THE REAL `process.execPath`, never a
+ * caller-injected one: the question is literally "are we already running
+ * this binary?", which an injected fake execPath cannot make true. A caller
+ * with an injected execPath (every test in this package) therefore keeps
+ * probing exactly as before; only the genuine self case short-circuits. It
+ * is also a plain string comparison, never a realpath/stat: a path that
+ * merely resolves to the same inode is NOT the provable case, and this helper
+ * only ever claims the provable one.
+ *
+ * `isSea` is injectable because under a single-executable build
+ * `process.execPath` is the apra-fleet binary rather than node, so no
+ * conclusion may be drawn from a match at all.
+ *
+ * @param {string|null|undefined} candidatePath
+ * @param {{ isSea?: () => boolean }} [deps]
+ * @returns {string|null} the normalized major.minor.patch version, or null
+ *   when `candidatePath` is not this process's own interpreter.
+ */
+export function knownSelfNodeVersion(candidatePath, deps = {}) {
+    const isSea = deps.isSea ?? defaultIsSea;
+    if (typeof candidatePath !== 'string' || candidatePath.trim().length === 0) return null;
+    if (candidatePath.trim() !== process.execPath) return null;
+    if (isSea()) return null;
+    return parseVersionString(process.versions.node);
 }
 
 /**

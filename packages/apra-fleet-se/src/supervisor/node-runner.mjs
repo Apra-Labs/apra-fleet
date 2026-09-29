@@ -35,14 +35,12 @@
 //      a skipped check is indistinguishable from a passed one, and this tier
 //      MUST beat current-runtime and PATH so a service with no usable PATH
 //      never silently falls through to a PATH lookup that cannot succeed.
-//      apra-fleet-i9ag.19.35: this tier's probe opts into `{ retry: true }`
-//      (one bounded retry on a timeout/transient spawn errno, exactly
-//      toolchain.mjs's own policy for the SAME recorded path at startup) --
-//      before this, a probe that merely could not COMPLETE under host load
-//      collapsed straight into "does not resolve to a usable Node.js
-//      runtime", the wording reserved for a genuinely broken recording, and
-//      did so on a single attempt where startup validation had already
-//      survived the identical transient failure on its retry. A probe that
+//      apra-fleet-i9ag.19.35 (see "STARTUP AND LAUNCH MUST AGREE" below):
+//      this tier CONSUMES `configuredNodeVersion` -- the version startup
+//      validation already ACCEPTED for this exact path in this process -- and
+//      does not probe at all when it has one; when it has none it probes with
+//      `{ retry: true }`, the same bounded retry and transient-vs-genuine
+//      classification toolchain.mjs uses for the same path. A probe that
 //      times out even on the retry is still a HARD ERROR (same severity as
 //      today), just worded distinguishably (`formatIncompleteProbeProblem()`,
 //      ./node-version.mjs) so an operator is never told a node that merely
@@ -50,7 +48,37 @@
 //   3. The current process's own execPath -- but ONLY when this process is a
 //      real Node.js runtime, i.e. NOT a single-executable app (node:sea's
 //      isSea() === false). This preserves today's behaviour for a plain
-//      `node bin/serve.mjs` supervisor.
+//      `node bin/serve.mjs` supervisor. apra-fleet-i9ag.19.35: when that
+//      execPath is genuinely THIS process's own interpreter, its version is
+//      taken from `process.versions.node` (`knownSelfNodeVersion()`,
+//      ./node-version.mjs) instead of spawning a `--version` child to ask a
+//      binary we are already executing.
+//
+// STARTUP AND LAUNCH MUST AGREE (apra-fleet-i9ag.19.35) -- the defect and the
+// ONE strategy chosen for it, recorded here and not only in a commit message:
+// toolchain.mjs's `validateRecordedToolchain()` probes the recorded node at
+// supervisor startup (with a bounded retry) and this resolver probed the very
+// SAME path again at every launch (originally with none). Two independent
+// probes of one binary, two policies, and the launch-side one collapsed ANY
+// failure -- including a probe that merely could not COMPLETE under host load
+// -- into "does not resolve to a usable Node.js runtime" and hard-refused the
+// launch (503). So an installed supervisor could log a healthy toolchain at
+// boot and still refuse every sprint on a loaded machine.
+// CHOSEN: BOTH options the bead offered, because each closes a hole the other
+// cannot, and neither is "scale the timeout" (see toolchain.mjs's header for
+// why that budget stays a flat, honest SLA):
+//   (a) CONSUME the startup validation result for the recorded node
+//       (`deps.configuredNodeVersion`, threaded bin/serve.mjs ->
+//       spawner.mjs -> here) so the launch path re-probes NOTHING that
+//       startup already accepted. A retry alone can still lose twice in a
+//       row; consuming the accepted result makes a refusal for an accepted
+//       node structurally impossible rather than merely less likely.
+//   (b) KEEP a re-probe for the case where there is no accepted result to
+//       consume (a standalone/injected caller, or a recording startup
+//       validation did NOT accept), and give it the identical bounded-retry
+//       plus transient-vs-genuine classification, so the two probes can never
+//       disagree on the same input and an incomplete probe is never worded as
+//       a genuinely broken recording.
 //   4. `node` resolved from PATH, gated at >= MIN_NODE_VERSION.
 //   Otherwise: throw a SprintRunnerResolutionError naming every candidate
 //   tried, the resolved-but-too-old version when that is the reason, and the
@@ -69,11 +97,15 @@
 // =============================================================================
 
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 
-import { probeVersion as sharedProbeVersion, compareVersions, formatIncompleteProbeProblem } from './node-version.mjs';
-
-const require = createRequire(import.meta.url);
+import {
+    probeVersion as sharedProbeVersion,
+    compareVersions,
+    formatIncompleteProbeProblem,
+    parseVersionString,
+    knownSelfNodeVersion,
+    defaultIsSea,
+} from './node-version.mjs';
 
 /**
  * Minimum Node.js version fleet-se requires (major.minor.patch).
@@ -138,21 +170,12 @@ function defaultExec(file, args, options = {}) {
     return String(execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', ...options }));
 }
 
-/**
- * Real node:sea probe. Lazily required (via createRequire, this file is ESM)
- * and defensively wrapped: node:sea is a recent addition, and a host running
- * some other unexpected Node.js build should be treated as "not a SEA
- * binary" (the safer default -- it preserves today's execPath behaviour)
- * rather than crashing resolution entirely.
- */
-function defaultIsSea() {
-    try {
-        const sea = require('node:sea');
-        return typeof sea.isSea === 'function' && sea.isSea();
-    } catch {
-        return false;
-    }
-}
+// `defaultIsSea` (the real node:sea probe, defensively wrapped so a host
+// running some unexpected Node.js build is treated as "not a SEA binary" --
+// the safer default, since it preserves today's execPath behaviour -- rather
+// than crashing resolution) now lives in ./node-version.mjs
+// (apra-fleet-i9ag.19.35): `knownSelfNodeVersion()` there needs the identical
+// check, and one copy is the whole point of that shared module.
 
 /**
  * Resolves the Node.js command line the supervisor should spawn a sprint's
@@ -166,6 +189,7 @@ function defaultIsSea() {
  *   exec?: (file: string, args: string[], options?: object) => string|Buffer,
  *   platform?: NodeJS.Platform,
  *   configuredNodePath?: string,
+ *   configuredNodeVersion?: string,
  * }} [deps]
  * @returns {{ command: string, source: string, version: string }}
  * @throws {SprintRunnerResolutionError} when no tier resolves to a usable Node.js runtime
@@ -214,8 +238,43 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // the same way it does for execPath/FLEET_SE_NODE.
     const configuredNodePath = typeof deps.configuredNodePath === 'string' ? deps.configuredNodePath.trim() : '';
     if (configuredNodePath.length > 0) {
-        // apra-fleet-i9ag.19.35: `{ retry: true }` -- see this file's header
-        // for why this ONE tier opts in where tiers 1/3/4 do not.
+        // apra-fleet-i9ag.19.35, leg 1 -- CONSUME THE STARTUP VALIDATION
+        // RESULT instead of re-probing. `deps.configuredNodeVersion` is the
+        // version toolchain.mjs's `validateRecordedToolchain()` ACCEPTED for
+        // this exact recorded path, in this same supervisor process, moments
+        // ago (bin/serve.mjs passes it only when `nodeOk` was true, and
+        // spawner.mjs threads it through untouched). When it is present there
+        // is nothing left to find out: re-spawning a `--version` child could
+        // only ever ADD a way to fail -- host load, fd/process exhaustion, a
+        // timeout -- for a binary this process has already seen answer. That
+        // is precisely how a supervisor came to log a healthy toolchain at
+        // boot and still 503 the next launch over the SAME node, so this tier
+        // no longer probes at all in that case and a launch can never be
+        // refused for a node startup validation accepted.
+        //
+        // Still gated at >= MIN_NODE_VERSION (a version below it is not an
+        // "accepted" one -- startup validation would itself have reported
+        // that as a problem and bin/serve.mjs would not pass it here), and an
+        // unparseable value is ignored rather than trusted: the code falls
+        // through to the probe below, which is the conservative direction.
+        const acceptedVersion = typeof deps.configuredNodeVersion === 'string'
+            ? parseVersionString(deps.configuredNodeVersion)
+            : null;
+        if (acceptedVersion !== null) {
+            if (compareVersions(acceptedVersion, MIN_NODE_VERSION) < 0) {
+                throw new SprintRunnerResolutionError(
+                    `Recorded node path ${JSON.stringify(configuredNodePath)} resolved to Node.js ${acceptedVersion}, ` +
+                    `which is older than the required ${MIN_NODE_VERSION}. Fix the recorded toolchain (reinstall, or set FLEET_SE_NODE to an explicit Node.js binary to launch sprints with). ${SPRINT_RUNNER_FIX_LINE}`,
+                );
+            }
+            return { command: configuredNodePath, source: SPRINT_RUNNER_SOURCE.CONFIGURED, version: acceptedVersion };
+        }
+        // apra-fleet-i9ag.19.35, leg 2 -- nothing validated this path in this
+        // process (an injected/standalone caller, or a recording that never
+        // passed startup validation), so the tier DOES probe -- with
+        // `{ retry: true }`, the SAME bounded retry and transient-vs-genuine
+        // classification the startup check has, so the two can never disagree
+        // on the same input. See this file's header.
         const { version, incomplete } = sharedProbeVersion(
             exec, platform, configuredNodePath, ['--version'],
             { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS, retry: true },
@@ -250,6 +309,23 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // process.execPath when isSea() is true: that silent fallback IS the bug
     // this module exists to fix.
     if (!isSea()) {
+        // apra-fleet-i9ag.19.35, leg 3 -- NEVER SPAWN A PROBE WHOSE ANSWER
+        // THIS PROCESS ALREADY KNOWS. When `execPath` is literally the binary
+        // this process is running on (the real, uninjected default -- see
+        // knownSelfNodeVersion()'s doc comment for why the comparison is
+        // against the true `process.execPath` and never an injected one),
+        // `process.versions.node` IS its version, with certainty. Asking a
+        // child process instead added a 15s-bounded, timeout-capable spawn to
+        // every launch on a host with no recorded toolchain -- two of them
+        // once tier 4 followed -- which is how a loaded host turned a POST
+        // /api/sprints into a 30s+ request that could still fall through to a
+        // "no usable node" hard error over the very interpreter running the
+        // supervisor. A caller that injects `execPath` (every test in this
+        // package) is unaffected and still probes exactly as before.
+        const selfVersion = knownSelfNodeVersion(execPath, { isSea });
+        if (selfVersion !== null) {
+            return { command: execPath, source: SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME, version: selfVersion };
+        }
         const { version } = sharedProbeVersion(exec, platform, execPath, ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
         if (version !== null) {
             return { command: execPath, source: SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME, version };

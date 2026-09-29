@@ -472,6 +472,77 @@ describe('apra-fleet-i9ag.19.11: a GOOD recording produces exactly one informati
     });
 });
 
+describe('apra-fleet-i9ag.19.35: a launch is never refused for a recorded node startup validation ACCEPTED in the same process', () => {
+    // The defect this closes end to end: the supervisor logged
+    // "[supervisor] toolchain: node <path> (vX)" at startup -- its own
+    // validateRecordedToolchain() had probed that exact binary and it
+    // answered -- and moments later the launch path's INDEPENDENT re-probe of
+    // the SAME path failed under host load and hard-refused the launch with a
+    // 503 "does not resolve to a usable Node.js runtime". One binary, two
+    // probes, two policies, and the second one fatal.
+    //
+    // The fix is that the launch path no longer re-probes what startup
+    // accepted: bin/serve.mjs hands the ACCEPTED version to createSpawner
+    // (configuredNodeVersion), which threads it to node-runner.mjs's
+    // CONFIGURED tier, which consumes it. What is observable from outside the
+    // process -- and what this case asserts -- is that the version the
+    // spawner reports resolving is EXACTLY the version the startup line
+    // reported for that same path, with source "configured" and no 503
+    // anywhere. (The unit-level proof that consuming it means no probe
+    // happens at all, even against an exec that fails every probe, is in
+    // test/i9ag15-node-runner.test.mjs's own apra-fleet-i9ag.19.35 block.)
+    test('the spawner resolves the recorded node with the exact version the startup toolchain line accepted, and the launch is never 503\'d', async () => {
+        const fixture = await buildFixtureTools('accepted');
+        const recordedBd = path.join(fixture.toolDir, 'recorded-bd');
+        writeBdStub(recordedBd, { versionOk: true });
+        const pathBdDir = await buildPathBdDir('accepted');
+
+        let supervisor;
+        try {
+            supervisor = await bootServe('accepted', {
+                toolchainConfig: { nodePath: fixture.recordedNode, bdPath: recordedBd },
+                preload: fixture.preload,
+                extraPathDir: pathBdDir,
+            });
+
+            // Startup ACCEPTED the recorded node -- this is the precondition
+            // the whole case is about, read off the supervisor's own line
+            // rather than assumed.
+            const startupLine = findLine(supervisor.getOutput(), ['[supervisor] toolchain: node ', fixture.recordedNode]);
+            assert.ok(startupLine, `startup never reported accepting the recorded node:\n${supervisor.getOutput()}`);
+            const acceptedVersion = /\(v([0-9]+\.[0-9]+\.[0-9]+)\)/.exec(startupLine)?.[1];
+            assert.ok(acceptedVersion, `could not read the accepted version off: ${startupLine}`);
+            assert.deepEqual(findLines(supervisor.getOutput(), /^\[supervisor\] ERROR: /), []);
+
+            const launch = await supervisor.request('/api/sprints', 'POST', launchBody('accepted'));
+            assert.equal(
+                launch.status, 201,
+                `a launch over a node startup validation ACCEPTED must never be refused.\nresponse: ${launch.body}\noutput:\n${supervisor.getOutput()}`,
+            );
+            track(JSON.parse(launch.body).pid);
+
+            const resolvedLine = await waitForOutputLine(
+                supervisor,
+                ['[spawner] resolved sprint runner:'],
+                SPAWN_RECORD_TIMEOUT_MS,
+                () => 'the supervisor never reported resolving the sprint runner',
+            );
+            assert.ok(resolvedLine.includes('source: configured'), resolvedLine);
+            assert.ok(resolvedLine.includes(fixture.recordedNode), resolvedLine);
+            assert.ok(
+                resolvedLine.includes(`version: ${acceptedVersion}`),
+                `the launch must report the SAME version startup accepted (${acceptedVersion}) -- a different one means it re-probed: ${resolvedLine}`,
+            );
+            assert.ok(
+                !supervisor.getOutput().includes('does not resolve to a usable Node.js runtime'),
+                `the wording reserved for a genuinely broken recording must never appear for an accepted one:\n${supervisor.getOutput()}`,
+            );
+        } finally {
+            await stopSupervisor(supervisor);
+        }
+    });
+});
+
 describe('apra-fleet-i9ag.19.11: a BROKEN recorded node -- loud ERROR naming the path and the module\'s own fix line', () => {
     test('the ERROR line carries TOOLCHAIN_FIX_LINE verbatim (not a hand-copied literal); still listening; launch refused 503 naming the path', async () => {
         const fixture = await buildFixtureTools('brokennode');

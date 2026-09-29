@@ -265,21 +265,34 @@ describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
             '../src/supervisor/node-runner.mjs',
         );
         const src = await fs.default.readFile(filePath, 'utf-8');
-        const importLines = src.split('\n').filter((l) => /^\s*import\b/.test(l));
-        for (const line of importLines) {
+        // WHOLE import STATEMENTS, not lines (apra-fleet-i9ag.19.35): a
+        // multi-line `import {\n  a,\n  b,\n} from './x.mjs'` specifier list
+        // is one statement whose FIRST line carries no `from` clause at all,
+        // so a line-based check failed it as if it reached outside the
+        // package. Matching each statement up to its own `from '...'` keeps
+        // the real invariant exact while being indifferent to formatting.
+        const importSpecifiers = [...src.matchAll(/^\s*import\b[\s\S]*?from\s+'([^']+)';/gm)].map((m) => m[1]);
+        const sideEffectImports = [...src.matchAll(/^\s*import\s+'([^']+)';/gm)].map((m) => m[1]);
+        const importCount = src.split('\n').filter((l) => /^\s*import\b/.test(l)).length;
+        assert.ok(
+            importSpecifiers.length + sideEffectImports.length > 0 && importCount > 0,
+            'the import scan matched nothing at all -- the regex, not the module, is what broke',
+        );
+        for (const specifier of [...importSpecifiers, ...sideEffectImports]) {
             assert.ok(
                 // node: built-ins, or a same-directory sibling module -- both
                 // stay inside packages/apra-fleet-se. apra-fleet-i9ag.19.15
                 // added the latter: node-runner.mjs now imports
                 // parseVersionString/compareVersions/quoteForWindowsShell/
                 // probeVersion from the shared ./node-version.mjs instead of
-                // keeping its own local copies. A '../'-prefixed or bare
-                // package-name import (reaching outside this directory, or
-                // out to core's src/ tree / node_modules) still fails this
-                // assertion, which is the invariant this test actually
-                // protects.
-                /from\s+'(node:|\.\/)/.test(line),
-                `expected only node: built-in or same-directory sibling imports, found: ${line}`,
+                // keeping its own local copies (apra-fleet-i9ag.19.35 adds
+                // knownSelfNodeVersion/defaultIsSea from the same sibling). A
+                // '../'-prefixed or bare package-name import (reaching outside
+                // this directory, or out to core's src/ tree / node_modules)
+                // still fails this assertion, which is the invariant this test
+                // actually protects.
+                /^(node:|\.\/)/.test(specifier),
+                `expected only node: built-in or same-directory sibling imports, found: ${specifier}`,
             );
         }
     });
@@ -618,19 +631,24 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
         assert.equal(calls[0].options.shell, false);
     });
 
-    // apra-fleet-i9ag.19.35: the CONFIGURED tier's probe opts into
-    // `probeVersion(..., { retry: true })`, the SAME bounded-retry,
+    // apra-fleet-i9ag.19.35, leg 2 of the chosen strategy (see
+    // node-runner.mjs's "STARTUP AND LAUNCH MUST AGREE" header): when there
+    // is NO accepted startup-validation result to consume -- no
+    // `configuredNodeVersion`, the shape every case in this block uses -- the
+    // CONFIGURED tier still probes, and that probe opts into
+    // `probeVersion(..., { retry: true })`: the SAME bounded-retry,
     // transient-vs-genuine classification toolchain.mjs's startup
-    // `validateRecordedToolchain()` already has for this exact recorded path
-    // -- so a probe that merely could not COMPLETE under host load (a
-    // timeout, or a transient spawn errno) is never collapsed into "does not
-    // resolve to a usable Node.js runtime", the wording reserved for a
-    // genuinely broken recording, and a launch is never hard-refused for a
-    // node that startup validation had already accepted moments earlier in
-    // the same process. These tests pin BOTH behavioural halves this bead's
-    // acceptance criteria call out directly, against the real exec/retry
-    // seam (not toolchain.mjs's own tests, which cover its own call site and
-    // pass unchanged regardless of what this tier does).
+    // `validateRecordedToolchain()` has for this exact recorded path. So a
+    // probe that merely could not COMPLETE under host load (a timeout, or a
+    // transient spawn errno) is never collapsed into "does not resolve to a
+    // usable Node.js runtime", the wording reserved for a genuinely broken
+    // recording, and the two probes can never disagree on the same input.
+    // Leg 1 -- consuming the accepted version so no launch-time probe happens
+    // at all -- is pinned in its own describe block at the end of this file.
+    // These tests pin BOTH behavioural halves this bead's acceptance criteria
+    // call out directly, against the real exec/retry seam (not toolchain.mjs's
+    // own tests, which cover its own call site and pass unchanged regardless
+    // of what this tier does).
     test('apra-fleet-i9ag.19.35: a timeout on the first attempt retries and SUCCEEDS on the bounded retry, source stays "configured"', () => {
         const timeoutErr = Object.assign(new Error('spawn ETIMEDOUT'), { killed: true });
         const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
@@ -733,5 +751,232 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
             },
         );
         assert.equal(calls.length, 2, 'the original attempt plus exactly one bounded retry, then a hard stop -- never a retry-until-pass loop');
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.19.35 -- A LAUNCH IS NEVER REFUSED FOR A NODE STARTUP
+// VALIDATION ALREADY ACCEPTED (leg 1 of the chosen strategy), and the current
+// runtime is never re-probed to learn its own version (leg 3).
+//
+// The defect: toolchain.mjs's `validateRecordedToolchain()` probed the recorded
+// node at supervisor startup and logged it healthy; this resolver then probed
+// the SAME path again at every launch and hard-refused (503) when that second,
+// independent probe could not complete under host load. A bounded retry alone
+// (the block above) narrows the window but cannot close it -- two attempts can
+// both lose on a loaded machine. Leg 1 closes it structurally: when the caller
+// hands over the version startup validation ACCEPTED for that exact path in
+// that same process (`deps.configuredNodeVersion`, threaded bin/serve.mjs ->
+// spawner.mjs -> here), this tier consumes it and probes NOTHING.
+//
+// Each case proves that the only way that counts: with an injected exec that
+// FAILS every probe it is given (and would time out even on the retry), so a
+// successful resolution can only mean no probe ran.
+// =============================================================================
+describe('apra-fleet-i9ag.19.35: the CONFIGURED tier consumes the startup validation result instead of re-probing', () => {
+    /** An exec that always fails with Node's own timeout-kill shape, and
+     * counts every call. Under this exec, ANY successful resolution proves the
+     * candidate was never probed. */
+    function alwaysTimingOutExec() {
+        const calls = [];
+        const exec = (file, args, options) => {
+            calls.push({ file, args, options });
+            throw Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { killed: true, signal: 'SIGTERM' });
+        };
+        return { exec, calls };
+    }
+
+    test('AC3: with the accepted version supplied, an exec that times out EVERY probe still resolves the configured node -- and is never called at all', () => {
+        const { exec, calls } = alwaysTimingOutExec();
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec,
+            platform: 'linux',
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            configuredNodePath: '/opt/toolchain/node',
+            configuredNodeVersion: '22.23.2',
+        });
+
+        assert.equal(result.command, '/opt/toolchain/node');
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CONFIGURED);
+        assert.equal(result.version, '22.23.2');
+        assert.deepEqual(calls, [], 'a node startup validation already accepted must never be re-probed at launch time');
+    });
+
+    test('AC3 CONTROL: the SAME inputs WITHOUT the accepted version hard-refuse the launch -- so it is the consumed result, not the fake, that makes the case above pass', () => {
+        const { exec, calls } = alwaysTimingOutExec();
+
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                exec,
+                platform: 'linux',
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                configuredNodePath: '/opt/toolchain/node',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.match(err.message, new RegExp(`could not be probed within ${SPRINT_RUNNER_PROBE_TIMEOUT_MS / 1_000}s`));
+                assert.doesNotMatch(err.message, /does not resolve to a usable Node\.js runtime/);
+                return true;
+            },
+        );
+        assert.equal(calls.length, 2, 'without an accepted version this tier probes -- original attempt plus one bounded retry');
+    });
+
+    test('a leading-v accepted version ("v22.23.2", exactly what `node --version` prints and the recording carries) is normalized, not rejected', () => {
+        const { exec, calls } = alwaysTimingOutExec();
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec,
+            platform: 'linux',
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            configuredNodePath: '/opt/toolchain/node',
+            configuredNodeVersion: 'v22.23.2',
+        });
+
+        assert.equal(result.version, '22.23.2');
+        assert.deepEqual(calls, []);
+    });
+
+    test('an accepted version BELOW MIN_NODE_VERSION is still a hard error naming both versions -- "accepted" never means "ungated"', () => {
+        const { exec, calls } = alwaysTimingOutExec();
+
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                exec,
+                platform: 'linux',
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                configuredNodePath: '/opt/toolchain/node',
+                configuredNodeVersion: '18.0.0',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.match(err.message, /18\.0\.0/);
+                assert.match(err.message, new RegExp(MIN_NODE_VERSION.replace(/\./g, '\\.')));
+                return true;
+            },
+        );
+        assert.deepEqual(calls, [], 'the gate is applied to the consumed value itself -- no probe is needed to reject it');
+    });
+
+    test('an unparseable/blank accepted version is never trusted: the tier falls through to its normal probe', () => {
+        for (const bogus of ['', '   ', 'not-a-version', 'unknown']) {
+            const { exec, calls } = fakeExecCapturing({ '/opt/toolchain/node': `v${MIN_NODE_VERSION}` });
+
+            const result = resolveSprintRunnerCommand({
+                env: {},
+                exec,
+                platform: 'linux',
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                configuredNodePath: '/opt/toolchain/node',
+                configuredNodeVersion: bogus,
+            });
+
+            assert.equal(result.source, SPRINT_RUNNER_SOURCE.CONFIGURED, `bogus version ${JSON.stringify(bogus)}`);
+            assert.equal(result.version, MIN_NODE_VERSION, 'the version reported must be the PROBED one, never the bogus input');
+            assert.equal(calls.length, 1, `bogus version ${JSON.stringify(bogus)} must fall through to a real probe`);
+        }
+    });
+
+    test('an accepted version is scoped to the CONFIGURED tier alone: with no configuredNodePath it changes nothing', () => {
+        const { exec, calls } = fakeExecCapturing({ node: `v${MIN_NODE_VERSION}` });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec,
+            platform: 'linux',
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            configuredNodeVersion: '22.23.2',
+        });
+
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.PATH, 'a version with no path to attach it to must never resolve anything');
+        assert.equal(result.command, 'node');
+        assert.equal(calls.length, 1);
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.19.35, leg 3 -- tier 3 never spawns a child process to ask
+// the interpreter it is ALREADY RUNNING ON what version it is.
+//
+// On a host with no recorded toolchain, every launch used to pay for a real
+// `node --version` spawn (tier 3) and, if that could not complete in time,
+// another one for tier 4 -- two 15s-bounded, load-sensitive child processes on
+// the POST /api/sprints critical path, with a "no usable Node.js runtime" hard
+// error waiting at the end of them for the very interpreter running the
+// supervisor. `process.versions.node` is that answer, known with certainty.
+// =============================================================================
+describe('apra-fleet-i9ag.19.35: tier 3 reads its own version instead of probing itself', () => {
+    test('the real process.execPath resolves with source current-runtime and process.versions.node, spawning nothing', () => {
+        let execCalls = 0;
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec: () => { execCalls += 1; throw new Error('the current runtime must never be probed with a child process'); },
+            platform: process.platform,
+            execPath: process.execPath,
+            isSea: () => false,
+        });
+
+        assert.equal(result.command, process.execPath);
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME);
+        assert.equal(result.version, process.versions.node);
+        assert.equal(execCalls, 0, 'this process is executing that binary -- stronger evidence than any probe of it could be');
+    });
+
+    test('CONTROL: any OTHER execPath is still probed exactly as before -- the shortcut is not a blanket skip', () => {
+        const { exec, calls } = fakeExecCapturing({ '/some/other/node': `v${MIN_NODE_VERSION}` });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec,
+            platform: 'linux',
+            execPath: '/some/other/node',
+            isSea: () => false,
+        });
+
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME);
+        assert.equal(calls.length, 1, 'an execPath this process is not running on says nothing about itself and must be probed');
+        assert.equal(calls[0].file, '/some/other/node');
+    });
+
+    test('CONTROL: under a SEA build tier 3 stays skipped entirely -- process.execPath is the apra-fleet binary, not node', () => {
+        const { exec, calls } = fakeExecCapturing({ node: `v${MIN_NODE_VERSION}` });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            exec,
+            platform: 'linux',
+            execPath: process.execPath,
+            isSea: () => true,
+        });
+
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.PATH, 'the SEA guard still wins: nothing may be concluded from execPath');
+        assert.deepEqual(calls.map((c) => c.file), ['node'], 'only the PATH tier was probed');
+    });
+
+    test('the FLEET_SE_NODE override still beats the shortcut, and is still probed (the operator named THAT interpreter)', () => {
+        const { exec, calls } = fakeExecCapturing({ '/explicit/node': 'v22.16.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: { FLEET_SE_NODE: '/explicit/node' },
+            exec,
+            platform: 'linux',
+            execPath: process.execPath,
+            isSea: () => false,
+        });
+
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.OVERRIDE);
+        assert.equal(result.command, '/explicit/node');
+        assert.deepEqual(calls.map((c) => c.file), ['/explicit/node']);
     });
 });

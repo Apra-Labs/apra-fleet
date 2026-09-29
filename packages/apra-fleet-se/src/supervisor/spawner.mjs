@@ -271,8 +271,9 @@ export function buildSprintArgv(opts = {}) {
  * @param {{
  *   basePort?: number,
  *   command?: string,
- *   resolveRunner?: (deps?: { configuredNodePath?: string }) => { command: string, source: string, version: string },
+ *   resolveRunner?: (deps?: { configuredNodePath?: string, configuredNodeVersion?: string }) => { command: string, source: string, version: string },
  *   configuredNodePath?: string,
+ *   configuredNodeVersion?: string,
  *   cliPath?: string,
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
@@ -345,6 +346,18 @@ export function createSpawner(deps = {}) {
     // zero-arg closure that ignores whatever argument it is called with, so
     // this cannot change any existing test's behaviour.
     const configuredNodePath = deps.configuredNodePath;
+    // apra-fleet-i9ag.19.35: the version bin/serve.mjs's startup
+    // `validateRecordedToolchain()` ACCEPTED for exactly that recorded path,
+    // in this same process (passed only when its `nodeOk` was true). Threaded
+    // straight through to the resolver's CONFIGURED tier, which consumes it
+    // INSTEAD of re-probing the same binary per launch -- see
+    // node-runner.mjs's header ("STARTUP AND LAUNCH MUST AGREE") for why a
+    // second, independent probe of an already-accepted node is what let a
+    // loaded host 503 every launch the startup check had just passed. Omitted
+    // from the resolver's deps object entirely when undefined, so an injected
+    // `resolveRunner` (every existing test) sees the exact same argument shape
+    // it saw before this bead.
+    const configuredNodeVersion = deps.configuredNodeVersion;
     // A SUCCESSFUL resolution is cached for this process's lifetime -- the
     // Node.js runtime available to this supervisor process cannot change
     // while it is up. A FAILURE is deliberately NEVER cached, so a transient
@@ -366,7 +379,10 @@ export function createSpawner(deps = {}) {
     function resolveCommand() {
         if (commandOverride !== undefined) return commandOverride;
         if (cachedRunner) return cachedRunner.command;
-        const resolved = resolveRunner({ configuredNodePath });
+        const resolved = resolveRunner({
+            configuredNodePath,
+            ...(configuredNodeVersion !== undefined ? { configuredNodeVersion } : {}),
+        });
         cachedRunner = resolved;
         logger.log?.(
             `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,
