@@ -43,6 +43,9 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
+// (apra-fleet-i9ag.16.7) The single "did this run end badly?" answer shared
+// with launch-form.mjs -- see run-outcome.mjs for why it is its own module.
+import { FAILED_VERDICTS, FAILED_RUN_STATUSES, isFailedRunOutcome } from './run-outcome.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
 import { TOKEN_COOKIE_NAME } from './auth.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
@@ -83,6 +86,7 @@ import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
 // back-link targets -- see sprint-anchor.mjs's doc comment for why this is
 // the one shared source instead of two independent id schemes.
 import { sprintCardAnchorId } from './sprint-anchor.mjs';
+import { DASHBOARD_CSS } from './theme.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -230,6 +234,35 @@ export function launchFailedBadge() {
 }
 
 /**
+ * (apra-fleet-i9ag.16.7) The "Reason: ..." line shown under a run that ended
+ * badly -- on a Finished Sprints card (renderFinishedRunsHtml) and on a Sprint
+ * Stack row (renderSprintSection). Returns '' for an absent/empty reason, so a
+ * caller never has to guard, and a run with no recorded reason simply renders
+ * no line at all.
+ *
+ * `className` exists purely to keep the pre-existing launch-failed
+ * presentation byte-for-byte identical: that row has always carried
+ * `class="launch-failed-reason"`, and apra-fleet-i9ag.16.7's whole point is to
+ * REUSE that line for other failed runs rather than reclassify the launch
+ * failure. Every other caller passes the neutral default. Both classes are
+ * styled inline here, so neither needs a DASHBOARD_CSS rule.
+ *
+ * The reason text comes from a child process (a terminal state file's
+ * terminalReason/lastError/notes, or a watchdog history event's reason), so it
+ * is untrusted input and goes through escapeHtml() unconditionally -- never
+ * interpolated raw.
+ * @param {string|null|undefined} reason
+ * @param {string} [className] - defaults to 'run-failure-reason'
+ * @returns {string}
+ */
+export function failureReasonHtml(reason, className) {
+    if (typeof reason !== 'string' || reason.length === 0) return '';
+    var cls = (typeof className === 'string' && className.length > 0) ? className : 'run-failure-reason';
+    return '<div class="' + cls + '" style="margin-top: 4px; font-size: 12px; color: #a1a1aa;">Reason: ' +
+        escapeHtml(reason) + '</div>';
+}
+
+/**
  * (apra-fleet-i9ag.4) Renders the finished-sprints (History) list: one card
  * per finished run, newest first as supplied (history-view.mjs's
  * createFinishedRunsIndex() already orders them), each with its verdict
@@ -253,7 +286,15 @@ export function launchFailedBadge() {
  * instead of verdictBadge(), its `reason` text, and a raw-log link
  * (/sprints/:id/log, the child's own stdout/stderr -- it exists because the
  * child at least started before it died) in place of the PR/History links.
- * Every other (file-backed) row renders exactly as it did before this change.
+ *
+ * (apra-fleet-i9ag.16.7) A row that ended badly for ANY other reason -- a
+ * failed status, or a failed terminal verdict such as the ABORTED one
+ * fleet-sprint's fatal-diagnostics guard records -- now also renders its
+ * `reason` (failureReasonHtml(), gated on isFailedRunOutcome()), keeping its
+ * normal verdict badge and PR/History links. Before this, the reason line was
+ * hard-gated on the launch-failed status, so such a row showed a red verdict
+ * badge and no explanation anywhere on the page. A row that ended cleanly
+ * renders exactly as it did before.
  * @param {Array<{ sprintId: string, verdict?: string|null, prUrl?: string|null, endedAt?: string|null, goal?: string|null, status?: string|null, reason?: string|null, hasTerminalState?: boolean }>} [runs]
  * @param {string} [mountPrefix] - mount-prefix.mjs's resolved prefix (e.g. '/ext/se'), or '' to serve direct
  * @returns {string}
@@ -272,8 +313,18 @@ export function renderFinishedRunsHtml(runs, mountPrefix) {
             ? '<a class="raw-log-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/log') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Raw log</a>'
             : prLink(run.prUrl) +
                 '<a class="history-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/history') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">History</a>';
-        var reasonHtml = (isLaunchFailed && run.reason)
-            ? '<div class="launch-failed-reason" style="margin-top: 4px; font-size: 12px; color: #a1a1aa;">Reason: ' + escapeHtml(run.reason) + '</div>'
+        // (apra-fleet-i9ag.16.7) The reason line is no longer gated on the
+        // launch-failed classification. It was, and that is exactly why the
+        // ABORTED card the final M1 acceptance run produced showed no reason
+        // at all: a run whose status is anything other than 'launch-failed'
+        // took the verdictBadge() path and reasonHtml was hard-forced to ''
+        // regardless of what reason data the row carried. Now ANY run that
+        // ended badly (isFailedRunOutcome: a failed status, or a failed
+        // terminal verdict such as ABORTED/FAIL) shows its reason, while the
+        // launch-failed row keeps its original `launch-failed-reason` class
+        // and therefore its exact original markup.
+        var reasonHtml = isFailedRunOutcome(run.status, run.verdict)
+            ? failureReasonHtml(run.reason, isLaunchFailed ? 'launch-failed-reason' : 'run-failure-reason')
             : '';
         return '<section class="finished-sprint" data-finished-sprint-id="' + id + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
             'border-radius: 6px; padding: 8px 14px; margin-bottom: 8px;">' +
@@ -371,6 +422,15 @@ export function renderSprintSection(view, mountPrefix) {
     const hasOutcome = (typeof view.verdict === 'string' && view.verdict.length > 0) ||
         (typeof view.prUrl === 'string' && view.prUrl.length > 0);
     const outcomeHtml = hasOutcome ? verdictBadge(view.verdict) + prLink(view.prUrl) : '';
+    // (apra-fleet-i9ag.16.7) A stack row for a run that ended badly (a CRASHED
+    // or LAUNCH_FAILED classification, or a failed terminal verdict) surfaces
+    // WHY right here, next to the status badge -- previously the reason existed
+    // only on the live viewer / History page, so the one place an operator
+    // actually watches showed a red badge with no explanation. A healthy row's
+    // `reason` is null, so this renders nothing at all for it.
+    const reasonHtml = isFailedRunOutcome(view.status, view.verdict)
+        ? failureReasonHtml(view.reason)
+        : '';
 
     // (apra-fleet-p2to.3.1) Pause/Resume is only meaningful for a sprint the
     // watchdog currently sees as a LIVE pid (running-healthy/running-
@@ -426,6 +486,7 @@ export function renderSprintSection(view, mountPrefix) {
         '<button type="button" class="btn btn-secondary btn-restart-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Restart</button>' +
         '</div>' +
+        reasonHtml +
         progressHtml +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + (base ? ' -> ' + base : '') + '</div>' +
@@ -477,52 +538,9 @@ export function renderSprintStackHtml(views, mountPrefix) {
     // array), which would hand the row index in as `mountPrefix`.
     return list.map((view) => renderSprintSection(view, mountPrefix)).join('\n');
 }
+// apra-fleet-i9ag.20.1: DASHBOARD_CSS extracted to ./theme.mjs as the single
+// source of truth shared with console pages (such as /ui/projects).
 
-// apra-fleet supervisor-viewer-parity: the SAME CSS custom-property names and
-// header/tab/panel vocabulary as apra-fleet-workflow's per-sprint dashboard
-// (packages/apra-fleet-workflow/src/viewer/index.mjs's HTML_TEMPLATE) -- one
-// operator moving between "a single sprint's live view" and "the cross-sprint
-// supervisor" should not have to re-learn a second visual language. fleet-
-// sprint's own beads-tree extension (viewer-extensions.mjs's renderBeadsHtml,
-// reused verbatim for the Backlog tab below) already styles its badges via
-// `var(--accent)` / `var(--danger)` etc, so defining the SAME tokens here is
-// what makes that reuse actually look right, not just share markup shape.
-const DASHBOARD_CSS = `
-    :root {
-      --bg: #09090b; --bg-glass: rgba(24, 24, 27, 0.6); --border: rgba(255, 255, 255, 0.1);
-      --text: #e4e4e7; --text-muted: #a1a1aa; --accent: #3b82f6; --accent-glow: rgba(59, 130, 246, 0.2);
-      --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
-    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
-    a { color: var(--accent); }
-    .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
-    .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
-    .header-actions { display: flex; gap: 12px; align-items: center; }
-    .stats-banner { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
-    .stats-banner span strong { color: var(--text); font-weight: 600; }
-
-    .btn { padding: 4px 12px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
-    .btn:hover { opacity: 0.8; }
-    .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
-
-    .main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }
-    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
-    .panel-header { flex-shrink: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); text-transform: uppercase; letter-spacing: 0.5px; }
-    .panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
-
-    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; flex-shrink: 0; }
-    .tab-btn { background: transparent; color: var(--text-muted); border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 13px; }
-    .tab-btn:hover { background: rgba(255,255,255,0.05); }
-    .tab-btn.active { color: #fff; background: rgba(255,255,255,0.1); }
-    .tab-content { display: none; }
-    .tab-content.active { display: flex; min-height: 0; }
-
-    .bead-row-selected { outline: 2px solid var(--accent); background: var(--accent-glow) !important; }
-    table tr:hover { background: rgba(255,255,255,0.03); }
-`;
 
 // (apra-fleet-siqi.2.1) How old a tab's last fetch must be, in ms, before
 // activating that tab triggers a fresh one -- rather than just showing
@@ -926,6 +944,19 @@ const sprintStackLiveScript = (mountPrefix) => `
     // swallows into a console-only 'Poll Error:', silently freezing the
     // Finished Sprints list from the first poll onward).
     ${launchFailedBadge.toString()}
+    // (apra-fleet-i9ag.16.7) renderFinishedRunsHtml() AND renderSprintSection()
+    // below both call isFailedRunOutcome()/failureReasonHtml() to decide and
+    // render a failed run's reason line -- embedded here for exactly the same
+    // reason launchFailedBadge() above is: a helper a toString-embedded
+    // renderer calls but that was never embedded itself throws a
+    // ReferenceError inside poll(), which swallows it into a console-only
+    // 'Poll Error:' and silently freezes the list from the first poll onward.
+    // The two frozen arrays go over as inline JSON (same as WATCHDOG_STATUS/
+    // STATUS_BADGE_COLORS above) since isFailedRunOutcome() closes over them.
+    var FAILED_VERDICTS = ${JSON.stringify(FAILED_VERDICTS)};
+    var FAILED_RUN_STATUSES = ${JSON.stringify(FAILED_RUN_STATUSES)};
+    ${isFailedRunOutcome.toString()}
+    ${failureReasonHtml.toString()}
     ${renderFinishedRunsHtml.toString()}
     ${renderProgressBarHtml.toString()}
     ${renderSprintProgressHtml.toString()}
@@ -997,6 +1028,11 @@ const sprintStackLiveScript = (mountPrefix) => `
             var res = await fetch('${mountHref(mountPrefix, '/state')}?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
             renderSprintStackFromState(data.sprints);
+            var counterEl = document.getElementById('running-counter');
+            if (counterEl) {
+                var running = Array.isArray(data.sprints) ? data.sprints.length : 0;
+                counterEl.innerHTML = '<strong>' + running + '</strong> running';
+            }
             // apra-fleet-i9ag.4: the finished-sprints list rides the SAME
             // poll, so a sprint that just left the stack above shows up
             // below (with its verdict/PR) without a page reload.
@@ -1198,7 +1234,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<body>\n' +
         '<div class="header">' +
         '<h1>Fleet-Sprint Supervisor</h1>' +
-        '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
+        '<div class="header-actions"><div class="stats-banner"><span id="running-counter"><strong>' + runningCount + '</strong> running</span></div>' +
         renderConsoleLinkHtml(opts && opts.consoleOrigin) +
         '<a href="' + mountHref(mountPrefix, '/supervisor/log') + '" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
@@ -1265,6 +1301,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @property {string|null} beadsPrefix - the beads prefix recorded on the ledger entry at launch (`beads.prefix`, beads-identity.mjs); null when absent
  * @property {string|null} verdict - (apra-fleet-i9ag.4) terminal verdict once known (from the run's persisted terminal state); null while unknown
  * @property {string|null} prUrl - (apra-fleet-i9ag.4) the run's PR URL once known; null when none
+ * @property {string|null} reason - (apra-fleet-i9ag.16.7) WHY the run ended, once it has ended badly (from the finished-runs row's own terminal-state reason, else the watchdog classification's exit detail); null while the run is healthy or no reason is recorded
  */
 
 /**
@@ -1305,6 +1342,11 @@ export function buildStatePayload(views, finishedRuns) {
             beadsPrefix: v.beadsPrefix ?? null,
             verdict: v.verdict ?? null,
             prUrl: v.prUrl ?? null,
+            // (apra-fleet-i9ag.16.7) The ending reason travels on the stack
+            // row too, not just on `finished` below, so renderSprintSection()
+            // renders it identically in the server's first paint and after a
+            // /state poll -- the client re-render calls the SAME function.
+            reason: v.reason ?? null,
         })),
     };
     if (Array.isArray(finishedRuns)) {
@@ -1604,6 +1646,15 @@ export function createDashboard(deps = {}) {
                 beadsPrefix: entry.beads && entry.beads.prefix ? entry.beads.prefix : null,
                 verdict: outcomeById.get(entry.sprintId)?.verdict ?? null,
                 prUrl: outcomeById.get(entry.sprintId)?.prUrl ?? null,
+                // (apra-fleet-i9ag.16.7) WHY this run ended, for a row that
+                // ended badly. Preferred source is the run's OWN finished-runs
+                // row -- the SAME record the Finished Sprints card and the
+                // History page read, so the two can never disagree. A CRASHED
+                // run has no terminal state file and therefore no such row, so
+                // it falls back to the watchdog classification's own `detail`
+                // ("exited 1 at ...", the ledger-recorded exit), which is
+                // genuinely all that is known about why it ended.
+                reason: outcomeById.get(entry.sprintId)?.reason ?? classification.detail ?? null,
             };
         }));
         return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);

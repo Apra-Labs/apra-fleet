@@ -55,7 +55,8 @@ import { resolveFleetServerConnection } from './cli.mjs';
 import {
     discoverBeadsDir, probeBeadsIdentity, createBeadsIdentityState,
     formatNoBeadsWarning, formatProbeFailedWarning,
-    resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE,
+    resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE, LAUNCH_MODE,
+    formatUnusableLaunchFolderError,
 } from '../src/supervisor/beads-identity.mjs';
 import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { validateRecordedToolchain } from '../src/supervisor/toolchain.mjs';
@@ -82,6 +83,9 @@ termination signal (Ctrl-C / SIGTERM).
 
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --managed-service     Set by the installed OS service registration: this
+                            supervisor is restarted by 'apra-fleet restart', and
+                            restart guidance says so. Standalone launches omit it.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. A path that does not
                             exist is an error.
@@ -216,6 +220,7 @@ export function parseServeArgs(argv) {
             options: {
                 port: { type: 'string' },
                 'beads-dir': { type: 'string' },
+                'managed-service': { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -226,8 +231,31 @@ export function parseServeArgs(argv) {
     }
 }
 
+/**
+ * Can a sprint child be started with `cwd` as its working directory? False
+ * for an unusable configured project folder (resolveProjectDir usable:false)
+ * or a cwd that no longer exists / is not a directory. Deliberately NOT keyed
+ * on the beads identity: having no local beads is a designed fallback
+ * (sprints verify against the orchestrator member's beads).
+ * @param {{ usable?: boolean }} project
+ * @param {string} cwd
+ * @param {{ existsSync: Function, statSync: Function }} [fsImpl]
+ * @returns {boolean}
+ */
+export function launchFolderUsable(project, cwd, fsImpl = fs) {
+    if (project && project.usable === false) return false;
+    try {
+        return fsImpl.existsSync(cwd) && fsImpl.statSync(cwd).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
 export async function serveMain(argv = process.argv.slice(2)) {
     const { values } = parseServeArgs(argv);
+    // Explicit launch-mode signal (never guessed from the environment): the
+    // installed service registration passes --managed-service.
+    const launchMode = values['managed-service'] ? LAUNCH_MODE.INSTALLED_SERVICE : LAUNCH_MODE.STANDALONE;
 
     if (values.help) {
         console.log(SERVE_USAGE);
@@ -293,7 +321,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     //     /api/health?refresh=1 can recover it without a restart.
     let project;
     try {
-        project = await resolveProjectDir({ flag: values['beads-dir'], cwd: process.cwd() });
+        project = await resolveProjectDir({ flag: values['beads-dir'], cwd: process.cwd(), launchMode });
     } catch (err) {
         // Only the flag branch throws -- the typo-is-fatal half above.
         console.error(`Error: ${err && err.message ? err.message : err}`);
@@ -313,7 +341,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
                 ...project,
                 chdir: null,
                 usable: false,
-                warning: formatStaleConfiguredProjectWarning(project.projectDir, supervisorConfigPath()),
+                warning: formatStaleConfiguredProjectWarning(project.projectDir, supervisorConfigPath(), { launchMode }),
             };
         }
     }
@@ -425,7 +453,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
             beadsWarning = formatProbeFailedWarning(repoRoot, err);
         }
     }
-    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning, launchMode });
     if (beadsIdentityRecord) {
         console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
     }
@@ -594,7 +622,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog section (below) AND as GET /api/backlog's real listing (see the
     // sprint controller wiring below), so there is exactly one "what does the
     // tracker minus claimed scope look like right now" implementation.
-    const backlog = createBacklog({ ledger, watchdog });
+    const backlog = createBacklog({ ledger, watchdog, hasProject: () => discovered !== null });
 
     // (apra-fleet-i9ag.5.1) Resolve the apra-fleet server connection once here
     // for the dashboard's header "Console" back-link (this origin, or nothing
@@ -700,6 +728,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // the startup resolution above); `flagActive` mirrors that resolution's
     // own precedence decision rather than re-deriving it from the raw flag.
     registerProjectFolderRoutes(supervisor, {
+        launchMode,
         projectDir: project.projectDir,
         source: project.source,
         flagActive: project.source === PROJECT_DIR_SOURCE.FLAG,
@@ -754,7 +783,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
         spawner,
         history,
         listMembers: listMembersForLaunch,
-        getBacklog: async () => ({ tree: await backlog.buildTree() }),
+        // Refuse a launch whose cwd (repoRoot) is unusable -- see api.mjs's
+        // launchGuard. Keyed on the LAUNCH CWD, never on a null beads identity.
+        launchGuard: () => (launchFolderUsable(project, repoRoot)
+            ? null
+            : formatUnusableLaunchFolderError(repoRoot, { launchMode })),
+        getBacklog: async () => (backlog.hasProject()
+            ? { tree: await backlog.buildTree() }
+            : { tree: [], noProject: true }),
         beforeLaunch,
         beadsIdentity,
     });

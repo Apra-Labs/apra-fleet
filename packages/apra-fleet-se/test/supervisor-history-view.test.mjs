@@ -12,6 +12,10 @@ import {
     isSafeSprintId,
     resolveOldSprintPath,
     loadOldSprintState,
+    // (apra-fleet-i9ag.16.8) the finished-run reason reader and its consumers
+    summarizeTerminalReason,
+    summarizeFinishedRun,
+    createFinishedRunsIndex,
 } from '../src/supervisor/history-view.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
@@ -307,5 +311,105 @@ describe('history-view -- GET /sprints/:id/history resolves the mount prefix its
         assert.strictEqual(res.status, 200);
         assert.ok(res.body.includes('href="' + anchorSuffix + '" target="_top"'), res.body);
         assert.ok(!res.body.includes('evil.example'), 'a protocol-relative header value must never reach the rendered page');
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.16.8 -- where a finished run's REASON comes from
+// =============================================================================
+//
+// createFinishedRunsIndex() used to stamp `reason: null` onto every
+// file-backed row unconditionally, so a failed/aborted run's Finished Sprints
+// card had no reason to render even though its terminal state file carried
+// one. summarizeTerminalReason() (apra-fleet-i9ag.16.7) is the reader that
+// closes that gap; these pin the real producer shapes it has to cope with.
+describe('apra-fleet-i9ag.16.8: summarizeTerminalReason reads the reason out of a terminal state file', () => {
+    test("the fatal-diagnostics guard's shape: terminalReason label plus the lastError message an operator actually needs", () => {
+        // fleet-sprint/fatal-diagnostics.mjs's publishState('terminal', ...) --
+        // the exact producer behind the ABORTED card the final M1 acceptance
+        // run saw with no reason at all. The bare label ('uncaughtException')
+        // explains nothing on its own, so both halves must survive.
+        const reason = summarizeTerminalReason({
+            extensions: {
+                terminal: {
+                    verdict: 'ABORTED',
+                    failed: true,
+                    terminalReason: 'uncaughtException',
+                    lastError: { message: 'claude: command not found', phase: 'Plan' },
+                },
+            },
+        });
+        assert.equal(reason, 'uncaughtException: claude: command not found');
+    });
+
+    test("runner.js's typed-abort shape: terminalReason plus the error message carried alongside it", () => {
+        const reason = summarizeTerminalReason({
+            extensions: { terminal: { verdict: 'ABORTED', terminalReason: 'BEADS_SYNC_CONFLICT', message: 'bd dolt push rejected' } },
+        });
+        assert.equal(reason, 'BEADS_SYNC_CONFLICT: bd dolt push rejected');
+    });
+
+    test("a FAIL verdict's explanation comes from the workflow result's notes", () => {
+        const reason = summarizeTerminalReason({
+            terminalReason: 'failed',
+            result: { status: 'failed', verdict: 'FAIL', notes: 'integration tests red on windows-latest' },
+        });
+        assert.equal(reason, 'failed: integration tests red on windows-latest');
+    });
+
+    test("the engine's own top-level terminalReason is used when the child recorded nothing more specific", () => {
+        assert.equal(summarizeTerminalReason({ terminalReason: 'SIGTERM' }), 'SIGTERM');
+    });
+
+    test('a label that duplicates its detail is not repeated back twice', () => {
+        const reason = summarizeTerminalReason({
+            terminalReason: 'boom',
+            extensions: { terminal: { lastError: { message: 'boom' } } },
+        });
+        assert.equal(reason, 'boom');
+    });
+
+    test('an empty/garbage/absent state yields null, never a throw or an empty "Reason:" line', () => {
+        assert.equal(summarizeTerminalReason({}), null);
+        assert.equal(summarizeTerminalReason(null), null);
+        assert.equal(summarizeTerminalReason(undefined), null);
+        assert.equal(summarizeTerminalReason('not an object'), null);
+        assert.equal(summarizeTerminalReason({ terminalReason: '   ' }), null, 'whitespace is not a reason');
+        assert.equal(summarizeTerminalReason({ extensions: { terminal: 'not an object' } }), null);
+    });
+
+    test('summarizeFinishedRun() carries that reason on the row, so it is cached with the rest of the summary', () => {
+        const row = summarizeFinishedRun('sprint-a', {
+            extensions: { terminal: { verdict: 'ABORTED', terminalReason: 'uncaughtException', lastError: { message: 'claude: command not found' } } },
+        });
+        assert.equal(row.verdict, 'ABORTED');
+        assert.equal(row.reason, 'uncaughtException: claude: command not found');
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: createFinishedRunsIndex surfaces a file-backed row reason end-to-end', () => {
+    let dataDir;
+    before(async () => {
+        dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-i9ag168-index-'));
+        const oldRuns = path.join(dataDir, 'old_runs');
+        await fs.mkdir(oldRuns, { recursive: true });
+        await fs.writeFile(path.join(oldRuns, 'sprint-aborted.json'), JSON.stringify({
+            endedAt: '2026-09-28T12:00:00.000Z',
+            extensions: { terminal: { verdict: 'ABORTED', terminalReason: 'uncaughtException', lastError: { message: 'claude: command not found' } } },
+        }));
+    });
+    after(async () => {
+        await fs.rm(dataDir, { recursive: true, force: true });
+    });
+
+    test("a real old_runs/ file's reason reaches the row the dashboard renders -- no longer a hard-coded null", async () => {
+        const index = createFinishedRunsIndex({ env: { APRA_FLEET_DATA_DIR: dataDir }, logger: { log() {}, error() {} } });
+        const rows = await index.list();
+        const row = rows.find((r) => r.sprintId === 'sprint-aborted');
+        assert.ok(row, `expected a row for sprint-aborted, got ${JSON.stringify(rows)}`);
+        assert.equal(row.status, 'finished');
+        assert.equal(row.hasTerminalState, true);
+        assert.equal(row.verdict, 'ABORTED');
+        assert.equal(row.reason, 'uncaughtException: claude: command not found');
     });
 });

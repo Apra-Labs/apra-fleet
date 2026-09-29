@@ -289,10 +289,9 @@ needs.
   auto-start registration. The script runs the freshly built `dist/index.js`
   in place.
 - **NEVER run `apra-fleet stop` / `node dist/index.js stop`** to tear down.
-  `runStop()` (`src/cli/stop.ts`) checks `svcMgr.isInstalled()` FIRST with no
-  `isNonDefaultInstance()` guard (the asymmetry with `start` is real): with
-  the production service registered, `stop` in a sandbox environment stops
-  PRODUCTION and leaves your sandbox running. Use the Teardown below.
+  `runStop()` now skips registered OS services for a non-default instance
+  (like `start`), but older installed binaries do not -- they stop
+  PRODUCTION. Kept as defense in depth; use the Teardown below.
 - **NEVER bind the production ports.** The script asks the OS for free ports
   and refuses `7523`/`8787` (and the regression playbook's `18700`/`18701`).
 - **NEVER write into `~/.apra-fleet`, `~/.apra-fleet-se`, or production's

@@ -293,7 +293,7 @@ describe('install -- successful supervisor registration', () => {
     expect(exitCode).toBeUndefined();
     expect(supervisorMgr.register).toHaveBeenCalledWith(
       expect.stringContaining('apra-fleet'),
-      ['supervisor'],
+      ['supervisor', '--managed-service'],
       expect.any(String),
       expect.objectContaining({ workingDirectory: expect.stringContaining('fleet-sprint') }),
     );

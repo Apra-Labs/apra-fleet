@@ -58,7 +58,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import {
-    resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME, PROJECT_DIR_SOURCE,
+    resolveBeadsDirArg, checkProjectFolderIdentity, BEADS_DIR_NAME, PROJECT_DIR_SOURCE, isProjectBeadsDir, restartInstruction,
 } from './beads-identity.mjs';
 import { writeSupervisorConfig } from './project-config.mjs';
 
@@ -73,13 +73,7 @@ import { writeSupervisorConfig } from './project-config.mjs';
  * @returns {boolean}
  */
 function hasBeadsDbAt(dir, fsImpl) {
-    const candidate = path.join(dir, BEADS_DIR_NAME);
-    try {
-        return fsImpl.existsSync(candidate)
-            && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(candidate).isDirectory());
-    } catch {
-        return false;
-    }
+    return isProjectBeadsDir(path.join(dir, BEADS_DIR_NAME), fsImpl);
 }
 
 /**
@@ -155,6 +149,7 @@ export function registerProjectFolderRoutes(supervisor, deps) {
             cwd: resolved,
             execBd: deps.execBd,
             execGit: deps.execGit,
+            launchMode: deps.launchMode,
         });
         if (!usability.ok) {
             sendJson(res, 400, { error: usability.error, missing: usability.missing });
@@ -179,7 +174,7 @@ export function registerProjectFolderRoutes(supervisor, deps) {
             restartRequired: true,
             note: flagActive
                 ? `saved, but the --beads-dir flag is currently overriding this setting; it will not take effect until the flag is removed and the supervisor is restarted`
-                : 'saved; restart the supervisor for this to take effect',
+                : `saved; to take effect, ${restartInstruction(deps.launchMode)}`,
         });
     });
 }

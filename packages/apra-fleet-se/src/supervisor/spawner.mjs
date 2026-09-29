@@ -301,6 +301,9 @@ export function buildSprintArgv(opts = {}) {
  *   getLiveEntry(pid: number): { port: number, child: object, logPath: string }|undefined,
  * }}
  */
+/** err.code of a launch whose child process could not be spawned at all. */
+export const SPRINT_SPAWN_FAILED = 'SPRINT_SPAWN_FAILED';
+
 export function createSpawner(deps = {}) {
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -485,8 +488,24 @@ export function createSpawner(deps = {}) {
         }
 
         if (!child || typeof child.pid !== 'number') {
+            // Node reports an unspawnable child (nonexistent cwd, missing
+            // executable) as a pid-less child plus an ASYNC 'error' event.
+            // Give that event one tick so the launch is rejected WITH the
+            // cause -- otherwise the operator sees a sprint that never
+            // starts and only the supervisor log knows why.
+            let spawnErr = null;
+            if (child && typeof child.once === 'function') {
+                spawnErr = await new Promise((resolve) => {
+                    child.once('error', (e) => resolve(e));
+                    setImmediate(() => resolve(null));
+                });
+            }
             closeLogFd();
-            throw new Error('[spawner] spawn did not return a pid; sprint child process failed to launch');
+            const cause = spawnErr ? `: ${spawnErr.message}` : '';
+            const where = deps.cwd !== undefined ? ` (cwd '${deps.cwd}')` : '';
+            const failure = new Error(`[spawner] spawn did not return a pid; sprint child process failed to launch${cause}${where}`);
+            failure.code = SPRINT_SPAWN_FAILED;
+            throw failure;
         }
         const pid = child.pid;
         live.set(pid, { port, child, logPath });

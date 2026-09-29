@@ -48,7 +48,18 @@ import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
 // boundary.md) -- the injection happens IN THIS SUPERVISOR-ONLY module,
 // against the already-rendered HTML string, exactly like proxy.mjs does for
 // the live view.
-import { injectLiveViewBackLink, renderLiveViewBackLinkHtml } from './proxy.mjs';
+// (apra-fleet-i9ag.5) ...and its ENFORCEMENT: injectViewerBackLink() throws
+// for a page it cannot splice the anchor into as real body content, and
+// assertViewerBackLink() re-reads the finished document the way a browser does
+// before handleGet() writes it. The generic HTML_TEMPLATE's own <style> block
+// contains the literal text '<body>' in a CSS comment ~12.5KB ahead of the
+// real tag, which is precisely how this page shipped with the anchor buried in
+// CSS and no link in the DOM -- see viewer-back-link.mjs's doc comment.
+import {
+    assertViewerBackLink,
+    injectViewerBackLink,
+    renderViewerBackLinkHtml,
+} from './viewer-back-link.mjs';
 // (apra-fleet-i9ag.16.1) LAUNCH_FAILED is the one history event kind this
 // module synthesizes a finished-runs row for -- a sprint whose child died in
 // its launch window before ever writing a terminal state file (see
@@ -253,7 +264,7 @@ export function createHistoryView(deps = {}) {
         const state = await loadOldSprintState(sprintId, env, readFile);
         if (state == null) return null;
         const html = renderHistoryPageHtml(state, dashboardExtensions);
-        return injectLiveViewBackLink(html, renderLiveViewBackLinkHtml(mountPrefix ?? '', sprintId));
+        return injectViewerBackLink(html, renderViewerBackLinkHtml(mountPrefix ?? '', sprintId));
     }
 
     // GET /sprints/:id/history -- the dedicated "History" link (apra-fleet-eft.6,
@@ -272,15 +283,16 @@ export function createHistoryView(deps = {}) {
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);
             return;
         }
+        // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
+        // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
+        // handleBase: one rendered page answers both the direct-on-port hit and
+        // the console's /ext/<id> iframe hop. A hostile or malformed header
+        // fails closed to '' in resolveMountPrefix(), which is exactly the
+        // serve-direct render.
+        const mountPrefix = resolveMountPrefix(req);
         let html;
         try {
-            // (apra-fleet-i9ag.3.9) Resolved PER REQUEST from this route's own
-            // `req`, same as dashboard.mjs's GET / handler and proxy.mjs's
-            // handleBase: one rendered page answers both the direct-on-port
-            // hit and the console's /ext/<id> iframe hop. A hostile or
-            // malformed header fails closed to '' in resolveMountPrefix(),
-            // which is exactly the serve-direct render.
-            html = await renderForSprint(sprintId, resolveMountPrefix(req));
+            html = await renderForSprint(sprintId, mountPrefix);
         } catch (err) {
             logError('[history-view] failed to load state for', sprintId, err);
             sendPlain(res, 400, `invalid sprint id: ${sprintId}`);
@@ -288,6 +300,17 @@ export function createHistoryView(deps = {}) {
         }
         if (html == null) {
             sendPlain(res, 404, `No history for '${sprintId}'.`);
+            return;
+        }
+        // (apra-fleet-i9ag.5) This page opens in a NEW TAB from the Finished
+        // Sprints card's History link and carries no other navigation, so a
+        // missing back-link is a dead end. Gate on the rendered document
+        // really having it -- a loud 500 beats a silently linkless 200.
+        try {
+            assertViewerBackLink(html, { mountPrefix, sprintId, where: 'GET /sprints/:id/history' });
+        } catch (err) {
+            logError('[history-view] refusing to serve a History page with no dashboard back-link:', err);
+            sendPlain(res, 500, `history for '${sprintId}' could not be served with a back-link to the supervisor dashboard: ${err.message}`);
             return;
         }
         const body = Buffer.from(html, 'utf-8');
@@ -310,6 +333,63 @@ export function createHistoryView(deps = {}) {
 /** Default cap on how many finished runs the dashboard History list shows. */
 export const DEFAULT_FINISHED_RUNS_LIMIT = 50;
 
+/** First non-empty string among `values`, else null. */
+function firstText(...values) {
+    for (const v of values) {
+        if (typeof v === 'string' && v.trim().length > 0) return v;
+    }
+    return null;
+}
+
+/**
+ * apra-fleet-i9ag.16.7: WHY a run ended, pulled out of the same parsed
+ * terminal state file the rest of this summary comes from -- so the dashboard
+ * can show an operator the reason on a Finished Sprints card / Sprint Stack
+ * row instead of a bare verdict badge. Before this, a finished run's `reason`
+ * was hard-coded `null` in createFinishedRunsIndex()'s list() below and only
+ * the launch-failed synthesis path ever carried one, which is why the ABORTED
+ * card the final M1 acceptance run hit had no reason to render at all.
+ *
+ * Composed from a LABEL and a DETAIL, joined `label: detail` when both exist
+ * and differ, because the two real producers each populate a different half:
+ *
+ *   * fleet-sprint's fatal-diagnostics guard (fleet-sprint/fatal-diagnostics.mjs)
+ *     writes `extensions.terminal = { verdict: 'ABORTED', terminalReason:
+ *     <'uncaughtException'|'unhandledRejection'>, lastError: { message, ... } }`
+ *     -- the label alone ('uncaughtException') says nothing useful, the
+ *     lastError message is the part an operator needs.
+ *   * runner.js's typed-abort path writes `extensions.terminal =
+ *     { verdict: 'ABORTED', terminalReason: <code/name>, message: <err.message> }`.
+ *   * the engine's own run-end handler (apra-fleet-workflow viewer index.mjs)
+ *     writes top-level `terminalReason` (an error message, or the bare run
+ *     status when the run ended without one), and a FAIL verdict's own
+ *     explanation lives in the workflow result's `notes`.
+ *
+ * Never throws on an unexpected shape -- every access is guarded, and an
+ * absent reason is `null` (the render layer then omits the line entirely).
+ * @param {unknown} state - a parsed terminal run-state file
+ * @returns {string|null}
+ */
+export function summarizeTerminalReason(state) {
+    const s = (state && typeof state === 'object') ? state : {};
+    const terminal = (s.extensions && typeof s.extensions.terminal === 'object' && s.extensions.terminal)
+        ? s.extensions.terminal
+        : {};
+    const lastError = (terminal.lastError && typeof terminal.lastError === 'object')
+        ? terminal.lastError
+        : ((s.lastError && typeof s.lastError === 'object') ? s.lastError : {});
+    const result = (s.result && typeof s.result === 'object') ? s.result : {};
+    // The child's OWN terminal record wins over the engine's generic run-end
+    // one: `extensions.terminal` is written at the moment the sprint decided
+    // it was over and names the specific cause, while top-level
+    // `terminalReason` degrades to the bare run status when the run ended
+    // without a thrown error.
+    const label = firstText(terminal.terminalReason, s.terminalReason);
+    const detail = firstText(terminal.message, lastError.message, result.notes);
+    if (label && detail && detail !== label) return label + ': ' + detail;
+    return label || detail;
+}
+
 /**
  * Pulls the dashboard-facing summary out of one parsed terminal state file.
  * Verdict/PR come from the opaque `result` (post-M2, or backfilled from the
@@ -318,10 +398,16 @@ export const DEFAULT_FINISHED_RUNS_LIMIT = 50;
  * watchdog copies into sprint-history.json's FINISHED event. A prUrl is only
  * kept when it is an http(s) URL, so a malformed/hostile value can never
  * become a `javascript:` href on the dashboard.
+ *
+ * (apra-fleet-i9ag.16.7) `reason` is summarizeTerminalReason()'s answer for
+ * this same state. It is part of THIS summary (rather than being bolted on by
+ * list() below) because list() caches summaries per file by mtime+size -- a
+ * reason computed outside the cached object would be recomputed on every poll
+ * and, worse, could drift from the cached verdict it explains.
  * @param {string} sprintId - the file's basename (the id GET /sprints/:id/history resolves)
  * @param {object} state
  * @param {number} mtimeMs
- * @returns {{ sprintId: string, verdict: string|null, prUrl: string|null, endedAt: string|null, goal: string|null, workflowName: string|null }}
+ * @returns {{ sprintId: string, verdict: string|null, prUrl: string|null, endedAt: string|null, goal: string|null, workflowName: string|null, reason: string|null }}
  */
 export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
     const s = backfillLegacyResult(state) || {};
@@ -341,6 +427,7 @@ export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
         endedAt,
         goal,
         workflowName: typeof s.workflowName === 'string' ? s.workflowName : null,
+        reason: summarizeTerminalReason(s),
     };
 }
 
@@ -349,8 +436,9 @@ export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
  * (apra-fleet-i9ag.4): every persisted terminal run under old_runs/ (plus the
  * legacy old_sprints/), newest first, each summarized by
  * summarizeFinishedRun(). File-backed rows get GET /sprints/:id/history links
- * that resolve, `status: 'finished'`, `reason: null`, and
- * `hasTerminalState: true`.
+ * that resolve, `status: 'finished'`, `hasTerminalState: true`, and
+ * (apra-fleet-i9ag.16.7) the `reason` summarizeTerminalReason() read out of
+ * their own terminal state file -- no longer a hard-coded null.
  *
  * old_runs/ lives in the shared fleet data dir, so other workflows' runs land
  * there too. When a `history` collaborator (history.mjs's sprint-history log)
@@ -478,9 +566,17 @@ export function createFinishedRunsIndex(deps = {}) {
         // gets the SAME three constant fields so consumers branch on one
         // explicit `status` instead of inferring "launch-failed" from an
         // absent verdict.
+        //
+        // apra-fleet-i9ag.16.7: `reason` is no longer a hard-coded null here.
+        // It is whatever summarizeFinishedRun() read out of this run's own
+        // terminal state file (summarizeTerminalReason()) -- the reason a
+        // failed/aborted run's Finished Sprints card and Sprint Stack row can
+        // now show. A clean run typically carries one too (its run status);
+        // the render layer only surfaces it for a run that ended badly, so
+        // populating it unconditionally here adds no noise to the page.
         const rows = summaries.map((s) => {
             const withVerdict = s.verdict || !historyVerdicts ? s : { ...s, verdict: historyVerdicts.get(s.sprintId) ?? null };
-            return { ...withVerdict, status: 'finished', reason: null, hasTerminalState: true };
+            return { ...withVerdict, status: 'finished', reason: withVerdict.reason ?? null, hasTerminalState: true };
         });
 
         // apra-fleet-i9ag.16.1: a sprint that died in its launch window NEVER
