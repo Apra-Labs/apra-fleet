@@ -22,29 +22,52 @@ random one-off failure rather than a structural one.
 ## Resolution order
 
 The supervisor resolves which Node.js binary to spawn a sprint with, once
-per process lifetime, through a fixed, three-tier order:
+per process lifetime, through a fixed, four-tier order:
 
 1. **An explicit operator override** (an environment variable naming a
    Node.js binary). Honored even if it resolves to a version below the
    minimum the workflow requires -- the operator named this interpreter
    deliberately, so a below-minimum override is surfaced as a version
    mismatch, never silently skipped in favor of a later tier.
-2. **The current process's own execPath**, but *only* when this process is
+2. **The recorded toolchain's node path** -- an absolute path resolved once
+   at install time and written into the supervisor's own config (see
+   "Recording and validating the toolchain" below), handed to the resolver
+   already-read so it stays synchronous and filesystem-free. This tier
+   exists specifically for a supervisor running as an installed background
+   service: an OS service manager (macOS launchd, a Windows scheduled task)
+   does not inherit the interactive login shell's PATH, so a Node.js runtime
+   installed through a version manager (nvm/fnm/volta) is invisible to tiers
+   3 and 4 even though it is exactly the runtime the operator uses everywhere
+   else. It must be consulted before tiers 3/4 for that reason -- a service
+   whose PATH is empty and whose own execPath is the apra-fleet single-
+   executable binary rather than node has no other way to reach a usable
+   runtime. Gated at the same minimum version as every other tier, and, like
+   the override above, a configured-but-unusable path is a HARD ERROR, never
+   a silent fall-through to a later tier: a skipped check here is
+   indistinguishable from a passed one, and falling through would risk
+   landing on a PATH lookup that cannot succeed on exactly the service that
+   needed this tier in the first place.
+3. **The current process's own execPath**, but *only* when this process is
    confirmed to be a real Node.js runtime and not a single-executable binary
    (checked via Node's own `node:sea` API, defensively: an unrecognized or
    unexpectedly-shaped `node:sea` module is treated as "not a SEA binary,"
    the safer default that preserves today's behavior rather than crashing
    resolution outright).
-3. **`node` resolved from PATH**, gated at the same minimum version the rest
+4. **`node` resolved from PATH**, gated at the same minimum version the rest
    of the toolchain requires. Version comparison is always numeric
    (`22.9.0` must never compare "greater than" `22.16.0` under a naive string
    comparison -- that class of bug is exactly what a purely numeric
    major/minor/patch comparison avoids).
 
-If none of the three tiers resolves to a usable runtime, resolution throws a
+If none of the four tiers resolves to a usable runtime, resolution throws a
 dedicated, class-checkable error naming every candidate tried (with the
 specific reason each failed -- not found, probe failed, or below minimum
 version) and a single operator-facing fix line.
+
+See `recorded-toolchain.md` for how the tier-2 path gets resolved, recorded,
+and re-validated, and how the same recording is used to invoke `bd` (a
+parallel, independent resolution with its own, more forgiving fallback
+behavior).
 
 ## Where resolution runs, and why it is lazy and cached
 
