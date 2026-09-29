@@ -68,6 +68,8 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { prependToPathEnv } from './child-path-env.mjs';
+
 const nodeExecFileAsync = promisify(nodeExecFile);
 
 // ---------------------------------------------------------------------------
@@ -253,6 +255,18 @@ export function warnIfLargeBdOutput(args, out, warn = console.warn) {
  * input unchanged, since callers only assign the result when `nodePath` is
  * present.
  *
+ * apra-fleet-i9ag.19.37: the actual PATH-key write goes through
+ * `./child-path-env.mjs`'s `prependToPathEnv()` (added by apra-fleet-i9ag.19.32
+ * for spawner.mjs's sprint-child equivalent of this exact fix) rather than a
+ * second, local `env.PATH ?? env.Path ?? ''` copy of the same case-correct
+ * lookup apra-fleet-i9ag.19.15 already deduped elsewhere -- both call sites
+ * below are guarded to POSIX only, where the spelling is always `PATH`, so
+ * this was never a live bug, only a second copy of logic that would be wrong
+ * first if either guard were ever lifted. The POSIX delimiter (`path.posix.
+ * delimiter`, i.e. `:`) is passed explicitly so this function keeps modelling
+ * POSIX composition regardless of the host `process.delimiter` would imply,
+ * exactly as it already does for `path.posix.dirname()` above.
+ *
  * @param {NodeJS.ProcessEnv|undefined} baseEnv - the options.env a caller passed, if any; falls back to `process.env`.
  * @param {string|null} nodePath - the configured nodePath, or null/undefined.
  * @returns {NodeJS.ProcessEnv|undefined}
@@ -261,9 +275,7 @@ function withConfiguredNodeDirOnPath(baseEnv, nodePath) {
     if (!nodePath) return baseEnv;
     const env = { ...(baseEnv ?? process.env) };
     const nodeDir = path.posix.dirname(nodePath);
-    const currentPath = env.PATH ?? env.Path ?? '';
-    env.PATH = currentPath ? `${nodeDir}:${currentPath}` : nodeDir;
-    return env;
+    return prependToPathEnv(env, nodeDir, path.posix.delimiter);
 }
 
 /**
