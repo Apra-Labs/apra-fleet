@@ -815,3 +815,114 @@ describe('runWatch: the getLog fallback classifies a terminal log', () => {
     assert.strictEqual(result.health, 'terminal');
   });
 });
+
+// ---------------------------------------------------------------------------
+// The public viewer's live state is a remote write like the shared sinks, so
+// it follows the SAME single-writer gate: the claim holder publishes, a
+// watcher that sees someone else's claim does not.
+// ---------------------------------------------------------------------------
+
+// A claim left by a process that is provably DEAD (the daemon was stopped for
+// a redeploy) used to gate an operator's own watch out of the remote writes
+// forever. It is now taken over -- release, then claim -- and only a WON
+// claim keeps the shared sinks, so a daemon racing for the same dead claim
+// can never produce two writers.
+describe('taking over a dead claim', () => {
+  function takeoverSpool(claim, { claimResult = true } = {}) {
+    const doc = { sprintId: 'sprint-1', claim };
+    const calls = [];
+    return {
+      calls,
+      read: async () => doc,
+      release: async (id) => { calls.push(['release', id]); doc.claim = null; },
+      claim: async (id, who) => { calls.push(['claim', id, who]); if (claimResult) doc.claim = who; return claimResult; },
+    };
+  }
+  const deadClaim = { pid: 26272, host: 'dev1', claimedAt: 'then' };
+
+  async function run(spool, isAlive) {
+    const shared = makeRecordingSink('blob');
+    const log = makeLog();
+    await runWatch({ sprintId: 'sprint-1' }, {
+      supervisorClient: makeFakeSupervisorClient({ getSprintResponses: [terminalSprint(stateWithPhase('Done'))] }),
+      spool, pid: 999, host: 'dev1', isAlive,
+      sinks: [{ name: 'local', sink: makeRecordingSink('local') }, { name: 'blob', sink: shared, shared: true }],
+      ...baseDeps({ log }),
+    });
+    return { shared, log };
+  }
+
+  test('a dead same-host claim is taken over and the shared sinks stay on', async () => {
+    const spool = takeoverSpool(deadClaim);
+    const { shared, log } = await run(spool, () => false);
+    assert.deepStrictEqual(spool.calls.map((c) => c[0]), ['release', 'claim']);
+    assert.deepStrictEqual(spool.calls[1][2], { pid: 999, host: 'dev1' });
+    assert.strictEqual(shared.received.length, 1);
+    assert.ok(log.lines.some((l) => l.includes('took it over')));
+  });
+
+  test('a live claim is never taken', async () => {
+    const spool = takeoverSpool(deadClaim);
+    const { shared } = await run(spool, () => true);
+    assert.deepStrictEqual(spool.calls, []);
+    assert.strictEqual(shared.received.length, 0);
+  });
+
+  test('losing the takeover race to another claimant still gates the shared sinks', async () => {
+    const spool = takeoverSpool(deadClaim, { claimResult: false });
+    const { shared } = await run(spool, () => false);
+    assert.strictEqual(shared.received.length, 0, 'someone else won the claim: they are the single writer');
+  });
+});
+
+describe('live state publishing follows the single-writer gate', () => {
+  function recordingPublisher() {
+    const calls = [];
+    return {
+      calls,
+      publish: async (sprintId, sprint) => { calls.push({ sprintId, sprint }); return { published: true, reason: 'changed' }; },
+      health: () => ({ name: 'live-state', healthy: true, consecutiveFailures: 0 }),
+    };
+  }
+
+  test('the claim holder publishes every tick\'s sprint to the publisher', async () => {
+    const running = liveSprint(stateWithPhase('Develop'));
+    const done = terminalSprint(stateWithPhase('Done'));
+    const supervisorClient = makeFakeSupervisorClient({ getSprintResponses: [running, done] });
+    const publisher = recordingPublisher();
+    const deps = {
+      supervisorClient,
+      spool: makeFakeSpool({ sprintId: 'sprint-1', claim: { pid: 4242, host: 'daemon-host', claimedAt: 'now' } }),
+      pid: 4242,
+      host: 'daemon-host',
+      sinks: [{ name: 'local', sink: makeRecordingSink('local') }, { name: 'blob', sink: makeRecordingSink('blob'), shared: true }],
+      liveStatePublisher: publisher,
+      ...baseDeps(),
+    };
+
+    await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.deepStrictEqual(publisher.calls.map((c) => c.sprint), [running, done], 'the terminal tick is handed over too');
+    assert.ok(publisher.calls.every((c) => c.sprintId === 'sprint-1'));
+  });
+
+  test('a watcher that sees someone else\'s claim publishes nothing, and says why', async () => {
+    const supervisorClient = makeFakeSupervisorClient({ getSprintResponses: [terminalSprint(stateWithPhase('Done'))] });
+    const publisher = recordingPublisher();
+    const log = makeLog();
+    const deps = {
+      supervisorClient,
+      spool: makeFakeSpool({ sprintId: 'sprint-1', claim: { pid: 111, host: 'daemon-host', claimedAt: 'now' } }),
+      pid: 999,
+      host: 'daemon-host',
+      sinks: [{ name: 'local', sink: makeRecordingSink('local') }, { name: 'blob', sink: makeRecordingSink('blob'), shared: true }],
+      liveStatePublisher: publisher,
+      ...baseDeps({ log }),
+    };
+
+    await runWatch({ sprintId: 'sprint-1' }, deps);
+
+    assert.strictEqual(publisher.calls.length, 0);
+    assert.ok(log.lines.some((l) => l.includes('NOT published')), `expected an explanation; logs: ${log.lines.join(' | ')}`);
+  });
+});

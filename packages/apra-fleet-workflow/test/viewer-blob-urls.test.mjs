@@ -85,6 +85,47 @@ describe('the emitted blob page', () => {
   });
 });
 
+// The page's script is generated inside a template literal, so an escape that
+// is right in the source can come out wrong in the page (a \' becomes a bare
+// quote). Caught once already while writing this file; compile every mode.
+describe('the emitted page script compiles in every mode', () => {
+  const state = { workflowName: 'x', status: 'success', stats: {}, tree: [], extensions: {} };
+  for (const [label, opts] of [
+    ['live', {}],
+    ['blob', { dataProvider: 'blob' }],
+    ['history', { history: true, state }],
+    ['archive', { history: true, state, historyAssets: 'relative' }],
+  ]) {
+    test(label, () => {
+      const html = HTML_TEMPLATE([], opts);
+      const start = html.indexOf('<script>');
+      const script = html.slice(start + '<script>'.length, html.indexOf('</script>', start));
+      assert.doesNotThrow(() => new vm.Script(script), `the ${label} page script must parse`);
+    });
+  }
+});
+
+describe('the emitted blob page without access', () => {
+  // Observed live against real storage: with no SAS, the page tried to parse
+  // the service's XML error body as JSON and reported a syntax error.
+  test('a refused state read says there is no access, with the HTTP status', async () => {
+    const html = HTML_TEMPLATE([], { dataProvider: 'blob' });
+    const start = html.indexOf('<script>');
+    const script = html.slice(start + '<script>'.length, html.indexOf('</script>', start));
+    const from = script.indexOf('function resolveStringRefs');
+    const marker = 'window.dataProvider = dataProvider; }';
+    const sandbox = {
+      URL, URLSearchParams, encodeURIComponent,
+      location: { hash: buildBlobViewerFragment({ stateUrl: STATE }), search: '' },
+      window: {},
+      fetch: async () => ({ ok: false, status: 409, json: async () => { throw new SyntaxError("Unexpected token '<'"); } }),
+      setInterval: () => 0, clearInterval: () => {},
+    };
+    vm.runInNewContext(script.slice(from, script.indexOf(marker) + marker.length), sandbox);
+    await assert.rejects(sandbox.window.dataProvider.getState(), /no access to this run \(HTTP 409\)/);
+  });
+});
+
 describe('the emitted archive page (history, relative assets)', () => {
   const state = { workflowName: 'x', status: 'success', stats: { activitiesCount: 0, totalTokens: 0, totalCost: 0, unknownCostCount: 0, startTime: 0, durationMs: 0 }, tree: [], extensions: {} };
 

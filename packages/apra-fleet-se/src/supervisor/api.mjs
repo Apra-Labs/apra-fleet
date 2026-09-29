@@ -775,7 +775,10 @@ export function createSprintController(deps = {}) {
             // the answer if the read fails.
             let state = null;
             try { state = readFinalState(id, latest.branch ?? null); } catch { state = null; }
-            return { sprintId: id, live: false, history: history.forSprint(id), latest, ...(state ? { state } : {}) };
+            // A persisted FINAL state means the run ended: say so with the same
+            // terminal:true the lingering-child shape above uses, so a caller
+            // never has to re-derive it from the history events.
+            return { sprintId: id, live: false, history: history.forSprint(id), latest, ...(state ? { terminal: true, state } : {}) };
         }
         throw new ApiError(404, `no sprint '${id}' is live or in history`);
     }

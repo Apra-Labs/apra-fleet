@@ -108,6 +108,7 @@ import { createAdapterFacade } from '../src/adapters/facade.mjs';
 import { createJsonlFileSink } from '../src/sinks/jsonl-file.mjs';
 import { createAppendBlobSink } from '../src/sinks/append-blob.mjs';
 import { createAppendBlobHttp } from '../src/sinks/append-blob-http.mjs';
+import { createLiveStatePublisher } from '../src/spa/live-state-publisher.mjs';
 import { createArchivePublisher } from '../src/spa/archive-publisher.mjs';
 import { createRedactor } from '../src/log-safe.mjs';
 
@@ -610,9 +611,24 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
     });
   }
 
+  // The public blob viewer's live state (sprints/<id>/state.json), published
+  // to the same container as the log. watch.mjs runs it only when the gate
+  // keeps the shared sinks, so the claim holder is its single writer.
+  const liveStatePublisher = blob
+    ? createLiveStatePublisher({
+      accountUrl: blob.accountUrl,
+      containerName: blob.containerName,
+      sas: blob.sas,
+      http: ctx.blobHttp(),
+      now: ctx.clock.now,
+      log: ctx.log,
+    })
+    : null;
+
   return {
     supervisorClient: await ctx.supervisorClient(flags),
     sinks,
+    liveStatePublisher,
     spool: await ctx.spool(flags),
     adapter,
     sleep: ctx.clock.sleep,
@@ -627,6 +643,8 @@ async function buildObservabilityDeps({ sprintId, handle }, ctx, flags, mcpConn)
     // daemon's own append-blob sink on every sprint.
     pid: process.pid,
     host: os.hostname(),
+    // Lets the gate take over a claim left by a dead process on this host.
+    isAlive: ctx.isAliveFn,
   };
 }
 

@@ -676,7 +676,12 @@ export function toProgressSnapshot(sprint) {
 
   const spendUsd = spendUsdFromSprint(sprint);
 
-  const health = sprint && sprint.terminal
+  // The SAME rule finalize gates on (isSprintTerminal), never a second one:
+  // a released sprint answered with its persisted final state beside its
+  // history used to read 'unknown' here -- the history branch above is
+  // skipped once `state` is present -- so watch polled it forever while
+  // finalize, reading the history events, called it ended.
+  const health = isSprintTerminal(sprint)
     ? 'terminal'
     : (sprint && sprint.live ? 'running' : 'unknown');
 

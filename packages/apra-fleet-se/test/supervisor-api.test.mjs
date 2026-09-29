@@ -1079,6 +1079,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         assert.equal(out.latest.event, 'auto-released');
         assert.deepEqual(out.state, { status: 'failed', terminalReason: 'watchdog: crashed', tree: [] });
         assert.deepEqual(seen, ['s1']);
+        assert.equal(out.terminal, true, 'a persisted final state means the run ended');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
@@ -1094,6 +1095,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         const out = await controller.getSprint('s1');
         assert.equal(out.live, false);
         assert.equal('state' in out, false);
+        assert.equal('terminal' in out, false, 'no persisted state: the history events are the only evidence, nothing is asserted');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 

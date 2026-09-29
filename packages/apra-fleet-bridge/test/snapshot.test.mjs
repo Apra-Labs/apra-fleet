@@ -673,6 +673,15 @@ describe('isSprintTerminal', () => {
     assert.equal(isSprintTerminal(killedSprint), toProgressSnapshot(killedSprint).health === 'terminal');
   });
 
+  // The same killed sprint once the supervisor also returns its persisted
+  // final state: this shape skipped the history branch and read 'unknown',
+  // and watch polled it forever (observed live).
+  test('finalize and watch agree when the released sprint also carries its persisted state', () => {
+    const withState = { ...killedSprint, state: { status: 'failed', terminalReason: 'watchdog: crashed', tree: [], extensions: {} } };
+    assert.equal(isSprintTerminal(withState), true);
+    assert.equal(toProgressSnapshot(withState).health, 'terminal');
+  });
+
   test('an operator force-release alone is NOT terminal: the process may still be running', () => {
     const forced = { sprintId: 's', live: false, history: [{ event: 'force-released', at: '2026-09-29T04:00:00Z' }] };
     assert.equal(isSprintTerminal(forced), false);

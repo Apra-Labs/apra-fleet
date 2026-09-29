@@ -213,7 +213,18 @@ function validateWatchDeps(deps) {
   const pid = typeof d.pid === 'number' && Number.isFinite(d.pid) ? d.pid : null;
   const host = typeof d.host === 'string' && d.host.length > 0 ? d.host : null;
 
-  return { supervisorClient, sinkEntries: d.sinks, sleep: d.sleep, now: d.now, adapter, spool, log, signal, pid, host };
+  // Optional: publishes the running sprint's state for the public blob viewer
+  // (spa/live-state-publisher.mjs). A remote writer, so it follows the SAME
+  // single-writer gate as the shared sinks -- see runWatch().
+  const liveStatePublisher = d.liveStatePublisher && typeof d.liveStatePublisher.publish === 'function'
+    ? d.liveStatePublisher
+    : null;
+
+  // Optional: the same liveness probe the daemon uses (runtime.mjs isAlive),
+  // so the gate can take over a claim whose owner is provably dead.
+  const isAlive = typeof d.isAlive === 'function' ? d.isAlive : null;
+
+  return { supervisorClient, sinkEntries: d.sinks, sleep: d.sleep, now: d.now, adapter, spool, log, signal, pid, host, liveStatePublisher, isAlive };
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +307,38 @@ async function applySinkGate(sinkEntries, opts, deps) {
   if (ownClaim) {
     deps.log(`[watch] the live spool claim on sprint "${opts.sprintId}" is this caller's own (pid ${deps.pid} on ${deps.host}) -- keeping shared sink(s) enabled; the single-writer invariant is satisfied by being that single writer`);
     return sinkEntries;
+  }
+
+  // A claim whose owner is provably DEAD (same host, no such pid) protects
+  // nobody, but ignoring it would not be safe either: a daemon may take the
+  // same dead claim over at the same moment, and then two writers share one
+  // appendpos sequence. So take it over the way the daemon does -- release,
+  // then claim -- and write only if this caller WON. `isAlive` answers
+  // "alive" for any other host (runtime.mjs), so a foreign host's claim is
+  // never taken.
+  const canTakeOver = typeof deps.isAlive === 'function'
+    && deps.pid !== null && deps.pid !== undefined && deps.host
+    && typeof deps.spool.release === 'function' && typeof deps.spool.claim === 'function';
+  if (canTakeOver) {
+    let dead = false;
+    try {
+      dead = !deps.isAlive(claim.pid, claim.host);
+    } catch {
+      dead = false;
+    }
+    if (dead) {
+      let won = false;
+      try {
+        await deps.spool.release(opts.sprintId);
+        won = Boolean(await deps.spool.claim(opts.sprintId, { pid: deps.pid, host: deps.host }));
+      } catch (err) {
+        deps.log(`[watch] could not take over the dead claim on sprint "${opts.sprintId}" (treated as foreign): ${err && err.message ? err.message : String(err)}`);
+      }
+      if (won) {
+        deps.log(`[watch] the spool claim on sprint "${opts.sprintId}" belonged to a dead process (pid ${claim.pid} on ${claim.host}) -- took it over; this caller is now the single writer and keeps shared sink(s) enabled`);
+        return sinkEntries;
+      }
+    }
   }
 
   const sharedNames = sharedEntries.map((e) => e.name).join(', ');
@@ -420,10 +463,23 @@ async function sleepInterruptible(ms, sleep, signal) {
  */
 export async function runWatch(opts, deps) {
   const { sprintId, giveUpMs, logTailLines } = validateWatchOpts(opts);
-  const { supervisorClient, sinkEntries, sleep, now, adapter, spool, log, signal, pid, host } = validateWatchDeps(deps);
+  const { supervisorClient, sinkEntries, sleep, now, adapter, spool, log, signal, pid, host, liveStatePublisher: requestedPublisher, isAlive } = validateWatchDeps(deps);
 
-  const gatedEntries = await applySinkGate(sinkEntries, { sprintId }, { spool, log, pid, host });
+  const gatedEntries = await applySinkGate(sinkEntries, { sprintId }, { spool, log, pid, host, isAlive });
   const sinkFan = createSinkFan({ sinks: gatedEntries, log, now });
+
+  // The live-state publisher writes to the same remote as the shared sinks,
+  // so it runs only when the gate kept them: two watchers of one sprint must
+  // never both overwrite its state.json.
+  const sharedEntries = sinkEntries.filter((e) => e && e.shared === true);
+  const sharedKept = sharedEntries.every((e) => gatedEntries.includes(e));
+  const liveStatePublisher = requestedPublisher && sharedKept ? requestedPublisher : null;
+  if (requestedPublisher && !sharedKept) {
+    log(`[watch] live state for sprint "${sprintId}" is NOT published by this caller: another process holds the claim and is its single writer`);
+  }
+  const healthEntries = liveStatePublisher
+    ? [...gatedEntries, { name: 'live-state', sink: liveStatePublisher }]
+    : gatedEntries;
 
   // WHY A HEALTH MONITOR AND NOT JUST THE FAN'S stats(): the fan counts an
   // emit as a success the moment the sink accepts the record, and a
@@ -541,6 +597,17 @@ export async function runWatch(opts, deps) {
           log(`[watch] sink fan emit() threw (isolated, continuing): ${safeMessage(err)}`);
         }
 
+        // The public viewer's live state. Rate-limited and never-throwing by
+        // contract (spa/live-state-publisher.mjs); isolated anyway.
+        if (liveStatePublisher && sprint) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await liveStatePublisher.publish(sprintId, sprint);
+          } catch (err) {
+            log(`[watch] live state publish threw (isolated, continuing): ${safeMessage(err)}`);
+          }
+        }
+
         // Checked on every tick, immediately after the emit that may have
         // filled a failing sink's buffer further. Cheap (a pure read of
         // already-recorded counters) and non-throwing by contract, but
@@ -548,7 +615,7 @@ export async function runWatch(opts, deps) {
         // observational can end a sprint.
         try {
           // eslint-disable-next-line no-await-in-loop
-          await sinkHealth.check(gatedEntries);
+          await sinkHealth.check(healthEntries);
         } catch (err) {
           log(`[watch] sink health check threw (isolated, continuing): ${safeMessage(err)}`);
         }
@@ -605,7 +672,7 @@ export async function runWatch(opts, deps) {
     // sprint would otherwise never be escalated at all -- the tick that
     // would have noticed never comes.
     try {
-      sinkHealth.finalReport(gatedEntries);
+      sinkHealth.finalReport(healthEntries);
     } catch (err) {
       log(`[watch] sink health final report threw (isolated): ${safeMessage(err)}`);
     }

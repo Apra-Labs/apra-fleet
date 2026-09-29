@@ -473,6 +473,12 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
             const url = apraFleetBlobStateUrl();
             if (!url) throw new Error('blob provider: no state URL configured (expected #state=<url> in the page fragment)');
             const res = await fetch(url, { cache: 'no-store' });
+            // Storage answers a missing, wrong or expired SAS with an XML
+            // error body; parsing that as JSON reported a meaningless syntax
+            // error instead of the actual cause.
+            if (!res.ok) {
+                throw new Error('no access to this run (HTTP ' + res.status + '): the access token in the link is missing, wrong or expired');
+            }
             const raw = await res.json();
             return resolveStringRefs(raw, raw._strings || []);
         },
