@@ -283,12 +283,43 @@ function resolveNodePath(exec: FleetSePrereqExec): FleetSeToolchainProbe {
 }
 
 /**
+ * Extension-matcher for a Windows executable shim/binary. `where bd` can list
+ * multiple candidates on PATH; only a `.cmd` or `.exe` line is something
+ * cmd.exe can actually execute and resolveConfiguredWindowsBdScript()'s
+ * `.cmd`-shape regex can parse.
+ */
+const WINDOWS_EXECUTABLE_EXTENSION_RE = /\.(cmd|exe)$/i;
+
+/**
+ * Picks the line `where bd` produced that resolveBdPath() should record on
+ * win32. npm installs bd as BOTH an extensionless POSIX-shell shim
+ * (`<prefix>\npm\bd`) and a `bd.cmd`, and `where bd` lists the extensionless
+ * shim FIRST -- so selection here is by EXECUTABLE EXTENSION, never by line
+ * index (apra-fleet-i9ag.19 judge defect D2). Swapping the order of the same
+ * two lines must select the same `.cmd`/`.exe`. When only extensionless
+ * candidates exist, that is an explicit, documented degraded outcome
+ * (path: null, ok: false, reason naming what was found) -- never a silently
+ * recorded unusable path.
+ */
+function pickWindowsBdLine(lines: string[]): { path: string | null; reason: string | null } {
+  const executable = lines.find((line) => WINDOWS_EXECUTABLE_EXTENSION_RE.test(line));
+  if (executable !== undefined) return { path: executable, reason: null };
+  if (lines.length > 0) {
+    return {
+      path: null,
+      reason: `where bd found no .cmd/.exe on PATH, only non-executable candidate(s) cmd.exe cannot run: ${lines.join(', ')}`,
+    };
+  }
+  return { path: null, reason: 'where bd returned no output' };
+}
+
+/**
  * Resolves bd's absolute path via a platform lookup ('where bd' on win32,
- * first non-empty line; 'which bd' elsewhere) and its version via
- * `bd --version`. bd being absent is NOT an error here -- unlike node, bd is
- * not a hard fleet-se prerequisite this module enforces (see the module doc
- * comment's SCOPE NOTE) -- it just yields ok:false plus a reason. Never
- * throws.
+ * preferring the .cmd/.exe candidate; 'which bd' elsewhere, first non-empty
+ * line) and its version via `bd --version`. bd being absent is NOT an error
+ * here -- unlike node, bd is not a hard fleet-se prerequisite this module
+ * enforces (see the module doc comment's SCOPE NOTE) -- it just yields
+ * ok:false plus a reason. Never throws.
  */
 function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSeToolchainProbe {
   const lookupFile = platform === 'win32' ? 'where' : 'which';
@@ -297,12 +328,16 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
   let reason: string | null = null;
   try {
     const raw = exec(lookupFile, ['bd'], { ...PROBE_OPTIONS });
-    const firstLine = String(raw)
+    const lines = String(raw)
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    if (firstLine !== undefined) {
-      bdPath = firstLine;
+      .filter((line) => line.length > 0);
+    if (platform === 'win32') {
+      const picked = pickWindowsBdLine(lines);
+      bdPath = picked.path;
+      reason = picked.reason;
+    } else if (lines.length > 0) {
+      bdPath = lines[0];
     } else {
       reason = `${lookupFile} bd returned no output`;
     }
