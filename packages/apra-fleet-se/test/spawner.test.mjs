@@ -919,3 +919,66 @@ describe('createSpawner -- lazy runner resolution (apra-fleet-i9ag.15.2)', () =>
         assert.equal(attempt, 2, 'a failed resolution must never be cached');
     });
 });
+
+// apra-fleet-i9ag.19.5 -- createSpawner() threads deps.configuredNodePath
+// into every resolveRunner() call ({ configuredNodePath }), so the real
+// resolveSprintRunnerCommand() (node-runner.mjs) can apply its CONFIGURED
+// tier. These tests exercise the seam at the spawner level (the CONFIGURED
+// tier's own resolution logic is covered by
+// packages/apra-fleet-se/test/i9ag15-node-runner.test.mjs); AC6 in
+// particular needs the ordering guarantee proven with a spy, not just
+// asserted in prose.
+describe('createSpawner -- configured node path threading (apra-fleet-i9ag.19.5)', () => {
+    test('AC6: configuredNodePath is threaded into resolveRunner(), consulted strictly before port allocation and log-file creation, and used as the spawn command', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([777]);
+        const fakeFs = makeFakeFs();
+        let portProbed = false;
+        let receivedArg;
+        let sawSideEffectBeforeResolve = false;
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            configuredNodePath: '/opt/toolchain/node',
+            resolveRunner: (arg) => {
+                receivedArg = arg;
+                if (portProbed || fakeFs.mkdirCalls.length > 0 || fakeFs.opened.length > 0) {
+                    sawSideEffectBeforeResolve = true;
+                }
+                return { command: arg.configuredNodePath, source: 'configured', version: '22.16.0' };
+            },
+            basePort: 9000,
+            isPortAvailable: async () => { portProbed = true; return true; },
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        const result = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.deepEqual(receivedArg, { configuredNodePath: '/opt/toolchain/node' }, 'resolveRunner must receive the configured path');
+        assert.equal(sawSideEffectBeforeResolve, false, 'resolveRunner (and thus configuredNodePath) must be consulted before port allocation or log-file creation');
+        assert.equal(result.command, '/opt/toolchain/node');
+        assert.equal(calls[0].command, '/opt/toolchain/node', 'spawnSprint must actually spawn with the resolved configured command');
+    });
+
+    test('an injected deps.command still wins unconditionally over configuredNodePath -- resolveRunner (and configuredNodePath) is never consulted', async () => {
+        let resolverCalls = 0;
+        const { spawnFn, calls } = makeFakeSpawn([778]);
+        const fakeFs = makeFakeFs();
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/explicit/override/node',
+            configuredNodePath: '/opt/toolchain/node',
+            resolveRunner: () => { resolverCalls += 1; return { command: 'node', source: 'path', version: '22.16.0' }; },
+            basePort: 9000,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
+            logger: { log() {}, error() {} },
+        });
+
+        const result = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        assert.equal(result.command, '/explicit/override/node');
+        assert.equal(calls[0].command, '/explicit/override/node');
+        assert.equal(resolverCalls, 0, 'deps.command must bypass resolveRunner -- and therefore configuredNodePath -- entirely');
+    });
+});

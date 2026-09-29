@@ -311,3 +311,167 @@ describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
         assert.ok(Object.values(SPRINT_RUNNER_SOURCE).includes(result.source));
     });
 });
+
+// apra-fleet-i9ag.19.5 -- the CONFIGURED tier: the recorded toolchain's
+// absolute node path, inserted between the FLEET_SE_NODE override (tier 1)
+// and current-runtime/PATH (tiers 3/4). This is what lets a launchd/Windows-
+// service supervisor -- whose PATH the login shell never populates, and whose
+// own execPath is the apra-fleet SEA binary rather than node -- launch a
+// sprint at all. See node-runner.mjs's file-level doc comment for the full
+// rationale; these tests pin AC1-AC5 from that bead with exact
+// file/args/options assertions (matching this file's own injected-exec
+// convention above), not just "it still works".
+describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', () => {
+    test('AC1: a configured path with no other usable tier (PATH absent) resolves with source "configured"', () => {
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true, // current-runtime tier is skipped either way
+            // 'node' (the PATH tier) is deliberately absent from this map --
+            // if resolution ever fell through to it, the probe would throw.
+            exec: fakeExec({ '/opt/toolchain/node': 'v22.16.0' }),
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+        assert.deepEqual(result, {
+            command: '/opt/toolchain/node',
+            source: SPRINT_RUNNER_SOURCE.CONFIGURED,
+            version: '22.16.0',
+        });
+    });
+
+    test('AC2: a broken configured path throws naming it, and neither current-runtime nor the PATH probe is ever invoked', () => {
+        // Both the current-runtime execPath and 'node' on PATH would resolve
+        // successfully if tried -- proving the configured-tier failure is a
+        // hard stop, not a silent fall-through, requires a spy that shows
+        // those probes never ran at all (not just that the end result threw).
+        const { exec, calls } = fakeExecCapturing({ '/usr/bin/node-under-test': 'v22.16.0', node: 'v22.16.0' });
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: '/usr/bin/node-under-test',
+                isSea: () => false,
+                exec,
+                platform: 'linux',
+                configuredNodePath: '/bad/configured/node',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.ok(err.message.includes('/bad/configured/node'), 'names the broken configured path');
+                return true;
+            },
+        );
+        assert.equal(calls.length, 1, 'current-runtime/PATH must never be probed once the configured tier throws');
+        assert.equal(calls[0].file, '/bad/configured/node');
+    });
+
+    test('AC2: a configured path resolving below MIN_NODE_VERSION throws naming the version found and the minimum, without falling through', () => {
+        const { exec, calls } = fakeExecCapturing({ '/opt/toolchain/node': 'v22.9.0', node: 'v22.16.0' });
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                exec,
+                platform: 'linux',
+                configuredNodePath: '/opt/toolchain/node',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.ok(err.message.includes('/opt/toolchain/node'), 'names the configured path');
+                assert.ok(err.message.includes('22.9.0'), 'names the too-old version actually found');
+                assert.ok(err.message.includes(MIN_NODE_VERSION), 'names the required minimum');
+                return true;
+            },
+        );
+        assert.equal(calls.length, 1, 'must never fall through to the PATH probe after a too-old configured version');
+    });
+
+    test('AC3: FLEET_SE_NODE still wins over a configured path, even when the configured path would also resolve', () => {
+        const result = resolveSprintRunnerCommand({
+            env: { FLEET_SE_NODE: '/custom/node' },
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec: fakeExec({ '/custom/node': 'v20.0.0', '/opt/toolchain/node': 'v22.16.0', node: 'v22.16.0' }),
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+        assert.deepEqual(result, {
+            command: '/custom/node',
+            source: SPRINT_RUNNER_SOURCE.OVERRIDE,
+            version: '20.0.0',
+        });
+    });
+
+    test('AC4: an absent configuredNodePath leaves current-runtime/PATH tier order and result exactly as before this bead', () => {
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/usr/bin/node-under-test',
+            isSea: () => false,
+            exec: fakeExec({ '/usr/bin/node-under-test': 'v22.16.0' }),
+            platform: 'linux',
+            // configuredNodePath intentionally omitted
+        });
+        assert.deepEqual(result, {
+            command: '/usr/bin/node-under-test',
+            source: SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME,
+            version: '22.16.0',
+        });
+    });
+
+    test('AC4: an empty/whitespace-only configuredNodePath is treated as unset, not a tier-2 candidate', () => {
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/usr/bin/node-under-test',
+            isSea: () => false,
+            exec: fakeExec({ '/usr/bin/node-under-test': 'v22.16.0' }),
+            platform: 'linux',
+            configuredNodePath: '   ',
+        });
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME);
+    });
+
+    test('AC5: a configured path containing a space is quoted before the win32 shell probe, and resolves', () => {
+        const spacedPath = 'C:\\Program Files\\nodejs\\node.exe';
+        const quoted = `"${spacedPath}"`;
+        const { exec, calls } = fakeExecCapturing({ [quoted]: 'v22.16.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'win32',
+            configuredNodePath: spacedPath,
+        });
+
+        assert.deepEqual(result, {
+            command: spacedPath,
+            source: SPRINT_RUNNER_SOURCE.CONFIGURED,
+            version: '22.16.0',
+        }, 'the resolved command returned to the caller is the ORIGINAL unquoted path');
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, quoted, 'the configured-path probe itself was quoted for the win32 shell');
+        assert.equal(calls[0].options.shell, true);
+    });
+
+    test('AC5: a configured path containing a space on non-win32 is probed unquoted and without a shell', () => {
+        const spacedPath = '/usr/local/my node/bin/node';
+        const { exec, calls } = fakeExecCapturing({ [spacedPath]: 'v22.16.0' });
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'linux',
+            configuredNodePath: spacedPath,
+        });
+
+        assert.equal(result.command, spacedPath);
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CONFIGURED);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].file, spacedPath, 'linux/darwin never quote -- no shell is used there');
+        assert.equal(calls[0].options.shell, false);
+    });
+});
