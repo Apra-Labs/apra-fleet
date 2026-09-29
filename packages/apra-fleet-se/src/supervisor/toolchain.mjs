@@ -52,6 +52,20 @@
 //     lookup for `bd` rather than hard-failing the way the node resolver
 //     does, so a broken *recording* for `bd` is not the same class of outage
 //     as a broken one for node.
+//   - `nodeOk`/`bdOk` (2026-09-29 review fix) make that node-vs-bd
+//     distinction MACHINE-READABLE, not just a fact a caller has to recover
+//     by substring-matching `problems`. `ok` alone conflates "node is fine"
+//     with "the whole toolchain is fine" (it is, by design, ONLY the former),
+//     which left no way for a consumer to ask "is node specifically okay?"
+//     or "is bd specifically okay?" without parsing prose. Both are `null`
+//     when `configured` is `false` (nothing to judge, not "good" or "bad"),
+//     otherwise strict booleans: `nodeOk` mirrors `ok` exactly (kept as a
+//     separate field for symmetry with `bdOk`, not because it can ever
+//     disagree with `ok`); `bdOk` is `true` only when a recorded `bdPath`
+//     probed successfully, `false` for either "no bdPath was recorded" or
+//     "the recorded bdPath did not probe" -- both already produce their own
+//     `problems` entry, this just gives a consumer a field to branch on
+//     instead.
 //   - Exactly ONE operator-facing fix line (`TOOLCHAIN_FIX_LINE`) is defined
 //     here, covering both node and bd, so no consumer of this module's
 //     result has to invent or restate its own version of that sentence.
@@ -203,6 +217,8 @@ function probeVersion(exec, platform, file, args) {
  *   source: string,
  *   reason: string|null,
  *   ok: boolean,
+ *   nodeOk: boolean|null,
+ *   bdOk: boolean|null,
  *   problems: string[],
  *   fixLine: string,
  * }>}
@@ -239,6 +255,8 @@ export async function validateRecordedToolchain(deps = {}) {
             source: config.path,
             reason: toolchainReason,
             ok: true,
+            nodeOk: null,
+            bdOk: null,
             problems: [],
             fixLine: TOOLCHAIN_FIX_LINE,
         };
@@ -275,17 +293,24 @@ export async function validateRecordedToolchain(deps = {}) {
     // never flips `ok`. exec-bd.mjs's configured-bd invocation degrades to a
     // PATH lookup rather than hard-failing, so a broken recording for `bd`
     // is not the same class of outage as one for node; it is still real and
-    // worth reporting, just not this module's single pass/fail gate.
+    // worth reporting, just not this module's single pass/fail gate. `bdOk`
+    // (see this file's header) gives a consumer that same distinction as a
+    // plain boolean, without having to substring-match `problems`.
     let bdVersion = null;
+    let bdOk;
     if (typeof bdPath !== 'string' || bdPath.length === 0) {
+        bdOk = false;
         problems.push('No bd path was recorded for this installation.');
     } else {
         bdVersion = probeVersion(exec, platform, bdPath, ['--version']);
         if (bdVersion === null) {
+            bdOk = false;
             problems.push(
                 `Recorded bd path ${JSON.stringify(bdPath)} does not resolve to a usable bd `
                 + `(probed '${bdPath} --version' and it failed, or returned no parseable version).`,
             );
+        } else {
+            bdOk = true;
         }
     }
 
@@ -298,6 +323,8 @@ export async function validateRecordedToolchain(deps = {}) {
         source: config.path,
         reason: null,
         ok: nodeOk,
+        nodeOk,
+        bdOk,
         problems,
         fixLine: TOOLCHAIN_FIX_LINE,
     };
