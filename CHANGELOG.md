@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Console theme-token fix and header/stack counter fix land; two acceptance-run regressions from the same M1 pass remain open
+
+Sprint goal: close four defects found by an M1 acceptance run against the
+installed console binary -- unreadable black-on-dark text on the Projects
+page, the supervisor header's running-sprint counter disagreeing with its own
+sprint stack, launch-failure reasons not surfacing on the dashboard for a
+sprint that fails after its launch window, and missing cross-links between
+the live sprint viewer/History pages and the dashboard. Two of the four are
+fixed and verified against the deployed build; the other two were closed on
+suites that already existed in the build the regression was found in and so
+could not have distinguished "fixed" from "still broken" -- both were
+reopened in review and remain open, with the underlying defects still
+present at branch head.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.6991.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.3716 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 11 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The console Projects page now renders on the shared dark theme instead
+  of unstyled black-on-dark text.** The dashboard's CSS tokens moved out of
+  the dashboard's own module into one shared module that both the dashboard
+  and the Projects page import, so the two can never drift back out of sync,
+  and any future console-embedded page gets the theme by importing the same
+  module rather than redefining it. See
+  [docs/features](packages/apra-fleet-se/docs/architecture.md) ("Theme
+  tokens: one shared module, not a per-page copy").
+- **The supervisor header's running-sprint counter now always agrees with
+  the sprint stack rendered below it.** Both the first paint and every
+  subsequent live poll derive the counter from the exact same array the
+  stack is rendered from, through the one client-side render path already in
+  place -- there is no second counter-producing code path that could fall out
+  of sync. See `packages/apra-fleet-se/docs/architecture.md` ("Header
+  running-counter must read the same array the stack renders").
+
+Carried forward (reopened in review, still open):
+
+- **A sprint that fails after its launch window still does not show a
+  failure reason on the dashboard's sprint-stack row or finished-sprint
+  card.** The reason is not lost -- it is visible on the live viewer and the
+  History page -- but the dashboard's own summary surfaces render an empty
+  reason for any status other than the narrow launch-failed case. Fixing
+  this needs both prompt terminal-state detection and reason rendering on the
+  stack row/card; landing only one half still leaves an unexplained failure
+  on screen.
+- **Cross-links from the live sprint viewer and the History page back to the
+  dashboard were reported missing during a click-only acceptance pass**, even
+  though the back-link injection code exists on both paths. No code or test
+  changed in the affected area since that finding, so the passing suite
+  cannot be treated as evidence the regression is fixed.
+
 ## [Unreleased] -- Sprint launches reliably from the installed binary, and a failed launch is now visible
 
 Sprint goal: fix three console launch-path defects found by an acceptance
