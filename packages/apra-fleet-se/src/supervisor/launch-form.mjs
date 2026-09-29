@@ -48,6 +48,11 @@ import { ROLES } from '../../fleet-sprint/contracts.mjs';
 // 404, so a launch from the embedded form could not work at all. Both are built
 // through mountHref() against the mount prefix dashboard.mjs threads in.
 import { mountHref } from './mount-prefix.mjs';
+// (apra-fleet-i9ag.16.7) The SAME "did this run end badly?" answer the
+// dashboard's Finished Sprints card and Sprint Stack row use, so the launch
+// form can never disagree with the rest of the page about whether the run it
+// launched failed. See run-outcome.mjs for why it is its own module.
+import { FAILED_VERDICTS, FAILED_RUN_STATUSES, isFailedRunOutcome } from './run-outcome.mjs';
 
 /**
  * The goal selector offers EXACTLY these three values (acceptance criterion).
@@ -220,6 +225,91 @@ export function classifyLaunchWatch(body) {
     }
     if (body.live === true) return { status: 'live' };
     return { status: 'unknown' };
+}
+
+/**
+ * (apra-fleet-i9ag.16.7) Given a GET /state payload (dashboard.mjs's
+ * buildStatePayload() shape: `{ sprints: [...], finished: [...] }`), decides
+ * what the launch form should now say about the run it just launched.
+ *
+ * WHY THIS EXISTS ON TOP OF classifyLaunchWatch() ABOVE: that watch covers the
+ * LAUNCH WINDOW only (apra-fleet-i9ag.16.4's first-seconds poll of
+ * GET /api/sprints/:id, bounded by WATCH_WINDOW_MS). The final M1 acceptance
+ * run hit a sprint that launched cleanly and then failed MINUTES later, in its
+ * Plan phase -- long after that window had closed -- and the form was still
+ * showing a plain green 'Launched sprint ...' line. Widening the launch window
+ * is explicitly NOT the fix (it would still be a bounded guess); following the
+ * run through the SAME /state payload the Sprint Stack already renders from is.
+ *
+ * PURE -- no DOM, no fetch, no timers -- so it is unit-testable in isolation
+ * AND embedded verbatim into the client script via `.toString()`, exactly like
+ * classifyLaunchWatch() above.
+ *
+ * The four answers, in the order they are decided:
+ *   'failed'   the run is visible (in the live stack OR the finished list) with
+ *              an outcome that means it ended badly (isFailedRunOutcome) --
+ *              replace the green line with the failure and its reason.
+ *   'finished' the run reached a terminal state that is NOT a failure -- say so
+ *              with its verdict, and stop following.
+ *   'healthy'  the run is in the stack and genuinely healthy (running-healthy,
+ *              or paused, which is a live, deliberate state) -- the launch
+ *              really did succeed, so stop following and leave the line alone.
+ *   'running'  the run is in the stack but not yet in a settled state (e.g.
+ *              running-unresponsive) -- keep following.
+ *   'unknown'  the run is in neither list yet (a poll that raced the launch, a
+ *              404, a malformed body) -- keep following, NEVER invent a failure.
+ * @param {{ sprints?: Array<object>, finished?: Array<object> }|null|undefined} state
+ * @param {string} sprintId
+ * @returns {{ status: 'failed', reason: string }|{ status: 'finished', verdict: string }|{ status: 'healthy', sprintStatus: string }|{ status: 'running', sprintStatus: string }|{ status: 'unknown' }}
+ */
+export function classifyLaunchFollow(state, sprintId) {
+    if (!state || typeof state !== 'object') return { status: 'unknown' };
+    if (typeof sprintId !== 'string' || sprintId.length === 0) return { status: 'unknown' };
+    var sprints = Array.isArray(state.sprints) ? state.sprints : [];
+    var row = null;
+    for (var i = 0; i < sprints.length; i += 1) {
+        if (sprints[i] && sprints[i].sprintId === sprintId) { row = sprints[i]; break; }
+    }
+    if (row) {
+        if (isFailedRunOutcome(row.status, row.verdict)) {
+            return { status: 'failed', reason: launchFollowReason(row.reason, row.status) };
+        }
+        var live = String(row.status || '');
+        // running-healthy / paused are the two settled LIVE states: the launch
+        // is confirmed good, so there is nothing left for the form to warn
+        // about. Anything else (running-unresponsive) is still in flight.
+        if (live === 'running-healthy' || live === 'paused') {
+            return { status: 'healthy', sprintStatus: live };
+        }
+        return { status: 'running', sprintStatus: live || 'running' };
+    }
+    var finished = Array.isArray(state.finished) ? state.finished : [];
+    for (var j = 0; j < finished.length; j += 1) {
+        var done = finished[j];
+        if (!done || done.sprintId !== sprintId) continue;
+        if (isFailedRunOutcome(done.status, done.verdict)) {
+            return { status: 'failed', reason: launchFollowReason(done.reason, done.verdict || done.status) };
+        }
+        var verdict = (typeof done.verdict === 'string' && done.verdict.length > 0) ? done.verdict : 'unknown';
+        return { status: 'finished', verdict: verdict };
+    }
+    return { status: 'unknown' };
+}
+
+/**
+ * (apra-fleet-i9ag.16.7) The reason text classifyLaunchFollow() reports: the
+ * run's own recorded reason when it has one, else the bare status/verdict that
+ * proved it failed, else a non-empty last resort -- so the form never renders
+ * 'failed: ' with nothing after it. Embedded into the client script alongside
+ * classifyLaunchFollow(), which is its only caller.
+ * @param {unknown} reason
+ * @param {unknown} fallback
+ * @returns {string}
+ */
+export function launchFollowReason(reason, fallback) {
+    if (typeof reason === 'string' && reason.length > 0) return reason;
+    if (typeof fallback === 'string' && fallback.length > 0) return fallback;
+    return 'run ended without a recorded reason';
 }
 
 /**
@@ -464,6 +554,17 @@ function clientScriptSource(mountPrefix) {
     var MOUNT_PREFIX = '${typeof mountPrefix === 'string' ? mountPrefix : ''}';
     ${mountHref.toString()}
     ${classifyLaunchWatch.toString()}
+    // apra-fleet-i9ag.16.7: the post-launch-window FOLLOW phase's classifier
+    // and its two dependencies. isFailedRunOutcome() closes over these two
+    // frozen arrays, so they go over as inline JSON -- a helper embedded
+    // without what it references is a ReferenceError the moment the browser
+    // reaches it (the same trap dashboard.mjs's sprintStackLiveScript()
+    // documents for launchFailedBadge).
+    var FAILED_VERDICTS = ${JSON.stringify(FAILED_VERDICTS)};
+    var FAILED_RUN_STATUSES = ${JSON.stringify(FAILED_RUN_STATUSES)};
+    ${isFailedRunOutcome.toString()}
+    ${launchFollowReason.toString()}
+    ${classifyLaunchFollow.toString()}
 
     // Poll every 2s for up to 30s -- comfortably more than one watchdog
     // classification tick (watchdog.mjs's launch-failed window check runs on
@@ -486,9 +587,14 @@ function clientScriptSource(mountPrefix) {
         }
     }
 
-    function renderLaunchWatchFailure(sprintId, reason) {
+    // apra-fleet-i9ag.16.7: the red failure line + raw-log anchor, shared by
+    // the launch-window watch below and the post-window follow phase after it.
+    // The two differ ONLY in their leading text, because "failed to launch" and
+    // "failed" are genuinely different claims about the same sprint and an
+    // operator reading the line needs to know which one happened.
+    function renderLaunchFailureLine(sprintId, text) {
         resultEl.style.color = '#ef4444';
-        resultEl.textContent = 'Sprint ' + sprintId + ' failed to launch: ' + reason;
+        resultEl.textContent = text;
         var logLink = document.createElement('a');
         logLink.href = mountHref(MOUNT_PREFIX, '/sprints/' + encodeURIComponent(sprintId) + '/log');
         logLink.target = '_blank';
@@ -498,11 +604,86 @@ function clientScriptSource(mountPrefix) {
         resultEl.appendChild(logLink);
     }
 
+    function renderLaunchWatchFailure(sprintId, reason) {
+        renderLaunchFailureLine(sprintId, 'Sprint ' + sprintId + ' failed to launch: ' + reason);
+    }
+
+    // apra-fleet-i9ag.16.7: how often the FOLLOW phase re-reads GET /state.
+    // Matches the dashboard's own sprint-stack heartbeat cadence
+    // (dashboard.mjs's HEARTBEAT_INTERVAL_MS) rather than the launch window's
+    // tighter 2s tick: by the time this phase runs, nothing is expected to
+    // change second-to-second, and this is the same payload the page is
+    // already polling.
+    var FOLLOW_INTERVAL_MS = 7000;
+    var followTimer = null;
+
+    function stopFollow() {
+        if (followTimer) {
+            clearInterval(followTimer);
+            followTimer = null;
+        }
+    }
+
+    /**
+     * apra-fleet-i9ag.16.7: keeps watching the launched run AFTER the launch
+     * window closes, through the SAME GET /state payload the Sprint Stack
+     * renders from, until the run reaches a settled state -- so a failure
+     * MINUTES after a clean launch (the Plan-phase failure the final M1
+     * acceptance run hit) replaces the green 'Launched sprint ...' line with
+     * the real failure and its reason, instead of leaving a stale success on
+     * screen for the rest of the session.
+     *
+     * Self-terminating, never a bounded guess: it stops on the run's first
+     * settled observation -- failed, finished, or confirmed healthy -- and
+     * keeps polling only while the run's state is genuinely unsettled or not
+     * yet visible. The launch window's own WATCH_WINDOW_MS is untouched by
+     * this (apra-fleet-i9ag.16.6 acceptance criterion 4).
+     */
+    function followLaunch(sprintId) {
+        stopFollow();
+        var myGeneration = watchGeneration;
+        function tick() {
+            fetch(mountHref(MOUNT_PREFIX, '/state') + '?_t=' + Date.now(), { cache: 'no-store' })
+                .then(function (r) { return (r && r.ok !== false) ? r.json() : null; })
+                .catch(function () { return null; })
+                .then(function (state) {
+                    // A newer launch superseded this follow while the fetch was
+                    // in flight -- discard, same generation discipline
+                    // watchLaunch() below uses for its own polls.
+                    if (myGeneration !== watchGeneration) return;
+                    var result = classifyLaunchFollow(state, sprintId);
+                    if (result.status === 'failed') {
+                        stopFollow();
+                        renderLaunchFailureLine(sprintId, 'Sprint ' + sprintId + ' failed: ' + result.reason);
+                        return;
+                    }
+                    if (result.status === 'finished') {
+                        stopFollow();
+                        resultEl.style.color = '#22c55e';
+                        resultEl.textContent = 'Sprint ' + sprintId + ' finished: ' + result.verdict + '.';
+                        return;
+                    }
+                    if (result.status === 'healthy') {
+                        // The launch is confirmed good; the existing green
+                        // 'Launched sprint ...' line is accurate, so it is left
+                        // exactly as it is rather than rewritten.
+                        stopFollow();
+                    }
+                    // 'running' / 'unknown': keep following.
+                });
+        }
+        followTimer = setInterval(tick, FOLLOW_INTERVAL_MS);
+    }
+
     // apra-fleet-i9ag.16.4: only ONE watch runs at a time -- a second submit
     // (a new call to this function) cancels whatever watch is already in
     // flight before starting its own, via stopWatch() below.
     function watchLaunch(sprintId) {
         stopWatch();
+        // apra-fleet-i9ag.16.7: a second submit also cancels whatever FOLLOW
+        // phase the previous launch handed off to -- otherwise the old run's
+        // outcome could overwrite the new launch's result line.
+        stopFollow();
         watchGeneration += 1;
         var myGeneration = watchGeneration;
         var elapsedMs = 0;
@@ -523,12 +704,24 @@ function clientScriptSource(mountPrefix) {
                     }
                     if (result.status === 'live') {
                         stopWatch();
+                        // apra-fleet-i9ag.16.7: the child is up, so the LAUNCH
+                        // succeeded -- but the RUN has barely started. Hand off
+                        // to the follow phase so a later failure still reaches
+                        // this line (see followLaunch()).
+                        followLaunch(sprintId);
                         return;
                     }
                     // Inconclusive (404 / network error / unparseable body) --
                     // keep polling until the window closes, then leave the
                     // original success line untouched. NEVER invent a failure.
-                    if (elapsedMs >= WATCH_WINDOW_MS) stopWatch();
+                    if (elapsedMs >= WATCH_WINDOW_MS) {
+                        stopWatch();
+                        // apra-fleet-i9ag.16.7: an inconclusive window is not a
+                        // verdict either way, so the run is followed from here
+                        // too rather than abandoned with a green line that may
+                        // already be wrong.
+                        followLaunch(sprintId);
+                    }
                 });
         }
         watchTimer = setInterval(tick, WATCH_INTERVAL_MS);
