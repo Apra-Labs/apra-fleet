@@ -146,6 +146,7 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         const token = 'b'.repeat(64);
         const projectDir = await mkTmp('proj-with-beads-');
         await fsp.mkdir(path.join(projectDir, BEADS_DIR_NAME));
+        await fsp.writeFile(path.join(path.join(projectDir, BEADS_DIR_NAME), 'metadata.json'), '{}');
         const dataDir = await mkTmp('data-');
         const supervisor = mountProjectRoute({ token, projectDir, source: 'config', flagActive: false, dataDir });
 
@@ -287,6 +288,7 @@ describe('GET/POST /api/project (apra-fleet-i9ag.17.2.1)', () => {
         const supervisor = mountProjectRoute({ token, projectDir, dataDir });
         const target = await mkTmp('proj-accept-beads-target-');
         await fsp.mkdir(path.join(target, BEADS_DIR_NAME));
+        await fsp.writeFile(path.join(path.join(target, BEADS_DIR_NAME), 'metadata.json'), '{}');
 
         const res = mockRes();
         await supervisor.handleRequest(mockReq('POST', '/api/project', { headers: AUTH(token), body: { projectDir: target } }), res);

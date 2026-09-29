@@ -43,6 +43,13 @@ const SERVICE_CAPABLE_PLATFORMS: ReadonlySet<string> = new Set(['win32', 'linux'
 /** The single argument the registered unit passes to the apra-fleet binary. */
 export const SUPERVISOR_SUBCOMMAND = 'supervisor';
 
+/**
+ * Explicit launch-mode signal for the registered unit: tells the supervisor it
+ * runs as the installed service (so its restart guidance names
+ * 'apra-fleet restart'). The launcher forwards it to serve.mjs verbatim.
+ */
+export const SUPERVISOR_MANAGED_SERVICE_FLAG = '--managed-service';
+
 export interface SupervisorRegistrationResult {
   registered: boolean;
   /** Human-readable reason when registered === false. Always set in that case. */
@@ -102,7 +109,7 @@ export async function registerSupervisorService(
 
   const mgr = await getServiceManager('fleet-supervisor');
   try {
-    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND], SUPERVISOR_LOG_FILE_PATH, {
+    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND, SUPERVISOR_MANAGED_SERVICE_FLAG], SUPERVISOR_LOG_FILE_PATH, {
       workingDirectory: SUPERVISOR_WORKING_DIR,
     });
   } catch (err) {

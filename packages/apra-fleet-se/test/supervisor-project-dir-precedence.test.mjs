@@ -122,8 +122,11 @@ async function makeFixture() {
     await fsp.mkdir(dirs.dataDir, { recursive: true });
     await fsp.mkdir(dirs.home, { recursive: true });
     await fsp.mkdir(path.join(dirs.projA, '.beads'), { recursive: true });
+    await fsp.writeFile(path.join(path.join(dirs.projA, '.beads'), 'metadata.json'), '{}');
     await fsp.mkdir(path.join(dirs.projB, '.beads'), { recursive: true });
+    await fsp.writeFile(path.join(path.join(dirs.projB, '.beads'), 'metadata.json'), '{}');
     await fsp.mkdir(path.join(dirs.flagDir, '.beads'), { recursive: true });
+    await fsp.writeFile(path.join(path.join(dirs.flagDir, '.beads'), 'metadata.json'), '{}');
     await fsp.mkdir(dirs.noBeads, { recursive: true });
     await fsp.mkdir(dirs.projBSub, { recursive: true });
     return dirs;

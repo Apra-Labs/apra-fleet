@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "e899abc69cd167545bffc256dd8bbb629e65fbba",
-    "branch": "feat/v05-m1-ship-console",
-    "entry_count": 255
+    "commit": "f83aa1f130b437cd0b64875fc121b3328b37c3f7",
+    "branch": "feat/v05-m1-project-folder-2",
+    "entry_count": 257
   },
   "entries": [
     {
@@ -136,6 +136,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-27T02:53:31.023Z"
+    },
+    {
+      "id": "076d83e4-73cf-4b68-8bfe-3a93ce39e1d0",
+      "type": "learning",
+      "title": "Supervisor service registration args are pinned in three separate root test files",
+      "summary": "Changing the args registerSupervisorService passes to mgr.register must update tests/supervisor-service.test.ts, tests/install-supervisor-service.test.ts and tests/supervisor-unit-shape.test.ts together.",
+      "symbols": [
+        "registerSupervisorService",
+        "SUPERVISOR_MANAGED_SERVICE_FLAG",
+        "SUPERVISOR_SUBCOMMAND"
+      ],
+      "source_files": [
+        "src/services/supervisor-service.ts",
+        "tests/supervisor-service.test.ts",
+        "tests/install-supervisor-service.test.ts",
+        "tests/supervisor-unit-shape.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T02:17:50.175Z"
     },
     {
       "id": "07dbc271-b464-4afe-8760-87456e491691",
@@ -486,6 +505,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.938Z"
+    },
+    {
+      "id": "1399df2b-095f-491e-9e4c-d6db6e550e95",
+      "type": "learning",
+      "title": "SEA smoke test fails locally on any stale dist binary but is skipped on CI",
+      "summary": "tests/sea-http-verify.test.ts is skipIf(!binaryExists), yet it throws a staleness error when an old dist/apra-fleet-installer binary exists, so a local root npm test fails until npm run build:binary is rerun.",
+      "symbols": [
+        "resolveSeaBinaryStaleness"
+      ],
+      "source_files": [
+        "tests/sea-http-verify.test.ts",
+        "tests/helpers/sea-binary-staleness.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T02:17:50.161Z"
     },
     {
       "id": "1412a686-48d2-4f64-8626-70ace05d271a",

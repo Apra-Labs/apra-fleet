@@ -112,10 +112,12 @@ async function makeFixture() {
     await fsp.mkdir(dirs.home, { recursive: true });
     await fsp.mkdir(dirs.bootCwd, { recursive: true });
     await fsp.mkdir(path.join(dirs.savedProj, '.beads'), { recursive: true });
+    await fsp.writeFile(path.join(path.join(dirs.savedProj, '.beads'), 'metadata.json'), '{}');
     // A folder that EXISTS but no sprint could run in -- no .beads, no git
     // origin. The set-time refusal case.
     await fsp.mkdir(dirs.unusableProj, { recursive: true });
     await fsp.mkdir(path.join(dirs.cwdTrap, '.beads'), { recursive: true });
+    await fsp.writeFile(path.join(path.join(dirs.cwdTrap, '.beads'), 'metadata.json'), '{}');
 
     // The real git identity half of savedProj's usability (see the header).
     execFileSync('git', ['init', '-q'], { cwd: dirs.savedProj, stdio: 'pipe' });

@@ -543,6 +543,37 @@ describe('DELETE /api/projects/:id -- round-trip', { skip }, () => {
     });
 });
 
+/**
+ * Does `source` IMPORT (or re-export) or CALL the M2 CRUD route registrar?
+ * Comments are stripped first, so prose that merely names it (e.g. a header
+ * comment explaining a naming distinction) is not a reference -- the guard's
+ * intent is to prevent wiring, not to police wording.
+ * @param {string} source
+ * @returns {boolean}
+ */
+function referencesRegistrar(source) {
+    const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+    return /\b(?:import|export)\b[^;]*?\bregisterProjectRoutes\b/.test(code)
+        || /\bregisterProjectRoutes\s*\(/.test(code);
+}
+
+describe('registerProjectRoutes guard matches code references, not comments', () => {
+    test('an import specifier or a call site trips the guard', () => {
+        assert.equal(referencesRegistrar("import { registerProjectRoutes } from './projects.mjs';"), true);
+        assert.equal(referencesRegistrar("import {\n  a,\n  registerProjectRoutes,\n} from './projects.mjs';"), true);
+        assert.equal(referencesRegistrar('registerProjectRoutes(supervisor, deps);'), true);
+        assert.equal(referencesRegistrar('mod.registerProjectRoutes (supervisor);'), true);
+    });
+
+    test('the name inside a line comment or a block comment does not trip the guard', () => {
+        assert.equal(referencesRegistrar('// distinct from registerProjectRoutes (the M2 CRUD registrar)\nconst x = 1;'), false);
+        assert.equal(referencesRegistrar('/* registerProjectRoutes is not mounted here\n   registerProjectRoutes(supervisor) would be M2 */\nconst x = 1;'), false);
+        assert.equal(referencesRegistrar('const x = 1; // see registerProjectRoutes'), false);
+    });
+});
+
 describe('registerProjectRoutes is still NOT mounted on the live supervisor', () => {
     test('no file under src/supervisor/ imports or calls registerProjectRoutes', async () => {
         const supervisorDir = path.join(import.meta.dirname, '..', 'src', 'supervisor');
@@ -554,7 +585,7 @@ describe('registerProjectRoutes is still NOT mounted on the live supervisor', ()
         for (const file of files) {
             const contents = await fsp.readFile(file, 'utf8');
             assert.ok(
-                !contents.includes('registerProjectRoutes'),
+                !referencesRegistrar(contents),
                 `${path.relative(supervisorDir, file)} must not reference registerProjectRoutes`,
             );
         }

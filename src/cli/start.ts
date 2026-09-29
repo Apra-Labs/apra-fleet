@@ -61,27 +61,34 @@ function directSpawn(): void {
  * Skipped for sandboxed instances for the same reason the MCP service is
  * (a non-default port/data dir must not touch machine-global registrations).
  */
-async function startSupervisorServiceIfInstalled(): Promise<void> {
+async function startSupervisorServiceIfInstalled(opts: { strict?: boolean } = {}): Promise<void> {
   if (isNonDefaultInstance()) return;
   try {
     const supervisorMgr = await getServiceManager('fleet-supervisor');
     if (!(await supervisorMgr.isInstalled())) return;
     const status = await supervisorMgr.query().catch(() => ({ installed: true, running: false }));
     if (status.running) {
+      if (opts.strict) {
+        throw new Error('Fleet supervisor service is still running after stop; refusing to report it restarted.');
+      }
       console.log('Fleet supervisor service already running.');
       return;
     }
     await supervisorMgr.start();
     console.log('Fleet supervisor service starting...');
   } catch (err: any) {
+    if (opts.strict) {
+      throw new Error(`Fleet supervisor service restart failed (${err?.message ?? err}).`);
+    }
     console.warn(`Fleet supervisor service start failed (${err?.message ?? err}).`);
   }
 }
 
-export async function runStart(_args: string[]): Promise<void> {
+export async function runStart(_args: string[], opts: { strictSupervisor?: boolean } = {}): Promise<void> {
+  const strict = { strict: opts.strictSupervisor };
   const instance = await checkRunningInstance();
   if (instance.running) {
-    await startSupervisorServiceIfInstalled();
+    await startSupervisorServiceIfInstalled(strict);
     if (instance.version && instance.version !== serverVersion) {
       console.error(
         `Server already running at ${instance.url} pid=${instance.pid} is version ${instance.version}, `
@@ -118,7 +125,7 @@ export async function runStart(_args: string[]): Promise<void> {
     directSpawn();
   }
 
-  await startSupervisorServiceIfInstalled();
+  await startSupervisorServiceIfInstalled(strict);
 
   await new Promise<void>(resolve => setTimeout(resolve, 2000));
   const result = await checkRunningInstance();

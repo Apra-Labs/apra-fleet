@@ -16,19 +16,30 @@ import { isPidAlive, postShutdown } from '../utils/process-utils.js';
  * cannot confirm the process is gone, and that lands in the catch below as a
  * warning instead of "Fleet supervisor service stopped."
  */
-async function stopSupervisorServiceIfInstalled(): Promise<void> {
+export async function stopSupervisorServiceIfInstalled(opts: { strict?: boolean } = {}): Promise<void> {
   try {
     const supervisorMgr = await getServiceManager('fleet-supervisor');
     if (!(await supervisorMgr.isInstalled())) return;
     await supervisorMgr.stop();
+    if (opts.strict) {
+      // restart path: a supervisor still reported running after stop must not
+      // fall through to start's "already running" no-op.
+      const status = await supervisorMgr.query().catch(() => ({ installed: true, running: false }));
+      if (status.running) {
+        throw new Error('service still reported running after stop');
+      }
+    }
     console.log('Fleet supervisor service stopped.');
   } catch (err: any) {
+    if (opts.strict) {
+      throw new Error(`Fleet supervisor service could not be confirmed stopped (${err?.message ?? err}); restart aborted.`);
+    }
     console.warn(`Fleet supervisor service stop failed (${err?.message ?? err}).`);
   }
 }
 
-export async function runStop(_args: string[]): Promise<void> {
-  await stopSupervisorServiceIfInstalled();
+export async function runStop(_args: string[], opts: { strictSupervisor?: boolean } = {}): Promise<void> {
+  await stopSupervisorServiceIfInstalled({ strict: opts.strictSupervisor });
 
   const svcMgr = await getServiceManager();
   if (await svcMgr.isInstalled()) {
