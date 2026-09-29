@@ -17,7 +17,7 @@
 // index.mjs's `state.pause`, apra-fleet-p2to.2.1) -- into EXACTLY SIX statuses:
 //
 //   running-healthy      PID alive (and plausibly OUR child), HTTP answering,
-//                        and not paused.
+//                        not paused, and no terminal state recorded.
 //   paused               PID alive, HTTP answering, and the child's own
 //                        `state.pause.status` reads 'paused' (apra-fleet-
 //                        p2to.1's engine pause primitive has actually
@@ -31,20 +31,30 @@
 //   crashed              PID gone, and NO terminal state persisted in old_runs/
 //                        (or the legacy old_sprints/, apra-fleet-eft.37.1),
 //                        and NOT within the launch-failed window.
-//   finished             PID gone, and a terminal state IS persisted in old_runs/
-//                        (or the legacy old_sprints/, apra-fleet-eft.37.1)
+//   finished             A terminal state IS persisted in old_runs/ (or the
+//                        legacy old_sprints/, apra-fleet-eft.37.1) --
+//                        REGARDLESS of PID liveness (apra-fleet-i9ag.16.6):
+//                        a fleet-sprint child keeps its per-sprint dashboard
+//                        alive ~300s after the run ends, so waiting for the
+//                        process to exit showed an already-ended run as
+//                        running-unresponsive for minutes.
 //   launch-failed        PID gone within the configurable launch window (default 60s),
 //                        NO terminal state, a symptom of immediate child exit
 //
 // CRITICAL invariants (acceptance criteria):
 //   * The classifier returns EXACTLY ONE of the six statuses per sprint.
-//   * A hung child (PID alive, HTTP not answering) is running-unresponsive --
-//     never crashed, never killed.
+//   * A hung child (PID alive, HTTP not answering, and NO terminal state of its
+//     own) is running-unresponsive -- never crashed, never killed. This is the
+//     operator-attention invariant, and apra-fleet-i9ag.16.6 deliberately did
+//     NOT weaken it: only a child that positively recorded its own ending
+//     leaves this state early.
 //   * A live-pid child the engine has actually paused is `paused`, never
 //     stalled/dead/crashed -- and, like every other live status, its
 //     reservation is never force-released (apra-fleet-p2to.3.1).
-//   * PID-gone WITH an old_runs/ (or legacy old_sprints/) terminal state =>
-//     finished; WITHOUT one => crashed.
+//   * An old_runs/ (or legacy old_sprints/) terminal state => finished, whether
+//     or not the PID is still alive (apra-fleet-i9ag.16.6: the child's OWN
+//     recorded ending is authoritative over process liveness). PID-gone
+//     WITHOUT one => crashed.
 //   * PID reuse is guarded: the liveness probe validates the PID is plausibly
 //     OUR child (its command line still carries the sprint's unique
 //     `--viewer-port <port>` marker), not just any process that reused the PID
@@ -775,7 +785,47 @@ export function createWatchdog(deps = {}) {
 
         const pidAlive = childPid != null && (await isChildAlive(childPid, marker));
 
-        if (pidAlive) {
+        // apra-fleet-i9ag.16.6: the child's OWN terminal state is read BEFORE
+        // the PID-liveness split below, because the two signals are
+        // independent and the terminal one is authoritative about whether the
+        // RUN is over. A fleet-sprint child keeps its per-sprint dashboard
+        // process alive for ~300s AFTER the run ends, so its OS process (and,
+        // for part of that window, its HTTP viewer) outlive the run by
+        // minutes. Reading the terminal state only on the PID-gone path meant
+        // the supervisor learned a run was over only when that lingering
+        // process finally exited: the final M1 acceptance run saw a sprint
+        // that failed in its Plan phase presented as running-unresponsive for
+        // ~5 minutes, long after the child itself had recorded its ending.
+        //
+        // This does NOT weaken the liveness classifier's operator-attention
+        // invariant (see this module's file-level doc comment): a PID-alive,
+        // HTTP-silent child with NO terminal state is still
+        // running-unresponsive and is still never auto-declared crashed. The
+        // ONLY behaviour that changes is for a child that has positively
+        // recorded its own ending -- the run really did end, with a reason it
+        // wrote down itself.
+        //
+        // apra-fleet-k7b.2: resolves by run-id first, falling back to this
+        // reservation's own recorded `branch` for a pre-k7b.1 reservation
+        // (see defaultHasTerminalState()'s doc comment). Returns the parsed
+        // terminal state object (or `null`/falsy for an injected boolean
+        // test double), never just a boolean. A stale hit from an earlier
+        // incarnation is not possible: a reservation's sprintId is minted
+        // per launch (api.mjs's `${issue}-${randomUUID()}`) and is the run-id
+        // the child writes its terminal state under.
+        //
+        // COST: this now runs for every sprint on every tick rather than only
+        // on the PID-gone path -- one or two fs.existsSync() calls against
+        // old_runs/ per sprint (defaultHasTerminalState), which for a live run
+        // miss and never reach a read. That is nothing like the event-loop
+        // starvation the synchronous cmdline spawn caused (see
+        // WATCHDOG_HTTP_TIMEOUT_MS's incident note above); api.mjs's
+        // getSprint()/stopSprint() already do this same read per request for
+        // the same dashboard-linger reason (apra-fleet-2l4.1).
+        const terminalState = hasTerminalState(sprintId, entry.branch ?? null);
+        const finished = Boolean(terminalState);
+
+        if (pidAlive && !finished) {
             // PID alive: the HTTP signal splits healthy vs unresponsive. A hung
             // child (HTTP silent) is unresponsive -- NEVER auto-declared crashed.
             let httpOk = false;
@@ -819,9 +869,12 @@ export function createWatchdog(deps = {}) {
             };
         }
 
-        // PID gone: a persisted terminal state in old_runs/ (or legacy
-        // old_sprints/) means it FINISHED; its absence means either CRASHED
-        // or LAUNCH_FAILED (both died without recording a terminal state).
+        // Everything from here down is a TERMINAL classification: either the
+        // PID is gone, or (apra-fleet-i9ag.16.6) the child has recorded its
+        // own terminal state while its post-run dashboard process lingers. A
+        // persisted terminal state in old_runs/ (or legacy old_sprints/) means
+        // it FINISHED; its absence means either CRASHED or LAUNCH_FAILED (both
+        // died without recording a terminal state).
         //
         // apra-fleet-k7b.3: `detail` reports whatever this SAME instance's
         // spawner actually witnessed (ledger.recordExit(), see spawner.mjs/
@@ -829,14 +882,15 @@ export function createWatchdog(deps = {}) {
         // the previous bare "pid gone" when nothing was recorded (a restart
         // severed the in-memory exit listener before this instance ever saw
         // the child exit; see this module's file-level doc comment).
-        const detail = formatExitDetail(entry);
-        // apra-fleet-k7b.2: resolves by run-id first, falling back to this
-        // reservation's own recorded `branch` for a pre-k7b.1 reservation
-        // (see defaultHasTerminalState()'s doc comment). Returns the parsed
-        // terminal state object (or `null`/falsy for an injected boolean
-        // test double), never just a boolean.
-        const terminalState = hasTerminalState(sprintId, entry.branch ?? null);
-        const finished = Boolean(terminalState);
+        //
+        // apra-fleet-i9ag.16.6: a still-alive child that has already recorded
+        // a terminal state gets its own honest detail instead -- there is no
+        // exit to report yet, and calling it "pid gone" in the log/history
+        // would be a straight falsehood about a process that is demonstrably
+        // still running.
+        const detail = (finished && pidAlive)
+            ? `terminal state recorded while pid ${childPid ?? 'unknown'} is still alive (post-run dashboard linger)`
+            : formatExitDetail(entry);
 
         // apra-fleet-gey.1: determine if this is a launch-failed sprint
         // (exited within the launch window with no terminal state).
@@ -916,7 +970,13 @@ export function createWatchdog(deps = {}) {
         return {
             sprintId,
             status: classifiedStatus,
-            pidAlive: false,
+            // apra-fleet-i9ag.16.6: reported as OBSERVED, not assumed false --
+            // a FINISHED run whose child is still in its post-run dashboard
+            // linger genuinely has a live pid, and a consumer reasoning about
+            // whether anything is left to reap needs the truth here. `httpOk`
+            // stays false because this path never probes HTTP: the terminal
+            // state already settled the question the probe would have asked.
+            pidAlive,
             httpOk: false,
             childPid,
             port,
