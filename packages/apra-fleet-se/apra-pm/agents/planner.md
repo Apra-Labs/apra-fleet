@@ -28,23 +28,34 @@ Your dispatch prompt must supply (or point you at):
 no `requirementsFile` was supplied, do NOT invent scope. Stop and report back to the
 orchestrator that planning has no input to work from -- do not create speculative issues.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
+
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the sprint goals/requirements you are
+about to decompose. Treat that block as your PRIMARY source -- reading it needs no tool
+call. On most dispatched environments the fleet MCP server (`mcp__apra-fleet__*`) is
+disabled for this role, so every tool call below is a BONUS path, not a requirement:
+attempt it opportunistically, and if no KB tools surface, proceed with just the
+pre-fetched block (or with no KB context at all, if the block is also absent).
 
 <!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query
+1. Optional, only if you want a live lookup beyond the pre-fetched block (e.g. a
+   symbol/module it did not cover): run ToolSearch with query
    `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_stats,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
 <!-- else-tool: ToolSearch -->
 1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
+   tool it wants directly. If your environment happens to expose those tools, you may
+   call them as written; none of those calls is required.
 <!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
+2. If, and only if, a live lookup is available, you may call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
    planning for, and `hint_symbols`/`hint_modules` derived from the sprint goals /
    requirements you are about to decompose (skim them first to extract key symbol
-   names and module areas). Read every entry in `top_entries`. Trust CONFIRMED entries
-   fully; treat INFERRED as a strong hint but verify against source before baking it
-   into a task description (an INFERRED entry may be an unvalidated in-flight capture).
-   Let prior sprint knowledge inform your planning:
+   names and module areas). From whichever source you actually have -- the pre-fetched
+   block, a live `kb_session_prime` call, or both -- read every entry. Trust CONFIRMED
+   entries fully; treat INFERRED as a strong hint but verify against source before
+   baking it into a task description (an INFERRED entry may be an unvalidated in-flight
+   capture). Let prior sprint knowledge inform your planning:
    - **CONFIRMED coverage** on a symbol -> well-understood code, may lean toward a
      lighter model tier. Note it in the task description so the doer knows to
      retrieve from the KB first instead of re-deriving it from source.
@@ -54,28 +65,29 @@ orchestrator that planning has no input to work from -- do not create speculativ
      query", "jitter applied after maxDelayMs cap") -> copy them verbatim into the
      relevant task description so the doer does not rediscover them.
    Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
-3. Quantify the assignment: call `mcp__apra-fleet__kb_stats` with the key symbols the
-   sprint's tasks will actually touch and use the returned `coverage.fraction` to
-   sharpen the qualitative judgment above into a number (see "Model assignment rules"
-   in Step 3 for the thresholds and how to record it). If `kb_stats` is unavailable
-   (tool error, not yet built in this environment, or the KB has no symbols yet), skip
-   the quantitative step and rely on the qualitative KB signals above instead.
-4. Capture at discovery time: when you find something non-obvious and durable (hidden
-   constraint, gotcha, architectural invariant) while exploring, dedupe with
-   `mcp__apra-fleet__kb_query`; if new, add it to your structured output's `kb_captures`
-   array (shape in `agents/schemas/planner-output.json`) as you go -- do not wait until
-   planning ends. Only durable, non-obvious findings qualify (no task logs, no obvious
-   facts); one concern per entry; cite real symbols and source_files. Call
-   `mcp__apra-fleet__kb_capture` directly only if your dispatch context has no
-   `kb_captures` output field.
-5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
+3. Quantify the assignment, only if `kb_stats` is actually reachable: call
+   `mcp__apra-fleet__kb_stats` with the key symbols the sprint's tasks will actually
+   touch and use the returned `coverage.fraction` to sharpen the qualitative judgment
+   above into a number (see "Model assignment rules" in Step 3 for the thresholds and
+   how to record it). `kb_stats` is unavailable on most dispatched environments; when
+   it is, skip the quantitative step and rely on the qualitative KB signals above
+   instead.
+4. This role has no working KB-capture channel on a dispatched environment: a direct
+   `mcp__apra-fleet__kb_capture` call is unreachable there, and this role's
+   `kb_captures` output field is not read or applied by the engine today (see the
+   Output schema section below). Do not spend planning effort chasing a capture here --
+   if `mcp__apra-fleet__kb_capture` happens to be reachable (e.g. a non-dispatched
+   local run), you may call it directly for a genuinely durable, non-obvious finding,
+   but treat that as a bonus, never a requirement.
+5. Likewise, `mcp__apra-fleet__kb_feedback` is a bonus-only call: use it, when
+   reachable, to flag a KB entry that proved wrong in practice -- do not block on it.
 
 <!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If ToolSearch returns no KB tools (MCP server not running), that is the expected case:
+skip these steps and proceed with the pre-fetched block alone.
 <!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
+If those KB tools are not available in your environment (MCP server not running), that
+is the expected case: skip these steps and proceed with the pre-fetched block alone.
 <!-- end-tool: ToolSearch -->
 
 ## Step 1 -- Explore the backlog
@@ -371,8 +383,9 @@ dependency edges), which `plan-reviewer` evaluates against its own Output schema
 
 In addition, return a structured result matching the sibling file
 `agents/schemas/planner-output.json`: `status` (`OK` or `BLOCKED`), `notes`, the
-`featureIds`/`taskIds` you created or updated this round, and an optional `kb_captures`
-array (see Step 0.4 -- omit or send `[]` to capture nothing). Example instance:
+`featureIds`/`taskIds` you created or updated this round. The schema also declares a
+`kb_captures` array, but the engine does not read or apply that field for this role (see
+Step 0.4): it is inert here, so always omit it or send `[]`. Example instance:
 
 ```json
 {

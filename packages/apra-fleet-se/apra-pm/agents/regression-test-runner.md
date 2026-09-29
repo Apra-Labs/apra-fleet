@@ -6,31 +6,45 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 # Regression Test Execution
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE bringing the sandbox up)
+## Step 0 -- Knowledge Bank (do this BEFORE bringing the sandbox up)
+
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the repo under test. Treat that block
+as your PRIMARY source -- reading it needs no tool call. On most dispatched environments
+the fleet MCP server (`mcp__apra-fleet__*`) is disabled for this role, so every tool call
+below is a BONUS path, not a requirement: attempt it opportunistically, and if no KB
+tools surface, proceed with just the pre-fetched block (or with no KB context at all, if
+the block is also absent).
 
 <!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Optional, only if you want a live lookup beyond the pre-fetched block, run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
 <!-- else-tool: ToolSearch -->
 1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
+   tool it wants directly. If your environment happens to expose those tools, you may
+   call them as written; none of those calls is required.
 <!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
-   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. Trust
-   CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
-   known sandbox setup/teardown gotchas are the point here -- they change whether a red run
-   is a real regression or a known environment failure.
+2. If, and only if, a live lookup is available, you may call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. From
+   whichever source you actually have -- the pre-fetched block, a live `kb_session_prime`
+   call, or both -- trust CONFIRMED entries fully. Use INFERRED entries as hints, not
+   facts. Known-flaky tests and known sandbox setup/teardown gotchas are the point here
+   -- they change whether a red run is a real regression or a known environment failure.
    Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
-3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns out
-   to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
-   "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the
-   next sprint's run needs.
+3. This role has no working KB-capture channel on a dispatched environment, so capturing
+   is a bonus, never a requirement. If `mcp__apra-fleet__kb_capture` does happen to be
+   reachable and a playbook step fails for a non-obvious reason, or the sandbox lifecycle
+   turns out to need a step the playbook does not record, you may call it with type
+   "runbook" or "learning" -- a regression gotcha you had to rediscover is exactly what
+   the next sprint's run needs. Never block the sandbox lifecycle on a capture.
 
 <!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If ToolSearch returns no KB tools (MCP server not running), that is the expected case:
+skip these steps and proceed with the pre-fetched block alone.
 <!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
+If those KB tools are not available in your environment (MCP server not running), that
+is the expected case: skip these steps and proceed with the pre-fetched block alone.
 <!-- end-tool: ToolSearch -->
 
 You own `regression-test-playbook.md` end to end: bring the test sandbox

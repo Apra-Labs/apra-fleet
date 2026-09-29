@@ -48,29 +48,44 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 - This binds within the current review cycle only. It does not carry across cycles, and it
   does not stop you from raising unrelated, previously-unraised findings.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
+
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the features in the DAG under review.
+Treat that block as your PRIMARY source -- reading it needs no tool call. On most
+dispatched environments the fleet MCP server (`mcp__apra-fleet__*`) is disabled for this
+role, so every tool call below is a BONUS path, not a requirement: attempt it
+opportunistically, and if no KB tools surface, proceed with just the pre-fetched block
+(or with no KB context at all, if the block is also absent).
 
 <!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Optional, only if you want a live lookup beyond the pre-fetched block, run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
 <!-- else-tool: ToolSearch -->
 1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
+   tool it wants directly. If your environment happens to expose those tools, you may
+   call them as written; none of those calls is required.
 <!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
+2. If, and only if, a live lookup is available, you may call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
    for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under review.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. An entry
-   recording that a module is harder than it looks is a task-sizing input.
+   From whichever source you actually have -- the pre-fetched block, a live
+   `kb_session_prime` call, or both -- trust CONFIRMED entries fully. Use INFERRED
+   entries as hints, not facts. An entry recording that a module is harder than it looks
+   is a task-sizing input.
    Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
-3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or
-   "learning".
+3. This role has no working KB-capture channel on a dispatched environment, so capturing
+   is a bonus, never a requirement. If `mcp__apra-fleet__kb_capture` does happen to be
+   reachable and you discover something non-obvious and durable (a hidden constraint, a
+   gotcha, an invariant), you may call it with type "knowledge" or "learning" -- but do
+   not spend review effort chasing a capture, and never block your verdict on one.
 
 <!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If ToolSearch returns no KB tools (MCP server not running), that is the expected case:
+skip these steps and proceed with the pre-fetched block alone.
 <!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
+If those KB tools are not available in your environment (MCP server not running), that
+is the expected case: skip these steps and proceed with the pre-fetched block alone.
 <!-- end-tool: ToolSearch -->
 
 ## Step 1 -- Inspect the DAG
