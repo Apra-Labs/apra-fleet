@@ -11,6 +11,7 @@ import {
     SprintRunnerResolutionError,
     SPRINT_RUNNER_SOURCE,
     MIN_NODE_VERSION,
+    SPRINT_RUNNER_PROBE_TIMEOUT_MS,
 } from '../src/supervisor/node-runner.mjs';
 
 /** A fake `exec(file, args, options)` -- `versions` maps file -> version
@@ -41,6 +42,41 @@ function fakeExecCapturing(versions) {
             throw new Error(`spawn ENOENT: ${file}`);
         }
         return versions[file];
+    };
+    return { exec, calls };
+}
+
+/**
+ * A fake `exec` that plays back a fixed SEQUENCE of outcomes for exactly one
+ * `file` -- apra-fleet-i9ag.19.35's retry tests need to control precisely
+ * what the CONFIGURED tier's probe sees on its first attempt vs its one
+ * bounded retry (`probeVersion()`'s `{ retry: true }` opt-in, node-version.mjs),
+ * something `fakeExec`/`fakeExecCapturing` (a single fixed outcome per file)
+ * cannot express. Each entry in `sequence` is either a version string
+ * (success) or `{ error }`, an Error object to throw -- callers build that
+ * Error with exactly the shape `classifyIncompleteProbe()` (node-version.mjs)
+ * inspects (`killed: true` for a timeout, `code: 'EAGAIN'`/etc. for a
+ * transient spawn errno), so these tests exercise the SAME classification
+ * logic a real timed-out/overloaded spawn would hit, not just "some Error".
+ * The last entry repeats for any call beyond `sequence`'s length (a retry
+ * ceiling bug would otherwise call past the array and crash confusingly).
+ * A call for any OTHER file throws a generic ENOENT, matching this file's
+ * other fakes' behaviour for an unlisted candidate.
+ */
+function fakeExecSequence(file, sequence) {
+    let next = 0;
+    const calls = [];
+    const exec = (f, args, options) => {
+        calls.push({ file: f, args, options });
+        if (f !== file) {
+            throw new Error(`spawn ENOENT: ${f}`);
+        }
+        const entry = sequence[Math.min(next, sequence.length - 1)];
+        next += 1;
+        if (entry && typeof entry === 'object' && 'error' in entry) {
+            throw entry.error;
+        }
+        return entry;
     };
     return { exec, calls };
 }
@@ -462,6 +498,14 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
         );
         assert.equal(calls.length, 1, 'current-runtime/PATH must never be probed once the configured tier throws');
         assert.equal(calls[0].file, '/bad/configured/node');
+        // apra-fleet-i9ag.19.35: this ALSO incidentally pins the other half
+        // of the CONFIGURED tier's `{ retry: true }` contract -- an ENOENT
+        // (this fake's thrown Error carries no `.code` at all, which
+        // classifyIncompleteProbe() treats identically to an unrecognised
+        // code: never retryable) never retries even though retry IS opted
+        // into, so `calls.length` above is exactly 1, not 2. Made fully
+        // explicit, with a `.code: 'ENOENT'` Error and a
+        // would-succeed-if-retried control, in the dedicated test below.
     });
 
     test('AC2: a configured path resolving below MIN_NODE_VERSION throws naming the version found and the minimum, without falling through', () => {
@@ -572,5 +616,122 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
         assert.equal(calls.length, 1);
         assert.equal(calls[0].file, spacedPath, 'linux/darwin never quote -- no shell is used there');
         assert.equal(calls[0].options.shell, false);
+    });
+
+    // apra-fleet-i9ag.19.35: the CONFIGURED tier's probe opts into
+    // `probeVersion(..., { retry: true })`, the SAME bounded-retry,
+    // transient-vs-genuine classification toolchain.mjs's startup
+    // `validateRecordedToolchain()` already has for this exact recorded path
+    // -- so a probe that merely could not COMPLETE under host load (a
+    // timeout, or a transient spawn errno) is never collapsed into "does not
+    // resolve to a usable Node.js runtime", the wording reserved for a
+    // genuinely broken recording, and a launch is never hard-refused for a
+    // node that startup validation had already accepted moments earlier in
+    // the same process. These tests pin BOTH behavioural halves this bead's
+    // acceptance criteria call out directly, against the real exec/retry
+    // seam (not toolchain.mjs's own tests, which cover its own call site and
+    // pass unchanged regardless of what this tier does).
+    test('apra-fleet-i9ag.19.35: a timeout on the first attempt retries and SUCCEEDS on the bounded retry, source stays "configured"', () => {
+        const timeoutErr = Object.assign(new Error('spawn ETIMEDOUT'), { killed: true });
+        const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
+            { error: timeoutErr },
+            'v22.16.0',
+        ]);
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+
+        assert.deepEqual(result, {
+            command: '/opt/toolchain/node',
+            source: SPRINT_RUNNER_SOURCE.CONFIGURED,
+            version: '22.16.0',
+        }, 'a transient timeout on attempt 1 must not fail the launch when the bounded retry succeeds');
+        assert.equal(calls.length, 2, 'exactly the original attempt plus one bounded retry, never a retry-until-pass loop');
+    });
+
+    test('apra-fleet-i9ag.19.35: a transient spawn errno (EAGAIN) retries the same as a timeout does', () => {
+        const eagainErr = Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' });
+        const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
+            { error: eagainErr },
+            'v22.16.0',
+        ]);
+
+        const result = resolveSprintRunnerCommand({
+            env: {},
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec,
+            platform: 'linux',
+            configuredNodePath: '/opt/toolchain/node',
+        });
+
+        assert.equal(result.version, '22.16.0');
+        assert.equal(result.source, SPRINT_RUNNER_SOURCE.CONFIGURED);
+        assert.equal(calls.length, 2, 'a transient EAGAIN is classified the same way a timeout is: one bounded retry');
+    });
+
+    test('apra-fleet-i9ag.19.35: an ENOENT (genuine missing binary) never retries, even though retry is opted into', () => {
+        const enoentErr = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+        // The second entry ('v22.16.0') would be picked up and would make
+        // resolution SUCCEED if a retry ever happened -- so this proves the
+        // no-retry gate is real (the test would fail the other way if the
+        // gate were accidentally removed), not just that no assertion
+        // happened to catch a retry.
+        const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
+            { error: enoentErr },
+            'v22.16.0',
+        ]);
+
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                exec,
+                platform: 'linux',
+                configuredNodePath: '/opt/toolchain/node',
+            }),
+            SprintRunnerResolutionError,
+        );
+        assert.equal(calls.length, 1, 'ENOENT is a genuine finding on the first attempt -- classifyIncompleteProbe() deliberately excludes it');
+    });
+
+    test('apra-fleet-i9ag.19.35: a timeout that persists through the bounded retry is worded distinguishably from a broken recording', () => {
+        const timeoutErr = () => Object.assign(new Error('spawn ETIMEDOUT'), { killed: true });
+        const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
+            { error: timeoutErr() },
+            { error: timeoutErr() },
+        ]);
+
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                exec,
+                platform: 'linux',
+                configuredNodePath: '/opt/toolchain/node',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.match(
+                    err.message,
+                    new RegExp(`could not be probed within ${SPRINT_RUNNER_PROBE_TIMEOUT_MS / 1_000}s`),
+                    'must use formatIncompleteProbeProblem()\'s shared "could not be probed" wording, deriving the seconds from the real export, not a hand-copied literal',
+                );
+                assert.ok(
+                    !err.message.includes('does not resolve'),
+                    'a probe that merely could not COMPLETE must never read as "does not resolve to a usable Node.js runtime" -- the wording reserved for a genuinely broken recording',
+                );
+                return true;
+            },
+        );
+        assert.equal(calls.length, 2, 'the original attempt plus exactly one bounded retry, then a hard stop -- never a retry-until-pass loop');
     });
 });
