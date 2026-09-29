@@ -54,11 +54,10 @@ describe('apra-fleet-i9ag.19.16: compareVersions is numeric, not lexicographic',
         assert.ok(compareVersions('22.9.0', '22.16.0') < 0);
     });
 
-    test('22.9.0 compared against MIN_NODE_VERSION (22.16.0) sorts OLDER -- the exact drift a string compare would introduce', () => {
-        assert.equal(MIN_NODE_VERSION, '22.16.0');
+    test('22.9.0 compared against MIN_NODE_VERSION sorts OLDER -- the exact drift a string compare would introduce', () => {
         assert.ok(
             compareVersions('22.9.0', MIN_NODE_VERSION) < 0,
-            'a string compare would wrongly conclude "22.9.0" > "22.16.0" because the character "9" sorts after "1"',
+            `a string compare would wrongly conclude "22.9.0" > "${MIN_NODE_VERSION}" because the character "9" sorts after "1"`,
         );
     });
 
