@@ -85,3 +85,68 @@ SSH):
 Provider-specific warnings (for example grants a provider cannot express) are
 returned under `Warnings:` in the result. After delivery, workspace trust is
 seeded for providers that need it (Claude).
+
+---
+
+## 3. The member-local Fleet MCP server
+
+Every member also runs its **own** apra-fleet as a local MCP server (over
+stdio) rather than calling back into any central server. `compose_permissions`
+resolves that member's own install (`resolveMemberFleetInstall`,
+`src/services/member-fleet-install.ts`) and, when it verifies one at or above
+`MIN_MEMBER_FLEET_VERSION`, enables a `Fleet MCP` entry alongside the
+provider's normal permission delivery -- see
+[install.md](install.md#member-side-apra-fleet-prerequisite-for-kb--code-intelligence-tools)
+for the prerequisite this depends on and how to satisfy it.
+
+**Tool scope**: the shared definition in `src/providers/member-tool-scope.ts`
+allows exactly 13 read/contribute tools (`kb_query`, `kb_capture`, `kb_stats`,
+`kb_list`, `kb_feedback`, `kb_session_prime`, `code_graph`, `code_impact`,
+`code_query`, `code_context`, `code_map`, `code_flow`, `code_tests`) and
+denies everything else fleet's tool registry knows about, including the
+admin-only KB tools (`kb_setup`, `kb_export`, `kb_import`, `kb_harvest`,
+`kb_promote`, `kb_invalidate`, `kb_context`, `kb_freshness_sweep`,
+`kb_resolve_contradiction`, `kb_reconcile_prefilter`) and every fleet-admin
+tool (`register_member`, `execute_prompt`, `shutdown_server`,
+`credential_store_*`, ...). Rendered per provider from that one definition
+(`renderClaudeMemberMcpRules`, `renderAgyMemberMcpRules`) so the allow/deny
+sets can never drift between providers. The deny rules are emitted for BOTH
+the current server name (`apra-fleet`) and the retired central-server name
+(`apra-fleet-member`), so a member that still carries the old entry on disk
+cannot use it as a way around the allowlist.
+
+**Outcome, always named, never silent**: `resolveMemberFleetInstall` either
+verifies a usable install and returns a scoped stdio launch descriptor, or
+returns one of three machine-readable unscoped reasons plus a user-actionable
+remediation string (`no-install-found`, `install-unusable`, `probe-failed` --
+see install.md's table). `compose_permissions`' text result always carries a
+`Fleet MCP:` line reporting which happened, e.g.:
+
+```
+Fleet MCP: enabled as "apra-fleet" (member-local stdio, apra-fleet 0.4.4); tools limited to 13 kb/code tools
+```
+
+or, unscoped:
+
+```
+Fleet MCP: NOT scoped (no-install-found) -- no entry written.
+    apra-fleet is not installed on member "bella"...
+```
+
+The outcome is also persisted on the member record (`Agent.memberMcpScope` in
+`src/types.ts`) so later phases -- Sprint Setup preflight, the fleet panel --
+can read it back without re-probing the member. `scoped: false` is a normal,
+non-fatal state; it never means `compose_permissions` itself failed.
+
+**Config shape per provider**, written only when the member is scoped:
+
+| Provider | Where the entry lands | What is pruned every compose |
+|---|---|---|
+| Claude | `<workFolder>/.mcp.json` (`mcpServers.apra-fleet`) | The retired `mcpServers.apra-fleet.disabled` switch in `settings.local.json`, and the superseded `mcpServers['apra-fleet-member']` (orchestrator-URL-plus-bearer-token) entry in `.mcp.json` |
+| Antigravity (agy) | `~/.gemini/config/mcp_config.json` (`mcpServers.apra-fleet`) | The superseded `mcpServers['apra-fleet-member']` entry in the same file |
+
+Both prunes exist because a deep merge can only add or overwrite keys -- a
+retired or superseded entry left on a member's disk from before this design
+would otherwise survive every future compose forever, leaving the member
+reading as enabled via two different (and, for the retired switch,
+contradictory) mechanisms at once.

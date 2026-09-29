@@ -981,6 +981,46 @@ which skills are installed, uninstalling, and self-updating.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
+## Member-side apra-fleet prerequisite for KB & code-intelligence tools
+
+Every registered member (local or remote) runs its **own** copy of apra-fleet
+as a local MCP server (over stdio) to serve its KB read/contribute and
+code-intelligence tools (`kb_query`, `kb_capture`, `code_graph`, `code_impact`,
+etc.) -- there is no central KB server or endpoint a member calls back into.
+That means a member needs its own apra-fleet install, at or above the minimum
+version the orchestrator's release requires (`MIN_MEMBER_FLEET_VERSION`,
+currently `0.4.4`), at the same default install path this page's Quick/Manual
+install steps write to (`~/.apra-fleet/bin/apra-fleet` on macOS/Linux,
+`~/.apra-fleet/bin/apra-fleet.exe` on Windows) -- **before** it is registered.
+
+This is deliberate, not an oversight: an apra-fleet install is a
+platform-specific native executable, and the orchestrator cannot safely push
+one built for its own OS/architecture onto a member that may be running a
+different one. So it is never auto-provisioned. Instead:
+
+1. Log in to the member machine as the account fleet connects as (the same
+   user SSH/local dispatch runs as).
+2. Run the [Quick install](#quick-install) or [Manual install](#manual-install)
+   steps above, on that machine.
+3. Re-run `register_member` (or just re-dispatch to that member --
+   `compose_permissions` re-probes on every run; nothing needs a server
+   restart to pick up a freshly installed or upgraded member).
+
+Until that install exists and is new enough, the member is not broken --
+everything else about it (dispatch, file transfer, other MCP tools) still
+works. `compose_permissions`' result simply reports that member's own MCP
+server as unscoped, with one of three machine-readable reasons and an
+actionable remediation printed alongside it:
+
+| Reason | Meaning | Fix |
+|---|---|---|
+| `no-install-found` | Nothing at the expected path yet. | Install apra-fleet on the member. |
+| `install-unusable` | Something is there, but it is older than `MIN_MEMBER_FLEET_VERSION` or did not report a usable version. | Re-run install on the member to upgrade/repair it. |
+| `probe-failed` | The member could not be reached to check at all -- a connectivity problem, not (necessarily) an install problem. | Check that the member is reachable, then retry. |
+
+See [docs/compose-permissions-design.md](compose-permissions-design.md#3-the-member-local-fleet-mcp-server)
+for how this resolution and scoping works.
+
 ## Quick install
 
 Installation is the default action -- just run the binary with no arguments (or double-click it

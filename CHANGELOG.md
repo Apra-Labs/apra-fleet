@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Each member now serves its own KB and code-intelligence tools over local stdio
+
+`compose_permissions` now resolves and enables a member-LOCAL `apra-fleet` MCP
+server (over stdio, tools limited to 13 read/contribute `kb_*`/`code_*` tools --
+never the admin or fleet-management surface) instead of the old central-server
+endpoint. This is a **new registration prerequisite**: a member needs its own
+`apra-fleet` install, at or above `MIN_MEMBER_FLEET_VERSION` (currently
+`0.4.4`), reachable at its default install path, before it gets KB or
+code-intelligence tools at all. A member without one, or with a too-old one,
+is not an error -- `compose_permissions`' result names the reason
+(`no-install-found`, `install-unusable`, or `probe-failed`) and a
+user-actionable remediation on a new `Fleet MCP:` line, and the outcome is
+persisted on the member record (`Agent.memberMcpScope`, read back by Sprint
+Setup preflight and the fleet panel without re-probing). See
+[docs/install.md](docs/install.md#member-side-apra-fleet-prerequisite-for-kb--code-intelligence-tools)
+for what to install and where, and
+[docs/compose-permissions-design.md](docs/compose-permissions-design.md#3-the-member-local-fleet-mcp-server)
+for the resolution/scoping design.
+
+Member config shape changes that come with this:
+- Claude members get a new project `.mcp.json` declaring the `apra-fleet`
+  stdio server, plus roughly 90 new `permissions.deny` entries in
+  `.claude/settings.local.json` (the shared kb/code tool allow-set denied
+  under both the current and the retired server name, so a member still
+  carrying the old entry cannot use it to bypass the allowlist). The old
+  `mcpServers.apra-fleet.disabled` switch and, for Claude, the superseded
+  `mcpServers['apra-fleet-member']` (orchestrator-URL-plus-bearer-token)
+  entry are actively pruned on every compose, not merely stopped-writing.
+- Antigravity (agy) members get `~/.gemini/config/mcp_config.json` added to
+  the file set compose_permissions writes, with the same prune of its own
+  superseded `apra-fleet-member` entry.
+- `compose_permissions`' text result gains a `Fleet MCP:` line reporting the
+  scoped/unscoped outcome for every member, in addition to the existing
+  granted-permissions summary.
+
 ## [Unreleased] -- kb_* tools now refuse an unscoped call instead of guessing a repo
 
 A server-handled `kb_*` call (anything arriving over MCP) that names no repo --

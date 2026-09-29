@@ -15,6 +15,27 @@
 > and `apra-fleet-fnz.5`) both still hold. Where this document and the master plan
 > disagree elsewhere, `hub-spoke-master-plan.md` wins (see that document's own header).
 
+> **Revision note (apra-fleet-b4g.42/.44):** the owner design decided AFTER this
+> document (2026-09-29, tracked under `apra-fleet-b4g.23` and siblings) replaces the
+> central-server registration this doc designs -- `registerMcpEndpoint`, section 3's
+> `claude mcp add --transport http ... apra-fleet-member <url> --header
+> "Authorization: Bearer <token>"`, and the equivalent AGY/OpenCode config-file
+> mechanisms in section 3a -- with a **member-local** design: every member runs its
+> own apra-fleet as an MCP server over stdio, serving its own KB and code index, with
+> no endpoint URL, no bearer token and no central server to register against at all.
+> `registerMcpEndpoint`'s call site (`register-member.ts`'s interactive-bootstrap
+> path) is currently disabled for an unrelated lifecycle reason and is not on the
+> registration path today; where it previously left a legacy `apra-fleet-member`
+> entry in a member's config, that entry is now actively pruned rather than
+> preserved (`apra-fleet-b4g.42`). See
+> [compose-permissions-design.md](compose-permissions-design.md#3-the-member-local-fleet-mcp-server)
+> for the design that replaces sections 3/3a below, and
+> [install.md](install.md#member-side-apra-fleet-prerequisite-for-kb--code-intelligence-tools)
+> for the new member-side install prerequisite this introduces. Journeys A/B/C
+> (section 4) and the LAN/WAN enrollment-token framing are UNAFFECTED -- they are
+> about how a member's *identity* joins the fleet, which is orthogonal to how that
+> member serves its own KB/code tools once joined.
+
 # Member Onboarding: User Journey Design Brainstorm
 
 ## 0. Where this comes from
