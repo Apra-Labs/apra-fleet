@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- kb_* tools now refuse an unscoped call instead of guessing a repo
+
+A server-handled `kb_*` call (anything arriving over MCP) that names no repo --
+no `repo_path`/`repo`, and no `repo_remote_url` where the tool accepts one --
+now errors with `reason: "repo_scope_required"` (contract code
+`E-REPO-SCOPE-REQUIRED`) before any KB is opened, instead of silently falling
+back to the fleet server's own `process.cwd()`. This is a breaking change for
+any caller that omitted the repo argument: `kb_capture`, `kb_query`, `kb_list`,
+`kb_context`, `kb_invalidate`, `kb_harvest`, `kb_promote`, `kb_feedback`,
+`kb_freshness_sweep`, `kb_reconcile_prefilter` and `kb_resolve_contradiction`
+now require `repo_path` or `repo_remote_url`; `kb_export`, `kb_import`,
+`kb_stats` and `kb_session_prime` need `repo_path` itself and cannot resolve
+from `repo_remote_url` alone. `kb_setup` is exempt (its `repo_path` only
+locates `.git` for the hook). Pass one of those instead of relying on the
+server's working directory. In-shell CLI entry points (`apra-fleet kb
+invalidate` from the post-commit hook, `kb commit`, `kb import`, `kb-server`,
+the directive commands) are unaffected -- they call the same resolution code
+directly and still fall back to their own process's working directory, which
+is correct for a single-repo CLI invocation. See
+[docs/knowledge-layer.md](docs/knowledge-layer.md#per-repo-kb-isolation) and
+[docs/mcp-tools.md](docs/mcp-tools.md) for the full scoping contract.
+
 ## [Unreleased] -- provision_vcs_auth: failure cause now reaches structuredContent, not just text
 
 `provision_vcs_auth` failures (e.g. `deploy_failed`, `member_offline`) now carry the
