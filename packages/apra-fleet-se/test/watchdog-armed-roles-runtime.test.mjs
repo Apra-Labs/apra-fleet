@@ -68,10 +68,13 @@ const GRACE_S = 30; // DISPATCH_WATCHDOG_GRACE_S, private to dispatch-failure.mj
  * that file is a mutex resource owned by a different streak).
  */
 
-/** The genuine global setTimeout, captured before this file's own
- *  mock.timers.enable() call ever runs, so a hang-guard built from it can
- *  never be faked by the same clock the code under test is racing against. */
+/** The genuine global setTimeout/clearTimeout, captured before this file's own
+ *  mock.timers.enable() call ever runs, so a hang-guard built from them can
+ *  never be faked by the same clock the code under test is racing against,
+ *  and clearing the guard later never routes through a since-mocked
+ *  clearTimeout that only understands fake-timer handles. */
 const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 
 /** Real wall-clock ceiling for "the engine actually reached the watchdog
  *  race" -- never a fixed turn count -- scaled for host contention via
@@ -82,16 +85,22 @@ const REACHED_RACE_TIMEOUT_MS = scaledTimeout(5_000);
  *  A healthy run always settles `promise` near-instantly; `ms` is never what
  *  a PASSING run waits on, only a bound on a genuinely hung one, so a real
  *  regression fails loudly with a message naming the real budget waited,
- *  instead of hanging the suite forever. */
+ *  instead of hanging the suite forever. The guard timer is always cleared
+ *  once the race settles either way, so a passing case releases the real
+ *  event loop immediately instead of leaving a ref'd timer alive for its
+ *  full `ms` -- a genuine hang still fails loudly with the same message
+ *  naming the real scaled budget, since the guard fires before its own
+ *  clear ever runs. */
 function withRealTimeoutOrFail(promise, ms, label) {
-    return Promise.race([
-        promise,
-        new Promise((_resolve, reject) => {
-            realSetTimeout(() => reject(new Error(
-                `${label} -- a genuine hang is suspected: this did not happen within ${ms}ms of real wall-clock time.`
-            )), ms);
-        }),
-    ]);
+    let guardHandle;
+    const guard = new Promise((_resolve, reject) => {
+        guardHandle = realSetTimeout(() => reject(new Error(
+            `${label} -- a genuine hang is suspected: this did not happen within ${ms}ms of real wall-clock time.`
+        )), ms);
+    });
+    return Promise.race([promise, guard]).finally(() => {
+        realClearTimeout(guardHandle);
+    });
 }
 
 /**
