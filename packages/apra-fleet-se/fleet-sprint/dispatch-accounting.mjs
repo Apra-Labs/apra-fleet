@@ -2,7 +2,7 @@
 // PER-DISPATCH KNOWLEDGE AND CODE INTELLIGENCE ACCOUNTING (apra-fleet-b4g.33).
 //
 // Data-collection half of the Knowledge and Code Intelligence panel
-// (apra-fleet-b4g.21 renders it; apra-fleet-b4g.25 asserts on it). ONE
+// (apra-fleet-b4g.21 renders it; apra-fleet-b4g.34 asserts on it). ONE
 // structured store, read back by both, so neither has to reconstruct a count
 // by re-parsing this engine's prose log lines.
 //
@@ -45,9 +45,27 @@
 // handful of times per sprint, and the panel's job is "did this role/member's
 // KB traffic look real", which an accumulated total answers as well as a
 // per-invocation breakdown would. A record is created zero-initialized on
-// its FIRST touch (never reset afterward), which is what makes "no kb calls
-// made" for a role/member pair that never touched the KB an explicit
-// zero rather than an absent key.
+// its FIRST touch (never reset afterward).
+//
+// WHAT COUNTS AS A "TOUCH" (review round 2 fix): forDispatch() itself only
+// ever creates-or-returns -- it has no opinion on WHO calls it first. Before
+// this fix the only caller anywhere was kb.mjs's accountCall(), which runs
+// the instant BEFORE it counts a real kb_* attempt -- so a record could only
+// ever come into existence already carrying a count of at least 1, and a
+// role/member pair that made zero kb_* calls (every deployer/
+// integ-test-runner dispatch; a planner/harvester round that returns no
+// captures) got NO record at all rather than an explicit zero, silently
+// defeating AC7 and apra-fleet-b4g.21's "highlight a role that made ZERO kb
+// calls" panel feature -- that state could never occur. The first touch is
+// now dispatch-role.mjs's dispatchRole(), which seeds this same store the
+// instant a (persona, member) pair is genuinely dispatched, before any kb_*
+// call could possibly happen and regardless of whether one ever does. kb.mjs's
+// accountCall() then either finds that record already zero-initialized and
+// increments it, or -- for a caller that never wired dispatchRole's seed
+// (a unit test constructing kbWork directly, as this file's own tests do) --
+// still creates it itself, unchanged. Either path makes "no kb calls made"
+// for a role/member pair this sprint genuinely dispatched an explicit zero
+// rather than an absent key.
 //
 // BEST-EFFORT AND NON-FATAL, matching kb.mjs's own standing rule: every
 // mutator here is wrapped so a recording failure is only ever logged, never

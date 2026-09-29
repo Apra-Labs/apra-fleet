@@ -531,6 +531,40 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         : (opts.bindings || {}));
     const bindings = bindingsFor(0);
     const member = resolveMember(ctx, policy.member, bindings);
+    // apra-fleet-b4g.33 (review round 2): seed a ZERO-initialized kb
+    // accounting record for this (persona, member) pair the instant this
+    // role is genuinely dispatched -- before any attempt runs or fails, and
+    // regardless of whether a kb_* call ever happens. Without this,
+    // dispatch-accounting.mjs's forDispatch() is reached ONLY from kb.mjs's
+    // own call sites, so a role/member pair that IS dispatched this sprint
+    // but makes zero kb_* calls (every deployer/integ-test-runner dispatch,
+    // and most planner/harvester ones -- neither has a wired kb-apply
+    // postResult step, or simply returns no captures) gets NO record at all
+    // rather than an explicit zero. That made apra-fleet-b4g.21's "highlight
+    // a role that made ZERO kb calls" panel feature unreachable in
+    // production: the zero state this seeds is the ONLY state the highlight
+    // exists to catch.
+    //
+    // Keyed by policy.agentType -- the PERSONA string every real kb.mjs call
+    // site actually threads as `role` (the doer/reviewer pre-dispatch
+    // relevantKnowledge/promotionCandidates calls' literal 'doer'/'reviewer',
+    // and the 'kb-apply' postResult step's `policy.agentType` argument to
+    // kbWork.apply) -- NOT by roleName/policy.role, which is this table's
+    // internal ladder name (doer-resume, scoped-replan-planner, final-review,
+    // ...) and would seed a SECOND, never-merged record under a key no
+    // kb.mjs call site ever uses. final-review shares agentType 'reviewer'
+    // with the per-round reviewer ladder by design (both accumulate into the
+    // same (reviewer, member) record across the sprint), so seeding by
+    // agentType is also what keeps this seed from splitting that pair.
+    // streak-assignment is the one role with agentType === null (it has no
+    // persona and no kb.mjs call site of its own) -- nothing to seed.
+    // ctx.dispatchAccounting is an optional injection seam (absent for every
+    // caller that does not wire one, including this harness's default ctx),
+    // so this degrades to a silent no-op exactly like every other accounting
+    // touch point in kb.mjs.
+    if (ctx.dispatchAccounting && policy.agentType) {
+        ctx.dispatchAccounting.forDispatch({ role: policy.agentType, member });
+    }
     const roleLabel = opts.roleLabel || policy.role;
     const retry = policy.retry;
     const backoffMs = retry.backoffMs;

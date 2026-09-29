@@ -1524,6 +1524,14 @@ async function runSprintCycle(context) {
         getMemberForRole,
         memberSessionGuard,
         onLlmAuthFailure,
+        // apra-fleet-b4g.33 (review round 2): the ONE store dispatchRole()
+        // seeds a zero-initialized (persona, member) record into at the
+        // start of EVERY real dispatch it runs, so a role/member pair that
+        // makes no kb_* calls still reaches the panel as an explicit zero
+        // rather than being absent. Same instance kb.mjs's own call sites
+        // (via kbWork's `accounting` above) count real kb_* attempts into --
+        // one store, seeded from two places, never two stores.
+        dispatchAccounting,
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,

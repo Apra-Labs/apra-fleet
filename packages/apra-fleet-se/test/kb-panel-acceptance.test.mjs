@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createDispatchAccounting, CODE_CALLS_NOT_OBSERVABLE } from '../fleet-sprint/dispatch-accounting.mjs';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
 import { renderKbCodeIntelHtml, renderBeadsHtml, kbCodeIntelExtension, beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { driveEngineDispatch } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
 // apra-fleet-b4g.34 -- acceptance suite for the kbpanel lane: apra-fleet-b4g.33
@@ -188,20 +189,37 @@ describe('assertion 6 -- zero vs missing vs not-observable are three distinguish
         assert.equal(rec.kbCounts.kb_list, 0);
     });
 
-    test('accounting layer: a role/member pair with NO record at all is absent (dispatchRecordFor returns null), never a fabricated zero-record', () => {
+    test('accounting layer: a role/member pair genuinely DISPATCHED this sprint (through the real dispatchRole() engine, apra-fleet-b4g.33 review round 2) but that makes ZERO kb_* calls gets a real record with explicit-zero counts, not an absent one', async () => {
+        const accounting = createDispatchAccounting();
+        // No kb.mjs call happens anywhere in this test -- dispatchRole() alone
+        // is what must leave the record behind, exactly as it does for every
+        // real deployer/integ-test-runner dispatch and any planner/harvester
+        // round that returns no captures.
+        const { dispatch } = await driveEngineDispatch('reviewer', 'main', { ctx: { dispatchAccounting: accounting } });
+
+        const rec = accounting.dispatchRecordFor('reviewer', dispatch.options.member_name);
+        assert.ok(rec, 'the real engine dispatched this (role, member) pair -- it must leave a record behind even though it made no kb_* call at all');
+        assert.deepEqual(rec.kbCounts, { kb_list: 0, kb_query: 0, kb_capture: 0, kb_promote: 0, kb_export: 0 });
+    });
+
+    test('accounting layer: a role/member pair genuinely NEVER dispatched this sprint stays absent (dispatchRecordFor returns null), never a fabricated zero-record', () => {
         const accounting = createDispatchAccounting();
         assert.equal(accounting.dispatchRecordFor('doer', 'ghost'), null);
         assert.deepEqual(accounting.dispatchRecords(), []);
     });
 
-    test('panel layer: an explicit zero total renders the literal 0 + highlight, a malformed/missing kbCounts renders (unknown), and code_* renders its own marker', () => {
+    test('panel layer: an explicit zero total -- produced by a REAL zero-kb-call dispatch through the engine, not a hand-built fixture -- renders the literal 0 + highlight, a malformed/missing kbCounts renders (unknown), and code_* renders its own marker', async () => {
+        const accounting = createDispatchAccounting();
+        await driveEngineDispatch('reviewer', 'main', { ctx: { dispatchAccounting: accounting } });
+        // accounting.dispatchRecords() is the ACTUAL shape dispatchRole() left
+        // behind -- the same object runner.js's real dispatchCtx.dispatchAccounting
+        // would publish to the panel. Only the malformed second entry is a
+        // hand-built fixture, and deliberately so: it is proving defensive
+        // rendering against a shape the real store can never produce, not the
+        // zero-call state itself.
         const html = renderKbCodeIntelHtml({ members: [] }, {
             dispatches: [
-                {
-                    role: 'reviewer', member: 'zero-caller',
-                    kbCounts: { kb_list: 0, kb_query: 0, kb_capture: 0, kb_promote: 0, kb_export: 0 },
-                    captureOutcomes: [], code: { status: CODE_CALLS_NOT_OBSERVABLE },
-                },
+                ...accounting.dispatchRecords(),
                 { role: 'doer', member: 'no-data', kbCounts: null, captureOutcomes: [], code: { status: CODE_CALLS_NOT_OBSERVABLE } },
             ],
         });
@@ -277,16 +295,29 @@ describe('assertion 9 -- the panel pins the ABSENCE of a code-index commit: no f
 });
 
 describe('assertion 10 -- zero-call highlight vs the not-observable marker are mutually exclusive', () => {
-    test('a zero-kb-call dispatch is highlighted; a non-zero one is not; the code_* marker never triggers the zero highlight either way', () => {
-        const html = renderKbCodeIntelHtml({ members: [] }, {
-            dispatches: [
-                { role: 'reviewer', member: 'zero', kbCounts: { kb_list: 0, kb_query: 0, kb_capture: 0, kb_promote: 0, kb_export: 0 }, captureOutcomes: [], code: { status: CODE_CALLS_NOT_OBSERVABLE } },
-                { role: 'doer', member: 'nonzero', kbCounts: { kb_list: 0, kb_query: 4, kb_capture: 0, kb_promote: 0, kb_export: 0 }, captureOutcomes: [], code: { status: CODE_CALLS_NOT_OBSERVABLE } },
-            ],
-        });
-        const rows = html.split('<tr>').filter((s) => s.includes('zero') || s.includes('nonzero'));
-        const zeroRow = rows.find((r) => r.includes('>zero<'));
-        const nonzeroRow = rows.find((r) => r.includes('>nonzero<'));
+    test('a zero-kb-call dispatch (through the real engine) is highlighted; a non-zero one (a real kb.mjs call layered onto the same engine seed) is not; the code_* marker never triggers the zero highlight either way', async () => {
+        const accounting = createDispatchAccounting();
+
+        // Zero: dispatchRole() seeds this (role, member) record; nothing ever
+        // calls kb.mjs for it -- exactly the production shape apra-fleet-b4g.21's
+        // highlight exists to catch.
+        const { dispatch: zeroDispatch } = await driveEngineDispatch('reviewer', 'main', { ctx: { dispatchAccounting: accounting } });
+
+        // Non-zero: dispatchRole() seeds a DIFFERENT (role, member) record,
+        // then a real kb.mjs call -- exactly as develop.mjs's pre-dispatch
+        // relevantKnowledge() threads it -- pushes its kb_query count above
+        // zero on top of that same seed.
+        const { dispatch: doerDispatch } = await driveEngineDispatch('doer', 'main', { ctx: { dispatchAccounting: accounting } });
+        const doerMember = doerDispatch.options.member_name;
+        const { callTool } = createStubCallTool();
+        const kbWork = createKbWorkClient({ callTool, accounting });
+        await kbWork.relevantKnowledge('/r/doer', ['q'], { role: 'doer', member: doerMember });
+
+        const html = renderKbCodeIntelHtml({ members: [] }, { dispatches: accounting.dispatchRecords() });
+        const zeroMember = zeroDispatch.options.member_name;
+        const rows = html.split('<tr>').filter((s) => s.includes(zeroMember) || s.includes(doerMember));
+        const zeroRow = rows.find((r) => r.includes(`>${zeroMember}<`));
+        const nonzeroRow = rows.find((r) => r.includes(`>${doerMember}<`));
         assert.match(zeroRow, /data-kb-panel-zero-calls="true"/);
         assert.doesNotMatch(nonzeroRow, /data-kb-panel-zero-calls="true"/);
         // Both rows carry the not-observable marker regardless of their kb_* total.

@@ -237,6 +237,14 @@ export function createRecordingCtx(options = {}) {
         // engine uses the real frozen ROLE_POLICIES; a test that is proving a
         // variance is field-driven passes a spliced copy here.
         policies = undefined,
+        // apra-fleet-b4g.33 (review round 2): the optional dispatch-accounting
+        // seam dispatchRole() seeds a zero-initialized (persona, member)
+        // record into at dispatch start. Left undefined by default (every
+        // pre-existing pin in this suite), matching production's own
+        // three-way seam discipline -- a caller that wires nothing gets
+        // exactly the pre-existing no-op behaviour. A test proving the seed
+        // itself passes a real createDispatchAccounting() instance here.
+        dispatchAccounting = undefined,
     } = options;
 
     const rec = {
@@ -266,6 +274,7 @@ export function createRecordingCtx(options = {}) {
 
     const ctx = {
         ...(policies ? { policies } : {}),
+        ...(dispatchAccounting ? { dispatchAccounting } : {}),
         agent: async (prompt, opts) => {
             const entry = {
                 prompt,
