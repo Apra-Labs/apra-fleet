@@ -20,6 +20,7 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
    CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
    known sandbox setup/teardown gotchas are the point here -- they change whether a red run
    is a real regression or a known environment failure.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns out
    to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
    "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the

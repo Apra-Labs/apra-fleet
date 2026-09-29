@@ -23,6 +23,7 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
    you are grooming, and `hint_modules` naming the subsystems the assigned beads touch.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. This matters
    most for duplicate detection and sprint-set grouping.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When grooming turns up a durable backlog fact -- two ids that are genuinely the same
    work, a dependency between beads that their text does not state, or a recurring reason
    items land unactionable -- call `mcp__apra-fleet__kb_capture` with type "knowledge".

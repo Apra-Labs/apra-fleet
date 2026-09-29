@@ -61,6 +61,7 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
    for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under review.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. An entry
    recording that a module is harder than it looks is a task-sizing input.
+   Pass that same `repo_path` on EVERY `mcp__apra-fleet__kb_*` call you make (queries, captures, feedback, stats) -- the fleet server refuses a `kb_*` call that names no repo rather than guessing one.
 3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
    an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or
    "learning".
