@@ -1,10 +1,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { createProjectsPageHandler } from '../src/registration/project-page.mjs';
 import { PROJECTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { PLACEHOLDER_HTML } from '../src/registration/ui-placeholder.mjs';
 import { TOKEN_COOKIE_NAME } from '../src/supervisor/auth.mjs';
+import { THEME_CSS } from '../src/supervisor/theme.mjs';
 
 // =============================================================================
 // apra-fleet-i9ag.17.2.2 -- GET /ui/projects: the real project-folder page.
@@ -231,4 +234,28 @@ describe('GET /ui/projects (apra-fleet-i9ag.17.2.2)', () => {
 
         assert.equal(els['message'].textContent, note);
     });
+
+    test('Projects page HTML carries the shared theme tokens from theme.mjs and applies themed background and text (apra-fleet-i9ag.20.2)', async () => {
+        const { status, html } = await renderPath(PROJECTS_UI_PATH, { token: null });
+        assert.equal(status, 200);
+        // Single source of truth: tokens emitted must match the imported THEME_CSS
+        assert.ok(html.includes(THEME_CSS), 'Projects page HTML must contain the theme tokens imported from theme.mjs');
+        assert.match(html, /<style>[\s\S]*<\/style>/, 'must contain a <style> block');
+        // Page applies themed background and foreground tokens
+        assert.match(html, /body\s*\{[^}]*background:\s*var\(--bg\)/, 'body background must use --bg token');
+        assert.match(html, /body\s*\{[^}]*color:\s*var\(--text\)/, 'body color must use --text token');
+        assert.match(html, /dt[^{]*\{[^}]*color:\s*var\(--text-muted\)/, 'dt text must use --text-muted token');
+        assert.match(html, /label[^{]*\{[^}]*color:\s*var\(--text-muted\)/, 'label text must use --text-muted token');
+        // Must not fall back to browser-default unstyled colors
+        assert.ok(!html.includes('<head><meta charset="utf-8"><title>Projects</title></head>'), 'must not emit bare unstyled head');
+    });
+
+    test('single source of truth: project-page.mjs imports THEME_CSS and does not duplicate token definitions (apra-fleet-i9ag.20.2)', () => {
+        const projectPagePath = fileURLToPath(new URL('../src/registration/project-page.mjs', import.meta.url));
+        const src = fs.readFileSync(projectPagePath, 'utf-8');
+        assert.match(src, /import\s*\{[^}]*THEME_CSS[^}]*\}\s*from\s*['"]\.\.\/supervisor\/theme\.mjs['"]/, 'must import THEME_CSS from shared theme module');
+        assert.ok(!src.includes('--text-muted:'), 'project-page.mjs must not duplicate theme token declarations');
+        assert.ok(!src.includes('--bg:'), 'project-page.mjs must not duplicate theme token declarations');
+    });
 });
+

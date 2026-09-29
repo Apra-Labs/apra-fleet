@@ -1618,6 +1618,94 @@ per-sprint firewall holes. Live-streamed updates (Server-Sent Events) are
 proxied with no buffering and no compression, so the live view stays live
 through the proxy hop.
 
+### Theme tokens: one shared module, not a per-page copy
+
+The dashboard's CSS custom properties (`--bg`, `--text`, `--accent`, etc.) and
+base rules live in a single exported string (`theme.mjs`), imported by both
+the main dashboard page and every other console-embedded page the supervisor
+serves (e.g. the Projects settings page). Earlier revisions defined the same
+token block inline inside the dashboard's own module and left every other
+page -- anything rendered by a route module other than the dashboard itself --
+with no styling at all, so it inherited the browser's default black-on-white
+(or black-on-dark-shell) rendering instead of the shared theme. The fix is
+structural, not a per-page patch: a page gets the theme by importing the one
+module, so a new page cannot ship unstyled by omission the way copy-paste
+inline CSS allowed. Any future console-embedded page under this package
+should import from this same module rather than defining its own token block,
+even a page that only needs a couple of the tokens.
+
+### Header running-counter must read the same array the stack renders
+
+The dashboard header's running-sprint counter and the sprint-stack list below
+it are two independent DOM regions fed by the same poll response, and they
+must never be allowed to diverge -- a counter and a list that disagree about
+how many sprints are running is confusing regardless of which one is
+"right." The fix that holds this invariant is structural: both the initial
+server-side render and every subsequent client-side poll derive the counter
+from `data.sprints.length` -- the exact same array `renderSprintStackFromState`
+iterates to build the stack rows, not a separately-tracked count. There is
+only one client-side render path (poll, invoked by both the SSE message
+handler and the heartbeat-interval fallback); there is no second code path
+that could recompute or cache a stale count independently.
+
+**Known latent risk in this shape:** the poll handler renders the stack
+first and updates the counter second, both inside one `try`/`catch` that only
+logs to the console on failure. If rendering the stack throws partway through
+(e.g. one malformed sprint view in the array), the counter update below it
+never runs and the header keeps its last-good value while the stack has
+already partially re-rendered -- reintroducing a header/stack disagreement on
+the failure path even though the success path is provably consistent. Fixing
+this requires writing the counter from the same array before (or independently
+of) the stack render, not after it, so the two writes cannot be separated by
+an exception in between.
+
+### Surfacing a failure reason depends on correctly classifying the terminal state first
+
+A sprint that fails after its initial launch window (rather than failing to
+launch at all) reaches a different code path than a launch failure, and both
+halves of getting its reason on screen have to work: the run has to be
+recognised as over, and the reason it carries has to be rendered. Landing
+either half alone still leaves an operator looking at an unexplained failure,
+so they are described together here.
+
+**Recognising that the run is over does not wait for the child to exit.** A
+fleet-sprint child keeps its own per-sprint dashboard process alive for a few
+minutes after the run itself ends, so process liveness lags the actual ending.
+The watchdog's classifier therefore reads the child's recorded terminal state
+*before* it splits on PID liveness: a recorded terminal state means FINISHED
+whether or not the process is still running. (The sprint API's own
+get/stop paths already consulted that signal ahead of PID liveness for exactly
+this linger window; the classifier is now consistent with them.) Without this,
+a run that failed in its first phase was presented as running-unresponsive for
+the length of the linger window -- observed at roughly five minutes -- and never
+left the Sprint Stack, because finished runs are excluded from the stack by
+classification rather than by process state.
+
+**Rendering the reason is gated on one shared "did this run end badly?"
+predicate,** not on a single hard-coded status. The finished-sprint card used to
+gate its reason line on the status being the explicit launch-failed value, which
+forced the reason to the empty string for every other bad outcome -- which is
+why an ABORTED card could carry a reason in its record and still render no
+explanation. That predicate now lives in its own module so the dashboard
+renderers and the launch form can all share it (the dashboard already imports
+the launch form, so housing it in either would create an import cycle), and it
+drives three surfaces: the sprint-stack row next to its status badge, the
+finished-sprint card, and the launch form's own post-launch line, which no
+longer leaves a green "launched" message standing for a run that fails minutes
+later. A launch-failed row keeps its previous presentation byte-for-byte (same
+CSS class, badge and raw-log link); other bad outcomes get a neutral class.
+Every reason is escaped -- it is text produced by a child process.
+
+Two constraints worth knowing before changing any of this. First, the stack
+row's reason is carried on the `/state` payload as well as the server's first
+paint, so the row renders identically before and after a live poll -- the
+client-side renderer is the server's own function shipped verbatim via
+`toString()`, so any helper it calls must be embedded alongside it or the poll
+dies on a `ReferenceError` and silently freezes the list. Second, a verdict
+such as ABORTED is recorded verbatim by the child (its fatal-diagnostics and
+typed-abort paths both write it) and copied through unchanged: the fix for an
+unexplained ABORTED card is to show the reason, never to relabel the verdict.
+
 ## Embedding the dashboard in the console: mount-prefix resolution and cross-links
 
 The supervisor is a self-registering workflow package in the fleet console
@@ -1693,15 +1781,30 @@ elsewhere in this codebase:
   escape delimiter, two different sprint ids could produce the same escaped
   anchor id (a real, checked injectivity requirement, not just tidiness).
 
-**Known carried-forward gap:** the dedicated read-only sprint history page
-(reached by its own direct route, not through the live-view fallthrough) does
-not yet resolve the mount prefix for its own back-link, so that one page's
-link resolves against the console root rather than the package mount point
-when the page is reached through the embedded `/ext/<id>` hop. The live-view
-fallthrough surface does not have this gap; only the standalone history route
-does. This is intentionally left open as a small, isolated fix rather than
-bundled into the mount-prefix work that fixed every other page, since it does
-not affect the widely-used live-embedded path.
+**The back-link is enforced on the served page, not assumed from the
+renderer.** Every viewer surface -- the live-proxied child HTML, that same
+URL's finished-sprint fallthrough, and the dedicated history route -- resolves
+the mount prefix from its own request and injects the back-link itself, and
+then re-reads the finished document before writing it: anchors are taken from
+the rendered body only, with comment, `<script>` and `<style>` regions removed
+first, and the response is refused with a loud 5xx if the expected anchor is
+not among them.
+
+That gate exists because the naive version of this shipped broken for a
+release. The injection used to splice the anchor at the first `<body` match in
+the document. The generic viewer template has an explanatory CSS comment inside
+its `<head>` `<style>` block that contains the literal text `<body>`, some
+12.5KB ahead of the real body tag -- so the anchor was spliced into CSS, where a
+browser parses it as style text. The bytes were on the wire, so a substring
+assertion over the served HTML passed, and the pure-renderer round-trip test
+passed too; but `document.querySelectorAll('a')` returned `[]` on both the live
+viewer and the history page, and since all three pages open in a new tab with
+no other navigation on them, the operator was simply stranded. The lessons
+generalise past this one bug: `<body>` is not a reliable needle in a document
+that talks about HTML, a page assertion that does not model what the DOM would
+see is not evidence, and a navigation affordance that can silently vanish needs
+a check on the response rather than trust in the transform. A page that cannot
+carry the link is a dead end, so failing loudly is the honest answer.
 
 ## Server-side member reservation
 

@@ -48,6 +48,7 @@ import { PROJECTS_UI_PATH } from './manifest.mjs';
 import { defaultPlaceholderHandler } from './ui-placeholder.mjs';
 import { resolveMountPrefix, mountHref } from '../supervisor/mount-prefix.mjs';
 import { TOKEN_COOKIE_NAME } from '../supervisor/auth.mjs';
+import { THEME_CSS } from '../supervisor/theme.mjs';
 
 function sendHtml(res, status, html, extraHeaders = {}) {
     const body = Buffer.from(html, 'utf-8');
@@ -72,7 +73,23 @@ function renderProjectsPageHtml({ mountPrefix }) {
     const apiHref = mountHref(mountPrefix, '/api/project');
     return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Projects</title></head>
+<head>
+<meta charset="utf-8">
+<title>Projects</title>
+<style>
+${THEME_CSS}
+body { padding: 24px; overflow-y: auto; }
+h1 { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+dl { margin-bottom: 24px; }
+dt { color: var(--text-muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 8px; }
+dd { color: var(--text); margin-top: 2px; }
+label { display: block; color: var(--text-muted); font-size: 13px; margin-bottom: 8px; }
+input[type="text"] { background: var(--bg-glass); border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: 4px; font-size: 13px; width: 100%; max-width: 480px; margin-bottom: 12px; }
+button { padding: 6px 16px; font-size: 13px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; background: var(--accent); color: var(--text); }
+button:hover { opacity: 0.8; }
+#message { margin-top: 12px; font-size: 13px; }
+</style>
+</head>
 <body>
 <h1>Project folder</h1>
 <dl>

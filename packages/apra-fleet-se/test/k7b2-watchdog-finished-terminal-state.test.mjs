@@ -243,3 +243,137 @@ describe('apra-fleet-k7b.2: withTimestamps -- ISO-timestamp-prefixed log lines',
         assert.deepEqual(calls[1], ['warn', '2026-07-30T12:00:00.000Z [readopt] heads up']);
     });
 });
+
+// =============================================================================
+// apra-fleet-i9ag.16.8 -- the post-launch-window failure regression
+// =============================================================================
+//
+// Guards apra-fleet-i9ag.16.6's detection change. The final M1 acceptance run
+// (Windows Sandbox, v0.5 binary 546286ca) launched a sprint that failed in its
+// Plan phase and watched the supervisor present it as running-unresponsive for
+// ~5 MINUTES: a fleet-sprint child keeps its per-sprint dashboard process alive
+// 300s after the run ends, and the classifier only read the child's terminal
+// state on its PID-gone path, so "the run is over" was inferred from process
+// exit rather than from the child's own recorded ending.
+//
+// These tests drive the classifier with the two signals DELIBERATELY IN
+// CONFLICT -- pid alive, terminal state present -- which is precisely the
+// dashboard-linger window and a combination no pre-existing test in this
+// package ever set up.
+describe('apra-fleet-i9ag.16.8: a terminal state is observed while the child pid is still alive (300s dashboard linger)', () => {
+    let tmpDataDir;
+    let env;
+    beforeEach(() => {
+        tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-i9ag168-linger-'));
+        env = { APRA_FLEET_DATA_DIR: tmpDataDir };
+    });
+    afterEach(() => {
+        fs.rmSync(tmpDataDir, { recursive: true, force: true });
+    });
+
+    test('PID ALIVE + a real on-disk terminal state => FINISHED, not running-unresponsive -- without waiting for the child to exit', async () => {
+        // The exact terminal state fleet-sprint's fatal-diagnostics guard
+        // leaves behind for a Plan-phase failure (fleet-sprint/
+        // fatal-diagnostics.mjs's publishState('terminal', ...)).
+        const sprintId = 'i9ag168-linger-run';
+        const statePath = getTerminalRunStatePath(sprintId, env);
+        fs.mkdirSync(path.dirname(statePath), { recursive: true });
+        fs.writeFileSync(statePath, JSON.stringify({
+            terminalReason: 'uncaughtException',
+            extensions: {
+                terminal: {
+                    verdict: 'ABORTED',
+                    failed: true,
+                    lastError: { message: 'claude: command not found', phase: 'Plan' },
+                },
+            },
+        }));
+
+        const wd = createWatchdog({
+            ledger: fakeLedger([{ sprintId, childPid: 4242, branch: 'feat/i9ag168' }]),
+            // The child process is STILL RUNNING -- it is serving its
+            // post-terminal dashboard. This is the whole point of the case.
+            isChildAlive: () => true,
+            resolvePort: () => 9100,
+            // ...and its HTTP is silent, which is what used to make this
+            // running-unresponsive for the rest of the linger window.
+            probeHttp: () => false,
+            env,
+            logger: { log() {}, error() {} },
+        });
+
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.FINISHED, 'a run whose own terminal state is on disk must never still be presented as running');
+        assert.notEqual(r.status, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE);
+        // Reported as observed, not assumed: the pid really is alive.
+        assert.equal(r.pidAlive, true, 'the classification must report the pid truthfully, not pretend the process is gone');
+        assert.equal(r.terminalState.extensions.terminal.verdict, 'ABORTED');
+        // The detail must not claim an exit that has not happened.
+        assert.ok(!/pid gone/.test(r.detail), r.detail);
+        assert.match(r.detail, /still alive/);
+    });
+
+    test('INVARIANT INTACT: PID alive + HTTP silent + NO terminal state is STILL running-unresponsive and never auto-declared crashed, across repeated ticks', async () => {
+        // apra-fleet-i9ag.16.6 acceptance criterion 2 -- pinned so the
+        // detection fix above can never be re-implemented by weakening the
+        // liveness classifier into calling a wedged child dead.
+        const crashRecords = [];
+        const wd = createWatchdog({
+            ledger: fakeLedger([{ sprintId: 'i9ag168-wedged', childPid: 4243, branch: 'feat/wedged' }]),
+            isChildAlive: () => true,
+            resolvePort: () => 9101,
+            probeHttp: () => false,
+            hasTerminalState: () => null,
+            recordTerminalError: (info) => crashRecords.push(info),
+            env,
+            logger: { log() {}, error() {} },
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+            const [r] = await wd.classifyAll();
+            assert.equal(r.status, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE, 'a wedged-but-live child with no terminal state of its own stays an operator-attention signal');
+            assert.notEqual(r.status, WATCHDOG_STATUS.CRASHED);
+            assert.notEqual(r.status, WATCHDOG_STATUS.FINISHED);
+        }
+        assert.equal(crashRecords.length, 0, 'an unresponsive child must never be routed through the CRASHED terminal-error recorder');
+    });
+
+    test('a still-alive FINISHED run records its ending exactly once and releases its reservation, same as a PID-gone one', async () => {
+        const released = [];
+        const finishes = [];
+        const wd = createWatchdog({
+            ledger: {
+                list: () => [{ sprintId: 'i9ag168-release', childPid: 4244, branch: 'feat/release' }],
+                release: async (id) => { released.push(id); return true; },
+            },
+            isChildAlive: () => true,
+            resolvePort: () => 9102,
+            probeHttp: () => true, // even a still-ANSWERING lingering dashboard
+            hasTerminalState: () => ({ terminalReason: 'DONE' }),
+            recordFinished: (info) => finishes.push(info),
+            env,
+            logger: { log() {}, error() {} },
+        });
+
+        await wd.classifyAll();
+        await wd.classifyAll();
+
+        assert.equal(finishes.length, 1, 'the FINISHED recorder fires once per sprint, not once per tick');
+        assert.ok(released.includes('i9ag168-release'), 'a finished run must not keep holding its member/scope reservation for the whole linger window');
+    });
+
+    test('a healthy run is unaffected: pid alive, HTTP answering, no terminal state => running-healthy', async () => {
+        const wd = createWatchdog({
+            ledger: fakeLedger([{ sprintId: 'i9ag168-healthy', childPid: 4245, branch: 'feat/healthy' }]),
+            isChildAlive: () => true,
+            resolvePort: () => 9103,
+            probeHttp: () => true,
+            probePauseState: () => null,
+            hasTerminalState: () => null,
+            env,
+            logger: { log() {}, error() {} },
+        });
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+    });
+});

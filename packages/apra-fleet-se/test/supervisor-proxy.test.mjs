@@ -133,8 +133,32 @@ describe('proxy -- renderLiveViewBackLinkHtml / injectLiveViewBackLink', () => {
         assert.ok(html.startsWith('<html><body data-view="live"><p>BACK</p><p>content</p></body></html>'), html);
     });
 
-    test('is a no-op on non-string input', () => {
-        assert.strictEqual(injectLiveViewBackLink(undefined, '<p>BACK</p>'), undefined);
+    // (apra-fleet-i9ag.5) FAIL LOUD, not silently: the old no-op/prepend
+    // fallbacks are what let a linkless viewer page ship for a release. A page
+    // this supervisor cannot splice a back-link into as real body content is a
+    // dead end for the operator, so the transform throws and the route answers
+    // a 5xx.
+    test('throws on a non-string body rather than silently serving it linkless', () => {
+        assert.throws(() => injectLiveViewBackLink(undefined, '<p>BACK</p>'), TypeError);
+    });
+
+    test('throws on a document with no <body> start tag', () => {
+        assert.throws(
+            () => injectLiveViewBackLink('<div>fragment, not a document</div>', '<p>BACK</p>'),
+            /no <body> start tag/,
+        );
+    });
+
+    // The exact shape of the shipped defect: the generic viewer template's
+    // <head> <style> block contains the literal text '<body>' in a CSS comment
+    // ~12.5KB ahead of the real tag, so a first-match splice landed the anchor
+    // inside CSS, where a browser never sees it as markup.
+    test('ignores a <body> that is only TEXT inside a <style> block', () => {
+        const html = '<html><head><style>/* overflow: hidden on <body> */</style></head>'
+            + '<body data-view="live"><h1>x</h1></body></html>';
+        const out = injectLiveViewBackLink(html, '<p>BACK</p>');
+        assert.ok(out.includes('<body data-view="live"><p>BACK</p><h1>x</h1>'), out);
+        assert.ok(out.includes('hidden on <body> */</style>'), 'the CSS comment must be left untouched');
     });
 });
 
@@ -163,14 +187,17 @@ describe('proxy -- renderReadOnlyHistoryHtml', () => {
     // mount point inside the console's /ext/<id> iframe, not the console
     // root, and must escape the iframe (target="_top") on both the
     // no-header (serve-direct) and mount-path-header (embedded) cases.
+    // (apra-fleet-i9ag.5) It targets this sprint's own dashboard CARD anchor
+    // now -- the same href every other viewer page carries -- so the operator
+    // lands back on the row they clicked, not merely on the dashboard root.
     test('back-link is unprefixed and target="_top" with no mount prefix', () => {
         const html = renderReadOnlyHistoryHtml('sprint-x', { status: 'success' });
-        assert.ok(html.includes('href="/" target="_top"'), html);
+        assert.ok(html.includes('href="/#' + sprintCardAnchorId('sprint-x') + '" target="_top"'), html);
     });
 
     test('back-link is prefixed with the mount path when a mount prefix is given', () => {
         const html = renderReadOnlyHistoryHtml('sprint-x', { status: 'success' }, '/ext/se');
-        assert.ok(html.includes('href="/ext/se/" target="_top"'), html);
+        assert.ok(html.includes('href="/ext/se/#' + sprintCardAnchorId('sprint-x') + '" target="_top"'), html);
     });
 });
 
@@ -426,7 +453,7 @@ describe('proxy -- history fallthrough', () => {
         try {
             const res = await getText(sup.port, '/sprints/gone/live');
             assert.strictEqual(res.status, 200);
-            assert.ok(res.body.includes('href="/" target="_top"'), res.body);
+            assert.ok(res.body.includes('href="/#' + sprintCardAnchorId('gone') + '" target="_top"'), res.body);
         } finally {
             await sup.supervisor.stop('test');
         }
@@ -440,7 +467,7 @@ describe('proxy -- history fallthrough', () => {
         try {
             const res = await getText(sup.port, '/sprints/gone/live', { headers: { [MOUNT_PATH_HEADER]: '/ext/se' } });
             assert.strictEqual(res.status, 200);
-            assert.ok(res.body.includes('href="/ext/se/" target="_top"'), res.body);
+            assert.ok(res.body.includes('href="/ext/se/#' + sprintCardAnchorId('gone') + '" target="_top"'), res.body);
         } finally {
             await sup.supervisor.stop('test');
         }
