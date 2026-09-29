@@ -90,20 +90,75 @@
 //
 // NOTHING in this file imports from outside packages/apra-fleet-se, matching
 // node-runner.mjs's own standalone-package contract.
+//
+// apra-fleet-i9ag.19.20 -- BOUNDING THE TOTAL WALL-CLOCK NOW THAT EACH PROBE
+// CAN RETRY (apra-fleet-i9ag.19.18 added one bounded retry per probe on a
+// timeout/transient spawn errno). Sequentially, that raised the worst case
+// from 2 tools x 1 attempt x 15s = 30s to 2 tools x 2 attempts x 15s = 60s --
+// a full minute during which bin/serve.mjs has not yet bound the port an
+// operator would use to fix the very setting being validated. Of the
+// strategies this task's own acceptance criteria lists (shorten the retry's
+// ceiling; give the whole validation one shared budget; probe node and bd
+// concurrently, since they are fully independent; log each retry), this
+// module picks CONCURRENT PROBING (option c), alone, deliberately over the
+// other two "shrink a budget" options:
+//   - it needs NO new timeout value and changes NOTHING about
+//     TOOLCHAIN_PROBE_TIMEOUT_MS -- every attempt, first or retried, still
+//     carries the exact same per-attempt ceiling it always has, so a probe
+//     is never given LESS time to complete than it had before this task;
+//   - node and bd have no dependency on each other's outcome (see this
+//     file's header: `ok` is gated on node ALONE, `bd` is always its own
+//     separately-worded entry) -- there is no reason two fully independent
+//     probes should ever have run sequentially at all;
+//   - running them concurrently instead of sequentially exactly HALVES the
+//     worst case back to 2 attempts x 15s = 30s total (both probes' own
+//     worst case is 30s each; running at the same time, the wall clock is
+//     the MAX of the two, not the sum) -- precisely the pre-retry total,
+//     with no new "budget exhausted, never even attempted" state to invent
+//     wording for, unlike a shared-budget approach would require.
+// See `TOOLCHAIN_VALIDATION_WORST_CASE_MS` below for the single named
+// constant this bounds to, and `validateRecordedToolchain()`'s own
+// `Promise.all()` call for where the concurrency actually happens.
+// `probeVersion()` is `async` and its `exec` dependency now returns a
+// Promise (the real `defaultExec()` below now spawns via non-blocking
+// `child_process.execFile` rather than the blocking `execFileSync` it used
+// before, which is what makes two in-flight probes able to actually overlap
+// on the wall clock rather than merely being *expressed* concurrently while
+// still running back-to-back) -- every existing injected-`exec` test mock
+// keeps working unchanged: a synchronous mock that returns a plain value or
+// throws still behaves identically whether or not the caller `await`s it.
 // =============================================================================
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Wall-clock ceiling for a single `--version` probe (mirrors
  * node-runner.mjs's SPRINT_RUNNER_PROBE_TIMEOUT_MS): a probe that never
  * returns -- a wedged interpreter, a broken shim, a network-mounted path
- * that hangs -- must never hang supervisor startup indefinitely.
+ * that hangs -- must never hang supervisor startup indefinitely. Unchanged
+ * by apra-fleet-i9ag.19.20 (see this file's header) -- every attempt, first
+ * or retried, still carries exactly this ceiling.
  */
 export const TOOLCHAIN_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * apra-fleet-i9ag.19.20: the single named constant this module's worst-case
+ * wall clock is bounded by -- node's own probe (first attempt + one bounded
+ * retry) and bd's own probe (same shape) run CONCURRENTLY (see this file's
+ * header and `validateRecordedToolchain()`'s `Promise.all()`), so the
+ * overall wall clock is the MAX of the two, not their sum: one probe's own
+ * worst case, `TOOLCHAIN_PROBE_TIMEOUT_MS * 2` (an attempt plus one retry,
+ * each bounded by `TOOLCHAIN_PROBE_TIMEOUT_MS`) -- exactly the pre-retry
+ * total (2 tools x 1 attempt x 15s, run sequentially, before
+ * apra-fleet-i9ag.19.18 added the retry).
+ */
+export const TOOLCHAIN_VALIDATION_WORST_CASE_MS = TOOLCHAIN_PROBE_TIMEOUT_MS * 2;
 
 /**
  * The single operator-facing fix line every problem entry this module
@@ -115,8 +170,21 @@ export const TOOLCHAIN_FIX_LINE =
     'Re-run the installer to re-record the toolchain (node and bd), or set FLEET_SE_NODE to an explicit Node.js binary '
     + 'and ensure bd resolves on PATH, to override the recording explicitly.';
 
-function defaultExec(file, args, options = {}) {
-    return String(execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', ...options }));
+/**
+ * apra-fleet-i9ag.19.20: non-blocking (`child_process.execFile`, not
+ * `execFileSync`) -- this is what actually lets the node probe and the bd
+ * probe overlap on the wall clock when `validateRecordedToolchain()` runs
+ * them concurrently (see this file's header): a *blocking* sync call can
+ * never truly overlap with anything else on Node's single thread no matter
+ * how it is scheduled, so switching the default `exec` to an async spawn is
+ * a required part of this bound, not an unrelated cleanup. Same error
+ * shape as `execFileSync` on failure/timeout (`err.killed`, `err.signal`,
+ * `err.code`) -- `classifyIncompleteProbe()` inspects exactly those fields
+ * and is unaffected by this swap.
+ */
+async function defaultExec(file, args, options = {}) {
+    const { stdout } = await execFileAsync(file, args, { encoding: 'utf-8', ...options });
+    return String(stdout);
 }
 
 /**
@@ -181,22 +249,38 @@ const TRANSIENT_SPAWN_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
 
 /**
  * Classifies a probe failure as one that could not COMPLETE -- the child was
- * killed (`options.timeout` firing is this module's own
- * `TOOLCHAIN_PROBE_TIMEOUT_MS` ceiling; Node reports this as `err.killed:
- * true` plus `err.signal` set) or the OS itself transiently failed to spawn
+ * killed BY THE TIMEOUT ITSELF (`options.timeout` firing is this module's
+ * own `TOOLCHAIN_PROBE_TIMEOUT_MS` ceiling; Node reports this, and ONLY
+ * this, as `err.killed: true`) or the OS itself transiently failed to spawn
  * it (`err.code` one of `TRANSIENT_SPAWN_ERRNOS`) -- versus one that
  * completed and genuinely found nothing (a missing binary/`ENOENT`, a
- * permission error, output with no parseable version). Only the former is
- * worth a bounded retry and this module's own distinct "could not be probed"
- * wording (see `probeVersion()`); the latter is unchanged from this module's
- * original, pre-apra-fleet-i9ag.19.18 behavior.
+ * permission error, output with no parseable version) OR one that CRASHED
+ * on its own (apra-fleet-i9ag.19.20: a child killed by a signal it did NOT
+ * receive from this module's own timeout -- e.g. SIGSEGV, or SIGKILL from
+ * the OOM killer -- still sets `err.signal`, but Node leaves `err.killed`
+ * `false` because Node did not initiate that kill). Only the TIMEOUT/
+ * transient-errno case is worth a bounded retry and this module's own
+ * distinct "could not be probed" wording (see `probeVersion()`); a crash
+ * falls through to `null` exactly like `ENOENT` does -- a genuine,
+ * non-retryable finding with its own, already-distinct "does not resolve to
+ * a usable ..." wording, never confused with (or retried as) a timeout.
+ *
+ * apra-fleet-i9ag.19.20: this function used to ALSO treat any bare
+ * `err.signal` (regardless of `err.killed`) as a timeout -- which meant a
+ * genuine crash (killed by the OS/kernel on its own, not by this module's
+ * timeout) was misreported with the timeout's "could not be probed within
+ * 15s" wording AND retried as though a scheduling fluke might resolve it on
+ * a second try. `err.killed === true` is the timeout's own signature (the
+ * ONLY way this module's `exec` calls ever kill a child): keying on that
+ * alone, and dropping the bare-`err.signal` branch, is what stops a crash
+ * from being misread as -- or retried as -- a timeout.
  * @param {unknown} err
  * @returns {string|null} `'timeout'`, a transient errno code, or `null` for
- *   a genuine (non-retryable) failure.
+ *   a genuine (non-retryable) failure -- including a crash.
  */
 function classifyIncompleteProbe(err) {
     if (!err || typeof err !== 'object') return null;
-    if (err.killed === true || (typeof err.signal === 'string' && err.signal.length > 0)) return 'timeout';
+    if (err.killed === true) return 'timeout';
     if (typeof err.code === 'string' && TRANSIENT_SPAWN_ERRNOS.has(err.code)) return err.code;
     return null;
 }
@@ -220,15 +304,24 @@ function classifyIncompleteProbe(err) {
  * with no parseable version) is never retried -- a retry could never change
  * that outcome -- and returns `incomplete: null` exactly as this function
  * always has.
- * @param {(file: string, args: string[], options?: object) => string|Buffer} exec
+ *
+ * apra-fleet-i9ag.19.20: `async` (awaits `exec()`'s result) so that the two
+ * call sites in `validateRecordedToolchain()` -- node's probe and bd's --
+ * can genuinely run concurrently rather than back-to-back (see this file's
+ * header). A synchronous `exec` mock (every existing test's injected fake)
+ * behaves identically whether or not its result is `await`ed.
+ * @param {(file: string, args: string[], options?: object) => string|Buffer|Promise<string|Buffer>} exec
  * @param {NodeJS.Platform} platform
  * @param {string} file
  * @param {string[]} args
- * @returns {{ version: string|null, incomplete: string|null }}
+ * @returns {Promise<{ version: string|null, incomplete: string|null }>}
  */
-function probeVersion(exec, platform, file, args) {
+async function probeVersion(exec, platform, file, args) {
     const isWin32Shell = platform === 'win32';
-    const execFile = isWin32Shell ? quoteForWindowsShell(file) : file;
+    // Named `probeTarget`, deliberately NOT `execFile` -- this module also
+    // imports node:child_process's own `execFile` (used by `defaultExec()`
+    // above), and shadowing that name here, while legal, invites confusion.
+    const probeTarget = isWin32Shell ? quoteForWindowsShell(file) : file;
     const options = { shell: isWin32Shell, timeout: TOOLCHAIN_PROBE_TIMEOUT_MS };
 
     let incomplete = null;
@@ -236,7 +329,9 @@ function probeVersion(exec, platform, file, args) {
     // -- never a bare retry-until-pass loop.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
         try {
-            const raw = exec(execFile, args, options);
+            // eslint-disable-next-line no-await-in-loop -- a genuine
+            // sequential retry, never a batch worth parallelizing.
+            const raw = await exec(probeTarget, args, options);
             return { version: parseVersionString(raw), incomplete: null };
         } catch (err) {
             incomplete = classifyIncompleteProbe(err);
@@ -340,6 +435,21 @@ export async function validateRecordedToolchain(deps = {}) {
 
     const { nodePath, bdPath } = toolchain;
     const problems = [];
+    const bdRecorded = typeof bdPath === 'string' && bdPath.length > 0;
+
+    // apra-fleet-i9ag.19.20: node's probe and bd's probe are fully
+    // independent of each other (see this file's header for why they never
+    // needed to run sequentially in the first place) -- both are STARTED
+    // here, before either is awaited, so their two `--version` child
+    // processes are in flight at the same time; `Promise.all()` below is
+    // what bounds the overall wall clock to ONE probe's own worst case
+    // (`TOOLCHAIN_VALIDATION_WORST_CASE_MS`) rather than the sum of both.
+    // `bdProbePromise` is `null` (never even started) when nothing was
+    // recorded for bd at all -- exactly the existing "only the node probe
+    // ran" contract, unaffected by running concurrently.
+    const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version']);
+    const bdProbePromise = bdRecorded ? probeVersion(exec, platform, bdPath, ['--version']) : null;
+    const [nodeProbe, bdProbe] = await Promise.all([nodeProbePromise, bdProbePromise]);
 
     // Node: the ONLY input to `ok` (see this file's header for why) --
     // node-runner.mjs's CONFIGURED tier hard-fails a sprint launch the
@@ -360,7 +470,6 @@ export async function validateRecordedToolchain(deps = {}) {
     // line, so a consumer/operator is never told a node that merely could
     // not be probed in time "does not resolve" -- those are different
     // findings and must read as different findings.
-    const nodeProbe = probeVersion(exec, platform, nodePath, ['--version']);
     const nodeVersion = nodeProbe.version;
     let nodeOk;
     if (nodeProbe.incomplete) {
@@ -392,11 +501,10 @@ export async function validateRecordedToolchain(deps = {}) {
     // plain boolean, without having to substring-match `problems`.
     let bdVersion = null;
     let bdOk;
-    if (typeof bdPath !== 'string' || bdPath.length === 0) {
+    if (!bdRecorded) {
         bdOk = false;
         problems.push('No bd path was recorded for this installation.');
     } else {
-        const bdProbe = probeVersion(exec, platform, bdPath, ['--version']);
         bdVersion = bdProbe.version;
         if (bdProbe.incomplete) {
             bdOk = false;
