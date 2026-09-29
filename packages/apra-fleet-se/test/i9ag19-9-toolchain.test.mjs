@@ -19,7 +19,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { validateRecordedToolchain, TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
+import { validateRecordedToolchain, TOOLCHAIN_FIX_LINE, TOOLCHAIN_PROBE_TIMEOUT_MS } from '../src/supervisor/toolchain.mjs';
 import { writeSupervisorToolchain, supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { MIN_NODE_VERSION } from '../src/supervisor/node-runner.mjs';
 
@@ -311,5 +311,83 @@ describe('apra-fleet-i9ag.19.9: validateRecordedToolchain() -- never throws on a
         const exec = () => { throw 'not-an-error-object'; }; // eslint-disable-line no-throw-literal
 
         await assert.doesNotReject(validateRecordedToolchain({ filePath, exec, platform: 'linux' }));
+    });
+});
+
+// apra-fleet-i9ag.19.11 AC6: branches of validateRecordedToolchain() this
+// file's own AC1-AC6 coverage above did not yet exercise -- every case above
+// drives it through `filePath` plus an injected `exec`/`platform`; the four
+// below cover the remaining injectable seams (`dataDir`, `fs`, the probe
+// timeout actually threaded through to `exec`) and the REAL default `exec`
+// (execFileSync), which no case above ever calls.
+describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchain() -- remaining injectable seams', () => {
+    test('deps.dataDir (not filePath) resolves to the SAME supervisor.config.json readSupervisorConfig() would use', async () => {
+        const dataDir = await mkTmp();
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' }, { dataDir });
+        const { exec } = fakeExecCapturing({
+            '/opt/toolchain/node': `v${MIN_NODE_VERSION}`,
+            '/opt/toolchain/bd': 'bd version 1.2.3',
+        });
+
+        const result = await validateRecordedToolchain({ dataDir, exec, platform: 'linux' });
+
+        assert.equal(result.configured, true);
+        assert.equal(result.ok, true);
+        assert.equal(result.source, supervisorConfigPath({ dataDir }), 'source must be the SAME path a dataDir-based caller would resolve');
+    });
+
+    test('deps.fs (an injected reader, no real file on disk) is honored, exactly like readSupervisorConfig() itself', async () => {
+        const filePath = path.join(await mkTmp(), 'supervisor.config.json');
+        const fakeFs = {
+            readFile: async (p, enc) => {
+                assert.equal(p, filePath);
+                assert.equal(enc, 'utf-8');
+                return JSON.stringify({ toolchain: { nodePath: '/opt/toolchain/node' } });
+            },
+        };
+        const { exec, calls } = fakeExecCapturing({ '/opt/toolchain/node': `v${MIN_NODE_VERSION}` });
+
+        const result = await validateRecordedToolchain({ filePath, fs: fakeFs, exec, platform: 'linux' });
+
+        assert.equal(result.configured, true);
+        assert.equal(result.ok, true);
+        assert.equal(result.nodePath, '/opt/toolchain/node');
+        assert.equal(calls.length, 1, 'the injected fs reader must be what fed the probe, not a real file on disk');
+    });
+
+    test('every probe carries TOOLCHAIN_PROBE_TIMEOUT_MS as its exec options.timeout, so a wedged binary can never hang startup', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' }, { filePath });
+        const { exec, calls } = fakeExecCapturing({
+            '/opt/toolchain/node': `v${MIN_NODE_VERSION}`,
+            '/opt/toolchain/bd': 'bd version 1.2.3',
+        });
+
+        await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(calls.length, 2);
+        for (const call of calls) {
+            assert.equal(call.options.timeout, TOOLCHAIN_PROBE_TIMEOUT_MS, `probe of ${call.file} did not carry the wall-clock ceiling`);
+        }
+    });
+
+    test('the REAL default exec (execFileSync) resolves a real absolute node path when no exec is injected', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        // process.execPath is a real, absolute, spawnable Node.js runtime --
+        // exactly the shape a genuine recording would carry -- and this is
+        // this test file's ONLY case that lets validateRecordedToolchain()
+        // fall through to its own real defaultExec()/process.platform
+        // instead of an injected fake.
+        await writeSupervisorToolchain({ nodePath: process.execPath }, { filePath });
+
+        const result = await validateRecordedToolchain({ filePath });
+
+        assert.equal(result.configured, true);
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.nodeVersion, process.versions.node);
+        assert.equal(result.bdOk, false, 'no bdPath was recorded');
+        assert.deepEqual(result.problems, ['No bd path was recorded for this installation.']);
     });
 });
