@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
 import { HTML_TEMPLATE } from '../src/viewer/index.mjs';
-import { resolveBlobDataUrls, blobDataUrl, buildBlobViewerFragment } from '../src/viewer/blob-urls.mjs';
+import { resolveBlobDataUrls, blobDataUrl, buildBlobViewerFragment, buildBlobViewerLink } from '../src/viewer/blob-urls.mjs';
 
 const SAS = 'sv=2021-08-06&sr=c&sp=r&se=2026-09-30T04%3A00%3A00Z&sig=abc%2Fdef%3D';
 const STATE = 'https://acct.blob.core.windows.net/c1/sprints/s1/state.json';
@@ -51,7 +51,7 @@ describe('resolveBlobDataUrls', () => {
  * Run the data-provider block of a real emitted page in a sandbox and return
  * its dataProvider plus every URL it fetched.
  */
-function loadProvider(html, { hash = '', search = '' } = {}) {
+function loadProvider(html, { hash = '', search = '', href = '' } = {}) {
   const start = html.indexOf('<script>');
   const script = html.slice(start + '<script>'.length, html.indexOf('</script>', start));
   const from = script.indexOf('function resolveStringRefs');
@@ -60,8 +60,8 @@ function loadProvider(html, { hash = '', search = '' } = {}) {
   assert.ok(from > 0 && to > from, 'could not locate the provider block in the emitted page');
   const fetched = [];
   const sandbox = {
-    URL, URLSearchParams, encodeURIComponent,
-    location: { hash, search },
+    URL, URLSearchParams, encodeURIComponent, decodeURIComponent,
+    location: { hash, search, href },
     window: {},
     fetch: async (url) => { fetched.push(url); return { ok: true, json: async () => ({ id: 'x', _strings: [] }) }; },
     setInterval: () => 0, clearInterval: () => {},
@@ -69,6 +69,53 @@ function loadProvider(html, { hash = '', search = '' } = {}) {
   vm.runInNewContext(script.slice(from, to), sandbox);
   return { provider: sandbox.window.dataProvider, fetched };
 }
+
+// The short link: the page sits in the same (private) container as the data
+// and is opened as viewer.html?<SAS>#<runId>. The token appears ONCE -- the one
+// that loaded the page is the one every read uses -- and the state URL is
+// derived from the page's own location instead of being spelled out.
+const PAGE = 'https://acct.blob.core.windows.net/c1/viewer.html';
+
+describe('the short link', () => {
+  test('builds as page?SAS#runId, with the run id encoded', () => {
+    assert.equal(buildBlobViewerLink({ pageUrl: PAGE, runId: 's 1', sas: `?${SAS}` }), `${PAGE}?${SAS}#s%201`);
+  });
+
+  test('derives the state URL beside the page (default runs/ folder) and carries the page token to every read', () => {
+    const urls = resolveBlobDataUrls('#s%201', `${PAGE}?${SAS}#s%201`, `?${SAS}`);
+    assert.equal(urls.stateUrl, `https://acct.blob.core.windows.net/c1/runs/s%201/state.json?${SAS}`);
+    assert.equal(blobDataUrl(urls, 'activities/a1.json'), `https://acct.blob.core.windows.net/c1/runs/s%201/activities/a1.json?${SAS}`);
+  });
+
+  test('#run=<id> is the same thing, named, and the folder is whatever the publisher says', () => {
+    const urls = resolveBlobDataUrls('#run=s1', `${PAGE}?${SAS}`, `?${SAS}`, 'sprints');
+    assert.equal(urls.stateUrl, `https://acct.blob.core.windows.net/c1/sprints/s1/state.json?${SAS}`);
+  });
+
+  test('the explicit #state= form still works, and falls back to the page token', () => {
+    const urls = resolveBlobDataUrls(`#state=${encodeURIComponent(STATE)}`, `${PAGE}?${SAS}`, `?${SAS}`);
+    assert.equal(urls.stateUrl, `${STATE}?${SAS}`);
+  });
+
+  test('the real emitted page, published with a runs folder, reads everything with the ONE token it was opened with', async () => {
+    const html = HTML_TEMPLATE([], { dataProvider: 'blob', blobRunsPrefix: 'sprints' });
+    const link = buildBlobViewerLink({ pageUrl: PAGE, runId: 's1', sas: SAS });
+    const { provider, fetched } = loadProvider(html, { href: link, search: `?${SAS}`, hash: '#s1' });
+    await provider.getState();
+    await provider.getActivityOutput('a1');
+    await provider.getExtensionDetail('beads', 'b1');
+    assert.deepEqual(fetched, [
+      `https://acct.blob.core.windows.net/c1/sprints/s1/state.json?${SAS}`,
+      `https://acct.blob.core.windows.net/c1/sprints/s1/activities/a1.json?${SAS}`,
+      `https://acct.blob.core.windows.net/c1/sprints/s1/extensions/beads/b1.json?${SAS}`,
+    ]);
+  });
+
+  test('a runs folder that is not a plain name is refused in favour of the default', () => {
+    const html = HTML_TEMPLATE([], { dataProvider: 'blob', blobRunsPrefix: '../elsewhere' });
+    assert.ok(html.includes('const BLOB_RUNS_PREFIX = "runs"'));
+  });
+});
 
 describe('the emitted blob page', () => {
   test('reads state, activity output and extension detail WITH the SAS', async () => {

@@ -41,6 +41,9 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // run is archived, so every 'more...' and extension detail in it failed
     // silently.
     const historyAssets = opts.historyAssets === 'relative' ? 'relative' : 'live';
+    // Blob mode, short links (viewer.html?<token>#<runId>): the folder runs
+    // live under beside the page. Supplied by whoever publishes the page.
+    const blobRunsPrefix = typeof opts.blobRunsPrefix === 'string' && /^[A-Za-z0-9._-]+$/.test(opts.blobRunsPrefix) ? opts.blobRunsPrefix : 'runs';
     const frozenStateLiteral = isHistory
         ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
         : 'null';
@@ -417,6 +420,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // at runtime, and per-item detail blobs are resolved relative to
     // state.json's own folder.
     const PROVIDER_KIND = ${JSON.stringify(providerKind)};
+    // Folder the publisher stores runs under, beside this page (short links).
+    const BLOB_RUNS_PREFIX = ${JSON.stringify(blobRunsPrefix)};
 
     // Embedded from blob-urls.mjs (same .toString() pattern as above): the
     // fragment -> URL resolution, including carrying the SAS onto every
@@ -424,7 +429,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     ${resolveBlobDataUrls.toString()}
     ${blobDataUrl.toString()}
     function apraFleetBlobUrls() {
-        return resolveBlobDataUrls((typeof location !== 'undefined' && location.hash) ? location.hash : '');
+        const loc = (typeof location !== 'undefined') ? location : {};
+        return resolveBlobDataUrls(loc.hash || '', loc.href || '', loc.search || '', BLOB_RUNS_PREFIX);
     }
     function apraFleetBlobStateUrl() { return apraFleetBlobUrls().stateUrl; }
     function apraFleetBlobSocketUrl() { return apraFleetBlobUrls().socketUrl; }
@@ -471,7 +477,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     const blobProvider = {
         getState: async function () {
             const url = apraFleetBlobStateUrl();
-            if (!url) throw new Error('blob provider: no state URL configured (expected #state=<url> in the page fragment)');
+            if (!url) throw new Error('no run selected: open this page as viewer.html?<access token>#<run id>');
             const res = await fetch(url, { cache: 'no-store' });
             // Storage answers a missing, wrong or expired SAS with an XML
             // error body; parsing that as JSON reported a meaningless syntax
