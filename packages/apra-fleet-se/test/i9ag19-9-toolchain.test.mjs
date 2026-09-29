@@ -556,21 +556,86 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchai
 // `execFileAsync` would), and the test drives that clock deterministically
 // via `node:test`'s built-in `mock.timers` (the same fake-clock convention
 // dispatch-watchdog.test.mjs and watchdog-armed-roles-runtime.test.mjs already
-// use for this exact "budget elapses" shape) plus a bounded number of real
-// `setImmediate` turns to flush the probe retry loop's own awaits between
-// ticks (mock.timers only fakes `setTimeout` here, so `setImmediate` still
-// drains microtasks/pending promise reactions without moving the fake clock).
+// use for this exact "budget elapses" shape).
+//
+// apra-fleet-i9ag.19.21 JUDGE FIX (PR #561, ubuntu run 36579143337, '0 !== 2'
+// in the 'concurrency' case below): this block used to advance past each
+// case's async config read by draining a FIXED number (20) of real
+// `setImmediate` turns before checking `calls.length`. That fixed count was
+// racing a REAL `fs.readFile()` (this file's own `writeSupervisorToolchain()`
+// + real temp file convention) whose completion time depends on actual OS
+// I/O scheduling -- on a loaded CI host, 20 turns is not a guaranteed upper
+// bound on "the read has completed", so the assertion could run before both
+// probes had even started. NOTHING below counts event-loop turns anymore:
+// `withCallSignal()` wraps an exec so a test can `await waitForCalls(n)` --
+// an explicit deferred the wrapped exec itself resolves synchronously the
+// instant its n-th call is recorded, whatever real or simulated latency
+// preceded it. Where a case only needs to flush an already-fired fake
+// timer's own promise-rejection microtasks (no real I/O in flight at that
+// point), `waitForCalls()` on the resulting call count serves that too --
+// there is no longer any place in this describe block that advances by
+// counting turns; the only case that also needs to prove FAILURE (a
+// regression back to sequential probing must still fail, never hang
+// forever) races `waitForCalls()` against `waitForCallsOrFail()`'s short REAL
+// wall-clock timer captured via `realSetTimeout` before this file's
+// `mock.timers.enable()` call ever runs, so it can never itself be faked.
 // =============================================================================
 describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock budget and crash-vs-timeout classification', () => {
-    /** One real event-loop turn, taken with setImmediate so the FAKE
-     *  setTimeout clock does not move. */
-    const turn = () => new Promise((resolve) => setImmediate(resolve));
+    /** The genuine global setTimeout, captured before any `mock.timers.enable()`
+     * call in this file ever runs, so a hang-guard built from it can never be
+     * faked by a test that mocks the clock the CODE UNDER TEST sees. */
+    const realSetTimeout = globalThis.setTimeout;
 
-    /** A bounded number of real turns, to flush whatever probeVersion()'s
-     *  retry loop has queued (its own `await exec(...)` and the `catch`
-     *  block that decides whether to retry). */
-    async function drainTurns(n = 20) {
-        for (let i = 0; i < n; i += 1) await turn();
+    /** Wraps `exec` so a test can wait for an ACTUAL call count rather than
+     * counting event-loop turns (see this describe block's file-level note).
+     * `waitForCalls(n)` resolves the instant the wrapped exec's n-th
+     * invocation is recorded -- driven by an explicit deferred the wrapper
+     * itself resolves synchronously inside that call, never by a fixed
+     * number of turns/ticks.
+     */
+    function withCallSignal(exec) {
+        const calls = [];
+        const waiters = [];
+        function notify() {
+            for (let i = waiters.length - 1; i >= 0; i -= 1) {
+                if (calls.length >= waiters[i].count) {
+                    waiters[i].resolve();
+                    waiters.splice(i, 1);
+                }
+            }
+        }
+        const wrapped = (file, args, options) => {
+            calls.push({ file, args, options });
+            notify();
+            return exec(file, args, options);
+        };
+        function waitForCalls(count) {
+            if (calls.length >= count) return Promise.resolve();
+            return new Promise((resolve) => waiters.push({ count, resolve }));
+        }
+        return { exec: wrapped, calls, waitForCalls };
+    }
+
+    /** Races `waitForCalls(count)` against a short, REAL (never fake-clock)
+     * wall-clock guard, so a case whose whole point is proving CONCURRENCY
+     * fails loudly -- instead of hanging the suite forever -- if a
+     * regression ever makes the probes sequential again (in which case the
+     * second probe would never even start without a manual `tick()`, and
+     * `waitForCalls()` alone would never settle). A healthy concurrent
+     * implementation always settles this near-instantly; `guardMs` is never
+     * what a PASSING run waits on, only a bound on the FAILING one -- well
+     * under the "no real 15s/30s/60s wait" constraint this suite must honor.
+     */
+    function waitForCallsOrFail(waitForCalls, count, guardMs, label) {
+        return Promise.race([
+            waitForCalls(count),
+            new Promise((_resolve, reject) => {
+                realSetTimeout(() => reject(new Error(
+                    `${label}: exec was not called ${count} time(s) within ${guardMs}ms of real wall-clock time -- `
+                    + 'this almost always means the probes regressed from concurrent to sequential.',
+                )), guardMs);
+            }),
+        ]);
     }
 
     /** A fake exec that never produces a version -- it hangs until
@@ -582,19 +647,15 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
      * clock through the module's real retry loop instead of asserting on a
      * synchronous shortcut. */
     function fakeExecTimesOutForever() {
-        const calls = [];
-        const exec = (file, args, options) => {
-            calls.push({ file, args, options });
-            return new Promise((_resolve, reject) => {
-                setTimeout(() => {
-                    const err = new Error(`simulated timeout kill: ${file}`);
-                    err.killed = true;
-                    err.signal = 'SIGTERM';
-                    reject(err);
-                }, options.timeout);
-            });
-        };
-        return { exec, calls };
+        const exec = (file, args, options) => new Promise((_resolve, reject) => {
+            setTimeout(() => {
+                const err = new Error(`simulated timeout kill: ${file}`);
+                err.killed = true;
+                err.signal = 'SIGTERM';
+                reject(err);
+            }, options.timeout);
+        });
+        return withCallSignal(exec);
     }
 
     /** A fake exec whose single call throws `err` synchronously -- used for
@@ -656,7 +717,7 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
                 { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
                 { filePath },
             );
-            const { exec, calls } = fakeExecTimesOutForever();
+            const { exec, calls, waitForCalls } = fakeExecTimesOutForever();
 
             let resolved = false;
             const pending = validateRecordedToolchain({ filePath, exec, platform: 'linux' });
@@ -665,26 +726,39 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
             // Both probes are started before either's first attempt has any
             // chance to settle -- see the dedicated concurrency test below
             // for the named pin of this fact; asserted here too as a
-            // sanity precondition for the timing math that follows.
-            await drainTurns();
+            // sanity precondition for the timing math that follows. Waits on
+            // the ACTUAL call count (an explicit signal the wrapped exec
+            // fires on every invocation), never a fixed number of
+            // event-loop turns -- this is what raced the real config-file
+            // read and flaked in CI (see this describe block's file-level
+            // note) -- raced against a short REAL wall-clock guard so a
+            // regression back to sequential probing FAILS this case instead
+            // of hanging forever (sequential would leave calls.length stuck
+            // at 1 with no tick ever advancing it).
+            await waitForCallsOrFail(waitForCalls, 2, 2_000, 'TOTAL budget precondition');
             assert.equal(calls.length, 2, 'node and bd probes both started (their first attempts are in flight concurrently)');
 
-            // Just BEFORE the first attempt's own timeout: nothing has fired.
+            // Just BEFORE the first attempt's own timeout: nothing has
+            // fired, so there is nothing to wait for -- mock.timers.tick()
+            // itself is synchronous and this assertion is true immediately.
             mock.timers.tick(TOOLCHAIN_PROBE_TIMEOUT_MS - 1);
-            await drainTurns();
             assert.equal(resolved, false, 'must not settle before even the first attempt times out');
 
             // Cross the first attempt's timeout: probeVersion() retries once
-            // for both node and bd (its own bounded, single retry).
+            // for both node and bd (its own bounded, single retry). Waiting
+            // for the call count to reach 4 (rather than draining a fixed
+            // number of turns) is what actually proves the retry's own new
+            // exec() invocation has happened, however many promise-chain
+            // microtask hops that took.
             mock.timers.tick(1);
-            await drainTurns();
+            await waitForCalls(4);
             assert.equal(calls.length, 4, 'both node and bd were retried exactly once after their first attempt timed out');
             assert.equal(resolved, false, 'the retry\'s own timeout has not elapsed yet');
 
             // Just BEFORE the retry's own timeout, i.e. one tick short of the
-            // module's own named total budget: still not settled.
+            // module's own named total budget: still not settled -- again
+            // nothing new has fired, so nothing needs draining.
             mock.timers.tick(TOOLCHAIN_VALIDATION_WORST_CASE_MS - TOOLCHAIN_PROBE_TIMEOUT_MS - 1);
-            await drainTurns();
             assert.equal(resolved, false, 'must not settle one tick before the module\'s own exported total budget elapses');
 
             // The final tick crosses TOOLCHAIN_VALIDATION_WORST_CASE_MS
@@ -716,7 +790,7 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
                 { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
                 { filePath },
             );
-            const { exec, calls } = fakeExecTimesOutForever();
+            const { exec, calls, waitForCalls } = fakeExecTimesOutForever();
 
             const pending = validateRecordedToolchain({ filePath, exec, platform: 'linux' });
 
@@ -724,8 +798,16 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
             // if BOTH calls are already recorded, they were started
             // concurrently -- a sequential implementation could only ever
             // have made the second call after the first one settled, which
-            // (with a wedged exec) would never happen at all.
-            await drainTurns();
+            // (with a wedged exec) would never happen without a manual
+            // tick(). Waits on the ACTUAL call count via an explicit signal
+            // the wrapped exec fires on every invocation (never a fixed
+            // number of event-loop turns -- see this describe block's
+            // file-level note for the CI flake that pattern caused), raced
+            // against a short REAL wall-clock guard so a genuine regression
+            // to sequential probing FAILS this case instead of hanging the
+            // suite forever (a sequential implementation would leave
+            // `calls.length` stuck at 1 with no tick ever advancing it).
+            await waitForCallsOrFail(waitForCalls, 2, 2_000, 'concurrency overlap');
             assert.equal(calls.length, 2, 'both node and bd were invoked before either had any chance to settle');
             assert.equal(calls[0].file, '/opt/toolchain/node');
             assert.equal(calls[1].file, '/opt/toolchain/bd');
@@ -733,11 +815,13 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
             // Let the pending validation finish so no promise is left
             // dangling once this test's fake clock is torn down -- ticking
             // through both the first attempt's timeout AND the retry's own
-            // timeout, draining real turns between each so the retry loop's
-            // own `await`s (and the second `setTimeout` registration they
-            // gate) actually run before the next tick.
+            // timeout, waiting for the retry's own exec() invocations (call
+            // count reaching 4) between each so the retry loop's own
+            // `await`s (and the second `setTimeout` registration they gate)
+            // actually run before the next tick -- again driven by the
+            // actual call count, never a fixed turn count.
             mock.timers.tick(TOOLCHAIN_PROBE_TIMEOUT_MS);
-            await drainTurns();
+            await waitForCalls(4);
             mock.timers.tick(TOOLCHAIN_VALIDATION_WORST_CASE_MS - TOOLCHAIN_PROBE_TIMEOUT_MS);
             await pending;
         } finally {
