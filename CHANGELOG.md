@@ -2,7 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- Sprint launches reliably from the installed binary, and a failed launch is now visible
+## [Unreleased] -- Installed supervisor now launches sprints with the recorded toolchain, not a service's bare PATH
+
+Sprint goal: fix a reported case where the installed supervisor, running as a
+background service under a service manager that does not inherit the login
+shell's PATH (macOS launchd, a Windows scheduled task without the user's
+PATH), could not find `node` or `bd` at all and every sprint launch failed.
+The fix resolves the absolute paths of both binaries at install time (asking
+Node.js for its own real interpreter path rather than trusting a PATH
+lookup, so a version-manager-installed runtime such as nvm/fnm/volta is
+resolved correctly) and records them into the supervisor's own config. That
+recording is read through a validating config module, consulted as its own
+tier in the sprint-runner's Node.js resolution order and threaded through
+`bd` invocation, re-validated (never blocking, never throwing) once at every
+supervisor start, and surfaced on the Health endpoint and the dashboard
+header. A fresh install on a machine where `node` comes from a version
+manager and the service does not inherit its PATH now launches a sprint
+successfully end to end, verified with a real child-process spawn under a
+scrubbed, empty PATH.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $61.6679.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1665 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 76 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working:
+
+- **The installer resolves and records the absolute paths of `node` and
+  `bd`** into the supervisor's own config at install time. An unresolvable
+  `node` is a loud, fatal install error (the supervisor cannot function
+  without one); an unresolvable `bd` degrades gracefully instead of blocking
+  installation, matching `bd`'s status as a soft dependency everywhere else
+  in the system.
+- **The sprint-runner's Node.js resolution order gained a new tier** between
+  the explicit operator override and the current process's own execPath: the
+  recorded toolchain's node path. It is treated exactly like the operator
+  override -- a configured-but-unusable path is a hard error, never a silent
+  fall-through to a PATH lookup that cannot succeed on exactly the service
+  that needed this tier in the first place.
+- **`bd` invocation now prefers the recorded `bd` path** when one was
+  recorded, falling back to a plain PATH lookup when it was not recorded or
+  does not check out -- a softer fallback than node's, because a missing
+  `bd` does not block a sprint launch the way a missing Node.js runtime
+  does.
+- **The supervisor re-validates its recorded toolchain once at every
+  start**, never blocking startup and never throwing: every failure mode
+  (nothing recorded, a malformed recording, an absent or unprobeable binary,
+  a too-old node) degrades to a machine-readable problem report instead of a
+  crash. Both probes run concurrently, bounding the worst-case validation
+  time to one probe's own ceiling rather than the sum of both.
+- **The Health endpoint and dashboard header both surface the same
+  toolchain report**, reusing its own problem text and fix line rather than
+  each restating it, with every rendered path/version value escaped.
+- See [docs/features/recorded-toolchain.md](docs/features/recorded-toolchain.md)
+  for the full design (why node and `bd` deliberately get different fallback
+  philosophies) and the updated
+  [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md)
+  for the new four-tier resolution order.
+
+Carried forward (tracked, not blocking): a handful of low-priority polish
+items remain open in the backlog -- consolidating duplicated test coverage
+for the shared node-version-probe helpers, tightening the contract for a
+synchronous probe caller handed an async exec, a stale in-code cross-
+reference comment, quoting a spaced `bd` path in one Windows fallback branch,
+and a discarded probe-failure reason in one code path that otherwise
+resolved successfully. None of them affect the shipped behavior above.
 
 Sprint goal: fix three console launch-path defects found by an acceptance
 run in a fresh installed-binary Windows Sandbox -- launching a sprint from
