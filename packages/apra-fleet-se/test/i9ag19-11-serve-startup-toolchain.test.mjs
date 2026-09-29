@@ -79,6 +79,7 @@ const SERVE_BIN = path.join(SE_ROOT, 'bin', 'serve.mjs');
 const BOOT_TIMEOUT_MS = scaledTimeout(30_000);
 const SPAWN_RECORD_TIMEOUT_MS = scaledTimeout(20_000);
 const SHUTDOWN_TIMEOUT_MS = scaledTimeout(15_000);
+const HTTP_REQUEST_TIMEOUT_MS = scaledTimeout(10_000);
 
 /** @type {Set<string>} */
 const tmpDirs = new Set();
@@ -143,7 +144,7 @@ function httpRequest(port, pathname, method = 'GET', token = '', body = undefine
             headers['content-length'] = String(payload.length);
         }
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 10_000, headers },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: HTTP_REQUEST_TIMEOUT_MS, headers },
             (res) => {
                 let text = '';
                 res.on('data', (c) => { text += c; });
