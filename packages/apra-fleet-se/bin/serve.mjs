@@ -58,6 +58,8 @@ import {
     resolveProjectDir, formatStaleConfiguredProjectWarning, PROJECT_DIR_SOURCE,
 } from '../src/supervisor/beads-identity.mjs';
 import { supervisorConfigPath } from '../src/supervisor/project-config.mjs';
+import { validateRecordedToolchain } from '../src/supervisor/toolchain.mjs';
+import { configureBdInvocation } from '../src/supervisor/lib/exec-bd.mjs';
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 import { buildManifest, SPRINTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { startRegistrationConvergence } from '../src/registration/register.mjs';
@@ -334,6 +336,84 @@ export async function serveMain(argv = process.argv.slice(2)) {
         project = { ...project, projectDir: discovered.repoRoot };
     }
     console.log(`[supervisor] project folder: ${project.projectDir} (source: ${project.source})`);
+
+    // THE RECORDED TOOLCHAIN (apra-fleet-i9ag.19.10) -- re-probed HERE, in the
+    // same up-front startup block that just resolved the project folder:
+    // BEFORE any seam is constructed and BEFORE the port is bound, and before
+    // the beads-identity probe a few lines down runs the FIRST `bd` of this
+    // process's life (that probe goes through ../src/supervisor/lib/exec-bd.mjs
+    // too, so configuring the bd invocation after it would leave exactly the
+    // service case this lane exists to fix -- no login PATH -- unable to find
+    // bd for its own identity probe).
+    //
+    // WHY re-probe at all: the absolute node/bd paths recorded at install time
+    // (supervisor.config.json's `toolchain` block) go stale for reasons the
+    // operator is not present to fix -- a version manager removed that
+    // release, the checkout moved, the machine was reimaged. Recording is
+    // worthless unless a stale recording is LOUD, and unless the values that
+    // survive validation actually reach the two places that need them: the
+    // sprint runner (createSpawner's configuredNodePath, below) and bd
+    // (configureBdInvocation, just below).
+    //
+    // SEVERITY, and the SAME deliberate asymmetry the persisted project
+    // folder above already documents: a bad recording is LOUD but NEVER
+    // fatal. A supervisor that refuses to start cannot serve the console page
+    // an operator would use to correct the setting, so this block never
+    // returns a non-zero exit code and never skips the listen -- loud and
+    // still serving; never silent, and never dead.
+    //
+    // NODE vs BD is read off `nodeOk`/`bdOk` (machine-readable, per
+    // ../src/supervisor/toolchain.mjs) -- never by substring-matching the
+    // module's prose. A broken node is an ERROR (node-runner.mjs's CONFIGURED
+    // tier hard-fails every launch over it); a broken bd is a WARNING
+    // (exec-bd.mjs degrades to a PATH lookup instead). The problem wording
+    // and the single fix line are the module's, restated nowhere here.
+    const toolchain = await validateRecordedToolchain();
+    if (!toolchain.configured) {
+        // An older install that predates the recording, or a foreground
+        // `node bin/serve.mjs` dev run. Informational ONLY: no error, no
+        // warning state, and node/bd resolution below stays exactly what it
+        // is today (FLEET_SE_NODE / current runtime / PATH, and a bare `bd`).
+        console.log(
+            `[supervisor] toolchain: not recorded (${toolchain.reason ?? 'no toolchain block'}); `
+            + 'resolving node and bd as before (FLEET_SE_NODE, this runtime, then PATH).',
+        );
+    } else if (toolchain.problems.length === 0) {
+        console.log(
+            `[supervisor] toolchain: node ${toolchain.nodePath} (v${toolchain.nodeVersion}), `
+            + `bd ${toolchain.bdPath} (v${toolchain.bdVersion}) (source: ${toolchain.source})`,
+        );
+    } else if (!toolchain.nodeOk) {
+        console.error(`[supervisor] ERROR: ${toolchain.problems.join(' ')} ${toolchain.fixLine}`);
+    } else {
+        // Node validated; only bd is broken. Report node once (sprints WILL
+        // launch with it) and warn about bd separately, so the operator is
+        // never left guessing which of the two went bad.
+        console.log(
+            `[supervisor] toolchain: node ${toolchain.nodePath} (v${toolchain.nodeVersion}) `
+            + `(source: ${toolchain.source})`,
+        );
+        console.warn(
+            `[supervisor] WARNING: ${toolchain.problems.join(' ')} `
+            + `bd falls back to a PATH lookup until this is fixed. ${toolchain.fixLine}`,
+        );
+    }
+
+    // bd: configured EXACTLY ONCE, and ONLY with values that PASSED
+    // validation -- a broken recording must never become a broken bd
+    // invocation, because exec-bd.mjs does no validation of its own (by
+    // design) and a configured-but-dead bdPath would turn every backlog /
+    // scope-overlap / identity call into a hard failure where today's PATH
+    // lookup still works. An unvalidated value is therefore simply OMITTED:
+    // with no bdPath the module reports `configured: false` and behaves
+    // exactly as it does today. nodePath here is bd's win32-shim interpreter
+    // only, so it too is passed only when node validated (exec-bd falls back
+    // to process.execPath otherwise). Nothing recorded -> `{}` -> a no-op.
+    configureBdInvocation({
+        ...(toolchain.bdOk ? { bdPath: toolchain.bdPath } : {}),
+        ...(toolchain.nodeOk ? { nodePath: toolchain.nodePath } : {}),
+    });
+
     let beadsIdentityRecord = null;
     let beadsWarning = null;
     if (!discovered) {
@@ -433,6 +513,23 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // id-allocator) authenticates against the SAME guard server.mjs now
         // enforces (see createSupervisor({ token }) below).
         serviceToken,
+        // apra-fleet-i9ag.19.10: the RECORDED node path, handed to
+        // node-runner.mjs's CONFIGURED tier (via spawner.mjs) so a
+        // service-started supervisor whose PATH never saw a login shell can
+        // still launch sprints.
+        //
+        // Deliberately the recorded value REGARDLESS of whether it validated
+        // above -- the opposite of the bd rule right next to the validation
+        // block, and not an oversight. The CONFIGURED tier treats an
+        // unusable recorded path as a HARD error naming that exact path
+        // (answered as POST /api/sprints 503, api.mjs's
+        // runnerResolutionApiError), which is the honest outcome: withholding
+        // it here would let resolution fall through to a PATH lookup, which
+        // on the very host that needed the recording either fails with a
+        // vaguer message or -- worse -- silently succeeds with a DIFFERENT
+        // node than the one the operator recorded. bd can fall back silently
+        // because its fallback still works; node's cannot.
+        configuredNodePath: toolchain.nodePath ?? undefined,
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
@@ -580,6 +677,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // The project-folder resolution decided at the top of serveMain, so
         // GET /api/health can report the folder AND which source won it.
         project: { projectDir: project.projectDir, source: project.source },
+        // apra-fleet-i9ag.19.10: the startup toolchain validation report,
+        // handed in so the health handler can reach it without re-probing
+        // (the health/dashboard SURFACING itself is apra-fleet-i9ag.19.12;
+        // this only makes the value available). Deliberately the report as
+        // validated at startup -- one voice, the same object the startup log
+        // above spoke from, so health and the log can never disagree.
+        toolchain,
     });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
