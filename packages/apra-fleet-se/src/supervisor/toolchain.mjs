@@ -184,6 +184,7 @@ import path from 'node:path';
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
 import { compareVersions, probeVersion, formatIncompleteProbeProblem } from './node-version.mjs';
+import { prependToPathEnv } from './lib/child-path-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -271,18 +272,45 @@ async function defaultExec(file, args, options = {}) {
  * sniff which kind `bdPath` is -- see exec-bd.mjs's own doc comment for the
  * full rationale, which applies unchanged here.
  *
+ * POSIX-ONLY, gated on `platform !== 'win32'` (2026-09-29 review fix, D1
+ * defect 1): mirrors exec-bd.mjs's own guard on this exact composition
+ * (`withConfiguredNodeDirOnPath()`'s two call sites are each conditioned on
+ * `!needsShellConfigured`/`platform !== 'win32'`) rather than inheriting the
+ * POSIX-only modelling without the guard that makes it safe. `nodeDir` is
+ * computed with `path.posix.dirname()`, which only agrees with a REAL
+ * Windows path's directory when given a forward-slash-rooted path (this
+ * file's own win32 describe block's fixtures are deliberately POSIX-shaped
+ * for exactly that reason) -- handed a real backslash path like
+ * `C:\Program Files\nodejs\node.exe`, it returns `'.'`, which would prepend
+ * the supervisor's own CURRENT WORKING DIRECTORY to the bd probe's search
+ * path instead of the recorded node's directory: a silent no-op for the D1
+ * fix this function exists to deliver, AND a real (if narrow) preference-
+ * hijack surface, since a `bd.cmd`/`bd.exe` dropped in that cwd would now be
+ * found before the recorded one. On win32 this function is therefore a
+ * no-op (returns `exec` unchanged) -- the bd probe there already goes
+ * through `probeVersion()`'s own `{ shell: true }` cmd.exe path, which this
+ * bead's scope (this file only, see its own WHAT TO DO) does not extend to
+ * fixing.
+ *
  * Wraps the `exec` FUNCTION handed to `probeVersion()`, never its `options`
  * bag shape (`{ timeoutMs, retry }`) -- so `./node-version.mjs` needs no
  * change at all to express this (apra-fleet-i9ag.19.30 AC 3): the wrapped
  * exec receives exactly the `execOptions` (`{ shell, timeout }`) probeVersion
  * always builds, adds `env` on top, and forwards to the real `exec`
- * unchanged otherwise. Modeled with `path.posix.*` and a literal `:`
- * delimiter (not the bare `path` module, which follows the host's real
- * `process.platform`) -- same reasoning as exec-bd.mjs's own composition:
- * `nodePath` here has already been validated absolute by
- * `readToolchainBlock()` (project-config.mjs), and this repo's recorded
- * toolchain paths are POSIX-shaped even under an injected win32 `platform`
- * in tests (see this file's win32 describe block).
+ * unchanged otherwise. The actual PATH-key write goes through
+ * `./lib/child-path-env.mjs`'s `prependToPathEnv()` (2026-09-29 review fix,
+ * D1 defect 2) rather than a THIRD hand-copy of the case-correct `PATH`/
+ * `Path` lookup apra-fleet-i9ag.19.15/.32/.37 already deduped into that one
+ * shared module -- see that module's own doc comment for why a bare
+ * `env.PATH ?? env.Path ?? ''` read followed by an unconditional `env.PATH =`
+ * write creates a shadow variable on a real Windows env (moot here today,
+ * since this function is POSIX-only, but the next platform-gate removal
+ * would silently reintroduce exactly that defect if this composed the write
+ * by hand again). `path.posix.delimiter` is passed explicitly, same
+ * reasoning as `nodeDir`'s `path.posix.dirname()` above: `nodePath` here has
+ * already been validated absolute by `readToolchainBlock()`
+ * (project-config.mjs), and this repo's recorded toolchain paths are
+ * POSIX-shaped whenever this (POSIX-gated) branch runs.
  *
  * Only ever applied to the bd probe (node's own probe is unchanged -- node
  * is a real binary, never a shebang script, so it never needs this), and
@@ -295,14 +323,14 @@ async function defaultExec(file, args, options = {}) {
  *
  * @param {(file: string, args: string[], options?: object) => unknown} exec - the real probe exec (injected or defaultExec).
  * @param {string} nodePath - the recorded, already-format-validated node path.
+ * @param {NodeJS.Platform} platform - gates this composition to non-win32 (see doc comment above).
  * @returns {(file: string, args: string[], options?: object) => unknown}
  */
-function withNodeFirstBdExec(exec, nodePath) {
+function withNodeFirstBdExec(exec, nodePath, platform) {
+    if (platform === 'win32') return exec;
     const nodeDir = path.posix.dirname(nodePath);
     return (file, args, options = {}) => {
-        const baseEnv = options.env ?? process.env;
-        const currentPath = baseEnv.PATH ?? baseEnv.Path ?? '';
-        const env = { ...baseEnv, PATH: currentPath ? `${nodeDir}:${currentPath}` : nodeDir };
+        const env = prependToPathEnv({ ...(options.env ?? process.env) }, nodeDir, path.posix.delimiter);
         return exec(file, args, { ...options, env });
     };
 }
@@ -400,8 +428,9 @@ export async function validateRecordedToolchain(deps = {}) {
     // withNodeFirstBdExec()'s doc comment) so a node-less service PATH
     // cannot fake a broken bd. `nodePath` is guaranteed present here --
     // `toolchain` (and therefore `nodePath`) was already confirmed truthy by
-    // the `!toolchain` early return above.
-    const bdExec = bdRecorded ? withNodeFirstBdExec(exec, nodePath) : exec;
+    // the `!toolchain` early return above. POSIX-only (see that function's
+    // doc comment) -- a no-op on win32.
+    const bdExec = bdRecorded ? withNodeFirstBdExec(exec, nodePath, platform) : exec;
     const bdProbePromise = bdRecorded ? probeVersion(bdExec, platform, bdPath, ['--version'], probeOptions) : null;
     const [nodeProbe, bdProbe] = await Promise.all([nodeProbePromise, bdProbePromise]);
 

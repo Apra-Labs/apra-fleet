@@ -977,3 +977,103 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
         assert.equal(typeof result.fixLine, 'string');
     });
 });
+
+// apra-fleet-i9ag.19.30 -- the bd probe runs THROUGH the recorded node (D1
+// fix, second half): a recorded bd installed by npm is typically a
+// '#!/usr/bin/env node' shebang script, so probing it directly under a
+// service PATH with no `node` at all makes `env` fail with exit 127 before
+// bd itself ever runs, reporting a perfectly good recording as broken. See
+// toolchain.mjs's withNodeFirstBdExec() doc comment for the chosen strategy
+// (mirrors exec-bd.mjs's withConfiguredNodeDirOnPath()) and why it is
+// POSIX-only (a real Windows backslash nodePath would make
+// path.posix.dirname() silently return '.', prepending the supervisor's own
+// cwd instead of the recorded node's directory).
+//
+// A dedicated, comprehensive suite for this composition lives in
+// apra-fleet-i9ag.19.31; the cases below are the minimal set this [impl]
+// bead's own acceptance criteria require directly (exact-invocation proof
+// for AC1, the win32 platform gate for D1 defect 1, and the bd-problem-still-
+// names-bdPath proof for AC6) so the fix does not ship unverified.
+//
+// AC2 ("with no recorded nodePath, the bd probe is byte-for-byte the direct
+// probe it is today") describes a state readToolchainBlock() (project-
+// config.mjs) can never produce: `nodePath` is required for `toolchain` to
+// be non-null at all, so "recorded bd, no recorded node" cannot occur --
+// the "no bd path recorded at all" case above (AC4 describe block) is the
+// closest reachable neighbor, and already shows the wrapper is applied only
+// when a bd path is actually recorded (calls.length === 1, only the node
+// probe ran).
+describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix, second half)', () => {
+    test('AC1: with a recorded node and a recorded node-shebang bd, the bd probe exec receives dirname(nodePath) prepended onto PATH -- exact invocation, bdOk:true even though PATH itself carries no node', { skip: process.platform === 'win32' ? 'POSIX-only PATH-prepend fix' : false }, async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec, calls } = fakeExecCapturing({
+            [nodePath]: `v${MIN_NODE_VERSION}`,
+            [bdPath]: 'bd version 1.2.3',
+        });
+
+        const originalPath = process.env.PATH;
+        process.env.PATH = '/usr/bin:/bin'; // deliberately no node directory on it
+        try {
+            const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+            assert.equal(result.bdOk, true, 'bd resolves through the recorded node dir even though PATH itself carries no node');
+            assert.equal(result.nodeOk, true);
+            assert.equal(calls.length, 2);
+
+            assert.equal(calls[0].file, nodePath, 'the node probe itself is unchanged');
+            assert.equal('env' in calls[0].options, false, 'the node probe is never composed through this wrapper -- it is a real binary, never a shebang script');
+
+            assert.equal(calls[1].file, bdPath, 'bd is still invoked as itself, never wrapped as "<nodePath> <bdPath>"');
+            assert.deepEqual(calls[1].args, ['--version']);
+            assert.deepEqual(calls[1].options, {
+                shell: false,
+                timeout: TOOLCHAIN_PROBE_TIMEOUT_MS,
+                env: { ...process.env, PATH: `/opt/toolchain${path.delimiter}/usr/bin:/bin` },
+            }, 'the bd probe exec receives EXACTLY probeVersion\'s own {shell,timeout} plus dirname(nodePath) prepended onto PATH -- nothing else changed');
+        } finally {
+            process.env.PATH = originalPath;
+        }
+    });
+
+    test('D1 defect 1 regression guard: on win32, the bd probe exec is NOT wrapped at all -- no env key is added', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec, calls } = fakeExecCapturing({
+            [nodePath]: `v${MIN_NODE_VERSION}`,
+            [bdPath]: 'bd version 1.2.3',
+        });
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'win32' });
+
+        assert.equal(result.bdOk, true);
+        assert.equal(calls.length, 2);
+        assert.equal(calls[1].file, bdPath, 'no whitespace to quote for the win32 shell probe');
+        assert.deepEqual(calls[1].options, { shell: true, timeout: TOOLCHAIN_PROBE_TIMEOUT_MS }, 'win32 must never get an env key added by this composition -- path.posix.dirname() on a real backslash nodePath would silently resolve to "." (the cwd), not the recorded node directory, which is both a no-op for the D1 fix and a preference-hijack surface');
+    });
+
+    test('AC6: a bd problem message still names the recorded bdPath even when probed through the node-first wrapped exec', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const nodePath = '/opt/toolchain/node';
+        const bdPath = '/opt/toolchain/broken-bd';
+        await writeSupervisorToolchain({ nodePath, bdPath }, { filePath });
+        const { exec, calls } = fakeExecCapturing({ [nodePath]: `v${MIN_NODE_VERSION}` });
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.bdOk, false);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /\/opt\/toolchain\/broken-bd/, 'the operator must still see WHICH recording is suspect, even though the interpreter is now node\'s path');
+        assert.match(result.problems[0], /does not resolve to a usable bd/);
+        const bdCall = calls.find((c) => c.file === bdPath);
+        assert.ok(bdCall, 'the bd probe was still invoked with the unmodified bdPath as file');
+        assert.ok(bdCall.options.env, 'the bd probe was composed through the node-first wrapper (env present) -- proves this exercises the FIXED code path, not the pre-fix direct probe');
+    });
+});
