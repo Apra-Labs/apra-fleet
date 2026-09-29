@@ -25,8 +25,15 @@ import {
     renderSprintSection,
     renderFinishedRunsHtml,
     buildStatePayload,
+    // (apra-fleet-i9ag.16.8) asserted against verbatim, so a badge/markup
+    // tweak can never make a reason-line assertion pass by coincidence.
+    verdictBadge,
+    launchFailedBadge,
 } from '../src/supervisor/dashboard.mjs';
-import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
+import { WATCHDOG_STATUS, createWatchdog } from '../src/supervisor/watchdog.mjs';
+// (apra-fleet-i9ag.16.8) the shared "did this run end badly?" gate both
+// renderers above and launch-form.mjs's follow phase consult.
+import { isFailedRunOutcome } from '../src/supervisor/run-outcome.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
 
@@ -346,6 +353,16 @@ class MockFinishedContainer {
     }
 }
 
+/** The `#running-counter` element poll() updates via .innerHTML (apra-fleet-i9ag.21.1/2). */
+class MockCounterElement {
+    constructor(initialHtml) {
+        this.innerHTML = initialHtml ?? '';
+    }
+    get textContent() {
+        return this.innerHTML.replace(/<[^>]*>/g, '').trim();
+    }
+}
+
 /**
  * Runs the actual SPRINT_STACK_LIVE_SCRIPT (renderSprintStackFromState() +
  * schedulePoll()/poll() + the EventSource/heartbeat wiring) against mocked
@@ -360,13 +377,18 @@ class MockFinishedContainer {
  * as it would on a page render with no finished-sprints element (poll()'s own
  * `if (finishedEl && ...)` guard skips that branch, matching every
  * pre-i9ag.16.2 test in this file that never touched it).
+ *
+ * `counterContainer` (apra-fleet-i9ag.21.2), when supplied, is returned for
+ * `document.getElementById('running-counter')` -- the header stats banner
+ * counter updated on every poll.
  */
-function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer }) {
+function runLiveRefreshScript({ container, fetchImpl, eventSourceCtor, finishedContainer, counterContainer }) {
     const script = extractLiveRefreshScript();
     const mockDocument = {
         getElementById: (id) => {
             if (id === 'sprint-stack') return container;
             if (id === 'finished-sprints') return finishedContainer ?? null;
+            if (id === 'running-counter') return counterContainer ?? null;
             return null;
         },
     };
@@ -812,5 +834,390 @@ describe('apra-fleet-i9ag.15.6: every helper called by a toString-embedded dashb
             }
         }
         assert.deepEqual(missing, [], missing.join('\n'));
+    });
+});
+
+describe('apra-fleet-i9ag.21.2: header running counter agrees with the rendered sprint stack across live polls', () => {
+    test('renderIndexPageHtml emits stats-banner with id="running-counter" matching initial views length', () => {
+        const html0 = renderIndexPageHtml([]);
+        assert.match(html0, /<span id="running-counter"><strong>0<\/strong> running<\/span>/);
+
+        const sprintView = {
+            sprintId: 'sprint-1', branch: 'b',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: [], beadCount: 0,
+        };
+        const html1 = renderIndexPageHtml([sprintView]);
+        assert.match(html1, /<span id="running-counter"><strong>1<\/strong> running<\/span>/);
+    });
+
+    test('a poll with one sprint leaves header reading 1 running AND stack showing one sprint row', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const counterContainer = new MockCounterElement('<strong>0</strong> running');
+            const sprintView = {
+                sprintId: 'sprint-1', branch: 'feat/one', goal: 'test',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r1'], beadCount: 1,
+                progress: null, members: [{ name: 'alice' }], base: 'main', baseDrift: 0,
+            };
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([sprintView]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '1 running', 'header counter must reflect 1 running sprint');
+            assert.equal(counterContainer.innerHTML, '<strong>1</strong> running');
+            assert.equal(container.children.length, 1, 'stack must render exactly one sprint row');
+            assert.equal(container.children[0].getAttribute('data-sprint-id'), 'sprint-1');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a poll whose payload drops from one to zero sprints updates header to 0 running AND stack to empty state (screenshot 42 regression)', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const sprintView = {
+                sprintId: 'sprint-1', branch: 'feat/one', goal: 'test',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r1'], beadCount: 1,
+                progress: null, members: [{ name: 'alice' }], base: 'main', baseDrift: 0,
+            };
+            const container = new MockContainer();
+            container.insertAdjacentHTML('beforeend', renderSprintSection(sprintView));
+            const counterContainer = new MockCounterElement('<strong>1</strong> running');
+
+            // Now /state returns zero running sprints
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '0 running', 'header counter must update from 1 to 0 running');
+            assert.equal(counterContainer.innerHTML, '<strong>0</strong> running');
+            assert.equal(container.children.length, 0, 'stack must have zero sprint rows');
+            assert.ok(container.innerHTML.includes('No sprints are currently running'), 'stack must show empty state message');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test('a page first painted with zero sprints updates header to 1 running AND stack to 1 row when poll returns a sprint (screenshot 31c regression)', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const counterContainer = new MockCounterElement('<strong>0</strong> running');
+
+            const sprintView = {
+                sprintId: 'sprint-2', branch: 'feat/two', goal: 'test2',
+                status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: ['r2'], beadCount: 2,
+                progress: null, members: [{ name: 'bob' }], base: 'main', baseDrift: 1,
+            };
+            const fetchImpl = async () => ({
+                json: async () => buildStatePayload([sprintView]),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            // Assert header value and rendered row count together in the SAME assertion block
+            assert.equal(counterContainer.textContent, '1 running', 'header counter must update from 0 to 1 running');
+            assert.equal(counterContainer.innerHTML, '<strong>1</strong> running');
+            assert.equal(container.children.length, 1, 'stack must render exactly one sprint row');
+            assert.equal(container.children[0].getAttribute('data-sprint-id'), 'sprint-2');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
+
+// =============================================================================
+// apra-fleet-i9ag.16.8 -- a post-launch-window failure stops showing as
+// running, and shows its reason
+// =============================================================================
+//
+// The regression the final M1 acceptance run found (Windows Sandbox, v0.5
+// binary 546286ca): a sprint that failed AFTER the launch window showed as
+// running-unresponsive for ~5 minutes (its child keeps a dashboard alive 300s
+// past the run's end), and when it finally reached Finished Sprints the card
+// read ABORTED with NO reason -- the reason existed only on the live viewer /
+// History page.
+//
+// The rendered-output half is driven through the REAL extracted client script
+// (extractLiveScriptRenderers()/runLiveRefreshScript()), never a
+// reimplementation of the render logic, so these assertions cover the exact
+// code the browser runs on every /state poll as well as the server's first
+// paint. The detection half lives in
+// test/k7b2-watchdog-finished-terminal-state.test.mjs.
+
+/** Every href in `html`, in document order. */
+function hrefs(html) {
+    return [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+}
+
+/** The shape createFinishedRunsIndex() produces for the observed ABORTED run. */
+const ABORTED_RUN = {
+    sprintId: 'sprint-aborted',
+    verdict: 'ABORTED',
+    prUrl: null,
+    endedAt: '2026-09-28T12:00:00.000Z',
+    goal: 'P1',
+    status: 'finished',
+    reason: 'uncaughtException: claude: command not found',
+    hasTerminalState: true,
+};
+
+const LAUNCH_FAILED_RUN = {
+    sprintId: 'sprint-launch-failed',
+    verdict: null,
+    prUrl: null,
+    endedAt: '2026-09-28T12:00:00.000Z',
+    goal: null,
+    status: 'launch-failed',
+    reason: 'watchdog: child exited within launch window (exited 1)',
+    hasTerminalState: false,
+};
+
+const PASSING_RUN = {
+    sprintId: 'sprint-pass',
+    verdict: 'PASS',
+    prUrl: 'https://github.com/example/repo/pull/1',
+    endedAt: '2026-09-28T12:00:00.000Z',
+    goal: 'P1',
+    status: 'finished',
+    reason: 'success: all goal-priority work closed',
+    hasTerminalState: true,
+};
+
+describe('apra-fleet-i9ag.16.8: isFailedRunOutcome() -- the one gate both renderers and the launch form share', () => {
+    test('a failed STATUS is enough, whatever the verdict says', () => {
+        for (const status of ['launch-failed', 'crashed', 'failed', 'aborted']) {
+            assert.equal(isFailedRunOutcome(status, null), true, status);
+        }
+        assert.equal(isFailedRunOutcome('ABORTED', null), true, 'status matching is case-insensitive');
+    });
+
+    test('a failed VERDICT is enough, whatever the status says', () => {
+        for (const verdict of ['FAIL', 'CHANGES_NEEDED', 'ABORTED']) {
+            assert.equal(isFailedRunOutcome('finished', verdict), true, verdict);
+        }
+        assert.equal(isFailedRunOutcome('finished', 'aborted'), true, 'verdict matching is case-insensitive');
+    });
+
+    test('a clean ending is not a failure', () => {
+        assert.equal(isFailedRunOutcome('finished', 'PASS'), false);
+        assert.equal(isFailedRunOutcome('finished', 'MERGED'), false);
+        assert.equal(isFailedRunOutcome('finished', null), false);
+    });
+
+    test('a LIVE status is never a failure -- running-unresponsive is an operator-attention signal, not a declared ending', () => {
+        assert.equal(isFailedRunOutcome(WATCHDOG_STATUS.RUNNING_UNRESPONSIVE, null), false);
+        assert.equal(isFailedRunOutcome(WATCHDOG_STATUS.RUNNING_HEALTHY, null), false);
+        assert.equal(isFailedRunOutcome(WATCHDOG_STATUS.PAUSED, null), false);
+    });
+
+    test('absent/garbage inputs are not a failure, and never throw', () => {
+        assert.equal(isFailedRunOutcome(undefined, undefined), false);
+        assert.equal(isFailedRunOutcome(null, null), false);
+        assert.equal(isFailedRunOutcome('', ''), false);
+        assert.equal(isFailedRunOutcome(42, {}), false);
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: a run that ended badly shows its reason on the Finished Sprints card', () => {
+    test('an ABORTED run renders its reason -- the exact shape that shipped broken (reason gated on launch-failed only)', () => {
+        const html = renderFinishedRunsHtml([ABORTED_RUN]);
+        assert.ok(html.includes(verdictBadge('ABORTED')), 'the verdict badge is unchanged');
+        assert.ok(
+            html.includes('Reason: uncaughtException: claude: command not found'),
+            `an ABORTED card must carry its reason, got: ${html}`
+        );
+        // It must NOT be relabeled as a launch failure to get a reason line --
+        // that classification means something different (no terminal state at
+        // all) and has its own badge/raw-log presentation.
+        assert.ok(!html.includes('launch-failed-badge'), 'a real terminal verdict must never be re-presented as a launch failure');
+        assert.ok(hrefs(html).includes('/sprints/sprint-aborted/history'), 'a file-backed row keeps its History link');
+    });
+
+    test('a run whose STATUS (not just verdict) says it aborted also renders its reason', () => {
+        const html = renderFinishedRunsHtml([{ ...ABORTED_RUN, status: 'aborted', verdict: null }]);
+        assert.ok(html.includes('Reason: uncaughtException: claude: command not found'), html);
+    });
+
+    test('a cleanly-passing run renders NO reason line, so the page gains no noise', () => {
+        const html = renderFinishedRunsHtml([PASSING_RUN]);
+        assert.ok(html.includes(verdictBadge('PASS')));
+        assert.ok(!html.includes('Reason:'), `a clean run must not show a reason line, got: ${html}`);
+    });
+
+    test('the launch-failed presentation is byte-for-byte unchanged: badge, raw-log link, and the launch-failed-reason class', () => {
+        const html = renderFinishedRunsHtml([LAUNCH_FAILED_RUN]);
+        assert.ok(html.includes(launchFailedBadge()));
+        assert.ok(html.includes('class="launch-failed-reason"'), 'the launch-failed row keeps its own reason class, not the generalised one');
+        assert.ok(html.includes('Reason: watchdog: child exited within launch window (exited 1)'));
+        assert.ok(hrefs(html).includes('/sprints/sprint-launch-failed/log'));
+        assert.ok(!html.includes('class="history-link"'), 'a row with no terminal state file still has nothing for History to render');
+    });
+
+    test('a reason carrying HTML metacharacters is escaped, never interpolated raw', () => {
+        const hostile = '<img src=x onerror="alert(1)">';
+        const html = renderFinishedRunsHtml([{ ...ABORTED_RUN, reason: hostile }]);
+        assert.ok(!html.includes(hostile), 'the raw reason string must never reach the document');
+        assert.ok(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'), html);
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: the Sprint Stack row surfaces the failure reason for a run that ended badly', () => {
+    const CRASHED_VIEW = {
+        sprintId: 'sprint-crashed',
+        branch: 'feat/x',
+        goal: 'P1',
+        status: WATCHDOG_STATUS.CRASHED,
+        issueRoots: ['r1'],
+        beadCount: 3,
+        progress: null,
+        members: [],
+        base: 'main',
+        baseDrift: null,
+        beadsPrefix: null,
+        verdict: null,
+        prUrl: null,
+        reason: 'exited 1 at 2026-09-28T12:00:00.000Z',
+    };
+
+    test('a crashed row shows WHY, next to its status badge', () => {
+        const html = renderSprintSection(CRASHED_VIEW);
+        assert.ok(html.includes('Reason: exited 1 at 2026-09-28T12:00:00.000Z'), html);
+    });
+
+    test('a healthy row shows no reason line at all', () => {
+        const html = renderSprintSection({ ...CRASHED_VIEW, status: WATCHDOG_STATUS.RUNNING_HEALTHY, reason: null });
+        assert.ok(!html.includes('Reason:'), html);
+    });
+
+    test("a stack row's reason is escaped too", () => {
+        const html = renderSprintSection({ ...CRASHED_VIEW, reason: '<script>alert(1)</script>' });
+        assert.ok(!html.includes('<script>alert(1)</script>'));
+        assert.ok(html.includes('&lt;script&gt;'));
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: the reason survives the /state round trip -- first paint AND poll render it identically', () => {
+    test('buildStatePayload() carries the stack row reason, and the REAL client script renders it', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const crashedView = {
+                sprintId: 'sprint-crashed',
+                branch: 'feat/x',
+                goal: 'P1',
+                status: WATCHDOG_STATUS.CRASHED,
+                issueRoots: ['r1'],
+                beadCount: 3,
+                progress: null,
+                members: [],
+                base: 'main',
+                baseDrift: null,
+                beadsPrefix: null,
+                verdict: null,
+                prUrl: null,
+                reason: 'exited 1 at 2026-09-28T12:00:00.000Z',
+            };
+            const payload = buildStatePayload([crashedView], [ABORTED_RUN]);
+            assert.equal(payload.sprints[0].reason, 'exited 1 at 2026-09-28T12:00:00.000Z', '/state must carry the stack row reason, or the client has nothing to render');
+            assert.equal(payload.finished[0].reason, ABORTED_RUN.reason);
+
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const finishedContainer = new MockFinishedContainer('');
+            runLiveRefreshScript({
+                container,
+                finishedContainer,
+                fetchImpl: async () => ({ json: async () => payload }),
+                eventSourceCtor: undefined,
+            });
+            await flushMicrotasks();
+
+            assert.equal(container.children.length, 1);
+            assert.ok(
+                container.children[0].outerHTML.includes('Reason: exited 1 at 2026-09-28T12:00:00.000Z'),
+                `the poll-rendered stack row must show the reason, got: ${container.children[0].outerHTML}`
+            );
+            assert.ok(
+                finishedContainer.innerHTML.includes('Reason: uncaughtException: claude: command not found'),
+                `the poll-rendered Finished Sprints card must show the reason, got: ${finishedContainer.innerHTML}`
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+
+    test("the server's first paint shows the same reasons the poll does", () => {
+        const html = renderIndexPageHtml([], undefined, undefined, { finishedRuns: [ABORTED_RUN] });
+        // The page's OWN rendered markup (before any script text) must already
+        // carry the reason -- an operator who loads the page and never waits for
+        // a poll still sees it.
+        const firstPaint = html.slice(html.indexOf('id="finished-sprints"'), html.indexOf('</script>'));
+        assert.ok(firstPaint.includes('Reason: uncaughtException: claude: command not found'), firstPaint.slice(0, 2000));
+    });
+
+    test('the embedded client renderers produce byte-identical output to the server module functions for a failed run', (t) => {
+        // extractLiveScriptRenderers() executes the WHOLE script, which starts
+        // a real setInterval() heartbeat on load -- mock the timer APIs so it
+        // is never a real OS timer left running after this test (same
+        // discipline every other test in this file follows).
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        try {
+            const { renderFinishedRunsHtml: clientRender } = extractLiveScriptRenderers();
+            assert.equal(
+                clientRender([ABORTED_RUN, LAUNCH_FAILED_RUN, PASSING_RUN], ''),
+                renderFinishedRunsHtml([ABORTED_RUN, LAUNCH_FAILED_RUN, PASSING_RUN], ''),
+                'the toString-embedded renderer must not drift from the module one'
+            );
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
+describe('apra-fleet-i9ag.16.8: a child that recorded its own terminal state leaves the Sprint Stack, pid still alive', () => {
+    test('the REAL watchdog + REAL dashboard drop a lingering-but-finished child from the stack and from the running count', async () => {
+        // End-to-end over the two modules apra-fleet-i9ag.16.6 changed: the
+        // watchdog observes the child's terminal state while its pid is alive,
+        // and buildSprintViews() therefore excludes it -- so the run stops
+        // being presented as running WITHOUT waiting ~300s for the child's
+        // dashboard process to exit.
+        const watchdog = createWatchdog({
+            ledger: fakeLedger([
+                { sprintId: 'lingering-finished', childPid: 7001, branch: 'feat/a' },
+                { sprintId: 'genuinely-running', childPid: 7002, branch: 'feat/b' },
+            ]),
+            isChildAlive: () => true, // BOTH children's processes are alive
+            resolvePort: (id) => (id === 'lingering-finished' ? 9200 : 9201),
+            probeHttp: () => true,
+            probePauseState: () => null,
+            hasTerminalState: (id) => (id === 'lingering-finished' ? { terminalReason: 'uncaughtException' } : null),
+            logger: { log() {}, error() {} },
+        });
+        const dashboard = createDashboard({
+            ledger: fakeLedger([
+                { sprintId: 'lingering-finished', members: ['alice'], issueRoots: ['r1'], childPid: 7001 },
+                { sprintId: 'genuinely-running', members: ['bob'], issueRoots: ['r2'], childPid: 7002 },
+            ]),
+            watchdog,
+            expandScope: async () => new Set(),
+            listAllBeads: async () => [],
+            driftCheck: async () => null,
+            logger: { log() {}, error() {} },
+        });
+
+        const views = await dashboard.buildSprintViews();
+        const ids = views.map((v) => v.sprintId);
+        assert.deepEqual(ids, ['genuinely-running'], 'a child that recorded its own ending must not still occupy the live stack');
+        assert.equal(buildStatePayload(views).runningCount, 1, 'the header running counter must not count an already-ended run');
     });
 });
