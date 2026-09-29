@@ -59,6 +59,8 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
+import { probeVersion as sharedProbeVersion, compareVersions } from './node-version.mjs';
+
 const require = createRequire(import.meta.url);
 
 /**
@@ -141,100 +143,6 @@ function defaultIsSea() {
 }
 
 /**
- * Parses a version string (with or without a leading 'v', tolerant of
- * trailing whitespace/build metadata) into a normalized "major.minor.patch"
- * string. Returns null when no version-like substring is found -- mirrors
- * src/cli/fleet-se-prereqs.ts's parseVersionString().
- * @param {string|Buffer|null|undefined} raw
- * @returns {string|null}
- */
-function parseVersionString(raw) {
-    if (raw === null || raw === undefined) return null;
-    const match = String(raw).match(/(\d+)\.(\d+)\.(\d+)/);
-    if (!match) return null;
-    return `${match[1]}.${match[2]}.${match[3]}`;
-}
-
-/**
- * Numeric major.minor.patch comparison -- NEVER a string compare (a string
- * compare would treat '22.9.0' as GREATER than '22.16.0', a defect this
- * module's acceptance criteria calls out explicitly). Mirrors
- * src/cli/fleet-se-prereqs.ts's compareVersions().
- * @param {string} a
- * @param {string} b
- * @returns {number} negative if a < b, positive if a > b, 0 if equal
- */
-function compareVersions(a, b) {
-    const pa = a.split('.').map(Number);
-    const pb = b.split('.').map(Number);
-    for (let i = 0; i < 3; i += 1) {
-        const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-        if (diff !== 0) return diff < 0 ? -1 : 1;
-    }
-    return 0;
-}
-
-/**
- * Quotes a single win32 shell command-line token when it needs it (contains
- * whitespace), so `cmd.exe /d /s /c "<file> <args...>"` -- the literal string
- * Node's child_process builds internally when `shell: true` on Windows --
- * does not get re-split on the space inside a candidate path. Node joins
- * `file` and `args` with a single space and wraps the WHOLE line in one pair
- * of outer quotes for the `/s` flag; `/s` only strips those outer quotes when
- * the line contains no OTHER embedded quotes, so an unquoted spaced file
- * (e.g. the default `C:\Program Files\nodejs\node.exe`) is handed to cmd.exe
- * as bare, unquoted text and splits into `C:\Program` (treated as the
- * executable) plus `Files\nodejs\node.exe` and `--version` (treated as
- * args) -- this IS the bug this module exists to fix (apra-fleet-i9ag.15.4).
- * Quoting `file` here instead defeats that outer-quote stripping (the line
- * now has embedded quotes), so cmd.exe parses the whole thing itself and
- * keeps the spaced path as one token. No-op for a token with no whitespace,
- * and only ever called on the win32 shell path -- POSIX shells/argv arrays
- * never see this. Escapes embedded double quotes by doubling them, cmd.exe's
- * own quoting convention (distinct from POSIX backslash-escaping).
- * @param {string} token
- * @returns {string}
- */
-function quoteForWindowsShell(token) {
-    if (!/\s/.test(token)) return token;
-    return `"${token.replace(/"/g, '""')}"`;
-}
-
-/**
- * Probes `file --version` (well, `file`, `args`), returning the parsed
- * version or null when the probe fails or its output carries no
- * version-like substring. `shell: true` on win32 only -- mirrors
- * src/cli/fleet-se-prereqs.ts's PROBE_OPTIONS doc comment: both `node` and an
- * explicit FLEET_SE_NODE override routinely resolve to a `.cmd`/shim on
- * Windows, and Node refuses to spawn one without a shell. Argv is always a
- * fixed-literal array (never a caller-interpolated command string), so
- * routing through a shell here introduces no expansion (CLAUDE.md). On
- * win32, `file` (a caller/environment-supplied path, unlike the fixed
- * literal args) is quoted via quoteForWindowsShell() before being handed to
- * `exec` -- see that function's doc comment for why an unquoted spaced path
- * breaks under `shell: true` on Windows. This is probe-internal only: the
- * unquoted original path is still what resolveSprintRunnerCommand() returns
- * to its caller.
- * @param {(file: string, args: string[], options?: object) => string|Buffer} exec
- * @param {NodeJS.Platform} platform
- * @param {string} file
- * @param {string[]} args
- * @returns {string|null}
- */
-function probeVersion(exec, platform, file, args) {
-    const isWin32Shell = platform === 'win32';
-    try {
-        const raw = exec(isWin32Shell ? quoteForWindowsShell(file) : file, args, {
-            shell: isWin32Shell,
-            timeout: SPRINT_RUNNER_PROBE_TIMEOUT_MS,
-        });
-        return parseVersionString(raw);
-    } catch {
-        return null;
-    }
-}
-
-/**
  * Resolves the Node.js command line the supervisor should spawn a sprint's
  * fleet-sprint CLI child process with. See the file-level doc comment above
  * for the fixed 4-tier resolution order and rationale.
@@ -264,7 +172,7 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // silent fall-through to a later tier when it is not.
     const override = typeof env.FLEET_SE_NODE === 'string' ? env.FLEET_SE_NODE.trim() : '';
     if (override.length > 0) {
-        const version = probeVersion(exec, platform, override, ['--version']);
+        const { version } = sharedProbeVersion(exec, platform, override, ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
         if (version === null) {
             throw new SprintRunnerResolutionError(
                 `FLEET_SE_NODE=${JSON.stringify(override)} does not resolve to a usable Node.js runtime ` +
@@ -288,12 +196,13 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // indistinguishable from a passed one, and letting resolution continue
     // would risk silently falling through to a PATH lookup that cannot
     // succeed on exactly the service that needed this tier in the first
-    // place. probeVersion() already handles win32 shell-quoting for a path
+    // place. The shared probeVersion() (./node-version.mjs) already handles
+    // win32 shell-quoting for a path
     // containing spaces (e.g. the default `C:\Program Files\nodejs\node.exe`)
     // the same way it does for execPath/FLEET_SE_NODE.
     const configuredNodePath = typeof deps.configuredNodePath === 'string' ? deps.configuredNodePath.trim() : '';
     if (configuredNodePath.length > 0) {
-        const version = probeVersion(exec, platform, configuredNodePath, ['--version']);
+        const { version } = sharedProbeVersion(exec, platform, configuredNodePath, ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
         if (version === null) {
             throw new SprintRunnerResolutionError(
                 `Recorded node path ${JSON.stringify(configuredNodePath)} does not resolve to a usable Node.js runtime ` +
@@ -317,7 +226,7 @@ export function resolveSprintRunnerCommand(deps = {}) {
     // process.execPath when isSea() is true: that silent fallback IS the bug
     // this module exists to fix.
     if (!isSea()) {
-        const version = probeVersion(exec, platform, execPath, ['--version']);
+        const { version } = sharedProbeVersion(exec, platform, execPath, ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
         if (version !== null) {
             return { command: execPath, source: SPRINT_RUNNER_SOURCE.CURRENT_RUNTIME, version };
         }
@@ -327,7 +236,7 @@ export function resolveSprintRunnerCommand(deps = {}) {
     }
 
     // Tier 4: node resolved from PATH, gated at >= MIN_NODE_VERSION.
-    const pathVersion = probeVersion(exec, platform, 'node', ['--version']);
+    const { version: pathVersion } = sharedProbeVersion(exec, platform, 'node', ['--version'], { timeoutMs: SPRINT_RUNNER_PROBE_TIMEOUT_MS });
     if (pathVersion === null) {
         candidates.push("'node' on PATH -- not found");
     } else if (compareVersions(pathVersion, MIN_NODE_VERSION) < 0) {

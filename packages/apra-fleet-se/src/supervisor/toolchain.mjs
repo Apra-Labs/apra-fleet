@@ -78,15 +78,15 @@
 // recording at all, a malformed config file) is exercisable with no real
 // node, no real bd, and no real config file on disk.
 //
-// The small version-probing helpers below (`parseVersionString`,
-// `compareVersions`, `quoteForWindowsShell`, `probeVersion`) are deliberately
-// a local, self-contained copy of node-runner.mjs's own identically-named,
-// identically-behaved helpers rather than an import from it: this task's
-// FILES list is this one new module, and node-runner.mjs does not export
-// them (they are resolver-internal there). Only `MIN_NODE_VERSION` itself is
-// imported from node-runner.mjs -- the one thing that MUST stay a single
-// source of truth, per this task's own acceptance criteria ("sourced from
-// the existing constant, not a new literal").
+// The small version-probing helpers this module needs (`compareVersions`,
+// `probeVersion`, and transitively `parseVersionString`/
+// `quoteForWindowsShell`) used to be a local, self-contained copy of
+// node-runner.mjs's own identically-named, identically-behaved helpers.
+// apra-fleet-i9ag.19.15 moved all four into the shared
+// `./node-version.mjs` -- both this module and node-runner.mjs import from
+// there now; neither keeps a local copy. `MIN_NODE_VERSION` itself is still
+// imported straight from node-runner.mjs -- the one thing that MUST stay a
+// single source of truth, and the shared module never redeclares it.
 //
 // NOTHING in this file imports from outside packages/apra-fleet-se, matching
 // node-runner.mjs's own standalone-package contract.
@@ -119,14 +119,18 @@
 // See `TOOLCHAIN_VALIDATION_WORST_CASE_MS` below for the single named
 // constant this bounds to, and `validateRecordedToolchain()`'s own
 // `Promise.all()` call for where the concurrency actually happens.
-// `probeVersion()` is `async` and its `exec` dependency now returns a
-// Promise (the real `defaultExec()` below now spawns via non-blocking
-// `child_process.execFile` rather than the blocking `execFileSync` it used
-// before, which is what makes two in-flight probes able to actually overlap
-// on the wall clock rather than merely being *expressed* concurrently while
-// still running back-to-back) -- every existing injected-`exec` test mock
-// keeps working unchanged: a synchronous mock that returns a plain value or
-// throws still behaves identically whether or not the caller `await`s it.
+// This module's `exec` dependency returns a Promise (the real
+// `defaultExec()` below spawns via non-blocking `child_process.execFile`
+// rather than a blocking `execFileSync`), which is what makes two in-flight
+// probes able to actually overlap on the wall clock rather than merely being
+// *expressed* concurrently while still running back-to-back. The shared
+// `probeVersion()` (./node-version.mjs) is deliberately NOT declared
+// `async` itself -- it returns a genuine Promise when `exec` does (this
+// module's contract) and a plain value when `exec` is synchronous
+// (node-runner.mjs's contract) -- so every existing injected-`exec` test
+// mock here keeps working unchanged: a synchronous mock that returns a
+// plain value or throws still behaves identically whether or not its result
+// is `await`ed by `validateRecordedToolchain()` below.
 // =============================================================================
 
 import { execFile } from 'node:child_process';
@@ -134,6 +138,7 @@ import { promisify } from 'node:util';
 
 import { readSupervisorConfig } from './project-config.mjs';
 import { MIN_NODE_VERSION } from './node-runner.mjs';
+import { compareVersions, probeVersion } from './node-version.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -179,172 +184,26 @@ export const TOOLCHAIN_FIX_LINE =
  * how it is scheduled, so switching the default `exec` to an async spawn is
  * a required part of this bound, not an unrelated cleanup. Same error
  * shape as `execFileSync` on failure/timeout (`err.killed`, `err.signal`,
- * `err.code`) -- `classifyIncompleteProbe()` inspects exactly those fields
- * and is unaffected by this swap.
+ * `err.code`) -- node-version.mjs's `classifyIncompleteProbe()` inspects
+ * exactly those fields and is unaffected by this swap.
  */
 async function defaultExec(file, args, options = {}) {
     const { stdout } = await execFileAsync(file, args, { encoding: 'utf-8', ...options });
     return String(stdout);
 }
 
-/**
- * Parses a version string (with or without a leading 'v', tolerant of
- * trailing whitespace/build metadata) into a normalized "major.minor.patch"
- * string. Returns null when no version-like substring is found. A local copy
- * of node-runner.mjs's identically-named helper -- see this file's header
- * for why it is duplicated rather than imported.
- * @param {string|Buffer|null|undefined} raw
- * @returns {string|null}
- */
-function parseVersionString(raw) {
-    if (raw === null || raw === undefined) return null;
-    const match = String(raw).match(/(\d+)\.(\d+)\.(\d+)/);
-    if (!match) return null;
-    return `${match[1]}.${match[2]}.${match[3]}`;
-}
-
-/**
- * Numeric major.minor.patch comparison -- NEVER a string compare (a string
- * compare would treat '22.9.0' as GREATER than '22.16.0'). A local copy of
- * node-runner.mjs's identically-named helper -- see this file's header for
- * why it is duplicated rather than imported.
- * @param {string} a
- * @param {string} b
- * @returns {number} negative if a < b, positive if a > b, 0 if equal
- */
-function compareVersions(a, b) {
-    const pa = a.split('.').map(Number);
-    const pb = b.split('.').map(Number);
-    for (let i = 0; i < 3; i += 1) {
-        const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-        if (diff !== 0) return diff < 0 ? -1 : 1;
-    }
-    return 0;
-}
-
-/**
- * Quotes a single win32 shell command-line token when it needs it (contains
- * whitespace), so an unquoted spaced path (e.g. the default
- * `C:\Program Files\nodejs\node.exe`) is not mis-split by cmd.exe. A local
- * copy of node-runner.mjs's identically-named, identically-behaved helper --
- * see this file's header for why it is duplicated rather than imported, and
- * node-runner.mjs's own copy for the full rationale.
- * @param {string} token
- * @returns {string}
- */
-function quoteForWindowsShell(token) {
-    if (!/\s/.test(token)) return token;
-    return `"${token.replace(/"/g, '""')}"`;
-}
-
-/**
- * Transient spawn errno codes worth one bounded retry before this module
- * concludes a probe genuinely failed -- these mean the OS could not even
- * START the child process (resource exhaustion under load), never that the
- * target binary itself is broken. `ENOENT` (the binary genuinely does not
- * exist) is deliberately NOT included: a missing binary is a genuine finding
- * on the very first attempt, and a retry could never change that.
- */
-const TRANSIENT_SPAWN_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE']);
-
-/**
- * Classifies a probe failure as one that could not COMPLETE -- the child was
- * killed BY THE TIMEOUT ITSELF (`options.timeout` firing is this module's
- * own `TOOLCHAIN_PROBE_TIMEOUT_MS` ceiling; Node reports this, and ONLY
- * this, as `err.killed: true`) or the OS itself transiently failed to spawn
- * it (`err.code` one of `TRANSIENT_SPAWN_ERRNOS`) -- versus one that
- * completed and genuinely found nothing (a missing binary/`ENOENT`, a
- * permission error, output with no parseable version) OR one that CRASHED
- * on its own (apra-fleet-i9ag.19.20: a child killed by a signal it did NOT
- * receive from this module's own timeout -- e.g. SIGSEGV, or SIGKILL from
- * the OOM killer -- still sets `err.signal`, but Node leaves `err.killed`
- * `false` because Node did not initiate that kill). Only the TIMEOUT/
- * transient-errno case is worth a bounded retry and this module's own
- * distinct "could not be probed" wording (see `probeVersion()`); a crash
- * falls through to `null` exactly like `ENOENT` does -- a genuine,
- * non-retryable finding with its own, already-distinct "does not resolve to
- * a usable ..." wording, never confused with (or retried as) a timeout.
- *
- * apra-fleet-i9ag.19.20: this function used to ALSO treat any bare
- * `err.signal` (regardless of `err.killed`) as a timeout -- which meant a
- * genuine crash (killed by the OS/kernel on its own, not by this module's
- * timeout) was misreported with the timeout's "could not be probed within
- * 15s" wording AND retried as though a scheduling fluke might resolve it on
- * a second try. `err.killed === true` is the timeout's own signature (the
- * ONLY way this module's `exec` calls ever kill a child): keying on that
- * alone, and dropping the bare-`err.signal` branch, is what stops a crash
- * from being misread as -- or retried as -- a timeout.
- * @param {unknown} err
- * @returns {string|null} `'timeout'`, a transient errno code, or `null` for
- *   a genuine (non-retryable) failure -- including a crash.
- */
-function classifyIncompleteProbe(err) {
-    if (!err || typeof err !== 'object') return null;
-    if (err.killed === true) return 'timeout';
-    if (typeof err.code === 'string' && TRANSIENT_SPAWN_ERRNOS.has(err.code)) return err.code;
-    return null;
-}
-
-/**
- * Probes `file --version` (well, `file`, `args`), returning the parsed
- * version, or a reason the probe never produced one. `shell: true` on win32
- * only, with `file` quoted first when it contains whitespace -- a local copy
- * of node-runner.mjs's identically-named, identically-behaved helper; see
- * this file's header for why it is duplicated rather than imported.
- *
- * apra-fleet-i9ag.19.18: a probe that could not COMPLETE (killed at
- * `TOOLCHAIN_PROBE_TIMEOUT_MS`, or a transient spawn errno such as `EAGAIN`
- * under load) is retried exactly ONCE, bounded, before this function gives
- * up -- a single kill/transient errno on a busy machine must never be
- * indistinguishable from a binary that resolved and genuinely said no. If
- * the SAME class of failure persists through the retry, that is reported
- * back as `incomplete` (a distinct reason a caller can word differently from
- * "does not resolve to a usable runtime") rather than folded into a plain
- * `null`. A genuine failure (a missing binary, a permission error, output
- * with no parseable version) is never retried -- a retry could never change
- * that outcome -- and returns `incomplete: null` exactly as this function
- * always has.
- *
- * apra-fleet-i9ag.19.20: `async` (awaits `exec()`'s result) so that the two
- * call sites in `validateRecordedToolchain()` -- node's probe and bd's --
- * can genuinely run concurrently rather than back-to-back (see this file's
- * header). A synchronous `exec` mock (every existing test's injected fake)
- * behaves identically whether or not its result is `await`ed.
- * @param {(file: string, args: string[], options?: object) => string|Buffer|Promise<string|Buffer>} exec
- * @param {NodeJS.Platform} platform
- * @param {string} file
- * @param {string[]} args
- * @returns {Promise<{ version: string|null, incomplete: string|null }>}
- */
-async function probeVersion(exec, platform, file, args) {
-    const isWin32Shell = platform === 'win32';
-    // Named `probeTarget`, deliberately NOT `execFile` -- this module also
-    // imports node:child_process's own `execFile` (used by `defaultExec()`
-    // above), and shadowing that name here, while legal, invites confusion.
-    const probeTarget = isWin32Shell ? quoteForWindowsShell(file) : file;
-    const options = { shell: isWin32Shell, timeout: TOOLCHAIN_PROBE_TIMEOUT_MS };
-
-    let incomplete = null;
-    // MAX_ATTEMPTS = 2: the original attempt plus exactly one bounded retry
-    // -- never a bare retry-until-pass loop.
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-            // eslint-disable-next-line no-await-in-loop -- a genuine
-            // sequential retry, never a batch worth parallelizing.
-            const raw = await exec(probeTarget, args, options);
-            return { version: parseVersionString(raw), incomplete: null };
-        } catch (err) {
-            incomplete = classifyIncompleteProbe(err);
-            if (!incomplete) {
-                // A genuine failure -- never worth a retry.
-                return { version: null, incomplete: null };
-            }
-            // Fall through and retry exactly once on a timeout/transient
-            // spawn errno before concluding anything.
-        }
-    }
-    return { version: null, incomplete };
-}
+// parseVersionString, compareVersions, quoteForWindowsShell and probeVersion
+// used to be a local, self-contained copy of node-runner.mjs's identically-
+// named, identically-behaved helpers (see this file's own now-superseded
+// former header note, and node-runner.mjs's git history). apra-fleet-i9ag.19.15
+// moved all four into the shared ./node-version.mjs, which both this module
+// and node-runner.mjs now import -- see that module's file-level doc comment
+// for the full sync-vs-async, retry-vs-no-retry contract `probeVersion()`
+// serves for its two callers. This module opts into `{ retry: true }` below
+// (its own bounded, one-retry-on-timeout/transient-errno behaviour,
+// apra-fleet-i9ag.19.18/19.20, is unchanged); `classifyIncompleteProbe()`
+// and `TRANSIENT_SPAWN_ERRNOS` moved into the shared module alongside it,
+// since they exist only to support that retry decision.
 
 /**
  * Words a "the probe could not complete" problem entry for `label` (`'node'`
@@ -447,8 +306,9 @@ export async function validateRecordedToolchain(deps = {}) {
     // `bdProbePromise` is `null` (never even started) when nothing was
     // recorded for bd at all -- exactly the existing "only the node probe
     // ran" contract, unaffected by running concurrently.
-    const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version']);
-    const bdProbePromise = bdRecorded ? probeVersion(exec, platform, bdPath, ['--version']) : null;
+    const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true };
+    const nodeProbePromise = probeVersion(exec, platform, nodePath, ['--version'], probeOptions);
+    const bdProbePromise = bdRecorded ? probeVersion(exec, platform, bdPath, ['--version'], probeOptions) : null;
     const [nodeProbe, bdProbe] = await Promise.all([nodeProbePromise, bdProbePromise]);
 
     // Node: the ONLY input to `ok` (see this file's header for why) --

@@ -194,8 +194,18 @@ describe('apra-fleet-i9ag.15.1: resolveSprintRunnerCommand()', () => {
         const importLines = src.split('\n').filter((l) => /^\s*import\b/.test(l));
         for (const line of importLines) {
             assert.ok(
-                /from\s+'node:/.test(line),
-                `expected only node: built-in imports, found: ${line}`,
+                // node: built-ins, or a same-directory sibling module -- both
+                // stay inside packages/apra-fleet-se. apra-fleet-i9ag.19.15
+                // added the latter: node-runner.mjs now imports
+                // parseVersionString/compareVersions/quoteForWindowsShell/
+                // probeVersion from the shared ./node-version.mjs instead of
+                // keeping its own local copies. A '../'-prefixed or bare
+                // package-name import (reaching outside this directory, or
+                // out to core's src/ tree / node_modules) still fails this
+                // assertion, which is the invariant this test actually
+                // protects.
+                /from\s+'(node:|\.\/)/.test(line),
+                `expected only node: built-in or same-directory sibling imports, found: ${line}`,
             );
         }
     });
