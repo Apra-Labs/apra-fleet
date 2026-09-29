@@ -172,6 +172,22 @@ function binaryNameFor(targetOs: TargetOS | undefined): string {
  * Both branches are written to exit 0 and to TAG their outcome in stdout, so a
  * non-zero exit code means "the shell/transport itself failed" and nothing else.
  * That is what lets 'no-install-found' and 'probe-failed' stay distinguishable.
+ *
+ * POWERSHELL BRANCH -- DO NOT "SIMPLIFY" THE $LASTEXITCODE TEST OR THE TRAILING
+ * `exit 0`. PowerShell raises NO terminating error when a NATIVE executable
+ * exits non-zero, so the obvious `try { & $p --version } catch { <sentinel> }`
+ * shape never reaches its catch for a present-but-broken install: the probe
+ * returns partial stdout with no sentinel, and wrapPowerShellEncoded()
+ * (src/os/windows.ts) then propagates the leftover $LASTEXITCODE as the process
+ * exit code. verifyOnMember() below sees "no sentinel + non-zero exit" and
+ * reports probe-failed ("check the member is powered on and reachable") for a
+ * perfectly reachable machine whose install is the real problem -- exactly the
+ * confidently-wrong named cause CLAUDE.md forbids. Hence the explicit
+ * $LASTEXITCODE branch, and the trailing `exit 0` that keeps the wrapper's exit
+ * code reserved for genuine transport failure. The catch is still needed for a
+ * path that exists but cannot be launched at all (bad image, not executable).
+ * Both branches are execute-verified against a real interpreter by the live-pwsh
+ * assertions in tests/member-mcp-scope.test.ts, not just pattern-matched.
  */
 export function buildFleetVersionProbe(
   binPath: string,
