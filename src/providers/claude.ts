@@ -542,7 +542,21 @@ export class ClaudeProvider implements ProviderAdapter {
       // must replace, or a withdrawn permission could never actually be removed.
       unionArrayPaths: [['permissions', 'deny']],
     }];
-    if (opts.fleetInstall?.scoped) rules.push({});
+    // apra-fleet-b4g.42: prune the SUPERSEDED `apra-fleet-member` entry from
+    // .mcp.json -- the central-server-era `{ type: 'http', url, headers:
+    // { Authorization } }` entry that registerMcpEndpoint's `claude mcp add
+    // --scope project apra-fleet-member <url> --header 'Authorization: Bearer
+    // <jwt>'` writes there (still reachable if the disabled interactive-bootstrap
+    // lifecycle is ever re-enabled, and left behind on disk by any member
+    // registered while it WAS enabled). deepMerge preserves foreign keys by
+    // design (apra-fleet-2xs.1), so without an explicit prune a local Claude
+    // member ends up with BOTH the member-local stdio server (this rule's other
+    // key) AND the orchestrator-URL-plus-bearer-token one enabled side by side --
+    // same superseded-key shape agy already prunes from its own mcp config
+    // (permissionConfigMergeRules in agy.ts), mirrored here. Only added when
+    // .mcp.json is actually written (scoped): an unscoped member's stale
+    // .mcp.json is left untouched entirely, same as agy's own gate.
+    if (opts.fleetInstall?.scoped) rules.push({ pruneKeys: [['mcpServers', 'apra-fleet-member']] });
     return rules;
   }
 

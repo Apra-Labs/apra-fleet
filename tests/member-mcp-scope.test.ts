@@ -912,6 +912,39 @@ describe('composePermissions -- exactly ONE switch for the server (assertion 8)'
     expect(writtenJson('.mcp.json').mcpServers['apra-fleet']).toBeDefined();
   });
 
+  it('prunes the superseded url+credential claude entry rather than leaving it reachable (apra-fleet-b4g.42)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    // Exactly what registerMcpEndpoint's `claude mcp add --scope project
+    // apra-fleet-member <url> --header 'Authorization: Bearer <jwt>'` leaves in
+    // .mcp.json (docs/member-onboarding-journey.md:119). A deep merge alone
+    // cannot remove it, so without the explicit prune a local claude member ends
+    // up with BOTH this orchestrator-URL-plus-bearer entry AND the member-local
+    // stdio one enabled side by side -- the same superseded-key shape agy prunes
+    // from its own mcp config, mirrored here for claude.
+    install({
+      probe: { kind: 'version', version: GOOD_VERSION },
+      seed: {
+        '"/home/testuser/project/.mcp.json"': JSON.stringify({
+          mcpServers: {
+            'apra-fleet-member': {
+              type: 'http',
+              url: 'http://orchestrator:9999/mcp?member=abc',
+              headers: { Authorization: 'Bearer stale-jwt' },
+            },
+          },
+        }),
+      },
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const cfg = writtenJson('.mcp.json');
+    expect(cfg.mcpServers['apra-fleet-member']).toBeUndefined();
+    expect(cfg.mcpServers[MEMBER_MCP_SERVER_NAME]).toBeDefined();
+    expect(JSON.stringify(cfg)).not.toContain('stale-jwt');
+  });
+
   it('prunes the superseded url+credential agy entry rather than leaving it reachable', async () => {
     const member = makeTestAgent({
       friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux', agyProjectId: 'proj-1',
