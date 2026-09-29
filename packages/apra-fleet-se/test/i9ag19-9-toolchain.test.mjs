@@ -12,14 +12,17 @@
 // injected-exec/injected-platform convention this module was written to
 // follow.
 
-import { test, describe, afterEach } from 'node:test';
+import { test, describe, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { validateRecordedToolchain, TOOLCHAIN_FIX_LINE, TOOLCHAIN_PROBE_TIMEOUT_MS } from '../src/supervisor/toolchain.mjs';
+import {
+    validateRecordedToolchain, TOOLCHAIN_FIX_LINE, TOOLCHAIN_PROBE_TIMEOUT_MS,
+    TOOLCHAIN_VALIDATION_WORST_CASE_MS,
+} from '../src/supervisor/toolchain.mjs';
 import { writeSupervisorToolchain, supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { MIN_NODE_VERSION } from '../src/supervisor/node-runner.mjs';
 
@@ -527,5 +530,359 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchai
         assert.equal(result.nodeVersion, process.versions.node);
         assert.equal(result.bdOk, false, 'no bdPath was recorded');
         assert.deepEqual(result.problems, ['No bd path was recorded for this installation.']);
+    });
+});
+
+// =============================================================================
+// apra-fleet-i9ag.19.21 -- pinning tests for apra-fleet-i9ag.19.20's two
+// independent fixes to validateRecordedToolchain(): (1) the TOTAL wall-clock
+// of the whole validation is bounded by the module's own exported
+// `TOOLCHAIN_VALIDATION_WORST_CASE_MS` (concurrent node/bd probing, chosen
+// over shrinking any per-attempt timeout -- see toolchain.mjs's file header);
+// (2) `classifyIncompleteProbe()` keys the timeout branch on `err.killed
+// === true` alone, so a genuine crash (SIGSEGV, or SIGKILL from the OOM
+// killer) reads as a crash and is never retried as a timeout.
+//
+// The TOTAL-budget cases below never sleep for a real 15s/30s wall-clock
+// wait: the injected `exec` fakes a wedged process by registering its OWN
+// `setTimeout` (honoring `options.timeout` the same way Node's real
+// `execFileAsync` would), and the test drives that clock deterministically
+// via `node:test`'s built-in `mock.timers` (the same fake-clock convention
+// dispatch-watchdog.test.mjs and watchdog-armed-roles-runtime.test.mjs already
+// use for this exact "budget elapses" shape) plus a bounded number of real
+// `setImmediate` turns to flush the probe retry loop's own awaits between
+// ticks (mock.timers only fakes `setTimeout` here, so `setImmediate` still
+// drains microtasks/pending promise reactions without moving the fake clock).
+// =============================================================================
+describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock budget and crash-vs-timeout classification', () => {
+    /** One real event-loop turn, taken with setImmediate so the FAKE
+     *  setTimeout clock does not move. */
+    const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+    /** A bounded number of real turns, to flush whatever probeVersion()'s
+     *  retry loop has queued (its own `await exec(...)` and the `catch`
+     *  block that decides whether to retry). */
+    async function drainTurns(n = 20) {
+        for (let i = 0; i < n; i += 1) await turn();
+    }
+
+    /** A fake exec that never produces a version -- it hangs until
+     * `options.timeout` elapses (the SAME ceiling toolchain.mjs passes to
+     * every probe, first attempt or retry), then rejects with the exact
+     * shape Node's real `execFileAsync` produces when ITS OWN `timeout`
+     * option fires (`err.killed: true`). Driving that via `setTimeout` (not
+     * an immediately-thrown error) is what lets the test advance a FAKE
+     * clock through the module's real retry loop instead of asserting on a
+     * synchronous shortcut. */
+    function fakeExecTimesOutForever() {
+        const calls = [];
+        const exec = (file, args, options) => {
+            calls.push({ file, args, options });
+            return new Promise((_resolve, reject) => {
+                setTimeout(() => {
+                    const err = new Error(`simulated timeout kill: ${file}`);
+                    err.killed = true;
+                    err.signal = 'SIGTERM';
+                    reject(err);
+                }, options.timeout);
+            });
+        };
+        return { exec, calls };
+    }
+
+    /** A fake exec whose single call throws `err` synchronously -- used for
+     * the non-retryable outcomes (a crash, ENOENT) where no timer/retry is
+     * ever involved. */
+    function fakeExecThrowsOnce(err) {
+        const calls = [];
+        const exec = (file, args, options) => {
+            calls.push({ file, args, options });
+            throw err;
+        };
+        return { exec, calls };
+    }
+
+    /** A fake exec whose call `n` (1-based) throws `failures[n-1]` (when
+     * set) or returns `success` once `n` exceeds `failures.length` -- used
+     * to drive `probeVersion()`'s bounded retry with a SYNCHRONOUS failure
+     * (a genuine timeout signature that does not need the fake clock). */
+    function fakeExecWithFailures(failures, success) {
+        const calls = [];
+        let n = 0;
+        const exec = (file, args, options) => {
+            n += 1;
+            calls.push({ file, args, options });
+            const failure = failures[n - 1];
+            if (failure) throw failure;
+            return success;
+        };
+        return { exec, calls };
+    }
+
+    /** The timeout's OWN signature: `err.killed === true` (see
+     * classifyIncompleteProbe()'s doc comment) -- the ONLY shape this module
+     * ever produces by killing a child itself. */
+    function timeoutKillError() {
+        const err = new Error('simulated timeout kill');
+        err.killed = true;
+        err.signal = 'SIGTERM';
+        return err;
+    }
+
+    /** A crash: killed by a signal the module's OWN timeout did NOT send --
+     * `err.killed` stays `false` because Node did not initiate this kill
+     * (see toolchain.mjs's classifyIncompleteProbe() doc comment for why a
+     * genuine SIGSEGV or an OOM-killer SIGKILL both look like this). */
+    function crashError(signal) {
+        const err = new Error(`simulated crash: killed by ${signal}`);
+        err.killed = false;
+        err.signal = signal;
+        return err;
+    }
+
+    test('TOTAL budget: the two-tool worst case (both recorded node AND bd unresponsive) settles at exactly TOOLCHAIN_VALIDATION_WORST_CASE_MS, never before, driven entirely by the fake clock', async () => {
+        mock.timers.enable({ apis: ['setTimeout'] });
+        try {
+            const dataDir = await mkTmp();
+            const filePath = supervisorConfigPath({ dataDir });
+            await writeSupervisorToolchain(
+                { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+                { filePath },
+            );
+            const { exec, calls } = fakeExecTimesOutForever();
+
+            let resolved = false;
+            const pending = validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+            pending.then(() => { resolved = true; });
+
+            // Both probes are started before either's first attempt has any
+            // chance to settle -- see the dedicated concurrency test below
+            // for the named pin of this fact; asserted here too as a
+            // sanity precondition for the timing math that follows.
+            await drainTurns();
+            assert.equal(calls.length, 2, 'node and bd probes both started (their first attempts are in flight concurrently)');
+
+            // Just BEFORE the first attempt's own timeout: nothing has fired.
+            mock.timers.tick(TOOLCHAIN_PROBE_TIMEOUT_MS - 1);
+            await drainTurns();
+            assert.equal(resolved, false, 'must not settle before even the first attempt times out');
+
+            // Cross the first attempt's timeout: probeVersion() retries once
+            // for both node and bd (its own bounded, single retry).
+            mock.timers.tick(1);
+            await drainTurns();
+            assert.equal(calls.length, 4, 'both node and bd were retried exactly once after their first attempt timed out');
+            assert.equal(resolved, false, 'the retry\'s own timeout has not elapsed yet');
+
+            // Just BEFORE the retry's own timeout, i.e. one tick short of the
+            // module's own named total budget: still not settled.
+            mock.timers.tick(TOOLCHAIN_VALIDATION_WORST_CASE_MS - TOOLCHAIN_PROBE_TIMEOUT_MS - 1);
+            await drainTurns();
+            assert.equal(resolved, false, 'must not settle one tick before the module\'s own exported total budget elapses');
+
+            // The final tick crosses TOOLCHAIN_VALIDATION_WORST_CASE_MS
+            // exactly (TOOLCHAIN_PROBE_TIMEOUT_MS - 1 + 1 + (WORST_CASE -
+            // PROBE_TIMEOUT - 1) + 1 === WORST_CASE) -- derived entirely from
+            // the module's own exported constants, never a hand-copied
+            // 15000/30000 literal.
+            mock.timers.tick(1);
+            const result = await pending;
+
+            assert.equal(resolved, true, 'validateRecordedToolchain() settled once the module\'s own total budget elapsed');
+            assert.equal(result.ok, false);
+            assert.equal(result.nodeOk, false);
+            assert.equal(result.bdOk, false);
+            assert.equal(calls.length, 4, '2 tools x (1 attempt + 1 retry) -- never more');
+            assert.match(result.problems.find((p) => p.includes('node')), /could not be probed within/);
+            assert.match(result.problems.find((p) => p.includes('bd')), /could not be probed within/);
+        } finally {
+            mock.timers.reset();
+        }
+    });
+
+    test('concurrency: node and bd probes overlap -- both exec invocations are observed before either one settles', async () => {
+        mock.timers.enable({ apis: ['setTimeout'] });
+        try {
+            const dataDir = await mkTmp();
+            const filePath = supervisorConfigPath({ dataDir });
+            await writeSupervisorToolchain(
+                { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+                { filePath },
+            );
+            const { exec, calls } = fakeExecTimesOutForever();
+
+            const pending = validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+            // Neither probe's fake timer has fired yet (no tick at all), so
+            // if BOTH calls are already recorded, they were started
+            // concurrently -- a sequential implementation could only ever
+            // have made the second call after the first one settled, which
+            // (with a wedged exec) would never happen at all.
+            await drainTurns();
+            assert.equal(calls.length, 2, 'both node and bd were invoked before either had any chance to settle');
+            assert.equal(calls[0].file, '/opt/toolchain/node');
+            assert.equal(calls[1].file, '/opt/toolchain/bd');
+
+            // Let the pending validation finish so no promise is left
+            // dangling once this test's fake clock is torn down -- ticking
+            // through both the first attempt's timeout AND the retry's own
+            // timeout, draining real turns between each so the retry loop's
+            // own `await`s (and the second `setTimeout` registration they
+            // gate) actually run before the next tick.
+            mock.timers.tick(TOOLCHAIN_PROBE_TIMEOUT_MS);
+            await drainTurns();
+            mock.timers.tick(TOOLCHAIN_VALIDATION_WORST_CASE_MS - TOOLCHAIN_PROBE_TIMEOUT_MS);
+            await pending;
+        } finally {
+            mock.timers.reset();
+        }
+    });
+
+    test('crash vs timeout: a node probe killed by SIGSEGV (not this module\'s own timeout) is reported with the non-retryable "does not resolve" wording, never retried and never worded as a timeout', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain(
+            { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+            { filePath },
+        );
+        const { exec: nodeExec, calls: nodeCalls } = fakeExecThrowsOnce(crashError('SIGSEGV'));
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+            return nodeExec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.nodeOk, false);
+        assert.equal(result.nodeVersion, null);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /does not resolve to a usable Node\.js runtime/, 'a crash is reported with the genuine non-retryable wording');
+        assert.doesNotMatch(result.problems[0], /could not be probed within/, 'a crash must never be worded as a timeout');
+        assert.equal(nodeCalls.length, 1, 'a crash is never retried -- exactly one exec invocation');
+        // bd stayed fine and is reported separately, unaffected by node's crash.
+        assert.equal(result.bdOk, true);
+    });
+
+    test('crash vs timeout: a bd probe killed by SIGKILL from the OOM killer (not this module\'s own timeout) is reported the same non-retryable way, naming bd, never retried', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain(
+            { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+            { filePath },
+        );
+        const { exec: bdExec, calls: bdCalls } = fakeExecThrowsOnce(crashError('SIGKILL'));
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/node') return `v${MIN_NODE_VERSION}`;
+            return bdExec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.ok, true, '"ok" tracks node health only -- an OOM-killed bd never flips it');
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.bdOk, false);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /\/opt\/toolchain\/bd/);
+        assert.match(result.problems[0], /does not resolve to a usable bd/, 'an OOM-killed bd is reported with the genuine non-retryable wording');
+        assert.doesNotMatch(result.problems[0], /could not be probed within/, 'an OOM-killed bd must never be worded as a timeout');
+        assert.equal(bdCalls.length, 1, 'a crash is never retried -- exactly one exec invocation');
+    });
+
+    test('genuine timeout: a node probe killed by this module\'s own timeout (err.killed===true) on both attempts still produces the "could not be probed" wording, and retries exactly once (the chosen strategy\'s own ceiling)', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain(
+            { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+            { filePath },
+        );
+        const { exec, calls } = fakeExecWithFailures([timeoutKillError(), timeoutKillError()], null);
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+            return exec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.nodeOk, false);
+        assert.equal(result.problems.length, 1);
+        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/, 'a genuine timeout must never be worded as a crash/resolve failure');
+        assert.equal(calls.length, 2, 'a genuine timeout is retried exactly once -- never zero, never more than one retry');
+    });
+
+    test('ENOENT stays non-retryable: exactly one injected exec invocation, existing "does not resolve" wording preserved', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain(
+            { nodePath: '/does/not/exist/node', bdPath: '/opt/toolchain/bd' },
+            { filePath },
+        );
+        const enoent = new Error('spawn ENOENT');
+        enoent.code = 'ENOENT';
+        const { exec: nodeExec, calls: nodeCalls } = fakeExecThrowsOnce(enoent);
+        const wrappedExec = (file, args, options) => {
+            if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+            return nodeExec(file, args, options);
+        };
+
+        const result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' });
+
+        assert.equal(result.nodeOk, false);
+        assert.match(result.problems[0], /does not resolve to a usable Node\.js runtime/);
+        assert.doesNotMatch(result.problems[0], /could not be probed within/);
+        assert.equal(nodeCalls.length, 1, 'ENOENT is never retried -- exactly one exec invocation');
+    });
+
+    test('totality: validateRecordedToolchain() RETURNS a report and never throws for a crash, a genuine timeout, ENOENT, or a transient spawn errno', async () => {
+        const shapes = [
+            ['SIGSEGV crash', crashError('SIGSEGV')],
+            ['OOM SIGKILL crash', crashError('SIGKILL')],
+            ['genuine timeout', timeoutKillError()],
+            ['ENOENT', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })],
+            ['transient EAGAIN', Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' })],
+        ];
+
+        for (const [label, err] of shapes) {
+            const dataDir = await mkTmp();
+            const filePath = supervisorConfigPath({ dataDir });
+            await writeSupervisorToolchain(
+                { nodePath: '/opt/toolchain/node', bdPath: '/opt/toolchain/bd' },
+                { filePath },
+            );
+            // A retryable shape (timeout/EAGAIN) needs the SAME failure
+            // queued twice so the module's own bounded retry still sees a
+            // failure on its second attempt too -- a non-retryable shape
+            // (crash/ENOENT) only ever consumes the first entry.
+            const { exec } = fakeExecWithFailures([err, err], null);
+            const wrappedExec = (file, args, options) => {
+                if (file === '/opt/toolchain/bd') return 'bd version 1.2.3';
+                return exec(file, args, options);
+            };
+
+            let result;
+            await assert.doesNotReject(
+                async () => { result = await validateRecordedToolchain({ filePath, exec: wrappedExec, platform: 'linux' }); },
+                `validateRecordedToolchain() must never throw for: ${label}`,
+            );
+            assert.ok(result && typeof result === 'object', `expected a report object for: ${label}`);
+            assert.equal(result.configured, true, `expected a configured report for: ${label}`);
+            assert.equal(typeof result.ok, 'boolean', `expected a boolean 'ok' verdict for: ${label}`);
+            assert.equal(result.nodeOk, false, `expected node to be reported unhealthy for: ${label}`);
+        }
+    });
+
+    test('exactly one operator fix line is present for a broken recording, matched via the module\'s own exported TOOLCHAIN_FIX_LINE (never a copied string literal)', async () => {
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        await writeSupervisorToolchain({ nodePath: '/does/not/exist/node' }, { filePath });
+        const enoent = new Error('spawn ENOENT');
+        enoent.code = 'ENOENT';
+        const { exec } = fakeExecThrowsOnce(enoent);
+
+        const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
+
+        assert.equal(result.fixLine, TOOLCHAIN_FIX_LINE, 'the report\'s fix line must be the module\'s own exported constant');
+        assert.equal(typeof result.fixLine, 'string');
     });
 });
