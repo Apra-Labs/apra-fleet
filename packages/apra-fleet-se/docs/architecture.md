@@ -1662,19 +1662,49 @@ an exception in between.
 ### Surfacing a failure reason depends on correctly classifying the terminal state first
 
 A sprint that fails after its initial launch window (rather than failing to
-launch at all) reaches a different code path than a launch failure, and that
-path does not currently thread the failure reason through to either the
-sprint-stack row or the finished-sprint card -- both currently render an empty
-reason string for any status other than the explicit launch-failed state, even
-when the underlying run record does carry a reason. The reason itself is not
-lost -- it is visible on the live viewer and in the standalone History page --
-so this is a rendering/classification gap on the dashboard's own summary
-surfaces, not a data-loss bug. Any fix here has two independent parts that
-both have to land together: detecting the terminal state promptly (rather
-than only when the child process's own dashboard exits, which can lag the
-actual failure by minutes), and actually rendering the carried reason once
-that state is detected -- fixing only one without the other still leaves an
-operator looking at a stack row or finished card with no explanation.
+launch at all) reaches a different code path than a launch failure, and both
+halves of getting its reason on screen have to work: the run has to be
+recognised as over, and the reason it carries has to be rendered. Landing
+either half alone still leaves an operator looking at an unexplained failure,
+so they are described together here.
+
+**Recognising that the run is over does not wait for the child to exit.** A
+fleet-sprint child keeps its own per-sprint dashboard process alive for a few
+minutes after the run itself ends, so process liveness lags the actual ending.
+The watchdog's classifier therefore reads the child's recorded terminal state
+*before* it splits on PID liveness: a recorded terminal state means FINISHED
+whether or not the process is still running. (The sprint API's own
+get/stop paths already consulted that signal ahead of PID liveness for exactly
+this linger window; the classifier is now consistent with them.) Without this,
+a run that failed in its first phase was presented as running-unresponsive for
+the length of the linger window -- observed at roughly five minutes -- and never
+left the Sprint Stack, because finished runs are excluded from the stack by
+classification rather than by process state.
+
+**Rendering the reason is gated on one shared "did this run end badly?"
+predicate,** not on a single hard-coded status. The finished-sprint card used to
+gate its reason line on the status being the explicit launch-failed value, which
+forced the reason to the empty string for every other bad outcome -- which is
+why an ABORTED card could carry a reason in its record and still render no
+explanation. That predicate now lives in its own module so the dashboard
+renderers and the launch form can all share it (the dashboard already imports
+the launch form, so housing it in either would create an import cycle), and it
+drives three surfaces: the sprint-stack row next to its status badge, the
+finished-sprint card, and the launch form's own post-launch line, which no
+longer leaves a green "launched" message standing for a run that fails minutes
+later. A launch-failed row keeps its previous presentation byte-for-byte (same
+CSS class, badge and raw-log link); other bad outcomes get a neutral class.
+Every reason is escaped -- it is text produced by a child process.
+
+Two constraints worth knowing before changing any of this. First, the stack
+row's reason is carried on the `/state` payload as well as the server's first
+paint, so the row renders identically before and after a live poll -- the
+client-side renderer is the server's own function shipped verbatim via
+`toString()`, so any helper it calls must be embedded alongside it or the poll
+dies on a `ReferenceError` and silently freezes the list. Second, a verdict
+such as ABORTED is recorded verbatim by the child (its fatal-diagnostics and
+typed-abort paths both write it) and copied through unchanged: the fix for an
+unexplained ABORTED card is to show the reason, never to relabel the verdict.
 
 ## Embedding the dashboard in the console: mount-prefix resolution and cross-links
 
@@ -1751,15 +1781,30 @@ elsewhere in this codebase:
   escape delimiter, two different sprint ids could produce the same escaped
   anchor id (a real, checked injectivity requirement, not just tidiness).
 
-**Known carried-forward gap:** the dedicated read-only sprint history page
-(reached by its own direct route, not through the live-view fallthrough) does
-not yet resolve the mount prefix for its own back-link, so that one page's
-link resolves against the console root rather than the package mount point
-when the page is reached through the embedded `/ext/<id>` hop. The live-view
-fallthrough surface does not have this gap; only the standalone history route
-does. This is intentionally left open as a small, isolated fix rather than
-bundled into the mount-prefix work that fixed every other page, since it does
-not affect the widely-used live-embedded path.
+**The back-link is enforced on the served page, not assumed from the
+renderer.** Every viewer surface -- the live-proxied child HTML, that same
+URL's finished-sprint fallthrough, and the dedicated history route -- resolves
+the mount prefix from its own request and injects the back-link itself, and
+then re-reads the finished document before writing it: anchors are taken from
+the rendered body only, with comment, `<script>` and `<style>` regions removed
+first, and the response is refused with a loud 5xx if the expected anchor is
+not among them.
+
+That gate exists because the naive version of this shipped broken for a
+release. The injection used to splice the anchor at the first `<body` match in
+the document. The generic viewer template has an explanatory CSS comment inside
+its `<head>` `<style>` block that contains the literal text `<body>`, some
+12.5KB ahead of the real body tag -- so the anchor was spliced into CSS, where a
+browser parses it as style text. The bytes were on the wire, so a substring
+assertion over the served HTML passed, and the pure-renderer round-trip test
+passed too; but `document.querySelectorAll('a')` returned `[]` on both the live
+viewer and the history page, and since all three pages open in a new tab with
+no other navigation on them, the operator was simply stranded. The lessons
+generalise past this one bug: `<body>` is not a reliable needle in a document
+that talks about HTML, a page assertion that does not model what the DOM would
+see is not evidence, and a navigation affordance that can silently vanish needs
+a check on the response rather than trust in the transform. A page that cannot
+carry the link is a dead end, so failing loudly is the honest answer.
 
 ## Server-side member reservation
 

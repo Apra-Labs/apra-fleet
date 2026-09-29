@@ -2,28 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- Console theme-token fix and header/stack counter fix land; two acceptance-run regressions from the same M1 pass remain open
+## [Unreleased] -- All four M1 acceptance-run defects fixed: console theme, header counter, failure reasons on the dashboard, and viewer back-links
 
 Sprint goal: close four defects found by an M1 acceptance run against the
-installed console binary -- unreadable black-on-dark text on the Projects
-page, the supervisor header's running-sprint counter disagreeing with its own
-sprint stack, launch-failure reasons not surfacing on the dashboard for a
-sprint that fails after its launch window, and missing cross-links between
-the live sprint viewer/History pages and the dashboard. Two of the four are
-fixed and verified against the deployed build; the other two were closed on
-suites that already existed in the build the regression was found in and so
-could not have distinguished "fixed" from "still broken" -- both were
-reopened in review and remain open, with the underlying defects still
-present at branch head.
+installed console binary -- unreadable black-on-dark text on the Projects page,
+the supervisor header's running-sprint counter disagreeing with its own sprint
+stack, launch-failure reasons not surfacing on the dashboard for a sprint that
+fails after its launch window, and missing cross-links from the live sprint
+viewer and History pages back to the dashboard. All four are fixed.
 
-Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $10.6991.
-Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.3716 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 11 priced dispatch(es) used real per-member rates (get_member_model_pricing).
-Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
-
-What shipped and is verified working:
+Tracked spend for this sprint: $10.6991 (priced dispatches only; a lower bound,
+since dispatches on an unpriced model id are not counted).
 
 - **The console Projects page now renders on the shared dark theme instead
   of unstyled black-on-dark text.** The dashboard's CSS tokens moved out of
@@ -31,8 +20,8 @@ What shipped and is verified working:
   and the Projects page import, so the two can never drift back out of sync,
   and any future console-embedded page gets the theme by importing the same
   module rather than redefining it. See
-  [docs/features](packages/apra-fleet-se/docs/architecture.md) ("Theme
-  tokens: one shared module, not a per-page copy").
+  [the supervisor architecture notes](packages/apra-fleet-se/docs/architecture.md)
+  ("Theme tokens: one shared module, not a per-page copy").
 - **The supervisor header's running-sprint counter now always agrees with
   the sprint stack rendered below it.** Both the first paint and every
   subsequent live poll derive the counter from the exact same array the
@@ -40,22 +29,40 @@ What shipped and is verified working:
   place -- there is no second counter-producing code path that could fall out
   of sync. See `packages/apra-fleet-se/docs/architecture.md` ("Header
   running-counter must read the same array the stack renders").
-
-Carried forward (reopened in review, still open):
-
-- **A sprint that fails after its launch window still does not show a
-  failure reason on the dashboard's sprint-stack row or finished-sprint
-  card.** The reason is not lost -- it is visible on the live viewer and the
-  History page -- but the dashboard's own summary surfaces render an empty
-  reason for any status other than the narrow launch-failed case. Fixing
-  this needs both prompt terminal-state detection and reason rendering on the
-  stack row/card; landing only one half still leaves an unexplained failure
-  on screen.
-- **Cross-links from the live sprint viewer and the History page back to the
-  dashboard were reported missing during a click-only acceptance pass**, even
-  though the back-link injection code exists on both paths. No code or test
-  changed in the affected area since that finding, so the passing suite
-  cannot be treated as evidence the regression is fixed.
+- **A sprint that fails after its launch window now says why, on every
+  dashboard surface.** Two halves had to land together, and both did. The
+  watchdog no longer waits for the sprint child's process to exit before
+  deciding the run is over: a recorded terminal state means finished whether or
+  not the process is still alive, so a run that failed in its first phase stops
+  being presented as running-unresponsive for the few minutes the child's own
+  dashboard lingers, and leaves the Sprint Stack. And the reason itself is now
+  rendered from one shared "did this run end badly?" predicate on the
+  sprint-stack row, the finished-sprint card, and the launch form -- which also
+  means the launch form no longer leaves a green "launched" line standing for a
+  run that fails minutes later. Previously the reason line was gated on the one
+  explicit launch-failed status, so any other bad outcome (an ABORTED run, for
+  instance) rendered no explanation even though its record carried one. A
+  launch-failed row's presentation is unchanged. See
+  `packages/apra-fleet-se/docs/architecture.md` ("Surfacing a failure reason
+  depends on correctly classifying the terminal state first").
+- **The live sprint viewer and the History page now really do link back to the
+  sprint's card on the dashboard.** All three viewer surfaces -- the live
+  viewer, that same URL after the sprint finishes, and the standalone History
+  page -- previously served pages with no anchors in them at all, which strands
+  the operator: each opens in a new tab and carries no other navigation. The
+  back-link code had existed on all three paths the whole time; it spliced the
+  anchor at the first `<body` match in the document, and the viewer template
+  mentions `<body>` in a CSS comment about 12.5KB before its real body tag, so
+  the link was spliced into CSS where a browser never sees it as markup. The
+  bytes were on the wire, which is why a substring assertion over the served
+  HTML could not tell the difference. Finding the real body tag now skips
+  comment, `<script>` and `<style>` regions, each page's rendered output is
+  re-read the way a DOM would read it before the response is written, and a page
+  that cannot carry the link fails with a loud 5xx rather than a silently
+  linkless 200. The compact fallback page links to the sprint's own card too,
+  not just the dashboard root. See
+  `packages/apra-fleet-se/docs/architecture.md` ("Embedding the dashboard in
+  the console: mount-prefix resolution and cross-links").
 
 ## [Unreleased] -- Sprint launches reliably from the installed binary, and a failed launch is now visible
 
