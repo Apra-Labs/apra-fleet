@@ -950,19 +950,28 @@ describe('StallDetector', () => {
       expect(mockUpdateAgent).not.toHaveBeenCalled();
     });
 
-    it('still treats a frozen file as no-activity when mtime does not advance either (content null + stale mtime)', async () => {
+    // apra-fleet-qe83.2.2: this used to assert the frozen-tail bug itself
+    // (idle cycles stayed at 0 and the threshold check never ran even 10s
+    // past a 5s threshold). The file's own mtime IS known here and has not
+    // advanced, which is genuine corroborating evidence the transcript is
+    // frozen -- see the frozen-tail-null-timestamp block below for the full
+    // fixture-driven reproduction/fix.
+    it('treats a frozen file (content null, mtime known and stale) as idle using the last known activity, not as no-signal', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const pastTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
 
-      // mtime is older than (or equal to) lastActivityAt — no corroborating signal.
+      // mtime is older than (or equal to) lastActivityAt — no corroborating
+      // advancement, but it IS known (not undefined/null): the file exists.
       mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: pastTime - 1000 });
 
       await detector._poll();
 
-      expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(0);
-      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
-      expect(stallCalls).toHaveLength(0);
+      expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(1);
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
     });
 
     it('emits stall_detected only when BOTH content timestamp and mtime agree there is no new activity', async () => {
@@ -1022,6 +1031,96 @@ describe('StallDetector', () => {
       await detector._poll();
 
       expect(detector.getEntry('member-1')?.lastActivityAt).toBe(mtimeMs);
+    });
+  });
+
+  /**
+   * apra-fleet-qe83.2: reproduces the recorded missed stall -- a transcript
+   * whose tail is a dated assistant entry, an attachment entry, and a final
+   * last-prompt record with no timestamp field, byte-cap-truncated so the
+   * dated entry never survives extraction (see the fixture
+   * tests/fixtures/stall-frozen-tail-no-timestamp.jsonl and its pollLogFile-
+   * level reproduction in tests/stall-poller.test.ts). The file's own mtime
+   * is frozen at the same instant. pollLogFile is mocked here to return
+   * exactly what that extraction layer produces for this shape
+   * (lastTimestamp: null, mtimeMs pinned) so this block isolates the
+   * DETECTOR's classification of that result, not the extraction itself.
+   */
+  describe('_poll — frozen-tail-null-timestamp (apra-fleet-qe83.2)', () => {
+    // apra-fleet-qe83.2.1 pinned the pre-fix behaviour here (no stall_detected,
+    // no onStall, no log line at all, past a 30-minute threshold). This is
+    // the flip: apra-fleet-qe83.2.2's fix now classifies the frozen,
+    // mtime-corroborated tail as a genuine stall and logs the silent-continue
+    // path it fell into.
+    it('detects a stall past threshold when content parsing finds nothing but the file mtime is known and frozen', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '1800000'; // matches the recorded bug's 30-minute threshold
+      const baseTime = Date.now();
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: baseTime, onStall }));
+
+      // Frozen: content extraction found nothing usable, and the file's own
+      // mtime has not advanced past lastActivityAt either.
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: baseTime });
+
+      // Threshold + one poll past T0.
+      vi.setSystemTime(baseTime + 1_800_000 + 30_000);
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+      expect(stallCalls).toHaveLength(1);
+      expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(1);
+      // The silent-continue path this fell into is now diagnosable from
+      // fleet.log alone -- asserted by capturing the actual log call, not by
+      // inspecting the source for a `logLine` invocation.
+      const truncatedCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_tail_truncated');
+      expect(truncatedCalls).toHaveLength(1);
+      const logged = JSON.parse(truncatedCalls[0]![1] as string);
+      expect(logged.memberId).toBe('member-1');
+      expect(logged.mtimeMs).toBe(baseTime);
+    });
+  });
+
+  /**
+   * apra-fleet-qe83.2.2: every silent-continue and error-return path in the
+   * non-provisional poll loop must emit exactly one structured log line, so a
+   * repeat occurrence of any of these is diagnosable from fleet.log alone.
+   * Asserted by capturing the actual logged call for each path, not by
+   * inspecting the source for a call site.
+   */
+  describe('_poll — silent-continue / error-return paths are all logged (apra-fleet-qe83.2.2)', () => {
+    it('logs stall_no_signal when there is no content timestamp and no file mtime at all (file not yet created)', async () => {
+      const baseTime = Date.now();
+      detector.add('member-1', makeEntry({ lastActivityAt: baseTime }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null }); // mtimeMs undefined -- no signal whatsoever
+
+      await detector._poll();
+
+      const calls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_no_signal');
+      expect(calls).toHaveLength(1);
+      const logged = JSON.parse(calls[0]![1] as string);
+      expect(logged.memberId).toBe('member-1');
+      // Still no false stall for the genuine absence-of-evidence case.
+      expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(0);
+    });
+
+    it('logs stall_log_read on every read failure, not only once the 3-failure warning threshold is crossed', async () => {
+      const baseTime = Date.now();
+      detector.add('member-1', makeEntry({ lastActivityAt: baseTime }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, error: 'Connection refused' });
+
+      await detector._poll();
+
+      const calls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_log_read');
+      expect(calls).toHaveLength(1);
+      const logged = JSON.parse(calls[0]![1] as string);
+      expect(logged.memberId).toBe('member-1');
+      expect(logged.error).toBe('Connection refused');
+      expect(logged.consecutiveReadFailures).toBe(1);
+      // The existing 3-failure warning threshold is untouched.
+      expect(mockLogWarn.mock.calls.filter((c: string[]) => c[0] === 'stall_read_failures')).toHaveLength(0);
     });
   });
 });

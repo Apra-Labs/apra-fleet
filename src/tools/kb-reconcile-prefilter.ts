@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.1 (F5 step 3, D4 HARDENED, resolution R1): kb_reconcile_prefilter --
 // mechanical resolution rung of the /pm kb-reconcile flow, run AFTER
@@ -24,6 +25,7 @@ export type KbReconcilePrefilterInput = z.infer<typeof kbReconcilePrefilterSchem
 
 export async function kbReconcilePrefilter(input: KbReconcilePrefilterInput): Promise<string> {
   const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
-  const result = await providers.project.reconcilePrefilter();
+  const sqliteProvider = requireSqliteProject(providers.project, 'kb_reconcile_prefilter');
+  const result = await sqliteProvider.reconcilePrefilter();
   return JSON.stringify(result);
 }

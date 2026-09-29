@@ -54,7 +54,7 @@ describe('WindowsServiceManager', () => {
       await mgr.register('/bin/apra-fleet.exe', ['--transport', 'http'], '/logs/fleet.log');
       expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
         '/create', '/tn', 'ApraFleet', '/sc', 'onlogon', '/rl', 'limited', '/f',
-      ]));
+      ]), expect.objectContaining({ timeout: expect.any(Number) }));
     });
   });
 

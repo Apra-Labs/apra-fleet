@@ -1,0 +1,85 @@
+{
+  "_comment": "One checklist for both platforms. box/pass.ps1 and box/pass.sh record one JSON line per step id; lib/verdict.mjs applies these expectations. ${expectVersion}/${baselineVersion} come from run.mjs. envLimited = failure explained by a documented environment limit (no systemd in the Linux container).",
+  "passes": {
+    "A": {
+      "title": "Fresh install, no Node.js on PATH",
+      "steps": [
+        { "id": "A01", "title": "candidate --version", "expect": { "exit": 0, "observed": "^${expectVersion}$" } },
+        { "id": "A02", "title": "precondition: node not on PATH", "expect": { "exit": "nonzero" } },
+        { "id": "A03", "title": "default install refuses, names fleet-se prerequisite", "expect": { "exit": "nonzero", "keyline": "fleet-se requires Node\\.js 22\\.16\\+ and npm" } },
+        { "id": "A04", "title": "nothing written by refused install", "expect": { "exit": 0 } },
+        { "id": "A05", "title": "install --workflows none", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd", "note": "no systemd user manager in the container" } ] },
+        { "id": "A06", "title": "server service registered and running", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "A07", "title": "GET /health 200 on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "A08", "title": "GET /ui serves the shell", "severity": "advisory", "expect": { "exit": 200, "keyline": "id=\"root\"" }, "na": { "exit": [404], "reason": "this build does not serve /ui" } },
+        { "id": "A09", "title": "GET /api/fleet/members without credential is 401", "expect": { "exit": 401 }, "na": { "exit": [404], "reason": "route not served by this build" } },
+        { "id": "A10", "title": "apra-fleet status", "expect": { "exit": 0, "keyline": "running" } }
+      ]
+    },
+    "B": {
+      "title": "Fresh install with pinned Node.js LTS",
+      "steps": [
+        { "id": "B01", "title": "candidate --version", "expect": { "exit": 0, "observed": "^${expectVersion}$" } },
+        { "id": "B02", "title": "install pinned Node.js (checksum verified)", "expect": { "exit": 0, "observed": "^v22\\.(1[6-9]|[2-9][0-9])\\." } },
+        { "id": "B03", "title": "npm available", "expect": { "exit": 0 } },
+        { "id": "B04", "title": "default install", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd", "note": "no systemd user manager in the container" } ] },
+        { "id": "B05", "title": "bd 1.3.0 installed", "expect": { "exit": 0, "keyline": "1\\.3\\.0" } },
+        { "id": "B06", "title": "server service registered and running", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "B07", "title": "supervisor service (if this build installs one)", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "B08", "title": "GET /health 200 on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "B09", "title": "MCP initialize over HTTP", "expect": { "exit": 200, "keyline": "serverInfo" } },
+        { "id": "B10", "title": "MCP with invalid bearer is 401", "expect": { "exit": 401 } },
+        { "id": "B11", "title": "POST /shutdown without bearer is 401", "expect": { "exit": 401 } },
+        { "id": "B12", "title": "GET /api/fleet/members without credential is 401", "expect": { "exit": 401 }, "na": { "exit": [404], "reason": "route not served by this build" } },
+        { "id": "B13", "title": "GET /ui serves the shell", "severity": "advisory", "expect": { "exit": 200, "keyline": "id=\"root\"" }, "na": { "exit": [404], "reason": "this build does not serve /ui" } },
+        { "id": "B14", "title": "apra-fleet status (server still up)", "expect": { "exit": 0, "keyline": "running" } }
+      ]
+    },
+    "U": {
+      "title": "Upgrade baseline -> candidate via install --force (Node present)",
+      "steps": [
+        { "id": "U01", "title": "install pinned Node.js (checksum verified)", "expect": { "exit": 0, "observed": "^v22\\." } },
+        { "id": "U02", "title": "baseline --version", "expect": { "exit": 0, "observed": "^${baselineVersion}$" } },
+        { "id": "U03", "title": "baseline install", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd", "note": "no systemd user manager in the container" } ] },
+        { "id": "U04", "title": "baseline server up on baseline version", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
+        { "id": "U05", "title": "seed dummy member (register-member)", "expect": { "exit": 0 } },
+        { "id": "U06", "title": "seed dummy secret (secret --set --persist)", "expect": { "exit": 0 } },
+        { "id": "U07", "title": "seed visible before upgrade (member + secret)", "expect": { "exit": 0 } },
+        { "id": "U08", "title": "candidate --version", "expect": { "exit": 0, "observed": "^${expectVersion}$" } },
+        { "id": "U09", "title": "upgrade: candidate install --force", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd|NOT running", "note": "no systemd: --force stopped the hand-started server and could not register a service (loud exit 1 by design)" } ] },
+        { "id": "U10", "title": "server back on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "U11", "title": "installed binary is the candidate", "expect": { "exit": 0, "observed": "^${expectVersion}$" } },
+        { "id": "U12", "title": "dummy member survived", "expect": { "exit": 0 } },
+        { "id": "U13", "title": "dummy secret survived", "expect": { "exit": 0 } },
+        { "id": "U14", "title": "fleet.key unchanged", "expect": { "exit": 0 } },
+        { "id": "U15", "title": "server service running after upgrade", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "U16", "title": "apra-fleet status after upgrade", "expect": { "exit": 0, "keyline": "running" } },
+        { "id": "U17", "title": "apra-fleet update --check (informational)", "severity": "advisory", "expect": { "exit": 0 } }
+      ]
+    },
+    "U2": {
+      "title": "Upgrade along the apra-fleet update path (baseline without Node, then with Node)",
+      "steps": [
+        { "id": "V01", "title": "baseline --version", "expect": { "exit": 0, "observed": "^${baselineVersion}$" } },
+        { "id": "V02", "title": "baseline install (no Node)", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd", "note": "no systemd user manager in the container" } ] },
+        { "id": "V03", "title": "baseline server up on baseline version", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
+        { "id": "V04", "title": "seed dummy member + secret", "expect": { "exit": 0 } },
+        { "id": "V05", "title": "baseline apra-fleet update (targets GitHub latest; cannot target a local binary)", "severity": "advisory", "expect": { "exit": 0 } },
+        { "id": "V06", "title": "update argv replayed with candidate, no Node: refused naming prerequisite", "severity": "advisory", "expect": { "exit": "nonzero", "keyline": "fleet-se requires Node\\.js 22\\.16\\+ and npm" } },
+        { "id": "V07", "title": "refused update left baseline server running", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
+        { "id": "V08", "title": "install pinned Node.js (checksum verified)", "expect": { "exit": 0, "observed": "^v22\\." } },
+        { "id": "V09", "title": "update argv replayed with candidate (Node present)", "expect": { "exit": 0, "keyline": "installed successfully" },
+          "envLimited": [ { "platforms": ["linux"], "keyline": "systemd|NOT running", "note": "no systemd: --force stopped the hand-started server and could not register a service (loud exit 1 by design)" } ] },
+        { "id": "V10", "title": "server back on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "V11", "title": "dummy member + secret survived", "expect": { "exit": 0 } },
+        { "id": "V12", "title": "server service running after upgrade", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "V13", "title": "apra-fleet status after upgrade", "expect": { "exit": 0, "keyline": "running" } }
+      ]
+    }
+  }
+}

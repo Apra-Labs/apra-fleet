@@ -77,8 +77,8 @@ real when the evidence above was gathered.
 
 Every file above matches `packages/apra-fleet-se/test/*.test.mjs`, the glob
 `npm test` (`scripts/run-tests.mjs mock`) runs by default, which is what
-`.github/workflows/ci.yml`'s "Run workspace package test suites (node:test)"
-step executes on every PR (`npm test --workspaces --if-present`). None of
+the root `npm test` (`scripts/run-all-tests.mjs`) executes on every PR via
+this workspace's own `npm test`. None of
 this coverage was placed in `test/slow`, which is excluded from the default
 suite and only reached by `npm run test:slow` -- the exact trap the KB entry
 for `test/slow/dispatch-watchdog-timer-ref.test.mjs` warns about.

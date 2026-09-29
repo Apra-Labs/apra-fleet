@@ -1,0 +1,288 @@
+#!/usr/bin/env node
+/**
+ * Standalone reproduction: a grandchild that inherits the dispatch's stdio
+ * pins the pipe after the dispatched process has already exited (Windows).
+ *
+ * Shape (the same one the fleet server hits in production):
+ *   powershell wrapper  ->  starts a grandchild with UseShellExecute=$false and
+ *                           NO redirected handles, so the grandchild inherits
+ *                           the wrapper's stdout/stderr
+ *   wrapper exits immediately (stand-in for claude.exe finishing its turn)
+ *   the grandchild keeps running (stand-in for the deploy sandbox pair, a test
+ *   runner, or an orphaned find.exe)
+ *
+ * Pre-fix the exec side waits for pipe EOF, so the dispatch never returns while
+ * the grandchild lives. Post-fix (src/services/exit-drain.ts) it completes
+ * within the drain window of the wrapper's exit and the grandchild survives.
+ *
+ * Usage (Windows, after `npm run build`):
+ *   node scripts/repro/win-orphan-pipe.mjs
+ *   node scripts/repro/win-orphan-pipe.mjs --grandchild "node dist/index.js --transport http"
+ *   node scripts/repro/win-orphan-pipe.mjs --keep     # leave the grandchild running
+ *
+ * Prints elapsed time to completion, the surviving grandchild pid, and a
+ * PASS/FAIL verdict. The same scenario runs as an automated test in
+ * tests/execute-command-long-running-windows.test.ts (grandchild-pins-pipe).
+ */
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** Default grandchild: a node keep-alive that never exits on its own. */
+export const DEFAULT_GRANDCHILD = 'node -e "setInterval(()=>{},1000)"';
+
+/**
+ * PowerShell parent script: starts `grandchildCommand` with inherited handles
+ * (UseShellExecute=$false, nothing redirected), announces both pids, and exits.
+ * Shared with the automated test so the two can never drift apart.
+ */
+export function buildOrphanPipeParentScript(grandchildCommand = DEFAULT_GRANDCHILD) {
+  const trimmed = grandchildCommand.trim();
+  const spaceAt = trimmed.indexOf(' ');
+  const exe = spaceAt === -1 ? trimmed : trimmed.slice(0, spaceAt);
+  const args = spaceAt === -1 ? '' : trimmed.slice(spaceAt + 1);
+  const psArgs = args.replace(/'/g, "''");
+  return [
+    'Write-Output "FLEET_PID:$pid"',
+    `$psi = [System.Diagnostics.ProcessStartInfo]::new("${exe}", '${psArgs}')`,
+    '$psi.UseShellExecute = $false',
+    '$psi.CreateNoWindow = $true',
+    '$p = [System.Diagnostics.Process]::Start($psi)',
+    'Write-Output "GRANDCHILD_PID:$($p.Id)"',
+    '[Console]::Out.Flush()',
+    'exit 0',
+  ].join('; ');
+}
+
+/**
+ * True if a pid is currently running (tasklist on Windows, kill -0 plus a
+ * zombie check elsewhere).
+ *
+ * On POSIX, `process.kill(pid, 0)` succeeds for a ZOMBIE too -- a process
+ * that already received SIGKILL but has not yet been reaped by its parent --
+ * so on its own it cannot tell "still running" from "doomed, waiting to be
+ * reaped". `ps -o stat=` disambiguates: a zombie's state starts with 'Z'.
+ * A genuinely live process is unaffected (its state never starts with 'Z'),
+ * so this can only ever turn a false "alive" into a true "not alive" -- it
+ * never weakens the check into reporting a live process as gone.
+ */
+export function isPidAlive(pid) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8' });
+      return out.includes(String(pid));
+    }
+    process.kill(pid, 0);
+    try {
+      const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      if (stat.startsWith('Z')) return false;
+    } catch {
+      // ps failed (e.g. the pid vanished between the kill(0) probe above and
+      // this ps call) -- fall through and trust the kill(0) result.
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bound (ms) on how long killPidTree waits for a signalled pid to actually
+ * leave the process table, and the poll interval inside that bound.
+ *
+ * Deliberately a BOUNDED poll, not a fixed sleep: a pid that dies in 3 ms
+ * costs 3 ms, and a pid that somehow never dies costs at most the bound and
+ * then returns anyway (killPidTree stays best-effort and never throws).
+ */
+export const KILL_TREE_WAIT_MS = 5000;
+const KILL_TREE_POLL_MS = 20;
+
+/**
+ * Synchronous sleep. killPidTree/isPidAlive are synchronous and are called
+ * from synchronous teardown (vitest afterEach), so the wait cannot be an
+ * `await`. Atomics.wait on a throwaway SharedArrayBuffer blocks the thread
+ * for the given ms without busy-spinning the CPU.
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Bounded wait until `pid` is no longer alive. Returns true if it is gone
+ * within `timeoutMs`, false if it outlived the bound.
+ *
+ * Why this is needed at all: `process.kill(pid, 'SIGKILL')` (and taskkill)
+ * only QUEUES the kill -- the syscall returns as soon as the signal is
+ * pending, before the target has been scheduled to die. A liveness probe run
+ * on the very next line therefore still sees a running process. On a Linux
+ * runner whose grandchild has been reparented to init this is not even a
+ * flaky race: it reported "still alive" on 25/25 local WSL2 iterations. The
+ * zombie branch in isPidAlive does not help here, because at that instant the
+ * process is not a zombie yet -- it is still in state S/R with a pending
+ * SIGKILL.
+ */
+export function waitForPidGone(pid, timeoutMs = KILL_TREE_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!isPidAlive(pid)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(KILL_TREE_POLL_MS);
+  }
+}
+
+/**
+ * True if the POSIX process group `pgid` still has at least one member that
+ * is not already a zombie.
+ *
+ * `process.kill(-pgid, 0)` cannot be used for this: it succeeds for a group
+ * whose only remaining members are unreaped zombies, which would make the
+ * wait below burn its whole bound whenever a descendant's reaper is slow.
+ * `ps -e -o pid=,pgid=,stat=` is filtered in JS instead of using `ps -g`,
+ * because `-g` means process-group on macOS but effective-group-name on
+ * Linux.
+ */
+function groupHasLiveMember(pgid) {
+  try {
+    const out = execFileSync('ps', ['-e', '-o', 'pid=,pgid=,stat='], { encoding: 'utf8' });
+    for (const line of out.split('\n')) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line);
+      if (!m) continue;
+      if (Number(m[2]) !== pgid) continue;
+      if (m[3].startsWith('Z')) continue;
+      return true;
+    }
+    return false;
+  } catch {
+    // ps unavailable -- cannot prove anything survives, so do not block.
+    return false;
+  }
+}
+
+/**
+ * Bounded wait until no live (non-zombie) process remains in process group
+ * `pgid`. Returns true if the group drained within the bound.
+ *
+ * This is what makes killPidTree live up to its name: `kill(-pgid, SIGKILL)`
+ * reaches every group member, but returns before ANY of them has died, so a
+ * descendant that stayed in the leader's group is still visible to a liveness
+ * probe on the next line -- the same asynchronous-delivery effect documented
+ * on waitForPidGone, just for the descendants rather than the leader.
+ */
+export function waitForGroupGone(pgid, timeoutMs = KILL_TREE_WAIT_MS) {
+  if (process.platform === 'win32') return true;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!groupHasLiveMember(pgid)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(KILL_TREE_POLL_MS);
+  }
+}
+
+/**
+ * Best-effort kill of a pid and its descendants, which does not return until
+ * the pid has actually left the process table (or the bounded wait above
+ * expires); never throws, even when the target is already gone.
+ *
+ * On POSIX a plain `process.kill(pid, 'SIGKILL')` only ever reaches the
+ * single given pid despite the function's name -- any descendant survives.
+ * A `detached: true` child (see buildLateOutputParentScript above and the
+ * Windows CIM launch wrapper this reproduces) becomes the leader of its own
+ * new process group, so signalling the negative pid (`-pid`) reaches that
+ * whole group -- the leader plus any descendant that did not itself detach
+ * into a further group. The direct `kill(pid, ...)` is kept alongside it for
+ * a pid that was never a process-group leader (e.g. not spawned detached).
+ */
+export function killPidTree(pid) {
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
+    } catch { /* already gone */ }
+    waitForPidGone(pid);
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch { /* no such process group (already gone, or pid never led one) */ }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch { /* already gone */ }
+  waitForPidGone(pid);
+  waitForGroupGone(pid);
+}
+
+async function main() {
+  if (process.platform !== 'win32') {
+    console.error('[win-orphan-pipe] This reproduction only means anything on Windows; exiting.');
+    process.exit(2);
+  }
+  const argv = process.argv.slice(2);
+  const grandchildIdx = argv.indexOf('--grandchild');
+  const grandchild = grandchildIdx === -1 ? DEFAULT_GRANDCHILD : argv[grandchildIdx + 1];
+  const keep = argv.includes('--keep');
+  const deadlineMs = 30_000;
+
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(here, '..', '..');
+  const strategyDist = path.join(repoRoot, 'dist', 'services', 'strategy.js');
+  if (!fs.existsSync(strategyDist)) {
+    console.error(`[win-orphan-pipe] ${strategyDist} not found -- run "npm run build" first.`);
+    process.exit(2);
+  }
+  const { getStrategy } = await import(`file://${strategyDist.replace(/\\/g, '/')}`);
+
+  const agent = {
+    id: `repro-${Date.now()}`,
+    friendlyName: 'win-orphan-pipe-repro',
+    agentType: 'local',
+    os: 'windows',
+    workFolder: fs.existsSync(path.join(repoRoot, 'dist')) ? repoRoot : os.tmpdir(),
+    createdAt: new Date().toISOString(),
+  };
+
+  const script = buildOrphanPipeParentScript(grandchild);
+  console.log(`[win-orphan-pipe] grandchild command: ${grandchild}`);
+  console.log(`[win-orphan-pipe] parent script: ${script}`);
+
+  const started = Date.now();
+  let elapsed = -1;
+  let stdout = '';
+  let failure = null;
+  try {
+    const result = await getStrategy(agent).execCommand(script, deadlineMs);
+    elapsed = Date.now() - started;
+    stdout = result.stdout;
+  } catch (err) {
+    elapsed = Date.now() - started;
+    failure = err instanceof Error ? err.message : String(err);
+  }
+
+  const pidMatch = /GRANDCHILD_PID:(\d+)/.exec(stdout);
+  const grandchildPid = pidMatch ? Number(pidMatch[1]) : null;
+  const alive = grandchildPid === null ? false : isPidAlive(grandchildPid);
+
+  console.log(`[win-orphan-pipe] elapsed to completion: ${elapsed} ms`);
+  console.log(`[win-orphan-pipe] grandchild pid: ${grandchildPid ?? '(not reported)'}`);
+  console.log(`[win-orphan-pipe] grandchild still alive after the dispatch: ${alive}`);
+  if (failure) console.log(`[win-orphan-pipe] dispatch failed: ${failure}`);
+
+  const passed = !failure && grandchildPid !== null && alive && elapsed < deadlineMs / 2;
+  console.log(`[win-orphan-pipe] ${passed ? 'PASS' : 'FAIL'} -- dispatch must complete within seconds of the parent exit while the grandchild keeps running.`);
+
+  if (grandchildPid !== null && !keep) {
+    killPidTree(grandchildPid);
+    console.log(`[win-orphan-pipe] torn down grandchild ${grandchildPid}; still alive: ${isPidAlive(grandchildPid)}`);
+  } else if (keep) {
+    console.log(`[win-orphan-pipe] --keep given: grandchild ${grandchildPid} left running; kill it with: taskkill /F /T /PID ${grandchildPid}`);
+  }
+  process.exit(passed ? 0 : 1);
+}
+
+const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error('[win-orphan-pipe] unexpected error:', err);
+    process.exit(1);
+  });
+}

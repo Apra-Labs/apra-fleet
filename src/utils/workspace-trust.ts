@@ -30,17 +30,30 @@ export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): 
       const probed = await getMemberHomeDir(agent);
       if (!probed) throw new Error('member home directory could not be resolved');
       const home = sftpHomePath(probed, agent.os);
+      const relDir = path.dirname(relPath).replace(/\\/g, '/');
+      const targetDir = relDir && relDir !== '.' ? `${home}/${relDir}` : home;
       const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-trust-'));
       const local = path.join(staging, path.basename(relPath));
       try {
         fs.writeFileSync(local, content, { encoding: 'utf8' });
-        const result = await strat.transferFiles([local], home);
+        const result = await strat.transferFiles([local], targetDir);
         if (result.failed.length > 0) {
           throw new Error(`transfer of ~/${relPath} failed: ${result.failed[0].error}`);
         }
       } finally {
         fs.rmSync(staging, { recursive: true, force: true });
       }
+    },
+    readHomeFile: async (relPath: string): Promise<{ found: boolean; content?: string } | undefined> => {
+      if (agent.agentType !== 'local') return undefined;
+      const probed = await getMemberHomeDir(agent);
+      if (!probed) return undefined;
+      const home = sftpHomePath(probed, agent.os);
+      const filePath = path.join(home, relPath);
+      if (fs.existsSync(filePath)) {
+        return { found: true, content: fs.readFileSync(filePath, 'utf8') };
+      }
+      return { found: false };
     },
   };
 }
@@ -78,10 +91,24 @@ export function sftpHomePath(home: string, agentOs: Agent['os']): string {
  *   compose_permissions, should pass it instead of paying for a second lookup).
  * @param tag Log tag identifying the call site (e.g. 'register_member').
  */
+const isHomeAnchored = (p: string) => p.startsWith('~/') || p.startsWith('~\\');
+
 export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy, tag = 'workspace-trust'): Promise<void> {
   try {
     const provider = getProvider(agent.llmProvider);
     const strat = strategy ?? getStrategy(agent);
+    // AGY's config path needs the member's project id, which a member may not
+    // have yet (it is provisioned by compose_permissions/execute_prompt); agy
+    // seeds no trust anyway, so treat "no path yet" as not home-anchored.
+    let configPaths: string[];
+    try {
+      configPaths = provider.permissionConfigPaths(agent);
+    } catch {
+      configPaths = [];
+    }
+    const memberHomeDir = configPaths.some(isHomeAnchored)
+      ? await getMemberHomeDir(agent)
+      : null;
     const result = await provider.ensureWorkspaceTrusted(
       agent.workFolder,
       (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),
@@ -92,6 +119,7 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
       // File channel so a large merged ~/.claude.json never rides a Windows
       // command line (GitHub #499); the adapter falls back to exec delivery.
       workspaceTrustTransportFor(agent, strat),
+      memberHomeDir,
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {

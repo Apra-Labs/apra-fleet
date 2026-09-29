@@ -24,7 +24,13 @@ Your dispatch prompt must supply ONE of the two scoping forms:
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose CI you
    are checking, and `hint_modules` naming its CI workflow files. Trust CONFIRMED entries
    fully. Use INFERRED entries as hints, not facts. Known-flaky tests and known CI failure
@@ -32,7 +38,12 @@ Your dispatch prompt must supply ONE of the two scoping forms:
 3. Do NOT capture. You poll a status API; you verify no claim about this repository, so you
    have no basis to write one down.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Step 1 -- List recent CI runs
 

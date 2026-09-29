@@ -111,6 +111,8 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+The default install includes fleet-se (fleet-sprint, supervisor, bd), which requires a system Node.js 22.16+ and npm on PATH; the installer fails up front if they are missing. Use `apra-fleet install --workflows none` to install the core only.
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
@@ -208,6 +210,21 @@ MCP tools that ship with the KB:
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+
+`kb_setup --remote <url> --token <key>` takes effect immediately: the next
+KB tool call resolves its project provider from this config, so a stock build
+points at a remote KB server by configuration alone, with no code change and
+no separate "server mode" build. A config with no remote, or any config the
+reader cannot parse, always falls back to the local SQLite provider -- see
+[Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
+for the exact selection rule and its fallback-construction invariant.
+
+**The provider config is install-wide, not per repo.** There is one
+`knowledge/config.json` per fleet install, so pointing it at a remote KB
+points EVERY repo that install serves -- every member, every project -- at
+that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
+post-commit hook; it does not scope the config. On a shared fleet server,
+treat `kb_setup --remote` as a change for all of its users.
 
 Every KB tool call is scoped to the repo it is about -- a fleet server
 handling many members across many repos never lets one repo's learnings land
@@ -433,8 +450,10 @@ third-party verticals.
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| GitHub App setup (exact permissions per git_access level) | [docs/github-app-setup.md](docs/github-app-setup.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |

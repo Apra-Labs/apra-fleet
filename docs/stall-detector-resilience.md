@@ -192,6 +192,59 @@ null/missing-file behavior.
 
 ---
 
+### 10. A Byte-Capped Tail Read Can Truncate the Last Dated Entry -- Scan Backwards, and Treat "No Timestamp But Mtime Unchanged" as Staleness, Not Silence
+
+**Scenario:** The tail read is capped to a fixed byte/line window (`tail -c 512` on
+POSIX, `Get-Content -Tail 5` on Windows) for cost reasons. On a real frozen
+transcript, the last line inside that window can be an untimestamped record
+(an attachment, a last-prompt record) sitting below the actual last dated
+entry, which the byte cap pushed just outside the window -- or the window can
+otherwise contain no line that parses as JSON with a `timestamp` field at
+all. Before this fix, the content scan looked only at the very last line,
+found nothing usable, and the poll loop's `lastTimestamp === null` branch
+fell straight through a bare `continue` with no log line and no threshold
+check ever running -- a transcript frozen well past its stall threshold
+produced no stall event at all, because the code path that would have
+evaluated it was simply never reached.
+
+**Decision:** Two independent changes close this gap:
+- `readLogTail()` scans the tail window **backwards** from the last line,
+  looking for the most recent line that parses as JSON with a string
+  `timestamp` field, instead of inspecting only the final line. A trailing
+  untimestamped record no longer hides a dated entry sitting one line above
+  it within the same capped window.
+- If no line in the window carries a parseable timestamp at all (`lastTimestamp
+  === null`), the poll loop no longer treats that as pure absence of
+  evidence on its own. It falls back to the transcript file's own OS mtime
+  (already fetched every poll as the cross-check described in edge case 7
+  above): if the mtime is unavailable, this genuinely is absence of evidence
+  (the file may not exist yet) and the poll still does not count as a stall
+  cycle. But if the mtime IS known and has NOT advanced past the entry's
+  `lastActivityAt` baseline, that is now evaluated as a stale, unadvanced tail
+  -- the same idle-cycle/threshold check used for a stale *content*
+  timestamp -- anchored on the entry's existing `lastActivityAt` (the last
+  dated entry, wherever it was found, still decides staleness; only the
+  *evaluation* of that staleness no longer silently skips).
+
+**Rationale:** Mtime is already trusted elsewhere in this design as a
+format-agnostic corroborating signal (edge case 7); using it here closes the
+exact class of gap that motivated edge case 7 in the first place, but for the
+"tail read found nothing at all" case rather than the "content parser doesn't
+understand this shape" case. The two are different failure modes (a byte cap
+truncating a well-formed entry vs. a parser not recognizing a well-formed
+entry) but the fix is the same: don't let an unparseable/truncated content
+scan silently disable the threshold check when a strictly-more-reliable
+signal (the file's own mtime) is available and agrees the transcript is
+frozen.
+
+**Invariant to preserve if this code is touched again:** a `null` result from
+the content-timestamp scan must never, on its own, short-circuit the stall
+threshold evaluation when the transcript file's mtime is known. The only
+legitimate silent-`continue` case is "mtime itself is also unavailable" --
+i.e. genuine absence of evidence that the file exists at all.
+
+---
+
 ## Consistency Checks
 
 ### Invariants

@@ -2,6 +2,116 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- provision_vcs_auth: failure cause now reaches structuredContent, not just text
+
+`provision_vcs_auth` failures (e.g. `deploy_failed`, `member_offline`) now carry the
+human-readable cause in a new `structuredContent.message` field, so a caller reading
+only structured content no longer sees a bare reason code with the cause dropped.
+`packages/apra-fleet-client`'s JSDoc typedef updated to match.
+
+## [Unreleased] -- Beads hygiene: milestone labels, gate-lock ignore, no token-estimate memories
+
+- `scripts/check-bead-milestones.mjs`: lists non-closed beads with zero, several or
+  unknown `milestone:*` labels (exit 2). Options `--assignee`, `--known`, `--file`,
+  `--json`. A standalone, opt-in operator tool. The `milestone:*` labels are a local,
+  ad-hoc convention until a formal milestone model lands, so the script is not wired
+  into any sprint phase, hook, prompt or CI job.
+- `.gitignore`: ignore `.beads.gate.lock`, the bd runtime lock that sprints kept
+  re-filing as a dirty-worktree finding.
+- apra-pm: the legacy auto-sprint harvest and the pm cost skill no longer write the
+  `token-estimates-json` bd memory; `scripts/fix-token-memories.mjs` is removed.
+  Calibration stays in `sprint-logs/calibration.json`.
+- backlog-groomer: new hygiene step. Follow-ups under closed parents are groomed, given
+  the parent's context and detached. Fully closed epics are listed as deletion
+  candidates, which need operator confirmation. Token-estimate memories are banned.
+
+## [Unreleased] -- Windows dispatch pipe stall, missed-stall tail truncation and unbounded test runner (sprint goal not yet met -- see carried-forward items)
+
+Sprint goal: close three P1 regressions that could each hold a Windows-member
+dispatch open indefinitely -- a dispatch that never completed because a
+grandchild process inherited its stdout/stderr pipe, a stall detector that
+never fired against a frozen transcript whose tail ended in an
+untimestamped entry, and a root test-runner chain with no wall-clock bound
+that could hang the whole dispatch behind it. The epic's own acceptance
+criterion is `npm test` green on both Windows and Linux; that criterion is
+not yet met, so this entry documents real, verified progress and explicitly
+does not claim the epic is done.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.2194.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4967 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 29 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped and is verified working on Windows:
+
+- **Windows dispatch completion now keys off the dispatched process's own
+  exit, not pipe EOF.** A grandchild started by a dispatched CLI (a sandbox
+  server, a nested test runner) can hold the dispatch's stdout/stderr pipe
+  open on Windows long after the process actually dispatched has exited.
+  The read side now treats process exit as the completion signal on
+  Windows only, with a short bounded grace window to drain any output
+  already buffered in the pipe; POSIX is unchanged, since a real EOF is
+  reachable there and remains the more complete signal. The two call sites
+  that implement this (local and SSH strategies) now finalize before
+  tearing down the readable stream, closing a prior ordering defect that
+  could silently drop output landing late inside the drain window. See
+  `docs/dispatch-reliability-hardening.md`.
+- **The stall detector now catches a frozen transcript whose tail read
+  finds no parseable timestamp at all**, instead of silently skipping the
+  threshold check for that poll. The tail read now scans backwards for the
+  most recent dated entry (a trailing untimestamped record no longer hides
+  one sitting just above it), and when no timestamp is found anywhere in
+  the tail window, the transcript's own file-modification time is used as
+  the staleness signal instead of treating the read as pure absence of
+  evidence. See `docs/stall-detector-resilience.md`.
+- **Both bundled test-runner chains (the root runner and the
+  workspace-local runner) are now bounded by a wall-clock timeout with a
+  process-tree kill cascade**: a graceful group-terminate first, escalating
+  to an unconditional group-kill if the tree hasn't exited, plus a forced
+  process-exit backstop in case the kill signal never produces an exit
+  event. An outer terminating signal delivered to the runner itself now
+  always yields a non-zero exit code, regardless of which internal code
+  path happens to reach `process.exit` first, and a deferred hard-kill
+  timer now captures its target process-group id at signal time so it
+  cannot lose track of (or kill the wrong occupant of) that slot. See
+  `docs/dispatch-reliability-hardening.md`.
+- The process-tree-kill reproduction/test harness used to prove the above
+  now signals the whole POSIX process group (not just one pid),
+  disambiguates a zombie from a genuinely live process before reporting
+  liveness, and polls with a bounded wait for the target to actually leave
+  the process table instead of assuming a sent kill signal took effect
+  immediately.
+
+Carried forward, not resolved by this release -- this is why the sprint
+verdict is FAIL against the epic's own acceptance criteria:
+
+- **No CI evidence exists yet at the tip of this work.** The epic requires
+  `npm test` green on Windows AND Linux; the most recent CI run available
+  predates several of the fixes above, and that run's Linux leg failed on
+  exactly the process-tree-kill correctness gaps this release addresses.
+  Local Windows verification is real (build, unit, and workspace test
+  suites all green) but is necessary, not sufficient, evidence for a
+  cross-platform acceptance criterion -- a fresh CI run on all target OSes
+  is required before this can be called done.
+- **A POSIX-only "outer signal produces a non-zero runner exit code"
+  ordering case was still failing against exit code 0 as of the last
+  available CI evidence**, despite its implementing subtasks having been
+  marked complete -- closing a subtask is not the same as the parent
+  behavior being independently confirmed against a deployed build. The gap
+  is filed and tracked; the dependent feature and its parent remain open
+  pending that confirmation.
+- A separate, out-of-scope macOS process-leak failure was observed and
+  filed under the task that claims that exact coverage, rather than folded
+  into this release's scope.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.4256.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.4256 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 44 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
 ## [Unreleased] -- memory-contract/v1 skeleton complete: round-trip harness, CI drift guard, taxonomy, sign-off
 
 Sprint goal: turn the existing MCP knowledge-tool surface into the
@@ -201,6 +311,151 @@ Tracked spend (priced dispatches only): $28.4659.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
 Pricing source: all 39 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- agent transform: closing out the static follow-ups from the body-block fix; end-to-end proof still not run (sprint FAILED)
+
+Sprint goal (continuation of the prior entry below): close the follow-up gaps
+left after landing the provider-conditional body-block mechanism for role
+prompts, and attempt acceptance criterion 2 -- an end-to-end proof that a real
+toy sprint on the Antigravity provider completes a review cycle with zero
+executor-construction errors and zero calls to a tool dropped from its own
+frontmatter.
+
+What shipped this round:
+
+- **A behavioral cross-implementation guard** now covers the rest of the
+  logic `packages/apra-fleet-se/apra-pm/install.mjs` hand-copies from
+  `src/cli/agent-transform.ts` -- `resolveConditionalBody`, declared-tools
+  intersection, and wildcard paths -- not just the two literal tool-map
+  tables that were guarded before.
+- **The apra-pm installer's `copyDirResolved` now gates its UTF-8 rewrite
+  on a text-file allowlist** (`.md`, `.json`, `.txt`); anything else copies
+  byte-for-byte, closing the latent binary-corruption risk flagged as a
+  follow-up in the prior entry. A test asserts byte-for-byte survival.
+- **CI's test-step comments were reconciled** with the fact that root
+  `npm test` now covers all three suites, and a regression test now asserts
+  `run-all-tests.mjs` enumerates every suite and fails the run when any one
+  suite fails.
+- **An automated ASCII-only gate**, wired into root `npm test`, enforces the
+  existing "ASCII only" convention instead of leaving it review-enforced. It
+  ships as a ratchet against a checked-in baseline of pre-existing violations
+  (a baselined file may have at most its recorded violation count; fewer than
+  recorded also fails, so the baseline can't silently go stale) rather than a
+  blanket exemption, and excludes binary files by content (a NUL byte in the
+  first 8000 bytes), not by extension. The two non-ASCII characters this
+  branch itself had introduced into `agent-transform.ts` comments were
+  replaced with ASCII.
+
+Filed as follow-up (deliberately left open, not closed by this pass):
+
+- **Acceptance criterion 2 (the end-to-end Antigravity proof) is still
+  unrun, for the second sprint in a row.** Root-caused this round, not just
+  re-observed: the IntegTest routing classifier excludes any bead with no
+  children (so a dedicated leaf "run and record the proof" bead can only ever
+  route to the doer, never verification) and excludes any parent with an open
+  child (so the epic itself can't become verify-eligible while that leaf, or
+  any other open child, stays open) -- making the criterion structurally
+  unreachable under the current decomposition regardless of how many times
+  the leaf bead is recreated. Filed as a P2 task to give the routing
+  classifier an explicit escape hatch (or restructure so the proof rides the
+  parent's own verify route) with a regression test, so a verification leaf
+  can't silently be routed to the doer again.
+- **The main `apra-fleet` installer still lacks the binary-safe asset copy
+  path** the apra-pm installer gained this round -- `loadAgentAssets()` and
+  the install loop in `src/cli/install.ts` still round-trip every asset
+  through UTF-8 text handling regardless of content, latent for as long as
+  the agent asset trees stay text-only. Filed as a P3 follow-up.
+- **Conditional-marker syntax has two undocumented, unenforced gaps**: a
+  marker sharing a line with prose silently swallows the boundary whitespace,
+  and markers inside a fenced code block are resolved like any other text (so
+  the mechanism cannot be demonstrated inline in a role prompt body). Both are
+  now documented as caveats in
+  `docs/features/agent-transform-provider-conditionals.md`; enforcing them
+  with a test is filed as a P3 follow-up.
+- **This branch conflicts with current `origin/main`** in `CHANGELOG.md` and
+  `scripts/run-all-tests.mjs` -- `origin/main` independently added the
+  identical apra-pm suite entry this branch also adds, so a careless merge
+  would run that suite twice per `npm test`. Filed as a pre-merge blocker;
+  the branch also has no CI run yet at its current head.
+- A stray, untracked `.beads.gate.lock` file was observed at the repo root
+  (not committed by this branch); filed as a low-priority `.gitignore` fix.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.1640.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2602 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 28 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- agent transform: role-prompt body text now follows dropped tools, not just frontmatter (sprint FAILED -- static half verified, end-to-end proof not run)
+
+Sprint goal: fix the half of `apra-fleet-oomh` that the earlier frontmatter-only
+fix (PR #509) left alive -- a role prompt whose frontmatter had a tool dropped
+for a non-Claude provider could still instruct the agent, in prose, to call
+that exact tool by name.
+
+What shipped:
+
+- **A generic provider-conditional body-block mechanism** in the agent
+  transform pipeline: role prompts may wrap tool-specific prose in
+  `<!-- if-tool: X --> ... <!-- else-tool: X --> ... <!-- end-tool: X -->`
+  markers, resolved at install time against the same tool-availability
+  decision that drives the frontmatter rewrite for each provider. Malformed
+  markers (unclosed, unmatched, mismatched, duplicated) are a hard install-time
+  error naming the file, never a silent pass-through. See
+  `docs/features/agent-transform-provider-conditionals.md` for the full
+  mechanism.
+- **All 11 role prompts** now gate their ToolSearch-discovery prose behind
+  these markers, with provider-neutral fallback text for non-Claude providers.
+- **A non-vacuity test** asserts, over every transformed role prompt on a
+  non-Claude provider, that no installed file references a tool its own
+  frontmatter dropped -- deriving the expected drop list from the transform's
+  own warnings rather than re-deriving the tool map, plus an independent
+  line-scanner oracle for the Claude path.
+- **The previously Claude-passthrough install path now also resolves and
+  strips markers**, closing the gap that let provider-specific prose leak
+  through unfiltered before this mechanism existed.
+- **The apra-pm installer's agy path gained its own frontmatter transform**
+  (it previously left `tools:` untouched for agy) and now routes the
+  `agents/schemas/` and `agents/_shared/` asset trees through the same
+  marker-resolution pass as agent files, so a marker added to either tree in
+  the future can never ship unresolved on any `--llm` path.
+- **The root `npm test` now runs the apra-pm test suite**, not only CI, so a
+  regression there is caught locally instead of only on push.
+
+Filed as follow-up (deliberately left open, not closed by this pass):
+
+- **The sprint's own acceptance criterion 2 -- an end-to-end proof that a real
+  toy sprint on the Antigravity provider completes a review cycle with zero
+  executor-construction errors and zero calls to a dropped tool -- was never
+  run or recorded.** This is why the sprint's final verdict is FAIL despite
+  every closed child bead being independently verified correct: static tests
+  proving the string transform is right are necessary but not sufficient,
+  since the exact prior failure mode (PR #509) was also static-only and
+  correct-looking while the bug it left behind was live. The end-to-end proof
+  remains an open, unstarted P2 follow-up.
+- A behavioral cross-implementation guard for the rest of the logic
+  `apra-pm/install.mjs` hand-copies from `src/cli/agent-transform.ts`
+  (`resolveConditionalBody`, `toolAvailability`, `readFrontmatterTools`, the
+  two transform functions themselves) -- today only the two literal tool-map
+  tables are guarded for drift between the files.
+- CI's own test-step comments have not been reconciled with the fact that
+  `npm test` now covers all three suites.
+- `copyDirResolved` in the apra-pm installer still round-trips every file
+  through UTF-8 text handling regardless of extension -- latent corruption
+  risk for a future binary asset under the trees it now covers, not yet
+  guarded by a text-file allowlist.
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $13.2742.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0335 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- fleet-sprint: a finished sprint with deferred beads no longer aborts as stalled, and a permission-scope git rejection stops spinning the sprint
 
@@ -457,6 +712,62 @@ Integ-test-runner spend: $0.8319 across 6 dispatch(es) this sprint (a subset of 
 Pricing source: all 71 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
+
+## [Unreleased] -- restore config-driven HTTP KB provider selection
+
+Sprint goal: give `getKbProviders` back the provider-selection logic an
+earlier cleanup removed, so a stock, unmodified build can be pointed at a
+remote KB server by configuration alone, with the SQLite path staying
+byte-identical when no such configuration is present.
+
+What shipped:
+
+- **`getKbProviders` selects the project provider from config.** When
+  `FLEET_DIR/knowledge/config.json` (written by `kb_setup`) selects
+  `provider: "http"` with a URL and a decryptable token, the project KB
+  provider is now an `HttpKbProvider`; every other case -- no config file,
+  `provider: "sqlite"`, or a malformed/incomplete config -- degrades to the
+  existing `SqliteProvider` unchanged, with a malformed config logging one
+  loud warning instead of failing every KB tool.
+- **No new no-arg `SqliteProvider` construction.** The `HttpKbProvider` this
+  selection builds is always constructed with the already-built project
+  `SqliteProvider` as its explicit fallback, closing the specific hazard of
+  `HttpKbProvider`'s own default fallback resolving a database from the
+  wrong working directory.
+- **A `requireSqliteProject` narrowing guard** now sits in front of every KB
+  tool call site that needs `SqliteProvider`-only capabilities (list,
+  feedback, freshness sweep, reconcile/resolve-contradiction, directive
+  methods), so those operations refuse loudly and by name when the project
+  provider is remote instead of behaving unpredictably. That is eight of the
+  nine SqliteProvider-only call sites; the ninth, `kb_stats`, deliberately
+  degrades instead, using the non-throwing `isSqliteProject` guard to report
+  a not-computable bible block over a remote provider.
+- **`kb_setup` validates `remote`.** A value that is not an `http://` or
+  `https://` URL is rejected before any hook or config is written, and plain
+  `http://` to a non-loopback host returns a `warnings` entry (and logs one),
+  because the bearer token would travel in cleartext. Loopback http
+  (`localhost`, `127.0.0.0/8`, `[::1]`) does not warn. It warns rather than
+  refuses so existing LAN deployments keep working.
+- Test coverage is against real implementations only, including an
+  end-to-end test that runs `kb_setup` for real against a live local HTTP
+  server -- no mocked provider stubs. See `docs/knowledge-layer-design.md`
+  for the full selection contract and its one remaining follow-up gap (an
+  audit of `kb_stats` consumers now that its response is a union shape).
+
+Carried forward as open backlog: auditing `kb_stats` consumers against its
+now-union response shape. The user-directive pending-proposal clamp and
+`kb serve`'s behaviour under a remote project provider were both listed here
+as follow-ups and are resolved in this same branch.
+
+
+### Cost analysis
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.0737.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 15 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- planner/plan-reviewer catch decompositions that contradict a bead's own NOTES corrections
 

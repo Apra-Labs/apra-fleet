@@ -59,9 +59,8 @@
 // dolt-sync-configured-remote.test.mjs (~7s), so this file lives in `test/`
 // and is picked up by the DEFAULT `test/*.test.mjs` glob that this package's
 // `npm test` (scripts/run-tests.mjs mock) runs. That IS a lane CI executes:
-// .github/workflows/ci.yml's "Run workspace package test suites (node:test)"
-// step runs `npm test --workspaces --if-present`, which reaches this
-// package's mock lane on every PR. It
+// the root `npm test` (scripts/run-all-tests.mjs) runs this workspace's own
+// `npm test` on every PR. It
 // is deliberately NOT in `test/slow/`: that directory is only reached by the
 // separate `npm run test:slow` script and is excluded from the default suite,
 // so putting it there would have left this gap open while looking closed.

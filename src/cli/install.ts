@@ -20,11 +20,12 @@ import {
   INSTALLABLE_LLM_PROVIDERS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -61,6 +62,82 @@ export function _resetDoltStepDeps(): void {
 function doltStepEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
   return process.env.APRA_FLEET_ENABLE_DOLT_INSTALL === '1';
+}
+
+// --- fleet-se prerequisite check (Node.js 22.16+ and npm on PATH) ---
+//
+// fleet-se (fleet-sprint, supervisor, bd) needs a SYSTEM Node.js >= 22.16.0
+// and npm; apra-fleet core does not. Checked up front in runInstall (only when
+// workflows are being installed) so a missing prerequisite fails loudly before
+// anything is stopped or written. Same DI + NODE_ENV=test gate shape as the
+// dolt step above: skipped under NODE_ENV=test unless
+// APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK=1 (tests then inject fake probes).
+export interface FleetSePrereqProbes {
+  nodeVersion: () => string | null;
+  npmVersion: () => string | null;
+}
+const FLEET_SE_MIN_NODE: [number, number, number] = [22, 16, 0];
+
+function probeVersion(cmd: string, shell: boolean): string | null {
+  try {
+    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell });
+    return String(out).trim() || null;
+  } catch {
+    return null;
+  }
+}
+// System node from PATH, NOT process.version (in SEA mode that is the embedded runtime).
+// node/npm can be .cmd shims on Windows (nvm-windows, corporate wrappers), so both need shell:true.
+const realFleetSePrereqProbes: FleetSePrereqProbes = {
+  nodeVersion: () => probeVersion('node', true),
+  npmVersion: () => probeVersion('npm', true),
+};
+let fleetSePrereqProbes: FleetSePrereqProbes = realFleetSePrereqProbes;
+/** Test-only: the real (non-overridden) probes, to assert their exec options. */
+export const _realFleetSePrereqProbes = realFleetSePrereqProbes;
+/** Test-only: inject fake probes for the fleet-se prerequisite check. */
+export function _setFleetSePrereqProbes(overrides: Partial<FleetSePrereqProbes>): void {
+  fleetSePrereqProbes = { ...realFleetSePrereqProbes, ...overrides };
+}
+/** Test-only: restore the real fleet-se prerequisite probes. */
+export function _resetFleetSePrereqProbes(): void {
+  fleetSePrereqProbes = realFleetSePrereqProbes;
+}
+
+function fleetSePrereqCheckEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK === '1';
+}
+
+function nodeVersionSatisfies(raw: string): boolean {
+  const m = raw.trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return false;
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) {
+    if (v[i] !== FLEET_SE_MIN_NODE[i]) return v[i] > FLEET_SE_MIN_NODE[i];
+  }
+  return true;
+}
+
+export function checkFleetSePrereqs(probes: FleetSePrereqProbes): { ok: boolean; missing: string[]; message: string } {
+  const missing: string[] = [];
+  const causes: string[] = [];
+  const minNode = FLEET_SE_MIN_NODE.join('.');
+  const node = probes.nodeVersion();
+  if (node === null) {
+    missing.push('node');
+    causes.push('Node.js not found on PATH');
+  } else if (!nodeVersionSatisfies(node)) {
+    missing.push('node');
+    causes.push(`Node.js ${node.trim()} found, ${minNode}+ required`);
+  }
+  if (probes.npmVersion() === null) {
+    missing.push('npm');
+    causes.push('npm not found on PATH');
+  }
+  if (missing.length === 0) return { ok: true, missing, message: '' };
+  const message = `${causes.join('; ')}. fleet-se requires Node.js 22.16+ and npm. Install them and re-run, or use --workflows none to install the core only.`;
+  return { ok: false, missing, message };
 }
 
 // Detect SEA mode
@@ -549,7 +626,18 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
 
 const CLAUDE_INVALID_RULES = ['tracker_*'];
 
+/** AGY validates every permissions.allow entry against this regex (verbatim
+ *  from the agy CLI binary, 1.2.8) and ignores anything that fails it. */
+const AGY_RULE_RE = /^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$/;
+
 export function pruneInvalidRules(allow: string[], providerName: string): string[] {
+  if (providerName === 'Antigravity') {
+    // Self-heal: strip Claude-syntax entries a previous install wrote into
+    // AGY's settings.json (mcp__apra-fleet__*, Agent(*), tracker_*, ...). AGY
+    // rejects them already, so removing them changes no effective grant -- it
+    // only stops fleet from leaving junk in a file the human user also owns.
+    return allow.filter(rule => AGY_RULE_RE.test(rule));
+  }
   if (providerName !== 'Claude') return allow;
   return allow.filter(rule => !CLAUDE_INVALID_RULES.includes(rule));
 }
@@ -575,7 +663,18 @@ export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
 function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = []): void {
   const settings = readConfig(paths);
 
-  const requiredPerms = [...buildRequiredPerms(paths), ...extraPerms];
+  let requiredPerms = [...buildRequiredPerms(paths), ...extraPerms];
+  if (paths.name === 'Antigravity') {
+    // buildRequiredPerms speaks Claude's permission vocabulary. AGY accepts
+    // only `action(target)` strings from a fixed action set, so the Read(<dir>)
+    // grants are translated to read_file(<dir>) and the tokens with no AGY
+    // equivalent (mcp__apra-fleet__*, activate_skill(*), Agent(*), tracker_*)
+    // are dropped -- same "no Antigravity equivalent" handling the agent
+    // transform already applies to unsupported tools. Writing them verbatim
+    // left AGY with an allow-list it discarded wholesale, so every headless
+    // dispatch hit the auto-deny wall on its first tool call.
+    requiredPerms = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(requiredPerms));
+  }
 
   settings.permissions = settings.permissions || {};
   settings.permissions.allow = settings.permissions.allow || [];
@@ -950,6 +1049,7 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
+                          fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
@@ -1073,6 +1173,16 @@ Options:
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
   const installWorkflows = workflowsMode === 'all';
+
+  // fleet-se prerequisites: fail before the running-process guard so nothing is stopped or written.
+  if (installWorkflows && fleetSePrereqCheckEnabled()) {
+    const prereq = checkFleetSePrereqs(fleetSePrereqProbes);
+    if (!prereq.ok) {
+      console.error(`Error: ${prereq.message}`);
+      process.exit(1);
+    }
+  }
+
   const serviceStep = isSea() && transport === 'http';
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
@@ -1538,11 +1648,15 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
+      // Every branch runs a transform -- the default one is NOT a passthrough. Claude
+      // keeps the source frontmatter and every conditional's if-branch, but the
+      // conditional markers themselves still have to be stripped or they ship
+      // verbatim into the installed agent file (apra-fleet-oomh.1).
       const content = llm === 'opencode'
         ? transformAgentForOpenCode(rawContent, relPath)
         : llm === 'agy'
         ? transformAgentForAgy(rawContent, relPath)
-        : rawContent;
+        : transformAgentForClaude(rawContent, relPath);
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
@@ -1691,20 +1805,35 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
+  let serviceReused = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
     const svcMgr = await getServiceManager();
     try {
-      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';
+      if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
       try {
         await svcMgr.start();
         serviceRegistered = true;
       } catch (startErr) {
-        try { await svcMgr.unregister(); } catch {}
+        // Never delete a reused task: it predates this install (e.g. elevated).
+        if (!serviceReused) { try { await svcMgr.unregister(); } catch {} }
         throw startErr;
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+      // --force stopped the server; reporting success would leave it down silently.
+      if (force && (runningScope?.relevant || guardStoppedService)) {
+        const restartHint = guardStoppedService
+          ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
+          : 'Start it with:\n    apra-fleet start';
+        console.error(`
+Error: install --force stopped the running apra-fleet server, but the service
+could not be registered/started, so the server is NOT running.
+${restartHint}
+`);
+        process.exit(1);
+      }
     }
   }
 
@@ -1720,7 +1849,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `registered and running${serviceReused ? ' (existing task reused)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.1 (F5 step 3, D4 HARDENED, resolution R7): kb_resolve_contradiction --
 // thin wrapper over SqliteProvider.resolveContradiction(), the SINGLE write
@@ -35,6 +36,7 @@ export type KbResolveContradictionInput = z.infer<typeof kbResolveContradictionS
 
 export async function kbResolveContradiction(input: KbResolveContradictionInput): Promise<string> {
   const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
-  const result = await providers.project.resolveContradiction(input.winnerId, input.loserId, input.evidence);
+  const sqliteProvider = requireSqliteProject(providers.project, 'kb_resolve_contradiction');
+  const result = await sqliteProvider.resolveContradiction(input.winnerId, input.loserId, input.evidence);
   return JSON.stringify(result);
 }

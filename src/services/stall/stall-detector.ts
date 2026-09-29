@@ -436,6 +436,10 @@ export class StallDetector {
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;
         this.update(memberId, { consecutiveReadFailures: newFailures });
+        // apra-fleet-qe83.2.2: log every error-return path, not only once the
+        // 3-consecutive-failures warning threshold is crossed, so a single
+        // occurrence is still diagnosable from fleet.log alone.
+        logLine('stall_log_read', JSON.stringify({ memberId, memberName: entry.memberName, error, consecutiveReadFailures: newFailures }));
         if (newFailures >= 3) {
           logWarn('stall_read_failures', JSON.stringify({ memberId, error, consecutiveReadFailures: newFailures }));
         }
@@ -468,27 +472,61 @@ export class StallDetector {
             stallReported: false,
           });
           writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - mtimeAdvancedTo)})`]]));
+          continue;
         }
-        // Otherwise: file not yet created / no signal at all — do NOT count as stall cycle
-        continue;
-      }
 
-      const ts = new Date(lastTimestamp).getTime();
-      const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
-      if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
-        // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
-        const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
-        this.update(memberId, {
-          lastActivityAt: advancedTo,
-          consecutiveIdleCycles: 0,
-          consecutiveReadFailures: 0,
-          stallReported: false,
-        });
-        if (contentAdvancedTo !== null) {
-          updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+        if (mtimeMs === undefined || mtimeMs === null) {
+          // apra-fleet-qe83.2.2: the file genuinely has no OS mtime either --
+          // it has not been created yet (or is otherwise unreadable). This IS
+          // the absence of evidence, not evidence of a stall: do NOT count it
+          // as a stall cycle, but log it so a sustained "never created" case
+          // is still diagnosable from fleet.log alone.
+          logLine('stall_no_signal', JSON.stringify({
+            memberId,
+            memberName: entry.memberName,
+            note: 'no content timestamp and no file mtime available yet -- treating as absence of evidence, not a stall',
+          }));
+          continue;
         }
-        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - advancedTo)})`]]));
-        continue;
+
+        // apra-fleet-qe83.2.2: the recorded missed-stall shape. The file DOES
+        // exist (mtimeMs is known) and has NOT advanced past lastActivityAt,
+        // but content parsing found no usable timestamp at all -- e.g. the
+        // byte-capped tail read truncated the last dated entry and every
+        // trailing entry (an attachment, a last-prompt record) carries no
+        // timestamp field of its own. Before this fix that fell through the
+        // silent `continue` above with no log line and no threshold check
+        // ever running, hiding a genuine 57-minute stall. The file's own
+        // mtime is exactly the kind of corroborating signal
+        // apra-fleet-iuc.2 already trusts elsewhere in this function, so
+        // fall through to the same idle-cycle/threshold evaluation used for
+        // a stale CONTENT timestamp below, anchored on the entry's existing
+        // lastActivityAt (last dated entry decides staleness).
+        logLine('stall_tail_truncated', JSON.stringify({
+          memberId,
+          memberName: entry.memberName,
+          mtimeMs,
+          lastActivityAt: entry.lastActivityAt,
+          note: 'tail read found no parseable timestamp but file mtime has not advanced; evaluating staleness against last known activity',
+        }));
+      } else {
+        const ts = new Date(lastTimestamp).getTime();
+        const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
+        if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
+          // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
+          const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
+          this.update(memberId, {
+            lastActivityAt: advancedTo,
+            consecutiveIdleCycles: 0,
+            consecutiveReadFailures: 0,
+            stallReported: false,
+          });
+          if (contentAdvancedTo !== null) {
+            updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+          }
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - advancedTo)})`]]));
+          continue;
+        }
       }
 
       // No new activity per EITHER signal — increment idle cycle counter and

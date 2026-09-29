@@ -15,8 +15,8 @@
 // the exact same way the empty object does, which would just reproduce the
 // defect in a new form. This requires `npm run build` (a full `tsc`, not
 // just `npm run build:contract`) to have run before these tests execute --
-// true in CI (the "Build" step runs before "Run workspace package test
-// suites") and for any local `npm test --workspace=@apralabs/apra-fleet-workflow`
+// true in CI (the "Build" step runs before "Run tests") and for any local
+// `npm test --workspace=@apralabs/apra-fleet-workflow`
 // run after a normal `npm run build`. See packages/apra-fleet-se/test/
 // fyc3-se-package-json-shipped.test.mjs for the same dist/-import pattern
 // already used elsewhere in this repo.

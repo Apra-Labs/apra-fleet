@@ -8,6 +8,7 @@ import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
 import { setStoredPid, clearStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getOsCommands } from '../os/index.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -200,11 +201,13 @@ export async function execCommand(
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
+    let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
     function settle(fn: () => void) {
       if (settled) return;
       settled = true;
       clearTimeout(inactivityTimer);
       if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
       releaseChannel();
       fn();
     }
@@ -292,7 +295,7 @@ export async function execCommand(
         }
       });
 
-      stream.on('close', (code: number) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
@@ -306,7 +309,57 @@ export async function execCommand(
           stderr = `Warning: ${warning}\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      stream.on('close', (code: number) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; rationale in
+      // src/services/exit-drain.ts). The SSH twin of the LocalStrategy change in
+      // strategy.ts: sshd sends `exit-status` when the command process itself
+      // exits, but only closes the channel once every inherited handle on the
+      // far side is released -- so one surviving grandchild (sandbox server,
+      // orphaned find.exe) holds the channel open indefinitely. On Windows
+      // members, treat the remote process exit as completion, drain briefly, then
+      // settle; the remote grandchild is left running on purpose.
+      if (completesOnProcessExit(getAgentOS(agent))) {
+        stream.on('exit', (code: number | null) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
+            finalize(code);
+            // Release our end of the wedged channel; the remote grandchild is
+            // unaffected (closing an ssh2 channel never signals the far side's
+            // processes -- see killRemoteTree above for why that is deliberate).
+            try { stream.close(); } catch { /* best-effort */ }
+          }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // The handle that always outlives the drain window here is the ssh2
+          // Client's TCP socket: the channel is still open (that is why the
+          // drain is running at all), so its connection socket is live, and
+          // ssh2 never unrefs it -- `unref` appears nowhere in
+          // node_modules/ssh2/lib/client.js (only in http-agents.js and
+          // server.js). Measured standalone that this is sufficient: a
+          // connected, reading net.Socket with the helper listener process
+          // unref-ed gave getActiveResourcesInfo() = [TCPSocketWrap] and an
+          // unref-ed 3000 ms timer still fired at 3014 ms -- i.e. the socket
+          // alone kept the loop alive with no ref-ed timer present. If the
+          // channel had already closed instead, `close` would have settled the
+          // promise without this timer. The connection-pool idle timers
+          // (resetIdleTimer above) are all unref-ed and are deliberately NOT
+          // part of this argument. Caller paths enumerated as for the
+          // strategy.ts twin: every execCommand() call site runs inside the
+          // long-lived MCP server, except src/cli/watch.ts, which holds a
+          // ref-ed setInterval for its watch loop.
+          // Residual risk: if the TCP socket dies during the drain window the
+          // callback is skipped -- but that path emits 'error', which settles
+          // via reject(), so the promise still settles. The narrow uncovered
+          // case is a socket destroyed with no 'error' and no 'close'.
+          exitDrainTimer.unref();
+        });
+      }
+
       stream.on('error', (err: Error) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();

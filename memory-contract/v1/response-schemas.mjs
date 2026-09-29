@@ -186,6 +186,9 @@ const KB_RESPONSE_BODIES = {
   kb_setup: z.object({
     success: z.boolean(),
     steps: z.array(z.unknown()),
+    // Always present (possibly empty): cleartext-http remote, a dropped token
+    // for a changed remote, or a malformed existing config that was replaced.
+    warnings: z.array(z.string()),
   }),
   kb_export: z.object({
     exported: z.number(),

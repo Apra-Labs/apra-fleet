@@ -61,7 +61,7 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
   `docs/opencode-getting-started.md`. This is the door to local/self-hosted
   OpenAI-compatible models.
 - **Antigravity (agy) provider maturation** -- `--agent` flag dispatch,
-  session-resume fixes, safety rationalization (`docs/agy-safety-rationalization.md`).
+  session-resume fixes, per-member project binding and permission-denial reporting (`docs/agy-provider.md`).
 - **Role-agent file installation, including remote members** --
   `apra-fleet install` writes planner/doer/reviewer/plan-reviewer agent
   definitions into each provider's agents directory, and `update_member`
@@ -82,7 +82,8 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
 
 - **Knowledge Bank MCP tools** -- `kb_session_prime`, `kb_capture`,
   `kb_query`, `kb_harvest`, `kb_promote`, `kb_export` and the rest of the
-  `kb_*` family, scoped per repo and opt-in per repo (`kb_setup`). See
+  `kb_*` family, with entries scoped per repo and the provider (local
+  SQLite or a remote KB, set by `kb_setup`) chosen per fleet install. See
   [docs/knowledge-layer.md](docs/knowledge-layer.md).
 - **Code-intelligence provider abstraction** -- `code_graph`,
   `code_impact`, `code_query`, `code_context` route through a pluggable

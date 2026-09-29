@@ -2,6 +2,7 @@ import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, 
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import type { MemberShell } from '../os/os-commands.js';
+import { transformAgentForClaude } from '../cli/agent-transform.js';
 
 const NO_LLM_ERROR = 'This member has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead of execute_prompt.';
 
@@ -116,8 +117,9 @@ export class NoneProvider implements ProviderAdapter {
     throw new Error('none provider has no agent directories');
   }
 
-  transformAgent(content: string, _relPath: string): string {
-    return content;
+  transformAgent(content: string, relPath: string): string {
+    // Same resolver the local install uses for this provider, so remote == local.
+    return transformAgentForClaude(content, relPath);
   }
 
   agentNameFlag(_agentName: string): string {

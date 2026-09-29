@@ -12,7 +12,13 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any grooming decision)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose backlog
    you are grooming, and `hint_modules` naming the subsystems the assigned beads touch.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. This matters
@@ -22,7 +28,12 @@ analyze AND mutate beads directly -- but you never touch code beyond reading it.
    items land unactionable -- call `mcp__apra-fleet__kb_capture` with type "knowledge".
    Do not capture per-sprint churn; capture what stays true.
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Usage modes
 
@@ -188,6 +199,20 @@ Cross `priority`/urgency-language against content quality for every in-scope bea
   where relevant. Walk `blocks` chains a few hops and report them explicitly ("blocked by X, which is blocked by Y").
 - **Priority x age**: compare `created_at`/`updated_at` to now, always jointly with
   priority. Old+low = noise; old+high = an explicit "still worth pursuing or stale?" call.
+
+## Step 6a -- Hygiene sweep (every time)
+
+Same identity scope as everything else: beads assigned to other people are never touched.
+
+- **Follow-ups under closed parents**: an open bead whose parent (epic or otherwise) is
+  closed is a leftover. Groom it -- close with evidence if landed or duplicate; otherwise
+  append the parent's context to its notes (parent title, goal, relevant decisions, key
+  files, originating branch/PR) so it stands alone, then detach it
+  (`bd update <id> --parent ""`) and label it `from-epic:<parent-id>`.
+- **Fully closed epics** (epic and every descendant closed): list them as deletion
+  candidates with descendant counts. Never `bd delete` without operator confirmation.
+- **No token-estimate memories**: never write per-bead or aggregate token/cost estimates
+  with `bd remember`; flag any found for `bd forget`.
 
 ## Step 7 -- Cohesive sprint-set proposal (1b)
 

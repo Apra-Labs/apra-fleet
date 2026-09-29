@@ -9,6 +9,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -133,11 +134,13 @@ class LocalStrategy implements AgentStrategy {
       }
 
       let settled = false;
+      let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
       function settle(fn: () => void) {
         if (settled) return;
         settled = true;
         clearTimeout(inactivityTimer);
         if (maxTotalTimer) clearTimeout(maxTotalTimer);
+        if (exitDrainTimer) clearTimeout(exitDrainTimer);
         fn();
       }
 
@@ -221,7 +224,7 @@ class LocalStrategy implements AgentStrategy {
         }
       });
 
-      child.on('close', (code) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(this.agent.id);
         const stdoutTail = stdoutDecoder.end();
         const stderrTail = stderrDecoder.end();
@@ -242,7 +245,71 @@ class LocalStrategy implements AgentStrategy {
           stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      child.on('close', (code) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; see src/services/exit-drain.ts
+      // for the full rationale and the spawn-side half). `close` only fires once
+      // EVERY holder of the child's stdio handles is gone -- on Windows a
+      // grandchild that inherited them (sandbox server, orphaned find.exe) keeps
+      // the pipe open long after the dispatched process itself exited, pinning the
+      // dispatch for as long as the grandchild lives. `exit` fires on the process
+      // exit itself, so on Windows we take that as completion, allow a short drain
+      // window for output still buffered in the pipe, then settle. The grandchild
+      // is deliberately NOT killed: the deploy phase's sandbox pair must outlive
+      // the dispatch that started it. POSIX keeps the strictly-more-complete
+      // `close` signal (the nohup path reaches EOF on its own).
+      if (completesOnProcessExit(getAgentOS(this.agent))) {
+        child.on('exit', (code) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
+            // finalize() must run first so any output already buffered in the
+            // pipe (and captured by the data listeners above) is included in
+            // the resolved result; destroying/unref-ing the handles below is
+            // pure cleanup and must never race ahead of settling the promise.
+            finalize(code);
+            // Release OUR ends of the pipes so the still-open handles held by a
+            // surviving grandchild do not keep this process's event loop and fds
+            // alive. Destroying a read end cannot affect the grandchild.
+            try { child.stdout?.destroy(); } catch { /* best-effort */ }
+            try { child.stderr?.destroy(); } catch { /* best-effort */ }
+            try { child.unref(); } catch { /* best-effort */ }
+          }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // An unref-ed timer does not hold the event loop open, so if it were
+          // ever the only live handle the process would exit before finalize()
+          // ran and this promise would never settle. It never is:
+          //   - drain actually needed (a grandchild still holds the inherited
+          //     stdio): child.stdout/child.stderr are open, flowing read
+          //     handles -- they are exactly why the drain exists -- and each is
+          //     a ref-ed handle. Measured standalone (not under a test runner,
+          //     whose own handles would mask this) with stdout redirected to a
+          //     file so the probe process had NO ref-ed stdio of its own:
+          //     getActiveResourcesInfo() at arm time = [PipeWrap, PipeWrap,
+          //     ProcessWrap]; the promise settled at 2638 ms.
+          //   - drain not needed (nothing inherited the pipes): the pipes have
+          //     already EOF-ed, so 'close' is queued and finalize() runs
+          //     without this timer. Measured the same way: arm-time resources =
+          //     [ProcessWrap] (ref-ed until 'close'), settled at 599 ms, well
+          //     inside the 2000 ms window -- i.e. via 'close', not the timer.
+          // Caller paths enumerated by grepping every execCommand() call site
+          // (src/tools/*, src/providers/claude.ts, src/services/* incl.
+          // stall/*, orphan-recovery, preflight-check, relay-executor): all run
+          // inside the long-lived MCP server, and the one CLI caller
+          // (src/cli/watch.ts) holds a ref-ed setInterval for its watch loop --
+          // so every caller has additional live handles anyway.
+          // Residual risk: this rests on Node keeping child stdio read handles
+          // ref-ed while flowing. If a future caller ever spawns with
+          // stdio 'ignore'/'inherit' (no child.stdout/child.stderr objects) AND
+          // the process exit races 'close', the drain callback could be skipped
+          // -- the fix then is to re-ref for the window, not to widen it.
+          exitDrainTimer.unref();
+        });
+      }
 
       child.on('error', (err) => {
         clearStoredPid(this.agent.id);

@@ -253,3 +253,168 @@ gets the broken version. The regression coverage needs a second leg that
 builds the actual publishable artifact (e.g. `npm pack`), installs it into a
 clean, non-workspace target, and imports the dependency from *that*
 installed copy before the pin can be trusted end to end.
+
+## Windows dispatch completion must key off process exit, not pipe EOF -- and only on Windows
+
+On Windows, a grandchild process started by the dispatched CLI (a sandbox
+server the deployer launched, a runaway file-search helper, a nested test
+runner) can inherit the dispatch's stdout/stderr handles. Those handles stay
+open for as long as the grandchild lives, so the exec side never observes
+EOF on the pipe even though the process actually dispatched exited minutes
+earlier -- `child.on('close')`-style completion (and the equivalent
+channel-close event on a remote transport) waits for that EOF, so a dispatch
+can sit "in flight" for tens of minutes after the LLM process itself already
+finished.
+
+The durable fix has two independent halves, and both matter:
+- **Spawn side:** anything that intentionally starts a long-lived
+  grandchild the fleet does *not* want torn down when the dispatch
+  completes (e.g. a sandbox server pair) must spawn it detached, with its
+  own log-file file descriptors -- never the inherited dispatch pipe -- so
+  it stops pinning that pipe open in the first place.
+  Long-lived helpers than *do* want to keep running past the dispatch
+  boundary are deliberately left running; only the file descriptor
+  inheritance is the bug.
+- **Read side:** completion is keyed off the dispatched process's own EXIT
+  event, not pipe EOF, **gated strictly to Windows** (a string comparison
+  against the resolved agent OS). A short bounded grace window after exit
+  is meant to drain whatever output is already buffered in the pipe before
+  the read side settles, so transcript/last-turn capture isn't truncated by
+  reacting to exit a moment too early. **This depends on a strict ordering
+  invariant that every completion-on-exit call site must honor identically:
+  the drain must be allowed to finish, and the settle/finalize step must run
+  AFTER it, never before.** A call site that tears down the readable stream
+  (destroying/closing it) before finalizing discards whatever was still
+  buffered and unread at that instant -- any output landing late inside the
+  grace window is then silently and permanently lost, with no error and no
+  signal that it happened. Whenever a new transport or provider adds its own
+  completion-on-exit path, the finalize-then-teardown ordering has to be
+  verified explicitly for that call site; it is not implied by getting the
+  Windows-only gate and the grace-window duration right.
+
+**This asymmetry is intentional and must not be "simplified" to one
+behavior for both platforms.** On POSIX, the existing process tree reaches a
+real EOF when the dispatched process exits (no equivalent handle-inheritance
+problem exists there), so `close`/EOF is already the strictly more complete
+signal -- settling on bare process exit there would be a behavior change
+with no bug behind it, and could truncate output a POSIX grandchild is still
+actively writing through the same pipe. The OS gate is not a scope-limiting
+convenience; it is the correctness boundary between "exit is a safe proxy
+for done" (Windows, broken handle inheritance) and "exit is not sufficient
+evidence of done" (POSIX, real EOF is reachable and more complete).
+
+## A wall-clock-bounded test runner must kill the whole process tree, not just its immediate child, and must survive a race with its own signal handler
+
+A test-runner wrapper that shells out to a test framework and wants to
+guarantee it can never hang a caller (a CI job, or -- more consequentially
+here -- a fleet dispatch waiting on that CI job) needs more than "spawn with
+a timeout and kill the child on expiry." A framework or its own child
+processes frequently spawn nested (sometimes detached) process groups of
+their own; killing only the immediately-spawned PID leaves those nested
+processes running and the wrapper's own stdio pipes open, defeating the
+timeout's purpose. The durable shape:
+
+- **Kill the process group, not the PID**, so nested children die with
+  their parent.
+- **Two-phase kill on POSIX**: broadcast a graceful terminate signal to the
+  whole group first (giving a nested, detached grandchild's own signal
+  handler a chance to exit cleanly), then escalate to an unconditional hard
+  kill signal (which cannot be caught or ignored) after a short grace
+  window if the group hasn't exited. Skipping straight to the hard kill can
+  leave a nested detached grandchild alive, because a bare hard-kill of the
+  immediate group does not necessarily reach every process it spawned.
+- **A forced-exit backstop** is required even after the hard kill signal is
+  sent: sending a kill signal is not a guarantee of an `exit` event firing
+  promptly (or at all, for a sufficiently wedged process), so the wrapper
+  must independently force its own process to exit after a bounded wait
+  rather than trusting the child's exit event to arrive.
+- **An outer terminating signal (sent to the wrapper itself, e.g. by a CI
+  runner enforcing its own job timeout) must always produce a non-zero
+  wrapper exit, even when the group-kill happens to reap the running test
+  process fast enough that the wrapper's normal suite-loop-break path would
+  otherwise reach its own exit first.** Two code paths -- the signal
+  handler's own explicit exit call, and the wrapper's normal trailing exit
+  at the end of its suite loop -- can race to be the one that actually ends
+  the process. Whichever wins, the exit code must reflect "this run was
+  externally terminated," not "the suite loop merely broke out of its
+  loop cleanly." The reliable way to guarantee this is a persistent flag set
+  the instant the terminating signal is first observed, consulted at every
+  place the wrapper can exit, rather than relying on one specific code path
+  being the one that happens to run first.
+- **A deferred hard-kill timer armed by the signal handler must capture the
+  target process-group id at signal time, not read whatever `currentChild`
+  happens to hold when the timer fires.** The trailing `process.exit()` that
+  ends the wrapper's normal suite loop can run before the deferred timer
+  fires, and by the time it does fire the wrapper may already be recycling
+  `currentChild` for a different (or no) suite -- a timer that reads the
+  live variable at fire-time can silently kill nothing, or the wrong thing,
+  while a SIGTERM-ignoring descendant of the *original* suite survives. The
+  fix is for the signal handler to snapshot the group pid into the timer's
+  own closure the instant the signal is observed, and for the timer to kill
+  that captured pid unconditionally -- and for the wrapper to explicitly
+  clear its own "there is a deferred kill still armed" tracking state on
+  exit, so a signal delivered after the tracked child has already been
+  reaped and recycled can never be mistaken for still applying to the new
+  occupant of that slot. **Do not assume `currentChild` is null at the
+  trailing `process.exit()` and therefore safe to ignore** -- that
+  assumption does not hold in practice; this is exactly the race the guard
+  above exists to close.
+- **A process-tree-kill helper's own liveness check needs two independent
+  correctness fixes on POSIX, beyond "send the kill signal":**
+  - **Signal the process group (negative pid), not just the single given
+    pid.** A detached child can lead its own process group with descendants
+    of its own; signalling only the single pid leaves those descendants
+    running.
+  - **Disambiguate a zombie from a live process before reporting
+    liveness.** The cheapest liveness probe (`kill(pid, 0)`) succeeds for a
+    zombie (a killed-but-not-yet-reaped-by-its-parent process) exactly as it
+    does for a genuinely live one; the probe must additionally check the
+    process's reported state (e.g. `ps -o stat=`) and treat a zombie state
+    as "not alive," or a liveness check run immediately after a kill signal
+    can spuriously report the target as still alive.
+  - **`kill(2)` only queues a signal -- it does not block until the target
+    has actually exited.** A liveness probe run on the very next line after
+    sending a kill signal can still observe the target as alive purely
+    because the kernel has not yet delivered/processed the queued signal.
+    The kill helper must poll, under a short bounded wait, until the pid has
+    actually left the process table and the process group has no
+    non-zombie member left, rather than treating "the signal was sent" as
+    equivalent to "the process is gone."
+
+## The exit-drain grace timer is deliberately unref'd, and that is provably safe given every current call site
+
+Both completion-on-exit call sites (the local strategy and the SSH strategy)
+arm a short grace-window timer to drain buffered output before finalizing,
+and then immediately `unref()` that timer so it cannot itself hold the
+process's event loop open. An unref'd timer does not prevent the process
+from exiting if it becomes the *only* remaining live handle -- if that ever
+happened here, the process could exit before the timer fires, and the
+promise waiting on that timer would never settle. It never does, for a
+verifiable reason specific to each transport:
+
+- **Local strategy:** if the drain is actually needed (a grandchild still
+  holds the inherited stdio), the child's stdout/stderr read streams are
+  themselves open, flowing, ref'd handles -- they are exactly why the drain
+  exists, and they keep the loop alive independent of the timer. If the
+  drain is not needed (nothing inherited the pipes), the pipes have already
+  reached EOF, `close` is already queued, and finalize runs via `close`
+  without ever depending on the timer.
+- **SSH strategy:** the ssh2 client's own TCP socket to the remote host is
+  the handle that outlives the drain window -- the channel being open is
+  what makes the drain necessary in the first place, so the underlying
+  connection socket is necessarily still live, and the ssh2 client library
+  never unrefs that socket itself.
+- Every current caller of either completion-on-exit path runs inside the
+  long-lived MCP server process, which always has other ref'd handles of
+  its own; the one CLI caller holds a ref'd interval for its own watch loop.
+
+**This is a call-site-dependent invariant, not a Node guarantee, and it has
+a known narrow gap:** if a future caller ever spawns with stdio fully
+detached from the parent (no readable `stdout`/`stderr` objects at all) and
+the underlying process/channel exit races the `close` event, the unref'd
+timer could in principle be skipped with no other live handle to save it.
+The correct fix if that ever surfaces is to re-ref the timer for the
+duration of the drain window at that call site, not to remove the unref
+globally -- removing it globally would reintroduce the risk of this timer
+alone holding the process open long after every real handle it is draining
+has already gone away.

@@ -268,7 +268,11 @@ cache-keying invariant is `tests/DEGRADATION.md` D-2.
 **THE RULE.** A provider MUST cap confidence at INFERRED on an ordinary
 capture: an incoming `confidence: CONFIRMED` MUST be downgraded to INFERRED,
 MUST set `confidence_clamped: true` in the `kb_capture` response, and MUST
-append a bracketed note to the stored content. CONFIRMED MAY be minted by the
+append a bracketed note to the stored content. More generally,
+`confidence_clamped` MUST be `true` exactly when the stored confidence differs
+from the requested one (absent means INFERRED) -- so a `user-directive`,
+quarantined to UNVERIFIED by 4.3, also reports `true`, while it does NOT get
+the bracketed note (the note names kb_promote, which is not its remedy). CONFIRMED MAY be minted by the
 promotion path (`kb_promote`) and MAY additionally survive on a dedicated
 bible-import path, because that path is a separately-trusted, human-reviewed
 channel -- but that exemption MUST be reachable only through an internal,
@@ -296,8 +300,10 @@ that do not resolve is refused the same as any other type
 schema-faithful but non-conforming. The clamp exists at two sites with
 DIFFERENT scopes. The tool handler, `src/tools/kb-capture.ts:99-107`,
 downgrades `confidence`, sets `confidence_clamped`, and appends
-`'\n\n[confidence clamped: CONFIRMED requires kb_promote]'` to content --
-unconditionally, for every `type` including `user-directive`, and only for
+`'\n\n[confidence clamped: CONFIRMED requires kb_promote]'` to content for
+every `type` except `user-directive` (whose quarantine to UNVERIFIED is
+applied next, in the same handler), then derives `confidence_clamped` from
+stored-vs-requested confidence, so both downgrades report it -- and only for
 calls that reach this handler (the `kb_capture` MCP tool; `kb_harvest`,
 `kb_import`, and the HTTP route never populate `confidence_clamped` at all).
 The provider choke point, `src/services/knowledge/sqlite-provider.ts:889-895`,
@@ -370,7 +376,8 @@ exemption is only the zero-files half and depends on the unresolvable-files
 half still applying.
 
 **THE TEST HOOK.** `clamp` -- for `kb_capture`, assert a request carrying
-`confidence: CONFIRMED` returns `confidence_clamped: true`; for every
+`confidence: CONFIRMED` returns `confidence_clamped: true`, including for a
+`user-directive`; for every
 non-import, non-directive route (`kb_capture`, `kb_harvest`, the HTTP capture
 route), assert the entry reads back at INFERRED regardless of what the
 response body reported; separately assert a bible import retains CONFIRMED

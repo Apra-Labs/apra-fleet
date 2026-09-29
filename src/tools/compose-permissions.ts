@@ -13,6 +13,8 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
+import { ensureAgyProject } from '../services/agy-project.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
@@ -106,6 +108,12 @@ function escapeRegExpExceptStar(s: string): string {
 function matchesDenyPattern(pattern: string, permission: string): boolean {
   const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
   return regex.test(permission);
+}
+
+/** True for a config path anchored at the MEMBER's home directory rather than
+ *  at its work folder (see resolveRemotePath). */
+function isHomeAnchored(configPath: string): boolean {
+  return configPath.startsWith('~/') || configPath.startsWith('~\\');
 }
 
 /** Splits `Tool(payload)` into its parts; returns null for a bare tool name. */
@@ -353,6 +361,29 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
   return result;
 }
 
+/** deepMerge, except that an array present on both sides becomes the union of
+ *  the two (existing entries first, then new ones not already present). Used
+ *  for agy's reactive grant, which must add rules to the project file's allow
+ *  list without discarding the ones compose_permissions wrote before. */
+export function deepMergeUnion(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    const current = result[key];
+    if (isPlainObject(value) && isPlainObject(current)) {
+      result[key] = deepMergeUnion(current, value);
+    } else if (Array.isArray(value) && Array.isArray(current)) {
+      const merged = [...current];
+      for (const v of value) {
+        if (!merged.some(m => stableStringify(m) === stableStringify(v))) merged.push(v);
+      }
+      result[key] = merged;
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /** Raised by deliverConfigFile when a config write does not verifiably land on
  *  the member (nonzero mkdir/write exit, or a read-back that does not match the
  *  intended content). Carries the target path so the caller can surface exactly
@@ -418,7 +449,24 @@ function resolveRemotePath(
   relPath: string,
   isWindows: boolean,
   shell?: MemberShell,
+  homeDir?: string | null,
 ): string {
+  // A "~/"-prefixed config path is HOME-anchored on the MEMBER, not relative to
+  // its work folder. AGY needs this: the member's project file lives at
+  // ~/.gemini/config/projects/<agyProjectId>.json, not under the work folder
+  // (see AgyProvider.permissionConfigPaths).
+  // `homeDir` is resolved in JavaScript by the caller via getMemberHomeDir --
+  // never emitted as a literal "~/" or "$HOME" for the member's shell to
+  // expand, because that member's shell may be PowerShell.
+  if (relPath.startsWith('~/') || relPath.startsWith('~\\')) {
+    if (!homeDir) {
+      throw new ConfigDeliveryError(
+        relPath,
+        'config path is home-anchored but the member\'s home directory could not be resolved',
+      );
+    }
+    return resolveRemotePath(homeDir, relPath.slice(2), isWindows, shell);
+  }
   if (isWindows) {
     const base = workFolder.replace(/[\\/]+$/, '').replace(/\//g, '\\');
     const winPath = `${base}\\${relPath.replace(/\//g, '\\')}`;
@@ -441,10 +489,12 @@ async function deliverConfigFile(
   filePath: string,
   content: Record<string, unknown> | string,
   shell?: MemberShell,
+  homeDir?: string | null,
+  opts: { unionArrays?: boolean } = {},
 ): Promise<void> {
   const isWindows = agentOs === 'windows';
   const posix = isPosixShell(isWindows, shell);
-  const absPath = resolveRemotePath(workFolder, filePath, isWindows, shell);
+  const absPath = resolveRemotePath(workFolder, filePath, isWindows, shell, homeDir);
   const winPath = absPath.replace(/\//g, '\\');
   const dir = posix
     ? absPath.split('/').slice(0, -1).join('/')
@@ -474,7 +524,7 @@ async function deliverConfigFile(
     } catch {
       // file missing, empty, or not JSON -- start from an empty object
     }
-    mergedContent = deepMerge(existing, content);
+    mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMerge(existing, content);
   }
 
   const contentStr = typeof mergedContent === 'string'
@@ -545,19 +595,47 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
-  // The member's registered shell decides POSIX vs PowerShell command strings
-  // for every config write below (apra-fleet-7dir.1.3).
-  const agentShell = getAgentShell(agent);
-  const profilesDir = findProfilesDir();
-  const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
 
-  // Reactive grant mode
+  // Reactive grant mode -- validate dangerous grants FIRST before any member probe or command
   if (input.grant?.length) {
     const blocked = input.grant.filter(p => isNeverAutoGrant(p));
     if (blocked.length) {
       return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
     }
+  }
 
+  // AGY: grants live in the member's own agy project file, which only exists
+  // once the member has a verified project id. Provision it here when missing
+  // (upgrade path for members registered before project binding) or when the
+  // file is gone/corrupt -- never write grants anywhere else.
+  let agyNote = '';
+  if (provider.name === 'agy') {
+    try {
+      const ensured = await ensureAgyProject(agent);
+      if (ensured.provisioned) {
+        agyNote = `\n  AGY project: ${ensured.projectId} (created: ${ensured.provisioned.replace(/_/g, ' ')})`;
+      }
+    } catch (e: any) {
+      return `[FAIL] Failed to provision the agy project for "${agent.friendlyName}": ${e?.message ?? String(e)}. No permissions were written.`;
+    }
+  }
+
+  // The member's registered shell decides POSIX vs PowerShell command strings
+  // for every config write below (apra-fleet-7dir.1.3).
+  const agentShell = getAgentShell(agent);
+  // Resolved once per call, in JavaScript, for any provider whose
+  // permissionConfigPaths() are home-anchored ("~/..."). Cached per member by
+  // getMemberHomeDir, and null for a member whose probe fails -- in which case
+  // resolveRemotePath raises a ConfigDeliveryError rather than silently writing
+  // a home-anchored file to the wrong place.
+  const memberHomeDir = provider.permissionConfigPaths(agent).some(isHomeAnchored)
+    ? await getMemberHomeDir(agent)
+    : null;
+  const profilesDir = findProfilesDir();
+  const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
+
+  // Reactive grant mode
+  if (input.grant?.length) {
     // Expand co-occurrences
     const expanded = new Set(input.grant);
     for (const p of input.grant) {
@@ -593,11 +671,25 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       allow = [...expanded];
     }
 
-    const configs = provider.composePermissionConfig(mode, allow);
-    const paths = provider.permissionConfigPaths();
+    let deliveryWarnings: string[] = [];
+    if (provider.preparePermissionsDelivery) {
+      const warns = await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+      if (Array.isArray(warns) && warns.length > 0) {
+        deliveryWarnings = warns;
+      }
+    }
+    const composeWarnings: string[] = [];
+    const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+    deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
+    const paths = provider.permissionConfigPaths(agent);
+    // A grant ADDS to what the member already has. Claude's allow list was
+    // merged above; agy's rules are unioned into the project file's existing
+    // allow/deny arrays instead of replacing them (a plain deepMerge would
+    // overwrite the arrays with just the granted rules).
+    const unionArrays = provider.name === 'agy';
     try {
       for (let i = 0; i < paths.length; i++) {
-        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
+        await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir, { unionArrays });
       }
     } catch (e) {
       if (e instanceof ConfigDeliveryError) {
@@ -625,7 +717,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     // trust was never seeded, gets fixed the next time permissions are composed).
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
+    const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${warningsBlock}`;
   }
 
   // Proactive compose mode
@@ -635,12 +728,22 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const allow = input.tags?.length
     ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger)
     : compose(profilesDir, mode, stacks, ledger);
-  const configs = provider.composePermissionConfig(mode, allow);
-  const paths = provider.permissionConfigPaths();
+
+  let deliveryWarnings: string[] = [];
+  if (provider.preparePermissionsDelivery) {
+    const warns = await provider.preparePermissionsDelivery(agent, (cmd, t) => strategy.execCommand(cmd, t), memberHomeDir, agent.os ?? 'linux', agentShell);
+    if (Array.isArray(warns) && warns.length > 0) {
+      deliveryWarnings = warns;
+    }
+  }
+  const composeWarnings: string[] = [];
+  const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
+  deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
+  const paths = provider.permissionConfigPaths(agent);
 
   try {
     for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell);
+      await deliverConfigFile(strategy, agent.os ?? 'linux', agent.workFolder, paths[i], configs[i], agentShell, memberHomeDir);
     }
   } catch (e) {
     if (e instanceof ConfigDeliveryError) {
@@ -664,5 +767,6 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';
-  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}`;
+  const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
+  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${warningsBlock}`;
 }

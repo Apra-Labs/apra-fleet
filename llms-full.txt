@@ -114,6 +114,8 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+The default install includes fleet-se (fleet-sprint, supervisor, bd), which requires a system Node.js 22.16+ and npm on PATH; the installer fails up front if they are missing. Use `apra-fleet install --workflows none` to install the core only.
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
@@ -211,6 +213,21 @@ MCP tools that ship with the KB:
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+
+`kb_setup --remote <url> --token <key>` takes effect immediately: the next
+KB tool call resolves its project provider from this config, so a stock build
+points at a remote KB server by configuration alone, with no code change and
+no separate "server mode" build. A config with no remote, or any config the
+reader cannot parse, always falls back to the local SQLite provider -- see
+[Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
+for the exact selection rule and its fallback-construction invariant.
+
+**The provider config is install-wide, not per repo.** There is one
+`knowledge/config.json` per fleet install, so pointing it at a remote KB
+points EVERY repo that install serves -- every member, every project -- at
+that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
+post-commit hook; it does not scope the config. On a shared fleet server,
+treat `kb_setup --remote` as a change for all of its users.
 
 Every KB tool call is scoped to the repo it is about -- a fleet server
 handling many members across many repos never lets one repo's learnings land
@@ -436,8 +453,10 @@ third-party verticals.
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| GitHub App setup (exact permissions per git_access level) | [docs/github-app-setup.md](docs/github-app-setup.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
@@ -1033,7 +1052,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/fleet-sprint-cli/` | How to launch `apra-fleet workflow fleet-sprint` -- flag contract, preconditions, detached launch (all providers) |
 | `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
 
-For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`. These configure the agy CLI you run the orchestrator in; agy members get their grants in their own agy project instead (see [Antigravity (agy) provider](agy-provider.md)).
 
 This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
@@ -1134,12 +1153,15 @@ only Claude Code uses `/mcp`.
 
 `apra-fleet install --llm agy` configures Fleet for the Google Antigravity CLI.
 Agy uses Google OAuth by default -- a browser-based login flow is required per
-machine, so `provision_llm_auth` does **not** work for remote agy members today.
+machine. For headless or remote members, use an `ANTIGRAVITY_API_KEY` (obtain
+from [Google AI Studio](https://aistudio.google.com)): pass it to
+`provision_llm_auth` as `api_key`, or set it in the member's environment. The
+agy CLI checks env vars before falling back to OAuth.
 
-For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
-[Google AI Studio](https://aistudio.google.com)) in the environment before
-invoking fleet commands. The agy CLI checks env vars before falling back to
-OAuth.
+agy model overrides (below) take agy's model slug ids, as printed by
+`agy models`. How agy members are bound to their own agy project, how grants
+are written and how permission denials are reported is described in
+[Antigravity (agy) provider](agy-provider.md).
 
 ## Uninstall
 
@@ -1211,9 +1233,9 @@ If you set `APRA_FLEET_DATA_DIR`, the file lives at
   "providers": {
     "agy": {
       "modelMapping": {
-        "cheap":    "GPT-OSS 120B (Medium)",
-        "standard": "Gemini 3.1 Pro (High)",
-        "premium":  "Claude Opus 4.6 (Thinking)"
+        "cheap":    "gemini-3.8-flash-low",
+        "standard": "gemini-3.8-flash-high",
+        "premium":  "gemini-3.1-pro-high"
       }
     },
     "claude": {
@@ -2120,6 +2142,206 @@ secret the tool exists to protect.
 6. **Member config** -- `git_access` and `git_repos` fields on `register_member` / `update_member`
   </doc>
 
+  <doc title="GitHub App Setup" desc="What to set up before setup_git_app, and the exact App permissions each git_access level requests.">
+<!-- llm-context: Step-by-step setup of the GitHub App that apra-fleet mints short-lived git tokens from, with the exact App permissions each git_access level requests. Read before running setup_git_app, when provision_vcs_auth fails with "is not granted one or more of the requested permissions", or when upgrading an existing App to a new release. -->
+<!-- keywords: GitHub App, setup_git_app, provision_vcs_auth, git_access, push+pr, permissions, Actions, Workflows, installation, private key, 422, not granted -->
+<!-- see-also: design-git-auth.md (why tokens are scoped this way), secret-variables.md ({{secret.NAME}}), ../skills/fleet/auth-github.md (fleet skill summary) -->
+# Before you run setup_git_app
+
+apra-fleet can give members GitHub access in two ways (`provision_vcs_auth`
+with `provider: 'github'`):
+
+| Mode | `github_mode` | What you set up | Token lifetime |
+|---|---|---|---|
+| GitHub App (recommended for orgs) | `github-app` (default) | One App, once, via this guide + `setup_git_app` | ~1 hour, re-minted by fleet |
+| Personal access token | `pat` | Nothing here -- pass `token` | Whatever you chose |
+
+This guide is only for GitHub App mode. PAT mode ignores `git_access`
+entirely; its reach is whatever scopes you gave the PAT.
+
+## How permissions work (read this first)
+
+Every time fleet mints a token it asks GitHub for EXACTLY the permission set
+of the requested `git_access` level (table below) -- no more, no less. If the
+App has not been granted every permission in that set, GitHub refuses the
+mint (HTTP 422) and `provision_vcs_auth` fails with an error naming the
+requested permissions. Fleet never retries with fewer permissions: a silent
+downgrade would hide the misconfiguration and fail later, somewhere less
+obvious.
+
+The App's permissions are a ceiling, not a grant to every token. Giving the
+App the union of what your levels need does not widen any single token --
+a `read` mint still gets only `contents: read` + `metadata: read`.
+
+## Permissions per git_access level
+
+Set these under the App's **Repository permissions**. In the GitHub UI,
+"read" is **Read-only** and "write" is **Read and write**. **Metadata:
+Read-only** is mandatory on every App and is requested by every level.
+
+| App permission (UI name) | `read` | `push` | `push+pr` | `admin` | `issues` | `full` |
+|---|---|---|---|---|---|---|
+| Metadata | Read-only | Read-only | Read-only | Read-only | Read-only | Read-only |
+| Contents | Read-only | Read and write | Read and write | Read and write | - | Read and write |
+| Workflows | - | Read and write | Read and write | Read and write | - | Read and write |
+| Pull requests | - | - | Read and write | - | Read and write | Read and write |
+| Actions | - | - | Read and write | Read and write | - | Read and write |
+| Administration | - | - | - | Read and write | - | Read and write |
+| Issues | - | - | - | - | Read and write | Read and write |
+| Discussions | - | - | - | - | Read and write | Read and write |
+
+Source of truth: `mapAccessLevel()` in `src/services/github-app.ts`. If this
+table and that function ever disagree, the function wins -- please file an
+issue.
+
+Why some of these are there:
+- **Workflows** (push levels): GitHub rejects any push touching
+  `.github/workflows/**` from an App token without it.
+- **Actions** (`push+pr`, `admin`, `full`): lets an agent re-run failed CI jobs
+  (`gh run rerun --failed`) on its own PR. Added to `push+pr` in 0.4.3.
+- **Discussions** (`issues`, `full`): the Discussions GraphQL API.
+
+### Which to pick
+
+Grant the union of every level you will actually use. Common cases:
+
+- **fleet-sprint / PM workflows (minimum):** the `push+pr` column --
+  Metadata, Contents, Workflows, Pull requests, Actions. Sprints mint `push`
+  for sync and `push+pr` just before raising the PR, so both must succeed.
+- **Plus issue/Discussions triage:** add Issues and Discussions.
+- **Everything fleet can request:** the `full` column.
+
+Note: `register_member` / `update_member` accept `git_access` values
+`read | push | admin | issues | full` only. `push+pr` is passed per call to
+`provision_vcs_auth` (fleet-sprint does this itself).
+
+## Step 1 -- Create the App
+
+1. Go to your org: **Settings -> Developer settings -> GitHub Apps -> New
+   GitHub App** (direct URL:
+   `https://github.com/organizations/<org>/settings/apps/new`).
+2. **GitHub App name**: anything unique (e.g. `<org>-apra-fleet`).
+3. **Homepage URL**: any URL (your org or repo page is fine).
+4. **Webhook**: uncheck **Active**. Fleet never receives webhooks; it only
+   calls the GitHub API.
+5. **Repository permissions**: set the columns you chose above. Leave
+   Organization and Account permissions at "No access".
+6. **Where can this GitHub App be installed?**: **Only on this account**.
+7. Click **Create GitHub App**.
+
+## Step 2 -- Note the App ID and generate a private key
+
+1. On the App's **General** page, copy the **App ID** (a number).
+2. Scroll to **Private keys -> Generate a private key**. GitHub downloads a
+   `.pem` file. This is the only copy GitHub gives you.
+
+Treat the `.pem` as a secret: whoever holds it can mint tokens for every repo
+the App is installed on.
+
+## Step 3 -- Install the App and get the installation ID
+
+1. On the App page, choose **Install App -> Install** next to your org.
+2. **Repository access**: pick **Only select repositories** and choose the
+   repos fleet members will work on (or **All repositories**). A mint for a
+   repo outside this selection fails.
+3. After installing you land on
+   `https://github.com/organizations/<org>/settings/installations/<number>`.
+   That trailing `<number>` is the **installation ID**. (Later: org
+   **Settings -> GitHub Apps -> Configure** next to the App shows the same URL.)
+
+## Step 4 -- Run setup_git_app
+
+Pass a plain path to the downloaded key:
+
+    setup_git_app(app_id: "123456",
+                  private_key_path: "/home/me/Downloads/<app>.<date>.private-key.pem",
+                  installation_id: 78901234)
+
+Or keep the path (or the PEM content itself) in the credential store and
+reference it as `{{secret.NAME}}`: if the resolved value starts with
+`-----BEGIN` it is used as the key content, otherwise as a file path. See
+`secret-variables.md`. The credential must be usable by all members (it is
+resolved for member `*`).
+
+`setup_git_app` checks that the key authenticates as the App and that the
+installation exists, then copies the key to `<data dir>/github-app.pem`
+(owner-only permissions; data dir is `~/.apra-fleet/data` unless
+`APRA_FLEET_DATA_DIR` is set). On success it prints the App name, org,
+installation ID and the stored key path. You may delete the downloaded
+`.pem` afterwards.
+
+`setup_git_app` does NOT check the App's permission set. That is verified at
+the first mint (Step 5).
+
+## Step 5 -- Verify with one mint
+
+Mint the highest level you plan to use on one member, e.g.:
+
+    provision_vcs_auth(member_name: "<member>", provider: "github",
+                       github_mode: "github-app", git_access: "push+pr",
+                       repos: ["<org>/<repo>"])
+
+Expected:
+- `structuredContent.ok: true`.
+- `metadata.permissions` lists every permission of that level -- for
+  `push+pr`: `contents`, `pull_requests`, `metadata`, `workflows`, `actions`.
+  A successful mint IS the proof the App has them all.
+- `reason: "ok"` and `verified: true` when the member has `git_repos`
+  registered (fleet runs `git ls-remote` on the first one).
+  `reason: "deployed_verification_skipped"` just means the member has no
+  registered `git_repos` -- the credential is still deployed.
+- `metadata.ghCliAuth: ok` if the `gh` CLI on the member accepted the token.
+
+## Troubleshooting
+
+**`Token mint failed: GitHub App <id> (installation <id>) is not granted one or more of the requested permissions [contents, pull_requests, metadata, workflows, actions]: ...`**
+
+(`reason: deploy_failed`, full text in `structuredContent.message`.) The App
+lacks at least one permission of the requested level. Re-minting will not
+help. Fix:
+1. App settings -> **Permissions & events** -> add the missing permission(s)
+   from the table above -> **Save changes**.
+2. Changing an App's permissions does NOT update existing installations.
+   An org owner must accept it: org **Settings -> GitHub Apps -> Configure**
+   next to the App -> **Review request** -> **Accept new permissions**
+   (GitHub also emails the org owners).
+3. Re-run `provision_vcs_auth`.
+
+**`Token mint failed: Token mint failed (422): ... not accessible to the parent installation`** (or similar repo wording)
+
+A repo in `repos` is not in the installation's repository selection. Add it
+under the installation's **Repository access** (Step 3).
+
+**`GitHub App not configured. Run setup_git_app first.`** -- Step 4 not done
+on this fleet server (or a different data dir).
+
+**`No git_access level specified and none on agent config.`** -- pass
+`git_access`, or set it with `update_member`.
+
+**`No repos specified and none on agent config.`** -- pass `repos`, or set
+`git_repos` with `update_member`.
+
+**fleet-sprint finishes but no PR is raised; the log shows
+`[Publish PR Skipped] ... due to an unrecoverable VCS auth failure: Could not provision a push+pr credential ...`**
+
+The branch was pushed, but the `push+pr` mint failed -- almost always the
+permission error above (typically Actions after upgrading to 0.4.3). Fix the
+App, then raise the PR by hand or re-run publish.
+
+## Upgrading to 0.4.3
+
+0.4.3 requests two App permissions that earlier releases did not:
+
+- **Workflows: Read and write** on `push`, `push+pr`, `admin`, `full`.
+- **Actions: Read and write** on `push+pr` (it was already on `admin`/`full`).
+
+An App set up for 0.4.2 or earlier fails these mints with the
+"is not granted" error above until you add the permissions AND an org owner
+accepts them on the installation. For fleet-sprint the visible symptom is a
+sprint that pushes its branch but skips raising the PR. Do this before
+upgrading the fleet server.
+  </doc>
+
   <doc title="Provider Guide" desc="Choosing an LLM provider -- strengths, role recommendations, and gotchas.">
 <!-- llm-context: User-facing guide for choosing an LLM provider in apra-fleet. Consult when a user asks which provider to use for a role (PM, doer, reviewer), what each provider is good at, or what limitations to expect. For CLI flags, credential paths, and integration internals, see provider-matrix.md. -->
 <!-- keywords: provider, Claude, Antigravity, Codex, Copilot, choose, role, PM, doer, reviewer, gotchas, limitations, context window, max_turns, OAuth -->
@@ -2147,6 +2369,7 @@ Fleet supports Claude, Antigravity (agy), Codex, Copilot, and OpenCode. Members 
 ## Gotchas worth knowing
 
 - **`max_turns` is Claude-only.** On Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
+- **Antigravity members run headless and cannot prompt for approval.** Grant what they need with `compose_permissions`; an ungranted tool call comes back as `execute_prompt` reason `permission_denied` with suggested grants. See [Antigravity (agy) provider](agy-provider.md).
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ## Mixing providers in one fleet
@@ -3000,7 +3223,7 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
   `docs/opencode-getting-started.md`. This is the door to local/self-hosted
   OpenAI-compatible models.
 - **Antigravity (agy) provider maturation** -- `--agent` flag dispatch,
-  session-resume fixes, safety rationalization (`docs/agy-safety-rationalization.md`).
+  session-resume fixes, per-member project binding and permission-denial reporting (`docs/agy-provider.md`).
 - **Role-agent file installation, including remote members** --
   `apra-fleet install` writes planner/doer/reviewer/plan-reviewer agent
   definitions into each provider's agents directory, and `update_member`
@@ -3021,7 +3244,8 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
 
 - **Knowledge Bank MCP tools** -- `kb_session_prime`, `kb_capture`,
   `kb_query`, `kb_harvest`, `kb_promote`, `kb_export` and the rest of the
-  `kb_*` family, scoped per repo and opt-in per repo (`kb_setup`). See
+  `kb_*` family, with entries scoped per repo and the provider (local
+  SQLite or a remote KB, set by `kb_setup`) chosen per fleet install. See
   [docs/knowledge-layer.md](docs/knowledge-layer.md).
 - **Code-intelligence provider abstraction** -- `code_graph`,
   `code_impact`, `code_query`, `code_context` route through a pluggable
@@ -3213,7 +3437,7 @@ Examples:
 - **Formatting:** No enforced formatter currently -- keep indentation and style consistent with existing files.
 - **No unnecessary abstractions:** Prefer simple, direct code over premature generalization.
 - **Error handling:** Only handle errors at real system boundaries (user input, SSH, external APIs). Don't add fallbacks for scenarios that can't happen.
-- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks.
+- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks. Enforced automatically by `npm test` (`scripts/check-ascii-only.mjs`) against a checked-in baseline of pre-existing violations -- a new file must have zero, and a baselined file must not exceed (or silently drop below) its recorded count.
 
 ## For AI Agents
 
