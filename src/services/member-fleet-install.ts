@@ -145,8 +145,11 @@ const installCache = new Map<string, FleetInstallScoped>();
 const inFlight = new Map<string, Promise<MemberFleetInstall>>();
 
 /** Compare dotted numeric versions. Pre-release/build suffixes are ignored for
- *  ordering -- a `0.4.4-rc1` member counts as 0.4.4 rather than being rejected. */
-function compareVersions(a: string, b: string): number {
+ *  ordering -- a `0.4.4-rc1` member counts as 0.4.4 rather than being rejected.
+ *  Exported (apra-fleet-b4g.43) so a tripwire test can pin
+ *  compareVersions(MIN_MEMBER_FLEET_VERSION, package.json's own version) <= 0
+ *  directly, rather than re-deriving comparison logic in the test itself. */
+export function compareVersions(a: string, b: string): number {
   const parts = (v: string) => v.split(/[-+]/)[0].split('.').map(n => Number.parseInt(n, 10) || 0);
   const pa = parts(a);
   const pb = parts(b);

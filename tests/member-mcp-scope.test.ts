@@ -23,12 +23,14 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import {
   buildFleetVersionProbe,
   clearMemberFleetInstallCache,
+  compareVersions,
   orchestratorOwnedValues,
   parseFleetVersion,
   resolveMemberFleetInstall,
@@ -346,6 +348,26 @@ describe('resolveMemberFleetInstall -- named unscoped reasons, never a throw (as
     if (r.scoped) return;
     expect(r.remediation).toContain(MIN_MEMBER_FLEET_VERSION);
     expect(r.remediation).toContain('apra-fleet install');
+  });
+});
+
+describe('MIN_MEMBER_FLEET_VERSION -- cannot outrun the shippable version (apra-fleet-b4g.43)', () => {
+  it('compareVersions(MIN_MEMBER_FLEET_VERSION, package.json version) <= 0', () => {
+    // If this constant is ever raised ahead of a release bump, a member that
+    // installs apra-fleet from the current tree reports the OLD (still-shipping)
+    // version, fails this exact compareVersions check inside
+    // resolveMemberFleetInstall, and is classified install-unusable via
+    // tooOld() -- whose own remediation says "re-run apra-fleet install to
+    // upgrade it", which reinstalls the same too-old version and loops forever
+    // for an operator with no way to know a newer release does not exist yet.
+    // This tripwire fails LOUDLY the moment someone raises
+    // MIN_MEMBER_FLEET_VERSION without the matching package.json bump, instead
+    // of that loop being discovered live on a member's machine.
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(testDir, '..');
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8')) as { version: string };
+
+    expect(compareVersions(MIN_MEMBER_FLEET_VERSION, pkg.version)).toBeLessThanOrEqual(0);
   });
 });
 
