@@ -105,11 +105,18 @@ describe('Claude Integration Suite (claude-integration-tests)', () => {
   describe('Claude Native Permission Composition', () => {
     it('delivers native Claude permissions to .claude/settings.local.json', () => {
       const provider = new ClaudeProvider();
-      expect(provider.permissionConfigPaths()).toEqual(['.claude/settings.local.json']);
+      // .mcp.json is ALWAYS in the list now, scoped or not (apra-fleet-b4g.45):
+      // it needs to be touched even when unscoped so a stale entry from a
+      // PREVIOUS scoped run can be pruned.
+      expect(provider.permissionConfigPaths()).toEqual(['.claude/settings.local.json', '.mcp.json']);
 
       const allow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
       const configs = provider.composePermissionConfig('doer', allow);
-      expect(configs).toHaveLength(1);
+      // Second element is an empty patch for .mcp.json (this call is unscoped --
+      // no fleetInstall in opts): nothing NEW to declare there, the prune that
+      // entry exists for lives in permissionConfigMergeRules.
+      expect(configs).toHaveLength(2);
+      expect(configs[1]).toEqual({});
       const cfg = configs[0] as Record<string, any>;
       expect(cfg.permissions).toBeDefined();
       // Claude consumes its own allow-list syntax verbatim -- no translation layer

@@ -823,7 +823,10 @@ describe('composePermissions -- ENABLED member-local stdio entry when the instal
     expect(result).toContain('Permissions composed');
     expect(result).not.toContain('Failed to persist');
     expect(result).toContain('Fleet MCP: NOT scoped (no-install-found)');
-    expect(wroteTo('.mcp.json')).toBe(false);
+    // apra-fleet-b4g.45: .mcp.json is now touched even when unscoped (so a
+    // stale entry from a PREVIOUS scoped run can be pruned), but it must carry
+    // no enabled fleet MCP entry.
+    expect(writtenJson('.mcp.json')?.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
     expect(getAgent(member.id)!.memberMcpScope!.reason).toBe('no-install-found');
   });
 
@@ -861,7 +864,9 @@ describe('composePermissions -- unscoped member stays usable and is NAMED (asser
     expect(result).toContain('apra-fleet install');
 
     // No fleet MCP entry at all -- not an enabled one, not a disabled one.
-    expect(wroteTo('.mcp.json')).toBe(false);
+    // apra-fleet-b4g.45: .mcp.json is touched (to prune any stale entry from a
+    // PREVIOUS scoped run) but must carry no enabled entry either.
+    expect(writtenJson('.mcp.json')?.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
     const settings = writtenJson('.claude/settings.local.json');
     expect(settings.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
 
@@ -891,6 +896,65 @@ describe('composePermissions -- unscoped member stays usable and is NAMED (asser
     expect(scope.serverName).toBe(MEMBER_MCP_SERVER_NAME);
     expect(scope.version).toBe(GOOD_VERSION);
     expect(scope.reason).toBeUndefined();
+  });
+});
+
+describe('composePermissions -- a previously-scoped member that becomes unscoped is pruned (apra-fleet-b4g.45)', () => {
+  it('scoping a member then losing its install removes the stale .mcp.json entry', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Round 1: a healthy install -- the member gets scoped, and its .mcp.json
+    // declares the fleet MCP server.
+    install({ probe: { kind: 'version', version: GOOD_VERSION } });
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const scopedMcpJson = writtenJson('.mcp.json');
+    expect(scopedMcpJson.mcpServers[MEMBER_MCP_SERVER_NAME]).toBeDefined();
+
+    // Round 2: same member, same on-disk .mcp.json content carried over (the
+    // install was removed/downgraded -- nothing else touches this file in
+    // between), but the probe now reports no-install. Before apra-fleet-b4g.45,
+    // .mcp.json was dropped out of permissionConfigPaths entirely once unscoped,
+    // so nothing would ever prune the stale entry left by round 1.
+    // clearMemberFleetInstallCache is required: resolveMemberFleetInstall caches
+    // SUCCESSES (never failures), so without it round 2 would just replay round
+    // 1's cached scoped result instead of re-probing.
+    clearMemberFleetInstallCache(member.id);
+    install({
+      probe: { kind: 'no-install' },
+      seed: { '"/home/testuser/project/.mcp.json"': JSON.stringify(scopedMcpJson) },
+    });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('Fleet MCP: NOT scoped (no-install-found)');
+    const afterMcpJson = writtenJson('.mcp.json');
+    // The entry pointing at an executable that may no longer exist is GONE --
+    // not merely left stale.
+    expect(afterMcpJson.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
+    expect(getAgent(member.id)!.memberMcpScope!.scoped).toBe(false);
+  });
+
+  it('the same prune applies to an agy member\'s machine-global mcp_config.json', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux', agyProjectId: 'proj-1',
+    });
+    addAgent(member);
+
+    install({ probe: { kind: 'version', version: GOOD_VERSION } });
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const scopedCfg = writtenJson('.gemini/config/mcp_config.json');
+    expect(scopedCfg.mcpServers[MEMBER_MCP_SERVER_NAME]).toBeDefined();
+
+    clearMemberFleetInstallCache(member.id);
+    install({
+      probe: { kind: 'no-install' },
+      seed: { '"/home/testuser/.gemini/config/mcp_config.json"': JSON.stringify(scopedCfg) },
+    });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('Fleet MCP: NOT scoped (no-install-found)');
+    const afterCfg = writtenJson('.gemini/config/mcp_config.json');
+    expect(afterCfg.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
   });
 });
 
@@ -1141,7 +1205,9 @@ describe('composePermissions -- a human-set disable is honoured, not overridden 
     expect(result).toContain('Permissions composed');
     expect(result).toContain('Fleet MCP: NOT scoped (human-disabled)');
     // Their disable is not overridden: no enabled entry is written for it.
-    expect(wroteTo('.mcp.json')).toBe(false);
+    // apra-fleet-b4g.45: .mcp.json is touched (to prune any stale entry from a
+    // PREVIOUS scoped run) but must carry no enabled entry either.
+    expect(writtenJson('.mcp.json')?.mcpServers?.[MEMBER_MCP_SERVER_NAME]).toBeUndefined();
 
     const scope = getAgent(member.id)!.memberMcpScope!;
     expect(scope.scoped).toBe(false);

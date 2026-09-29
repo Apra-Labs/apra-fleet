@@ -508,16 +508,22 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   /**
-   * apra-fleet-b4g.23.1: `.mcp.json` joins the list whenever the member has a
-   * VERIFIED apra-fleet install of its own, because that file is half of
-   * Claude's one authoritative switch (see composePermissionConfig). When the
-   * member is unscoped the file is not written at all, so no empty or bogus
-   * entry is left behind.
+   * apra-fleet-b4g.23.1: `.mcp.json` is half of Claude's one authoritative
+   * switch (see composePermissionConfig) when the member has a VERIFIED
+   * apra-fleet install of its own.
+   *
+   * apra-fleet-b4g.45: ALWAYS in the list now, scoped or not -- previously it
+   * only joined when `opts.fleetInstall?.scoped`, so a member that WAS scoped
+   * and then became unscoped (install removed, downgraded, or newly
+   * human-disabled) kept its stale `mcpServers.apra-fleet` entry forever:
+   * nothing ever touched the file again to prune it, and the entry pointed at
+   * an executable that might no longer even exist. The prune needs the file in
+   * this list to have somewhere to land (permissionConfigMergeRules below);
+   * composePermissionConfig always supplies a matching (possibly empty) config
+   * element so the two stay index-parallel.
    */
-  permissionConfigPaths(_agent?: Agent, opts: ComposePermissionOptions = {}): string[] {
-    const paths = ['.claude/settings.local.json'];
-    if (opts.fleetInstall?.scoped) paths.push('.mcp.json');
-    return paths;
+  permissionConfigPaths(_agent?: Agent, _opts: ComposePermissionOptions = {}): string[] {
+    return ['.claude/settings.local.json', '.mcp.json'];
   }
 
   /**
@@ -532,7 +538,7 @@ export class ClaudeProvider implements ProviderAdapter {
    * `mcpServers.apra-fleet` object -- not just the `disabled` flag -- means no
    * fragment of the old switch survives.
    */
-  permissionConfigMergeRules(_agent?: Agent, opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
+  permissionConfigMergeRules(_agent?: Agent, _opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
     const rules: PermissionConfigMergeRule[] = [{
       pruneKeys: [['mcpServers', MEMBER_MCP_SERVER_NAME]],
       // `permissions.deny` is a list a HUMAN also edits, so fleet's MCP deny
@@ -542,21 +548,28 @@ export class ClaudeProvider implements ProviderAdapter {
       // must replace, or a withdrawn permission could never actually be removed.
       unionArrayPaths: [['permissions', 'deny']],
     }];
-    // apra-fleet-b4g.42: prune the SUPERSEDED `apra-fleet-member` entry from
-    // .mcp.json -- the central-server-era `{ type: 'http', url, headers:
-    // { Authorization } }` entry that registerMcpEndpoint's `claude mcp add
-    // --scope project apra-fleet-member <url> --header 'Authorization: Bearer
-    // <jwt>'` writes there (still reachable if the disabled interactive-bootstrap
-    // lifecycle is ever re-enabled, and left behind on disk by any member
-    // registered while it WAS enabled). deepMerge preserves foreign keys by
-    // design (apra-fleet-2xs.1), so without an explicit prune a local Claude
-    // member ends up with BOTH the member-local stdio server (this rule's other
-    // key) AND the orchestrator-URL-plus-bearer-token one enabled side by side --
-    // same superseded-key shape agy already prunes from its own mcp config
-    // (permissionConfigMergeRules in agy.ts), mirrored here. Only added when
-    // .mcp.json is actually written (scoped): an unscoped member's stale
-    // .mcp.json is left untouched entirely, same as agy's own gate.
-    if (opts.fleetInstall?.scoped) rules.push({ pruneKeys: [['mcpServers', 'apra-fleet-member']] });
+    // .mcp.json's own rule -- ALWAYS applied now (apra-fleet-b4g.45), regardless
+    // of scoped, pruning BOTH server names it has ever carried:
+    //
+    //  - MEMBER_MCP_SERVER_NAME ('apra-fleet'): the CURRENT member-local stdio
+    //    switch. Pruning it here even in the scoped case is a safe no-op --
+    //    composePermissionConfig's own content re-supplies the fresh descriptor
+    //    for that same key, and deepMerge overwrites a pruned/absent key with
+    //    the new content exactly as it would an existing one. What this prune
+    //    actually FIXES is the unscoped case: a member that WAS scoped and then
+    //    lost its install (removed, downgraded, newly human-disabled) has
+    //    nothing else that would ever remove the stale entry -- deepMerge can
+    //    only add/overwrite, never delete, and composePermissionConfig supplies
+    //    no `mcpServers` key at all when unscoped.
+    //  - 'apra-fleet-member' (apra-fleet-b4g.42): the SUPERSEDED central-server
+    //    entry (`{ type: 'http', url, headers: { Authorization } }`) that
+    //    registerMcpEndpoint's `claude mcp add --scope project apra-fleet-member
+    //    <url> --header 'Authorization: Bearer <jwt>'` writes. Previously only
+    //    pruned when scoped ("an unscoped member's stale .mcp.json is left
+    //    untouched entirely"), but now that .mcp.json is touched either way
+    //    (permissionConfigPaths above), there is no reason left to leave that
+    //    stale credential-bearing entry behind on an unscoped member.
+    rules.push({ pruneKeys: [['mcpServers', MEMBER_MCP_SERVER_NAME], ['mcpServers', 'apra-fleet-member']] });
     return rules;
   }
 
@@ -602,7 +615,13 @@ export class ClaudeProvider implements ProviderAdapter {
       skillOverrides: { pm: 'off', fleet: 'off' },
     };
 
-    if (!scoped) return [settings];
+    // apra-fleet-b4g.45: .mcp.json is now in permissionConfigPaths() regardless
+    // of scoped (so a previously-scoped member's stale entry gets pruned when it
+    // becomes unscoped), so this array must stay index-parallel with it: an
+    // empty patch when unscoped -- there is nothing NEW to declare, the prune in
+    // permissionConfigMergeRules does the actual work -- versus the real
+    // descriptor when scoped.
+    if (!scoped) return [settings, {}];
 
     return [
       settings,

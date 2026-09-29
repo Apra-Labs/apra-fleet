@@ -78,7 +78,10 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
         agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       });
       const configs = agy.composePermissionConfig('doer', ['Read', 'Write'], agent);
-      expect(configs).toHaveLength(1);
+      // Second element is an empty patch for mcp_config.json (this call is
+      // unscoped -- no fleetInstall in opts) (apra-fleet-b4g.45).
+      expect(configs).toHaveLength(2);
+      expect(configs[1]).toEqual({});
       const cfg = configs[0] as Record<string, any>;
 
       const denyList: string[] = cfg.permissionGrants.permissionGrants.deny;

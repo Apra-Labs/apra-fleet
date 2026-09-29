@@ -387,9 +387,15 @@ describe('AgyProvider -- dispatch always binds --project', () => {
     expect(() => agy.projectFlag('bad id')).toThrow();
   });
 
-  it('permissionConfigPaths names only the member\'s own project file', () => {
+  it('permissionConfigPaths names the member\'s own project file plus the machine-global mcp config (apra-fleet-b4g.45)', () => {
     const agent = localAgyAgent({ agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
-    expect(agy.permissionConfigPaths(agent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
+    // mcp_config.json is ALWAYS in the list now, scoped or not -- it needs to be
+    // touched even when unscoped so a stale entry from a PREVIOUS scoped run can
+    // be pruned (apra-fleet-b4g.45); it used to join only when scoped.
+    expect(agy.permissionConfigPaths(agent)).toEqual([
+      '~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json',
+      '~/.gemini/config/mcp_config.json',
+    ]);
     expect(() => agy.permissionConfigPaths(localAgyAgent())).toThrow(/no agy project id/);
     expect(() => agy.permissionConfigPaths(undefined)).toThrow();
   });

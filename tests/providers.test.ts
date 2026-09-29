@@ -1052,9 +1052,15 @@ describe('AgyProvider', () => {
     expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-high');
   });
 
-  it("permissionConfigPaths is the member's own HOME-anchored agy project file", () => {
+  it("permissionConfigPaths is the member's own HOME-anchored agy project file, plus the machine-global mcp config (apra-fleet-b4g.45)", () => {
     const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
-    expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
+    // mcp_config.json is ALWAYS in the list now, scoped or not -- see
+    // apra-fleet-b4g.45: it needs to be touched even when unscoped so a stale
+    // entry from a PREVIOUS scoped run can be pruned.
+    expect(p.permissionConfigPaths(mockAgent)).toEqual([
+      '~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json',
+      '~/.gemini/config/mcp_config.json',
+    ]);
     expect(() => p.permissionConfigPaths()).toThrow();
     expect(() => p.permissionConfigPaths({ id: 'agent-456', workFolder: '/tmp/work' } as any)).toThrow();
   });
@@ -1063,7 +1069,12 @@ describe('AgyProvider', () => {
     const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
     const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
     const configs = p.composePermissionConfig('doer', claudeAllow, mockAgent);
-    expect(configs).toHaveLength(1);
+    // apra-fleet-b4g.45: a second (empty, since this call is unscoped -- no
+    // fleetInstall in opts) element for mcp_config.json now, index-parallel with
+    // permissionConfigPaths()'s second entry -- there is nothing NEW to declare
+    // there, the prune that entry exists for lives in permissionConfigMergeRules.
+    expect(configs).toHaveLength(2);
+    expect(configs[1]).toEqual({});
     const cfg = configs[0] as Record<string, any>;
     // id/name/projectResources are agy's own (kept by deliverConfigFile's merge).
     expect(Object.keys(cfg)).toEqual(['permissionGrants']);

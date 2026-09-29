@@ -432,37 +432,58 @@ export class AgyProvider implements ProviderAdapter {
    * `~/.gemini/config/mcp_config.json` -- agy has no `agy mcp` CLI verb and no
    * project/user scope distinction (live-verified, docs/member-onboarding-journey.md
    * section 3a), which is exactly why that file is agy's ONE authoritative
-   * switch. It joins the path list only when the member has a verified install,
-   * so an unscoped member gets no entry written at all.
+   * switch.
+   *
+   * apra-fleet-b4g.45: ALWAYS in the list now, scoped or not -- it used to join
+   * only when the member had a verified install, so a member that WAS scoped
+   * and then became unscoped (install removed, downgraded, or newly
+   * human-disabled) kept its stale `mcpServers.apra-fleet` entry in this
+   * machine-global file forever: nothing ever touched it again to prune the
+   * entry, which pointed at an executable that might no longer even exist. The
+   * prune needs the file in this list to have somewhere to land
+   * (permissionConfigMergeRules below); composePermissionConfig always supplies
+   * a matching (possibly empty) config element so the two stay index-parallel.
    *
    * Home-anchored on purpose: deliverConfigFile resolves `~/` against the
    * MEMBER's probed home dir, never emitting a literal `~` or `$HOME` for the
    * member's shell to expand.
    */
-  permissionConfigPaths(agent?: Agent, opts: ComposePermissionOptions = {}): string[] {
+  permissionConfigPaths(agent?: Agent, _opts: ComposePermissionOptions = {}): string[] {
     const id = agent?.agyProjectId;
     if (!id) {
       throw new Error('agy: member has no agy project id -- provision it (ensureAgyProject) before composing permissions');
     }
-    const paths = [`~/.gemini/config/projects/${id}.json`];
-    if (opts.fleetInstall?.scoped) paths.push('~/.gemini/config/mcp_config.json');
-    return paths;
+    return [`~/.gemini/config/projects/${id}.json`, `~/.gemini/config/mcp_config.json`];
   }
 
   /**
-   * apra-fleet-b4g.23.1: prune the SUPERSEDED `apra-fleet-member` entry from
-   * agy's mcp config. It was written by registerMcpEndpoint under the old
-   * central-server design as `{ type: 'http', url, headers: { Authorization } }` --
-   * an endpoint URL plus a bearer credential, both of which the member-local
-   * stdio design removes. deepMerge cannot delete keys, so a member configured
-   * under the old design keeps that entry (and stays reachable by URL+JWT) unless
-   * it is explicitly pruned.
+   * mcp_config.json's own rule -- ALWAYS applied now (apra-fleet-b4g.45),
+   * regardless of scoped, pruning BOTH server names it has ever carried:
+   *
+   *  - MEMBER_MCP_SERVER_NAME ('apra-fleet'): the CURRENT member-local stdio
+   *    switch. Pruning it here even in the scoped case is a safe no-op --
+   *    composePermissionConfig's own content re-supplies the fresh descriptor
+   *    for that same key, and deepMerge overwrites a pruned/absent key with the
+   *    new content exactly as it would an existing one. What this prune
+   *    actually FIXES is the unscoped case: a member that WAS scoped and then
+   *    lost its install (removed, downgraded, newly human-disabled) has nothing
+   *    else that would ever remove the stale entry from this machine-global
+   *    file -- deepMerge can only add/overwrite, never delete, and
+   *    composePermissionConfig supplies no `mcpServers` key at all when
+   *    unscoped.
+   *  - 'apra-fleet-member' (apra-fleet-b4g.23.1): the SUPERSEDED central-server
+   *    entry (`{ type: 'http', url, headers: { Authorization } }`) that
+   *    registerMcpEndpoint wrote under the old design -- an endpoint URL plus a
+   *    bearer credential, both of which the member-local stdio design removes.
+   *    Previously only pruned when scoped, but now that mcp_config.json is
+   *    touched either way (permissionConfigPaths above), there is no reason
+   *    left to leave that stale credential-bearing entry behind on an unscoped
+   *    member.
    */
-  permissionConfigMergeRules(_agent?: Agent, opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
+  permissionConfigMergeRules(_agent?: Agent, _opts: ComposePermissionOptions = {}): PermissionConfigMergeRule[] {
     // agy's project file already rides the caller's `unionArrays` path in grant
     // mode, so its allow/deny need no per-key directive here.
-    if (!opts.fleetInstall?.scoped) return [{}];
-    return [{}, { pruneKeys: [['mcpServers', 'apra-fleet-member']] }];
+    return [{}, { pruneKeys: [['mcpServers', MEMBER_MCP_SERVER_NAME], ['mcpServers', 'apra-fleet-member']] }];
   }
 
   /** Only `permissionGrants.permissionGrants.{allow,deny}` -- deliverConfigFile
@@ -499,7 +520,13 @@ export class AgyProvider implements ProviderAdapter {
       },
     };
 
-    if (!scoped) return [projectConfig];
+    // apra-fleet-b4g.45: mcp_config.json is now in permissionConfigPaths()
+    // regardless of scoped (so a previously-scoped member's stale entry gets
+    // pruned when it becomes unscoped), so this array must stay index-parallel
+    // with it: an empty patch when unscoped -- there is nothing NEW to declare,
+    // the prune in permissionConfigMergeRules does the actual work -- versus the
+    // real descriptor when scoped.
+    if (!scoped) return [projectConfig, {}];
 
     return [
       projectConfig,

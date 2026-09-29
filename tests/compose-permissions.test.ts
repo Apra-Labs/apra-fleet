@@ -410,11 +410,15 @@ describe('composePermissions -- AGY proactive', () => {
     expect(result).toContain(`.gemini/config/projects/${AGY_PID}.json`);
 
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
-    expect(writes).toHaveLength(1);
+    // apra-fleet-b4g.45: ~/.gemini/config/mcp_config.json is now touched even for
+    // an unscoped member (this one has no probed install), so a stale entry from
+    // a PREVIOUS scoped run can be pruned -- it used to be skipped entirely.
+    expect(writes).toHaveLength(2);
     const projectWrite = writes[0];
     expect(projectWrite).toContain(`cat > "${AGY_FILE}"`);
     expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
     expect(writes.some(cmd => cmd.includes('default-cli-project'))).toBe(false);
+    expect(writes.some(cmd => cmd.includes('.gemini/config/mcp_config.json'))).toBe(true);
 
     const written = JSON.parse(/<< 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/.exec(projectWrite)![1]);
     // agy's own id/name/projectResources are kept; only the nested grants change.

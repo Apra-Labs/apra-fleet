@@ -167,11 +167,21 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         workFolder: '/home/user/my-project',
         agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204',
       } as any;
-      expect(provider.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
+      // ~/.gemini/config/mcp_config.json is ALWAYS in the list now, scoped or
+      // not (apra-fleet-b4g.45): it needs to be touched even when unscoped so a
+      // stale entry from a PREVIOUS scoped run can be pruned.
+      expect(provider.permissionConfigPaths(mockAgent)).toEqual([
+        '~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json',
+        '~/.gemini/config/mcp_config.json',
+      ]);
       expect(() => provider.permissionConfigPaths()).toThrow();
 
       const configs = provider.composePermissionConfig('doer', ['Read', 'Write', 'Bash(git:*)', 'WebSearch', 'CustomToken'], mockAgent);
-      expect(configs).toHaveLength(1);
+      // Second element is an empty patch for mcp_config.json (this call is
+      // unscoped -- no fleetInstall in opts): nothing NEW to declare there, the
+      // prune that entry exists for lives in permissionConfigMergeRules.
+      expect(configs).toHaveLength(2);
+      expect(configs[1]).toEqual({});
       const cfg = configs[0] as Record<string, any>;
       // Only the grants block: agy's own id/name/projectResources are kept on disk.
       expect(Object.keys(cfg)).toEqual(['permissionGrants']);
