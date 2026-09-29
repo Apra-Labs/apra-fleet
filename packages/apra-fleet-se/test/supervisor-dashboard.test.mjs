@@ -12,10 +12,12 @@ import {
     computeBaseDrift,
     buildStatePayload,
     renderConsoleLinkHtml,
+    renderToolchainHeaderHtml,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { sprintCardAnchorId } from '../src/supervisor/sprint-anchor.mjs';
+import { TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
 // apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
 // built via this helper (raw rows routed through the real normalizeBead()),
 // so a fixture can never assert on a field the production listAllBeads path
@@ -75,6 +77,80 @@ describe('dashboard -- renderConsoleLinkHtml (apra-fleet-i9ag.5.1)', () => {
             assert.equal(renderConsoleLinkHtml(bad), '');
         });
     }
+});
+
+// renderToolchainHeaderHtml (apra-fleet-i9ag.19.12) -- the "which node/bd is
+// this supervisor actually using" header line, directly below the Beads
+// identity line. apra-fleet-i9ag.19.13 OWNERSHIP: this describe is the SOLE
+// owner of every assertion about this header; nothing else in this sprint
+// covers it.
+describe('dashboard -- renderToolchainHeaderHtml (apra-fleet-i9ag.19.13 coverage of apra-fleet-i9ag.19.12)', () => {
+    const GOOD_TOOLCHAIN_REPORT = {
+        configured: true,
+        nodePath: '/opt/toolchain/node/bin/node',
+        nodeVersion: '22.9.0',
+        bdPath: '/opt/toolchain/bd/bin/bd',
+        bdVersion: '1.2.3',
+        source: '/p/.fleet-se/supervisor.config.json',
+        ok: true,
+        problems: [],
+        fixLine: TOOLCHAIN_FIX_LINE,
+    };
+
+    test('a good recording renders BOTH the node and bd paths and versions, with no amber problem line', () => {
+        const html = renderToolchainHeaderHtml(GOOD_TOOLCHAIN_REPORT);
+        assert.ok(html.includes(GOOD_TOOLCHAIN_REPORT.nodePath), html);
+        assert.ok(html.includes('(v22.9.0)'), html);
+        assert.ok(html.includes(GOOD_TOOLCHAIN_REPORT.bdPath), html);
+        assert.ok(html.includes('(v1.2.3)'), html);
+        assert.ok(!html.includes('toolchain-status-warning'), `must not render the amber problem state: ${html}`);
+        assert.ok(!html.includes(TOOLCHAIN_FIX_LINE), html);
+    });
+
+    test('a problem (bd broken, node still ok) renders the amber problem state -- gated on non-empty problems, not solely on ok', () => {
+        // No double-quote characters in the fixture message: the whole
+        // problem sentence is HTML-escaped on render (escapeHtml()), so a
+        // literal `"` in the source string would come out as `&quot;` and
+        // an `includes()` check against the raw string would false-negative
+        // on the escaping itself rather than on the actual assertion.
+        const bdOnlyProblem = {
+            ...GOOD_TOOLCHAIN_REPORT,
+            ok: true, // node itself is fine -- toolchain.mjs's `ok` tracks node only
+            problems: ['Recorded bd path /opt/toolchain/bd/bin/bd does not resolve to a usable bd.'],
+        };
+        const html = renderToolchainHeaderHtml(bdOnlyProblem);
+        assert.ok(html.includes('toolchain-status-warning'), `expected the amber problem state even though ok is true: ${html}`);
+        assert.ok(html.includes(bdOnlyProblem.problems[0]), html);
+        // The fix line is the module's OWN export, never a hand-copied literal.
+        assert.ok(html.includes(TOOLCHAIN_FIX_LINE), html);
+    });
+
+    test('an ok:false problem (broken node) also renders the amber problem state, carrying the same fix line', () => {
+        const nodeProblem = {
+            ...GOOD_TOOLCHAIN_REPORT,
+            ok: false,
+            problems: ['Recorded node path /opt/toolchain/node/bin/node does not resolve to a usable Node.js runtime.'],
+        };
+        const html = renderToolchainHeaderHtml(nodeProblem);
+        assert.ok(html.includes('toolchain-status-warning'), html);
+        assert.ok(html.includes(nodeProblem.problems[0]), html);
+        assert.ok(html.includes(TOOLCHAIN_FIX_LINE), html);
+    });
+
+    test('no report, and a report with nothing configured, both render nothing -- matching renderBeadsHeaderHtml\'s own default', () => {
+        assert.equal(renderToolchainHeaderHtml(null), '');
+        assert.equal(renderToolchainHeaderHtml(undefined), '');
+        assert.equal(renderToolchainHeaderHtml({ configured: false }), '');
+    });
+
+    test('paths and versions are HTML-escaped', () => {
+        const untrusted = {
+            ...GOOD_TOOLCHAIN_REPORT,
+            nodePath: '/opt/"><script>alert(1)</script>/node',
+        };
+        const html = renderToolchainHeaderHtml(untrusted);
+        assert.ok(!html.includes('<script>'), html);
+    });
 });
 
 describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
@@ -752,6 +828,66 @@ describe('dashboard -- createDashboard', () => {
                 assert.ok(!html.includes('/ui"'), html);
             });
         }
+    });
+
+    // apra-fleet-i9ag.19.13 coverage of apra-fleet-i9ag.19.12: `deps.toolchain`
+    // (the SAME validateRecordedToolchain() report GET /api/health projects)
+    // reaches renderIndexPage() end to end, via renderToolchainHeaderHtml()
+    // above -- not just the pure-render unit tests in this file's own
+    // "renderToolchainHeaderHtml" describe block.
+    describe('apra-fleet-i9ag.19.13: deps.toolchain reaches the rendered page', () => {
+        const GOOD_TOOLCHAIN_REPORT = {
+            configured: true,
+            nodePath: '/opt/toolchain/node/bin/node',
+            nodeVersion: '22.9.0',
+            bdPath: '/opt/toolchain/bd/bin/bd',
+            bdVersion: '1.2.3',
+            source: '/p/.fleet-se/supervisor.config.json',
+            ok: true,
+            problems: [],
+            fixLine: TOOLCHAIN_FIX_LINE,
+        };
+
+        test('a configured deps.toolchain renders the Toolchain header line with both paths', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: fakeWatchdog({}),
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+                toolchain: GOOD_TOOLCHAIN_REPORT,
+            });
+            const html = await dashboard.renderIndexPage();
+            assert.ok(html.includes(GOOD_TOOLCHAIN_REPORT.nodePath), html);
+            assert.ok(html.includes(GOOD_TOOLCHAIN_REPORT.bdPath), html);
+        });
+
+        test('no deps.toolchain -- no Toolchain header line', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: fakeWatchdog({}),
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+            });
+            const html = await dashboard.renderIndexPage();
+            assert.ok(!html.includes('toolchain-status'), html);
+        });
+
+        test('a not-ok deps.toolchain renders the amber problem state in the rendered page', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([]),
+                watchdog: fakeWatchdog({}),
+                listAllBeads: async () => [],
+                driftCheck: async () => null,
+                toolchain: {
+                    ...GOOD_TOOLCHAIN_REPORT,
+                    ok: false,
+                    problems: ['Recorded node path "/opt/toolchain/node/bin/node" does not resolve to a usable Node.js runtime.'],
+                },
+            });
+            const html = await dashboard.renderIndexPage();
+            assert.ok(html.includes('toolchain-status-warning'), html);
+            assert.ok(html.includes(TOOLCHAIN_FIX_LINE), html);
+        });
     });
 
     // apra-fleet-p2to.3.1: base-drift wiring on the view-builder. `base`

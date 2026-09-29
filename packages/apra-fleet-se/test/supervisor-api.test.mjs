@@ -20,6 +20,7 @@ import {
     ApiError,
 } from '../src/supervisor/api.mjs';
 import { createBeadsIdentityState } from '../src/supervisor/beads-identity.mjs';
+import { TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
 import { createTestSupervisor } from './helpers/supervisor-harness.mjs';
 
 // apra-fleet-eft.4.4 -- supervisor HTTP endpoints: members, backlog,
@@ -1727,5 +1728,108 @@ describe('api -- /api/health beads identity', () => {
         assert.equal(ledger.get(second.sprintId).beads, null);
 
         await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// GET /api/health `toolchain`/`toolchainWarning` (src/supervisor/toolchain.mjs's
+// validateRecordedToolchain() result, projected by server.mjs's
+// toolchainSummaryOf()/toolchainWarningOf() -- apra-fleet-i9ag.19.12).
+//
+// apra-fleet-i9ag.19.13 OWNERSHIP: this describe is the SOLE owner of every
+// assertion about the health toolchain projection -- the scrubbed-PATH
+// end-to-end launch test (i9ag19-14-pathless-service-launch.test.mjs)
+// deliberately asserts nothing about health.toolchain/toolchainWarning, and
+// the startup-wiring suite (i9ag19-11) asserts only the STARTUP LOG lines,
+// never the health JSON shape. If a case below is missing, nothing else in
+// this sprint covers it.
+describe('api -- /api/health toolchain (apra-fleet-i9ag.19.13)', () => {
+    /** A full, internally-consistent validateRecordedToolchain() result --
+     * every field toolchainSummaryOf() might read is populated so the
+     * "field for field" case below can never accidentally pass by omission. */
+    const GOOD_TOOLCHAIN_REPORT = {
+        configured: true,
+        nodePath: '/opt/toolchain/node/bin/node',
+        nodeVersion: '22.9.0',
+        bdPath: '/opt/toolchain/bd/bin/bd',
+        bdVersion: '1.2.3',
+        source: '/p/.fleet-se/supervisor.config.json',
+        reason: null,
+        ok: true,
+        nodeOk: true,
+        bdOk: true,
+        problems: [],
+        fixLine: TOOLCHAIN_FIX_LINE,
+    };
+
+    test('a good recording: health.toolchain matches the recording FIELD FOR FIELD (ok:true, empty problems), no toolchainWarning key', async () => {
+        const res = mockRes();
+        await createSupervisor({ port: 0, toolchain: GOOD_TOOLCHAIN_REPORT }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        // A field-for-field deepEqual (not a handful of spot-checks): a
+        // partially-populated projection -- a dropped field, a stray extra
+        // one, a wrong value -- fails this, per apra-fleet-i9ag.19.13's AC2.
+        assert.deepEqual(payloadOf(res).toolchain, {
+            nodePath: GOOD_TOOLCHAIN_REPORT.nodePath,
+            nodeVersion: GOOD_TOOLCHAIN_REPORT.nodeVersion,
+            bdPath: GOOD_TOOLCHAIN_REPORT.bdPath,
+            bdVersion: GOOD_TOOLCHAIN_REPORT.bdVersion,
+            source: GOOD_TOOLCHAIN_REPORT.source,
+            ok: true,
+            problems: [],
+        });
+        assert.equal('toolchainWarning' in payloadOf(res), false, 'a good recording must never carry a toolchainWarning key');
+    });
+
+    test('not ok: health.toolchain carries the problems, and toolchainWarning contains the validator\'s OWN TOOLCHAIN_FIX_LINE (referenced, never hand-copied)', async () => {
+        const brokenReport = {
+            ...GOOD_TOOLCHAIN_REPORT,
+            ok: false,
+            nodeOk: false,
+            problems: [`Recorded node path ${JSON.stringify(GOOD_TOOLCHAIN_REPORT.nodePath)} does not resolve to a usable Node.js runtime.`],
+        };
+        const res = mockRes();
+        await createSupervisor({ port: 0, toolchain: brokenReport }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).toolchain.ok, false);
+        assert.deepEqual(payloadOf(res).toolchain.problems, brokenReport.problems);
+        assert.ok(typeof payloadOf(res).toolchainWarning === 'string', 'toolchainWarning must be present when ok is false');
+        assert.ok(payloadOf(res).toolchainWarning.includes(brokenReport.problems[0]), payloadOf(res).toolchainWarning);
+        assert.ok(payloadOf(res).toolchainWarning.includes(TOOLCHAIN_FIX_LINE), payloadOf(res).toolchainWarning);
+    });
+
+    test('no report at all: health.toolchain is null, and the toolchainWarning KEY IS ABSENT (asserted absent, never present as null)', async () => {
+        const res = mockRes();
+        await createSupervisor({ port: 0 }).handleRequest(mockReq('GET', '/api/health'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(payloadOf(res).toolchain, null);
+        assert.equal('toolchainWarning' in payloadOf(res), false);
+    });
+
+    test('every pre-existing health field (status/uptimeSeconds/pid/seams/beads/beadsWarning/projectDir/projectDirSource) is still present and unchanged alongside the new toolchain fields', async () => {
+        const beadsIdentity = {
+            get: () => null,
+            getWarning: () => 'no beads database found walking up from /p. To fix: pass --beads-dir.',
+        };
+        const res = mockRes();
+        await createSupervisor({
+            port: 0,
+            toolchain: GOOD_TOOLCHAIN_REPORT,
+            beadsIdentity,
+            project: { projectDir: '/p', source: 'flag' },
+            logger: { log() {}, error() {} },
+        }).handleRequest(mockReq('GET', '/api/health'), res);
+        const body = payloadOf(res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(body.status, 'ok');
+        assert.equal(typeof body.uptimeSeconds, 'number');
+        assert.equal(typeof body.pid, 'number');
+        assert.ok(body.seams && typeof body.seams === 'object');
+        assert.equal(body.beads, null);
+        assert.match(body.beadsWarning, /no beads database found/);
+        assert.equal(body.projectDir, '/p');
+        assert.equal(body.projectDirSource, 'flag');
+        // The toolchain addition sits alongside every field above -- neither
+        // renamed nor reshaped, never replacing any of them.
+        assert.ok(body.toolchain);
     });
 });
