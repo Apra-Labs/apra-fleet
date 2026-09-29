@@ -15,7 +15,8 @@
     "./viewer/run-state-paths": "./src/viewer/run-state-paths.mjs",
     "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs",
     "./viewer/debounced-writer": "./src/viewer/debounced-writer.mjs",
-    "./viewer/lean-state": "./src/viewer/lean-state.mjs"
+    "./viewer/lean-state": "./src/viewer/lean-state.mjs",
+    "./viewer/blob-urls": "./src/viewer/blob-urls.mjs"
   },
   "scripts": {
     "test": "node --test --test-timeout=60000 test/*.test.mjs"

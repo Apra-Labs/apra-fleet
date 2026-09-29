@@ -8,6 +8,7 @@ import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-pat
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
+import { resolveBlobDataUrls, blobDataUrl } from './blob-urls.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -31,6 +32,15 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // never renders the Pause/Stop controls.
     const providerKind = opts.dataProvider === 'blob' ? 'blob' : 'http';
     const hasControl = !isHistory && providerKind === 'http';
+    // History only: where the lazy-load clicks read per-item detail. 'live'
+    // (default, unchanged) calls the live routes. 'relative' reads the files
+    // an archive bundle materialises next to its index.html
+    // (activities/<id>.json, extensions/<ext>/<id>.json), carrying the page's
+    // own query string so a page opened with a SAS reads its files with it.
+    // An archive used to call the live routes, which no longer exist once a
+    // run is archived, so every 'more...' and extension detail in it failed
+    // silently.
+    const historyAssets = opts.historyAssets === 'relative' ? 'relative' : 'live';
     const frozenStateLiteral = isHistory
         ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
         : 'null';
@@ -348,6 +358,25 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // per-item blob materialization fixes, unchanged by this seam). No
     // EventSource/WebSocket/PROVIDER_KIND machinery is emitted in History
     // mode: it must never open any live connection.
+    ${historyAssets === 'relative' ? `
+    // Archive: read the materialised files beside this page, with this
+    // page's own query string (its SAS, when opened with one).
+    function apraFleetArchiveAssetUrl(relPath) {
+        const search = (typeof location !== 'undefined' && location.search) ? location.search : '';
+        return relPath + search;
+    }
+    const dataProvider = {
+        getActivityOutput: async function (activityId) {
+            const res = await fetch(apraFleetArchiveAssetUrl('activities/' + encodeURIComponent(activityId) + '.json'));
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            return res.json();
+        },
+        getExtensionDetail: async function (extId, itemId) {
+            const res = await fetch(apraFleetArchiveAssetUrl('extensions/' + encodeURIComponent(extId) + '/' + encodeURIComponent(itemId) + '.json'));
+            if (!res.ok) return null;
+            return res.json();
+        }
+    };` : `
     const dataProvider = {
         getActivityOutput: async function (activityId) {
             const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
@@ -359,7 +388,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
             if (!res.ok) return null;
             return res.json();
         }
-    };
+    };`}
     if (typeof window !== 'undefined') { window.dataProvider = dataProvider; }
     ` : `
     // fleet-bridge Part D2: the data-provider seam. Both implementations are
@@ -389,19 +418,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // state.json's own folder.
     const PROVIDER_KIND = ${JSON.stringify(providerKind)};
 
-    function apraFleetBlobFragmentParams() {
-        const hash = (typeof location !== 'undefined' && location.hash) ? location.hash.slice(1) : '';
-        const params = new URLSearchParams(hash);
-        return { state: params.get('state'), socket: params.get('socket') };
+    // Embedded from blob-urls.mjs (same .toString() pattern as above): the
+    // fragment -> URL resolution, including carrying the SAS onto every
+    // per-item read, is unit-tested there rather than re-derived here.
+    ${resolveBlobDataUrls.toString()}
+    ${blobDataUrl.toString()}
+    function apraFleetBlobUrls() {
+        return resolveBlobDataUrls((typeof location !== 'undefined' && location.hash) ? location.hash : '');
     }
-    function apraFleetBlobStateUrl() { return apraFleetBlobFragmentParams().state; }
-    function apraFleetBlobSocketUrl() { return apraFleetBlobFragmentParams().socket; }
-    function apraFleetBlobBaseUrl() {
-        const stateUrl = apraFleetBlobStateUrl();
-        if (!stateUrl) return '';
-        const idx = stateUrl.lastIndexOf('/');
-        return idx >= 0 ? stateUrl.slice(0, idx + 1) : '';
-    }
+    function apraFleetBlobStateUrl() { return apraFleetBlobUrls().stateUrl; }
+    function apraFleetBlobSocketUrl() { return apraFleetBlobUrls().socketUrl; }
     const BLOB_POLL_INTERVAL_MS = 15000;
 
     const httpProvider = {
@@ -472,14 +498,14 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
             };
         },
         getActivityOutput: async function (activityId) {
-            const base = apraFleetBlobBaseUrl();
-            const res = await fetch(base + 'activities/' + encodeURIComponent(activityId) + '.json', { cache: 'no-store' });
+            const url = blobDataUrl(apraFleetBlobUrls(), 'activities/' + encodeURIComponent(activityId) + '.json');
+            const res = await fetch(url, { cache: 'no-store' });
             if (!res.ok) throw new Error('request failed: ' + res.status);
             return res.json();
         },
         getExtensionDetail: async function (extId, itemId) {
-            const base = apraFleetBlobBaseUrl();
-            const res = await fetch(base + 'extensions/' + encodeURIComponent(extId) + '/' + encodeURIComponent(itemId) + '.json', { cache: 'no-store' });
+            const url = blobDataUrl(apraFleetBlobUrls(), 'extensions/' + encodeURIComponent(extId) + '/' + encodeURIComponent(itemId) + '.json');
+            const res = await fetch(url, { cache: 'no-store' });
             if (!res.ok) return null;
             return res.json();
         },

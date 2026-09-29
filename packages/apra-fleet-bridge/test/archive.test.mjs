@@ -263,8 +263,34 @@ describe('buildArchiveBundle: malformed/missing state', () => {
 
     test('an empty object state still produces a usable bundle (index.html, no activities/extensions files) rather than throwing', () => {
         const { files } = buildArchiveBundle({ state: {} });
-        assert.strictEqual(files.length, 1);
-        assert.strictEqual(files[0].path, 'index.html');
+        assert.deepStrictEqual(files.map((f) => f.path), ['index.html', 'state.json']);
+    });
+});
+
+// The archive is read two ways: its own index.html (opened directly), and the
+// public blob viewer (which reads state.json and the per-item files). Both
+// used to be broken or missing: the page called live routes that do not exist
+// for an archived run, and there was no state.json to point the viewer at.
+describe('buildArchiveBundle: readable by the page and by the blob viewer', () => {
+    test('index.html reads its per-item files beside it, not the live routes', () => {
+        const { files } = buildArchiveBundle({ state: realisticState() });
+        const html = files.find((f) => f.path === 'index.html').body;
+        assert.ok(html.includes("apraFleetArchiveAssetUrl('activities/'"), 'activity output must come from the materialised file');
+        assert.ok(html.includes("apraFleetArchiveAssetUrl('extensions/'"), 'extension detail must come from the materialised file');
+        assert.ok(!html.includes("fetch('/activities/'"), 'no live route may be called from an archive');
+    });
+
+    test('state.json is the lean live payload and resolves back to the same state', async () => {
+        const { resolveStringRefs } = await import('@apralabs/apra-fleet-workflow/viewer/lean-state');
+        const state = realisticState();
+        const { files } = buildArchiveBundle({ state });
+        const file = files.find((f) => f.path === 'state.json');
+        assert.strictEqual(file.contentType, 'application/json');
+        const raw = JSON.parse(file.body);
+        assert.ok(Array.isArray(raw._strings), 'same shape as GET /state: a _strings table');
+        const resolved = resolveStringRefs(raw, raw._strings);
+        assert.strictEqual(resolved.status, state.status);
+        assert.strictEqual(resolved.tree.length, state.tree.length);
     });
 });
 

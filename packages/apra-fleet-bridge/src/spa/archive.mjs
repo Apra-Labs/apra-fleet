@@ -92,6 +92,7 @@
 // extension recognises.
 
 import { renderHistoryPageHtml } from '@apralabs/apra-fleet-se/src/supervisor/history-view.mjs';
+import { buildListStatePayload } from '@apralabs/apra-fleet-workflow/viewer/lean-state';
 import { BridgeError, BRIDGE_ERROR_CODES } from '../errors.mjs';
 
 /**
@@ -191,10 +192,25 @@ export function buildArchiveBundle({ state, extensions } = {}) {
     // second renderer: renderHistoryPageHtml() is HTML_TEMPLATE(extensions,
     // { history: true, state }), the exact function history-view.mjs uses
     // to serve GET /sprints/:id/history.
+    //
+    // `historyAssets: 'relative'`: the page's lazy-load clicks read the
+    // activities/ and extensions/ files below, beside it, with the page's own
+    // query string. Without it they called the live routes, which do not
+    // exist for an archived run, so every one of those clicks failed silently.
     files.push({
         path: 'index.html',
         contentType: 'text/html; charset=utf-8',
-        body: renderHistoryPageHtml(state, exts),
+        body: renderHistoryPageHtml(state, exts, { historyAssets: 'relative' }),
+    });
+
+    // state.json -- the same lean payload the live /state route serves, in
+    // the layout the viewer's blob data source reads (state.json with
+    // activities/ and extensions/ beside it). This is what lets the public
+    // blob viewer open a finished run with the same link shape as a live one.
+    files.push({
+        path: 'state.json',
+        contentType: 'application/json',
+        body: JSON.stringify(buildListStatePayload(state)),
     });
 
     // activities/<activityId>.json -- one file per activity that actually
