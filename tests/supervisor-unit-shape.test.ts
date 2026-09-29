@@ -105,10 +105,10 @@ describe('registered supervisor unit -- Linux', () => {
     else process.env.XDG_RUNTIME_DIR = savedXdg;
   });
 
-  it('runs the quoted installed binary with the single argument supervisor', async () => {
+  it('runs the quoted installed binary with the supervisor subcommand and --managed-service', async () => {
     const result = await registerSupervisorService(BINARY);
     expect(result).toEqual({ registered: true });
-    expect(writtenContent()).toContain(`ExecStart="${BINARY}" supervisor`);
+    expect(writtenContent()).toContain(`ExecStart="${BINARY}" supervisor --managed-service`);
   });
 
   it('never names node as the executable and never mentions serve.mjs', async () => {
@@ -118,15 +118,15 @@ describe('registered supervisor unit -- Linux', () => {
     // The exact pre-fix shape: ExecStart=<abs node> <installed>/bin/serve.mjs
     expect(unit).not.toContain('serve.mjs');
     expect(execStart).not.toMatch(/ExecStart="?[^"]*\/node(\.exe)?"?[\s"]/);
-    // Exactly one argument follows the quoted executable.
-    expect(execStart).toBe(`ExecStart="${BINARY}" supervisor`);
+    // Exactly the subcommand and the managed-service flag follow the quoted executable.
+    expect(execStart).toBe(`ExecStart="${BINARY}" supervisor --managed-service`);
   });
 
   it('keeps the binary path intact when the operator home contains a space', async () => {
     await registerSupervisorService(BINARY_SPACED);
     const unit = writtenContent();
     // Quoted, so systemd's whitespace split cannot silently break the unit.
-    expect(unit).toContain(`ExecStart="${BINARY_SPACED}" supervisor`);
+    expect(unit).toContain(`ExecStart="${BINARY_SPACED}" supervisor --managed-service`);
     expect(unit).not.toContain(`ExecStart=${BINARY_SPACED} `);
   });
 
@@ -159,15 +159,15 @@ describe('registered supervisor unit -- macOS', () => {
     mockGetSvcMgr.mockImplementation(async () => new MacOSServiceManager('fleet-supervisor'));
   });
 
-  it('has ProgramArguments of exactly [binary, supervisor]', async () => {
+  it('has ProgramArguments of exactly [binary, supervisor, --managed-service]', async () => {
     const result = await registerSupervisorService(BINARY);
     expect(result).toEqual({ registered: true });
     const plist = writtenContent();
     const args = [...plist.matchAll(/<string>([^<]*)<\/string>/g)].map(m => m[1]);
     const start = args.indexOf(BINARY);
     expect(start).toBeGreaterThanOrEqual(0);
-    expect(args.slice(start, start + 2)).toEqual([BINARY, 'supervisor']);
-    // Nothing after the single argument, i.e. no serve.mjs tail.
+    expect(args.slice(start, start + 3)).toEqual([BINARY, 'supervisor', '--managed-service']);
+    // Nothing after the flag, i.e. no serve.mjs tail.
     expect(plist).not.toContain('serve.mjs');
     expect(plist).not.toContain('<string>node</string>');
   });
@@ -190,11 +190,11 @@ describe('registered supervisor unit -- Windows', () => {
     mockGetSvcMgr.mockImplementation(async () => new WindowsServiceManager('fleet-supervisor'));
   });
 
-  it('runs the quoted binary with the quoted single argument supervisor', async () => {
+  it('runs the quoted binary with the quoted supervisor and --managed-service args', async () => {
     const result = await registerSupervisorService(BINARY_WIN);
     expect(result).toEqual({ registered: true });
     const bat = writtenContent();
-    expect(bat).toContain(`"${BINARY_WIN}" "supervisor"`);
+    expect(bat).toContain(`"${BINARY_WIN}" "supervisor" "--managed-service"`);
     expect(bat).not.toContain('serve.mjs');
     expect(bat).not.toMatch(/"[^"]*\\node\.exe"/);
   });
