@@ -25,7 +25,7 @@
  */
 import os from 'node:os';
 import type { Agent } from '../types.js';
-import type { TargetOS } from '../providers/provider.js';
+import { joinForOS, type TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -55,10 +55,72 @@ const PROBE_TIMEOUT_MS = 10_000;
  *  - POSIX: `printf '%s'` rather than `echo` -- no trailing newline, no shell
  *    builtin escape-interpretation differences between sh/bash/dash.
  */
-function probeCommandFor(targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
-  return isPosixShell(targetOs, shell)
-    ? 'printf \'%s\' "$HOME"'
-    : wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)');
+export function probeCommandFor(targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
+  return memberCommandFor(targetOs, shell, {
+    posix: 'printf \'%s\' "$HOME"',
+    powershell: '[Console]::Out.Write($env:USERPROFILE)',
+  });
+}
+
+/**
+ * THE single place that turns "a POSIX form and a PowerShell form" into the one
+ * member-bound command string to send (apra-fleet-b4g.23.3).
+ *
+ * `probeCommandFor` above was the only consumer of this branch until the
+ * member-side fleet-install resolver needed the identical decision; rather than
+ * let a second copy of "isPosixShell? raw : wrapPowerShellEncoded" appear in
+ * another module (the drift CLAUDE.md's member-bound-command rule exists to
+ * prevent), both now route through here. The PowerShell side is ALWAYS
+ * base64-wrapped via `wrapPowerShellEncoded` -- never emitted as a raw
+ * `powershell -c "..."` string -- because the member's own sshd shell may
+ * itself be PowerShell and would expand the inner script before the inner
+ * interpreter sees it (apra-fleet-ot2z.10).
+ *
+ * Callers must pass fully-resolved literals in BOTH variants: this helper does
+ * not and cannot strip a `$VAR`, `~` or backtick the caller baked in.
+ */
+export function memberCommandFor(
+  targetOs: TargetOS,
+  shell: ReturnType<typeof getAgentShell>,
+  variants: { posix: string; powershell: string },
+): string {
+  return isPosixShell(targetOs, shell) ? variants.posix : wrapPowerShellEncoded(variants.powershell);
+}
+
+/**
+ * Join path segments using the MEMBER's path convention (apra-fleet-b4g.23.3).
+ *
+ * Deliberately keyed on the member's SHELL as well as its OS, which plain
+ * `joinForOS(targetOs, ...)` is not: a Windows member registered as
+ * Git-for-Windows bash reports `os: 'windows'` but its `$HOME` is a POSIX-style
+ * path (`/c/Users/name`) -- the same asymmetry `looksAbsolute` below already
+ * accounts for. Joining that home with `path.win32.join` yields the mixed
+ * `/c/Users/name\.apra-fleet` which gitbash cannot resolve, so a gitbash member
+ * takes the POSIX branch here.
+ */
+export function memberJoin(
+  targetOs: TargetOS | undefined,
+  shell: ReturnType<typeof getAgentShell>,
+  ...segments: string[]
+): string {
+  if (targetOs === undefined) return joinForOS(undefined, ...segments);
+  return joinForOS(isPosixShell(targetOs, shell) ? 'linux' : targetOs, ...segments);
+}
+
+/**
+ * Last non-empty line of a member command's stdout.
+ *
+ * A login shell or PowerShell banner is emitted BEFORE the command's own
+ * output, never after it, so the last non-empty line is the value the command
+ * actually produced. Shared with the fleet-install resolver
+ * (apra-fleet-b4g.23.3) so both parse member output identically.
+ */
+export function lastNonEmptyLine(stdout: string): string | undefined {
+  return stdout
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .pop();
 }
 
 /** Absolute POSIX path, Windows drive path, or UNC share. Anything else is
@@ -81,11 +143,7 @@ async function probeHomeDir(agent: Agent): Promise<string | null> {
     }
     // Take the LAST non-empty line: a login shell / PowerShell banner is
     // emitted BEFORE the command's own output, never after it.
-    const candidate = result.stdout
-      .split(/\r?\n/)
-      .map(l => l.trim())
-      .filter(Boolean)
-      .pop();
+    const candidate = lastNonEmptyLine(result.stdout);
     if (!candidate || !looksAbsolute(candidate, targetOs, shell)) {
       logWarn('member_home_probe', `home dir probe for ${agent.friendlyName} returned a non-path value; ignoring`);
       return null;
