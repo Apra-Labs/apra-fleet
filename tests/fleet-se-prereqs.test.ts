@@ -236,7 +236,16 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     });
   });
 
-  it('win32 resolves bd via "where bd" (first non-empty line); the SAME exec under linux cannot satisfy it', () => {
+  // NOTE (apra-fleet-i9ag.19.1 judge D2, 2026-09-29 review fix): this case's
+  // fixture lists TWO '.cmd' lines -- it exercises the 'where'/shell/timeout
+  // wiring and the win32-vs-linux PATH-lookup contrast, but NOT extension-
+  // based selection (both candidates already carry an executable extension,
+  // so a plain "take line 1" implementation would pass this case too). The
+  // title used to say "(first non-empty line)", which is no longer an
+  // accurate description of win32's selection rule -- see the dedicated
+  // A1-A5 cases below for the actual D2 regression coverage (extension
+  // preference over line index).
+  it('win32 resolves bd via "where bd", both candidates already executable; the SAME exec under linux cannot satisfy it', () => {
     const exec = makeArgvExec({
       'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
       'node --version': 'v22.16.0\n',
@@ -258,6 +267,99 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     expect(linuxResult.bd.ok).toBe(false);
     expect(linuxResult.bd.path).toBeNull();
     expect(exec).toHaveBeenCalledWith('which', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  // apra-fleet-i9ag.19.1 AMENDED AC (judge D2, PR #561): npm installs bd as
+  // BOTH an extensionless POSIX-shell shim ('<prefix>\npm\bd') and a
+  // 'bd.cmd', and 'where bd' lists the extensionless shim FIRST. The old
+  // (pre-D2) implementation took line 1 unconditionally, which picked that
+  // extensionless shim -- a file cmd.exe cannot execute and
+  // resolveConfiguredWindowsBdScript()'s own .cmd-shape regex cannot parse.
+  // These five cases pin pickWindowsBdLine()'s actual selection rule
+  // (executable extension, never line index) and its exact degraded-outcome
+  // wording.
+  it('A1: "where bd" lists the extensionless npm sh shim FIRST, then bd.cmd -> bd.path is the .cmd, not the first line', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    // A line-1-only (pre-D2-fix) implementation would have returned the
+    // extensionless shim line above instead -- this assertion FAILS against
+    // that shape, which is the whole point of this case.
+    expect(result.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(result.bd.ok).toBe(true);
+  });
+
+  it('A3: selection is by executable extension, not line index -- swapping the order of the same two lines yields the identical .cmd', () => {
+    const execShimFirst = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
+      'bd --version': '1.2.3\n',
+    });
+    const execCmdFirst = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const shimFirstResult = resolveFleetSeToolchainPaths({ exec: execShimFirst, platform: 'win32' });
+    const cmdFirstResult = resolveFleetSeToolchainPaths({ exec: execCmdFirst, platform: 'win32' });
+
+    expect(shimFirstResult.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(cmdFirstResult.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(shimFirstResult.bd.path).toBe(cmdFirstResult.bd.path);
+  });
+
+  it('A4: a native bd.exe with no .cmd present is still selected over the extensionless shim', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\tools\\bd\\bd.exe\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    expect(result.bd.path).toBe('C:\\tools\\bd\\bd.exe');
+    expect(result.bd.ok).toBe(true);
+  });
+
+  it('A2: "where bd" returns ONLY an extensionless shim -> ok:false, reason names exactly what was found and why it is unusable', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    expect(result.bd.ok).toBe(false);
+    expect(result.bd.path).toBeNull();
+    expect(result.bd.reason).toBe(
+      'where bd found no .cmd/.exe on PATH, only non-executable candidate(s) cmd.exe cannot run: '
+      + 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd',
+    );
+  });
+
+  it('A5: POSIX "which bd" returns multiple lines -> the first non-empty line is selected, asserted on the exact value', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '\n/usr/local/bin/bd\n/opt/other/bd\n',
+      'bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.bd.path).toBe('/usr/local/bin/bd');
+    expect(result.bd.ok).toBe(true);
   });
 
   it('node -p process.execPath throws -> node.ok false with a reason naming the probe, never thrown out of the function', () => {
