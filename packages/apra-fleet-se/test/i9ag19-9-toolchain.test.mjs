@@ -41,6 +41,13 @@ afterEach(async () => {
     }
 });
 
+/** The exact "could not be probed within Ns" prefix formatIncompleteProbeProblem()
+ * builds from TOOLCHAIN_PROBE_TIMEOUT_MS -- derived here (never hand-copied)
+ * so a retune of that ceiling can never desync these wording assertions from
+ * the source, per apra-fleet-i9ag.19.21's constraint applied to every case in
+ * this file (apra-fleet-i9ag.19.23). */
+const PROBE_TIMEOUT_WORDING_RE = new RegExp(`could not be probed within ${TOOLCHAIN_PROBE_TIMEOUT_MS / 1_000}s`);
+
 /** A fake `exec(file, args, options)` -- `versions` maps the exact string
  * `exec` should receive as `file` to a version string (parsed by the
  * module's own parseVersionString(), so 'vX.Y.Z' or 'X.Y.Z' both work), or
@@ -394,7 +401,7 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.18: validateRecordedToolchai
         assert.equal(result.nodeVersion, null);
         assert.equal(result.problems.length, 1);
         assert.match(result.problems[0], /\/opt\/toolchain\/node/);
-        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.match(result.problems[0], PROBE_TIMEOUT_WORDING_RE);
         assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/, 'a probe that never completed is a DIFFERENT finding from one that resolved and said no');
         assert.equal(calls.length, 2, 'exactly one bounded retry, never more');
         // bd stayed fine and is reported separately.
@@ -410,7 +417,7 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.18: validateRecordedToolchai
         const result = await validateRecordedToolchain({ filePath, exec, platform: 'linux' });
 
         assert.equal(result.nodeOk, false);
-        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.match(result.problems[0], PROBE_TIMEOUT_WORDING_RE);
         assert.match(result.problems[0], /EAGAIN/);
         assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/);
         assert.equal(calls.length, 2);
@@ -449,7 +456,7 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.18: validateRecordedToolchai
         assert.equal(result.bdOk, false);
         assert.equal(result.problems.length, 1);
         assert.match(result.problems[0], /\/opt\/toolchain\/bd/);
-        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.match(result.problems[0], PROBE_TIMEOUT_WORDING_RE);
         assert.doesNotMatch(result.problems[0], /Node\.js/);
         assert.equal(bdCalls.length, 2, 'bd\'s own probe was retried exactly once');
     });
@@ -806,7 +813,7 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
 
         assert.equal(result.nodeOk, false);
         assert.equal(result.problems.length, 1);
-        assert.match(result.problems[0], /could not be probed within 15s/);
+        assert.match(result.problems[0], PROBE_TIMEOUT_WORDING_RE);
         assert.doesNotMatch(result.problems[0], /does not resolve to a usable Node\.js runtime/, 'a genuine timeout must never be worded as a crash/resolve failure');
         assert.equal(calls.length, 2, 'a genuine timeout is retried exactly once -- never zero, never more than one retry');
     });
