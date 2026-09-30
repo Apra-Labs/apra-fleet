@@ -124,12 +124,12 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // rather than omitting `owner` from this schema (which would just silently
   // drop it, per zod's default strip-unknown-keys behaviour).
   if (input.owner !== undefined && existing.reservedBy) {
-    return `❌ Cannot set owner: member is held (reservedBy=${existing.reservedBy}). Member was NOT updated.`;
+    return `\u274C Cannot set owner: member is held (reservedBy=${existing.reservedBy}). Member was NOT updated.`;
   }
 
   if (input.env !== undefined) {
     const envResult = validateEnvMap(input.env);
-    if (!envResult.ok) return `❌ ${envResult.error} Member was NOT updated.`;
+    if (!envResult.ok) return `\u274C ${envResult.error} Member was NOT updated.`;
   }
 
   const needsUniquenessCheck = existing.agentType === 'remote'

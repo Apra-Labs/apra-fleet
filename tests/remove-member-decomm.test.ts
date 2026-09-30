@@ -237,7 +237,7 @@ describe('removeMember - decommissioning', () => {
 
       const result = await removeMember({ member_id: member.id, force: true });
 
-      expect(result).toContain('✅');
+      expect(result).toContain('\u2705');
     });
   });
 });

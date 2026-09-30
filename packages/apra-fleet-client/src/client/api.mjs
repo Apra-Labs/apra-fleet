@@ -154,6 +154,7 @@
  * @property {string} os - Detected/registered operating system, or "unknown"
  * @property {string} folder - Working directory on the target machine
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
+ * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project, null until provisioned
  * @property {string} llm_auth - Resolved LLM auth status
  * @property {string} [ssh_auth] - SSH auth type, remote members only
  * @property {string|null} session - Current session id, or null

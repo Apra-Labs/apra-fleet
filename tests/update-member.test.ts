@@ -637,7 +637,7 @@ describe('updateMember -- owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', (
       owner: { package: 'fleet-sprint', ref: 'sprint-1' },
     });
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).toContain('held');
     expect(getAllAgents().find(a => a.id === member.id)?.owner).toBeUndefined();
   });
@@ -648,7 +648,7 @@ describe('updateMember -- owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', (
 
     const result = await updateMember({ member_id: member.id, env: { '1bad': 'value' } });
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).toContain('Invalid env name');
     expect(getAllAgents().find(a => a.id === member.id)?.env).toBeUndefined();
   });
@@ -664,7 +664,7 @@ describe('updateMember -- owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', (
 
     const result = await updateMember({ member_id: member.id, env: bigEnv });
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).toContain('too large');
     expect(getAllAgents().find(a => a.id === member.id)?.env).toBeUndefined();
   });

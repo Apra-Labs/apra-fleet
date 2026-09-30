@@ -44,7 +44,7 @@ vi.mock('../../src/services/strategy.js', () => ({
 // (mocked) strategy above; mocking it directly keeps this suite's focus on
 // the owner/env/llmAuthExpiresAt field plumbing, not permission composition
 // (already covered by tests/register-member.test.ts).
-const mockComposePermissions = vi.fn(async () => '✅ mocked compose_permissions');
+const mockComposePermissions = vi.fn(async () => '\u2705 mocked compose_permissions');
 vi.mock('../../src/tools/compose-permissions.js', () => ({
   composePermissions: (...args: unknown[]) => mockComposePermissions(...args),
 }));
@@ -84,7 +84,7 @@ describe('Member owner/env/llmAuthExpiresAt round trip (apra-fleet-4qtu.1.2)', (
     vi.clearAllMocks();
     setupDefaultMocks();
     mockComposePermissions.mockClear();
-    mockComposePermissions.mockResolvedValue('✅ mocked compose_permissions');
+    mockComposePermissions.mockResolvedValue('\u2705 mocked compose_permissions');
   });
 
   afterEach(() => {
@@ -183,7 +183,7 @@ describe('Member owner/env/llmAuthExpiresAt round trip (apra-fleet-4qtu.1.2)', (
       env: { 'not valid!': 'value' },
     } as any);
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).not.toContain('registered successfully');
     // Never silently registered without the env -- the member must not exist at all.
     const list = JSON.parse(await listMembers({ format: 'json' }));
@@ -207,7 +207,7 @@ describe('Member owner/env/llmAuthExpiresAt round trip (apra-fleet-4qtu.1.2)', (
       env: bigEnv,
     } as any);
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).not.toContain('registered successfully');
   });
 
@@ -228,7 +228,7 @@ describe('Member owner/env/llmAuthExpiresAt round trip (apra-fleet-4qtu.1.2)', (
       owner: { package: 'fleet-sprint', ref: 'sprint-1' },
     });
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result.toLowerCase()).toContain('held');
     expect(getAgent(id)?.owner).toBeUndefined();
   });

@@ -233,7 +233,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // --- env map validation (DQ-23) ---
   if (input.env !== undefined) {
     const envResult = validateEnvMap(input.env);
-    if (!envResult.ok) return `❌ ${envResult.error} Member was NOT registered.`;
+    if (!envResult.ok) return `\u274C ${envResult.error} Member was NOT registered.`;
   }
 
   // --- Duplicate folder check ---

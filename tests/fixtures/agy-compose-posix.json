@@ -268,7 +268,11 @@
           "mcp(apra-fleet/kb_setup)",
           "mcp(apra-fleet-member/kb_setup)",
           "mcp(apra-fleet/kb_export)",
-          "mcp(apra-fleet-member/kb_export)"
+          "mcp(apra-fleet-member/kb_export)",
+          "mcp(apra-fleet/member_owner)",
+          "mcp(apra-fleet-member/member_owner)",
+          "mcp(apra-fleet/member_git_status)",
+          "mcp(apra-fleet-member/member_git_status)"
         ]
       }
     }
@@ -471,7 +475,11 @@
           "mcp(apra-fleet/kb_setup)",
           "mcp(apra-fleet-member/kb_setup)",
           "mcp(apra-fleet/kb_export)",
-          "mcp(apra-fleet-member/kb_export)"
+          "mcp(apra-fleet-member/kb_export)",
+          "mcp(apra-fleet/member_owner)",
+          "mcp(apra-fleet-member/member_owner)",
+          "mcp(apra-fleet/member_git_status)",
+          "mcp(apra-fleet-member/member_git_status)"
         ]
       }
     }

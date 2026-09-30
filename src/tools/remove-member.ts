@@ -55,7 +55,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (!input.force) {
     const { refusalText } = await memberHeldCheck(agent, [agent.owner?.package ?? null]);
     if (refusalText) {
-      return `⛔ Cannot remove member "${agent.friendlyName}": ${refusalText} Error code: member-held. Set force=true to remove anyway.`;
+      return `\u26D4 Cannot remove member "${agent.friendlyName}": ${refusalText} Error code: member-held. Set force=true to remove anyway.`;
     }
   }
 
