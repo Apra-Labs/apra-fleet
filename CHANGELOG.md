@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint: scoped re-plan findings, truthful role KB contract, shell-guard gap
+
+- Scoped in-cycle re-plan: the planner prompt now carries the code reviewer's findings for each flagged bead (capped at 4000 characters with a visible truncation marker).
+- planner, plan-reviewer, deployer, integ-test-runner and regression-test-runner treat the engine-injected KB block as primary; KB tool calls are optional, and the planner is no longer asked for `kb_captures`.
+- The shell-command guard now also flags POSIX special parameters (`$?`, `$!`, `$$`, `$#`, `$@`, `$*`, `$0`-`$9`) in member-bound command strings.
+
 ## [Unreleased] -- provision_vcs_auth: failure cause now reaches structuredContent, not just text
 
 `provision_vcs_auth` failures (e.g. `deploy_failed`, `member_offline`) now carry the
