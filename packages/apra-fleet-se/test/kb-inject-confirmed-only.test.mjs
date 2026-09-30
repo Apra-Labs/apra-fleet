@@ -179,6 +179,16 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
             'INFERRED entries ranked first must not crowd the CONFIRMED ones out of the cap');
     });
 
+    // The sources own the cap; the block only filters. A block-level cap would
+    // silently drop entries a caller deliberately handed it (e.g. related claims
+    // appended after a full page of direct hits).
+    test('kbKnowledgeBlock filters but never caps -- every CONFIRMED entry handed to it is rendered', () => {
+        const many = Array.from({ length: KB_MAX_KNOWLEDGE_ENTRIES + 5 }, (_, i) => entry(`m${i}`, `confirmedmarker many ${i}`, 'CONFIRMED'));
+        const [block] = kbKnowledgeBlock([...many, ...REJECTS]);
+        for (const e of many) assert.ok(block.includes(`"${e.title}"`), `${e.title} must be rendered`);
+        for (const marker of REJECT_MARKERS) assert.ok(!block.includes(marker), marker);
+    });
+
     // develop.mjs / runner.js: `queried.length > 0 ? queried : kbPriming.knowledgeOf(member)`.
     test('an all-unconfirmed query result falls back to the (filtered) sprint-start set', async () => {
         const { callTool } = oldServer({ l1: REJECTS, related: RELATED_REJECTS });

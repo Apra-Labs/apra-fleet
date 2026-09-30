@@ -713,7 +713,9 @@ export function kbQueryTerms(beads, beadIds) {
 // prompts tell them to note the finding in their own report instead.
 export function kbKnowledgeBlock(entries, { captureChannel = true } = {}) {
     if (!Array.isArray(entries)) return [];
-    const injectable = entries.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+    // Filter only -- the sources (relevantKnowledge, primeAll) own the entry cap,
+    // so this block never drops what a caller deliberately handed it.
+    const injectable = entries.filter(isInjectableKbEntry);
     if (injectable.length === 0) return [];
     const captureLine = captureChannel
         ? 'If you discover something non-obvious and durable while working, report it in the '
