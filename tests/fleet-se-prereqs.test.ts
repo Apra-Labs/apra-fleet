@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   detectFleetSePrereqs,
+  resolveFleetSeToolchainPaths,
   MIN_NODE_VERSION,
   PREREQ_PROBE_TIMEOUT_MS,
   type FleetSePrereqExec,
@@ -182,5 +183,281 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
     expect(result.missing).toContain('npm');
     // node resolved fine -- isolates this case to the npm branch only.
     expect(result.missing).not.toContain('node');
+  });
+});
+
+// apra-fleet-i9ag.19.1: resolveFleetSeToolchainPaths() resolves the ABSOLUTE
+// path of the node and bd the installer itself successfully probed, so a
+// later step can record that path for a service manager (macOS launchd, a
+// Windows scheduled task) that does not inherit the login shell's PATH.
+// Unlike makeExec() above (keyed only by `file`), these fakes need to
+// distinguish node's two different probes (`-p process.execPath` vs
+// `--version`) by their full argv, so they key on `${file} ${args.join(' ')}`.
+
+/**
+ * Builds a fake FleetSePrereqExec keyed by `${file} ${args.join(' ')}`. A
+ * key with no entry in `responses` throws ENOENT, mirroring a real failed
+ * spawn -- never a falsy/empty success value.
+ */
+function makeArgvExec(responses: Record<string, string | Error>): FleetSePrereqExec {
+  return vi.fn((file: string, args: string[]) => {
+    const key = [file, ...args].join(' ');
+    const resp = responses[key];
+    if (resp === undefined) {
+      throw Object.assign(new Error(`spawn ${key} ENOENT`), { code: 'ENOENT' });
+    }
+    if (resp instanceof Error) throw resp;
+    return resp;
+  });
+}
+
+describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
+  it('healthy host -> absolute node and bd paths with ok:true', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/opt/nvm/versions/node/v22.16.0/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      '/usr/local/bin/bd --version': 'bd version 1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.node).toEqual({
+      path: '/opt/nvm/versions/node/v22.16.0/bin/node',
+      version: '22.16.0',
+      ok: true,
+      reason: null,
+    });
+    expect(result.bd).toEqual({
+      path: '/usr/local/bin/bd',
+      version: '1.2.3',
+      ok: true,
+      reason: null,
+    });
+    // apra-fleet-i9ag.19.27 AC2/AC3: the version probe used the just-resolved
+    // absolute bdPath, never a fresh bare-'bd' PATH lookup that could
+    // silently resolve to a different binary.
+    expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
+    expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
+  });
+
+  // NOTE (apra-fleet-i9ag.19.1 judge D2, 2026-09-29 review fix): this case's
+  // fixture lists TWO '.cmd' lines -- it exercises the 'where'/shell/timeout
+  // wiring and the win32-vs-linux PATH-lookup contrast, but NOT extension-
+  // based selection (both candidates already carry an executable extension,
+  // so a plain "take line 1" implementation would pass this case too). The
+  // title used to say "(first non-empty line)", which is no longer an
+  // accurate description of win32's selection rule -- see the dedicated
+  // A1-A5 cases below for the actual D2 regression coverage (extension
+  // preference over line index).
+  it('win32 resolves bd via "where bd", both candidates already executable; the SAME exec under linux cannot satisfy it', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': '\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\other\\bd.cmd\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
+    });
+
+    const win32Result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(win32Result.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(win32Result.bd.ok).toBe(true);
+    expect(exec).toHaveBeenCalledWith('where', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+
+    vi.mocked(exec).mockClear();
+
+    // Same exec, POSIX platform: resolveBdPath() must ask 'which bd', which
+    // this fake does not know how to answer -> bd.ok false. This is what
+    // makes the win32 assertion above non-vacuous.
+    const linuxResult = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    expect(linuxResult.bd.ok).toBe(false);
+    expect(linuxResult.bd.path).toBeNull();
+    expect(exec).toHaveBeenCalledWith('which', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  // apra-fleet-i9ag.19.1 AMENDED AC (judge D2, PR #561): npm installs bd as
+  // BOTH an extensionless POSIX-shell shim ('<prefix>\npm\bd') and a
+  // 'bd.cmd', and 'where bd' lists the extensionless shim FIRST. The old
+  // (pre-D2) implementation took line 1 unconditionally, which picked that
+  // extensionless shim -- a file cmd.exe cannot execute and
+  // resolveConfiguredWindowsBdScript()'s own .cmd-shape regex cannot parse.
+  // These five cases pin pickWindowsBdLine()'s actual selection rule
+  // (executable extension, never line index) and its exact degraded-outcome
+  // wording.
+  it('A1: "where bd" lists the extensionless npm sh shim FIRST, then bd.cmd -> bd.path is the .cmd, not the first line', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    // A line-1-only (pre-D2-fix) implementation would have returned the
+    // extensionless shim line above instead -- this assertion FAILS against
+    // that shape, which is the whole point of this case.
+    expect(result.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(result.bd.ok).toBe(true);
+  });
+
+  it('A3: selection is by executable extension, not line index -- swapping the order of the same two lines yields the identical .cmd', () => {
+    const execShimFirst = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
+    });
+    const execCmdFirst = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\bd\n',
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd --version': '1.2.3\n',
+    });
+
+    const shimFirstResult = resolveFleetSeToolchainPaths({ exec: execShimFirst, platform: 'win32' });
+    const cmdFirstResult = resolveFleetSeToolchainPaths({ exec: execCmdFirst, platform: 'win32' });
+
+    expect(shimFirstResult.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(cmdFirstResult.bd.path).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd');
+    expect(shimFirstResult.bd.path).toBe(cmdFirstResult.bd.path);
+  });
+
+  it('A4: a native bd.exe with no .cmd present is still selected over the extensionless shim', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\r\nC:\\tools\\bd\\bd.exe\n',
+      'C:\\tools\\bd\\bd.exe --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    expect(result.bd.path).toBe('C:\\tools\\bd\\bd.exe');
+    expect(result.bd.ok).toBe(true);
+  });
+
+  it('A2: "where bd" returns ONLY an extensionless shim -> ok:false, reason names exactly what was found and why it is unusable', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+
+    expect(result.bd.ok).toBe(false);
+    expect(result.bd.path).toBeNull();
+    expect(result.bd.reason).toBe(
+      'where bd found no .cmd/.exe on PATH, only non-executable candidate(s) cmd.exe cannot run: '
+      + 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd',
+    );
+  });
+
+  it('A5: POSIX "which bd" returns multiple lines -> the first non-empty line is selected, asserted on the exact value', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '\n/usr/local/bin/bd\n/opt/other/bd\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.bd.path).toBe('/usr/local/bin/bd');
+    expect(result.bd.ok).toBe(true);
+  });
+
+  it('node -p process.execPath throws -> node.ok false with a reason naming the probe, never thrown out of the function', () => {
+    const exec = makeArgvExec({
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
+    });
+
+    let result: ReturnType<typeof resolveFleetSeToolchainPaths> | undefined;
+    expect(() => {
+      result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    }).not.toThrow();
+
+    expect(result!.node.ok).toBe(false);
+    expect(result!.node.path).toBeNull();
+    expect(result!.node.reason).toMatch(/process\.execPath/);
+  });
+
+  it('node below MIN_NODE_VERSION -> node.ok false, reason names the found version and the minimum', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.9.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      '/usr/local/bin/bd --version': '1.2.3\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.node.ok).toBe(false);
+    expect(result.node.path).toBe('/usr/bin/node');
+    expect(result.node.version).toBe('22.9.0');
+    expect(result.node.reason).toContain('22.9.0');
+    expect(result.node.reason).toContain(MIN_NODE_VERSION);
+  });
+
+  it('bd absent -> bd.ok false with a reason, and does not affect node\'s result', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    expect(result.bd.ok).toBe(false);
+    expect(result.bd.path).toBeNull();
+    expect(result.bd.reason).not.toBeNull();
+    expect(result.node).toEqual({
+      path: '/usr/bin/node',
+      version: '22.16.0',
+      ok: true,
+      reason: null,
+    });
+  });
+
+  // apra-fleet-i9ag.19.27: resolveBdPath() used to compute `reason` for this
+  // exact case (bdPath resolved, `bd --version` throws) and then
+  // unconditionally discard it via `reason: bdPath !== null ? null : reason`
+  // -- so bdVersion:null shipped with ok:true and NO explanation why. This
+  // pins the fix: the version-probe failure is now surfaced in `reason`
+  // (asserted by exact field value, not just non-null) while `ok` stays
+  // true, since bd is genuinely non-fatal at install time.
+  it('bd found on PATH but "bd --version" throws -> bd.ok stays true (path is what matters), version is null, and the failure reason is surfaced (not silently discarded)', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      '/usr/local/bin/bd --version': Object.assign(new Error('spawn bd ENOENT'), { code: 'ENOENT' }),
+    });
+
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+
+    // Path resolution succeeded -- bd IS on PATH -- so ok reflects that,
+    // even though its version could not be determined.
+    expect(result.bd.path).toBe('/usr/local/bin/bd');
+    expect(result.bd.ok).toBe(true);
+    expect(result.bd.version).toBeNull();
+    // The diagnostic is no longer discarded: it names the resolved path and
+    // the underlying spawn failure, asserted by exact value.
+    expect(result.bd.reason).toBe(
+      'bd --version failed for /usr/local/bin/bd: spawn bd ENOENT',
+    );
+    // AC2/AC3: the version probe was made against the just-resolved absolute
+    // bdPath, never a fresh bare-'bd' PATH lookup -- so the recorded
+    // bdVersion (or, here, the reason it is null) provably describes the
+    // recorded bdPath.
+    expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
+      shell: true,
+      timeout: PREREQ_PROBE_TIMEOUT_MS,
+    });
+    expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
   });
 });

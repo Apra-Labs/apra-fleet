@@ -16,6 +16,7 @@
 // scripts/lib/exec-bd.mjs.
 
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 
 /** Minimum Node.js version fleet-se requires (major.minor.patch). */
 export const MIN_NODE_VERSION = '22.16.0';
@@ -195,4 +196,217 @@ export function detectFleetSePrereqs(deps: Partial<FleetSePrereqDeps> = {}): Fle
   if (!npm.present) missing.push('npm');
 
   return { node, npm, ok: missing.length === 0, missing };
+}
+
+// ---------------------------------------------------------------------------
+// resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)
+// ---------------------------------------------------------------------------
+//
+// The installed fleet-supervisor service resolves `node` (and `bd`) through
+// whatever PATH its service manager hands it. macOS launchd and a Windows
+// scheduled task do not inherit the login shell's PATH, so a node installed
+// by nvm/fnm/volta is invisible to the service. Knowing the ABSOLUTE path of
+// the node and bd the installer itself successfully probed is the first step
+// toward recording that path for the service to use later
+// (apra-fleet-i9ag.19.2). This function only resolves and reports -- it never
+// writes config or touches the console/process.exit, mirroring
+// detectFleetSePrereqs()'s own "report only" contract above.
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Result of resolving a single toolchain binary's absolute path. */
+export interface FleetSeToolchainProbe {
+  /** Absolute path to the resolved binary, or null if resolution failed. */
+  path: string | null;
+  /** Parsed version string, or null if unknown/unavailable. */
+  version: string | null;
+  /** True only when the path was resolved (and, for node, satisfies MIN_NODE_VERSION). */
+  ok: boolean;
+  /**
+   * Human-readable diagnostic. For node, non-null exactly when ok is false
+   * (why resolution/the version gate failed). For bd, resolution failing
+   * (ok:false) sets this the same way, but a resolved bdPath whose OWN
+   * version probe then failed also sets this to a non-null advisory while
+   * ok stays true (apra-fleet-i9ag.19.27) -- bd's version is diagnostic
+   * only, never load-bearing for `ok`. Always check `ok` first; a non-null
+   * `reason` under `ok:true` is advisory, not a failure.
+   */
+  reason: string | null;
+}
+
+export interface FleetSeToolchainPaths {
+  node: FleetSeToolchainProbe;
+  bd: FleetSeToolchainProbe;
+}
+
+/**
+ * Resolves node's absolute interpreter path by asking node itself
+ * (`node -p process.execPath`) rather than trusting PATH resolution -- this
+ * is what makes a version-manager shim (nvm/fnm/volta) resolve to the real
+ * interpreter instead of to the shim script. Reuses probeNode() for the
+ * version/satisfiesMin verdict so there is exactly one version-compare
+ * implementation. Never throws: every probe failure becomes ok:false plus a
+ * human reason naming which probe failed.
+ */
+function resolveNodePath(exec: FleetSePrereqExec): FleetSeToolchainProbe {
+  let execPath: string | null = null;
+  let pathReason: string | null = null;
+  try {
+    const raw = exec('node', ['-p', 'process.execPath'], { ...PROBE_OPTIONS });
+    const text = String(raw).trim();
+    if (text.length > 0) {
+      execPath = text;
+    } else {
+      pathReason = 'node -p process.execPath returned no output';
+    }
+  } catch (err) {
+    pathReason = `node -p process.execPath failed: ${errorMessage(err)}`;
+  }
+
+  const versionProbe = probeNode(exec);
+  const isAbsolute = execPath !== null && path.isAbsolute(execPath);
+
+  const reasons: string[] = [];
+  if (execPath === null) {
+    reasons.push(pathReason ?? 'node -p process.execPath produced no usable path');
+  } else if (!isAbsolute) {
+    reasons.push(`node -p process.execPath returned a non-absolute path: ${execPath}`);
+  }
+  if (!versionProbe.satisfiesMin) {
+    reasons.push(
+      versionProbe.present
+        ? `node --version reported ${versionProbe.version}, below the minimum ${MIN_NODE_VERSION}`
+        : `node --version probe failed, required ${MIN_NODE_VERSION}+`,
+    );
+  }
+
+  return {
+    path: execPath,
+    version: versionProbe.version,
+    ok: isAbsolute && versionProbe.satisfiesMin,
+    reason: reasons.length > 0 ? reasons.join('; ') : null,
+  };
+}
+
+/**
+ * Extension-matcher for a Windows executable shim/binary. `where bd` can list
+ * multiple candidates on PATH; only a `.cmd` or `.exe` line is something
+ * cmd.exe can actually execute and resolveConfiguredWindowsBdScript()'s
+ * `.cmd`-shape regex can parse.
+ */
+const WINDOWS_EXECUTABLE_EXTENSION_RE = /\.(cmd|exe)$/i;
+
+/**
+ * Picks the line `where bd` produced that resolveBdPath() should record on
+ * win32. npm installs bd as BOTH an extensionless POSIX-shell shim
+ * (`<prefix>\npm\bd`) and a `bd.cmd`, and `where bd` lists the extensionless
+ * shim FIRST -- so selection here is by EXECUTABLE EXTENSION, never by line
+ * index (apra-fleet-i9ag.19 judge defect D2). Swapping the order of the same
+ * two lines must select the same `.cmd`/`.exe`. When only extensionless
+ * candidates exist, that is an explicit, documented degraded outcome
+ * (path: null, ok: false, reason naming what was found) -- never a silently
+ * recorded unusable path.
+ */
+function pickWindowsBdLine(lines: string[]): { path: string | null; reason: string | null } {
+  const executable = lines.find((line) => WINDOWS_EXECUTABLE_EXTENSION_RE.test(line));
+  if (executable !== undefined) return { path: executable, reason: null };
+  if (lines.length > 0) {
+    return {
+      path: null,
+      reason: `where bd found no .cmd/.exe on PATH, only non-executable candidate(s) cmd.exe cannot run: ${lines.join(', ')}`,
+    };
+  }
+  return { path: null, reason: 'where bd returned no output' };
+}
+
+/**
+ * Resolves bd's absolute path via a platform lookup ('where bd' on win32,
+ * preferring the .cmd/.exe candidate; 'which bd' elsewhere, first non-empty
+ * line) and its version by probing THAT resolved path directly (never a
+ * fresh bare-'bd' PATH lookup, which could silently resolve to a different
+ * binary than the one just picked -- e.g. a PATH ordering difference between
+ * the lookup and the probe, or a shell function/alias named `bd`). bd being
+ * absent is NOT an error here -- unlike node, bd is not a hard fleet-se
+ * prerequisite this module enforces (see the module doc comment's SCOPE
+ * NOTE) -- it just yields ok:false plus a reason.
+ *
+ * ok reflects PATH resolution only: once an absolute bdPath is found, ok
+ * stays true even if the version probe against that path then fails (bd's
+ * version is diagnostic, not load-bearing for the install to proceed).
+ * apra-fleet-i9ag.19.27: that failure is no longer silently dropped -- it is
+ * surfaced in `reason` alongside `ok:true`, which is why this probe's
+ * `reason` is NOT exclusively "why ok is false" the way resolveNodePath()'s
+ * is; a caller must check `ok` first and treat a non-null `reason` under
+ * `ok:true` as an advisory (bd's version could not be confirmed), not a
+ * failure. Never throws.
+ */
+function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSeToolchainProbe {
+  const lookupFile = platform === 'win32' ? 'where' : 'which';
+
+  let bdPath: string | null = null;
+  let reason: string | null = null;
+  try {
+    const raw = exec(lookupFile, ['bd'], { ...PROBE_OPTIONS });
+    const lines = String(raw)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (platform === 'win32') {
+      const picked = pickWindowsBdLine(lines);
+      bdPath = picked.path;
+      reason = picked.reason;
+    } else if (lines.length > 0) {
+      bdPath = lines[0];
+    } else {
+      reason = `${lookupFile} bd returned no output`;
+    }
+  } catch (err) {
+    reason = `bd not found on PATH (${lookupFile} bd failed: ${errorMessage(err)})`;
+  }
+
+  let version: string | null = null;
+  let versionProbeReason: string | null = null;
+  if (bdPath !== null) {
+    try {
+      const raw = exec(bdPath, ['--version'], { ...PROBE_OPTIONS });
+      const parsed = parseVersionString(raw);
+      const trimmed = String(raw).trim();
+      version = parsed ?? (trimmed.length > 0 ? trimmed : null);
+    } catch (err) {
+      versionProbeReason = `bd --version failed for ${bdPath}: ${errorMessage(err)}`;
+    }
+  }
+
+  return {
+    path: bdPath,
+    version,
+    ok: bdPath !== null,
+    // Path resolution failing is fatal to this probe (reason names why);
+    // a resolved path whose version probe then failed is NOT fatal (ok
+    // stays true) but the diagnostic is still surfaced, never discarded.
+    reason: bdPath !== null ? versionProbeReason : reason,
+  };
+}
+
+/**
+ * Resolves the absolute paths of node and bd that the installer itself
+ * successfully probed, so a later step (apra-fleet-i9ag.19.2) can record
+ * them into supervisor.config.json for a service manager that does not
+ * inherit the login shell's PATH (macOS launchd, a Windows scheduled task).
+ * Both the exec function and the platform value are injectable, mirroring
+ * detectFleetSePrereqs() above, so both the win32 and POSIX lookup branches
+ * are exercisable from any host with no real node/bd anywhere. Never throws.
+ */
+export function resolveFleetSeToolchainPaths(
+  deps: Partial<FleetSePrereqDeps> = {},
+): FleetSeToolchainPaths {
+  const exec = deps.exec ?? defaultExec;
+  const platform = deps.platform ?? process.platform;
+
+  return {
+    node: resolveNodePath(exec),
+    bd: resolveBdPath(exec, platform),
+  };
 }

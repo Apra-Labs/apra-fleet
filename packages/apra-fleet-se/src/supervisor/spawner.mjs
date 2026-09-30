@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSprintRunnerCommand } from './node-runner.mjs';
+import { prependToPathEnv } from './lib/child-path-env.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,7 +271,9 @@ export function buildSprintArgv(opts = {}) {
  * @param {{
  *   basePort?: number,
  *   command?: string,
- *   resolveRunner?: () => { command: string, source: string, version: string },
+ *   resolveRunner?: (deps?: { configuredNodePath?: string, configuredNodeVersion?: string }) => { command: string, source: string, version: string },
+ *   configuredNodePath?: string,
+ *   configuredNodeVersion?: string,
  *   cliPath?: string,
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
@@ -325,6 +328,36 @@ export function createSpawner(deps = {}) {
     // succeeding resolution without touching the real environment/PATH.
     const commandOverride = deps.command;
     const resolveRunner = deps.resolveRunner ?? resolveSprintRunnerCommand;
+    // apra-fleet-i9ag.19.5: the recorded toolchain's absolute node path --
+    // read by the caller (bin/serve.mjs, once it consults the installed
+    // toolchain) and handed in here so this module stays filesystem-free.
+    // NOT gated on that caller's own validation of it (2026-09-29 review
+    // fix -- see this value's second use, the PATH-prepend guard below, for
+    // why that distinction matters): bin/serve.mjs deliberately forwards the
+    // recorded path REGARDLESS of whether its own probe found it usable, so
+    // an unvalidated recording still reaches resolveRunner() below and is
+    // rejected LOUDLY, by name, through node-runner.mjs's own re-probing
+    // CONFIGURED tier -- never silently discarded to a PATH-lookup fallback.
+    // Threaded into every resolveRunner() call below so the real
+    // resolveSprintRunnerCommand() can apply that CONFIGURED tier, which MUST
+    // beat current-runtime/PATH: a supervisor service with no usable PATH has
+    // no other way to launch a sprint. Harmless to pass to an injected
+    // `resolveRunner` too -- every existing test's injected resolver is a
+    // zero-arg closure that ignores whatever argument it is called with, so
+    // this cannot change any existing test's behaviour.
+    const configuredNodePath = deps.configuredNodePath;
+    // apra-fleet-i9ag.19.35: the version bin/serve.mjs's startup
+    // `validateRecordedToolchain()` ACCEPTED for exactly that recorded path,
+    // in this same process (passed only when its `nodeOk` was true). Threaded
+    // straight through to the resolver's CONFIGURED tier, which consumes it
+    // INSTEAD of re-probing the same binary per launch -- see
+    // node-runner.mjs's header ("STARTUP AND LAUNCH MUST AGREE") for why a
+    // second, independent probe of an already-accepted node is what let a
+    // loaded host 503 every launch the startup check had just passed. Omitted
+    // from the resolver's deps object entirely when undefined, so an injected
+    // `resolveRunner` (every existing test) sees the exact same argument shape
+    // it saw before this bead.
+    const configuredNodeVersion = deps.configuredNodeVersion;
     // A SUCCESSFUL resolution is cached for this process's lifetime -- the
     // Node.js runtime available to this supervisor process cannot change
     // while it is up. A FAILURE is deliberately NEVER cached, so a transient
@@ -346,7 +379,10 @@ export function createSpawner(deps = {}) {
     function resolveCommand() {
         if (commandOverride !== undefined) return commandOverride;
         if (cachedRunner) return cachedRunner.command;
-        const resolved = resolveRunner();
+        const resolved = resolveRunner({
+            configuredNodePath,
+            ...(configuredNodeVersion !== undefined ? { configuredNodeVersion } : {}),
+        });
         cachedRunner = resolved;
         logger.log?.(
             `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,
@@ -455,12 +491,56 @@ export function createSpawner(deps = {}) {
             // apra-fleet-50j6.2.1: compose env with serviceToken. Base is
             // deps.env (if provided) or process.env (the implicit default).
             // If serviceToken is set, overlay it on the base env as
-            // FLEET_SE_SERVICE_TOKEN. Omit env entirely if no token and no
-            // deps.env -- match today's behavior exactly.
+            // FLEET_SE_SERVICE_TOKEN. Omit env entirely if no token, no
+            // deps.env, and no configured node path -- match today's
+            // behavior exactly (AC3).
             const baseEnv = deps.env ?? process.env;
-            const spawnEnv = serviceToken
-                ? { ...baseEnv, FLEET_SE_SERVICE_TOKEN: serviceToken }
-                : baseEnv;
+            let spawnEnv = baseEnv;
+            if (serviceToken) {
+                spawnEnv = { ...spawnEnv, FLEET_SE_SERVICE_TOKEN: serviceToken };
+            }
+            // apra-fleet-i9ag.19.32: the child-env half of the same defect
+            // exec-bd.mjs (apra-fleet-i9ag.19.7) fixes for the supervisor's
+            // OWN `bd` invocations. Spawning the sprint child with the
+            // recorded node fixes which interpreter the CHILD runs under,
+            // but the child inherits this env and shells out to `bd` (an
+            // npm `'#!/usr/bin/env node'` script) on its own -- under a
+            // launchd/Windows-task PATH with no `node` on it, that first
+            // `bd` call dies with `env: node: No such file or directory`
+            // (exit 127) unless the recorded node's directory is already on
+            // the search path this child inherits. Prepending (never
+            // replacing) dirname(configuredNodePath) here fixes that, while
+            // leaving every pre-existing entry in place and in order (AC1).
+            // Uses prependToPathEnv() (src/supervisor/lib/child-path-env.mjs)
+            // for the case-correct 'PATH' vs 'Path' key lookup -- writing
+            // `spawnEnv.PATH` directly would silently create a SECOND
+            // variable on Windows and drop every real entry (AC2). Operates
+            // on `spawnEnv`, never `baseEnv`/`process.env` directly (AC4):
+            // when neither serviceToken nor configuredNodePath applies,
+            // `spawnEnv` is still exactly `baseEnv` by reference, so the
+            // `spawnEnv !== process.env` check below is unaffected.
+            //
+            // WHAT THIS GUARD ACTUALLY CHECKS (2026-09-29 review fix): "a
+            // non-blank string", nothing more -- it does NOT require that
+            // `configuredNodePath` passed `validateRecordedToolchain()`'s own
+            // probe. bin/serve.mjs deliberately hands this the recorded
+            // `toolchain.nodePath` REGARDLESS of `nodeOk` (see its own
+            // `configuredNodePath: toolchain.nodePath ?? undefined` comment):
+            // an unvalidated recording is meant to surface as a loud,
+            // path-naming 503 from node-runner.mjs's CONFIGURED tier, not to
+            // silently fall through to a PATH lookup. That means this PATH
+            // prepend can run against a node path that never resolved to a
+            // usable runtime -- harmless in practice today because that same
+            // CONFIGURED tier hard-errors resolveCommand() before spawnImpl()
+            // is ever reached, so this line never executes for a broken
+            // recording -- but a future change must not assume this guard
+            // implies validity.
+            if (typeof configuredNodePath === 'string' && configuredNodePath.trim().length > 0) {
+                if (spawnEnv === baseEnv) {
+                    spawnEnv = { ...spawnEnv };
+                }
+                prependToPathEnv(spawnEnv, path.dirname(configuredNodePath.trim()));
+            }
             child = spawnImpl(command, args, {
                 detached: true,
                 stdio: ['ignore', logFd, logFd],

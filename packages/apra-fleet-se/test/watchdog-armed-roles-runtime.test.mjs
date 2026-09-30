@@ -8,6 +8,7 @@ import {
     createRecordingCtx, ROLE_CALL_OPTS, BINDINGS,
     DISPATCH_TIMEOUT_S, INTEG_MAX_TOTAL_S, REGRESSION_TEST_MAX_TOTAL_S,
 } from './helpers/dispatch-role-harness.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 /**
  * Maps a policy row's resolved `watchdog.timeoutS` SYMBOLIC NAME to the
@@ -50,22 +51,56 @@ const NEWLY_ARMED_ROLES = ROLE_NAMES.filter(
 
 const GRACE_S = 30; // DISPATCH_WATCHDOG_GRACE_S, private to dispatch-failure.mjs
 
-/** One real event-loop turn, taken with setImmediate so the FAKE setTimeout
- *  clock does not move. */
-const turn = () => new Promise((resolve) => setImmediate(resolve));
+/**
+ * apra-fleet-i9ag.19.39: this file used to advance past two waits by
+ * draining a FIXED number of real event-loop turns (`until()`'s bounded
+ * `setImmediate` poll, and a flat `drainTurns(20)` before the "did not fire
+ * early" check). A turn count is not an upper bound on "the thing I am
+ * waiting for has happened": on a loaded host `until()` could exhaust its
+ * budget before the engine reached the race (the judge's "0 !== 2"-shaped
+ * flake on PR #561), and `drainTurns()` could either race a genuine log
+ * arrival or -- worse -- pass vacuously by never giving a real early-fire a
+ * chance to be observed. Both are replaced below by waiting on an OBSERVABLE
+ * SIGNAL the production code itself produces (the watchdog wrapper being
+ * invoked; its own [dispatch-watchdog] log line landing), following the
+ * withCallSignal()/waitForCalls() precedent in
+ * test/i9ag19-9-toolchain.test.mjs (read as a pattern here, not imported --
+ * that file is a mutex resource owned by a different streak).
+ */
 
-/** A bounded number of real turns, to flush whatever the engine has queued. */
-async function drainTurns(n = 20) {
-    for (let i = 0; i < n; i += 1) await turn();
-}
+/** The genuine global setTimeout/clearTimeout, captured before this file's own
+ *  mock.timers.enable() call ever runs, so a hang-guard built from them can
+ *  never be faked by the same clock the code under test is racing against,
+ *  and clearing the guard later never routes through a since-mocked
+ *  clearTimeout that only understands fake-timer handles. */
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 
-/** Waits (in real turns, never fake time) until `pred` holds. */
-async function until(pred, label, maxTurns = 1000) {
-    for (let i = 0; i < maxTurns; i += 1) {
-        if (pred()) return;
-        await turn();
-    }
-    throw new Error(`timed out waiting for: ${label}`);
+/** Real wall-clock ceiling for "the engine actually reached the watchdog
+ *  race" -- never a fixed turn count -- scaled for host contention via
+ *  scaledTimeout() so a loaded CI host is never misreported as hung. */
+const REACHED_RACE_TIMEOUT_MS = scaledTimeout(5_000);
+
+/** Races `promise` against a short REAL (never fake-clock) wall-clock guard.
+ *  A healthy run always settles `promise` near-instantly; `ms` is never what
+ *  a PASSING run waits on, only a bound on a genuinely hung one, so a real
+ *  regression fails loudly with a message naming the real budget waited,
+ *  instead of hanging the suite forever. The guard timer is always cleared
+ *  once the race settles either way, so a passing case releases the real
+ *  event loop immediately instead of leaving a ref'd timer alive for its
+ *  full `ms` -- a genuine hang still fails loudly with the same message
+ *  naming the real scaled budget, since the guard fires before its own
+ *  clear ever runs. */
+function withRealTimeoutOrFail(promise, ms, label) {
+    let guardHandle;
+    const guard = new Promise((_resolve, reject) => {
+        guardHandle = realSetTimeout(() => reject(new Error(
+            `${label} -- a genuine hang is suspected: this did not happen within ${ms}ms of real wall-clock time.`
+        )), ms);
+    });
+    return Promise.race([promise, guard]).finally(() => {
+        realClearTimeout(guardHandle);
+    });
 }
 
 /**
@@ -80,10 +115,34 @@ async function raceRoleToWatchdogTimeout(role, expectedTimeoutS) {
 
     const { ctx, rec } = createRecordingCtx({ responses: [neverSettles] });
     const watchdogCalls = [];
+
+    // Resolves the instant the engine actually reaches the watchdog race --
+    // an explicit deferred the wrapper settles synchronously inside the
+    // call, never a fixed number of drained event-loop turns.
+    let resolveReachedRace;
+    const reachedRace = new Promise((resolve) => { resolveReachedRace = resolve; });
     ctx.withDispatchWatchdog = (dispatchPromise, options) => {
         watchdogCalls.push({ ...options });
+        resolveReachedRace();
         // The production race, not the harness pass-through.
         return withDispatchWatchdog(dispatchPromise, options);
+    };
+
+    // Tracks the watchdog's own [dispatch-watchdog] log line landing as a
+    // settled signal, so "did it fire early" is answered by the log's actual
+    // arrival relative to the clock -- never by how many turns were drained
+    // after a tick (which could make the negative half either race a real
+    // early fire, or pass vacuously by never giving one a chance to land).
+    let logged = false;
+    let resolveLogged;
+    const loggedSignal = new Promise((resolve) => { resolveLogged = resolve; });
+    const originalLog = ctx.log;
+    ctx.log = (message) => {
+        originalLog(message);
+        if (message.includes('[dispatch-watchdog]')) {
+            logged = true;
+            resolveLogged();
+        }
     };
 
     const opts = { bindings: BINDINGS, ...ROLE_CALL_OPTS[role] };
@@ -92,18 +151,29 @@ async function raceRoleToWatchdogTimeout(role, expectedTimeoutS) {
         (thrown) => ({ outcome: null, thrown })
     );
 
-    // Let the engine run until it has actually reached the race. setImmediate
-    // is NOT among the faked APIs, so this drains real turns without moving
-    // the fake clock -- guessing a fixed number of microtask ticks instead
-    // would race the engine's own pre-dispatch awaits.
-    await until(() => watchdogCalls.length > 0, `${role}: engine never reached the watchdog race`);
+    // Let the engine run until it has actually reached the race, driven by
+    // the deferred above -- never by guessing a fixed number of microtask
+    // ticks, which would race the engine's own pre-dispatch awaits. Raced
+    // against a short REAL wall-clock guard so a genuine hang fails loudly,
+    // naming the real budget it waited, instead of hanging the suite.
+    await withRealTimeoutOrFail(
+        reachedRace, REACHED_RACE_TIMEOUT_MS, `${role}: engine never reached the watchdog race`
+    );
 
     const budgetMs = (expectedTimeoutS + GRACE_S) * 1000;
     mock.timers.tick(budgetMs - 1);
-    await drainTurns();
-    const firedEarly = rec.logs.some((l) => l.includes('[dispatch-watchdog]'));
+    // mock.timers.tick() runs any due callback SYNCHRONOUSLY within the call
+    // itself (node:test's fake timers never defer a due callback to a later
+    // turn), so `logged` is an exact, immediate answer to "has the
+    // watchdog's own log line landed yet" -- no draining is needed, or able,
+    // to make a callback that is not yet due appear sooner. This is what
+    // makes the negative half fail if the grace period were removed: a
+    // shorter production budget would fire the real timer before this tick,
+    // and `logged` would already be true here.
+    const firedEarly = logged;
 
     mock.timers.tick(1);
+    await loggedSignal;
     const result = await settled;
 
     return { ...result, rec, watchdogCalls, firedEarly, underlyingSettled };

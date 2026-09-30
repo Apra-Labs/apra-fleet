@@ -103,9 +103,31 @@ Commit the docs/ changes with a descriptive message.
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
 - Prepend a new entry to `CHANGELOG.md` (create it if it does not exist) summarising
-  what was implemented, the sprint goal, and any items carried forward
+  what was implemented and the sprint goal
 - Your task context includes a `costAnalysis` block. Insert it verbatim into the CHANGELOG
   entry, after the summary paragraph, exactly as provided -- do not reformat or recompute it
+
+**"Carried forward" is a stable pointer, never an itemized list.** This is the ONE moment a
+sprint's tracker state is briefly final for you, but it does not stay final: other tracks
+(and review) keep closing or reopening beads on the same branch after you write this entry,
+so any specific claim you make here -- "item X remains open," "item Y shipped and is
+verified" -- can go stale within minutes, before you even commit. This has repeatedly
+happened in practice and produced a bad failure mode: an operator-facing release note that
+confidently states something as true when it no longer is. Two rules follow:
+- Do not enumerate specific still-open items, or describe what they are, in "Carried
+  forward." Write one short, permanently-true sentence instead, e.g. "Carried forward: work
+  not completed this sprint remains tracked as open backlog against this sprint's parent
+  bug; check the issue tracker for current status." That sentence is exactly as true
+  whenever a reader sees it, unlike a snapshot of specific item content.
+- Only name something in "What shipped and is verified working" if you have just
+  reconfirmed it as closed/passing in this step -- never restate an earlier draft's or an
+  earlier session's belief about what shipped. If a re-check shows a bead you were about to
+  credit was reopened, drop that line rather than carrying the stale claim forward.
+- Never treat "the CHANGELOG's carried-forward paragraph is out of date" as a task to hand
+  to a doer mid-sprint for a one-off correction -- that only opens a fresh, shorter staleness
+  window (proven in practice: a corrective edit went stale again in under 15 minutes). This
+  step, run once at harvest time with the two rules above, is the only place this text is
+  produced.
 
 Commit these changes.
 

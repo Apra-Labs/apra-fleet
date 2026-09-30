@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { applyIsolatedHome } from '../../../tests/helpers/isolated-home.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -54,6 +55,19 @@ import { applyIsolatedHome } from '../../../tests/helpers/isolated-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
+
+// apra-fleet-i9ag.19.19: every wall-clock wait budget in this file (per-
+// request HTTP timeouts, the /api/health boot deadline, the shutdown-exit
+// wait) is derived from scaledTimeout() rather than a bare millisecond
+// literal, so it scales with APRA_FLEET_TEST_CONCURRENCY the way the newer
+// real-boot suites in this package already do (see
+// test/i9ag19-11-serve-startup-toolchain.test.mjs,
+// test/i9ag19-14-pathless-service-launch.test.mjs). The base numbers below
+// are unchanged from this file's own prior standalone-safe values -- only
+// their scaling under contention is new.
+const HTTP_REQUEST_TIMEOUT_MS = scaledTimeout(3000);
+const BOOT_TIMEOUT_MS = scaledTimeout(20000);
+const SHUTDOWN_TIMEOUT_MS = scaledTimeout(10000);
 
 /** @type {Set<string>} */
 const tmpDirs = new Set();
@@ -119,7 +133,7 @@ function httpRequest(port, pathname, method = 'GET', serviceToken) {
     return new Promise((resolve, reject) => {
         const headers = serviceToken ? { authorization: `Bearer ${serviceToken}` } : {};
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000, headers },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: HTTP_REQUEST_TIMEOUT_MS, headers },
             (res) => {
                 let body = '';
                 res.on('data', (c) => { body += c; });
@@ -488,7 +502,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // Poll for /api/health, but fail fast (with the captured stderr) if
         // the process exits first -- e.g. on a reintroduced ERR_MODULE_NOT_FOUND
         // or other source-repo-relative resolution failure.
-        const deadline = Date.now() + 20000;
+        const deadline = Date.now() + BOOT_TIMEOUT_MS;
         for (;;) {
             if (exited) {
                 assert.fail(
@@ -553,7 +567,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         const shutdown = await httpRequest(port, '/api/shutdown', 'POST', serviceToken);
         assert.equal(shutdown.status, 200);
 
-        await waitForExit(serve, 10000);
+        await waitForExit(serve, SHUTDOWN_TIMEOUT_MS);
         assert.equal(serve.exitCode, 0, 'installed serve.mjs should exit 0 on /api/shutdown');
         assert.doesNotMatch(stderrBuf, /ERR_MODULE_NOT_FOUND/, `installed supervisor logged ERR_MODULE_NOT_FOUND after boot:\n${stderrBuf}`);
     });

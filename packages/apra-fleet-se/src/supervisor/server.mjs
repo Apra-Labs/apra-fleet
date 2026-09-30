@@ -147,6 +147,7 @@ function sendUnauthorized(res) {
  *   dashboard?: object,
  *   beadsIdentity?: { get: () => object|null, refresh: () => Promise<object> },
  *   project?: { projectDir: string, source: string },
+ *   toolchain?: object,
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  * }} [deps]
@@ -180,6 +181,36 @@ export function createSupervisor(deps = {}) {
     // because a record exists made Health read healthy right up to the first
     // failed launch. The handle decides whether there is anything to say.
     const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' ? (h.getWarning() || null) : null);
+    // apra-fleet-i9ag.19.12: the GET /api/health-facing projection of the
+    // startup toolchain report (see the `deps.toolchain` comment below) --
+    // `null` when this supervisor holds no report at all (no toolchain dep
+    // wired: the inert skeleton, or any test that does not pass one). This is
+    // deliberately NOT the raw report object: it omits `configured`/`reason`/
+    // `nodeOk`/`bdOk`/`fixLine` (internal-only fields this task's own FILES
+    // list never asked Health to expose) and keeps exactly the shape the
+    // acceptance criteria names -- { nodePath, nodeVersion, bdPath, bdVersion,
+    // source, ok, problems }.
+    const toolchainSummaryOf = (tc) => (tc ? {
+        nodePath: tc.nodePath,
+        nodeVersion: tc.nodeVersion,
+        bdPath: tc.bdPath,
+        bdVersion: tc.bdVersion,
+        source: tc.source,
+        ok: tc.ok,
+        problems: tc.problems,
+    } : null);
+    // The SAME sentence and fix line bin/serve.mjs's own startup ERROR line
+    // printed for a broken recorded node (`${problems.join(' ')} ${fixLine}`)
+    // -- reusing the report's OWN `problems`/`fixLine` fields (never a second,
+    // hand-copied literal here), so Health and the startup log can never say
+    // two different things about the same failure. Gated on `!ok` exactly
+    // like that ERROR line was: `ok` tracks NODE health only
+    // (toolchain.mjs's own contract), the one condition serious enough to
+    // hard-fail a launch (503) and therefore the one this key exists to
+    // surface to an operator who just hit that 503 with no service-log access.
+    const toolchainWarningOf = (tc) => (
+        tc && tc.ok === false ? [...(tc.problems ?? []), tc.fixLine].filter(Boolean).join(' ') : null
+    );
     // The resolved project folder and WHICH of the three sources won it
     // (flag / config / walk-up -- see resolveProjectDir() in
     // ./beads-identity.mjs). Reported on GET /api/health so the console and
@@ -188,6 +219,19 @@ export function createSupervisor(deps = {}) {
     // cannot see in the process's command line. Absent (null) for the inert
     // skeleton and for tests that wire no project dep.
     const project = deps.project && typeof deps.project.projectDir === 'string' ? deps.project : null;
+    // apra-fleet-i9ag.19.10: the recorded-toolchain validation report
+    // bin/serve.mjs produced ONCE at startup (./toolchain.mjs's
+    // validateRecordedToolchain() result: { configured, nodePath, nodeVersion,
+    // bdPath, bdVersion, source, reason, ok, nodeOk, bdOk, problems, fixLine }).
+    // Held here -- in the same scope GET /api/health below already reads
+    // `beadsIdentity`/`project` from -- so the health handler can report it
+    // without re-probing node and bd per request, and also exposed on the
+    // returned handle (see `get toolchain()` at the bottom of this function).
+    // Not a seam: no start()/stop(), and no route reads it YET -- the health
+    // payload/dashboard surfacing is apra-fleet-i9ag.19.12's job, whose whole
+    // input is this value being available. `null` for the inert skeleton and
+    // for every test that wires no toolchain dep.
+    const toolchain = deps.toolchain && typeof deps.toolchain === 'object' ? deps.toolchain : null;
 
     // The shared bearer service token guarding the `/api/` surface and the
     // live-sprint mutating routes (see auth.mjs's requiresAuth). Either
@@ -369,6 +413,15 @@ export function createSupervisor(deps = {}) {
             projectDirSource: project ? project.source : null,
             ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
+            // apra-fleet-i9ag.19.12: an ADDITION alongside `beads`/`projectDir`/
+            // `projectDirSource` above, never a rename -- `null` when this
+            // supervisor holds no startup toolchain report at all (see
+            // `deps.toolchain`'s own doc comment). `toolchainWarning` is
+            // OMITTED (not present as `null`) whenever there is nothing to
+            // warn about, matching `beadsWarning`'s own omit-not-null contract
+            // just above.
+            toolchain: toolchainSummaryOf(toolchain),
+            ...(toolchainWarningOf(toolchain) ? { toolchainWarning: toolchainWarningOf(toolchain) } : {}),
         });
     });
 
@@ -462,6 +515,10 @@ export function createSupervisor(deps = {}) {
         // only client without a second source of truth. `null` when auth was
         // never configured (see the deps.token/deps.dataDir comment above).
         get token() { return token; },
+        // apra-fleet-i9ag.19.10: the startup recorded-toolchain validation
+        // report (see the deps.toolchain comment above), or null when none was
+        // wired -- read by apra-fleet-i9ag.19.12's health/dashboard surfacing.
+        get toolchain() { return toolchain; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
     };

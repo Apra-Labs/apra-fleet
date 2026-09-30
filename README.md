@@ -507,6 +507,16 @@ Finished Sprints with its reason and a raw-log link, instead of silently
 vanishing -- see
 [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md)
 and [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md).
+An installed supervisor now also resolves and records the absolute paths of
+`node` and `bd` at install time, so a service manager that hands its child a
+minimal or PATH-less environment (macOS launchd, a Windows scheduled task)
+still launches sprints and runs `bd` with the exact toolchain the operator
+installed with (including a Node.js runtime managed by nvm/fnm/volta),
+instead of failing to resolve either on the service's own PATH. The
+recording is re-validated at every supervisor start (never blocking startup,
+never silently hiding a stale recording) and surfaced on the Health endpoint
+and the dashboard header -- see
+[docs/features/recorded-toolchain.md](docs/features/recorded-toolchain.md).
 
 ## Documentation
 
@@ -531,6 +541,7 @@ and [docs/features/supervisor-dashboard-live-refresh.md](docs/features/superviso
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Console server (`/ui` shell, `/api/fleet/*`, seam design) | [docs/console-architecture.md](docs/console-architecture.md) |
 | Sprint-runner resolution (how the supervisor picks a Node.js runtime to launch sprints with) | [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md) |
+| Recorded toolchain (installer-recorded node/bd paths for a service-mode supervisor, startup re-validation, Health/dashboard surfacing) | [docs/features/recorded-toolchain.md](docs/features/recorded-toolchain.md) |
 | Supervisor dashboard live refresh (launch-failed visibility, selection-hint binding) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Dispatch and orchestration reliability design (Windows completion-on-exit, stall detector, test-runner wall-clock bound) | [docs/dispatch-reliability-hardening.md](docs/dispatch-reliability-hardening.md) - [docs/stall-detector-resilience.md](docs/stall-detector-resilience.md) |
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |

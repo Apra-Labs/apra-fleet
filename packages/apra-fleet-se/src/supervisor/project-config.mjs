@@ -92,6 +92,78 @@ function notConfigured(filePath, reason, raw = {}) {
 }
 
 /**
+ * The not-recorded toolchain result, built in one place so every reason
+ * string arrives with the same surrounding shape as `notConfigured()` above.
+ * @param {string} reason
+ * @returns {{ toolchain: null, toolchainReason: string }}
+ */
+function toolchainNotRecorded(reason) {
+    return { toolchain: null, toolchainReason: reason };
+}
+
+/**
+ * Extract and validate the `toolchain` block from an already-parsed config
+ * object (apra-fleet-i9ag.19.3). This is INDEPENDENT of `projectDir`
+ * validation: a bad or absent `projectDir` must never affect this, and a bad
+ * or absent `toolchain` must never affect `projectDir` -- see the caller,
+ * which computes both from the same `parsed` object and never short-circuits
+ * one because of the other.
+ *
+ * TOTAL, same as the reader as a whole: every malformed shape below returns
+ * `{ toolchain: null, toolchainReason: <its own distinguishable reason> }`
+ * rather than throwing --
+ *
+ *   - the block is missing or `null` (the normal not-yet-recorded case),
+ *   - the block is present but not an object (a string, number, array, ...),
+ *   - `nodePath` is missing, not a string, blank, or not an absolute path.
+ *
+ * Only `nodePath` is validated this strictly: it is the one field a caller
+ * (apra-fleet-i9ag.19.5/.19.7) would otherwise try to `spawn()` or `execFile()`
+ * directly. `nodeVersion`, `bdPath`, `bdVersion`, and `recordedAt` are passed
+ * through as written -- `bdPath`/`bdVersion` are expected to be `null` when
+ * `bd` could not be resolved at install time (see `seedSupervisorToolchain()`
+ * in `src/cli/supervisor.ts`), and rejecting the whole block for that would
+ * throw away a perfectly usable `nodePath`.
+ * @param {string} filePath
+ * @param {object} parsed
+ * @returns {{ toolchain: { nodePath: string, nodeVersion: string|null, bdPath: string|null, bdVersion: string|null, recordedAt: string|null } | null, toolchainReason: string | null }}
+ */
+function readToolchainBlock(filePath, parsed) {
+    const block = parsed.toolchain;
+    if (block === undefined || block === null) {
+        return toolchainNotRecorded(`${filePath} has no 'toolchain' setting`);
+    }
+    if (typeof block !== 'object' || Array.isArray(block)) {
+        return toolchainNotRecorded(`${filePath} has a 'toolchain' that is not an object (got ${Array.isArray(block) ? 'an array' : typeof block})`);
+    }
+
+    const nodePath = block.nodePath;
+    if (nodePath === undefined || nodePath === null) {
+        return toolchainNotRecorded(`${filePath} toolchain has no 'nodePath' setting`);
+    }
+    if (typeof nodePath !== 'string') {
+        return toolchainNotRecorded(`${filePath} toolchain has a 'nodePath' that is not a string (got ${Array.isArray(nodePath) ? 'an array' : typeof nodePath})`);
+    }
+    if (!nodePath.trim()) {
+        return toolchainNotRecorded(`${filePath} toolchain has a 'nodePath' that is blank`);
+    }
+    if (!path.isAbsolute(nodePath)) {
+        return toolchainNotRecorded(`${filePath} toolchain has a 'nodePath' that is not an absolute path: ${nodePath}`);
+    }
+
+    return {
+        toolchain: {
+            nodePath,
+            nodeVersion: block.nodeVersion ?? null,
+            bdPath: block.bdPath ?? null,
+            bdVersion: block.bdVersion ?? null,
+            recordedAt: block.recordedAt ?? null,
+        },
+        toolchainReason: null,
+    };
+}
+
+/**
  * Read `supervisor.config.json`.
  *
  * TOTAL by contract -- this never throws and never rejects. Every failure
@@ -109,11 +181,22 @@ function notConfigured(filePath, reason, raw = {}) {
  * the whole parsed object so `writeSupervisorConfig()` can preserve unknown
  * keys.
  *
+ * The result also always carries `toolchain` / `toolchainReason`
+ * (apra-fleet-i9ag.19.3), the install-time-recorded
+ * `{ nodePath, nodeVersion, bdPath, bdVersion, recordedAt }` written by
+ * `seedSupervisorToolchain()` in `src/cli/supervisor.ts`, or `null` plus a
+ * reason when it is missing or malformed. Reading these two settings is
+ * INDEPENDENT in both directions: a bad `toolchain` never flips `configured`
+ * to `false`, and a bad or absent `projectDir` never forces `toolchain` to
+ * `null` -- each setting reports its own problem, because the supervisor must
+ * be able to boot and serve the console page an operator would use to fix
+ * either one on its own.
+ *
  * `fs` is injectable (the `node:fs/promises` shape; only `readFile` is used)
  * so a test can drive an unreadable-file case without needing real chmod
  * semantics -- which do not behave the same way on Windows or as root.
  * @param {{ dataDir?: string, filePath?: string, cwd?: string, fs?: { readFile: Function } }} [opts]
- * @returns {Promise<{ configured: boolean, projectDir: string|null, reason: string|null, path: string, raw: object }>}
+ * @returns {Promise<{ configured: boolean, projectDir: string|null, reason: string|null, path: string, raw: object, toolchain: object|null, toolchainReason: string|null }>}
  */
 export async function readSupervisorConfig(opts = {}) {
     const filePath = opts.filePath ?? supervisorConfigPath(opts);
@@ -125,11 +208,10 @@ export async function readSupervisorConfig(opts = {}) {
         text = await fs.readFile(filePath, 'utf-8');
     } catch (err) {
         const code = err && err.code;
-        if (code === 'ENOENT') {
-            return notConfigured(filePath, `no ${SUPERVISOR_CONFIG_FILENAME} at ${filePath}`);
-        }
-        const detail = err && err.message ? err.message : String(err);
-        return notConfigured(filePath, `could not read ${filePath}: ${detail}`);
+        const reason = code === 'ENOENT'
+            ? `no ${SUPERVISOR_CONFIG_FILENAME} at ${filePath}`
+            : `could not read ${filePath}: ${err && err.message ? err.message : String(err)}`;
+        return { ...notConfigured(filePath, reason), ...toolchainNotRecorded(reason) };
     }
 
     let parsed;
@@ -137,20 +219,27 @@ export async function readSupervisorConfig(opts = {}) {
         parsed = JSON.parse(text);
     } catch (err) {
         const detail = err && err.message ? err.message : String(err);
-        return notConfigured(filePath, `${filePath} is not valid JSON: ${detail}`);
+        const reason = `${filePath} is not valid JSON: ${detail}`;
+        return { ...notConfigured(filePath, reason), ...toolchainNotRecorded(reason) };
     }
 
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return notConfigured(filePath, `${filePath} must contain a JSON object, got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`);
+        const reason = `${filePath} must contain a JSON object, got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`;
+        return { ...notConfigured(filePath, reason), ...toolchainNotRecorded(reason) };
     }
+
+    // `toolchain` and `projectDir` are two independent settings living in the
+    // same object: compute both from `parsed` now, neither one gating the
+    // other, then merge whichever `projectDir` result applies below.
+    const toolchainResult = readToolchainBlock(filePath, parsed);
 
     const value = parsed.projectDir;
     if (value === undefined || value === null) {
-        return notConfigured(filePath, `${filePath} has no 'projectDir' setting`, parsed);
+        return { ...notConfigured(filePath, `${filePath} has no 'projectDir' setting`, parsed), ...toolchainResult };
     }
     if (typeof value !== 'string' || !value.trim()) {
         const shown = typeof value === 'string' ? 'an empty string' : `a ${Array.isArray(value) ? 'array' : typeof value}`;
-        return notConfigured(filePath, `${filePath} has a 'projectDir' that is not a non-empty string (got ${shown})`, parsed);
+        return { ...notConfigured(filePath, `${filePath} has a 'projectDir' that is not a non-empty string (got ${shown})`, parsed), ...toolchainResult };
     }
 
     return {
@@ -159,6 +248,7 @@ export async function readSupervisorConfig(opts = {}) {
         reason: null,
         path: filePath,
         raw: parsed,
+        ...toolchainResult,
     };
 }
 
@@ -202,4 +292,60 @@ export async function writeSupervisorConfig(opts = {}) {
     await renameWithRetry(fs, tmpPath, filePath, opts.renameRetry ?? {});
 
     return { path: filePath, projectDir: resolved, config };
+}
+
+/**
+ * Write the `toolchain` block atomically, preserving unknown keys AND the
+ * existing `projectDir` (apra-fleet-i9ag.19.3) -- the same two write
+ * guarantees `writeSupervisorConfig()` above documents, because both writers
+ * touch the SAME file and honouring only one of them would silently undo the
+ * other's work: an operator changing the project folder through the console's
+ * `POST /api/project` (which goes through `writeSupervisorConfig()`) must not
+ * un-record the toolchain, and this writer must not un-set their project
+ * folder either.
+ *
+ * `toolchain.nodePath` is required (a non-empty, absolute string) since it is
+ * the one field a later reader would try to `spawn()`/`execFile()` directly;
+ * `nodeVersion`, `bdPath`, `bdVersion`, and `recordedAt` are passed through
+ * as given, defaulting to `null` (or, for `recordedAt`, the current time) when
+ * omitted -- this mirrors `seedSupervisorToolchain()` in `src/cli/supervisor.ts`,
+ * the installer's own writer, so a value written by either one reads back
+ * through `readSupervisorConfig()` unchanged.
+ * @param {{ nodePath: string, nodeVersion?: string|null, bdPath?: string|null, bdVersion?: string|null, recordedAt?: string }} toolchain
+ * @param {{ dataDir?: string, filePath?: string, cwd?: string, fs?: object }} [opts]
+ * @returns {Promise<{ path: string, toolchain: object, config: object }>}
+ */
+export async function writeSupervisorToolchain(toolchain, opts = {}) {
+    const filePath = opts.filePath ?? supervisorConfigPath(opts);
+    const fs = opts.fs ?? fsp;
+    const cwd = opts.cwd ?? process.cwd();
+
+    if (!toolchain || typeof toolchain !== 'object' || Array.isArray(toolchain)) {
+        throw new TypeError('writeSupervisorToolchain requires a toolchain object');
+    }
+    const { nodePath } = toolchain;
+    if (typeof nodePath !== 'string' || !nodePath.trim() || !path.isAbsolute(nodePath)) {
+        throw new TypeError('writeSupervisorToolchain requires an absolute, non-empty toolchain.nodePath string');
+    }
+
+    // Unknown-key preservation (including a `projectDir` written by the
+    // OTHER writer): whatever is on disk now, minus our own `toolchain` key.
+    // A malformed current file yields `raw: {}` from the total reader, so a
+    // corrupt file is replaced by a good one instead of failing the write.
+    const current = await readSupervisorConfig({ filePath, fs, cwd });
+    const toolchainRecord = {
+        nodePath,
+        nodeVersion: toolchain.nodeVersion ?? null,
+        bdPath: toolchain.bdPath ?? null,
+        bdVersion: toolchain.bdVersion ?? null,
+        recordedAt: toolchain.recordedAt ?? new Date().toISOString(),
+    };
+    const config = { ...current.raw, toolchain: toolchainRecord };
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.tmp`;
+    await fs.writeFile(tmpPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+    await renameWithRetry(fs, tmpPath, filePath, opts.renameRetry ?? {});
+
+    return { path: filePath, toolchain: toolchainRecord, config };
 }

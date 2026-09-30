@@ -4,14 +4,19 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
     SUPERVISOR_CONFIG_FILENAME,
     supervisorConfigPath,
     readSupervisorConfig,
     writeSupervisorConfig,
+    writeSupervisorToolchain,
 } from '../src/supervisor/project-config.mjs';
 import { defaultDataDir } from '../src/supervisor/ledger.mjs';
+
+/** Repo root, two levels up from this package (packages/apra-fleet-se/test/..). */
+const REPO_ROOT = path.join(import.meta.dirname, '..', '..', '..');
 
 // =============================================================================
 // src/supervisor/project-config.mjs -- the single owner of
@@ -332,6 +337,195 @@ describe('project-config -- writing', () => {
         await assert.rejects(() => writeSupervisorConfig({ dataDir, projectDir: 5 }), /non-empty projectDir string/);
         // Nothing was created by any of the rejected calls.
         assert.deepEqual(await fsp.readdir(dataDir), []);
+    });
+});
+
+describe('project-config -- toolchain reading is total (apra-fleet-i9ag.19.3)', () => {
+    test('AC1: a file written by seedSupervisorToolchain() (the core installer, a different package) reads back through readSupervisorConfig() with the same values', async () => {
+        const dataDir = await mkTmp();
+        // dist/cli/supervisor.js is the compiled output of src/cli/supervisor.ts
+        // in the ROOT package -- a different package from this one, which is
+        // exactly why this is the one case that proves the two writers (this
+        // module's writeSupervisorToolchain() and the core installer's
+        // seedSupervisorToolchain()) agree on the wire format instead of only
+        // "by eye". Cache-busted the same way installed-supervisor.test.mjs
+        // already imports dist/cli/*.js, since a bare import would be cached
+        // across test files in this same process.
+        const cacheBust = `${Date.now()}-${Math.random()}`;
+        const supervisorMod = await import(
+            `${pathToFileURL(path.join(REPO_ROOT, 'dist', 'cli', 'supervisor.js')).href}?project-config-toolchain=${cacheBust}`
+        );
+
+        const resolvedToolchain = {
+            node: { path: '/opt/nvm/versions/node/v22.16.0/bin/node', version: '22.16.0', ok: true, reason: null },
+            bd: { path: '/usr/local/bin/bd', version: '1.3.0', ok: true, reason: null },
+        };
+        const seedResult = supervisorMod.seedSupervisorToolchain(resolvedToolchain, dataDir);
+        assert.equal(seedResult.ok, true, 'seedSupervisorToolchain should succeed for a resolved node');
+
+        const r = await readSupervisorConfig({ dataDir });
+        assert.equal(r.toolchainReason, null);
+        assert.ok(r.toolchain, 'toolchain should read back non-null');
+        assert.equal(r.toolchain.nodePath, resolvedToolchain.node.path);
+        assert.equal(r.toolchain.nodeVersion, resolvedToolchain.node.version);
+        assert.equal(r.toolchain.bdPath, resolvedToolchain.bd.path);
+        assert.equal(r.toolchain.bdVersion, resolvedToolchain.bd.version);
+        assert.equal(typeof r.toolchain.recordedAt, 'string');
+        assert.ok(!Number.isNaN(Date.parse(r.toolchain.recordedAt)), 'recordedAt should be a parseable timestamp');
+    });
+
+    test('AC2: each malformed toolchain shape returns toolchain:null with its OWN distinguishable reason', async () => {
+        const dataDir = await mkTmp();
+        const file = path.join(dataDir, SUPERVISOR_CONFIG_FILENAME);
+        const cases = [
+            ['no toolchain key at all', { projectDir: '/x' }, /has no 'toolchain' setting/],
+            ['a null toolchain', { projectDir: '/x', toolchain: null }, /has no 'toolchain' setting/],
+            ['a string toolchain', { toolchain: 'nope' }, /'toolchain' that is not an object \(got string\)/],
+            ['an array toolchain', { toolchain: ['/x'] }, /'toolchain' that is not an object \(got an array\)/],
+            ['a number toolchain', { toolchain: 7 }, /'toolchain' that is not an object \(got number\)/],
+            ['toolchain with no nodePath key', { toolchain: { bdPath: '/usr/bin/bd' } }, /toolchain has no 'nodePath' setting/],
+            ['toolchain with a null nodePath', { toolchain: { nodePath: null } }, /toolchain has no 'nodePath' setting/],
+            ['toolchain with a numeric nodePath', { toolchain: { nodePath: 7 } }, /'nodePath' that is not a string \(got number\)/],
+            ['toolchain with an array nodePath', { toolchain: { nodePath: ['/x'] } }, /'nodePath' that is not a string \(got an array\)/],
+            ['toolchain with a blank nodePath', { toolchain: { nodePath: '   ' } }, /'nodePath' that is blank/],
+            ['toolchain with a relative nodePath', { toolchain: { nodePath: 'bin/node' } }, /'nodePath' that is not an absolute path: bin\/node/],
+        ];
+
+        // "missing" and "null" are documented as the SAME not-yet-recorded case
+        // (see readToolchainBlock()'s doc comment), so they share one reason
+        // text by design; every other shape below must be distinguishable from
+        // every other shape's reason, which the per-case regex below enforces.
+        for (const [label, body, expected] of cases) {
+            await fsp.writeFile(file, JSON.stringify(body), 'utf-8');
+            const r = await readSupervisorConfig({ dataDir });
+            assert.equal(r.toolchain, null, `${label} should have a null toolchain`);
+            assert.match(r.toolchainReason, expected, `${label} toolchainReason: ${r.toolchainReason}`);
+        }
+    });
+
+    test('AC3: a valid toolchain plus a malformed projectDir -> configured:false with a projectDir reason AND a non-null toolchain', async () => {
+        const dataDir = await mkTmp();
+        await fsp.writeFile(
+            path.join(dataDir, SUPERVISOR_CONFIG_FILENAME),
+            JSON.stringify({
+                projectDir: 42,
+                toolchain: { nodePath: '/usr/bin/node', nodeVersion: '22.16.0', bdPath: null, bdVersion: null, recordedAt: '2026-01-01T00:00:00.000Z' },
+            }),
+            'utf-8',
+        );
+
+        const r = await readSupervisorConfig({ dataDir });
+
+        assert.equal(r.configured, false);
+        assert.match(r.reason, /not a non-empty string/);
+        assert.equal(r.toolchainReason, null);
+        assert.deepEqual(r.toolchain, {
+            nodePath: '/usr/bin/node',
+            nodeVersion: '22.16.0',
+            bdPath: null,
+            bdVersion: null,
+            recordedAt: '2026-01-01T00:00:00.000Z',
+        });
+    });
+
+    test('AC3 (reverse): a valid projectDir plus a malformed toolchain -> configured:true with the toolchain null and its own reason', async () => {
+        const dataDir = await mkTmp();
+        const projectDir = await mkTmp('apra-fleet-project-config-proj-');
+        await fsp.writeFile(
+            path.join(dataDir, SUPERVISOR_CONFIG_FILENAME),
+            JSON.stringify({ projectDir, toolchain: { nodePath: 'relative/node' } }),
+            'utf-8',
+        );
+
+        const r = await readSupervisorConfig({ dataDir });
+
+        assert.equal(r.configured, true);
+        assert.equal(r.projectDir, projectDir);
+        assert.equal(r.reason, null);
+        assert.equal(r.toolchain, null);
+        assert.match(r.toolchainReason, /'nodePath' that is not an absolute path/);
+    });
+});
+
+describe('project-config -- toolchain writing preserves the OTHER setting (apra-fleet-i9ag.19.3 AC4)', () => {
+    test('writeSupervisorToolchain() preserves an existing projectDir and unknown top-level keys', async () => {
+        const dataDir = await mkTmp();
+        const projectDir = await mkTmp('apra-fleet-project-config-proj-');
+        await fsp.writeFile(
+            path.join(dataDir, SUPERVISOR_CONFIG_FILENAME),
+            JSON.stringify({ projectDir, futureSetting: 'do not destroy me' }),
+            'utf-8',
+        );
+
+        const written = await writeSupervisorToolchain(
+            { nodePath: '/usr/bin/node', nodeVersion: '22.16.0', bdPath: '/usr/bin/bd', bdVersion: '1.3.0' },
+            { dataDir },
+        );
+        assert.equal(written.toolchain.nodePath, '/usr/bin/node');
+
+        const onDisk = JSON.parse(await fsp.readFile(path.join(dataDir, SUPERVISOR_CONFIG_FILENAME), 'utf-8'));
+        assert.equal(onDisk.projectDir, projectDir, 'projectDir survives a toolchain write');
+        assert.equal(onDisk.futureSetting, 'do not destroy me', 'unknown key survives a toolchain write');
+        assert.equal(onDisk.toolchain.nodePath, '/usr/bin/node');
+
+        const r = await readSupervisorConfig({ dataDir });
+        assert.equal(r.configured, true);
+        assert.equal(r.projectDir, projectDir);
+        assert.equal(r.toolchain.nodePath, '/usr/bin/node');
+    });
+
+    test('writeSupervisorConfig({ projectDir }) leaves an existing toolchain block intact', async () => {
+        const dataDir = await mkTmp();
+        const first = await mkTmp('apra-fleet-project-config-a-');
+        const second = await mkTmp('apra-fleet-project-config-b-');
+        await writeSupervisorToolchain({ nodePath: '/usr/bin/node' }, { dataDir });
+        await writeSupervisorConfig({ dataDir, projectDir: first });
+
+        await writeSupervisorConfig({ dataDir, projectDir: second });
+
+        const onDisk = JSON.parse(await fsp.readFile(path.join(dataDir, SUPERVISOR_CONFIG_FILENAME), 'utf-8'));
+        assert.equal(onDisk.projectDir, second, 'projectDir write still updates its own field');
+        assert.equal(onDisk.toolchain.nodePath, '/usr/bin/node', 'toolchain block survives a projectDir-only write');
+
+        const r = await readSupervisorConfig({ dataDir });
+        assert.equal(r.configured, true);
+        assert.equal(r.projectDir, second);
+        assert.equal(r.toolchain.nodePath, '/usr/bin/node');
+    });
+
+    test('writeSupervisorToolchain() requires a non-empty, absolute nodePath and does not write on a bad one', async () => {
+        const dataDir = await mkTmp();
+        await assert.rejects(() => writeSupervisorToolchain({ nodePath: '' }, { dataDir }), /absolute, non-empty toolchain\.nodePath/);
+        await assert.rejects(() => writeSupervisorToolchain({ nodePath: 'relative/node' }, { dataDir }), /absolute, non-empty toolchain\.nodePath/);
+        await assert.rejects(() => writeSupervisorToolchain(null, { dataDir }), /requires a toolchain object/);
+        assert.deepEqual(await fsp.readdir(dataDir), [], 'nothing written by any rejected call');
+    });
+
+    test('writeSupervisorToolchain() writes atomically: temp file then rename, no temp file left behind', async () => {
+        const dataDir = await mkTmp();
+        const target = path.join(dataDir, SUPERVISOR_CONFIG_FILENAME);
+
+        const calls = [];
+        const spyFs = {
+            readFile: (...a) => { calls.push(['readFile', a[0]]); return fsp.readFile(...a); },
+            mkdir: (...a) => { calls.push(['mkdir', a[0]]); return fsp.mkdir(...a); },
+            writeFile: (...a) => { calls.push(['writeFile', a[0]]); return fsp.writeFile(...a); },
+            rename: (...a) => { calls.push(['rename', a[0], a[1]]); return fsp.rename(...a); },
+        };
+
+        await writeSupervisorToolchain({ nodePath: '/usr/bin/node' }, { dataDir, fs: spyFs });
+
+        const write = calls.find((c) => c[0] === 'writeFile');
+        const rename = calls.find((c) => c[0] === 'rename');
+        assert.ok(write, 'a writeFile happened');
+        assert.ok(rename, 'a rename happened');
+        assert.equal(write[1], `${target}.tmp`, 'the payload goes to the .tmp sibling');
+        assert.equal(rename[1], `${target}.tmp`);
+        assert.equal(rename[2], target);
+        assert.ok(calls.indexOf(write) < calls.indexOf(rename), 'write must precede rename');
+
+        const entries = await fsp.readdir(dataDir);
+        assert.deepEqual(entries, [SUPERVISOR_CONFIG_FILENAME], 'no .tmp sibling left behind');
     });
 });
 
