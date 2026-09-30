@@ -111,6 +111,21 @@ const KB_CONDITIONAL_GUARD_RE = /\b(if|when|unless|where\s+(?:available|reachabl
  * @param {string} section
  * @returns {string|null} the first offending unit (whitespace-collapsed), or null
  */
+/** The same units findUnconditionalKbToolCall scans, filtered to those carrying an imperative KB tool call. */
+function kbToolCallUnits(section) {
+    const units = [];
+    for (const para of String(section || '').split(/\n\s*\n/)) units.push(...para.split(/\n(?=\s*(?:\d+\.|[-*])\s)/));
+    return units.map((u) => u.replace(/\s+/g, ' ').trim()).filter((u) => KB_TOOL_IMPERATIVE_RE.test(u));
+}
+
+// The tools-first contract's guard: a tool call is conditioned on the tools
+// being usable, not merely on some "if".
+const KB_AVAILABILITY_GUARD_RE = /\b(available|exposes|reachable)\b/i;
+
+// The provider-conditional ToolSearch gating (src/cli/agent-transform.ts):
+// [1] = if-branch (ToolSearch available), [2] = else-branch.
+const TOOLSEARCH_GATE_RE = /<!-- if-tool: ToolSearch -->([\s\S]*?)<!-- else-tool: ToolSearch -->([\s\S]*?)<!-- end-tool: ToolSearch -->/;
+
 function findUnconditionalKbToolCall(section) {
     const paragraphs = String(section || '').split(/\n\s*\n/);
     const units = [];
@@ -170,6 +185,37 @@ test('wrapper-injection roles without a kb-apply step: their prompt files requir
             `imperative KB tool-call instruction (no guarding if/when/unless/"where available"/etc on that line) -- ` +
             `KB tool calls are unreachable on a dispatched member for this role, so the instruction must be ` +
             `conditional. Offending line: ${JSON.stringify(unconditionalLine)}`
+        );
+
+        // Tools-first contract: any guard is not enough -- every KB tool call
+        // must be conditioned on the tools actually being AVAILABLE.
+        for (const unit of kbToolCallUnits(kb.section)) {
+            assert.ok(
+                KB_AVAILABILITY_GUARD_RE.test(unit),
+                `role(s) ${roleNames.join(', ')}: ${agentType}.md has a KB tool call not guarded by tool availability ` +
+                `(available/exposes/reachable): ${JSON.stringify(unit)}`
+            );
+        }
+
+        // Both provider branches of the ToolSearch gating must fall back to the
+        // pre-fetched block, and the shared text must say that block IS the
+        // knowledge when the tools are missing (never "no KB").
+        const branches = TOOLSEARCH_GATE_RE.exec(kb.section);
+        assert.ok(branches, `role(s) ${roleNames.join(', ')}: ${agentType}.md's Knowledge Bank step has no if-tool/else-tool ToolSearch gating`);
+        for (const [label, text] of [['if-tool (ToolSearch available)', branches[1]], ['else-tool (no ToolSearch)', branches[2]]]) {
+            const collapsed = text.replace(/\s+/g, ' ');
+            assert.ok(
+                collapsed.includes('use the pre-fetched block instead'),
+                `role(s) ${roleNames.join(', ')}: ${agentType}.md ${label} branch does not fall back to the pre-fetched block: ${JSON.stringify(collapsed)}`
+            );
+        }
+        const shared = kb.section.replace(TOOLSEARCH_GATE_RE, ' ').replace(/\s+/g, ' ');
+        assert.ok(
+            shared.includes('Use the live KB tools when they are available; otherwise use the pre-fetched') &&
+                shared.includes('A missing or failing KB tool never means "no KB"') &&
+                shared.includes("the pre-fetched block IS this repo's knowledge"),
+            `role(s) ${roleNames.join(', ')}: ${agentType}.md's shared Knowledge Bank text must state tools-first, ` +
+            `block-as-fallback, and that a missing tool never means "no KB"`
         );
 
         const captureMatch = content.match(KB_CAPTURES_INSTRUCTION_RE);

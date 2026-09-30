@@ -83,13 +83,21 @@ nothing downstream consumed it.
 For every role whose policy row is `kbInjection: 'wrapper'` with no
 `kb-apply` post-result step, the role prompt's Step 0 now:
 
-- Leads with the engine-injected KB context block already present in the
-  dispatch prompt, quoting its heading text, and tells the member to use that
-  context directly. A test
+- Prefers the live KB tools when they are available, and otherwise falls
+  back to the engine-injected KB context block already present in the
+  dispatch prompt, quoting its heading text. A test
   (`packages/apra-fleet-se/test/kb-prompt-contract-wrapper-roles.test.mjs`)
   pins the quoted heading against what `kbKnowledgeBlock()` in
   `fleet-sprint/kb.mjs` emits, so a reworded block heading fails the build.
-- Marks any KB tool call as bonus-only, never required. The injected block
+- Never lets a missing or failing tool read as "no KB": when the tools are
+  unavailable, the pre-fetched block IS the repo's knowledge, and any
+  coverage-based judgment (e.g. the planner's "no KB entries -> unexplored
+  territory, stronger model tier") is made from that block. Both branches of
+  the provider-conditional ToolSearch gating (the Claude branch with its
+  ToolSearch query, the ToolSearch-less branch that names the KB tool
+  directly) say to fall back to the block; the same test asserts this.
+- Conditions every KB tool call on the tools being available, and never
+  requires one. The injected block
   itself agrees: its "report it in the `kb_captures` field" sentence is
   emitted only for personas whose every role row has `kb-apply`
   (`agentTypeAppliesKbCaptures` in `role-policies.mjs`); other personas are
