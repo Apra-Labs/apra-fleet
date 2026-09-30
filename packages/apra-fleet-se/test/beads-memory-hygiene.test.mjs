@@ -158,6 +158,26 @@ test('forget failure and push failure -> warnings, no throw', async () => {
     assert.match(warns[0], /push after the sweep failed \(push rejected\)/);
 });
 
+test('a degraded (non-throwing) push outcome is warned about and pushed stays false', async () => {
+    // Shape returned by the real gitSync.syncBeadsAfter -> DoltSync.syncAfter
+    // on an unresolved push: it degrades instead of throwing.
+    const degraded = { ok: false, kind: 'push', degraded: true, degradedKind: 'REMOTE_UNREACHABLE', detail: 'dolt push timed out' };
+    const { command } = makeCommand({ t1: TOKEN_POSITIVES[0] });
+    const logs = [];
+    const r = await sweepTokenMemories({ command, log: (l) => logs.push(l), member: 'orch', pushBeads: async () => degraded });
+    assert.deepEqual(r.removed, ['t1']);
+    assert.equal(r.pushed, false);
+    const warns = logs.filter((l) => l.startsWith(BEADS_HYGIENE_WARNING_PREFIX));
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /push after the sweep failed \(REMOTE_UNREACHABLE: dolt push timed out\)/);
+});
+
+test('a successful structured push outcome sets pushed', async () => {
+    const { command } = makeCommand({ t1: TOKEN_POSITIVES[0] });
+    const r = await sweepTokenMemories({ command, member: 'orch', pushBeads: async () => ({ ok: true, degraded: false, pushed: true }) });
+    assert.equal(r.pushed, true);
+});
+
 test('all forgets failing -> no push', async () => {
     const { command } = makeCommand({ t1: TOKEN_POSITIVES[0] }, { forgetFail: new Set(['t1']) });
     let pushes = 0;

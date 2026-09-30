@@ -1038,9 +1038,13 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // the key to `forgottenMemories` (an array the caller owns).
         beadsMemories = null,
         forgottenMemories = null,
+        // Caller-owned object; receives `.live` (the live memory Map) so a
+        // test can assert what is still stored after the sprint.
+        memoriesSink = null,
     } = options;
     const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
     const liveMemories = beadsMemories ? new Map(Object.entries(beadsMemories)) : null;
+    if (memoriesSink && liveMemories) memoriesSink.live = liveMemories;
 
     let planRound = 0;
     let reviewRound = 0;
@@ -2074,6 +2078,7 @@ export async function runDevelopLoopScenario(tag, {
     const logs = [];
     const states = [];
     const forgottenMemories = [];
+    const memoriesSink = {};
     // apra-fleet-eft.60.3: opt this hermetic run into the runner's zero-wait
     // Planner-dispatch retry backoff. The ~110s of real PLANNER_DISPATCH_RETRY_
     // DELAYS_MS backoff only models a real fleet member's execute_prompt
@@ -2125,7 +2130,7 @@ export async function runDevelopLoopScenario(tag, {
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
             ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
-            ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories } : {}),
+            ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
@@ -2202,7 +2207,8 @@ export async function runDevelopLoopScenario(tag, {
         // as intended by callers that deliberately induce one (e.g. a doer
         // throw or a typed sprint-abort) to verify error handling.
         passed = (error === null);
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, forgottenMemories };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, forgottenMemories,
+            remainingMemories: memoriesSink.live ? Object.fromEntries(memoriesSink.live) : undefined };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.
         console.log(`=== END scenario: ${tag} (${passed ? 'PASS' : 'FAIL'}) ===`);

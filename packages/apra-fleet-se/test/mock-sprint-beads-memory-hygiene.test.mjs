@@ -34,6 +34,15 @@ test('mock sprint: seeded token-usage memories are forgotten at sprint start wit
         const warns = r.logs.filter((l) => l.startsWith('[beads-hygiene] WARNING: '));
         assert.equal(warns.length, 1, JSON.stringify(warns));
         assert.match(warns[0], /removed 2 token-usage memories from the beads DB: run-a-doer, run-b-review/);
+        // The legitimate memory survives the sweep.
+        assert.deepEqual(Object.keys(r.remainingMemories), ['real-rule']);
+        // Exactly one beads push for the sweep: sprint start has no other
+        // D-push before the sweep's WARNING line (the pre-sprint sync only pulls).
+        const warnIdx = r.logs.findIndex((l) => l.startsWith('[beads-hygiene] WARNING: '));
+        const pushesBeforeWarn = r.logs.slice(0, warnIdx).filter((l) => /^\[Dolt\] D-push for member 'orch'/.test(l));
+        assert.equal(pushesBeforeWarn.length, 1, JSON.stringify(r.logs.slice(0, warnIdx + 1)));
+        // A skipped push (no sync remote in this mock) is not a failed push.
+        assert.ok(!/push after the sweep failed/.test(warns[0]), warns[0]);
         // Listed exactly once: sprint start only, no per-cycle re-run.
         assert.equal(r.commandLog.filter((c) => c === 'bd memories --json').length, 1, 'sprint start only');
     });

@@ -160,8 +160,16 @@ export async function sweepTokenMemories({ command, log = () => {}, member, push
         let pushError = null;
         if (result.removed.length > 0 && typeof pushBeads === 'function') {
             try {
-                await pushBeads();
-                result.pushed = true;
+                // The real push (gitSync.syncBeadsAfter) is non-fatal: it
+                // returns a structured outcome { ok, degraded, degradedKind,
+                // detail } instead of throwing, so inspect it. A non-object
+                // return is treated as success.
+                const outcome = await pushBeads();
+                if (outcome && typeof outcome === 'object' && (outcome.degraded || outcome.ok === false)) {
+                    pushError = [outcome.degradedKind, outcome.detail ?? outcome.kind].filter(Boolean).map(String).join(': ') || 'push degraded';
+                } else {
+                    result.pushed = true;
+                }
             } catch (err) {
                 pushError = errText(err);
             }
