@@ -105,6 +105,11 @@ export interface CaptureOpts {
   preferredId?: string;
 }
 
+export interface EntryTrustFilter {
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
+}
+
 export interface QueryOptions {
   // Free text from a caller (kb_query). Tokenized + OR-joined inside query().
   // NEVER pass a pre-built FTS expression here -- query() would re-tokenize it
@@ -129,6 +134,14 @@ export interface QueryOptions {
   include_stale?: boolean;
   include_superseded?: boolean;
   flagged_only?: boolean;
+  // Retrieval-trust filters (kb_query confidence / exclude_disputed). Both are
+  // opt-in and default-off, so an existing caller's result is unchanged.
+  // `confidence` is an allow-list of tiers; `exclude_disputed` drops entries
+  // carrying either half of a contradiction pair (flagged_for_review=1 or a
+  // contradiction_of pointer). Ignored by the flagged_only branch, which exists
+  // to list exactly the disputed entries.
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -255,5 +268,8 @@ export interface MemoryProvider {
   // framing of this claim") and `contradiction_of` ("something disputes it").
   // shares_file/shares_symbol are deliberately NOT traversed: they encode
   // topicality, which an FTS match over the same fields already surfaces.
-  relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]>;
+  // `filter` applies the same retrieval-trust filters as QueryOptions so a
+  // caller that restricted its direct hits is not handed an unfiltered claim
+  // through the graph instead.
+  relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]>;
 }
