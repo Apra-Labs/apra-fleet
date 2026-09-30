@@ -493,7 +493,8 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
                 () => execBdSync([], { encoding: 'utf-8' }),
                 (err) => {
                     assert.equal(err.status, 127, 'exit code must be the exact env-cannot-find-interpreter code');
-                    assert.match(String(err.stderr), /env: node: No such file or directory/);
+                    // GNU coreutils env quotes the name ('node'); BSD/macOS env does not.
+                    assert.match(String(err.stderr), /env: '?node'?: No such file or directory/);
                     return true;
                 },
             );
@@ -538,7 +539,8 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
                 () => execBdAsync([], { encoding: 'utf-8' }),
                 (err) => {
                     assert.equal(err.code, 127, 'exit code must be the exact env-cannot-find-interpreter code');
-                    assert.match(String(err.stderr), /env: node: No such file or directory/);
+                    // GNU coreutils env quotes the name ('node'); BSD/macOS env does not.
+                    assert.match(String(err.stderr), /env: '?node'?: No such file or directory/);
                     return true;
                 },
             );
