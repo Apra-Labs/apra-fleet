@@ -364,7 +364,16 @@ function withNodeFirstBdExec(exec, nodePath, platform) {
  *   exec?: (file: string, args: string[], options?: object) => string|Buffer,
  *   platform?: NodeJS.Platform,
  *   isSea?: () => boolean,
- * }} [deps]
+ *   probeTimeoutMs?: number,
+ * }} [deps] `probeTimeoutMs` is TEST-ONLY (apra-fleet-i9ag.19.44): no real
+ *   production caller (bin/serve.mjs's startup wiring) ever sets it, so
+ *   every real installation still gets exactly `TOOLCHAIN_PROBE_TIMEOUT_MS`
+ *   -- the flat, deliberately-unscaled 15s SLA apra-fleet-i9ag.19.35
+ *   criterion 5 settled. It exists only so a test exercising the REAL
+ *   `defaultExec()` (a genuine `child_process.execFile` spawn, not an
+ *   injected fake) can give that one spawn more real wall-clock room under
+ *   test-suite host contention, without ever touching the exported
+ *   production constant.
  * @returns {Promise<{
  *   configured: boolean,
  *   nodePath: string|null,
@@ -384,6 +393,10 @@ export async function validateRecordedToolchain(deps = {}) {
     const exec = deps.exec ?? defaultExec;
     const platform = deps.platform ?? process.platform;
     const isSea = deps.isSea ?? defaultIsSea;
+    // apra-fleet-i9ag.19.44: TEST-ONLY override of the per-attempt probe
+    // ceiling -- see this function's own doc comment above for why this
+    // never changes real, production behaviour (no real caller sets it).
+    const probeTimeoutMs = deps.probeTimeoutMs ?? TOOLCHAIN_PROBE_TIMEOUT_MS;
 
     const config = await readSupervisorConfig({
         dataDir: deps.dataDir,
@@ -440,7 +453,7 @@ export async function validateRecordedToolchain(deps = {}) {
     // ./node-version.mjs's file header). Without this, probeVersion() would
     // throw ProbeVersionAsyncContractError the instant either probe's exec
     // resolved, since node-runner.mjs's sync-only contract is the default.
-    const probeOptions = { timeoutMs: TOOLCHAIN_PROBE_TIMEOUT_MS, retry: true, async: true };
+    const probeOptions = { timeoutMs: probeTimeoutMs, retry: true, async: true };
     // apra-fleet-i9ag.19.35: when the RECORDED node is literally the binary
     // this supervisor process is running on -- the common `node bin/serve.mjs`
     // / recorded-my-own-interpreter shape -- its version is already known with
@@ -493,7 +506,7 @@ export async function validateRecordedToolchain(deps = {}) {
     let nodeOk;
     if (nodeProbe.incomplete) {
         nodeOk = false;
-        problems.push(formatIncompleteProbeProblem('node', nodePath, nodeProbe.incomplete, TOOLCHAIN_PROBE_TIMEOUT_MS));
+        problems.push(formatIncompleteProbeProblem('node', nodePath, nodeProbe.incomplete, probeTimeoutMs));
     } else if (nodeVersion === null) {
         nodeOk = false;
         problems.push(
@@ -527,7 +540,7 @@ export async function validateRecordedToolchain(deps = {}) {
         bdVersion = bdProbe.version;
         if (bdProbe.incomplete) {
             bdOk = false;
-            problems.push(formatIncompleteProbeProblem('bd', bdPath, bdProbe.incomplete, TOOLCHAIN_PROBE_TIMEOUT_MS));
+            problems.push(formatIncompleteProbeProblem('bd', bdPath, bdProbe.incomplete, probeTimeoutMs));
         } else if (bdVersion === null) {
             bdOk = false;
             problems.push(
