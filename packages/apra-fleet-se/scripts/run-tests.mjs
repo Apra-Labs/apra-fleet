@@ -27,6 +27,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
+import { SERIAL_PROCESS_TEST_FILES } from '../test/helpers/serial-process-suites.mjs';
 import { sweepStaleTempHomes } from './stale-temp-home-sweep.mjs';
 import { ISOLATED_HOME_IMPORT_FLAG } from './isolated-home-import.mjs';
 
@@ -176,34 +177,131 @@ function runBounded(cmd, args, opts) {
     });
 }
 
-const result = await runBounded(
-    process.execPath,
-    [
-        '--test',
-        // apra-fleet-v6t7.16: run-level home isolation, applied via --import
-        // before any test file's own top-level code runs. The flag itself is
-        // resolved once in ./isolated-home-import.mjs and shared with the other
-        // entry point into this suite (scripts/run-integ-suites.mjs's real-bd
-        // lanes) -- see that module's header.
-        ISOLATED_HOME_IMPORT_FLAG,
-        '--test-reporter=./test/helpers/timestamped-reporter.mjs',
-        '--test-reporter-destination=stdout',
-        `--test-concurrency=${TEST_CONCURRENCY}`,
-        ...(extraArgs.length > 0 ? extraArgs : ['test/*.test.mjs']),
-    ],
-    {
-        cwd: pkgRoot,
-        stdio: 'inherit',
-        env: {
-            ...process.env,
-            APRA_FLEET_BD_MOCK: MODES[mode],
-            APRA_FLEET_TEST_CONCURRENCY: String(TEST_CONCURRENCY),
-        },
-    },
-);
+function envFor(concurrency) {
+    return {
+        ...process.env,
+        APRA_FLEET_BD_MOCK: MODES[mode],
+        APRA_FLEET_TEST_CONCURRENCY: String(concurrency),
+    };
+}
 
-if (result.timedOut) {
-    console.error(`\n> test run TIMED OUT after ${timeoutMs}ms and was killed\n`);
+let finalResult;
+
+if (extraArgs.length > 0) {
+    // Caller already chose exactly which file(s)/pattern to run (a developer
+    // re-running one file, or test/run-tests-script-wiring.test.mjs's derived
+    // probe command) -- nothing to isolate it from, so run it exactly as
+    // before, at the full TEST_CONCURRENCY.
+    finalResult = await runBounded(
+        process.execPath,
+        [
+            '--test',
+            // apra-fleet-v6t7.16: run-level home isolation, applied via --import
+            // before any test file's own top-level code runs. The flag itself is
+            // resolved once in ./isolated-home-import.mjs and shared with the other
+            // entry point into this suite (scripts/run-integ-suites.mjs's real-bd
+            // lanes) -- see that module's header.
+            ISOLATED_HOME_IMPORT_FLAG,
+            '--test-reporter=./test/helpers/timestamped-reporter.mjs',
+            '--test-reporter-destination=stdout',
+            `--test-concurrency=${TEST_CONCURRENCY}`,
+            ...extraArgs,
+        ],
+        {
+            cwd: pkgRoot,
+            stdio: 'inherit',
+            env: envFor(TEST_CONCURRENCY),
+        },
+    );
+} else {
+    // apra-fleet-i9ag.19.46: the default (no explicit file argument) run
+    // splits into two SEQUENTIAL phases so the heavy real-process suites
+    // registered in test/helpers/serial-process-suites.mjs never run
+    // concurrently with each other, or with the rest of the suite -- see
+    // that module's header for why an incidental/scaled-timeout-only fix
+    // (just widening the budget) is not the right fix. This is what makes
+    // those suites' pass/fail outcome independent of how many *other*
+    // se-lane suites the scheduler happens to be running at the same time.
+    const allTestFiles = fs
+        .readdirSync(path.join(pkgRoot, 'test'))
+        .filter((name) => name.endsWith('.test.mjs'))
+        .sort();
+
+    // Loud, fail-fast check that the registry itself has not gone stale
+    // (a renamed/deleted file left behind in the list): a silent no-op here
+    // would quietly stop isolating that file from the concurrent lane again.
+    const missing = SERIAL_PROCESS_TEST_FILES.filter((name) => !allTestFiles.includes(name));
+    if (missing.length > 0) {
+        console.error(
+            `\n> test/helpers/serial-process-suites.mjs lists file(s) that no longer exist under test/: ${missing.join(', ')}\n` +
+            `> fix the registry (rename or remove the stale entry) before running tests.\n`
+        );
+        process.exit(1);
+    }
+
+    const serialSet = new Set(SERIAL_PROCESS_TEST_FILES);
+    const concurrentFiles = allTestFiles.filter((name) => !serialSet.has(name)).map((name) => `test/${name}`);
+    const serialFiles = SERIAL_PROCESS_TEST_FILES.map((name) => `test/${name}`);
+
+    console.log(`\n> concurrent lane: ${concurrentFiles.length} test file(s) at --test-concurrency=${TEST_CONCURRENCY}\n`);
+    const concurrentResult = await runBounded(
+        process.execPath,
+        [
+            '--test',
+            // apra-fleet-v6t7.16: run-level home isolation -- see the identical
+            // comment on the extraArgs branch above for the full rationale.
+            ISOLATED_HOME_IMPORT_FLAG,
+            '--test-reporter=./test/helpers/timestamped-reporter.mjs',
+            '--test-reporter-destination=stdout',
+            `--test-concurrency=${TEST_CONCURRENCY}`,
+            ...concurrentFiles,
+        ],
+        {
+            cwd: pkgRoot,
+            stdio: 'inherit',
+            env: envFor(TEST_CONCURRENCY),
+        },
+    );
+
+    console.log(
+        `\n> serial lane: ${serialFiles.length} heavy real-process test file(s) at --test-concurrency=1 ` +
+        `(registered in test/helpers/serial-process-suites.mjs, run only after the concurrent lane finishes so ` +
+        `neither lane contends with the other)\n`
+    );
+    const serialResult = await runBounded(
+        process.execPath,
+        [
+            '--test',
+            // apra-fleet-v6t7.16: run-level home isolation -- see the identical
+            // comment on the extraArgs branch above for the full rationale.
+            ISOLATED_HOME_IMPORT_FLAG,
+            '--test-reporter=./test/helpers/timestamped-reporter.mjs',
+            '--test-reporter-destination=stdout',
+            '--test-concurrency=1',
+            ...serialFiles,
+        ],
+        {
+            cwd: pkgRoot,
+            stdio: 'inherit',
+            env: envFor(1),
+        },
+    );
+
+    if (concurrentResult.timedOut) {
+        console.error(`\n> concurrent lane TIMED OUT after ${timeoutMs}ms and was killed\n`);
+    }
+    if (serialResult.timedOut) {
+        console.error(`\n> serial lane TIMED OUT after ${timeoutMs}ms and was killed\n`);
+    }
+
+    finalResult = {
+        timedOut: concurrentResult.timedOut || serialResult.timedOut,
+        status: concurrentResult.status !== 0 ? concurrentResult.status : serialResult.status,
+    };
+}
+
+if (finalResult.timedOut) {
+    console.error(`\n> test run TIMED OUT and was killed\n`);
     process.exit(1);
 }
-process.exit(result.status ?? 1);
+process.exit(finalResult.status ?? 1);
