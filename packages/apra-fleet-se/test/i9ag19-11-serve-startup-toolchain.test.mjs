@@ -216,6 +216,11 @@ function waitForOutputLine(supervisor, needles, timeoutMs, describeFailure) {
  * fails outright (a broken/unprobeable recording). Never a real installed
  * `bd` -- this is what lets every case here run with no real bd anywhere.
  */
+// A WORKING stub's path must carry .cmd on win32: writeBdStub writes batch
+// content there, and cmd.exe will not run an extensionless file, so the
+// startup bd probe would fail and the GOOD recording would read as broken.
+const BD_STUB_EXT = process.platform === 'win32' ? '.cmd' : '';
+
 function writeBdStub(filePath, { versionOk }) {
     const isWin = process.platform === 'win32';
     if (isWin) {
@@ -439,7 +444,7 @@ function launchBody(label) {
 describe('apra-fleet-i9ag.19.11: a GOOD recording produces exactly one informational startup line, no problems', () => {
     test('exactly one "[supervisor] toolchain:" line, naming the recorded node+bd and their versions; no ERROR/WARNING toolchain line', async () => {
         const fixture = await buildFixtureTools('good');
-        const recordedBd = path.join(fixture.toolDir, 'recorded-bd');
+        const recordedBd = path.join(fixture.toolDir, `recorded-bd${BD_STUB_EXT}`);
         writeBdStub(recordedBd, { versionOk: true });
 
         let supervisor;
@@ -493,7 +498,7 @@ describe('apra-fleet-i9ag.19.35: a launch is never refused for a recorded node s
     // test/i9ag15-node-runner.test.mjs's own apra-fleet-i9ag.19.35 block.)
     test('the spawner resolves the recorded node with the exact version the startup toolchain line accepted, and the launch is never 503\'d', async () => {
         const fixture = await buildFixtureTools('accepted');
-        const recordedBd = path.join(fixture.toolDir, 'recorded-bd');
+        const recordedBd = path.join(fixture.toolDir, `recorded-bd${BD_STUB_EXT}`);
         writeBdStub(recordedBd, { versionOk: true });
         const pathBdDir = await buildPathBdDir('accepted');
 
@@ -548,7 +553,7 @@ describe('apra-fleet-i9ag.19.11: a BROKEN recorded node -- loud ERROR naming the
         const fixture = await buildFixtureTools('brokennode');
         const missingNode = path.join(fixture.toolDir, 'removed-by-version-manager', process.platform === 'win32' ? 'node.exe' : 'node');
         assert.ok(!fs.existsSync(missingNode), 'the broken recorded node path must not exist');
-        const recordedBd = path.join(fixture.toolDir, 'recorded-bd');
+        const recordedBd = path.join(fixture.toolDir, `recorded-bd${BD_STUB_EXT}`);
         writeBdStub(recordedBd, { versionOk: true });
 
         let supervisor;
