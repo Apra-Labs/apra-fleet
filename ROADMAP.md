@@ -61,7 +61,7 @@ Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/i
   `docs/opencode-getting-started.md`. This is the door to local/self-hosted
   OpenAI-compatible models.
 - **Antigravity (agy) provider maturation** -- `--agent` flag dispatch,
-  session-resume fixes, safety rationalization (`docs/agy-safety-rationalization.md`).
+  session-resume fixes, per-member project binding and permission-denial reporting (`docs/agy-provider.md`).
 - **Role-agent file installation, including remote members** --
   `apra-fleet install` writes planner/doer/reviewer/plan-reviewer agent
   definitions into each provider's agents directory, and `update_member`

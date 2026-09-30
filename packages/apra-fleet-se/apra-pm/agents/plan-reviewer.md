@@ -50,7 +50,13 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: every step below names the KB
+   tool it wants directly. Confirm your environment exposes those tools, then call
+   them as written.
+<!-- end-tool: ToolSearch -->
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
    for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under review.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. An entry
@@ -59,7 +65,12 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
    an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or
    "learning".
 
+<!-- if-tool: ToolSearch -->
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+<!-- else-tool: ToolSearch -->
+If those KB tools are not available in your environment (MCP server not running), skip
+these steps and proceed.
+<!-- end-tool: ToolSearch -->
 
 ## Step 1 -- Inspect the DAG
 

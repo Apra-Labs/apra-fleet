@@ -156,3 +156,7 @@ packages/apra-fleet-se/auto-sprint/logs/
 # tracked: apra-pm is NOT a workspace member (see ci.yml's separate --prefix
 # test step and scripts/run-all-tests.mjs's matching suite entry).
 packages/*/package-lock.json
+
+# Fresh-install release harness: download cache and run results (local only)
+tests/integration/fresh-install/.cache/
+tests/integration/fresh-install/results/

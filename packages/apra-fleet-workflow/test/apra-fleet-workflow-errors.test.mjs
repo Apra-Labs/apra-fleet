@@ -398,6 +398,37 @@ describe('agent(): usage_limit relay pass-through onto AgentDispatchError.detail
     });
 });
 
+// execute_prompt reports a member CLI's refused tool calls as
+// {reason: 'permission_denied', permissionDenied: {...}}; the workflow layer
+// forwards the block onto AgentDispatchError.details unchanged.
+describe('agent(): permission_denied pass-through onto AgentDispatchError.details', () => {
+    test('a permission_denied result exposes details.permissionDenied', async () => {
+        const permissionDenied = {
+            actions: ['command'],
+            denials: [{ action: 'command', target: 'git status --short --branch' }],
+            suggestedGrants: ['Bash(git status --short --branch)'],
+            hint: 'agy auto-denied command "git status --short --branch".',
+            signals: ['result_json'],
+        };
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: `[FAIL] execute_prompt on "${KNOWN_MEMBER}": permission denied` }],
+                structuredContent: { isError: true, reason: 'permission_denied', permissionDenied },
+            }),
+        }));
+
+        await assert.rejects(
+            () => wf.agent('do the thing', { member_name: KNOWN_MEMBER }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                assert.strictEqual(err.details.reason, 'permission_denied');
+                assert.deepStrictEqual(err.details.permissionDenied, permissionDenied);
+                return true;
+            }
+        );
+    });
+});
+
 describe('F10: resume defaulting at the workflow layer', () => {
     test('agent() defaults resume:false in the payload sent to executePrompt', async () => {
         let capturedPayload;

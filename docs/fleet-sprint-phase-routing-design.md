@@ -94,6 +94,38 @@ case 2, and even then all 15 are dragged through Plan/Develop/Review
 lockstep as one undifferentiated batch, exposing each of them to the case-1
 failure mode.
 
+### Case study 5: a verification leaf can be structurally unreachable
+
+`classifyVerifySet()`'s eligibility rules 3 and 4 (a bead qualifies only if it
+*has* children, and only once *every* child is closed) are individually
+correct, but together they can make a specific acceptance criterion
+impossible to route to verification no matter how the work is decomposed:
+
+- A dedicated leaf bead created to carry "run the end-to-end proof and record
+  the evidence" is childless by construction (it is the leaf) -- rule 3
+  excludes it, so it can only ever be routed to the doer in Develop, even
+  though its whole content is deployed-product verification, not a code
+  change. Closing it via the normal Develop/Review pipeline (or closing it
+  administratively as "not doer work" and leaving it open) either produces a
+  bogus closure or leaves the epic permanently short one child closure.
+- Its parent epic cannot substitute: rule 4 requires ALL children closed, so
+  the epic stays verify-ineligible for as long as that leaf (or any other
+  open child, including an unrelated low-priority hygiene task) is open --
+  which is guaranteed, since the leaf can never itself close through verify.
+
+The result is a live deadlock class distinct from the case-1 deadlock: not a
+sprint-level rejection, but a specific acceptance criterion that no
+decomposition of beads-and-rules can make reachable by IntegTest as the rules
+stand today. Recognizing it requires reading `classifyVerifySet` alongside
+the beads graph it is being asked to classify, not either in isolation.
+Fixing it needs one of: (a) an explicit escape hatch that lets a marked
+verification leaf route to IntegTest despite being childless (an
+`issue_type` or label the classifier honours in addition to the
+all-children-closed parent rule), or (b) restructuring so the proof always
+rides the parent's own verify route instead of living on a leaf -- i.e. never
+create a childless bead whose entire purpose is deployed-product
+verification.
+
 ### The rejected fix, and why
 
 A `--verify-only` sprint flag was proposed and rejected. A flag is a binary

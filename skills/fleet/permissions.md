@@ -67,6 +67,9 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
+For an agy member the failure is structured: `reason: "permission_denied"` with
+`permissionDenied.suggestedGrants` (primary grant first) - review them and pass them as `grant`.
+
 The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
@@ -142,7 +145,8 @@ same channel `compose_permissions` already uses, so it works uniformly for local
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
 already present. Other providers no-op: OpenCode has its own trust gate
 but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
-AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
+AGY needs no trust seeding (its grants bind through the member's own agy project,
+`--project` on every dispatch); Codex/Copilot have no
 known equivalent gate.
 
 If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own

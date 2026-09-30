@@ -157,7 +157,7 @@ describe('register_member: owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', 
     backupAndResetRegistry();
     workFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-fields-'));
     mockComposePermissions.mockReset();
-    mockComposePermissions.mockResolvedValue('✅ permissions composed');
+    mockComposePermissions.mockResolvedValue('\u2705 permissions composed');
   });
 
   afterEach(() => {
@@ -197,7 +197,7 @@ describe('register_member: owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', 
       env: { 'bad-name!': 'value' },
     } as any);
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).toContain('Invalid env name');
     expect(result).not.toContain('registered successfully');
     expect(mockComposePermissions).not.toHaveBeenCalled();
@@ -220,7 +220,7 @@ describe('register_member: owner, env, llmAuthExpiresAt (apra-fleet-4qtu.1.1)', 
       env: bigEnv,
     } as any);
 
-    expect(result).toContain('❌');
+    expect(result).toContain('\u274C');
     expect(result).toContain('too large');
     expect(result).not.toContain('registered successfully');
   }, 20000);

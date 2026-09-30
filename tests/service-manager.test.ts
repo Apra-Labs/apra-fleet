@@ -54,7 +54,7 @@ describe('WindowsServiceManager', () => {
       await mgr.register('/bin/apra-fleet.exe', ['--transport', 'http'], '/logs/fleet.log');
       expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
         '/create', '/tn', 'ApraFleet', '/sc', 'onlogon', '/rl', 'limited', '/f',
-      ]));
+      ]), expect.objectContaining({ timeout: expect.any(Number) }));
     });
   });
 
@@ -872,7 +872,7 @@ describe('service identity is distinct per platform', () => {
     expect(String(content)).toContain('cd /d "C:\\wf"');
     expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
       '/create', '/tn', 'ApraFleetSupervisor',
-    ]));
+    ]), expect.anything());
   });
 
   it('macos uses a distinct plist label, no KeepAlive, and a WorkingDirectory', async () => {

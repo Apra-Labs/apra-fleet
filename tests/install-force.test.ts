@@ -61,6 +61,20 @@ function makeFsMock() {
   vi.mocked(fs.copyFileSync).mockImplementation(() => {});
 }
 
+// A working service manager with nothing registered. Without it the SEA+http
+// service step fails on an unconfigured mock, which --force now reports as
+// fatal (the server it stopped would otherwise be left down).
+function mockNoServiceRegistered() {
+  vi.mocked(getServiceManager).mockResolvedValue({
+    register: vi.fn().mockResolvedValue('created'),
+    unregister: vi.fn().mockResolvedValue(undefined),
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    query: vi.fn().mockResolvedValue({ installed: false, running: false }),
+    isInstalled: vi.fn().mockResolvedValue(false),
+  });
+}
+
 // Executable path reported for the running server. Under the mocked home's
 // install prefix (BIN_DIR = <home>/.apra-fleet/bin), so the scoped guard
 // (apra-fleet-1aw, src/cli/install-guard.ts) classifies it as relevant to this
@@ -107,6 +121,7 @@ describe('install --force (#96)', () => {
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
+    mockNoServiceRegistered();
     // Simulate SEA mode so the process-detection guard runs
     _setSeaOverride(true);
     // Provide an empty manifest so loadManifest() doesn't call getSeaAsset()
@@ -261,6 +276,7 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
+    mockNoServiceRegistered();
     _setSeaOverride(true);
     _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
@@ -334,6 +350,7 @@ describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
+    mockNoServiceRegistered();
     _setSeaOverride(true);
     _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
@@ -481,6 +498,7 @@ describe('install running-server guard is scoped to the install target (apra-fle
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
+    mockNoServiceRegistered();
     _setSeaOverride(true);
     _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
@@ -643,6 +661,7 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
+    mockNoServiceRegistered();
     _setSeaOverride(true);
     _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });

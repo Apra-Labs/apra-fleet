@@ -2,6 +2,39 @@ import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { wrapPowerShellEncoded } from '../../os/windows.js';
+import { escapePowerShellArgInner } from '../../utils/shell-escape.js';
+
+/**
+ * apra-fleet-uob4: every Windows (non-POSIX) stall command goes through
+ * -EncodedCommand. A raw `powershell -c "..."` is re-parsed by the member's
+ * outer shell: under powershell.exe (local members, PowerShell-default sshd)
+ * `$c`/`$_` were expanded to empty before the inner PowerShell ever ran,
+ * turning the script into a parse error. Progress output is silenced so an
+ * encoded run does not also emit a `#< CLIXML` progress record on stderr.
+ */
+export function wrapStallPowerShell(psScript: string): string {
+  return wrapPowerShellEncoded(`$ProgressPreference = 'SilentlyContinue'; ${psScript}`);
+}
+
+/** Interior of a PowerShell single-quoted literal: `'` doubled to `''`. */
+export const psQuote = escapePowerShellArgInner;
+
+/**
+ * True when a failed tail read's stderr means "the log file does not exist
+ * yet" (benign). A PowerShell parse / command-not-found error is never that,
+ * even if its text happens to mention a missing item -- it is a broken
+ * command and must surface as a read failure (apra-fleet-uob4).
+ *
+ * An -EncodedCommand run reports errors as `#< CLIXML` with the message
+ * wrapped mid-phrase ("does not _x000D__x000A_</S><S S="Error">exist"), so
+ * the XML/line-break markup is flattened to plain spaces before matching.
+ */
+export function isLogNotYetCreatedStderr(stderr: string): boolean {
+  const text = stderr.replace(/_x000D__x000A_/g, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  if (/ParserError|CommandNotFoundException|is not recognized as/i.test(text)) return false;
+  return /No such file|cannot access|does not exist|ItemNotFoundException/i.test(text);
+}
 
 export interface ReadLogResult {
   lastTimestamp: string | null;
@@ -20,7 +53,7 @@ export async function readLogTail(memberId: string, logFilePath: string): Promis
   const shell = getAgentShell(agent);
   const cmd = isPosixShell(os, shell)
     ? `tail -c 512 "${logFilePath}"`
-    : `powershell -c "Get-Content -Tail 5 -Path '${logFilePath}'"`;
+    : wrapStallPowerShell(`Get-Content -Tail 5 -Path '${psQuote(logFilePath)}'`);
 
   try {
     const strategy = getStrategy(agent);
@@ -51,7 +84,7 @@ export async function readLogTail(memberId: string, logFilePath: string): Promis
     }
 
     // File not yet created — not an error per resilience decision
-    if (/No such file|cannot access|not recognized|does not exist|ItemNotFoundException/i.test(result.stderr)) {
+    if (isLogNotYetCreatedStderr(result.stderr)) {
       return { lastTimestamp: null };
     }
 

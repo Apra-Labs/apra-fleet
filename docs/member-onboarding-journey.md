@@ -130,7 +130,7 @@ docs). These are the mechanisms each provider's `registerMcpEndpoint()` should u
 
 - **AGY** -- no `agy mcp` subcommand exists (`agy help` subcommand list: changelog,
   help, install, models, plugin(s), update -- no mcp verb). Per
-  `docs/agy-safety-rationalization.md`, AGY reads MCP server config from a single
+  `docs/agy-provider.md`, AGY reads MCP server config from a single
   centralized, non-project-scoped file: `~/.gemini/config/mcp_config.json`
   (`{ "mcpServers": { "<name>": { ... } } }`, same shape Claude uses inline).
   AGY's `registerMcpEndpoint()` mechanism is therefore: read-modify-write that

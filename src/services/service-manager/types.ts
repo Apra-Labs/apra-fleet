@@ -93,6 +93,9 @@ export interface ServiceStatus {
   enabled?: boolean;
 }
 
+/** 'reused': the platform kept an existing registration it could not recreate (Windows). */
+export type RegisterResult = 'created' | 'reused';
+
 export interface RegisterOptions {
   /**
    * Directory the service process runs in (systemd WorkingDirectory=, launchd
@@ -106,7 +109,7 @@ export interface RegisterOptions {
 export interface ServiceManager {
   /** Which registered service this manager instance operates on. */
   readonly serviceId: ServiceId;
-  register(binaryPath: string, args: string[], logPath: string, options?: RegisterOptions): Promise<void>;
+  register(binaryPath: string, args: string[], logPath: string, options?: RegisterOptions): Promise<RegisterResult | void>;
   unregister(): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;

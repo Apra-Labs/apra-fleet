@@ -137,6 +137,22 @@ export function synthesizeBdWhere(cmd, cwd) {
     return { err: null, stdout: `${beadsDir}\n  prefix: mock\n`, stderr: '' };
 }
 
+// The sprint-start memory sweep (fleet-sprint/beads-memory-hygiene.mjs)
+// lists memories with `bd memories --json` and forgets matches with
+// `bd forget <key>`. A scratch `bd init` clone has no memories, so the mocked
+// (replay/record) modes synthesize an empty list and a clean forget instead
+// of requiring (or drifting) a recorded response. A scenario that seeds
+// memories intercepts both commands in its own executeCommand first (see the
+// mock-sprint harness's `beadsMemories` option). Real mode runs real bd.
+const isBdMemoriesListCommand = (cmd) => /^\s*bd\s+memories\s+--json\s*$/.test(cmd);
+const isBdForgetCommand = (cmd) => /^\s*bd\s+forget\s+\S+\s*$/.test(cmd);
+
+export function synthesizeBdMemoryCommand(cmd) {
+    if (isBdMemoriesListCommand(cmd)) return { err: null, stdout: '{}\n', stderr: '' };
+    if (isBdForgetCommand(cmd)) return { err: null, stdout: '', stderr: '' };
+    return null;
+}
+
 // The same precondition also issues `bd config get sync.remote --json` once
 // per member. Every committed recording answers that command with an unset
 // value (a scratch `bd init` clone has no sync remote), so replay mode
@@ -708,6 +724,9 @@ export function runCmd(cmd, cwd) {
     // synthesized in both mocked modes; the sync.remote probe only in replay
     // (record mode captures the real answer, exactly as it always did).
     if (isBdWhereCommand(cmd)) return Promise.resolve(synthesizeBdWhere(cmd, cwd));
+    // The memory sweep (see synthesizeBdMemoryCommand above).
+    const memoryAnswer = synthesizeBdMemoryCommand(cmd);
+    if (memoryAnswer) return Promise.resolve(memoryAnswer);
     if (mode === 'record') return recordBd(cmd, cwd);
     if (isStableConfigProbe(cmd)) return Promise.resolve({ err: null, stdout: SYNC_REMOTE_UNSET_STDOUT, stderr: '' });
     return replayBd(cmd, cwd);
