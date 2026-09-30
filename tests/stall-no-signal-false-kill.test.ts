@@ -225,7 +225,7 @@ describe('no-signal dispatches are not killed by the stall detector (#390 / igoe
 
     await detector._poll();
 
-    const dirPollCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('Get-ChildItem'));
+    const dirPollCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('Get-ChildItem'));
     expect(dirPollCmd).toBeDefined();
     expect(dirPollCmd).toContain('C:\\Users\\bella\\.gemini\\antigravity-cli\\brain');
     expect(dirPollCmd).not.toContain(HUB_HOME_MARKER);

@@ -381,10 +381,8 @@ describe('pollLogFile', () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
       await pollLogFile('member-1', 'C:\\logs\\log.jsonl');
-      expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('Get-Content -Tail'),
-        5000
-      );
+      const scripts = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0]));
+      expect(scripts.some(s => s.includes('Get-Content -Tail'))).toBe(true);
     });
   });
 
@@ -411,6 +409,31 @@ describe('pollLogFile', () => {
       const result = await pollLogFile('member-1', '/log.jsonl');
       expect(result.lastTimestamp).toBeNull();
       expect(result.error).toContain('Permission denied');
+    });
+
+    // apra-fleet-uob4: a broken PowerShell command is a read failure, not "file not yet created".
+    it('surfaces a PowerShell command-not-found/parse error as a read failure', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: "= : The term '=' is not recognized as the name of a cmdlet, function, script file, or operable program.\n    + CategoryInfo          : ObjectNotFound: (=:String) [], CommandNotFoundException",
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toContain('not recognized');
+    });
+
+    it('treats a CLIXML-wrapped PowerShell missing-file error as not-yet-created', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">... : Cannot find _x000D__x000A_</S><S S="Error">path \'C:\\l\\x.jsonl\' because it does not _x000D__x000A_</S><S S="Error">exist._x000D__x000A_</S></Objs>',
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toBeUndefined();
     });
 
     it('returns error when execCommand throws', async () => {
@@ -441,7 +464,7 @@ describe('pollLogFile', () => {
     it('parses mtimeMs from the PowerShell LastWriteTimeUtc command on Windows (already ms)', async () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockImplementation(async (cmd: string) => {
-        if (cmd.includes('LastWriteTimeUtc')) {
+        if (decodePowerShellEncodedCommand(cmd).includes('LastWriteTimeUtc')) {
           return { stdout: '1700000000000\n', stderr: '', code: 0 };
         }
         return { stdout: '', stderr: '', code: 0 };
@@ -595,7 +618,7 @@ describe('pollLogFile', () => {
       it('the generated scan command really finds the transcript nested under the brain dir', async () => {
         const activity = await pollDirectoryActivity('member-1');
 
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
         expect(scanCmd).toBeDefined();
         expect(scanCmd).toContain(logDir);
 
@@ -609,7 +632,7 @@ describe('pollLogFile', () => {
 
       it('the depth bound in the generated command covers the full AGY transcript layout', async () => {
         await pollDirectoryActivity('member-1');
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
 
         // How far below the polled root the transcript actually lives, derived
         // from the provider (currently brain/<sessionId>/.system_generated/
@@ -694,7 +717,7 @@ describe('pollLogFile', () => {
       it('reports activity from a plain non-jsonl log file, never scored as no progress', async () => {
         const activity = await pollDirectoryActivity('member-1');
 
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
         expect(scanCmd).toBeDefined();
         expect(scanCmd).toContain(logDir);
 
