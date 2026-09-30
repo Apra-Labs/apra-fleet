@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
+import { ROLE_POLICIES, agentTypeAppliesKbCaptures } from '../fleet-sprint/role-policies.mjs';
 import { kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
 
 // apra-fleet-9jmc.2 -- verification for apra-fleet-9jmc.1's fix: every role
@@ -275,4 +275,69 @@ test('wrapper-injection roles without a kb-apply step: the KB block heading thei
             `role(s) ${roleNames.join(', ')}: ${agentType}.md must quote the injected block heading "${heading}" verbatim`
         );
     }
+});
+
+// ---------------------------------------------------------------------------
+// The injected KNOWLEDGE BANK block itself must not contradict these prompts:
+// its "report it in the kb_captures field ... the orchestrator will record it"
+// promise is emitted only for personas whose captures are actually applied.
+// ---------------------------------------------------------------------------
+
+const KB_CAPTURES_PROMISE =
+    'If you discover something non-obvious and durable while working, report it in the '
+    + '`kb_captures` field of your structured output and the orchestrator will record it.';
+const ENTRY = [{ confidence: 'CONFIRMED', title: 't', summary: 's' }];
+
+/** Every distinct agentType whose rows ALL carry 'kb-apply' (derived, not hardcoded). */
+function kbApplyAgentTypes(rolePolicies) {
+    const byType = new Map();
+    for (const row of Object.values(rolePolicies)) {
+        if (!row.agentType) continue;
+        const applies = Array.isArray(row.postResult) && row.postResult.includes('kb-apply');
+        byType.set(row.agentType, (byType.get(row.agentType) ?? true) && applies);
+    }
+    return [...byType].filter(([, all]) => all).map(([t]) => t);
+}
+
+test('KB block: a kb-apply persona still gets the kb_captures promise verbatim', () => {
+    const types = kbApplyAgentTypes(ROLE_POLICIES);
+    assert.ok(types.includes('harvester') && types.includes('doer') && types.includes('reviewer'), `derived kb-apply personas: ${JSON.stringify(types)}`);
+    for (const agentType of types) {
+        assert.equal(agentTypeAppliesKbCaptures(agentType), true, `${agentType} has kb-apply on every row`);
+        const [block] = kbKnowledgeBlock(ENTRY, { captureChannel: agentTypeAppliesKbCaptures(agentType) });
+        assert.ok(block.includes(KB_CAPTURES_PROMISE), `${agentType}: expected the kb_captures promise verbatim`);
+    }
+    // The prompt-builder callers (doer/reviewer/final-review) pass no option: unchanged default.
+    assert.ok(kbKnowledgeBlock(ENTRY)[0].includes(KB_CAPTURES_PROMISE));
+});
+
+test('KB block: no wrapper-without-kb-apply persona is promised a kb_captures channel', () => {
+    const byAgentType = dedupeByAgentType(wrapperRowsWithoutKbApply(ROLE_POLICIES));
+    assert.ok(byAgentType.size > 0);
+    for (const [agentType, roleNames] of byAgentType) {
+        assert.equal(agentTypeAppliesKbCaptures(agentType), false, `${agentType} (${roleNames.join(', ')}) has no kb-apply step`);
+        const [block] = kbKnowledgeBlock(ENTRY, { captureChannel: agentTypeAppliesKbCaptures(agentType) });
+        assert.ok(!block.includes('kb_captures'), `${agentType}: block must not mention kb_captures, got: ${block.slice(0, 700)}`);
+        assert.ok(block.includes('note it in your own report'), `${agentType}: block must redirect a finding to the report`);
+        assert.ok(block.startsWith('KNOWLEDGE BANK -- what this repo already knows.'), 'heading unchanged');
+    }
+});
+
+test('agentTypeAppliesKbCaptures: unknown persona and a mixed persona have no channel', () => {
+    assert.equal(agentTypeAppliesKbCaptures(undefined), false);
+    assert.equal(agentTypeAppliesKbCaptures('no-such-persona'), false);
+    const mixed = {
+        a: { agentType: 'p', postResult: ['kb-apply'] },
+        b: { agentType: 'p', postResult: [] },
+    };
+    assert.equal(agentTypeAppliesKbCaptures('p', mixed), false);
+});
+
+test('the agent() wrapper derives the capture channel from the dispatch agentType', () => {
+    const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'fleet-sprint', 'runner.js'), 'utf8');
+    assert.match(
+        runnerSrc,
+        /kbKnowledgeBlock\(kbPriming\.knowledgeOf\(opts\.member_name\), \{\s*captureChannel: agentTypeAppliesKbCaptures\(opts\.agentType\),\s*\}\)/,
+        'runner.js agent() wrapper must pass captureChannel: agentTypeAppliesKbCaptures(opts.agentType)'
+    );
 });

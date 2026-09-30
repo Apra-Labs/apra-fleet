@@ -89,7 +89,11 @@ For every role whose policy row is `kbInjection: 'wrapper'` with no
   (`packages/apra-fleet-se/test/kb-prompt-contract-wrapper-roles.test.mjs`)
   pins the quoted heading against what `kbKnowledgeBlock()` in
   `fleet-sprint/kb.mjs` emits, so a reworded block heading fails the build.
-- Marks any KB tool call as bonus-only, never required.
+- Marks any KB tool call as bonus-only, never required. The injected block
+  itself agrees: its "report it in the `kb_captures` field" sentence is
+  emitted only for personas whose every role row has `kb-apply`
+  (`agentTypeAppliesKbCaptures` in `role-policies.mjs`); other personas are
+  told to note a finding in their own report.
 - Never instructs the member to populate a `kb_captures` output field, since
   nothing downstream applies it for these roles. The planner prompt and its
   output schema mention the field only to say it is ignored (omit it or send
