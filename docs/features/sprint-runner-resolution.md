@@ -108,6 +108,30 @@ strictly probe-internal: what resolution *returns* to its caller is always
 the original, unquoted path -- only the probe's own shell invocation needs
 the extra quoting.
 
+## Tier 2 must agree with the startup toolchain check, not just its own probe
+
+The recorded toolchain's node path (tier 2) is re-probed twice in the life of
+one supervisor process: once at startup, by the toolchain-validation module
+described in `recorded-toolchain.md`, and again at launch time, by this
+tier's own resolution logic -- and both probes target the exact same
+recorded path. If the two probes can independently decide "usable" or "not
+usable" for the same binary, they can disagree: a slow probe under host load
+can lose to a timeout the startup check's retry absorbed, and a launch is
+then hard-refused for a node the supervisor just reported healthy on its own
+Health endpoint moments earlier. The chosen fix is to make disagreement
+structurally impossible rather than merely less likely: tier 2 prefers to
+**consume** the startup check's own accepted result for that exact path
+(no second spawn at all) and only falls back to a fresh probe when nothing
+in this process has already validated it -- and that fallback probe then
+carries the identical bounded-retry, transient-vs-genuine classification the
+startup check uses, so the two paths can never classify the same failure
+differently. See the "Known gap" note below for a case this still leaves
+open. See also `recorded-toolchain.md`'s invariant on checking a shared
+timeout classifier against every exec shape that calls it -- tier 2's own
+fallback probe is exactly such a caller, and a classifier mismatch there
+reintroduces this exact disagreement even though the consuming path closes
+the common case.
+
 ## Known gap: a resolved shim can still fail to spawn
 
 Resolution's own probes run with a shell (`shell: true` on Windows), so a

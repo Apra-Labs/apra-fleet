@@ -478,3 +478,77 @@ product code, prefer resolving a home-derived path lazily inside the
 function that uses it rather than adding another eager module-level
 constant -- that keeps the code correct under both orderings instead of
 depending on which one happens to run first.
+
+### Building a test fixture at "a node path distinct from the runner's own": hard-link the binary, symlink its sibling `lib/`, never symlink the binary itself
+
+Any test that needs a second, independently-identifiable Node.js interpreter
+on disk -- to prove a spawned child ran through a *specific recorded path*
+rather than the test runner's own current runtime -- must not build it by
+symlinking `process.execPath`. Node resolves symbolic links when reporting
+`process.execPath` (and `process.argv[0]` always equals `process.execPath`),
+so a symlinked fixture reports the *original* binary's path once it runs,
+not the symlink's own path -- making it indistinguishable, by construction,
+from the runtime the test is trying to prove was NOT used. A hard link has
+no target to resolve, so a hard-linked binary reports exactly its own
+invoked path, preserving the identity a test needs.
+
+A hard link alone can still crash on start, though, on a non-relocatable
+build: a Homebrew-installed macOS node links its one relative dependency,
+`libnode.NNN.dylib`, via `@rpath`/`@loader_path`, resolved relative to
+*wherever the binary was invoked from* -- every other dependency uses an
+absolute path and is unaffected. A hard link sitting in a fresh directory
+with no co-located `lib/` therefore fails to load its shared library and
+aborts (`dyld: Library not loaded`), and because this happens for every
+process spawned against that path for as long as the broken link exists, it
+can cascade into unrelated test files that spawn their own child processes
+concurrently, not just the test that built the fixture. The fix is to hard-
+link the binary and additionally symlink node's sibling `lib/` directory (if
+one exists next to it) into the same relative position beside the hard link
+-- a directory symlink costs nothing to create, and dynamic-library loading
+(unlike `process.execPath` reporting) follows symlinks transparently. A
+self-contained build with no sibling `lib/` (the common shape for nvm/
+official-tarball installs) needs no such symlink at all. Whatever fixture
+mechanism is chosen, verify it doesn't merely avoid crashing the test that
+built it -- confirm the *whole* suite still passes, since this class of
+defect manifests in files that never touch the fixture directly.
+
+### `apra-fleet-se`'s bounded test runner: a concurrent lane and an explicit serial lane sharing one deadline
+
+`packages/apra-fleet-se`'s default (no explicit file argument) test run is
+not a single concurrent batch. A handful of test files each spawn a **real**
+OS child process that itself does real, heavy work -- a genuine `bd init`
+Dolt bootstrap, or a real long-lived `bin/serve.mjs`/nested `node --test`
+child -- rather than exercising in-process mocks. Every such spawn competes
+for host CPU/IO with whatever else is running at that moment, including
+*other* heavy files the scheduler happens to run concurrently in the same
+batch. That makes a contention-scaled timeout budget a function of how many
+heavy files happen to be co-resident, which is exactly the "implicit
+environment decides behaviour" failure shape this repo's own contributing
+rules forbid: adding new heavy real-process suites can silently blow an
+already-scaled budget in an unrelated, previously-stable file just by
+changing how many heavy files are now running at once.
+
+The fix is an explicit, enumerated split, not an incidental one. The runner
+runs two sequential phases against **one shared wall-clock deadline** (not
+two independent budgets) rather than the default concurrent batch alone:
+- Files on an explicit registry (`test/helpers/serial-process-suites.mjs`)
+  run in their own phase at concurrency 1 -- serially, and never overlapping
+  with the concurrent-lane phase -- so their outcome no longer depends on how
+  many *other* heavy suites happen to be resident.
+- Everything else still runs in the original concurrent lane.
+- A dedicated guard test scans every test file's source for the same
+  real-process signatures (`spawn(`, `execFileSync(`, etc.) the registry was
+  built from and fails loudly if it finds one that is not registered, or a
+  registry entry that no longer matches an existing file -- the registry is
+  the single source of truth for "which files are heavy," and drifting from
+  it silently reopens the exact contention bug the split exists to close.
+- Passing an explicit file/pattern to the runner (as a developer re-running
+  one file directly) bypasses the split entirely -- the caller already chose
+  exactly what runs, so there is nothing left to isolate it from.
+
+The two phases sharing one deadline (rather than each phase getting its own
+full budget) matters because a suite that is merely slow, not hung, must
+still be caught by the same bound that kills a genuinely hung process tree;
+splitting the budget in two would let a slow-but-alive serial lane silently
+eat into time the concurrent lane needed, or vice versa, without either
+phase ever individually appearing to exceed anything.

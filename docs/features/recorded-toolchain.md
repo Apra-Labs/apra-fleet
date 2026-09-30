@@ -200,3 +200,17 @@ and traces directly to how the rest of the system depends on each one.
   even after one bounded retry is worded distinctly from a probe that
   completed and found nothing usable -- these are different findings and an
   operator must never have to guess which one actually happened.
+- **A shared "did this probe merely fail to complete, or did it genuinely
+  find nothing" classifier must be checked against every exec shape it will
+  actually see, not just the shape it was written against.** Node's
+  synchronous child-process API (`execFileSync`) and its asynchronous one
+  (`execFile`) do not necessarily populate the same error fields on a
+  timeout kill -- a classifier written and tested only against one shape can
+  silently treat the other shape's timeout as a genuine, non-retryable
+  failure. The practical consequence: a probe that could not complete in
+  time gets worded as "does not resolve to a usable runtime," the sentence
+  reserved for a truly broken recording, and a launch is refused for a
+  binary that is actually fine, just momentarily slow to answer under load.
+  Any new caller of the shared classifier must state which exec shape it
+  uses and add a case (or a repro) proving the classifier actually recognizes
+  that shape's timeout, rather than assuming the existing tests cover it.
