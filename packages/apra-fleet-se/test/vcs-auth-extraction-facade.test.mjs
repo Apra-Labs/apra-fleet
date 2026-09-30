@@ -205,11 +205,19 @@ describe('(2) golden transcripts reproduce with the fixture directory untouched'
         // spawn's `env` option two statements down.
         assert.equal(env.NODE_TEST_CONTEXT, undefined, 'NODE_TEST_CONTEXT must be unset in the env object handed to the nested golden-transcript spawn, or the child silently no-ops instead of genuinely running');
 
-        const childOut = execFileSync(
-            process.execPath,
-            ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
-        );
+        let childOut;
+        try {
+            childOut = execFileSync(
+                process.execPath,
+                ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
+                { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
+            );
+        } catch (err) {
+            // Surface the child's own output: a bare "Command failed" gives
+            // no clue which golden test failed or why.
+            const tail = (s) => String(s ?? '').slice(-4000);
+            assert.fail(`nested golden-transcript run failed (status=${err.status} signal=${err.signal})\n--- child stdout (tail) ---\n${tail(err.stdout)}\n--- child stderr (tail) ---\n${tail(err.stderr)}`);
+        }
 
         // apra-fleet-j918.13.2: falsifiable pin against the vacuous no-op
         // child (j918.13) recurring -- a bare non-throw/exit-0 is NOT
