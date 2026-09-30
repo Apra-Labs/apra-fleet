@@ -179,6 +179,58 @@ describe('kb_query tool trust filters', () => {
     expect(parsed.related_claims.map((e: KBEntry) => e.id)).toEqual(['r-ok']);
   });
 
+  // An options-ignoring provider (older remote KB server) that DOES honour limit.
+  function ignoringProvider(rows: Array<Record<string, unknown>>) {
+    const calls: Array<{ limit?: number; ids?: string[] }> = [];
+    return {
+      calls,
+      query: async (opts: { ids?: string[]; limit?: number }) => {
+        calls.push({ limit: opts.limit, ids: opts.ids });
+        const results = opts.ids ? rows.filter(r => opts.ids!.includes(r.id as string)) : rows.slice(0, opts.limit ?? 20);
+        return { results, total: results.length, l1_only: false };
+      },
+      relatedClaims: async () => [],
+    };
+  }
+  const row = (id: string, title: string, confidence: string) =>
+    ({ id, title, confidence, flagged_for_review: false, content: 'c' });
+
+  it('an excluded project entry does not shadow an admissible global entry of the same title', async () => {
+    const project = ignoringProvider([row('p-inf', 'Shared title', 'INFERRED')]);
+    const global = ignoringProvider([row('g-conf', 'Shared title', 'CONFIRMED')]);
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project, global, projectSlug: 'test' } as any);
+
+    const parsed = JSON.parse(await kbQuery({ query: 'shared', confidence: ['CONFIRMED'] }));
+
+    expect(parsed.l1_results.map((e: KBEntry) => e.id)).toEqual(['g-conf']);
+  });
+
+  it('a full page of excluded entries from an options-ignoring provider does not starve the result', async () => {
+    const rows = [
+      ...Array.from({ length: 10 }, (_, i) => row(`inf${i}`, `inferred ${i}`, 'INFERRED')),
+      row('conf0', 'confirmed 0', 'CONFIRMED'),
+      row('conf1', 'confirmed 1', 'CONFIRMED'),
+    ];
+    const project = ignoringProvider(rows);
+    const global = ignoringProvider([]);
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project, global, projectSlug: 'test' } as any);
+
+    const parsed = JSON.parse(await kbQuery({ query: 'anything', limit: 5, confidence: ['CONFIRMED'] }));
+
+    expect(parsed.l1_results.map((e: KBEntry) => e.id)).toEqual(['conf0', 'conf1']);
+    expect(project.calls.filter(c => !c.ids).map(c => c.limit)).toEqual([5, 20]);
+  });
+
+  it('a filtering provider (sqlite) is asked once -- the wider re-query never fires for it', async () => {
+    const spy = vi.spyOn(provider, 'query');
+    useProvider(provider);
+
+    await kbQuery({ query: 'trustfilter', limit: 2, confidence: ['CONFIRMED'], exclude_disputed: true });
+
+    // project + global L1 (same provider here), plus one L2 id fetch.
+    expect(spy.mock.calls.filter(([o]) => !o.ids).map(([o]) => o.limit)).toEqual([2, 2]);
+  });
+
   it('rejects an empty confidence list rather than guessing its meaning', () => {
     expect(kbQuerySchema.safeParse({ query: 'x', confidence: [] }).success).toBe(false);
     expect(kbQuerySchema.safeParse({ query: 'x', confidence: ['CONFIRMED'] }).success).toBe(true);

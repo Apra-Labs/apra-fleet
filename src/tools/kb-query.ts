@@ -98,15 +98,34 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     exclude_disputed: input.exclude_disputed,
   };
 
-  const projectL1 = await providers.project.query(queryOpts);
-  const globalL1 = await providers.global.query(queryOpts);
+  // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
+  // after the merge would let an excluded project entry shadow an admissible
+  // global entry of the same title and then vanish, taking both with it.
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed);
+  const trustedL1 = async (provider: typeof providers.project) => {
+    const first = await provider.query(queryOpts);
+    if (!filtering) return first.results;
+    let kept = first.results.filter(e => passesTrustFilter(e, input));
+    // A provider that ignored the filter may have spent its whole limit on
+    // entries just dropped here. A full page that filtered short is the only
+    // signal of that (the sqlite provider filters in SQL, so it never trips
+    // this); re-ask once with a wider window and trim back to the limit.
+    if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
+      const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
+      kept = wider.results.filter(e => passesTrustFilter(e, input));
+    }
+    return kept.slice(0, queryOpts.limit);
+  };
+
+  const projectL1 = await trustedL1(providers.project);
+  const globalL1 = await trustedL1(providers.global);
 
   // Merge project first, deduplicate global entries by title
-  const seen = new Set(projectL1.results.map(e => e.title));
+  const seen = new Set(projectL1.map(e => e.title));
   const mergedL1 = [
-    ...projectL1.results,
-    ...globalL1.results.filter(e => !seen.has(e.title)),
-  ].filter(e => passesTrustFilter(e, input));
+    ...projectL1,
+    ...globalL1.filter(e => !seen.has(e.title)),
+  ];
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
   let l2Results = mergedL1.slice(0, 5);
