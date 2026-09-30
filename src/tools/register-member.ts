@@ -23,6 +23,7 @@ import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows } from '../services/agent-shadow.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
@@ -467,6 +468,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (connResult.ok) {
       agentProvisionResult = await provisionAgents(tempAgent);
       if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // Project-level agent files in the work folder shadow the managed role
+      // set (local and remote members alike). Never throws.
+      const shadowWarning = await recheckProjectAgentShadows(tempAgent);
+      if (shadowWarning) warnings.push(shadowWarning);
 
       // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
       // so composed project-scoped permissions are honored on the first dispatch,

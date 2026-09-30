@@ -18,6 +18,7 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
+import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -869,6 +870,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
 
   await ensureAgentFilesProvisioned(agent);
+  // Project-level <workFolder>/.claude/agents files take precedence over the
+  // user-level set provisioned above; quarantine untracked shadows, report
+  // tracked ones on every dispatch. Local members included. Never throws.
+  const shadowWarning = await ensureNoProjectAgentShadows(agent);
+  if (shadowWarning) heuristicWarningSuffix += `\n\n[WARN] ${shadowWarning}`;
   const stallDetector = getStallDetector();
   let clearedByStall = false;
   // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but

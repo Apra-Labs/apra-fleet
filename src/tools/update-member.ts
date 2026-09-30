@@ -13,6 +13,7 @@ import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '../services/agent-shadow.js';
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
@@ -307,6 +308,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   } else if (updated.agentType !== 'remote') {
     // Local members have no connectivity concept -- always attempt (best-effort/non-fatal).
     await seedWorkspaceTrust(updated, undefined, 'update_member');
+  }
+
+  // Re-check project-level agent files that would shadow the managed role set
+  // (the work folder or provider may have changed). The dispatch-time cache is
+  // always invalidated; the check itself runs only when the member is reachable
+  // (local members always). Never throws.
+  invalidateProjectAgentShadowCache(updated.id);
+  const shadowReachable = updated.agentType !== 'remote' || agentProvisionResult !== undefined
+    || remoteAgentsDir(updated.llmProvider ?? 'claude') === null;
+  if (shadowReachable) {
+    const shadowWarning = await recheckProjectAgentShadows(updated);
+    if (shadowWarning) warnings.push(shadowWarning);
   }
 
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
