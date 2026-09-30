@@ -418,6 +418,21 @@ if (idFoo) {
   });
 }
 
+// --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
+// Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
+// entries: the INFERRED context-cache entry that happy.json returns must be
+// absent here, and related_claims must obey the same filter.
+if (idFoo) {
+  await recordHappy('kb_query', 'happy-confirmed-only', {
+    repo_path: repoA,
+    repo_remote_url: REMOTE_A,
+    query: 'exampleFn',
+    confidence: ['CONFIRMED'],
+    exclude_disputed: true,
+    expand_related: true,
+  });
+}
+
 // --- kb_stats -------------------------------------------------------------
 await recordHappy('kb_stats', 'happy', {
   repo_path: repoA,

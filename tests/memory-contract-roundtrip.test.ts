@@ -174,7 +174,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(48);
+    expect(report.steps.length).toBe(49); // 48 + kb_query/happy-confirmed-only (trust filters)
   });
 
   it('covers all 23 inventoried tools', () => {

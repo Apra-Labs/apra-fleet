@@ -93,9 +93,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: this is the same 32-fixture population the bead's own ajv
-    // sweep measured (48 committed fixtures total, 16 carry `error` instead).
-    expect(keys.length).toBe(32);
+    // Non-vacuous: the 32-fixture population the original ajv sweep measured
+    // (48 committed fixtures total, 16 carry `error` instead), plus
+    // kb_query/happy-confirmed-only (trust filters).
+    expect(keys.length).toBe(33);
     expect(failures).toEqual([]);
   });
 
@@ -122,7 +123,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(32);
+    expect(keys.length).toBe(33);
     expect(failures).toEqual([]);
   });
 
