@@ -8,6 +8,12 @@ import type { Agent, SSHExecResult } from '../../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void) => Promise<SSHExecResult>>();
 
+// Project-level agent shadow check is covered by tests/agent-shadow*.test.ts;
+// stubbed so the mockResolvedValueOnce sequence below stays the dispatch's own calls.
+vi.mock('../../src/services/agent-shadow.js', () => ({
+  ensureNoProjectAgentShadows: vi.fn(async () => undefined),
+}));
+
 // Integration mock: wraps mockExecCommand and replicates the FLEET_PID extraction logic
 // inline (parsing stdout, calling setStoredPid + onPidCaptured) — mirrors what the real
 // LocalStrategy/SSH streaming handlers do via the onPidCaptured callback.
