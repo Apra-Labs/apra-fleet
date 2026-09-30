@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const {
   mockGetAgent,
@@ -354,10 +355,7 @@ describe('findLogFile', () => {
       await vi.runAllTimersAsync();
       await promise;
 
-      expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('Get-Item'),
-        expect.any(Number)
-      );
+      expect(decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0])).toContain('Get-Item');
     });
   });
 
@@ -430,8 +428,9 @@ describe('findLogFile', () => {
       await findLogFile('remote-1', T0, 'inv5', 'C:\\logs');
 
       const tiebreakCall = mockExecCommand.mock.calls[1];
-      expect(tiebreakCall[0]).toContain('Select-String');
-      expect(tiebreakCall[0]).toContain('inv5');
+      const tiebreakScript = decodePowerShellEncodedCommand(tiebreakCall[0]);
+      expect(tiebreakScript).toContain('Select-String');
+      expect(tiebreakScript).toContain('inv5');
     });
   });
 });

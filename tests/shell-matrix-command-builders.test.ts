@@ -27,6 +27,9 @@ import { decodePowerShellEncodedCommand } from './test-helpers.js';
 type ShellRow = 'gitbash' | 'pwsh7' | 'powershell5' | undefined;
 const SHELL_ROWS: ShellRow[] = ['gitbash', 'pwsh7', 'powershell5', undefined];
 const isPosixRow = (shell: ShellRow): boolean => shell === 'gitbash';
+/** Decoded form of a stall/* Windows command (wrapStallPowerShell). */
+const stallGuard = (script: string): string =>
+  `$ErrorActionPreference = 'Stop'; try { $ProgressPreference = 'SilentlyContinue'; ${script}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
 
 // ---------------------------------------------------------------------------
 // member-home.ts + orphan-recovery.ts: no registry involved, agent/params are
@@ -223,12 +226,50 @@ describe('find-log-file.ts log-file discovery: shell matrix', () => {
       expect(cmd).not.toMatch(/powershell/i);
       expect(cmd).not.toMatch(/EncodedCommand/i);
     } else {
-      // Golden: today's exact raw (non-encoded) PowerShell one-liner.
-      expect(cmd).toBe(
-        `powershell -c "Get-ChildItem -Path 'C:\\Users\\bella\\.claude\\projects\\p' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('1970-01-12T13:46:40') } | ForEach-Object { $_.FullName }"`
-      );
-      expect(cmd).not.toMatch(/EncodedCommand/i);
+      // Golden: -EncodedCommand envelope (apra-fleet-uob4), UTC comparison.
+      expect(cmd).toMatch(/^powershell -EncodedCommand /);
+      expect(decodePowerShellEncodedCommand(cmd)).toBe(stallGuard(
+        `Get-ChildItem -Path 'C:\\Users\\bella\\.claude\\projects\\p' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -gt [DateTimeOffset]::Parse('1970-01-12T13:46:40Z', [Globalization.CultureInfo]::InvariantCulture).UtcDateTime } | ForEach-Object { $_.FullName }`
+      ));
     }
+  });
+});
+
+// apra-fleet-uob4: the Windows find-log-file builders compare in UTC against a
+// Z-suffixed instant and double a `'` in every interpolated path.
+describe('find-log-file.ts Windows builders: UTC compare + quoted paths', () => {
+  beforeEach(() => {
+    mockExecCommand.mockReset();
+    mockGetAgent.mockReset();
+  });
+
+  const T0 = Date.UTC(2026, 8, 29, 10, 0, 0);
+  const DIR = "C:\\Users\\o'brien x\\.claude\\projects\\p";
+  const UTC_CUTOFF = "$_.LastWriteTimeUtc -gt [DateTimeOffset]::Parse('2026-09-29T10:00:00Z', [Globalization.CultureInfo]::InvariantCulture).UtcDateTime";
+
+  it('direct session-file lookup', async () => {
+    mockGetAgent.mockReturnValue(makeWindowsRemoteAgentFor('powershell5', 'uob4-direct', { sessionId: 'sess-1' }));
+    mockExecCommand.mockResolvedValue({ stdout: `${DIR}\\sess-1.jsonl\n`, stderr: '', code: 0 });
+
+    await findLogFile('uob4-direct', T0, 'inv-1', DIR);
+    const script = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0] as string);
+    expect(script).toContain("Get-Item -Path 'C:\\Users\\o''brien x\\.claude\\projects\\p\\sess-1.jsonl'");
+    expect(script).toContain(UTC_CUTOFF);
+    expect(script).not.toMatch(/\.LastWriteTime\s/);
+  });
+
+  it('mtime scan and [inv] tie-break', async () => {
+    mockGetAgent.mockReturnValue(makeWindowsRemoteAgentFor('powershell5', 'uob4-scan', { sessionId: undefined }));
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: `${DIR}\\a.jsonl\n${DIR}\\b.jsonl\n`, stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: `${DIR}\\b.jsonl\n`, stderr: '', code: 0 });
+
+    await findLogFile('uob4-scan', T0, 'inv-1', DIR);
+    const scan = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0] as string);
+    expect(scan).toContain("Get-ChildItem -Path 'C:\\Users\\o''brien x\\.claude\\projects\\p'");
+    expect(scan).toContain(UTC_CUTOFF);
+    const tie = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[1][0] as string);
+    expect(tie).toContain("@('C:\\Users\\o''brien x\\.claude\\projects\\p\\a.jsonl','C:\\Users\\o''brien x\\.claude\\projects\\p\\b.jsonl')");
   });
 });
 
@@ -251,8 +292,8 @@ describe('read-log-tail.ts log-tail read: shell matrix', () => {
       expect(cmd).toBe('tail -c 512 "C:\\Users\\bella\\.claude\\session.jsonl"');
       expect(cmd).not.toMatch(/powershell/i);
     } else {
-      // Golden: today's exact raw PowerShell tail command.
-      expect(cmd).toBe(`powershell -c "Get-Content -Tail 5 -Path 'C:\\Users\\bella\\.claude\\session.jsonl'"`);
+      expect(cmd).toMatch(/^powershell -EncodedCommand /);
+      expect(decodePowerShellEncodedCommand(cmd)).toBe(stallGuard(`Get-Content -Tail 5 -Path 'C:\\Users\\bella\\.claude\\session.jsonl'`));
     }
   });
 });
@@ -268,7 +309,7 @@ describe('stall-poller.ts poller mtime fetch: shell matrix', () => {
     mockGetAgent.mockReturnValue(agent);
     const posix = isPosixRow(shell);
     mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (/^stat -c %Y|DateTimeOffset/.test(cmd)) {
+      if (/^stat -c %Y|DateTimeOffset/.test(decodePowerShellEncodedCommand(cmd))) {
         return posix ? { stdout: '1700000000\n', stderr: '', code: 0 } : { stdout: '1700000000000\n', stderr: '', code: 0 };
       }
       // The content-tail call -- irrelevant to this test, return empty.
@@ -286,10 +327,10 @@ describe('stall-poller.ts poller mtime fetch: shell matrix', () => {
       );
       expect(mtimeCmd).not.toMatch(/powershell/i);
     } else {
-      // Golden: today's exact raw PowerShell mtime one-liner.
-      expect(mtimeCmd).toBe(
-        `powershell -c "[DateTimeOffset]::new((Get-Item -LiteralPath 'C:\\Users\\bella\\.claude\\session.jsonl' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()"`
-      );
+      expect(mtimeCmd).toMatch(/^powershell -EncodedCommand /);
+      expect(decodePowerShellEncodedCommand(mtimeCmd)).toBe(stallGuard(
+        `[DateTimeOffset]::new((Get-Item -LiteralPath 'C:\\Users\\bella\\.claude\\session.jsonl' -ErrorAction SilentlyContinue).LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds()`
+      ));
     }
   });
 });
