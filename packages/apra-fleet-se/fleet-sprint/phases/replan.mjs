@@ -108,8 +108,12 @@ export async function runReplanPhase({
     // the outcome of this pass.
     for (const id of replanScopeIds) replannedThisCycle.add(id);
 
-    // The code-reviewer findings that TRIGGERED this scoped replan, one
-    // section per flagged bead, sourced from perBeadFeedback. Every id in
+    // The code-reviewer findings that TRIGGERED this scoped replan, sourced
+    // from perBeadFeedback, one section per DISTINCT notes text. review.mjs
+    // stores the same verdict.notes under every id one verdict reopens, so
+    // identical text is emitted once under a header listing every bead id it
+    // applies to (first-seen order) instead of being repeated per bead and
+    // burning the REPLAN_FINDINGS_MAX_LENGTH budget. Every id in
     // replanScopeIds is guaranteed to have a perBeadFeedback entry --
     // foldReplanIds (beads-transitions.mjs) only admits a replanIds id that
     // was ALSO actually reopened, and review.mjs sets perBeadFeedback for
@@ -118,14 +122,17 @@ export async function runReplanPhase({
     // verdict.notes string, filtered out below. buildPlannerPrompt renders
     // this only when non-null/non-blank, and bounds it deterministically at
     // REPLAN_FINDINGS_MAX_LENGTH.
-    const findingsParts = replanScopeIds
-        .map((id) => {
-            const notes = perBeadFeedback.get(id);
-            return typeof notes === 'string' && notes.trim().length > 0
-                ? `${id}:\n${notes.trim()}`
-                : null;
-        })
-        .filter((part) => part !== null);
+    /** @type {Map<string, string[]>} trimmed notes text -> bead ids it applies to */
+    const idsByNotes = new Map();
+    for (const id of replanScopeIds) {
+        const notes = perBeadFeedback.get(id);
+        if (typeof notes !== 'string' || notes.trim().length === 0) continue;
+        const key = notes.trim();
+        const ids = idsByNotes.get(key);
+        if (ids) ids.push(id);
+        else idsByNotes.set(key, [id]);
+    }
+    const findingsParts = [...idsByNotes].map(([notes, ids]) => `${ids.join(', ')}:\n${notes}`);
     const replanFindings = findingsParts.length > 0 ? findingsParts.join('\n\n') : null;
 
     // --- Scoped planner pass ---

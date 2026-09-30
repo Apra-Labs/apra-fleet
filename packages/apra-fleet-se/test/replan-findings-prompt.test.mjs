@@ -26,7 +26,7 @@ import { createRecordingCtx } from './helpers/dispatch-role-harness.mjs';
 const FLAGGED_ID = 'apra-fleet-test1';
 
 /** Builds the state object runReplanPhase expects, with per-test overrides. */
-function buildState({ perBeadFeedback, dispatchCtx, replanIds, replannedThisCycle }) {
+function buildState({ perBeadFeedback, dispatchCtx, replanIds, replannedThisCycle, eligibleReplan }) {
     return {
         phase: () => {},
         log: () => {},
@@ -41,7 +41,7 @@ function buildState({ perBeadFeedback, dispatchCtx, replanIds, replannedThisCycl
         verifySetThisCycle: [],
         pendingRejectedNewTasks: [],
         devRounds: 1,
-        eligibleReplan: [{ id: FLAGGED_ID, title: 'Task: flagged bead' }],
+        eligibleReplan: eligibleReplan ?? [{ id: FLAGGED_ID, title: 'Task: flagged bead' }],
         replanIds: replanIds ?? new Set([FLAGGED_ID]),
         replannedThisCycle: replannedThisCycle ?? new Set(),
         perBeadFeedback,
@@ -154,5 +154,48 @@ describe('scoped in-cycle replan prompt: threads the reviewer findings that trig
             plannerPrompt.includes('TRUNCATED') && plannerPrompt.includes(String(originalLength)) && plannerPrompt.includes(String(REPLAN_FINDINGS_MAX_LENGTH)),
             `expected a visible truncation marker naming the original length (${originalLength}) and the cap (${REPLAN_FINDINGS_MAX_LENGTH}), got: ${plannerPrompt}`
         );
+    });
+
+    // review.mjs stores ONE verdict's notes under every id it reopens, so
+    // several flagged beads routinely carry the identical text. It must be
+    // emitted once, under a header naming every bead it applies to, rather
+    // than repeated per bead (which would burn the cap on duplicates).
+    const IDS = ['bead-a', 'bead-b', 'bead-c'];
+    const eligible = IDS.map((id) => ({ id, title: `Task: ${id}` }));
+
+    test('identical notes across flagged beads are emitted once, listing every bead id they apply to', async () => {
+        const shared = 'Criterion 2 is unsatisfiable as written: it requires X and not-X.';
+        const distinct = 'Criterion 1 names a file that does not exist.';
+        // bead-b's copy differs only by surrounding whitespace -- still the same finding.
+        const perBeadFeedback = new Map([['bead-a', shared], ['bead-b', `  ${shared}\n`], ['bead-c', distinct]]);
+        const { ctx, rec } = createRecordingCtx({ responses: approvingResponses() });
+
+        await runReplanPhase(buildState({ perBeadFeedback, dispatchCtx: ctx, eligibleReplan: eligible, replanIds: new Set(IDS) }));
+
+        const plannerPrompt = rec.dispatches[0].prompt;
+        assert.equal(plannerPrompt.split(shared).length - 1, 1, `shared notes must appear exactly once, got: ${plannerPrompt}`);
+        assert.ok(plannerPrompt.includes(`bead-a, bead-b:\n${shared}`), `expected one section headed by both bead ids, got: ${plannerPrompt}`);
+        assert.ok(plannerPrompt.includes(`bead-c:\n${distinct}`), `expected bead-c's distinct notes in their own section, got: ${plannerPrompt}`);
+    });
+
+    test('de-duplication keeps repeated notes under the cap; truncation still applies to what remains', async () => {
+        // 3 x 2000 chars would exceed the 4000-char cap if repeated per bead;
+        // emitted once it fits, so no truncation marker.
+        const shared = 'y'.repeat(2000);
+        const perBeadFeedback = new Map(IDS.map((id) => [id, shared]));
+        const { ctx, rec } = createRecordingCtx({ responses: approvingResponses() });
+
+        await runReplanPhase(buildState({ perBeadFeedback, dispatchCtx: ctx, eligibleReplan: eligible, replanIds: new Set(IDS) }));
+
+        const plannerPrompt = rec.dispatches[0].prompt;
+        assert.ok(plannerPrompt.includes(`bead-a, bead-b, bead-c:\n${shared}`));
+        assert.ok(!plannerPrompt.includes('TRUNCATED'), 'de-duplicated findings under the cap must not be truncated');
+
+        // Distinct over-cap notes still get the visible marker.
+        const big = new Map(IDS.map((id, i) => [id, String(i).repeat(2000)]));
+        const second = createRecordingCtx({ responses: approvingResponses() });
+        await runReplanPhase(buildState({ perBeadFeedback: big, dispatchCtx: second.ctx, eligibleReplan: eligible, replanIds: new Set(IDS) }));
+        const truncatedPrompt = second.rec.dispatches[0].prompt;
+        assert.ok(truncatedPrompt.includes('TRUNCATED') && truncatedPrompt.includes(String(REPLAN_FINDINGS_MAX_LENGTH)));
     });
 });
