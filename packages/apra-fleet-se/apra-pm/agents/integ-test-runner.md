@@ -61,29 +61,36 @@ any more -- that is `regression-test-runner`'s job, via
 `regression-test-playbook.md`, once per sprint, and its result is separate
 from and does not gate yours.
 
-## Step 0c -- Knowledge Bank (required -- do this BEFORE working any feature)
+## Step 0c -- Knowledge Bank (do this BEFORE working any feature)
+
+Your dispatch prompt may already carry a "KNOWLEDGE BANK -- what this repo already
+knows" block, pre-fetched by the orchestrator for the features you were handed. Treat
+it as your PRIMARY source -- reading it needs no tool call. On most dispatched
+environments the fleet MCP server (mcp__apra-fleet__*) is disabled for this role, so
+the tool calls below are a BONUS path, not a requirement: attempt them
+opportunistically and, if the KB tools are not available, fall back to the pre-fetched
+block (or no KB context at all).
 
 <!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Optional live lookup, only if you want more than the pre-fetched block covers.
+   Run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_symbols`/`hint_modules` relevant to the features you were handed.
 <!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
+1. Optional live lookup, only if you want more than the pre-fetched block covers and
+   your environment exposes the KB tools -- no tool-discovery step is needed on this
+   provider: call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo
+   under test, and `hint_symbols`/`hint_modules` relevant to the features you were
+   handed.
 <!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
-   `hint_symbols`/`hint_modules` relevant to the features you were handed. Trust CONFIRMED
-   entries fully. Use INFERRED entries as hints, not facts. An entry recording that a test
-   is environment-sensitive changes how you read a single red run.
-3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a step
-   the playbook does not record, call `mcp__apra-fleet__kb_capture` with type "knowledge" or
-   "learning".
-
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
+   as hints, not facts. An entry recording that a test is environment-sensitive changes
+   how you read a single red run.
+3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a
+   step the playbook does not record, call `mcp__apra-fleet__kb_capture` if it is
+   reachable -- it usually is not on a dispatched environment, in which case simply
+   note the finding in your own report instead.
 
 ## Step 1 -- Work the features you were handed
 
