@@ -6,6 +6,19 @@ import { credentialSet, credentialDelete } from '../src/services/credential-stor
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { invalidatePreflightCache } from '../src/services/preflight-check.js';
 import type { SSHExecResult } from '../src/types.js';
+import { ensureAgyProject } from '../src/services/agy-project.js';
+
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
 
 // GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
 // out-of-band file channel for a large ~/.claude.json) for every non-relay member.
@@ -129,6 +142,42 @@ describe('updateMember', () => {
 
     await updateMember({ member_id: agent.id, llm_provider: 'agy' });
     expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('switching to agy creates the member\'s agy project and records its id', async () => {
+    const agent = makeTestAgent({ id: 'member-agy-switch', llmProvider: 'claude' });
+    addAgent(agent);
+
+    const result = await updateMember({ member_id: agent.id, llm_provider: 'agy' });
+
+    expect(vi.mocked(ensureAgyProject)).toHaveBeenCalledWith(expect.objectContaining({ id: agent.id, llmProvider: 'agy' }), { persist: false });
+    const stored = getAllAgents().find(a => a.id === agent.id)!;
+    expect(stored.llmProvider).toBe('agy');
+    expect(stored.agyProjectId).toBe('1afd6dbb-498f-4918-a9d9-6da64b75a204');
+    expect(result).toContain('AGY project: 1afd6dbb-498f-4918-a9d9-6da64b75a204');
+  });
+
+  it('switching to agy is refused, and nothing is updated, when no agy project can be created', async () => {
+    const agent = makeTestAgent({ id: 'member-agy-switch-fail', llmProvider: 'claude', friendlyName: 'before' });
+    addAgent(agent);
+    vi.mocked(ensureAgyProject).mockRejectedValueOnce(new Error('agy --new-project must create exactly one project file in ~/.gemini/config/projects, found 0.'));
+
+    const result = await updateMember({ member_id: agent.id, llm_provider: 'agy', friendly_name: 'after' });
+
+    expect(result).toContain('ERROR: could not create the agy project');
+    expect(result).toContain('Member was NOT updated.');
+    const stored = getAllAgents().find(a => a.id === agent.id)!;
+    expect(stored.llmProvider).toBe('claude');
+    expect(stored.friendlyName).toBe('before');
+    expect(stored.agyProjectId).toBeUndefined();
+  });
+
+  it('other provider switches never touch agy project provisioning', async () => {
+    const agent = makeTestAgent({ id: 'member-codex-switch', llmProvider: 'claude' });
+    addAgent(agent);
+    vi.mocked(ensureAgyProject).mockClear();
+    await updateMember({ member_id: agent.id, llm_provider: 'codex' });
+    expect(vi.mocked(ensureAgyProject)).not.toHaveBeenCalled();
   });
 
   it('does not invalidate the preflight cache for a non-identity field change', async () => {
@@ -444,7 +493,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null);
     spy.mockRestore();
   });
 
@@ -475,7 +524,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });

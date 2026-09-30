@@ -43,6 +43,12 @@ export interface Agent {
   vcsCredentialLabel?: string;
   vcsCredentialScopeUrl?: string;
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
+  /** AGY only: id of the member's own agy project (~/.gemini/config/projects/<id>.json),
+   *  created by `agy --new-project` and passed as `--project <id>` on every dispatch.
+   *  compose_permissions writes the member's grants into that file. Absent for
+   *  members registered before project binding; provisioned on their next
+   *  compose_permissions or execute_prompt. */
+  agyProjectId?: string;
   modelCheap?: string;
   modelStandard?: string;
   modelPremium?: string;

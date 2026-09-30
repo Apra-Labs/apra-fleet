@@ -128,7 +128,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/fleet-sprint-cli/` | How to launch `apra-fleet workflow fleet-sprint` -- flag contract, preconditions, detached launch (all providers) |
 | `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
 
-For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`. These configure the agy CLI you run the orchestrator in; agy members get their grants in their own agy project instead (see [Antigravity (agy) provider](agy-provider.md)).
 
 This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
@@ -336,12 +336,15 @@ only Claude Code uses `/mcp`.
 
 `apra-fleet install --llm agy` configures Fleet for the Google Antigravity CLI.
 Agy uses Google OAuth by default -- a browser-based login flow is required per
-machine, so `provision_llm_auth` does **not** work for remote agy members today.
+machine. For headless or remote members, use an `ANTIGRAVITY_API_KEY` (obtain
+from [Google AI Studio](https://aistudio.google.com)): pass it to
+`provision_llm_auth` as `api_key`, or set it in the member's environment. The
+agy CLI checks env vars before falling back to OAuth.
 
-For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
-[Google AI Studio](https://aistudio.google.com)) in the environment before
-invoking fleet commands. The agy CLI checks env vars before falling back to
-OAuth.
+agy model overrides (below) take agy's model slug ids, as printed by
+`agy models`. How agy members are bound to their own agy project, how grants
+are written and how permission denials are reported is described in
+[Antigravity (agy) provider](agy-provider.md).
 
 ## Uninstall
 
@@ -413,9 +416,9 @@ If you set `APRA_FLEET_DATA_DIR`, the file lives at
   "providers": {
     "agy": {
       "modelMapping": {
-        "cheap":    "GPT-OSS 120B (Medium)",
-        "standard": "Gemini 3.1 Pro (High)",
-        "premium":  "Claude Opus 4.6 (Thinking)"
+        "cheap":    "gemini-3.8-flash-low",
+        "standard": "gemini-3.8-flash-high",
+        "premium":  "gemini-3.1-pro-high"
       }
     },
     "claude": {

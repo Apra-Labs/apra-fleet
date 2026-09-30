@@ -1,10 +1,33 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
+import type { RegisterOptions, RegisterResult, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
 import { DEFAULT_SERVICE_ID, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { BIN_DIR } from '../../cli/config.js';
+
+/** Runs schtasks synchronously; throws on a non-zero exit. Injectable for tests. */
+export type SchtasksRunner = (args: string[]) => Buffer | string;
+
+const defaultSchtasksRunner: SchtasksRunner = (args) =>
+  execFileSync('schtasks', args, { timeout: 30_000, windowsHide: true });
+
+function normalizeTaskPath(p: string): string {
+  return p.replace(/"/g, '').replace(/\//g, '\\').trim().toLowerCase();
+}
+
+/**
+ * The <Command> of an existing task's XML definition, or null. schtasks may
+ * emit UTF-16, so NUL chars are stripped before parsing; XML tag names are
+ * not localized, unlike schtasks' human-readable output.
+ */
+export function taskXmlCommand(raw: Buffer | string): string | null {
+  const decoded = typeof raw === 'string' ? raw
+    : raw.toString(raw[0] === 0xff && raw[1] === 0xfe ? 'utf16le' : 'utf8');
+  const text = decoded.replace(/\u0000/g, '');
+  const m = /<Command>([\s\S]*?)<\/Command>/i.exec(text);
+  return m ? m[1].trim() : null;
+}
 
 export class WindowsServiceManager implements ServiceManager {
   readonly serviceId: ServiceId;
@@ -12,17 +35,27 @@ export class WindowsServiceManager implements ServiceManager {
   /** Wrapper .bat this service's scheduled task runs. One per service. */
   private readonly wrapperPath: string;
   private readonly taskName: string;
+  private readonly runSchtasks: SchtasksRunner;
+  private reusedExistingTask = false;
 
-  constructor(serviceId: ServiceId = DEFAULT_SERVICE_ID) {
+  constructor(
+    serviceId: ServiceId = DEFAULT_SERVICE_ID,
+    runSchtasks: SchtasksRunner = defaultSchtasksRunner,
+    wrapperPath?: string,
+  ) {
     this.serviceId = serviceId;
     this.descriptor = getServiceDescriptor(serviceId);
-    this.wrapperPath = path.join(BIN_DIR, this.descriptor.windowsWrapperFileName);
+    this.wrapperPath = wrapperPath ?? path.join(BIN_DIR, this.descriptor.windowsWrapperFileName);
     this.taskName = this.descriptor.windowsTaskName;
+    this.runSchtasks = runSchtasks;
   }
 
   async register(
     binaryPath: string, args: string[], logPath: string, options: RegisterOptions = {},
-  ): Promise<void> {
+  ): Promise<RegisterResult> {
+    this.reusedExistingTask = false;
+    // The wrapper is rewritten BEFORE /create so that a reused task (below)
+    // also launches the new binary.
     fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     const quotedArgs = args.map(a => `"${a}"`).join(' ');
     const lines = ['@echo off'];
@@ -33,11 +66,33 @@ export class WindowsServiceManager implements ServiceManager {
     }
     lines.push(`"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`);
     fs.writeFileSync(this.wrapperPath, lines.join('\r\n'), 'utf8');
-    execFileSync('schtasks', [
-      '/create', '/tn', this.taskName,
-      '/tr', this.wrapperPath,
-      '/sc', 'onlogon', '/rl', 'limited', '/f',
-    ]);
+    try {
+      this.runSchtasks([
+        '/create', '/tn', this.taskName,
+        '/tr', this.wrapperPath,
+        '/sc', 'onlogon', '/rl', 'limited', '/f',
+      ]);
+      return 'created';
+    } catch (createErr) {
+      // Any /create failure (typically "Access is denied" -- localized, so not
+      // matched -- when the existing task was created elevated): reuse the
+      // existing task only if it already runs our wrapper.
+      const createMsg = (createErr as Error).message;
+      let command: string | null;
+      try {
+        command = taskXmlCommand(this.runSchtasks(['/query', '/tn', this.taskName, '/xml']));
+      } catch {
+        throw new Error(`schtasks /create failed and no existing ${this.taskName} task was found: ${createMsg}`);
+      }
+      if (command === null || normalizeTaskPath(command) !== normalizeTaskPath(this.wrapperPath)) {
+        throw new Error(
+          `schtasks /create failed and the existing ${this.taskName} task runs ${command ?? '(unknown)'}, ` +
+          `not ${this.wrapperPath}: ${createMsg}`,
+        );
+      }
+      this.reusedExistingTask = true;
+      return 'reused';
+    }
   }
 
   async unregister(): Promise<void> {
@@ -75,6 +130,15 @@ export class WindowsServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
+    if (this.reusedExistingTask) {
+      // Reused task: run synchronously so a failure is surfaced, not swallowed.
+      try {
+        this.runSchtasks(['/run', '/tn', this.taskName]);
+      } catch (err) {
+        throw new Error(`schtasks /run /tn ${this.taskName} failed: ${(err as Error).message}`);
+      }
+      return;
+    }
     // Use spawn (detached) so schtasks /run does not block the installer.
     // schtasks /run returns quickly but on some Windows versions it waits
     // for the launched process -- detaching avoids that.

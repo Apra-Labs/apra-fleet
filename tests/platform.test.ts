@@ -7,6 +7,9 @@ import type { OsCommands } from '../src/os/index.js';
 import type { ForkDescriptor } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 
+// agy refuses to build a prompt command without the member's bound project id.
+const AGY_PROJECT_ID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+
 describe('detectOS', () => {
   it('detects OS from uname and ver output', () => {
     expect(detectOS('Linux', '')).toBe('linux');
@@ -108,6 +111,7 @@ describe('OsCommands via getOsCommands', () => {
 
     describe('buildAgentPromptCommand', () => {
       const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
+      const agyOpts = { ...opts, projectId: AGY_PROJECT_ID };
 
       for (const [name, cmds] of all) {
         it(`${name}: claude provider buildAgentPromptCommand includes prompt file reference and flags`, () => {
@@ -118,7 +122,7 @@ describe('OsCommands via getOsCommands', () => {
         });
 
         it(`${name}: agy provider uses agy binary`, () => {
-          const cmd = cmds.buildAgentPromptCommand(agyProvider, opts);
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, agyOpts);
           expect(cmd).toContain('agy');
           expect(cmd).toContain('.fleet-task.md');
           expect(cmd).toContain('--output-format json');
@@ -127,7 +131,7 @@ describe('OsCommands via getOsCommands', () => {
       }
 
       it('windows: agy prompt command uses PowerShell syntax', () => {
-        const cmd = windows.buildAgentPromptCommand(agyProvider, opts);
+        const cmd = windows.buildAgentPromptCommand(agyProvider, agyOpts);
         expect(cmd).toContain('Set-Location');
         expect(cmd).toContain('.fleet-task.md');
         expect(cmd).toContain('agy');
@@ -204,7 +208,7 @@ describe('OsCommands via getOsCommands', () => {
         });
 
         it(`${name}: a non-fork-capable provider ignores a supplied fork descriptor rather than crashing or leaking it`, () => {
-          const cmd = cmds.buildAgentPromptCommand(agyProvider, { ...opts, fork });
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, { ...opts, fork, projectId: AGY_PROJECT_ID });
           expect(cmd).not.toContain('--fork-session');
           expect(cmd).not.toContain('src-sess-1');
         });

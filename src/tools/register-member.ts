@@ -23,10 +23,12 @@ import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows } from '../services/agent-shadow.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
 
@@ -462,12 +464,31 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
     await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
 
+    // AGY: create the member's own agy project (`agy --new-project`) and bind
+    // it by id; every dispatch passes --project <id> and compose_permissions
+    // writes the member's grants into that project's file. Without it agy
+    // runs under the machine-wide default-cli-project. Refused registration
+    // rather than a member that cannot be bound. Needs the work folder, so it
+    // runs after mkdirCheck.
+    if (connResult.ok && providerName === 'agy') {
+      try {
+        await ensureAgyProject(tempAgent, { persist: false });
+      } catch (e: any) {
+        return `ERROR: could not create the agy project for "${input.friendly_name}": ${e?.message ?? String(e)}\nMember was NOT registered.`;
+      }
+    }
+
     // --- Provision role-agent definition files (planner.md, doer.md, ...) ---
     // Remote members have their own home dir and never receive these via install() --
     // only when connectivity is confirmed do we attempt the probe/push round trip.
     if (connResult.ok) {
       agentProvisionResult = await provisionAgents(tempAgent);
       if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // Project-level agent files in the work folder shadow the managed role
+      // set (local and remote members alike). Never throws.
+      const shadowWarning = await recheckProjectAgentShadows(tempAgent);
+      if (shadowWarning) warnings.push(shadowWarning);
 
       // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
       // so composed project-scoped permissions are honored on the first dispatch,
@@ -658,6 +679,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (tempAgent.llmProvider === 'agy' && tempAgent.agyProjectId) {
+    result += `  AGY project: ${tempAgent.agyProjectId}\n`;
+  }
   if (tempAgent.vcsProvider) {
     result += `  VCS Provider: ${tempAgent.vcsProvider}${vcsProviderAutoDetected ? ' (auto-detected from origin)' : ''}\n`;
   } else if (input.vcs_provider === 'none') {

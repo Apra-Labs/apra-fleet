@@ -111,6 +111,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 7. **Creates working folder** -- `mkdir -p` (or equivalent) on the target.
 8. **Provisions role-agent files (remote only)** -- hashes the canonical set of PM role-agent files (planner, doer, reviewer, etc., plus `_shared/` and `schemas/`) against what is already on the remote box and uploads anything missing or stale. Skipped for local members (they share the operator's home directory) and for providers with no agents directory (codex, copilot). A provisioning failure is reported as a warning but never blocks registration.
 8b. **Resolves the VCS provider** -- an explicit `vcs_provider` always wins and skips this step entirely. Otherwise the member's git `origin` remote is read (best effort) and its host mapped to a provider: `github.com` -> `github`, `bitbucket.org` -> `bitbucket`, `dev.azure.com` / `*.visualstudio.com` -> `azure-devops`. On success the result carries `VCS Provider: <provider> (auto-detected from origin)`. On failure (no git repo in the work folder yet, or an unrecognized host) registration still SUCCEEDS -- the common flow is to register a member and clone into its work folder afterwards -- but a loud warning is emitted saying the member will be UNABLE to push or open a PR until a provider is set. Members with `llm_provider: "none"` never dispatch an agent and are exempt. A GitHub Enterprise host has no fixed domain and is never auto-detected: register those with an explicit `vcs_provider`.
+8c. **Creates the agy project (agy only)** -- for a reachable agy member, runs `agy --new-project` once to create the member's own agy project and records its id as `agyProjectId`; if that fails the member is NOT registered. See [agy-provider.md](agy-provider.md).
 9. **Persists** -- saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` and `vcsProvider` fields.
 
 **Output:** Member ID, name, type, OS, folder, auth method, LLM provider, VCS provider, latency, agent-file provisioning result, and any warnings (e.g. CLI not found, auth failed, VCS provider undetermined).
@@ -175,8 +176,9 @@ Modifies an existing member's registration. All fields except `member_id` are op
 2. If the member is not local and `work_folder` is provided, rejects it up front unless it is a fully-qualified/absolute path.
 3. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) -- rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
 4. Encrypts password if provided (AES-256-GCM).
-5. Applies updates and persists to registry.
-6. **Re-provisions role-agent files (remote only)** -- same hash-diff-and-upload check as `register_member`, so a member that was registered before an agent file was added or changed picks it up. Skipped for local members and providers with no agents directory (codex, copilot); a provisioning failure is returned as a warning and does not fail the update.
+5. Switching `llm_provider` to `agy` first creates the member's own agy project (`agyProjectId`); if that fails the member is NOT updated.
+6. Applies updates and persists to registry.
+7. **Re-provisions role-agent files (remote only)** -- same hash-diff-and-upload check as `register_member`, so a member that was registered before an agent file was added or changed picks it up. Skipped for local members and providers with no agents directory (codex, copilot); a provisioning failure is returned as a warning and does not fail the update.
 
 **Output:** Updated member details.
 
@@ -197,8 +199,9 @@ Unregisters a fleet member and cleans up its connection.
 
 1. Looks up the member.
 2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
-3. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
-4. Removes the member from the registry file.
+3. **Best-effort agy project cleanup (agy only)** -- deletes the member's agy project file on its machine unless another member shares the same `agyProjectId`; failures are returned as warnings.
+4. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
+5. Removes the member from the registry file.
 
 **Output:** Confirmation message with member name and ID. Includes warnings if the token could not be cleared (e.g. member was offline).
 
@@ -350,7 +353,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
 | `max_turns` | number | no | Max turns for Claude (1-500, default 50). Ignored by providers that have no turn limit |
 | `substitutions` | object | no | Map of token name to replacement value. Replaces `{{name}}` patterns in the prompt before staging on the member. Keys must match `[A-Za-z_][A-Za-z0-9_]*`; a missing token fails the call with no CLI invoked; values are never logged |
-| `agent` | string | no | Agent name to activate. Claude uses `claude --agent <name>`; AGY prepends `@<name>` to the prompt. The agent file must exist at the provider-specific project or home path or the call is rejected |
+| `agent` | string | no | Agent name to activate. Claude uses `claude --agent <name>`; AGY uses `agy --agent <name>`. The agent file must exist at the provider-specific project or home path or the call is rejected |
 | `sprint_id` | string | no | Identity of the sprint issuing the dispatch, compared against the server-side member reservation instead of the `APRA_FLEET_SPRINT_ID` env var |
 | `expected_context_tokens` | number | no | Estimated tokens this dispatch adds to the session's context. Checked against remaining headroom before the LLM is invoked; too little headroom rejects with `insufficient_context_headroom` and no spawn |
 | `context_size` | `"S"` \| `"M"` \| `"L"` | no | Size-bucket shorthand for `expected_context_tokens`, mapped via `contextAdmission.sizeBucketTokens` in `config.json`. Ignored when `expected_context_tokens` is set |
@@ -359,7 +362,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 
 | Aspect | Claude | Codex | Copilot | OpenCode | AGY |
 |--------|--------|-------|---------|----------|-----|
-| CLI invocation | `claude -p "..." --output-format json` | `codex exec "..." --json` | `copilot -p "..."` | `opencode run` | `agy --output-format json` |
+| CLI invocation | `claude -p "..." --output-format json` | `codex exec "..." --json` | `copilot -p "..."` | `opencode run` | `agy --add-dir <folder> --project <agyProjectId> --output-format json` |
 | `max_turns` | `--max-turns N` (default 50) | Not available (ignored) | Not available (ignored) | Not available (ignored) | Not available (ignored) |
 | Skip permissions | `--dangerously-skip-permissions` | `--sandbox danger-full-access --ask-for-approval never` | `--allow-all-tools` | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` |
 | Session resume | `--resume <session_id>` | positional `resume` | `--continue` | `--session <id>` or `--continue` | `--conversation <id>` or `--continue` |
@@ -388,6 +391,7 @@ is rejected for them and `execute_command` should be used instead.
 - Automatically retries once with a 5-second backoff on transient server errors.
 - A `busy` rejection is not taken at face value: before rejecting, the tool verifies the locked session's backing process is actually still alive. If confirmed dead, the stale lock self-heals -- released with a warning -- and the dispatch proceeds instead of being rejected.
 - A Claude session that terminates because it hit the turn limit always classifies as `max_turns_exhausted`.
+- AGY: a tool call refused for lack of a grant returns `reason: "permission_denied"` with a `permissionDenied` block (denied actions, targets, `suggestedGrants`, `hint`); heal it with `compose_permissions` `grant` and re-dispatch. An agy member whose own agy project cannot be created or verified is rejected with `dispatch_failed` and no LLM call. See [agy-provider.md](agy-provider.md).
 
 **Token accumulation:**
 After each successful prompt response, the server automatically accumulates `input_tokens` and `output_tokens` from the provider's usage metadata onto the member record. Running totals are accessible via `member_detail` and `fleet_status`.

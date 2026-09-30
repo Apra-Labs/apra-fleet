@@ -4,6 +4,7 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import type { MemberShell } from '../os/os-commands.js';
+import { transformAgentForClaude } from '../cli/agent-transform.js';
 
 // Known exception: Codex CLI cannot take a caller-supplied session ID.
 // It uses a positional 'resume' keyword; session discovery relies on the mtime-scan
@@ -169,8 +170,9 @@ export class CodexProvider implements ProviderAdapter {
     return { project: rel, home: rel };
   }
 
-  transformAgent(content: string, _relPath: string): string {
-    return content;
+  transformAgent(content: string, relPath: string): string {
+    // Same resolver the local install uses for this provider, so remote == local.
+    return transformAgentForClaude(content, relPath);
   }
 
   agentNameFlag(_agentName: string): string {

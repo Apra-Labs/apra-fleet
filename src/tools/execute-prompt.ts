@@ -18,6 +18,7 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
+import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -39,13 +40,14 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse, UsageLimitSignal } from '../providers/provider.js';
+import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -69,6 +71,11 @@ export interface ExecutePromptStructured {
    *  detectUsageLimit() signal verbatim, so a caller (notably fleet-sprint) can
    *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
   usageLimit?: UsageLimitSignal;
+  /** Present on a 'permission_denied' failure: the member CLI refused tool
+   *  calls for lack of a grant (actions, concrete targets, the
+   *  compose_permissions grants that would allow them, and a hint). Any
+   *  partial reply is in `response`. */
+  permissionDenied?: PermissionDenial;
   [key: string]: unknown;
 }
 
@@ -112,8 +119,7 @@ export const executePromptSchema = z.object({
   agent: z.string().optional().describe(
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
-    'For AGY: prepends @<name> to the prompt on every dispatch. ' +
-    'Substitution runs before the @<name> prepend. ' +
+    'For AGY: invokes agy --agent <name>. ' +
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +
@@ -675,6 +681,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // return immediately following) must release this lock explicitly, since
   // it now returns AFTER the lock is claimed instead of before.
   inFlightAgents.add(agent.id);
+  // apra-fleet-c98q: if anything between this claim and a try/finally that
+  // owns the release throws (e.g. an SSH drop in writePromptFile), release
+  // the lock and stall entry here and rethrow. Body deliberately not
+  // reindented to keep this release fix minimal.
+  let claimGuardActive = true;
+  try {
 
   // Peek at session state early so the preflight check can skip interactive
   // members whose dispatch routes through a live MCP push channel, not SSH.
@@ -822,11 +834,19 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
     interactiveSession = undefined;
   }
+  // Project-level <workFolder>/.claude/agents files take precedence over the
+  // user-level role set; quarantine untracked shadows, report tracked ones on
+  // every dispatch. Runs before the interactive/subprocess split so both paths
+  // are covered, local members included. Independent of the user-level
+  // provisioning below (compares against the canonical set). Never throws.
+  const shadowWarning = await ensureNoProjectAgentShadows(agent);
+  if (shadowWarning) heuristicWarningSuffix += `\n\n[WARN] ${shadowWarning}`;
   if (interactiveSession?.server) {
     // Lock already claimed above, before the preflight await -- do not
     // re-add here (Set.add would be a harmless no-op, but keeping a second
     // add site invites the lock and its release to drift out of sync).
     writeStatusline(new Map([[agent.id, 'busy']]));
+    claimGuardActive = false;
     try {
       return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
     } finally {
@@ -836,6 +856,25 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
 
   // Lock already claimed above, before the preflight await.
+
+  // AGY: every dispatch is bound to the member's own agy project with
+  // --project; without it agy silently runs under the machine-wide
+  // default-cli-project. A member without a verified project (registered
+  // before project binding, or whose project file is gone/corrupt) gets one
+  // here. Failure is terminal -- never a dispatch without --project.
+  let agyProjectId: string | undefined;
+  if (agent.llmProvider === 'agy') {
+    try {
+      agyProjectId = (await ensureAgyProject(agent)).projectId;
+    } catch (e: any) {
+      inFlightAgents.delete(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- the member's agy project could not be provisioned: ${e?.message ?? String(e)}. No LLM call was made.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
+  }
 
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
@@ -873,6 +912,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
+      claimGuardActive = false;
       // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
       // progress of any kind for the whole threshold. Clearing bookkeeping
       // alone left that wedged process running indefinitely on the member --
@@ -1075,6 +1115,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     inv: scope.getInv(),
     agentName: input.agent,
     fork: forkDescriptor,
+    projectId: agyProjectId,
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
@@ -1355,6 +1396,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // orphan recovery, trust-heal retry) -- and regardless of result.code,
   // since a 0-exit result event whose text carries the limit message must not
   // be returned as a success response either.
+  // The member's OS reaches the parser (agy's permission-denial hint differs on Windows).
+  const parseCtx = { agentOs: agent.os };
   const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
     const signal = provider.detectUsageLimit(r, p);
     if (!signal) return null;
@@ -1381,6 +1424,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       },
     };
   };
+  claimGuardActive = false;
   try {
     let result;
     try {
@@ -1418,7 +1462,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
-    let parsed = provider.parseResponse(result);
+    let parsed = provider.parseResponse(result, parseCtx);
     if (parsed.usage) _epUsage = parsed.usage;
     {
       const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1461,7 +1505,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1482,7 +1526,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1490,6 +1534,28 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     _epExitCode = result.code;
+
+    // The member CLI refused tool calls for lack of a grant (AGY headless mode
+    // auto-denies them and still exits 0 with status SUCCESS). Report that as
+    // a permission failure the caller can heal via compose_permissions, not
+    // as an empty response. Only providers whose parser sets
+    // permissionDenial reach this; any partial reply is kept.
+    if (parsed.permissionDenial) {
+      const denial = parsed.permissionDenial;
+      const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
+        structuredContent: {
+          isError: true,
+          reason: 'permission_denied',
+          permissionDenied: denial,
+          ...(partial ? { response: partial } : {}),
+          ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        },
+      };
+    }
+
     if (result.code !== 0) {
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
@@ -1581,7 +1647,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
         const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
-        const recoveredParsed = provider.parseResponse(recoveredResult);
+        const recoveredParsed = provider.parseResponse(recoveredResult, parseCtx);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
@@ -1616,7 +1682,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-          parsed = provider.parseResponse(result);
+          parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
           if (usageLimitResult) return usageLimitResult;
@@ -1838,5 +1904,12 @@ session: ${parsed.sessionId}`;
     }
     stallDetector.remove(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+  }
+  } catch (err) {
+    if (claimGuardActive) {
+      inFlightAgents.delete(agent.id);
+      getStallDetector().remove(agent.id);
+    }
+    throw err;
   }
 }

@@ -13,8 +13,10 @@ import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '../services/agent-shadow.js';
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { ensureAgyProject } from '../services/agy-project.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
 
@@ -275,6 +277,19 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
+  // Switching a member TO agy: create (or re-verify) its own agy project
+  // before recording the switch, so an agy member always has a bindable
+  // --project id. Evaluated on the resulting member (new host/folder/shell).
+  if (input.llm_provider === 'agy' && (existing.llmProvider ?? 'claude') !== 'agy') {
+    const preview: Agent = { ...existing, ...updates };
+    try {
+      const ensured = await ensureAgyProject(preview, { persist: false });
+      updates.agyProjectId = ensured.projectId;
+    } catch (e: any) {
+      return `ERROR: could not create the agy project for "${existing.friendlyName}": ${e?.message ?? String(e)}\nMember was NOT updated.`;
+    }
+  }
+
   const updated = updateInRegistry(existing.id, updates);
   if (!updated) {
     return `Failed to update member "${existing.id}".`;
@@ -318,6 +333,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
+  // Re-check project-level agent files that would shadow the managed role set
+  // (the work folder or provider may have changed). The dispatch-time cache is
+  // always invalidated; the check itself runs only when the member is reachable
+  // (local members always). Never throws.
+  invalidateProjectAgentShadowCache(updated.id);
+  const shadowReachable = updated.agentType !== 'remote' || agentProvisionResult !== undefined
+    || remoteAgentsDir(updated.llmProvider ?? 'claude') === null;
+  if (shadowReachable) {
+    const shadowWarning = await recheckProjectAgentShadows(updated);
+    if (shadowWarning) warnings.push(shadowWarning);
+  }
+
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
   result += `  Icon:    ${updated.icon ?? DEFAULT_ICON}\n`;
   result += `  ID:      ${updated.id}\n`;
@@ -331,6 +358,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     result += `  Auth:    ${updated.authType}\n`;
   }
   result += `  Provider: ${updated.llmProvider ?? 'claude'}\n`;
+  if (updated.llmProvider === 'agy' && updated.agyProjectId) {
+    result += `  AGY project: ${updated.agyProjectId}\n`;
+  }
   if (input.vcs_provider !== undefined) {
     result += `  VCS Provider: ${updated.vcsProvider ?? 'none'}\n`;
   }

@@ -22,7 +22,7 @@ import {
   INSTALLABLE_LLM_PROVIDERS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
@@ -30,6 +30,7 @@ import { BEADS_PACKAGE } from './beads-pin.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
 import { detectFleetSePrereqs, resolveFleetSeToolchainPaths, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
+import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 
 // --- fleet-se prerequisite gate: injectable deps + explicit test-mode gate ---
 //
@@ -670,7 +671,18 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
 
 const CLAUDE_INVALID_RULES = ['tracker_*'];
 
+/** AGY validates every permissions.allow entry against this regex (verbatim
+ *  from the agy CLI binary, 1.2.8) and ignores anything that fails it. */
+const AGY_RULE_RE = /^(command|read_file|write_file|read_url|mcp|execute_url|unsandboxed)\s*\(.*\)$/;
+
 export function pruneInvalidRules(allow: string[], providerName: string): string[] {
+  if (providerName === 'Antigravity') {
+    // Self-heal: strip Claude-syntax entries a previous install wrote into
+    // AGY's settings.json (mcp__apra-fleet__*, Agent(*), tracker_*, ...). AGY
+    // rejects them already, so removing them changes no effective grant -- it
+    // only stops fleet from leaving junk in a file the human user also owns.
+    return allow.filter(rule => AGY_RULE_RE.test(rule));
+  }
   if (providerName !== 'Claude') return allow;
   return allow.filter(rule => !CLAUDE_INVALID_RULES.includes(rule));
 }
@@ -696,7 +708,18 @@ export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
 function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = []): void {
   const settings = readConfig(paths);
 
-  const requiredPerms = [...buildRequiredPerms(paths), ...extraPerms];
+  let requiredPerms = [...buildRequiredPerms(paths), ...extraPerms];
+  if (paths.name === 'Antigravity') {
+    // buildRequiredPerms speaks Claude's permission vocabulary. AGY accepts
+    // only `action(target)` strings from a fixed action set, so the Read(<dir>)
+    // grants are translated to read_file(<dir>) and the tokens with no AGY
+    // equivalent (mcp__apra-fleet__*, activate_skill(*), Agent(*), tracker_*)
+    // are dropped -- same "no Antigravity equivalent" handling the agent
+    // transform already applies to unsupported tools. Writing them verbatim
+    // left AGY with an allow-list it discarded wholesale, so every headless
+    // dispatch hit the auto-deny wall on its first tool call.
+    requiredPerms = formatAgyPermissionRules(convertClaudeAllowToAgyPermissions(requiredPerms));
+  }
 
   settings.permissions = settings.permissions || {};
   settings.permissions.allow = settings.permissions.allow || [];
@@ -1807,11 +1830,15 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
+      // Every branch runs a transform -- the default one is NOT a passthrough. Claude
+      // keeps the source frontmatter and every conditional's if-branch, but the
+      // conditional markers themselves still have to be stripped or they ship
+      // verbatim into the installed agent file (apra-fleet-oomh.1).
       const content = llm === 'opencode'
         ? transformAgentForOpenCode(rawContent, relPath)
         : llm === 'agy'
         ? transformAgentForAgy(rawContent, relPath)
-        : rawContent;
+        : transformAgentForClaude(rawContent, relPath);
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
@@ -2061,20 +2088,35 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   let serviceRegistered = false;
   let supervisorServiceRegistered = false;
   let supervisorServiceAttempted = false;
+  let serviceReused = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting services...`);
     const svcMgr = await getServiceManager();
     try {
-      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';
+      if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
       try {
         await svcMgr.start();
         serviceRegistered = true;
       } catch (startErr) {
-        try { await svcMgr.unregister(); } catch {}
+        // Never delete a reused task: it predates this install (e.g. elevated).
+        if (!serviceReused) { try { await svcMgr.unregister(); } catch {} }
         throw startErr;
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+      // --force stopped the server; reporting success would leave it down silently.
+      if (force && (runningScope?.relevant || guardStoppedService)) {
+        const restartHint = guardStoppedService
+          ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
+          : 'Start it with:\n    apra-fleet start';
+        console.error(`
+Error: install --force stopped the running apra-fleet server, but the service
+could not be registered/started, so the server is NOT running.
+${restartHint}
+`);
+        process.exit(1);
+      }
     }
 
     // The supervisor lives inside the installed fleet-sprint workflow tree, so
@@ -2124,7 +2166,6 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
   const supervisorLine = supervisorServiceAttempted
     ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and running' : 'registration skipped'}`
     : '';
@@ -2137,6 +2178,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const fleetSeLine = installWorkflows
     ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
     : `\n  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `registered and running${serviceReused ? ' (existing task reused)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
