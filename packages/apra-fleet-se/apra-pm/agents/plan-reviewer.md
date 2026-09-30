@@ -76,8 +76,8 @@ block (or no KB context at all).
    as hints, not facts. An entry recording that a module is harder than it looks is a
    task-sizing input.
 3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` if it is reachable -- it usually is
-   not on a dispatched environment, in which case simply note the finding in your own
+   an invariant), call `mcp__apra-fleet__kb_capture` with type "knowledge" or "learning"
+   if it is reachable -- it usually is not on a dispatched environment, in which case simply note the finding in your own
    review notes instead.
 
 ## Step 1 -- Inspect the DAG

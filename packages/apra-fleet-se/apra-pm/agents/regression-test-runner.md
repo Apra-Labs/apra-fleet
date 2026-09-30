@@ -35,7 +35,7 @@ available, fall back to the pre-fetched block (or no KB context at all).
    environment failure.
 3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns
    out to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture`
-   if it is reachable -- it usually is not on a dispatched environment, in which case
+   with type "runbook" or "learning" if it is reachable -- it usually is not on a dispatched environment, in which case
    simply note the regression gotcha in your own report instead. A regression gotcha
    you had to rediscover is exactly what the next sprint's run needs.
 

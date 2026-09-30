@@ -113,8 +113,8 @@ block (or no KB context at all).
 2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
    as hints, not facts.
 3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out
-   to be wrong or incomplete, call `mcp__apra-fleet__kb_capture` if it is reachable --
-   it usually is not on a dispatched environment, in which case simply note the deploy
+   to be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook"
+   or "learning" if it is reachable -- it usually is not on a dispatched environment, in which case simply note the deploy
    gotcha in your own report instead. A deploy gotcha you had to discover is exactly
    what the next deploy needs.
 

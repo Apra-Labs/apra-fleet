@@ -88,8 +88,8 @@ block (or no KB context at all).
    as hints, not facts. An entry recording that a test is environment-sensitive changes
    how you read a single red run.
 3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a
-   step the playbook does not record, call `mcp__apra-fleet__kb_capture` if it is
-   reachable -- it usually is not on a dispatched environment, in which case simply
+   step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
+   "knowledge" or "learning" if it is reachable -- it usually is not on a dispatched environment, in which case simply
    note the finding in your own report instead.
 
 ## Step 1 -- Work the features you were handed
