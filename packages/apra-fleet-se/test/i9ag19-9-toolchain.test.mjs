@@ -26,6 +26,7 @@ import {
 import { writeSupervisorToolchain, supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { MIN_NODE_VERSION } from '../src/supervisor/node-runner.mjs';
 import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
+import { assertPrependedPathEnv } from './helpers/child-path-env.mjs';
 
 /** Temp dirs created by this file, removed in afterEach. */
 const tmpDirs = [];
@@ -1044,7 +1045,7 @@ describe('apra-fleet-i9ag.19.21: validateRecordedToolchain() -- TOTAL wall-clock
 // when a bd path is actually recorded (calls.length === 1, only the node
 // probe ran).
 describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix, second half)', () => {
-    test('AC1: with a recorded node and a recorded node-shebang bd, the bd probe exec receives dirname(nodePath) prepended onto PATH -- exact invocation, bdOk:true even though PATH itself carries no node', { skip: process.platform === 'win32' ? 'POSIX-only PATH-prepend fix' : false }, async () => {
+    test('AC1: with a recorded node and a recorded node-shebang bd, the bd probe exec receives dirname(nodePath) prepended onto PATH -- exact invocation, bdOk:true even though PATH itself carries no node', async () => {
         const dataDir = await mkTmp();
         const filePath = supervisorConfigPath({ dataDir });
         const nodePath = '/opt/toolchain/node';
@@ -1069,11 +1070,9 @@ describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix
 
             assert.equal(calls[1].file, bdPath, 'bd is still invoked as itself, never wrapped as "<nodePath> <bdPath>"');
             assert.deepEqual(calls[1].args, ['--version']);
-            assert.deepEqual(calls[1].options, {
-                shell: false,
-                timeout: TOOLCHAIN_PROBE_TIMEOUT_MS,
-                env: { ...process.env, PATH: `/opt/toolchain${path.delimiter}/usr/bin:/bin` },
-            }, 'the bd probe exec receives EXACTLY probeVersion\'s own {shell,timeout} plus dirname(nodePath) prepended onto PATH -- nothing else changed');
+            assert.equal(calls[1].options.shell, false);
+            assert.equal(calls[1].options.timeout, TOOLCHAIN_PROBE_TIMEOUT_MS);
+            assertPrependedPathEnv(calls[1].options, { dir: '/opt/toolchain' });
         } finally {
             process.env.PATH = originalPath;
         }
@@ -1141,7 +1140,7 @@ describe('apra-fleet-i9ag.19.30: bd probe runs THROUGH the recorded node (D1 fix
 // would break.
 // =============================================================================
 describe('apra-fleet-i9ag.19.31: dedicated coverage for the recorded bd probe running through the recorded node', () => {
-    test('bullet 1: with a recorded node and a recorded bd, the bd probe exec receives the EXACT node-first invocation -- pinning the chosen strategy explicitly, not "it passed"', { skip: process.platform === 'win32' ? 'POSIX-only PATH-prepend fix' : false }, async () => {
+    test('bullet 1: with a recorded node and a recorded bd, the bd probe exec receives the EXACT node-first invocation -- pinning the chosen strategy explicitly, not "it passed"', async () => {
         const dataDir = await mkTmp();
         const filePath = supervisorConfigPath({ dataDir });
         const nodePath = '/opt/toolchain/node';
@@ -1163,11 +1162,9 @@ describe('apra-fleet-i9ag.19.31: dedicated coverage for the recorded bd probe ru
             const bdCall = calls.find((c) => c.file === bdPath);
             assert.ok(bdCall, 'bd is invoked as itself, never as "<nodePath> <bdPath>"');
             assert.deepEqual(bdCall.args, ['--version']);
-            assert.deepEqual(bdCall.options, {
-                shell: false,
-                timeout: TOOLCHAIN_PROBE_TIMEOUT_MS,
-                env: { ...process.env, PATH: `${path.posix.dirname(nodePath)}${path.delimiter}${process.env.PATH}` },
-            }, 'the bd probe exec receives EXACTLY probeVersion\'s own {shell,timeout} plus dirname(nodePath) prepended onto PATH -- nothing else');
+            assert.equal(bdCall.options.shell, false);
+            assert.equal(bdCall.options.timeout, TOOLCHAIN_PROBE_TIMEOUT_MS);
+            assertPrependedPathEnv(bdCall.options, { dir: path.posix.dirname(nodePath) });
         } finally {
             process.env.PATH = originalPath;
         }
@@ -1195,7 +1192,7 @@ describe('apra-fleet-i9ag.19.31: dedicated coverage for the recorded bd probe ru
         assert.equal(calls.length, 0, 'without a recorded nodePath there is no toolchain object for the bd branch to reference -- bd is never probed, composed or direct');
     });
 
-    test('bullet 3: a recorded node that itself fails validation does not stop bd from being composed against that exact recorded (still unvalidated) node path', { skip: process.platform === 'win32' ? 'POSIX-only PATH-prepend fix' : false }, async () => {
+    test('bullet 3: a recorded node that itself fails validation does not stop bd from being composed against that exact recorded (still unvalidated) node path', async () => {
         const dataDir = await mkTmp();
         const filePath = supervisorConfigPath({ dataDir });
         const nodePath = '/does/not/exist/node';
@@ -1223,11 +1220,7 @@ describe('apra-fleet-i9ag.19.31: dedicated coverage for the recorded bd probe ru
             const bdCall = calls.find((c) => c.file === bdPath);
             assert.ok(bdCall, 'bd was probed as itself');
             assert.ok(bdCall.options.env, 'bd was composed through the node-first wrapper even though node failed validation');
-            assert.equal(
-                bdCall.options.env.PATH.split(path.delimiter)[0],
-                path.posix.dirname(nodePath),
-                'bd\'s composed PATH is prefixed with dirname() of the exact RECORDED node path, unvalidated -- never a different/fallback path',
-            );
+            assertPrependedPathEnv(bdCall.options, { dir: path.posix.dirname(nodePath) });
         } finally {
             process.env.PATH = originalPath;
         }
