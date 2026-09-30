@@ -59,4 +59,27 @@ export const SERIAL_PROCESS_TEST_FILES = [
     // Spawn a nested `node --test` child process running real target files.
     'supervisor-dashboard-backlog-no-live-spawn.test.mjs',
     'supervisor-dashboard-no-live-spawn-guard-integrity.test.mjs',
+    // apra-fleet-i9ag.19.46 rework: found by widening
+    // test/serial-process-suites-registry.test.mjs's signatures to also catch
+    // execFileSync (not just the bare `spawn(` form) -- both of these run
+    // real target suite files as a nested `node --test` child via
+    // execFileSync(process.execPath, [...]): phase1-leaf-facade-
+    // completeness.test.mjs's golden-transcript gate (~2.7s), and phase3-
+    // dispatch-engine-completeness.test.mjs's three nested runs (behaviour-
+    // pins, golden-transcript, and a 63-file/164-test mock-sprint pass
+    // measured at 14.8s-43.3s depending on concurrency -- see that file's own
+    // COST comment above its mock-sprint test).
+    'phase1-leaf-facade-completeness.test.mjs',
+    'phase3-dispatch-engine-completeness.test.mjs',
+    // Same nested golden-transcript execFileSync(process.execPath, ['--test',
+    // 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'])
+    // call as phase1-leaf-facade-completeness.test.mjs above -- these are its
+    // pre-existing sibling facade tests. Registered for the same reason
+    // regardless of the separately-tracked NODE_TEST_CONTEXT no-op bug noted
+    // in phase1-leaf-facade-completeness.test.mjs's header (these two do not
+    // strip that var, so they currently no-op rather than really running the
+    // nested suite) -- this guard classifies by what the code spawns, not by
+    // whether a separate bug currently keeps it from doing real work.
+    'phase0-seams-facade.test.mjs',
+    'vcs-auth-extraction-facade.test.mjs',
 ];

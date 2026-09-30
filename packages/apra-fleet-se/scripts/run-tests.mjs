@@ -127,7 +127,7 @@ process.on('SIGTERM', () => {
     process.exit(1);
 });
 
-function runBounded(cmd, args, opts) {
+function runBounded(cmd, args, opts, boundMs) {
     return new Promise(resolve => {
         const child = spawn(cmd, args, { ...opts, detached: !isWindows });
         activeChildPid = child.pid;
@@ -150,7 +150,7 @@ function runBounded(cmd, args, opts) {
                 console.error(`\n> test run did not exit after being killed -- forcing process exit\n`);
                 process.exit(1);
             }, FORCE_EXIT_GRACE_MS);
-        }, timeoutMs);
+        }, boundMs);
 
         const finish = (result) => {
             if (settled) return;
@@ -212,6 +212,7 @@ if (extraArgs.length > 0) {
             stdio: 'inherit',
             env: envFor(TEST_CONCURRENCY),
         },
+        timeoutMs,
     );
 } else {
     // apra-fleet-i9ag.19.46: the default (no explicit file argument) run
@@ -243,6 +244,21 @@ if (extraArgs.length > 0) {
     const concurrentFiles = allTestFiles.filter((name) => !serialSet.has(name)).map((name) => `test/${name}`);
     const serialFiles = SERIAL_PROCESS_TEST_FILES.map((name) => `test/${name}`);
 
+    // apra-fleet-i9ag.19.46 rework: the two phases below share ONE deadline
+    // (`sharedDeadline`, timeoutMs from the moment this branch starts) rather
+    // than each getting its own fresh timeoutMs. Giving each runBounded() call
+    // its own full budget silently doubled this entry point's worst-case
+    // wall-clock hold to 2x timeoutMs (verified: `APRA_TEST_TIMEOUT_MS=5000
+    // node scripts/run-tests.mjs mock` took ~11s, not ~5s) -- exactly the
+    // "hung suite can never hold a dispatch open indefinitely" guarantee
+    // CLAUDE.md documents this entry point for. The serial lane only gets
+    // whatever remains of the shared budget after the concurrent lane
+    // finishes, and is skipped entirely (loudly, not silently) once that
+    // budget is already spent -- a hung concurrent lane must not also buy the
+    // serial lane a second full timeoutMs.
+    const sharedDeadline = Date.now() + timeoutMs;
+    const remainingBudgetMs = () => Math.max(0, sharedDeadline - Date.now());
+
     console.log(`\n> concurrent lane: ${concurrentFiles.length} test file(s) at --test-concurrency=${TEST_CONCURRENCY}\n`);
     const concurrentResult = await runBounded(
         process.execPath,
@@ -261,37 +277,51 @@ if (extraArgs.length > 0) {
             stdio: 'inherit',
             env: envFor(TEST_CONCURRENCY),
         },
-    );
-
-    console.log(
-        `\n> serial lane: ${serialFiles.length} heavy real-process test file(s) at --test-concurrency=1 ` +
-        `(registered in test/helpers/serial-process-suites.mjs, run only after the concurrent lane finishes so ` +
-        `neither lane contends with the other)\n`
-    );
-    const serialResult = await runBounded(
-        process.execPath,
-        [
-            '--test',
-            // apra-fleet-v6t7.16: run-level home isolation -- see the identical
-            // comment on the extraArgs branch above for the full rationale.
-            ISOLATED_HOME_IMPORT_FLAG,
-            '--test-reporter=./test/helpers/timestamped-reporter.mjs',
-            '--test-reporter-destination=stdout',
-            '--test-concurrency=1',
-            ...serialFiles,
-        ],
-        {
-            cwd: pkgRoot,
-            stdio: 'inherit',
-            env: envFor(1),
-        },
+        timeoutMs,
     );
 
     if (concurrentResult.timedOut) {
         console.error(`\n> concurrent lane TIMED OUT after ${timeoutMs}ms and was killed\n`);
     }
-    if (serialResult.timedOut) {
-        console.error(`\n> serial lane TIMED OUT after ${timeoutMs}ms and was killed\n`);
+
+    const serialBudgetMs = remainingBudgetMs();
+    let serialResult;
+    if (concurrentResult.timedOut || serialBudgetMs <= 0) {
+        console.error(
+            `\n> skipping serial lane: the shared ${timeoutMs}ms test budget is already exhausted ` +
+            `(concurrent lane ${concurrentResult.timedOut ? 'timed out' : `used all of it, ${serialBudgetMs}ms remaining`}) -- ` +
+            `running it against a fresh budget would let a hung concurrent lane buy a second full timeoutMs\n`
+        );
+        serialResult = { status: 1, timedOut: true };
+    } else {
+        console.log(
+            `\n> serial lane: ${serialFiles.length} heavy real-process test file(s) at --test-concurrency=1, ` +
+            `${serialBudgetMs}ms remaining of the shared ${timeoutMs}ms budget ` +
+            `(registered in test/helpers/serial-process-suites.mjs, run only after the concurrent lane finishes so ` +
+            `neither lane contends with the other)\n`
+        );
+        serialResult = await runBounded(
+            process.execPath,
+            [
+                '--test',
+                // apra-fleet-v6t7.16: run-level home isolation -- see the identical
+                // comment on the extraArgs branch above for the full rationale.
+                ISOLATED_HOME_IMPORT_FLAG,
+                '--test-reporter=./test/helpers/timestamped-reporter.mjs',
+                '--test-reporter-destination=stdout',
+                '--test-concurrency=1',
+                ...serialFiles,
+            ],
+            {
+                cwd: pkgRoot,
+                stdio: 'inherit',
+                env: envFor(1),
+            },
+            serialBudgetMs,
+        );
+        if (serialResult.timedOut) {
+            console.error(`\n> serial lane TIMED OUT after ${serialBudgetMs}ms (remaining shared budget) and was killed\n`);
+        }
     }
 
     finalResult = {
