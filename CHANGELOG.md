@@ -71,14 +71,13 @@ What shipped and is verified working:
   path used to silently discard is now surfaced. None of them affect the
   shipped behavior above.
 
-Carried forward (tracked, not blocking): a few test/impl items remain open
-against this sprint's parent bug -- restoring real-exec coverage for one
-toolchain test case that a since-added shortcut left short-circuited, the
-dedicated end-to-end test proving a service-style supervisor with no node on
-its PATH still launches a sprint, direct coverage for the startup toolchain
-validator's loud-but-not-fatal contract, and finishing the shared
-recorded-node test fixture fix. None of them affect the shipped behavior
-above.
+Carried forward: work not completed this sprint remains tracked as open
+backlog against this sprint's parent bug; none of it affects the shipped
+behavior above. Specific item status is intentionally not enumerated here --
+it keeps changing as tracks continue closing tasks after this entry is
+written, which made an earlier, itemized version of this paragraph stale
+within minutes of being corrected. Check the issue tracker for current
+status.
 
 ## [Unreleased] -- Project-folder resolution and service restart fail loudly with their real cause
 
