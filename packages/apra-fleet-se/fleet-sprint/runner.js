@@ -2572,7 +2572,7 @@ async function runSprintCycle(context) {
                     orchestratorMember,
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
-                    devRounds, eligibleReplan, replanIds, replannedThisCycle,
+                    devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
                 });
                 continue;
             }
