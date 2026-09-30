@@ -22,10 +22,10 @@ successfully end to end, verified with a real child-process spawn under a
 scrubbed, empty PATH.
 
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $61.6679.
+Tracked spend (priced dispatches only): $71.5979.
 Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.1665 across 5 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 76 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Integ-test-runner spend: $0.2308 across 4 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 66 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 What shipped and is verified working:
@@ -70,14 +70,30 @@ What shipped and is verified working:
   instead of leaving it bare, and a probe-failure reason that a resolved
   path used to silently discard is now surfaced. None of them affect the
   shipped behavior above.
+- The test suite's own recorded-node fixture no longer breaks unrelated
+  suites: it used to hard-link/copy the running interpreter, which crashes a
+  non-relocatable Node build (e.g. Homebrew) that resolves its shared
+  library relative to its own location; the shared fixture now produces an
+  interpreter that genuinely starts and runs from its own path on every
+  platform. Heavy real-process suites also now run in an isolated serial
+  lane against a shared wall-clock deadline instead of contending with the
+  concurrent lane, removing a class of load-dependent flake from the suite.
 
-Carried forward: work not completed this sprint remains tracked as open
-backlog against this sprint's parent bug; none of it affects the shipped
-behavior above. Specific item status is intentionally not enumerated here --
-it keeps changing as tracks continue closing tasks after this entry is
-written, which made an earlier, itemized version of this paragraph stale
-within minutes of being corrected. Check the issue tracker for current
-status.
+Carried forward: one known reliability gap remains open against this
+sprint's parent bug and does affect the shipped behavior above under load --
+the launch-time probe of the recorded node and the supervisor's own startup
+validation of that same recording can disagree under host contention,
+because the two probes classify a timeout differently; on a loaded host this
+can 503 a launch for a node the startup check just accepted, mis-worded as a
+broken recording rather than a probe that merely could not complete in time.
+The fix is to make the two probes agree (share one validation result, or
+give the launch-time probe the same bounded-retry and transient-vs-genuine
+classification the startup validator already has). Beyond that item,
+remaining work is ordinary low-priority polish tracked as open backlog;
+specific item status is intentionally not enumerated here -- it keeps
+changing as tracks continue closing tasks after this entry is written, which
+made an earlier, itemized version of this paragraph stale within minutes of
+being corrected. Check the issue tracker for current status.
 
 ## [Unreleased] -- Project-folder resolution and service restart fail loudly with their real cause
 
