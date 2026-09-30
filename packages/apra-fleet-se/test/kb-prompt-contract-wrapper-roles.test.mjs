@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
+import { kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
 
 // apra-fleet-9jmc.2 -- verification for apra-fleet-9jmc.1's fix: every role
 // row whose kbInjection is 'wrapper' and whose postResult has no 'kb-apply'
@@ -251,6 +252,27 @@ test('wrapper-injection roles without a kb-apply step: harvester, doer and revie
             !roleNames.includes(excluded),
             `'${excluded}' has a kb-apply postResult step (or is not wrapper-injection) and must not appear in the ` +
             `derived defective set, got: ${JSON.stringify(roleNames)}`
+        );
+    }
+});
+
+// The wrapper-role prompts tell the member to look for the engine-injected
+// block by its heading text. Pin that quoted heading against what
+// kbKnowledgeBlock() (fleet-sprint/kb.mjs) actually emits, so a reworded block
+// heading fails here instead of leaving the prompts pointing at nothing.
+test('wrapper-injection roles without a kb-apply step: the KB block heading their prompts quote is the one kb.mjs emits', () => {
+    const block = kbKnowledgeBlock([{ confidence: 'CONFIRMED', title: 't', summary: 's' }]);
+    assert.equal(block.length, 1, 'kbKnowledgeBlock must render a block for a non-empty entry list');
+    const m = /^(KNOWLEDGE BANK -- [^.]+)\./.exec(block[0]);
+    assert.ok(m, `kbKnowledgeBlock output no longer opens with a "KNOWLEDGE BANK -- ..." heading: ${JSON.stringify(block[0].slice(0, 80))}`);
+    const heading = m[1];
+
+    const byAgentType = dedupeByAgentType(wrapperRowsWithoutKbApply(ROLE_POLICIES));
+    for (const [agentType, roleNames] of byAgentType) {
+        const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentType}.md`), 'utf8').replace(/\s+/g, ' ');
+        assert.ok(
+            content.includes(`"${heading}"`),
+            `role(s) ${roleNames.join(', ')}: ${agentType}.md must quote the injected block heading "${heading}" verbatim`
         );
     }
 });

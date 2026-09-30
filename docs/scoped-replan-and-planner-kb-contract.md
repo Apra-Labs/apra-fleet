@@ -20,9 +20,11 @@ The replan prompt tells the planner to read the reviewer's findings below it.
 For that instruction to be true, the findings that triggered the replan have
 to actually be in the prompt. The source of those findings is a per-bead
 map of reviewer verdict notes populated when a bead is reopened; the replan
-phase reads that map read-only (it never mutates it) and renders one section
-per flagged bead, in bead-id order, filtering out any bead whose reviewer
-notes were blank.
+phase reads that map read-only (it never mutates it) and renders the flagged
+beads in the order the replan-eligible list holds them, filtering out any bead
+whose reviewer notes were blank. One reviewer verdict is stored under every
+bead it reopens, so identical notes text is emitted once, under a header
+listing every bead id it applies to, rather than repeated per bead.
 
 ### Invariants
 
@@ -82,12 +84,16 @@ For every role whose policy row is `kbInjection: 'wrapper'` with no
 `kb-apply` post-result step, the role prompt's Step 0 now:
 
 - Leads with the engine-injected KB context block already present in the
-  dispatch prompt (the heading text is matched verbatim against the
-  block-building code, so the prompt and the actual injected text cannot
-  drift silently), and tells the member to use that context directly.
+  dispatch prompt, quoting its heading text, and tells the member to use that
+  context directly. A test
+  (`packages/apra-fleet-se/test/kb-prompt-contract-wrapper-roles.test.mjs`)
+  pins the quoted heading against what `kbKnowledgeBlock()` in
+  `fleet-sprint/kb.mjs` emits, so a reworded block heading fails the build.
 - Marks any KB tool call as bonus-only, never required.
-- Says nothing about a `kb_captures` output field, since nothing downstream
-  applies it for these roles.
+- Never instructs the member to populate a `kb_captures` output field, since
+  nothing downstream applies it for these roles. The planner prompt and its
+  output schema mention the field only to say it is ignored (omit it or send
+  `[]`).
 
 A role whose policy row DOES have a `kb-apply` post-result step (doer,
 reviewer-family roles) is unaffected: those roles compose their own KB block
