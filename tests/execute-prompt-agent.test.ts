@@ -27,6 +27,12 @@ vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
 }));
 
 
+// Project-level agent shadow check is covered by tests/agent-shadow*.test.ts;
+// stubbed here so exec-call indexes stay the CLI dispatch.
+vi.mock('../src/services/agent-shadow.js', () => ({
+  ensureNoProjectAgentShadows: vi.fn(async () => undefined),
+}));
+
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
   readMemberStatus: vi.fn(() => 'idle'),

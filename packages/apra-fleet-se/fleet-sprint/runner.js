@@ -95,6 +95,7 @@ import {
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
 import { verifyBeadsIdentity } from './beads-identity-check.mjs';
+import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
     buildReviewerPrompt, buildFinalVerdictPrompt, buildHarvesterPrompt,
@@ -2044,6 +2045,17 @@ async function runSprintCycle(context) {
     // (apra-fleet-7dir.24).
     const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
     await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) });
+
+    // Beads memory hygiene: forget token-usage memories (and retired keys)
+    // before any dispatch, so `bd prime` never injects them into a session.
+    // Sprint start only; one non-fatal bracketed push when anything was
+    // forgotten; never throws. `context.sweepTokenMemories` is the test seam.
+    await (context.sweepTokenMemories ?? sweepTokenMemories)({
+        command,
+        log,
+        member: orchestratorMember,
+        pushBeads: () => gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true }),
+    });
 
     await updateDashboard();
 
