@@ -25,6 +25,7 @@ import {
 } from '../src/supervisor/toolchain.mjs';
 import { writeSupervisorToolchain, supervisorConfigPath } from '../src/supervisor/project-config.mjs';
 import { MIN_NODE_VERSION } from '../src/supervisor/node-runner.mjs';
+import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
 
 /** Temp dirs created by this file, removed in afterEach. */
 const tmpDirs = [];
@@ -520,26 +521,24 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchai
         }
     });
 
-    test('the REAL default exec (execFileSync) resolves a real absolute node path when no exec is injected', async () => {
+    test('no exec injected, recorded node === process.execPath: the self-node shortcut answers without spawning anything, even through the real default exec/platform', async () => {
         const dataDir = await mkTmp();
         const filePath = supervisorConfigPath({ dataDir });
         // process.execPath is a real, absolute, spawnable Node.js runtime --
-        // exactly the shape a genuine recording would carry -- and this is
-        // this test file's ONLY case that lets validateRecordedToolchain()
-        // fall through to its own real defaultExec()/process.platform
-        // instead of an injected fake.
-        //
-        // apra-fleet-i9ag.19.35: this case used to FAIL on a loaded host (a
-        // real `node --version` child that could not finish inside
-        // TOOLCHAIN_PROBE_TIMEOUT_MS on either attempt -- 30s, nodeOk:false).
-        // It no longer spawns anything for node at all: the recorded path IS
-        // this process's own interpreter, so the module reads
-        // process.versions.node directly (knownSelfNodeVersion(),
-        // node-version.mjs) -- which is why the version assertion below is an
-        // exact equality and can no longer be starved by host contention. The
-        // dedicated coverage for that shortcut (including the control proving
-        // any OTHER path still probes) is in the last describe block of this
-        // file.
+        // exactly the shape a genuine recording would carry -- and, like every
+        // case in this describe block, lets validateRecordedToolchain() fall
+        // through to its own real defaultExec()/process.platform instead of an
+        // injected fake. apra-fleet-i9ag.19.35's self-node shortcut
+        // (knownSelfNodeVersion(), node-version.mjs) means this specific
+        // recording never actually reaches defaultExec() for node: it is
+        // resolved from process.versions.node directly, with nothing spawned.
+        // That is real, load-independent coverage of the shortcut itself (see
+        // the dedicated describe block at the end of this file for the fuller
+        // suite, including the control proving any OTHER path still probes)
+        // -- but it means this case alone proves nothing about defaultExec()'s
+        // own real child_process.execFile path. apra-fleet-i9ag.19.40 adds
+        // that case directly below, with a recorded node that is NOT
+        // process.execPath.
         await writeSupervisorToolchain({ nodePath: process.execPath }, { filePath });
 
         const result = await validateRecordedToolchain({ filePath });
@@ -547,6 +546,35 @@ describe('apra-fleet-i9ag.19.9 / apra-fleet-i9ag.19.11: validateRecordedToolchai
         assert.equal(result.configured, true);
         assert.equal(result.nodeOk, true);
         assert.equal(result.nodeVersion, process.versions.node);
+        assert.equal(result.bdOk, false, 'no bdPath was recorded');
+        assert.deepEqual(result.problems, ['No bd path was recorded for this installation.']);
+    });
+
+    test('the REAL default exec (execFileAsync) resolves a real absolute node path when no exec is injected, for a recorded node distinct from process.execPath', async () => {
+        // apra-fleet-i9ag.19.40: the case above is short-circuited by the
+        // self-node shortcut before it ever reaches defaultExec() -- since
+        // apra-fleet-i9ag.19.35's leg 3, it is this file's ONLY other case
+        // exercising validateRecordedToolchain() with no injected exec, and it
+        // no longer spawns anything either, leaving zero coverage of
+        // toolchain.mjs's real defaultExec() (the promisified
+        // child_process.execFile path, its async contract, and its
+        // options.timeout plumbing). buildRecordedNode() (the same fixture
+        // i9ag19-11/i9ag19-14 use) produces a real, independently spawnable
+        // node binary at a path distinct from process.execPath, so the
+        // shortcut cannot apply and this genuinely falls through to
+        // defaultExec()/process.platform -- the property this case exists to
+        // restore.
+        const dataDir = await mkTmp();
+        const filePath = supervisorConfigPath({ dataDir });
+        const toolDir = await mkTmp('apra-fleet-toolchain-real-exec-');
+        const recordedNode = buildRecordedNode(toolDir);
+        await writeSupervisorToolchain({ nodePath: recordedNode }, { filePath });
+
+        const result = await validateRecordedToolchain({ filePath });
+
+        assert.equal(result.configured, true);
+        assert.equal(result.nodeOk, true);
+        assert.equal(result.nodeVersion, process.versions.node, 'the recorded node is a hard link/copy of the same binary, so its real --version output must match');
         assert.equal(result.bdOk, false, 'no bdPath was recorded');
         assert.deepEqual(result.problems, ['No bd path was recorded for this installation.']);
     });
