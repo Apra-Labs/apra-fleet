@@ -1381,6 +1381,24 @@ export function policyFor(role, table = ROLE_POLICIES) {
 }
 
 /**
+ * True when a dispatch of agent persona `agentType` has a working KB-capture
+ * channel: at least one row uses that agentType, and EVERY such row applies
+ * a returned `kb_captures` field via a 'kb-apply' postResult step. Several
+ * roles share one persona (scoped-replan-planner reuses planner), so a mixed
+ * persona counts as having no channel -- the KNOWLEDGE BANK block must never
+ * promise a capture path that some dispatch of that persona silently drops.
+ * An agentType with no row at all has no channel either.
+ * @param {string|null|undefined} agentType
+ * @param {object} [table]
+ * @returns {boolean}
+ */
+export function agentTypeAppliesKbCaptures(agentType, table = ROLE_POLICIES) {
+    if (typeof agentType !== 'string' || !agentType) return false;
+    const rows = Object.values(table).filter((row) => row.agentType === agentType);
+    return rows.length > 0 && rows.every((row) => Array.isArray(row.postResult) && row.postResult.includes('kb-apply'));
+}
+
+/**
  * Every DISPATCH the table describes: each role's main dispatch plus its
  * secondary, de-duplicated (doer-resume is reachable both as a role and as
  * the doer's secondary).

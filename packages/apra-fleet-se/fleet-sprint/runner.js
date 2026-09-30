@@ -126,7 +126,7 @@ import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
 // log line, the bound the row itself sets -- never to re-implement a ladder.
 // USAGE_LIMIT_BUDGET_DEFAULTS is the usage-limit controller's budget row,
 // recorded as data in the same table (apra-fleet-hzeb.4.1/.4.2).
-import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS } from './role-policies.mjs';
+import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS, agentTypeAppliesKbCaptures } from './role-policies.mjs';
 // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe controller wired
 // into the dispatchRole engine as ctx.onUsageLimit below.
 import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
@@ -929,7 +929,12 @@ async function runSprintCycle(context) {
     const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
-            const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name));
+            // Only promise the kb_captures channel to a persona whose returned
+            // captures the engine actually applies (e.g. harvester); planner,
+            // plan-reviewer, deployer and the test runners have none.
+            const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), {
+                captureChannel: agentTypeAppliesKbCaptures(opts.agentType),
+            });
             if (block) finalPrompt = prompt + '\n\n' + block;
         }
         try {
@@ -2572,7 +2577,7 @@ async function runSprintCycle(context) {
                     orchestratorMember,
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
-                    devRounds, eligibleReplan, replanIds, replannedThisCycle,
+                    devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
                 });
                 continue;
             }

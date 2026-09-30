@@ -22,7 +22,18 @@ import path from 'path';
 //   - a leading tilde path (`~/...`) -- PowerShell and cmd.exe do not expand
 //     it the way POSIX sh does;
 //   - backtick command substitution (a literal backtick reaching the member),
-//     or its `$( ... )` POSIX equivalent.
+//     or its `$( ... )` POSIX equivalent;
+//   - a POSIX shell SPECIAL PARAMETER -- `$?` `$!` `$$` `$#` `$@` `$*` and
+//     `$0`-`$9` (apra-fleet-i4ku.8). BARE_VAR_RE alone never covered these:
+//     it requires a letter/underscore immediately after the `$`, so every one
+//     of them silently passed this guard. Exactly like a named variable, a
+//     special parameter is evaluated by WHATEVER shell the member happens to
+//     run, so the exact same PowerShell-vs-POSIX ambiguity applies -- it must
+//     be resolved in JavaScript before dispatch, UNLESS the construct is
+//     deliberately meant to be evaluated by the member's own shell right
+//     after a prior command in the same dispatch (e.g. that shell's own `$?`
+//     immediately after a `kill` it just ran) -- which is exactly what the
+//     `shell-guard-allow` carve-out below exists for.
 //
 // Paths must instead be resolved in JavaScript BEFORE the command string is
 // built -- via probeCommandFor(targetOs, shell) in src/services/member-home.ts,
@@ -141,6 +152,24 @@ const BRACED_VAR_RE = /\$\{/g;
 const CMD_SUBST_RE = /\$\(/g;
 // A leading tilde path.
 const TILDE_RE = /(^|[\s'"`=(,:])~\//g;
+// A POSIX shell SPECIAL PARAMETER: $? $! $$ $# $@ $* and $0-$9
+// (apra-fleet-i4ku.8). None of these match BARE_VAR_RE above (it requires a
+// letter/underscore right after the `$`), so every one of them was
+// previously invisible to this guard -- see this file's header for why they
+// carry the same shell-ambiguity risk as a named variable.
+//
+// Two deliberate exclusions so this stays a real signal rather than noise:
+//   - `$$` only counts when NOT immediately followed by `{` -- that shape is
+//     `$` + the start of a `${...}` JS template interpolation (already
+//     handled, correctly, by NOT being flagged -- see BRACED_VAR_RE/the
+//     'template' segment-kind check below), not a literal "$$" (shell pid).
+//   - a digit only counts when NOT immediately followed by another digit or
+//     a `.` -- a genuine POSIX positional parameter is always exactly ONE
+//     digit (`$1`, never `$12`), so this excludes a dollar-amount literal
+//     like `$5.00` or `$1234` (this package's own cost-report strings, e.g.
+//     sprint-report.mjs, are full of these and are never dispatched to a
+//     shell at all).
+const SPECIAL_PARAM_RE = /\$([?!#@*]|\$(?!\{)|[0-9](?![0-9.]))/g;
 
 /**
  * Scans one line of source and returns an array of { column, reason } for
@@ -162,6 +191,20 @@ export function findLineViolations(text) {
                 `bare shell variable expansion "$${m[1]}" in a command string -- the target member's shell may be ` +
                 `PowerShell, not POSIX; resolve the value in JavaScript first (probeCommandFor(targetOs, shell) in ` +
                 `src/services/member-home.ts, or branch on isPosixShell(agentOs, shell))`,
+        });
+    }
+
+    SPECIAL_PARAM_RE.lastIndex = 0;
+    while ((m = SPECIAL_PARAM_RE.exec(text)) !== null) {
+        if (!inString(m.index)) continue;
+        found.push({
+            column: m.index + 1,
+            reason:
+                `POSIX shell special parameter "$${m[1]}" in a command string -- the target member's shell may be ` +
+                'PowerShell, not POSIX, and even on POSIX this is evaluated by WHATEVER shell runs the dispatch; ' +
+                'resolve the value in JavaScript first, or if the MEMBER shell must evaluate it itself (e.g. its ' +
+                'own "$?" immediately after a prior command in the same dispatch), add a documented ' + // shell-guard-allow: this guard's own violation-message text names the "$?" construct it detects; it is never dispatched as a command string.
+                '"// shell-guard-allow: <reason>" comment on this line',
         });
     }
 

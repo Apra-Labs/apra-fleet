@@ -671,8 +671,19 @@ export function kbQueryTerms(beads, beadIds) {
     return terms;
 }
 
-export function kbKnowledgeBlock(entries) {
+// `captureChannel` (default true, the doer/reviewer/final-review prompt
+// builders' case) says whether the recipient's returned `kb_captures` field is
+// actually applied by the engine (a 'kb-apply' postResult step -- see
+// role-policies.mjs agentTypeAppliesKbCaptures). When it is not, the block
+// must not promise that the orchestrator records a capture: those roles'
+// prompts tell them to note the finding in their own report instead.
+export function kbKnowledgeBlock(entries, { captureChannel = true } = {}) {
     if (!Array.isArray(entries) || entries.length === 0) return [];
+    const captureLine = captureChannel
+        ? 'If you discover something non-obvious and durable while working, report it in the '
+            + '`kb_captures` field of your structured output and the orchestrator will record it.\n'
+        : 'If you discover something non-obvious and durable while working, note it in your '
+            + 'own report.\n';
     return [
         'KNOWLEDGE BANK -- what this repo already knows. These entries were captured and '
         + 'verified during earlier work on this repository, and are provided so you do not '
@@ -682,9 +693,8 @@ export function kbKnowledgeBlock(entries) {
         + 'describes the tree it was captured against, so if one contradicts what you actually '
         + 'observe in the code right now, the code wins -- say so in your notes rather than '
         + 'bending your work to fit the entry.\n'
-        + 'You do not need to call any kb_* tool to read these. If you discover something '
-        + 'non-obvious and durable while working, report it in the `kb_captures` field of your '
-        + 'structured output and the orchestrator will record it.\n'
+        + 'You do not need to call any kb_* tool to read these. '
+        + captureLine
         + wrapUntrustedBlock('kb_session_prime --top_entries', JSON.stringify(
             entries.map((e) => ({
                 confidence: e.confidence,
