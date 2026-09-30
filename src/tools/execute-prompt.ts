@@ -18,6 +18,7 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
+import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -833,6 +834,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
     interactiveSession = undefined;
   }
+  // Project-level <workFolder>/.claude/agents files take precedence over the
+  // user-level role set; quarantine untracked shadows, report tracked ones on
+  // every dispatch. Runs before the interactive/subprocess split so both paths
+  // are covered, local members included. Independent of the user-level
+  // provisioning below (compares against the canonical set). Never throws.
+  const shadowWarning = await ensureNoProjectAgentShadows(agent);
+  if (shadowWarning) heuristicWarningSuffix += `\n\n[WARN] ${shadowWarning}`;
   if (interactiveSession?.server) {
     // Lock already claimed above, before the preflight await -- do not
     // re-add here (Set.add would be a harmless no-op, but keeping a second

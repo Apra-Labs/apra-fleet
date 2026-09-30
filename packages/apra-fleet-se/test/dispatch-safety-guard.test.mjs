@@ -1426,6 +1426,39 @@ test('every command() call site in fatal-diagnostics.mjs passes member_name or m
 });
 
 // =============================================================================
+// beads-memory-hygiene.mjs -- the sprint-start token-usage memory sweep.
+//
+// Its command() baseline is TWO: the memory list and the per-key forget, both
+// run on the orchestrator member named explicitly. Its agent() baseline is
+// ZERO: the sweep never dispatches a role.
+// =============================================================================
+const BEADS_MEMORY_HYGIENE_PATH = path.join(__dirname, '../fleet-sprint/beads-memory-hygiene.mjs');
+const EXPECTED_BEADS_MEMORY_HYGIENE_COMMAND_COUNT = 2;
+
+test('every command() call site in beads-memory-hygiene.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(BEADS_MEMORY_HYGIENE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_BEADS_MEMORY_HYGIENE_COMMAND_COUNT,
+        `Expected ${EXPECTED_BEADS_MEMORY_HYGIENE_COMMAND_COUNT} command() call site(s) in beads-memory-hygiene.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_BEADS_MEMORY_HYGIENE_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'beads-memory-hygiene.mjs must never dispatch an agent() -- it is a bd housekeeping step, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// =============================================================================
 // apra-fleet-3swo.34 -- an apostrophe inside a comment must never let
 // extractBalancedCall()'s depth walk run past the call's real closing paren.
 //

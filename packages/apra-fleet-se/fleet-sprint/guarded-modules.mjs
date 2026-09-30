@@ -376,6 +376,10 @@ export const GUARDED_MODULES = [
     // exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The sprint-start token-usage memory sweep: TWO member_name-bearing
+    // command() sites (the memory list and the per-key forget), no agent(),
+    // and its push goes through an injected bracketed callback.
+    'beads-memory-hygiene.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',
