@@ -61,14 +61,24 @@ What shipped and is verified working:
   philosophies) and the updated
   [docs/features/sprint-runner-resolution.md](docs/features/sprint-runner-resolution.md)
   for the new four-tier resolution order.
+- All of the low-priority polish items originally tracked as carried-forward
+  backlog for this sprint have since landed on this same branch: direct test
+  coverage for the shared node-version-probe helpers now exists, a
+  synchronous probe caller handed an async exec now fails loudly instead of
+  silently misbehaving, a stale in-code cross-reference comment was
+  corrected, one Windows fallback branch now quotes a spaced `bd` path
+  instead of leaving it bare, and a probe-failure reason that a resolved
+  path used to silently discard is now surfaced. None of them affect the
+  shipped behavior above.
 
-Carried forward (tracked, not blocking): a handful of low-priority polish
-items remain open in the backlog -- consolidating duplicated test coverage
-for the shared node-version-probe helpers, tightening the contract for a
-synchronous probe caller handed an async exec, a stale in-code cross-
-reference comment, quoting a spaced `bd` path in one Windows fallback branch,
-and a discarded probe-failure reason in one code path that otherwise
-resolved successfully. None of them affect the shipped behavior above.
+Carried forward (tracked, not blocking): a few test/impl items remain open
+against this sprint's parent bug -- restoring real-exec coverage for one
+toolchain test case that a since-added shortcut left short-circuited, the
+dedicated end-to-end test proving a service-style supervisor with no node on
+its PATH still launches a sprint, direct coverage for the startup toolchain
+validator's loud-but-not-fatal contract, and finishing the shared
+recorded-node test fixture fix. None of them affect the shipped behavior
+above.
 
 ## [Unreleased] -- Project-folder resolution and service restart fail loudly with their real cause
 
