@@ -53,6 +53,8 @@ export interface ProjectAgentEntry {
 export interface ProbeOutput {
   gitState: GitState;
   entries: ProjectAgentEntry[];
+  /** Agents-dir path components that are symlinks/junctions (listing skipped). */
+  links: string[];
 }
 
 export interface ManagedRoles {
@@ -82,6 +84,8 @@ export interface ShadowCheckResult {
   warning?: string;
   /** Portion of the warning that stays true until the operator acts (tracked/unmoved shadows). */
   persistentWarning?: string;
+  /** True when a quarantine move failed: do not cache, retry on the next dispatch. */
+  retry?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,16 +138,38 @@ export function memberJoin(windowsNative: boolean, ...parts: string[]): string {
 }
 
 /** Build the one-round-trip listing command for the member's OS/shell. */
-export function buildShadowProbeCommand(posix: boolean, agentsDir: string, workFolder: string): string {
+//
+// Git state: 'repo' only when git ran and confirmed a work tree; 'norepo' only
+// when git ran and said "not a git repository", or when no git ran/answered
+// and no ancestor of the work folder has a .git entry. Anything else
+// (git missing inside a repo, dubious-ownership refusal, ...) is 'unknown',
+// which classifyShadows treats as tracked (report only, never move).
+//
+// `linkPaths`: the work-folder-relative prefixes of the agents dir (e.g.
+// .claude, .claude/agents). If any is a symlink/junction the listing is
+// skipped (FLEETSHADOW_LINK) -- it may point at the managed user-level dir.
+export function buildShadowProbeCommand(posix: boolean, agentsDir: string, workFolder: string, linkPaths: string[] = [agentsDir]): string {
   if (posix) {
     return [
       `d=${escapeShellArg(agentsDir)}; w=${escapeShellArg(workFolder)}`,
-      'g=norepo',
-      'if git -C "$w" rev-parse --is-inside-work-tree >/dev/null 2>&1; then g=repo; elif [ -e "$w/.git" ]; then g=unknown; fi',
+      'g=unknown',
+      'if command -v git >/dev/null 2>&1; then',
+      '  o=$(LC_ALL=C git -C "$w" rev-parse --is-inside-work-tree 2>&1); rc=$?',
+      '  if [ "$rc" -eq 0 ] && [ "$o" = true ]; then g=repo',
+      "  elif printf '%s' \"$o\" | grep -qi 'not a git repository'; then g=norepo; fi",
+      'fi',
+      'if [ "$g" = unknown ]; then',
+      '  p="$w"; found=0',
+      '  while :; do if [ -e "$p/.git" ]; then found=1; break; fi; q=$(dirname -- "$p"); [ "$q" = "$p" ] && break; p="$q"; done',
+      '  [ "$found" = 0 ] && g=norepo',
+      'fi',
       "printf 'FLEETSHADOW_GIT\\t%s\\n' \"$g\"",
-      'if [ -d "$d" ]; then',
+      'lnk=0',
+      ...linkPaths.map(lp => `if [ -L ${escapeShellArg(lp)} ]; then lnk=1; printf 'FLEETSHADOW_LINK\\t%s\\n' ${escapeShellArg(lp)}; fi`),
+      'if [ "$lnk" = 0 ] && [ -d "$d" ]; then',
       "  find \"$d\" -type f -name '*.md' 2>/dev/null | while IFS= read -r f; do",
-      "    n=$(awk 'NR>40{exit} /^name:/{sub(/^name:[ \\t]*/,\"\"); print; exit}' \"$f\" 2>/dev/null)",
+      // `name:` only inside the leading --- frontmatter block.
+      "    n=$(awk 'NR>40{exit} NR==1{if ($0 !~ /^---[ \\t\\r]*$/) exit; next} /^---[ \\t\\r]*$/{exit} /^name:/{sub(/^name:[ \\t]*/,\"\"); print; exit}' \"$f\" 2>/dev/null)",
       '    t=U',
       '    if [ "$g" = repo ] && git -C "$w" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then t=T; fi',
       "    printf 'FLEETSHADOW\\t%s\\t%s\\t%s\\n' \"$t\" \"${f#\"$d\"/}\" \"$n\"",
@@ -156,17 +182,29 @@ export function buildShadowProbeCommand(posix: boolean, agentsDir: string, workF
     "$ErrorActionPreference = 'Continue'",
     PS_TAB_LF,
     `$d = ${escapePowerShellArg(agentsDir)}; $w = ${escapePowerShellArg(workFolder)}`,
-    "$g = 'norepo'",
-    'if (Get-Command git -ErrorAction SilentlyContinue) { & git -C $w rev-parse --is-inside-work-tree *> $null; if ($LASTEXITCODE -eq 0) { $g = \'repo\' } }',
-    "if ($g -ne 'repo' -and (Test-Path -LiteralPath (Join-Path $w '.git'))) { $g = 'unknown' }",
+    "$g = 'unknown'",
+    'if (Get-Command git -ErrorAction SilentlyContinue) {',
+    "  $env:LC_ALL = 'C'",
+    '  $o = (& git -C $w rev-parse --is-inside-work-tree 2>&1 | Out-String)',
+    "  if ($LASTEXITCODE -eq 0 -and $o.Trim() -eq 'true') { $g = 'repo' } elseif ($o -match 'not a git repository') { $g = 'norepo' }",
+    '}',
+    "if ($g -eq 'unknown') {",
+    '  $p = $w; $found = $false',
+    "  while ($p) { if (Test-Path -LiteralPath (Join-Path $p '.git')) { $found = $true; break }; $parent = Split-Path -Parent $p; if (-not $parent -or $parent -eq $p) { break }; $p = $parent }",
+    "  if (-not $found) { $g = 'norepo' }",
+    '}',
     "[Console]::Out.Write('FLEETSHADOW_GIT' + $TAB + $g + $LF)",
-    'if (Test-Path -LiteralPath $d -PathType Container) {',
+    '$lnk = $false',
+    ...linkPaths.map(lp => `$i = Get-Item -LiteralPath ${escapePowerShellArg(lp)} -Force -ErrorAction SilentlyContinue; if ($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $lnk = $true; [Console]::Out.Write('FLEETSHADOW_LINK' + $TAB + ${escapePowerShellArg(lp)} + $LF) }`),
+    'if (-not $lnk -and (Test-Path -LiteralPath $d -PathType Container)) {',
     "  $root = (Get-Item -LiteralPath $d).FullName.TrimEnd('\\', '/')",
     "  Get-ChildItem -LiteralPath $d -Recurse -File -Filter '*.md' -ErrorAction SilentlyContinue | ForEach-Object {",
     '    $f = $_.FullName',
     "    $rel = $f.Substring($root.Length).TrimStart('\\', '/') -replace '\\\\', '/'",
     "    $n = ''",
-    "    foreach ($l in @(Get-Content -LiteralPath $f -TotalCount 40 -ErrorAction SilentlyContinue)) { if ($l -match '^name:\\s*(.*)$') { $n = $Matches[1]; break } }",
+    // `name:` only inside the leading --- frontmatter block.
+    "    $ls = @(Get-Content -LiteralPath $f -TotalCount 40 -ErrorAction SilentlyContinue)",
+    "    if ($ls.Count -gt 0 -and $ls[0] -match '^---\\s*$') { for ($k = 1; $k -lt $ls.Count; $k++) { if ($ls[$k] -match '^---\\s*$') { break }; if ($ls[$k] -match '^name:\\s*(.*)$') { $n = $Matches[1]; break } } }",
     "    $t = 'U'",
     "    if ($g -eq 'repo') { & git -C $w ls-files --error-unmatch -- $f *> $null; if ($LASTEXITCODE -eq 0) { $t = 'T' } }",
     "    [Console]::Out.Write('FLEETSHADOW' + $TAB + $t + $TAB + $rel + $TAB + $n + $LF)",
@@ -183,10 +221,12 @@ export function parseShadowProbeOutput(stdout: string): ProbeOutput | null {
   let gitState: GitState | null = null;
   let done = false;
   const entries: ProjectAgentEntry[] = [];
+  const links: string[] = [];
   for (const raw of stdout.split('\n')) {
     const line = raw.replace(/\r$/, '');
     if (line === 'FLEETSHADOW_DONE') { done = true; continue; }
     const parts = line.split('\t');
+    if (parts[0] === 'FLEETSHADOW_LINK' && parts.length >= 2) { links.push(parts[1]); continue; }
     if (parts[0] === 'FLEETSHADOW_GIT' && parts.length >= 2) {
       const g = parts[1].trim();
       gitState = g === 'repo' || g === 'norepo' ? g : 'unknown';
@@ -199,7 +239,7 @@ export function parseShadowProbeOutput(stdout: string): ProbeOutput | null {
     }
   }
   if (!done || gitState === null) return null;
-  return { gitState, entries };
+  return { gitState, entries, links };
 }
 
 function isSafeRelPath(rel: string): boolean {
@@ -242,7 +282,10 @@ export function buildQuarantineCommand(
       `mkdir -p ${q(quarantineDir)} && printf '*\\n' > ${q(j(quarantineRoot, '.gitignore'))}`,
       ...relPaths.map(rel => {
         const dstDir = path.posix.dirname(rel) === '.' ? quarantineDir : j(quarantineDir, path.posix.dirname(rel));
-        return `if mkdir -p ${q(dstDir)} && mv -f -- ${q(j(agentsDir, rel))} ${q(j(quarantineDir, rel))}; then printf 'FLEETMOVED\\t%s\\n' ${q(rel)}; else printf 'FLEETMOVEFAIL\\t%s\\n' ${q(rel)}; fi`;
+        const src = q(j(agentsDir, rel));
+        const dst = q(j(quarantineDir, rel));
+        // Reported per file; MOVED only when the source is gone and the copy landed.
+        return `if mkdir -p ${q(dstDir)} && mv -f -- ${src} ${dst} && [ ! -e ${src} ] && [ -e ${dst} ]; then printf 'FLEETMOVED\\t%s\\n' ${q(rel)}; else printf 'FLEETMOVEFAIL\\t%s\\n' ${q(rel)}; fi`;
       }),
       "printf 'FLEETQUARANTINE_DONE\\n'",
     ];
@@ -250,12 +293,16 @@ export function buildQuarantineCommand(
   }
   const q = escapePowerShellArg;
   const lines = [
+    // Cmdlet errors are non-terminating by default; force them terminating so
+    // the per-file catch sees them and a failed move is never reported MOVED.
+    "$ErrorActionPreference = 'Stop'",
     PS_TAB_LF,
-    `New-Item -ItemType Directory -Force -Path ${q(quarantineDir)} | Out-Null`,
-    `Set-Content -LiteralPath ${q(j(quarantineRoot, '.gitignore'))} -Value '*'`,
+    `try { New-Item -ItemType Directory -Force -Path ${q(quarantineDir)} -ErrorAction Stop | Out-Null; Set-Content -LiteralPath ${q(j(quarantineRoot, '.gitignore'))} -Value '*' -ErrorAction Stop } catch { }`,
     ...relPaths.map(rel => {
       const dstDir = path.posix.dirname(rel) === '.' ? quarantineDir : j(quarantineDir, path.posix.dirname(rel));
-      return `try { New-Item -ItemType Directory -Force -Path ${q(dstDir)} | Out-Null; Move-Item -LiteralPath ${q(j(agentsDir, rel))} -Destination ${q(j(quarantineDir, rel))} -Force; [Console]::Out.Write('FLEETMOVED' + $TAB + ${q(rel)} + $LF) } catch { [Console]::Out.Write('FLEETMOVEFAIL' + $TAB + ${q(rel)} + $LF) }`;
+      const src = q(j(agentsDir, rel));
+      const dst = q(j(quarantineDir, rel));
+      return `try { New-Item -ItemType Directory -Force -Path ${q(dstDir)} -ErrorAction Stop | Out-Null; Move-Item -LiteralPath ${src} -Destination ${dst} -Force -ErrorAction Stop; if ((Test-Path -LiteralPath ${src}) -or -not (Test-Path -LiteralPath ${dst})) { throw 'move not verified' }; [Console]::Out.Write('FLEETMOVED' + $TAB + ${q(rel)} + $LF) } catch { [Console]::Out.Write('FLEETMOVEFAIL' + $TAB + ${q(rel)} + $LF) }`;
     }),
     "[Console]::Out.Write('FLEETQUARANTINE_DONE' + $LF)",
   ];
@@ -340,7 +387,10 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
   let probe: ProbeOutput | null = null;
   let failDetail = '';
   try {
-    const r = await strategy.execCommand(buildShadowProbeCommand(posix, agentsDir, wf), PROBE_TIMEOUT_MS);
+    // Every prefix of the agents dir under the work folder (.claude, .claude/agents).
+    const segs = relDir.split('/');
+    const linkPaths = segs.map((_, i) => memberJoin(windowsNative, wf, segs.slice(0, i + 1).join('/')));
+    const r = await strategy.execCommand(buildShadowProbeCommand(posix, agentsDir, wf, linkPaths), PROBE_TIMEOUT_MS);
     if (r.code !== 0) failDetail = `exit ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim().slice(0, 200)}` : ''}`;
     else {
       probe = parseShadowProbeOutput(r.stdout);
@@ -352,6 +402,13 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
   if (!probe) {
     const warning = `Could not check ${where} on "${agent.friendlyName}" for project-level agent files that would shadow fleet's managed role prompts (${failDetail}). Dispatch continues; if stale role files exist there they override the delivered prompts.`;
     return { ...base, status: 'probe_failed', projectAgentsDir: where, warning };
+  }
+
+  if (probe.links.length > 0) {
+    // A linked agents dir may resolve to the managed user-level dir; moving
+    // anything through it could strip the delivered role set. Skip, and say so.
+    const warning = `Skipped the project-level agent shadow check on "${agent.friendlyName}": ${probe.links.join(', ')} is a symlink/junction, so fleet did not inspect or move anything in ${where}. If it points at stale role files they override the delivered prompts.`;
+    return { ...base, projectAgentsDir: where, skippedReason: 'agents dir is a symlink/junction', warning };
   }
 
   const cls = classifyShadows(probe, roles);
@@ -388,6 +445,7 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
     }
     result.quarantined = moved;
     result.notMoved = failed;
+    if (failed.length > 0) result.retry = true;
     if (moved.length > 0) {
       result.quarantineDir = qWhere;
       oneShot.push(`Quarantined ${moved.length} untracked project-level agent file(s) on "${agent.friendlyName}" that shadowed fleet's managed role prompts: moved ${describeFiles(moved)} from ${where} to ${qWhere}.`);
@@ -414,6 +472,10 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
 // ---------------------------------------------------------------------------
 
 /** key -> persistent warning to re-emit on every dispatch ('' when clean). */
+// Known limitation: a 'clean' entry is not invalidated when the member's
+// checkout changes mid-uptime (e.g. a branch switch that adds a tracked
+// .claude/agents/doer.md). Tracked shadows are report-only anyway; the next
+// register_member/update_member or server restart re-checks.
 export const shadowCheckCache = new Map<string, string>();
 
 function cacheKey(agent: Agent): string {
@@ -440,7 +502,7 @@ export async function ensureNoProjectAgentShadows(agent: Agent): Promise<string 
   try {
     const r = await checkProjectAgentShadows(agent);
     if (r.warning) logWarn('agent_shadow', r.warning, agent);
-    if (r.status !== 'probe_failed') shadowCheckCache.set(key, r.persistentWarning ?? '');
+    if (r.status !== 'probe_failed' && !r.retry) shadowCheckCache.set(key, r.persistentWarning ?? '');
     return r.warning;
   } catch (err: any) {
     // Internal error (not a member-side probe failure): log, never block.

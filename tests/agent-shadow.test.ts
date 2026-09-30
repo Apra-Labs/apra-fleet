@@ -96,7 +96,7 @@ describe('agent-shadow pure helpers', () => {
     ]);
     expect(roles.basenames.has('graph-semantics.md')).toBe(false);
     const cls = classifyShadows({
-      gitState: 'repo',
+      gitState: 'repo', links: [],
       entries: [
         { relPath: 'Doer.md', tracked: false, name: '' },           // basename match (case-insensitive)
         { relPath: 'my-builder.md', tracked: true, name: 'planner' }, // frontmatter-name match, tracked
@@ -109,9 +109,52 @@ describe('agent-shadow pure helpers', () => {
 
   it('treats an unknown git state as tracked (never moves what it cannot prove untracked)', () => {
     const roles = managedRolesFrom([{ relPath: 'doer.md', content: '---\nname: doer\n---\n' }]);
-    const cls = classifyShadows({ gitState: 'unknown', entries: [{ relPath: 'doer.md', tracked: false, name: 'doer' }] }, roles);
+    const cls = classifyShadows({ gitState: 'unknown', links: [], entries: [{ relPath: 'doer.md', tracked: false, name: 'doer' }] }, roles);
     expect(cls.untracked).toEqual([]);
     expect(cls.tracked).toHaveLength(1);
+  });
+
+  it('probe: git state is norepo only on an explicit not-a-repo answer, else ancestor .git walk -> unknown', () => {
+    const sh = buildShadowProbeCommand(true, '/w/.claude/agents', '/w');
+    expect(sh).toContain('g=unknown');
+    expect(sh).toContain("grep -qi 'not a git repository'; then g=norepo");
+    expect(sh).toContain('while :; do if [ -e "$p/.git" ]; then found=1');
+    expect(sh).not.toMatch(/^g=norepo$/m);
+    const ps = decodePs(buildShadowProbeCommand(false, 'C:\\w\\.claude\\agents', 'C:\\w'));
+    expect(ps).toContain("$g = 'unknown'");
+    expect(ps).toContain("elseif ($o -match 'not a git repository') { $g = 'norepo' }");
+    expect(ps).toContain('Split-Path -Parent $p');
+  });
+
+  it('probe: checks each agents-dir component for a symlink/junction before listing', () => {
+    const sh = buildShadowProbeCommand(true, '/w/.claude/agents', '/w', ['/w/.claude', '/w/.claude/agents']);
+    expect(sh).toContain("if [ -L '/w/.claude' ]; then lnk=1");
+    expect(sh).toContain("if [ -L '/w/.claude/agents' ]; then lnk=1");
+    expect(sh).toContain('if [ "$lnk" = 0 ] && [ -d "$d" ]');
+    const ps = decodePs(buildShadowProbeCommand(false, 'C:\\w\\.claude\\agents', 'C:\\w', ['C:\\w\\.claude', 'C:\\w\\.claude\\agents']));
+    expect(ps).toContain("Get-Item -LiteralPath 'C:\\w\\.claude' -Force");
+    expect(ps).toContain('[IO.FileAttributes]::ReparsePoint');
+    expect(ps).toContain('if (-not $lnk -and (Test-Path -LiteralPath $d -PathType Container))');
+    expect(parseShadowProbeOutput('FLEETSHADOW_GIT\trepo\nFLEETSHADOW_LINK\t/w/.claude/agents\nFLEETSHADOW_DONE\n')!.links).toEqual(['/w/.claude/agents']);
+  });
+
+  it('probe: name: is read only inside the leading frontmatter block', () => {
+    const sh = buildShadowProbeCommand(true, '/w/.claude/agents', '/w');
+    expect(sh).toContain('NR==1{if ($0 !~ /^---[ \\t\\r]*$/) exit; next} /^---[ \\t\\r]*$/{exit}');
+    const ps = decodePs(buildShadowProbeCommand(false, 'C:\\w\\.claude\\agents', 'C:\\w'));
+    expect(ps).toContain("$ls[0] -match '^---\\s*$'");
+    expect(ps).toContain("if ($ls[$k] -match '^---\\s*$') { break }");
+  });
+
+  it('quarantine: failed moves are reported per file (Stop + verify on PowerShell, verify on POSIX)', () => {
+    const ps = decodePs(buildQuarantineCommand(false, true, 'C:\\w\\a', 'C:\\w\\q', 'C:\\w\\q\\T', ['doer.md']));
+    expect(ps).toContain("$ErrorActionPreference = 'Stop'");
+    expect(ps).toContain('Move-Item -LiteralPath \'C:\\w\\a\\doer.md\' -Destination \'C:\\w\\q\\T\\doer.md\' -Force -ErrorAction Stop');
+    expect(ps).toContain("throw 'move not verified'");
+    expect(ps).toContain("catch { [Console]::Out.Write('FLEETMOVEFAIL'");
+    const sh = buildQuarantineCommand(true, false, '/w/a', '/w/q', '/w/q/T', ['doer.md']);
+    expect(sh).toContain("[ ! -e '/w/a/doer.md' ] && [ -e '/w/q/T/doer.md' ]; then printf 'FLEETMOVED");
+    expect(sh).toContain("else printf 'FLEETMOVEFAIL\\t%s\\n' 'doer.md'");
   });
 
   it('reads frontmatter name', () => {
@@ -151,6 +194,31 @@ describe('checkProjectAgentShadows (mocked strategy)', () => {
     expect(r.tracked).toEqual(['doer.md']);
     expect(r.persistentWarning).toContain('tracked in git');
     expect(r.persistentWarning).toContain('doer.md');
+  });
+
+  it('a failed quarantine move lands in notMoved with a persistent warning and is not cached', async () => {
+    const probe = ok('FLEETSHADOW_GIT\trepo\nFLEETSHADOW\tU\tdoer.md\tdoer\nFLEETSHADOW_DONE\n');
+    const qfail = ok('FLEETMOVEFAIL\tdoer.md\nFLEETQUARANTINE_DONE\n');
+    mockExec.mockResolvedValueOnce(probe).mockResolvedValueOnce(qfail).mockResolvedValueOnce(probe).mockResolvedValueOnce(qfail);
+    const m = member();
+    const w1 = await ensureNoProjectAgentShadows(m);
+    expect(w1).toContain('Could not quarantine');
+    expect(shadowCheckCache.size).toBe(0);
+    const r = await checkProjectAgentShadows(m);
+    expect(r.quarantined).toEqual([]);
+    expect(r.notMoved).toEqual(['doer.md']);
+    expect(r.persistentWarning).toContain('doer.md');
+  });
+
+  it('skips (with a warning, no quarantine) when the agents dir is a symlink/junction', async () => {
+    mockExec.mockResolvedValueOnce(ok('FLEETSHADOW_GIT\trepo\nFLEETSHADOW_LINK\t/home/testuser/project/.claude/agents\nFLEETSHADOW_DONE\n'));
+    const r = await checkProjectAgentShadows(member());
+    expect(r.status).toBe('skipped');
+    expect(r.warning).toContain('symlink/junction');
+    expect(mockExec).toHaveBeenCalledTimes(1);
+    const probeCmd = mockExec.mock.calls[0][0];
+    expect(probeCmd).toContain("if [ -L '/home/testuser/project/.claude' ]");
+    expect(probeCmd).toContain("if [ -L '/home/testuser/project/.claude/agents' ]");
   });
 
   it('surfaces a probe failure as a warning and does not cache it', async () => {

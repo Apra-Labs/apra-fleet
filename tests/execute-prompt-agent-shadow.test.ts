@@ -65,8 +65,10 @@ describe('execute_prompt: project-level agent shadow check', () => {
     expect(text).toContain('[WARN] Quarantined 1 untracked project-level agent file(s)');
     // The quarantine must run before the LLM dispatch.
     const qIdx = execCalls.findIndex(c => c.includes('FLEETQUARANTINE_DONE'));
-    const dispatchIdx = execCalls.findIndex(c => c.includes('claude') && !c.includes('FLEETSHADOW') && !c.includes('FLEETQUARANTINE'));
-    if (dispatchIdx >= 0) expect(qIdx).toBeLessThan(dispatchIdx);
+    // First dispatch-side command: the prompt-file write that precedes the CLI run.
+    const dispatchIdx = execCalls.findIndex(c => c.includes('.fleet-task.md'));
+    expect(dispatchIdx).toBeGreaterThanOrEqual(0);
+    expect(qIdx).toBeLessThan(dispatchIdx);
 
     // Second dispatch: cached, no re-probe, no repeat of the one-shot notice.
     execCalls.length = 0;
