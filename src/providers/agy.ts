@@ -755,6 +755,7 @@ export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
   'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
   'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
   'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
+  'member_owner', 'member_git_status',
 ];
 
 export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [

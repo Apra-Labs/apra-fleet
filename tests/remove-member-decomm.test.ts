@@ -252,6 +252,7 @@ describe('removeMember - agy project cleanup', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockReadMemberStatus.mockReturnValue('idle');
+    mockConsultHolds.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => restoreRegistry());

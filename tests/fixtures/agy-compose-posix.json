@@ -308,6 +308,8 @@
           "command(regex:echo .*)",
           "command(grep)",
           "command(regex:grep .*)",
+          "command(curl)",
+          "command(regex:curl .*)",
           "command(gh)",
           "command(regex:gh .*)",
           "command(jq)",

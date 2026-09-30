@@ -167,7 +167,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
   it('--force + registration failure exits 1 with the restart command, before "installed successfully"', async () => {
     const svc = fakeSvc({ register: vi.fn().mockRejectedValue(new Error('Access is denied')) });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
-    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
+    await expect(runInstall(['--skill', 'none', '--workflows', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(errLines.join('\n')).toContain(serviceRestartCommand());
     expect(logLines.join('\n')).not.toContain('installed successfully');
@@ -193,7 +193,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
       register: vi.fn().mockRejectedValue(new Error('Access is denied')),
     });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
-    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
+    await expect(runInstall(['--skill', 'none', '--workflows', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
     expect(process.exit).toHaveBeenCalledWith(1);
     const err = errLines.join('\n');
     expect(err).toContain('apra-fleet start');
@@ -203,7 +203,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
   it('reused task + start ok -> success summary notes reuse, no exit', async () => {
     const svc = fakeSvc({ register: vi.fn().mockResolvedValue('reused') });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
-    await runInstall(['--skill', 'none', '--force', '--transport', 'http']);
+    await runInstall(['--skill', 'none', '--workflows', 'none', '--force', '--transport', 'http']);
     const log = logLines.join('\n');
     expect(log).toContain('registered and running (existing task reused)');
     expect(log).toContain('installed successfully');
@@ -216,7 +216,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
       start: vi.fn().mockRejectedValue(new Error('schtasks /run failed')),
     });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
-    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
+    await expect(runInstall(['--skill', 'none', '--workflows', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
     expect(svc.unregister).not.toHaveBeenCalled();
     expect(logLines.join('\n')).not.toContain('installed successfully');
   });
@@ -228,7 +228,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
     });
     const svc = fakeSvc({ register: vi.fn().mockRejectedValue(new Error('Access is denied')) });
     vi.mocked(getServiceManager).mockResolvedValue(svc);
-    await runInstall(['--skill', 'none', '--force', '--transport', 'http']);
+    await runInstall(['--skill', 'none', '--workflows', 'none', '--force', '--transport', 'http']);
     expect(process.exit).not.toHaveBeenCalled();
     expect(logLines.join('\n')).toContain('installed successfully');
   });

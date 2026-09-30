@@ -108,7 +108,8 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
     await runScript();
 
     const byName = extractSuiteRuns(logSpy);
-    expect(byName.size).toBe(5);
+    expect(byName.size).toBe(6);
+    expect(byName.get('contract:check')).toEqual([npmCmd, 'run', 'contract:check']);
     expect(byName.get('vitest')).toEqual([npmCmd, 'exec', '--', 'vitest', 'run']);
     expect(byName.get('apra-fleet-client')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-client']);
     expect(byName.get('apra-fleet-workflow')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-workflow']);
@@ -123,8 +124,8 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
 
     const { exitSpy } = await runScript();
 
-    // All five suites still ran -- the first failure did not skip the rest.
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(5);
+    // All six suites still ran -- the first failure did not skip the rest.
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(6);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
@@ -133,7 +134,7 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
 
     const { exitSpy } = await runScript();
 
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(5);
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(6);
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
