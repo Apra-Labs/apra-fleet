@@ -104,6 +104,12 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    // Handler resumed after the socket was already destroyed (e.g. server
+    // close): 'end'/'error'/'close' have fired or never will -- settle now.
+    if (req.destroyed) {
+      reject(new Error('request closed before body was read'));
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
@@ -115,6 +121,9 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
       }
     });
     req.on('error', reject);
+    // A socket destroyed mid-body may emit neither 'end' nor 'error';
+    // 'close' after a completed body is a no-op (already resolved).
+    req.on('close', () => { if (!req.complete) reject(new Error('request closed before body was complete')); });
   });
 }
 
@@ -125,7 +134,26 @@ function extractBearer(req: http.IncomingMessage): string | null {
 }
 
 export function createHttpServer(): HttpServerHandle {
-  const server = http.createServer(async (req, res) => {
+  // Request handlers are async and node:http never awaits them: a throw
+  // after any await (DB error, pool torn down mid-request) would otherwise
+  // surface as a process-level unhandled rejection. Every handler runs
+  // inside this boundary (500 + stderr log), and in-flight handlers are
+  // tracked so close() only resolves once they have all settled -- callers
+  // can safely release shared resources (the pool) after close().
+  const inFlight = new Set<Promise<void>>();
+  const server = http.createServer((req, res) => {
+    const p: Promise<void> = handleRequest(req, res)
+      .catch((err: unknown) => {
+        process.stderr.write(`[hub-service] ${req.method} ${req.url} failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+          sendJson(res, 500, { error: 'internal server error' });
+        }
+      })
+      .finally(() => { inFlight.delete(p); });
+    inFlight.add(p);
+  });
+
+  async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const segments = url.pathname.split('/').filter(Boolean);
 
@@ -715,7 +743,7 @@ export function createHttpServer(): HttpServerHandle {
     }
 
     sendJson(res, 404, { error: 'not found' });
-  });
+  }
 
   return {
     server,
@@ -723,8 +751,8 @@ export function createHttpServer(): HttpServerHandle {
       const addr = server.address();
       return typeof addr === 'object' && addr ? addr.port : 0;
     },
-    close(): Promise<void> {
-      return new Promise((resolve, reject) => {
+    async close(): Promise<void> {
+      await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
         // /ws/:id/stream holds a long-lived keep-alive SSE socket open
         // indefinitely; without force-closing live connections here, a
@@ -732,6 +760,10 @@ export function createHttpServer(): HttpServerHandle {
         // for streams that never end on their own.
         server.closeAllConnections();
       });
+      // Destroying a socket does not stop its handler: one parked on an
+      // await (e.g. /ack between authorize and ackRelay) resumes later. Wait
+      // for all of them so nothing touches the pool after close() returns.
+      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
     },
   };
 }
