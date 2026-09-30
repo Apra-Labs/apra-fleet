@@ -17,6 +17,11 @@ describe('findMilestoneViolations', () => {
         expect(v.map((x) => [x.id, x.problem])).toEqual([['a', 'missing'], ['b', 'multiple'], ['c', 'unknown']]);
     });
 
+    it('flags a bead still pointing at a shipped release', () => {
+        const v = findMilestoneViolations([bead('a', ['milestone:v0.4.3'])]);
+        expect(v.map((x) => [x.id, x.problem])).toEqual([['a', 'unknown']]);
+    });
+
     it('--known overrides the default milestone set', () => {
         const v = findMilestoneViolations([bead('a', ['milestone:v0.6']), bead('b', ['milestone:v0.4.4'])], { known: ['v0.6'] });
         expect(v.map((x) => [x.id, x.problem])).toEqual([['b', 'unknown']]);
