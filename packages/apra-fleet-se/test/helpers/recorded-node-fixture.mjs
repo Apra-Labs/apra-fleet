@@ -132,17 +132,42 @@ import { spawnSync } from 'node:child_process';
  * runs and exits 0 -- both properties every existing caller already relied
  * on before this bead, preserved here byte for byte.
  *
+ * THE `name` OPTION (apra-fleet-i9ag.19.14 amended AC A1/A2): the default
+ * basename `recorded-node` is deliberately NOT `node`, so a suite asserting
+ * "the CONFIGURED tier was used" cannot be confused by a coincidental PATH
+ * hit on a file that merely happens to be called `node`. But one caller
+ * needs the opposite: a REAL npm-shaped `bd` shim is a
+ * `#!/usr/bin/env node` script (POSIX) or an npm `.cmd` that prefers a
+ * co-located `node.exe` (Windows), and BOTH of those resolve the interpreter
+ * by the literal name `node` -- so a suite reproducing the PATH-less-service
+ * defect against a real shim must be able to record a node whose basename is
+ * exactly `node`/`node.exe`. That is a property of the FIXTURE (what the file
+ * is called), never of the assertions built on it: the returned path is still
+ * a distinct absolute path from `process.execPath`, still asserted so below,
+ * so `record.execPath === recordedNode && record.execPath !== process.execPath`
+ * keeps distinguishing the CONFIGURED tier from the current-runtime tier
+ * exactly as before. `.exe` is appended on win32 by this fixture, so callers
+ * pass the platform-neutral stem.
+ *
  * @param {string} toolDir - an existing, writable directory (typically a
  *   fresh temp dir) this fixture creates its own `bin/` (and, if needed,
  *   `lib/`) subdirectories under.
+ * @param {{ name?: string }} [options] - `name` is the platform-neutral
+ *   basename stem for the recorded interpreter (default `recorded-node`);
+ *   see the paragraph above for when a caller needs `'node'` instead.
  * @returns {string} the absolute path to the recorded node executable.
  */
-export function buildRecordedNode(toolDir) {
+export function buildRecordedNode(toolDir, options = {}) {
+    const { name = 'recorded-node' } = options;
+    assert.ok(
+        typeof name === 'string' && name.length > 0 && !/[\\/]/.test(name),
+        'buildRecordedNode(): `name` must be a bare basename stem, never a path',
+    );
     const isWin = process.platform === 'win32';
     const realNode = fs.realpathSync(process.execPath);
     const binDir = path.join(toolDir, 'bin');
     fs.mkdirSync(binDir, { recursive: true });
-    const recordedNode = path.join(binDir, isWin ? 'recorded-node.exe' : 'recorded-node');
+    const recordedNode = path.join(binDir, isWin ? `${name}.exe` : name);
 
     try {
         fs.linkSync(realNode, recordedNode);
