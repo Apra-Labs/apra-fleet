@@ -63,6 +63,26 @@ describe.skipIf(!hasGit())('agent-shadow real exec on host OS', () => {
     expect(status).not.toContain('agents-shadowed-by-fleet');
   }, 60_000);
 
+  it('does not descend into a junction/symlinked subdir inside the agents dir', async () => {
+    const wf = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-shadow-nested-'));
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-shadow-nested-target-'));
+    try {
+      fs.writeFileSync(path.join(target, 'doer.md'), '---\nname: doer\n---\nmanaged\n');
+      fs.mkdirSync(path.join(wf, '.claude', 'agents'), { recursive: true });
+      fs.symlinkSync(target, path.join(wf, '.claude', 'agents', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+      const r = await checkProjectAgentShadows(makeTestLocalAgent({ friendlyName: 'real-nested-link', workFolder: wf }));
+      expect(r.status).toBe('clean');
+      expect(r.quarantined).toEqual([]);
+      expect(fs.existsSync(path.join(target, 'doer.md'))).toBe(true);
+    } finally {
+      // Remove the link itself first so cleanup never walks into the target.
+      const link = path.join(wf, '.claude', 'agents', 'linked');
+      try { fs.unlinkSync(link); } catch { try { fs.rmdirSync(link); } catch { /* ignore */ } }
+      fs.rmSync(wf, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('skips a work folder whose agents dir is a symlink/junction (nothing moved)', async () => {
     const wf = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-shadow-link-'));
     const target = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-shadow-target-'));

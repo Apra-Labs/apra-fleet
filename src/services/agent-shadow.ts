@@ -9,7 +9,8 @@
  *
  * Before dispatch (and on register_member/update_member) this module lists the
  * project-level agents dir on the member, finds files that collide with a
- * managed role (same basename, or same frontmatter `name:`), and:
+ * managed role (same frontmatter `name:` -- the CLI's agent identity; the
+ * basename is only a fallback when a file has no `name:`), and:
  *   - untracked (not in the git index, or the work folder is not a git repo):
  *     QUARANTINES them into <workFolder>/.claude/agents-shadowed-by-fleet/<stamp>/
  *     (outside the dir the CLI loads agents from; never deleted) with a
@@ -167,7 +168,8 @@ export function buildShadowProbeCommand(posix: boolean, agentsDir: string, workF
       'lnk=0',
       ...linkPaths.map(lp => `if [ -L ${escapeShellArg(lp)} ]; then lnk=1; printf 'FLEETSHADOW_LINK\\t%s\\n' ${escapeShellArg(lp)}; fi`),
       'if [ "$lnk" = 0 ] && [ -d "$d" ]; then',
-      "  find \"$d\" -type f -name '*.md' 2>/dev/null | while IFS= read -r f; do",
+      // -P: never follow symlinks (a linked subdir could lead into the managed user-level dir).
+      "  find -P \"$d\" -type f -name '*.md' 2>/dev/null | while IFS= read -r f; do",
       // `name:` only inside the leading --- frontmatter block.
       "    n=$(awk 'NR>40{exit} NR==1{if ($0 !~ /^---[ \\t\\r]*$/) exit; next} /^---[ \\t\\r]*$/{exit} /^name:/{sub(/^name:[ \\t]*/,\"\"); print; exit}' \"$f\" 2>/dev/null)",
       '    t=U',
@@ -198,7 +200,17 @@ export function buildShadowProbeCommand(posix: boolean, agentsDir: string, workF
     ...linkPaths.map(lp => `$i = Get-Item -LiteralPath ${escapePowerShellArg(lp)} -Force -ErrorAction SilentlyContinue; if ($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $lnk = $true; [Console]::Out.Write('FLEETSHADOW_LINK' + $TAB + ${escapePowerShellArg(lp)} + $LF) }`),
     'if (-not $lnk -and (Test-Path -LiteralPath $d -PathType Container)) {',
     "  $root = (Get-Item -LiteralPath $d).FullName.TrimEnd('\\', '/')",
-    "  Get-ChildItem -LiteralPath $d -Recurse -File -Filter '*.md' -ErrorAction SilentlyContinue | ForEach-Object {",
+    // Manual walk: Get-ChildItem -Recurse descends into nested junctions/symlinked
+    // dirs, which could lead into the managed user-level dir. Skip reparse-point dirs.
+    '  $mds = New-Object System.Collections.ArrayList; $stack = New-Object System.Collections.Stack; $stack.Push($d)',
+    '  while ($stack.Count -gt 0) {',
+    '    $cur = $stack.Pop()',
+    "    foreach ($c in @(Get-ChildItem -LiteralPath $cur -ErrorAction SilentlyContinue)) {",
+    "      if ($c.PSIsContainer) { if (-not ($c.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $stack.Push($c.FullName) } }",
+    "      elseif ($c.Name -like '*.md') { [void]$mds.Add($c) }",
+    '    }',
+    '  }',
+    '  $mds | ForEach-Object {',
     '    $f = $_.FullName',
     "    $rel = $f.Substring($root.Length).TrimStart('\\', '/') -replace '\\\\', '/'",
     "    $n = ''",
@@ -248,8 +260,10 @@ function isSafeRelPath(rel: string): boolean {
 }
 
 /**
- * A file shadows a managed role when its basename or frontmatter name collides
- * with the managed set (case-insensitive: Windows/macOS filesystems are).
+ * A file shadows a managed role when its frontmatter `name:` equals a managed
+ * role name: the CLI identifies subagents by that name, not by filename, so
+ * reviewer.md with `name: code-reviewer` shadows nothing. Only a file with no
+ * `name:` falls back to its basename. Case-insensitive.
  * An 'unknown' git state (e.g. git failed inside a real repo) is treated as
  * tracked -- never move a file we cannot prove is untracked.
  */
@@ -258,7 +272,7 @@ export function classifyShadows(probe: ProbeOutput, roles: ManagedRoles): Shadow
   const tracked: ProjectAgentEntry[] = [];
   for (const e of probe.entries) {
     const base = e.relPath.split('/').pop()!.toLowerCase();
-    const collides = roles.basenames.has(base) || (e.name !== '' && roles.names.has(e.name.toLowerCase()));
+    const collides = e.name ? roles.names.has(e.name.toLowerCase()) : roles.basenames.has(base);
     if (!collides) continue;
     if (e.tracked || probe.gitState === 'unknown') tracked.push(e);
     else untracked.push(e);
@@ -416,6 +430,9 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
   const persistent: string[] = [];
   const oneShot: string[] = [];
 
+  // Unknown home: the "shadows" may be fleet's own user-level files (work
+  // folder == home). Never cache such a result; retry once the home resolves.
+  if (home === null && (cls.untracked.length > 0 || cls.tracked.length > 0)) result.retry = true;
   if (cls.untracked.length > 0 && home === null) {
     // Without the member's home we cannot rule out that this dir IS the
     // user-level managed dir -- report only, never move.
@@ -457,7 +474,7 @@ export async function checkProjectAgentShadows(agent: Agent, now: Date = new Dat
 
   if (cls.tracked.length > 0) {
     const why = probe.gitState === 'unknown' ? 'could not be verified as untracked (git state unknown)' : 'are tracked in git';
-    persistent.push(`Project-level agent file(s) on "${agent.friendlyName}" shadow fleet's managed role prompts and ${why}, so fleet left them in place: ${describeFiles(cls.tracked)} in ${where}. The member's CLI loads these INSTEAD of the role prompts fleet delivers -- remove or rename them in the repo.`);
+    persistent.push(`Project-level agent file(s) on "${agent.friendlyName}" shadow fleet's managed role prompts and ${why}, so fleet left them in place: ${describeFiles(cls.tracked)} in ${where}. The member's CLI loads these INSTEAD of the role prompts fleet delivers, because their frontmatter name: matches a managed role (renaming the file does not help) -- remove them from the repo or change their name: to one fleet does not manage.`);
   }
 
   if (cls.untracked.length > 0 || cls.tracked.length > 0) result.status = 'shadowed';

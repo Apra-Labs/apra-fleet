@@ -50,7 +50,7 @@ describe('agent-shadow pure helpers', () => {
     const cmd = buildShadowProbeCommand(true, "/w/it's/.claude/agents", "/w/it's");
     expect(cmd).toContain("d='/w/it'\\''s/.claude/agents'");
     expect(cmd).toContain("w='/w/it'\\''s'");
-    expect(cmd).toContain("find \"$d\" -type f -name '*.md'");
+    expect(cmd).toContain("find -P \"$d\" -type f -name '*.md'");
     expect(cmd).toContain('ls-files --error-unmatch');
     expect(cmd).toContain('FLEETSHADOW_DONE');
     expect(cmd).not.toContain('powershell');
@@ -62,7 +62,8 @@ describe('agent-shadow pure helpers', () => {
     const ps = decodePs(cmd);
     expect(ps).toContain("$d = 'C:\\w\\it''s\\.claude\\agents'");
     expect(ps).toContain("$w = 'C:\\w\\it''s'");
-    expect(ps).toContain('Get-ChildItem -LiteralPath $d -Recurse -File');
+    expect(ps).toContain('$c.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $stack.Push($c.FullName) }');
+    expect(ps).not.toContain('-Recurse');
     expect(ps).toContain("$ErrorActionPreference = 'Continue'");
     expect(ps).toContain('FLEETSHADOW_DONE');
   });
@@ -88,7 +89,17 @@ describe('agent-shadow pure helpers', () => {
     expect(parseShadowProbeOutput('{"result":"ok"}')).toBeNull();
   });
 
-  it('classifies by basename or frontmatter name; ignores non-colliding files; tracked vs untracked', () => {
+  it('basename matches but frontmatter name differs -> not a shadow (the CLI keys agents by name:)', () => {
+    const roles = managedRolesFrom([{ relPath: 'reviewer.md', content: '---\nname: reviewer\n---\n' }]);
+    const cls = classifyShadows({
+      gitState: 'repo', links: [],
+      entries: [{ relPath: 'reviewer.md', tracked: false, name: 'code-reviewer' }],
+    }, roles);
+    expect(cls.untracked).toEqual([]);
+    expect(cls.tracked).toEqual([]);
+  });
+
+  it('classifies by name (basename only when no name:); ignores non-colliding files; tracked vs untracked', () => {
     const roles = managedRolesFrom([
       { relPath: 'doer.md', content: '---\nname: doer\n---\n' },
       { relPath: 'planner.md', content: '---\nname: planner\n---\n' },
@@ -98,7 +109,7 @@ describe('agent-shadow pure helpers', () => {
     const cls = classifyShadows({
       gitState: 'repo', links: [],
       entries: [
-        { relPath: 'Doer.md', tracked: false, name: '' },           // basename match (case-insensitive)
+        { relPath: 'Doer.md', tracked: false, name: '' },           // no name: -> basename fallback (case-insensitive)
         { relPath: 'my-builder.md', tracked: true, name: 'planner' }, // frontmatter-name match, tracked
         { relPath: 'custom.md', tracked: false, name: 'custom' },   // non-colliding
       ],
@@ -193,6 +204,7 @@ describe('checkProjectAgentShadows (mocked strategy)', () => {
     expect(mockExec).toHaveBeenCalledTimes(1);
     expect(r.tracked).toEqual(['doer.md']);
     expect(r.persistentWarning).toContain('tracked in git');
+    expect(r.persistentWarning).toContain('renaming the file does not help');
     expect(r.persistentWarning).toContain('doer.md');
   });
 
@@ -219,6 +231,16 @@ describe('checkProjectAgentShadows (mocked strategy)', () => {
     const probeCmd = mockExec.mock.calls[0][0];
     expect(probeCmd).toContain("if [ -L '/home/testuser/project/.claude' ]");
     expect(probeCmd).toContain("if [ -L '/home/testuser/project/.claude/agents' ]");
+  });
+
+  it('unknown member home: shadows are reported, never moved, and the result is not cached', async () => {
+    const mh = await import('../src/services/member-home.js');
+    vi.mocked(mh.getMemberHomeDir).mockResolvedValueOnce(null);
+    mockExec.mockResolvedValueOnce(ok('FLEETSHADOW_GIT\trepo\nFLEETSHADOW\tU\tdoer.md\tdoer\nFLEETSHADOW_DONE\n'));
+    const w = await ensureNoProjectAgentShadows(member());
+    expect(w).toContain('not quarantined (member home dir could not be verified)');
+    expect(mockExec).toHaveBeenCalledTimes(1);
+    expect(shadowCheckCache.size).toBe(0);
   });
 
   it('surfaces a probe failure as a warning and does not cache it', async () => {
