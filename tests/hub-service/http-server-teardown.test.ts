@@ -9,7 +9,7 @@
  *
  * A gated pool holds the first query so the race window is forced open.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { newDb } from 'pg-mem';
 import fs from 'node:fs';
@@ -150,5 +150,35 @@ describe('hub http-server: late in-flight request vs teardown', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(unhandled).toEqual([]);
     req.destroy();
+  });
+
+  it('close() stops waiting after drainTimeoutMs when a handler is stuck, logs it, and the late handler stays contained', async () => {
+    const bounded = createHttpServer({ drainTimeoutMs: 100 });
+    const boundedPort = await listen(bounded, 0, '127.0.0.1');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { token } = sign({ sub: 'mach-a', ws: 'ws-a', role: 'spoke' }, SECRET);
+      gated.arm();
+      const { done, req } = postAck(boundedPort, token);
+      done.catch(() => {});
+      await gated.parked; // stuck "DB query": gate is never released before close()
+
+      const started = Date.now();
+      await bounded.close();
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(90);
+      expect(elapsed).toBeLessThan(2000);
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toMatch(/close: 1 request handler\(s\) still in flight after 100ms/);
+
+      // Shutdown proceeded; the pool goes away, then the stuck query returns.
+      // The resumed handler hits getPool() and must not escape.
+      await closePool();
+      gated.release();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).toEqual([]);
+      req.destroy();
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

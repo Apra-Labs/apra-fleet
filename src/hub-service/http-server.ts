@@ -133,13 +133,21 @@ function extractBearer(req: http.IncomingMessage): string | null {
   return auth.slice(7);
 }
 
-export function createHttpServer(): HttpServerHandle {
+export interface HttpServerOptions {
+  /** Max time close() waits for in-flight request handlers (default 5000ms). */
+  drainTimeoutMs?: number;
+}
+
+const DEFAULT_DRAIN_TIMEOUT_MS = 5000;
+
+export function createHttpServer(options: HttpServerOptions = {}): HttpServerHandle {
+  const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   // Request handlers are async and node:http never awaits them: a throw
   // after any await (DB error, pool torn down mid-request) would otherwise
   // surface as a process-level unhandled rejection. Every handler runs
   // inside this boundary (500 + stderr log), and in-flight handlers are
-  // tracked so close() only resolves once they have all settled -- callers
-  // can safely release shared resources (the pool) after close().
+  // tracked so close() waits (up to drainTimeoutMs) for them to settle --
+  // callers can safely release shared resources (the pool) after close().
   const inFlight = new Set<Promise<void>>();
   const server = http.createServer((req, res) => {
     const p: Promise<void> = handleRequest(req, res)
@@ -763,7 +771,22 @@ export function createHttpServer(): HttpServerHandle {
       // Destroying a socket does not stop its handler: one parked on an
       // await (e.g. /ack between authorize and ackRelay) resumes later. Wait
       // for all of them so nothing touches the pool after close() returns.
-      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+      // Bounded: a stuck DB query must not hang shutdown. Handlers still
+      // running after the bound stay contained by the error boundary above.
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = new Promise<true>((resolve) => {
+        timer = setTimeout(() => resolve(true), drainTimeoutMs);
+        timer.unref();
+      });
+      const drained = (async () => {
+        while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+        return false as const;
+      })();
+      const expired = await Promise.race([drained, timedOut]);
+      clearTimeout(timer);
+      if (expired && inFlight.size > 0) {
+        process.stderr.write(`[hub-service] close: ${inFlight.size} request handler(s) still in flight after ${drainTimeoutMs}ms; proceeding with shutdown\n`);
+      }
     },
   };
 }
