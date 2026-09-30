@@ -2,22 +2,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { checkRunningInstance } from '../services/singleton.js';
-import { SERVER_INFO_PATH, FLEET_DIR } from '../paths.js';
+import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isPidAlive, postShutdown } from '../utils/process-utils.js';
 
 export async function runStop(_args: string[]): Promise<void> {
-  const svcMgr = await getServiceManager();
-  if (await svcMgr.isInstalled()) {
-    await svcMgr.stop();
-    console.log('Server stopped.');
-    return;
+  // A sandboxed instance (non-default port or data dir) must never touch the
+  // machine-global service registration -- symmetric with runStart(). It
+  // stops only its own server via its data dir's server.json.
+  const sandboxed = isNonDefaultInstance();
+  if (sandboxed) {
+    console.log('Non-default instance: stopping only this instance (registered OS services are not touched).');
+  } else {
+    const svcMgr = await getServiceManager();
+    if (await svcMgr.isInstalled()) {
+      await svcMgr.stop();
+      console.log('Server stopped.');
+      return;
+    }
   }
 
   const instance = await checkRunningInstance();
   if (!instance.running) {
     console.log('Server is not running.');
     return;
+  }
+
+  // Port-only override shares the default data dir, so server.json may
+  // describe another instance (e.g. production) -- refuse unless it is ours.
+  if (sandboxed && !process.env.APRA_FLEET_DATA_DIR) {
+    const expectedPort = parseInt(process.env.APRA_FLEET_PORT ?? '', 10) || 7523;
+    let port = NaN;
+    try { port = Number(new URL(instance.url).port); } catch {}
+    if (port !== expectedPort) {
+      console.log(`Server is not running on port ${expectedPort} (found ${instance.url}; not stopping it).`);
+      return;
+    }
   }
 
   const { pid, url } = instance;
