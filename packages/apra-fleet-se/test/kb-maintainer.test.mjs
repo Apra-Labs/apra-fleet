@@ -8,6 +8,7 @@ import {
     ROLE_KB_MAINTAINER,
     KB_MAINTAINER_RULES,
 } from '../fleet-sprint/kb-maintainer.mjs';
+import { computeBranchEnsureMembers } from '../fleet-sprint/runner.js';
 import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
 
 // Unit tests for per-repository kb_maintainer selection. Every dependency is a
@@ -195,4 +196,53 @@ test('sprint-args: kb_maintainer is an accepted roleMap key (any casing) naming 
 test('sprint-args: kb_maintainer naming a non-member or a non-array is rejected', () => {
     assert.throws(() => validateArgs({ ...BASE_ARGS, roleMap: { kb_maintainer: ['zz'] } }), /kb_maintainer.*"zz" not in members/);
     assert.throws(() => validateArgs({ ...BASE_ARGS, roleMap: { kb_maintainer: 'a' } }), /kb_maintainer: must be an array/);
+});
+
+// --- orchestrator is never a maintainer -----------------------------------
+
+test('orchestrator member is never selected nor listed as a candidate (every rule)', async () => {
+    const roleMap = { orchestrator: ['orch'], doer: ['dev'], reviewer: ['rev'] };
+    const members = ['orch', 'dev', 'rev'];
+    const repoOf = new Map(members.map((m) => [m, A]));
+    const cands = orderMaintainerCandidates({ repo: A, members, repoOf, roleMap });
+    assert.ok(cands.length > 0);
+    assert.ok(cands.every((c) => c.member !== 'orch'));
+    const { selector } = makeSelector({ members, origins: { orch: REPO_A, dev: REPO_A, rev: REPO_A }, roleMap });
+    await selector.selectAll();
+    assert.ok(['dev', 'rev'].includes(selector.getKbMaintainer(REPO_A).member));
+});
+
+test('roleMap.kb_maintainer naming the orchestrator is ignored with a WARNING naming it', async () => {
+    const { selector, logs } = makeSelector({
+        members: ['orch', 'dev'],
+        origins: { orch: REPO_A, dev: REPO_A },
+        roleMap: { orchestrator: ['orch'], doer: ['dev'], kb_maintainer: ['orch'] },
+    });
+    await selector.selectAll();
+    assert.equal(selector.getKbMaintainer(REPO_A).member, 'dev');
+    assert.ok(logs.some((l) => /WARNING/.test(l) && l.includes("'orch'") && /orchestrator/.test(l)));
+});
+
+test('orchestrator is the only checkout of a repository: no maintainer and a distinct WARNING', async () => {
+    const { selector, logs } = makeSelector({
+        members: ['orch', 'dev'],
+        origins: { orch: REPO_A, dev: REPO_B },
+        roleMap: { orchestrator: ['orch'], doer: ['dev'] },
+    });
+    await selector.selectAll();
+    assert.equal(selector.maintainers().get(A).member, null);
+    const line = logs.find((l) => l.includes(A) && /WARNING/.test(l));
+    assert.ok(line, 'warning logged');
+    assert.match(line, /orchestrator/);
+    assert.doesNotMatch(line, /failed its probe/);
+});
+
+test('computeBranchEnsureMembers never adds an orchestrator via the maintainer path', () => {
+    const roles = { doer: ['dev'] };
+    const get = (r) => roles[r] || [];
+    const stub = { maintainers: () => new Map([[A, { member: 'orch' }], [B, { member: 'rev' }]]) };
+    assert.deepEqual(computeBranchEnsureMembers(get, stub, ['orch']), ['dev', 'rev']);
+    // an orchestrator also mapped to a dispatch role is still included through it
+    const both = (r) => (r === 'doer' ? ['orch'] : []);
+    assert.deepEqual(computeBranchEnsureMembers(both, stub, ['orch']), ['orch', 'rev']);
 });
