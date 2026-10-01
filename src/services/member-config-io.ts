@@ -170,6 +170,13 @@ export async function readMemberFile(exec: MemberExecFn, absPath: string, posix:
   return r.stdout ?? '';
 }
 
+/** PowerShell existence probe whose exit code reflects the result (a bare
+ *  Test-Path prints True/False and exits 0 either way). Single-quoted literal. */
+export function memberFileExistsPwshCommand(absPath: string): string {
+  const p = absPath.replace(/\//g, '\\').replace(/'/g, "''");
+  return `if (Test-Path -LiteralPath '${p}') { exit 0 } else { exit 1 }`;
+}
+
 /**
  * True when the member-side file at `absPath` exists (not a directory).
  * Handles all exit codes gracefully: missing file, unreadable file, etc. all
@@ -180,7 +187,7 @@ export async function memberFileExists(
   absPath: string,
   posix: boolean,
 ): Promise<boolean> {
-  const cmd = posix ? `test -e "${absPath}"` : `Test-Path -LiteralPath "${absPath.replace(/\//g, '\\')}"`;
+  const cmd = posix ? `test -e "${absPath}"` : memberFileExistsPwshCommand(absPath);
   const r = await exec(cmd, FS_OP_TIMEOUT_MS);
   return r.code === 0;
 }
