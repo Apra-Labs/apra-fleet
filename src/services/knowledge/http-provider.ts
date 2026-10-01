@@ -7,6 +7,7 @@ import type {
   KBEntry,
   KBEntryInput,
   QueryOptions,
+  EntryTrustFilter,
   KBResult,
   FileContextResult,
   PrimeOptions,
@@ -306,6 +307,8 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.l1_only) params.l1_only = 'true';
     if (opts.include_stale) params.include_stale = 'true';
     if (opts.include_superseded) params.include_superseded = 'true';
+    if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
+    if (opts.exclude_disputed) params.exclude_disputed = 'true';
 
     try {
       const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
@@ -394,12 +397,12 @@ export class HttpKbProvider implements MemoryProvider {
   // must not become an unwritten exemption from strict mode, which exists
   // precisely to stop a configured-http provider from silently answering a
   // read out of the local fallback while the remote is unreachable.
-  async relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]> {
+  async relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]> {
     if (this.strict) {
       await this.ensureReachable();
     }
     try {
-      return await this.fallback.relatedClaims(ids, limit);
+      return await this.fallback.relatedClaims(ids, limit, filter);
     } catch {
       return [];
     }

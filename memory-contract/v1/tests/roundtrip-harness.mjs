@@ -154,6 +154,23 @@ function assertConfidenceClamped(parsed) {
     : `expected parsed.confidence_clamped === true, got ${JSON.stringify(parsed?.confidence_clamped)}`;
 }
 
+// kb_query trust filters (spec section 4.6): with confidence:['CONFIRMED'] and
+// exclude_disputed, EVERY entry in the response -- l1, l2 and related_claims --
+// must be CONFIRMED and outside any contradiction, and the promoted FOO entry
+// must still come back (a filter that returns nothing would also pass the
+// first half).
+function assertConfirmedOnly(parsed, ctx) {
+  const entries = [...(parsed?.l1_results ?? []), ...(parsed?.l2_expanded ?? []), ...(parsed?.related_claims ?? [])];
+  for (const e of entries) {
+    if (e?.confidence !== 'CONFIRMED') return `entry ${e?.id} has confidence ${JSON.stringify(e?.confidence)}, expected CONFIRMED only`;
+    if (e?.flagged_for_review || e?.contradiction_of) return `entry ${e?.id} is disputed but exclude_disputed was set`;
+  }
+  const fooId = ctx.ids.get('FOO')?.live;
+  return (parsed?.l1_results ?? []).some((e) => e?.id === fooId)
+    ? null
+    : `the promoted entry ${fooId} is missing from the CONFIRMED-only l1_results`;
+}
+
 function assertDirectiveQuarantined(parsed, ctx) {
   const liveId = ctx.ids.get('DIRECTIVE')?.live;
   const entry = (parsed?.results ?? []).find((r) => r?.id === liveId);
@@ -182,6 +199,7 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
+  { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
   // below reads it back through the path anchor, no derive needed.

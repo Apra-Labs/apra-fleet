@@ -93,11 +93,11 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: this was the 32-fixture population the bead's own ajv
-    // sweep measured (48 committed fixtures total, 16 carry `error` instead).
-    // apra-fleet-i9ag.15.17 added kb_stats/edge-empty-promote-ratio-null, a
-    // response fixture, so the response population is now 33 (49 total).
-    expect(keys.length).toBe(33);
+    // Non-vacuous: the 32-fixture population the original ajv sweep measured
+    // (48 committed fixtures total, 16 carry `error` instead), plus
+    // kb_stats/edge-empty-promote-ratio-null (apra-fleet-i9ag.15.17) and
+    // kb_query/happy-confirmed-only (trust filters): 34 responses, 50 total.
+    expect(keys.length).toBe(34);
     expect(failures).toEqual([]);
   });
 
@@ -124,7 +124,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(33);
+    expect(keys.length).toBe(34);
     expect(failures).toEqual([]);
   });
 

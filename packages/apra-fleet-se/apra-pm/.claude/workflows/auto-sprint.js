@@ -2003,7 +2003,7 @@ const PLANNER_SCHEMA = {
     },
     "kb_captures": {
       "type": "array",
-      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
       "items": {
         "type": "object",
         "required": [
@@ -2170,6 +2170,8 @@ const KB_PRIMER_SCHEMA = {
           title:        { type: 'string' },
           summary:      { type: 'string' },
           confidence:   { type: 'string' },
+          flagged_for_review: { type: 'boolean' },
+          contradiction_of:   { type: ['string', 'null'] },
           symbols:      { type: 'array', items: { type: 'string' } },
           source_files: { type: 'array', items: { type: 'string' } },
           type:         { type: 'string' },
@@ -2203,7 +2205,7 @@ async function primeKB(repoPath) {
       `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with:\n` +
       `  repo_path: "${repoPath}"\n` +
       `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
-      `  For each entry return: title, summary, confidence, symbols, source_files, type.\n` +
+      `  For each entry return: title, summary, confidence, flagged_for_review, contradiction_of, symbols, source_files, type.\n` +
       `  Do NOT return the content field.\n` +
       `  Set sessionWarm from the result. Set imported to true if you ran kb_import successfully.\n\n` +
       `If ToolSearch returns no KB tools, return {entries:[], sessionWarm:false, imported:false}.\n` +
@@ -2369,15 +2371,30 @@ async function runKbWork(repoPath, role, result) {
 
 const KB_CHAR_BUDGET = 4000;
 
+// Only CONFIRMED entries outside any unresolved contradiction are injected --
+// the same rule as the fleet-sprint engine's KNOWLEDGE BANK block. INFERRED and
+// UNVERIFIED entries are unreviewed captures, and a flagged / contradiction_of
+// entry is one the KB itself marks as disputed. A missing tier is NOT treated as
+// CONFIRMED: the primer is an LLM relay, so an omitted field proves nothing.
+function isInjectableKbEntry(e) {
+  return Boolean(e)
+    && String(e.confidence || '').toUpperCase() === 'CONFIRMED'
+    && !e.flagged_for_review
+    && !e.contradiction_of;
+}
+
 function buildKBContext(kbResult) {
-  if (!kbResult || !Array.isArray(kbResult.entries) || kbResult.entries.length === 0) {
+  const entries = (kbResult && Array.isArray(kbResult.entries))
+    ? kbResult.entries.filter(isInjectableKbEntry)
+    : [];
+  if (entries.length === 0) {
     return '';
   }
-  let block = `\n--- Project Knowledge Bank (${kbResult.entries.length} entries) ---\n` +
-    `Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.\n\n`;
+  let block = `\n--- Project Knowledge Bank (${entries.length} entries) ---\n` +
+    `Only CONFIRMED entries are included. If one contradicts what you observe in the code now, the code wins.\n\n`;
   let len = block.length;
-  for (const e of kbResult.entries) {
-    const line = `- [${(e.confidence || 'CONFIRMED').toUpperCase()}] ${e.title}: ${e.summary}` +
+  for (const e of entries) {
+    const line = `- [CONFIRMED] ${e.title}: ${e.summary}` +
       (e.symbols && e.symbols.length ? ` (symbols: ${e.symbols.join(', ')})` : '') + '\n';
     if (len + line.length > KB_CHAR_BUDGET) break;
     block += line;

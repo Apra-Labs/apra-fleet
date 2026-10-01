@@ -208,8 +208,9 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    // apra-fleet-i9ag.15.17 added kb_stats/edge-empty-promote-ratio-null (48 -> 49).
-    expect(report.steps.length).toBe(49);
+    // 48 + kb_stats/edge-empty-promote-ratio-null (apra-fleet-i9ag.15.17)
+    // + kb_query/happy-confirmed-only (trust filters) = 50.
+    expect(report.steps.length).toBe(50);
   });
 
   it('covers all 23 inventoried tools', () => {

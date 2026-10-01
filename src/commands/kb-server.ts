@@ -9,7 +9,7 @@ import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
-import type { KBEntryInput } from '../services/knowledge/types.js';
+import type { KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
 // that tests/knowledge/kb-server.test.ts imports and calls IN-PROCESS. The
@@ -192,8 +192,12 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const type = url.searchParams.get('type') as any || undefined;
         const limit = url.searchParams.has('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined;
         const l1_only = url.searchParams.get('l1_only') === 'true';
+        const confidence = url.searchParams.get('confidence')
+          ?.split(',')
+          .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
+        const exclude_disputed = url.searchParams.get('exclude_disputed') === 'true';
 
-        const result = await provider.query({ query, type, limit, l1_only });
+        const result = await provider.query({ query, type, limit, l1_only, confidence, exclude_disputed });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }
 
