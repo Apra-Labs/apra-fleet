@@ -3,8 +3,6 @@
   "case": "refusal-basis-missing-files",
   "kind": "refusal",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "type": "knowledge",
     "title": "An entry citing a file that does not exist",
     "summary": "This capture cites a source file absent from the worktree.",

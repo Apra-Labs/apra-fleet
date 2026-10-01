@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
@@ -20,15 +20,11 @@ import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 // discretion: the export TOOL commits with its own dedicated identity
 // (pm-kb), so no role's "no git operations" rule is violated by this
 // automatic side effect.
-// F4 (T1.6): repo path resolution precedence -- (1) explicit repo_path input,
-// validated (must exist and be a directory) or kb_export refuses with a clear
-// error; (2) validated session context -- this process's own working
-// directory, used ONLY when repo_path is omitted, and put through the exact
-// same existence + isDirectory check as an explicit path, never trusted
-// blindly; (3) neither validates -- kb_export refuses with a clear error
-// rather than silently writing relative to an arbitrary path. There is no
-// bare process.cwd() fallback: the fallback tier is validated the same way
-// explicit input is.
+// kb (self): the repo written to is the calling session's own folder -- the
+// member's registered work folder for a member session, the server's working
+// folder otherwise (src/services/knowledge/kb-self.ts). It is validated (must
+// exist, be a git repo with an origin remote) or kb_export refuses with a
+// typed E-SELF error; it is never a scope argument.
 // T3.3 (F9a, D8): scope param -- 'project' (default, unchanged behavior) reads
 // the PROJECT KB and writes .fleet/kb-canonical.json (as before); 'global'
 // reads the GLOBAL KB (providers.global -- the shared kb.sqlite at
@@ -38,11 +34,8 @@ import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 // same asciiSafeStringify + deterministic id-sorted output, and the same
 // auto-commit behavior (T2.3) applies to the global file too.
 export const kbExportSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
   scope: z.enum(['project', 'global']).optional()
-    .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the given repo path (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
+    .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session\'s own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
@@ -149,16 +142,14 @@ function asciiSafeStringify(value: unknown): string {
   return out;
 }
 
-// F4 (T1.6): shared validation for both precedence tiers -- an explicit
-// repo_path (tier 1) and the session working directory fallback (tier 2, used
-// only when repo_path is omitted) go through the identical existence +
-// isDirectory check. Neither tier is ever trusted without it.
-function resolveRepoPath(explicit?: string): string {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
-    throw new Error('kb_export: repo_path does not exist or is not a directory: ' + candidate);
+// The resolved anchor folder must exist on THIS host: kb_export writes the
+// bible file there, so an anchor naming a folder on another host (a remote
+// member's work folder) has nothing meaningful to do and must refuse.
+function requireLocalFolder(folder: string): string {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
+    throw new Error('kb_export: repo folder does not exist or is not a directory on this host: ' + folder);
   }
-  return candidate;
+  return folder;
 }
 
 // T2.3 (F6a, D5 AMENDED): switch for the auto-commit below, read from the
@@ -316,26 +307,21 @@ function maybeAutoCommitBible(
   }
 }
 
-export async function kbExport(input: KbExportInput): Promise<string> {
-  // apra-fleet-b4g.7: this is the third resolveRepoPath site, and it stays a
-  // hard failure rather than adopting kb_session_prime/kb_stats' pass-verbatim
-  // rule. Those two only READ through the anchor, so an unreachable remote path
-  // can be carried honestly and suppressed by SqliteProvider.anchorIsMissing().
-  // kb_export WRITES <repo_path>/.fleet/kb-canonical.json and git-commits it, so
-  // an unreachable path has no meaningful behaviour left -- it must not proceed.
-  // What matters for the shared anchor policy is that it never degrades to the
-  // fleet server's process.cwd(): a supplied-but-invalid repo_path throws here,
-  // before getKbProviders is reached, so no provider is ever anchored at the
-  // server's own working directory (pinned in kb-anchor-never-cwd.test.ts).
-  const repoPath = resolveRepoPath(input.repo_path);
+export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise<string> {
+  // kb_export WRITES <folder>/.fleet/kb-canonical.json and git-commits it, so
+  // an unreachable folder has no meaningful behaviour left -- it must not
+  // proceed. An invalid anchor throws here, before getKbProviders is reached,
+  // so no provider is ever anchored somewhere the caller did not mean.
+  const resolved = resolveKbAnchor(anchor);
+  const repoPath = requireLocalFolder(resolved.folder);
   const scope = input.scope ?? 'project';
 
   // Read from the SAME repo we are about to write the bible into. Resolving the
   // source from process cwd while writing to repoPath is how repo A's entries
   // used to end up serialised into repo B's committed bible.
-  const providers = await getKbProviders(repoPath, input.repo_remote_url);
+  const providers = await getKbProviders(repoPath, resolved.remoteUrl);
   const source = scope === 'global' ? providers.global : requireSqliteProject(providers.project, 'kb_export');
-  const entries = await source.list({ confidence: 'CONFIRMED' });
+  const entries = await source.list({ confidence: ['CONFIRMED'] });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries

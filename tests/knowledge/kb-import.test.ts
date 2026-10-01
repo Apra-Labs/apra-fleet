@@ -114,7 +114,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'conf-1', type: 'knowledge', symbols: ['confSym'], confidence: 'CONFIRMED' }),
     ]);
 
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(report.imported).toBe(1);
 
     const imported = rawRow('conf-1');
@@ -144,7 +144,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       }),
     ]);
 
-    await kbImport({ repo: tmpRepo, path: p });
+    await kbImport({ path: p }, { folder: tmpRepo });
 
     const row = rawRow('dir-1');
     expect(row.confidence).toBe('UNVERIFIED'); // forced by the directive gate
@@ -166,11 +166,11 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'idem-bare', symbols: [], source_files: ['src/idem-bare.ts'] }),
     ]);
 
-    const first = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const first = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(first.imported).toBe(2);
     const countAfterFirst = rowCount();
 
-    const second = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const second = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(2);
     expect(rowCount()).toBe(countAfterFirst); // no new rows
@@ -186,7 +186,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'no-basis', symbols: [], source_files: [] }),
     ]);
 
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
 
     expect(report.imported).toBe(1);
     expect(report.rejected).toBe(1);
@@ -219,7 +219,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'bib-contra', title: 'contraToken gamma', summary: 'this was wrong, the feature is broken', symbols: ['contraSym'], source_files: ['src/contra.ts'] }),
     ]);
 
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(report.skipped).toBe(1);     // the duplicate
     expect(report.linked).toBe(1);      // the refinement
     expect(report.flagged).toBe(1);     // the contradiction
@@ -241,7 +241,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'bib-coll', title: 'collToken', summary: 'coll refined body', symbols: ['collSym'], source_files: ['src/coll.ts'] }),
     ]);
 
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
 
     expect(provider.hasEntry('keep-me-1')).toBe(true);   // fresh id preserved
     expect(provider.hasEntry('bib-coll')).toBe(false);   // update minted a fresh id
@@ -265,15 +265,15 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       }),
     ]);
 
-    const first = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const first = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(first.linked).toBe(1);
     const countAfterFirst = rowCount(); // seeded note + refined entry = 2
 
-    const second = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const second = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(second.imported).toBe(0);
     expect(rowCount()).toBe(countAfterFirst); // no new row on re-import
 
-    const third = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const third = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(third.imported).toBe(0);
     expect(rowCount()).toBe(countAfterFirst); // still no new row
   });
@@ -301,7 +301,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     const p = writeBible([
       bibleEntry({ id: 'branchB-1', title: 'branchB tracked claim', summary: 'B claim', symbols: ['branchBSym'], source_files: [fileX] }),
     ]);
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
 
     expect(report.sweep.staled).toBeGreaterThanOrEqual(1);
     expect(rawRow(aId).stale).toBe(1);            // branch-A wrong-branch claim retired
@@ -337,11 +337,11 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
   it('rejects a bible file that is not a JSON array', async () => {
     const p = path.join(fleetDir, 'kb-canonical.json');
     fs.writeFileSync(p, JSON.stringify({ not: 'an array' }), 'utf-8');
-    await expect(kbImport({ repo: tmpRepo, path: p })).rejects.toThrow(/not a JSON array/);
+    await expect(kbImport({ path: p }, { folder: tmpRepo })).rejects.toThrow(/not a JSON array/);
   });
 
   it('rejects a missing bible file', async () => {
-    await expect(kbImport({ repo: tmpRepo, path: path.join(fleetDir, 'nope.json') }))
+    await expect(kbImport({ path: path.join(fleetDir, 'nope.json') }, { folder: tmpRepo }))
       .rejects.toThrow(/not found/);
   });
 
@@ -359,7 +359,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       bibleEntry({ id: 'chdir-check-1', symbols: ['chdirCheckSym'] }),
     ]);
 
-    await kbImport({ repo: tmpRepo, path: p });
+    await kbImport({ path: p }, { folder: tmpRepo });
 
     expect(chdirSpy).not.toHaveBeenCalled();
     chdirSpy.mockRestore();
@@ -372,46 +372,12 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       { id: 'bad-conf', type: 'learning', title: 'x', summary: 'y', confidence: 'BOGUS' }, // bad confidence
       42, // not an object
     ]);
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
     expect(report.imported).toBe(1);
     expect(report.skipped).toBe(3);
     expect(provider.hasEntry('good-1')).toBe(true);
   });
 });
-
-// apra-fleet KB audit follow-up 2026-08-11: the same input-name trap that
-// apra-fleet-src found in kb_stats. Every other kb_* tool names this input
-// `repo_path` (kb_list, kb_capture, kb_promote, kb_session_prime, kb_export,
-// and kb_stats since src); kb_import alone took `repo`. Zod strips unknown keys
-// silently, so calling it the way every sibling is called did not error -- it
-// fell back to the SERVER's working directory and resolved some unrelated
-// repo's bible. A confidently wrong import is worse than a failure, and this
-// one is invisible: it still reports entries imported, just from the wrong
-// place. The sprint engine now calls kb_import per member, which is exactly
-// the repo-blindness class the per-member path resolution exists to prevent.
-describe('kb_import: repo_path input parity with the other kb_* tools', () => {
-  it('the declared schema accepts repo_path rather than silently discarding it', () => {
-    const parsed = kbImportSchema.parse({ repo_path: '/tmp' });
-    expect((parsed as { repo_path?: string }).repo_path).toBe('/tmp');
-  });
-
-  it('resolves the bible from repo_path exactly as repo does', async () => {
-    writeBible([bibleEntry({ id: 'alias-1', symbols: ['aliasSym'] })]);
-
-    const viaRepoPath = JSON.parse(await kbImport({ repo_path: tmpRepo } as never));
-
-    expect(viaRepoPath.imported).toBe(1);
-  });
-
-  it('repo wins when both are supplied, so existing callers are unaffected', async () => {
-    writeBible([bibleEntry({ id: 'alias-2', symbols: ['aliasSym2'] })]);
-
-    const result = JSON.parse(await kbImport({ repo: tmpRepo, repo_path: '/nonexistent-path' } as never));
-
-    expect(result.imported).toBe(1);
-  });
-});
-
 // KB audit follow-up 2026-08-12, found by a LIVE sprint rather than by review.
 //
 // The sprint engine calls kb_import per member at sprint start so the committed
@@ -454,7 +420,7 @@ describe('kb_import: skip_sweep (audit 2026-08-12)', () => {
     writeBible([bibleEntry({ id: 'sweep-1', symbols: ['sweepSym'] })]);
     const spy = vi.spyOn(provider, 'freshnessSweep');
 
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, skip_sweep: true } as never));
+    const report = JSON.parse(await kbImport({ skip_sweep: true } as never, { folder: tmpRepo }));
 
     expect(spy).not.toHaveBeenCalled();
     expect(report.imported).toBe(1);
@@ -466,7 +432,7 @@ describe('kb_import: skip_sweep (audit 2026-08-12)', () => {
     writeBible([bibleEntry({ id: 'sweep-2', symbols: ['sweepSym2'] })]);
     const spy = vi.spyOn(provider, 'freshnessSweep');
 
-    await kbImport({ repo: tmpRepo });
+    await kbImport({}, { folder: tmpRepo });
 
     expect(spy).toHaveBeenCalledOnce();
   });
@@ -474,7 +440,7 @@ describe('kb_import: skip_sweep (audit 2026-08-12)', () => {
   it('skip_sweep still imports -- only the sweep is skipped', async () => {
     seedBasisFile();
     writeBible([bibleEntry({ id: 'sweep-3', symbols: ['sweepSym3'] })]);
-    const report = JSON.parse(await kbImport({ repo: tmpRepo, skip_sweep: true } as never));
+    const report = JSON.parse(await kbImport({ skip_sweep: true } as never, { folder: tmpRepo }));
 
     expect(report.imported).toBe(1);
   });

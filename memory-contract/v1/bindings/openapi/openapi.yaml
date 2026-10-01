@@ -48,7 +48,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/2",
-      "title": "An explicitly supplied repo path does not exist or is not a directory. The call refuses rather than silently falling back to the server cwd.",
+      "title": "The calling session's resolved folder is not a directory on this host (a remote member session), so a tool that writes into it refuses rather than writing anywhere else.",
       "status": 400
     },
     {
@@ -134,6 +134,21 @@
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/1",
       "title": "The resolved code-intelligence provider key has no entry in the PROVIDERS map (codebase-memory, gitnexus, none), so no provider can be constructed for the call.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/2",
+      "title": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), or the fleet server's own working folder is gone.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/3",
+      "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/4",
+      "title": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
       "status": 500
     }
   ]

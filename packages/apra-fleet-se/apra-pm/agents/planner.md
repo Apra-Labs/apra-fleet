@@ -30,64 +30,39 @@ orchestrator that planning has no input to work from -- do not create speculativ
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-Use the live KB tools when they are available; otherwise use the pre-fetched
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
 the orchestrator fetched for the sprint goals/requirements you are about to decompose.
-On a dispatched member the fleet MCP server (mcp__apra-fleet__*) is usually disabled
-for this role, so expect to be on the fallback. A missing or failing KB tool never
-means "no KB": when the tools are unavailable, the pre-fetched block IS this repo's
-knowledge, and every KB-based judgment below -- including "no KB entries" for a
-symbol -- must be made from that block, not from the tool failure. You have no KB
-context only when the tools are unavailable AND the block is absent. None of these
-tool calls is ever a requirement.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-1. When the KB tools are available, prime from them first.
-   Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_stats,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`,
-   then call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you
-   are planning for, and `hint_symbols`/`hint_modules` derived from the sprint goals /
-   requirements you are about to decompose. If ToolSearch surfaces no KB tools or a
-   call fails, use the pre-fetched block instead -- that is the fallback, not a gap.
-<!-- else-tool: ToolSearch -->
-1. When your environment exposes the KB tools, prime from them first (no
-   tool-discovery step is needed on this provider): call
-   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
-   planning for, and `hint_symbols`/`hint_modules` derived from the sprint goals /
-   requirements you are about to decompose. If those tools are not available or a
-   call fails, use the pre-fetched block instead -- that is the fallback, not a gap.
-<!-- end-tool: ToolSearch -->
-2. From whichever source you have (a live `kb_session_prime` result, the pre-fetched
-   block, or both), read every entry. Trust CONFIRMED entries fully; treat INFERRED as a
-   strong hint but verify against source before baking it into a task description (an
-   INFERRED entry may be an unvalidated in-flight capture). Let prior sprint knowledge
-   inform your planning:
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   derived from the sprint goals / requirements you are about to decompose.
+2. From whichever source you have (a live `kb_session_prime` result, the injected
+   block, or both), read every entry. Treat INFERRED as a strong hint but verify it
+   against source before baking it into a task description (an INFERRED entry may be an
+   unvalidated in-flight capture). Let prior sprint knowledge inform your planning:
    - **CONFIRMED coverage** on a symbol -> well-understood code, may lean toward a
      lighter model tier. Note it in the task description so the doer knows to
      retrieve from the KB first instead of re-deriving it from source.
    - **No KB entries** for a symbol (in the live result, or -- without the tools -- in
-     the pre-fetched block; never inferred from a tool failure) -> unexplored
+     the injected block; never inferred from a tool failure) -> unexplored
      territory, front-load as Task 1 and lean toward a stronger model tier.
    - **Non-obvious constraints** in KB entries (e.g. "init() must be called before
      query", "jitter applied after maxDelayMs cap") -> copy them verbatim into the
      relevant task description so the doer does not rediscover them.
-3. Quantify the assignment when `kb_stats` is available: call
-   `mcp__apra-fleet__kb_stats` with the key symbols the sprint's tasks will actually
-   touch and use the returned `coverage.fraction` to sharpen the qualitative judgment
-   above into a number (see "Model assignment rules" in Step 3 for the thresholds and
-   how to record it). `kb_stats` is unavailable on most dispatched environments; when
-   it is, skip the quantitative step and rely on the qualitative KB signals above
-   (from the pre-fetched block) instead.
-4. This role has no working KB-capture channel on a dispatched environment: a direct
-   `mcp__apra-fleet__kb_capture` call is unreachable there, and this role's
-   `kb_captures` output field (see the Output schema section below) is not read by the
-   engine today. Do not spend planning effort chasing a capture here -- note a
-   genuinely durable, non-obvious finding in your own report. If
-   `mcp__apra-fleet__kb_capture` happens to be reachable (e.g. a non-dispatched local
-   run), you may also call it directly, but treat that as a bonus, never a task
-   requirement.
-5. Likewise, `mcp__apra-fleet__kb_feedback` is a bonus-only call: use it, when
-   reachable, to flag a KB entry that proved wrong in practice -- do not block on it.
+3. Quantify the assignment when `kb_stats` is present: call `kb_stats` with the key
+   symbols the sprint's tasks will actually touch and use the returned
+   `coverage.fraction` to sharpen the qualitative judgment above into a number (see
+   "Model assignment rules" in Step 3 for the thresholds and how to record it). When
+   `kb_stats` is absent or fails, skip the quantitative step and rely on the
+   qualitative KB signals above instead.
+4. This role has no KB-capture channel: note a genuinely durable, non-obvious finding --
+   or a KB entry that proved wrong in practice -- in your own report.
 
 ## Step 1 -- Explore the backlog
 

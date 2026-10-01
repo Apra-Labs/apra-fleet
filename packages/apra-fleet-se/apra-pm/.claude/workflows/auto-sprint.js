@@ -2189,9 +2189,10 @@ async function primeKB(repoPath) {
     `  a. First check if "${repoPath}/.fleet/kb-canonical.json" exists (use Bash: test -f).\n` +
     `  b. If it does NOT exist, run: echo $APRA_FLEET_DATA_DIR (using Bash) to get the data dir.\n` +
     `     Then check if "$APRA_FLEET_DATA_DIR/kb-canonical.json" exists.\n` +
-    `  c. Call mcp__apra-fleet__kb_import with repo set to "${repoPath}".\n` +
-    `     If the bible was found at the data dir path (step b), also pass\n` +
-    `     path set to that full path (e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `  c. Call mcp__apra-fleet__kb_import with path set to the full path of the bible\n` +
+    `     file you found: "${repoPath}/.fleet/kb-canonical.json" (step a), or the\n` +
+    `     data dir path (step b, e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `     Pass no other scope argument -- kb tools always use your session's own KB.\n` +
     `  d. If neither path has the bible, or the tool is unavailable, set imported=false and continue.\n`;
   const stepNum = _kbImported ? 2 : 3;
   try {
@@ -2202,8 +2203,8 @@ async function primeKB(repoPath) {
       (_kbImported ? `"` : `,mcp__apra-fleet__kb_import"`) +
       ` to load the tool schema(s).\n` +
       importStep +
-      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with:\n` +
-      `  repo_path: "${repoPath}"\n` +
+      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with no arguments ` +
+      `(it always primes your session's own KB; it takes no repo/scope argument).\n` +
       `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
       `  For each entry return: title, summary, confidence, flagged_for_review, contradiction_of, symbols, source_files, type.\n` +
       `  Do NOT return the content field.\n` +
@@ -2346,10 +2347,11 @@ async function runKbWork(repoPath, role, result) {
       `Step 1: Call ToolSearch with query ` +
       `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote".\n` +
       `Step 2: For EACH object in captures below, call mcp__apra-fleet__kb_capture ` +
-      `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
-      `reword, merge, split or invent entries.\n` +
+      `with that object's fields verbatim (no repo/scope argument -- the tool ` +
+      `always writes your session's own KB). Do not reword, merge, split or ` +
+      `invent entries.\n` +
       `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
-      `with repo_path "${repoPath}" and that object's id and reason verbatim.\n` +
+      `with that object's id and reason verbatim.\n` +
       `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
       `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
       `captures: ${JSON.stringify(captures)}\n` +

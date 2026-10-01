@@ -1,13 +1,9 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 
 const L2_CONTENT_CAP = 3200;
 
 export const kbQuerySchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
@@ -27,9 +23,9 @@ export const kbQuerySchema = z.object({
   // min_confidence threshold so the contract does not bake in a tier ordering and
   // matches kb_list's `confidence` naming.
   confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
-    .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Omit for every tier. Ignored when flagged_only is true.'),
+    .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true.'),
   exclude_disputed: z.boolean().optional()
-    .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default false. Ignored when flagged_only is true.'),
+    .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true.'),
 });
 
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
@@ -47,7 +43,7 @@ function passesTrustFilter(
   return true;
 }
 
-export async function kbQuery(input: KbQueryInput): Promise<string> {
+export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<string> {
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
@@ -55,7 +51,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const providers = await getSelfKbProviders(anchor);
 
   if (input.flagged_only) {
     const flaggedOpts = {
@@ -85,6 +81,15 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
         : `${merged.length} flagged entries found. Contradiction pairs: one entry has flagged_for_review=true, its counterpart has contradiction_of set to the original ID -- resolve by calling kb_promote (keep), kb_capture (correct), or kb_invalidate (remove). EXCEPTION (F1/D1): a directive PROPOSAL (type=user-directive, tag directive:pending) is resolved ONLY by the human CLI (apra-fleet kb approve-directive <id> / reject-directive <id>) -- kb_promote refuses user-directive entries.`,
     });
   }
+
+  // Default-trusted reads: with no confidence filter only CONFIRMED, undisputed
+  // entries come back. An explicit confidence list opts into other tiers, and
+  // then disputed entries are only dropped if exclude_disputed says so.
+  input = {
+    ...input,
+    confidence: input.confidence?.length ? input.confidence : ['CONFIRMED'],
+    exclude_disputed: input.exclude_disputed ?? !input.confidence?.length,
+  };
 
   const queryOpts = {
     query: input.query,

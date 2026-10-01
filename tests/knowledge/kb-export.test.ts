@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
@@ -90,7 +91,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     }));
     expect(cUpdate.audn_decision).toBe('update');
 
-    const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
+    const result = JSON.parse(await kbExport({}, { folder: tmpDir }));
     expect(result.exported).toBe(1);
 
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
@@ -103,7 +104,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     const { id } = await provider.capture(makeInput({ title: 'Field set entry' }));
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
-    await kbExport({ repo_path: tmpDir });
+    await kbExport({}, { folder: tmpDir });
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
 
     expect(written).toHaveLength(1);
@@ -127,7 +128,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       ids.push(id);
     }
 
-    await kbExport({ repo_path: tmpDir });
+    await kbExport({}, { folder: tmpDir });
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
 
     const writtenIds = written.map((e: { id: string }) => e.id);
@@ -138,7 +139,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   it('creates the .fleet directory when missing', async () => {
     expect(fs.existsSync(path.join(tmpDir, '.fleet'))).toBe(false);
 
-    await kbExport({ repo_path: tmpDir });
+    await kbExport({}, { folder: tmpDir });
 
     expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(true);
   });
@@ -146,7 +147,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   it('writes an empty array when there are no CONFIRMED entries', async () => {
     await provider.capture(makeInput({ title: 'Only inferred' }));
 
-    const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
+    const result = JSON.parse(await kbExport({}, { folder: tmpDir }));
     expect(result.exported).toBe(0);
 
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
@@ -166,7 +167,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     }));
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
-    await kbExport({ repo_path: tmpDir });
+    await kbExport({}, { folder: tmpDir });
     const raw = fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'));
     for (let i = 0; i < raw.length; i++) {
       expect(raw[i]).toBeLessThanOrEqual(127);
@@ -175,24 +176,25 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     expect(parsed.entries[0].title).toContain('caf' + eAcute);
   });
 
-  it('rejects a repo_path that does not exist', async () => {
-    await expect(kbExport({ repo_path: path.join(tmpDir, 'does-not-exist') })).rejects.toThrow();
+  it('rejects an anchor folder that does not exist on this host', async () => {
+    await expect(kbExport({}, { folder: path.join(tmpDir, 'does-not-exist') })).rejects.toThrow('not a directory on this host');
   });
 
-  // F4 (T1.6): repo path resolution precedence -- explicit input > validated
-  // session context (process.cwd(), validated) > refuse with a clear error.
-  // No bare process.cwd() fallback: the session-context tier is validated
-  // the same way explicit input is.
-  describe('repo path precedence (F4, T1.6)', () => {
+  // kb (self): an explicit in-process anchor wins; with none, a FULL session
+  // writes into the server's working folder, which must be a git repository
+  // with an origin remote -- otherwise a typed E-SELF refusal, never a write.
+  describe('anchor resolution (kb self)', () => {
     let cwdSpy: ReturnType<typeof vi.spyOn>;
 
     afterEach(() => {
       cwdSpy?.mockRestore();
     });
 
-    it('falls back to the validated session working directory when repo_path is omitted', async () => {
+    it('with no anchor, a FULL session exports into the server working folder', async () => {
       const { id } = await provider.capture(makeInput({ title: 'Session-context entry' }));
       await provider.promote(id, 'confirmed for test: basis checked in fixture');
+      execFileSync('git', ['init', '-q'], { cwd: tmpDir });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://example.test/kb-export-self.git'], { cwd: tmpDir });
 
       cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
       const result = JSON.parse(await kbExport({}));
@@ -202,14 +204,14 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       expect(written).toHaveLength(1);
     });
 
-    it('explicit repo_path input takes precedence over the session working directory', async () => {
+    it('an explicit anchor takes precedence over the session working directory', async () => {
       const { id } = await provider.capture(makeInput({ title: 'Explicit-wins entry' }));
       await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
       const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-other-'));
       try {
         cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(otherDir);
-        await kbExport({ repo_path: tmpDir });
+        await kbExport({}, { folder: tmpDir });
 
         expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(true);
         expect(fs.existsSync(path.join(otherDir, '.fleet', 'kb-canonical.json'))).toBe(false);
@@ -218,11 +220,11 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       }
     });
 
-    it('refuses with a clear error when neither explicit input nor the session working directory validate', async () => {
+    it('refuses with E-SELF-NO-WORKFOLDER when the session working folder is missing', async () => {
       const missingCwd = path.join(tmpDir, 'does-not-exist-cwd');
       cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(missingCwd);
 
-      await expect(kbExport({})).rejects.toThrow('repo_path does not exist or is not a directory');
+      await expect(kbExport({})).rejects.toThrow(/E-SELF-NO-WORKFOLDER.*Remediation:/);
       expect(fs.existsSync(path.join(missingCwd, '.fleet'))).toBe(false);
     });
   });
@@ -238,7 +240,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       const { id: globalId } = await globalProvider.capture(makeInput({ title: 'Global-only entry', symbols: ['globalOnlySym'] }));
       await globalProvider.promote(globalId, 'confirmed for test: basis checked in fixture');
 
-      const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
+      const result = JSON.parse(await kbExport({}, { folder: tmpDir }));
       expect(result.scope).toBe('project');
       expect(result.exported).toBe(1);
 
@@ -258,7 +260,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       }));
       await globalProvider.promote(globalId, 'confirmed for test: basis checked in fixture');
 
-      const result = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'global' }));
+      const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: tmpDir }));
       expect(result.scope).toBe('global');
       expect(result.exported).toBe(1);
 
@@ -277,7 +279,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     });
 
     it('scope="global" with an empty global KB writes a valid empty array file', async () => {
-      const result = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'global' }));
+      const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: tmpDir }));
       expect(result.exported).toBe(0);
 
       const outPath = path.join(tmpDir, '.fleet', 'kb-canonical-global.json');
@@ -292,7 +294,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       }));
       await globalProvider.promote(id, 'confirmed for test: basis checked in fixture');
 
-      await kbExport({ repo_path: tmpDir, scope: 'global' });
+      await kbExport({ scope: 'global' }, { folder: tmpDir });
       const raw = fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical-global.json'));
       for (let i = 0; i < raw.length; i++) {
         expect(raw[i]).toBeLessThanOrEqual(127);

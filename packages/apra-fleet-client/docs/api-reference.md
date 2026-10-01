@@ -74,7 +74,11 @@ send client-to-server messages.
   twice, after 500 ms and 2000 ms; a non-`ok` status or any other error is
   never retried.
 - **`stop()`** -- aborts the internal `AbortController`, tearing down both
-  the open GET stream and any in-flight POST.
+  the open GET stream and any in-flight POST. Local only: the server-side
+  session stays alive.
+- **`async close()`** -- best-effort HTTP `DELETE` of the session
+  (`mcp-session-id`, 5 s bound) so the server releases the McpServer and any
+  member registry entry, then `stop()`. Use for short-lived sessions.
 
 Both fetches go through `undici`'s own `fetch` with a dedicated `Agent`
 (`headersTimeout: 0`, `bodyTimeout: 0`, `keepAliveTimeout: 4000`) rather
@@ -142,6 +146,19 @@ abort support on top of a transport.
 - **`async callTool(name, args, opts = {})`** -- convenience wrapper:
   `request('tools/call', { name, arguments: args }, opts)`. This is what
   `ApraFleet`'s methods call under the hood.
+
+- **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
+  resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
+  (`?member=<uuid>`) this is exactly the member allowlist.
+
+### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
+
+Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
+returning `{ transport, mcpClient, mode: 'http', url, close }`. Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+resolution (a member identity rides on the URL). An unregistered uuid rejects
+with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
+`StreamableHttpTransport.start()` for any non-OK initialize response as
+`HTTP_<status>`).
 
 ## `src/client/errors.mjs`
 

@@ -10,30 +10,25 @@ You groom ONE operator's slice of the open beads backlog: what to pick up next, 
 to sprint together, what's a duplicate, what needs fixing before it's actionable. You
 analyze AND mutate beads directly -- but you never touch code beyond reading it.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any grooming decision)
+## Step 0 -- Knowledge Bank (do this BEFORE any grooming decision)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose backlog
-   you are grooming, and `hint_modules` naming the subsystems the assigned beads touch.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts. This matters
-   most for duplicate detection and sprint-set grouping.
-3. When grooming turns up a durable backlog fact -- two ids that are genuinely the same
-   work, a dependency between beads that their text does not state, or a recurring reason
-   items land unactionable -- call `mcp__apra-fleet__kb_capture` with type "knowledge".
-   Do not capture per-sprint churn; capture what stays true.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the backlog you are grooming.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
+   subsystems the assigned beads touch. KB knowledge matters most for duplicate
+   detection and sprint-set grouping.
+2. This role has no KB-capture channel: when grooming turns up a durable backlog fact --
+   two ids that are genuinely the same work, a dependency between beads that their text
+   does not state, or a recurring reason items land unactionable -- note it in your own
+   report. Record what stays true, not per-sprint churn.
 
 ## Usage modes
 

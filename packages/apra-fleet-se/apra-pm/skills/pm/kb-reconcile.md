@@ -33,14 +33,16 @@ CLI-only (`apra-fleet kb approve-directive`).
 ### Step 1: Import the merged bible
 
 ```
-kb_import({ repo: "<merged worktree path>" })
+kb_import({ path: "<merged worktree path>/.fleet/kb-canonical.json" })
 ```
 
-or the CLI equivalent, `apra-fleet kb import --repo <path>`, for a human
-running this post-merge by hand. Omit `path` to resolve
-`<repo>/.fleet/kb-canonical.json` (the trusted channel); pass an explicit
-`path` only when importing a bible from somewhere else (caller-asserted
-trust, see above).
+or the CLI equivalent, `apra-fleet kb import --path <file>`, for a human
+running this post-merge by hand. `path` names the bible FILE only: kb tools
+take no repo/scope argument and always write the calling session's own KB (a
+member session uses its registered work folder; any other session the fleet
+server's working folder). Omitting `path` resolves
+`<own folder>/.fleet/kb-canonical.json` (the trusted channel); a bible from
+anywhere else is caller-asserted trust (see above).
 
 Report: `{ imported, skipped, linked, flagged, sweep }`. `kb_import`
 already runs a freshness sweep internally at the end of its own run, scoped
@@ -96,7 +98,7 @@ with that array. It reads the MERGED code via `code_context`/`code_impact`/
 `code_query` (never Glob/Grep) for each remaining pair, resolves what the
 code decides via `kb_resolve_contradiction`, falls back to a trust-tier
 tiebreak (`CONFIRMED > INFERRED > UNVERIFIED`) when the code is silent, and
-leaves genuinely undecidable pairs flagged for `/pm kb-review`. Active
+leaves genuinely undecidable pairs flagged for `/pm kb-review`. Any `kb_query`/`kb_list` lookup of a pair's entries must pass an explicit `confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` list: the read tools default to CONFIRMED undisputed entries only, and a disputed or unpromoted side would otherwise be invisible (`kb_query({ flagged_only: true })` is exempt). Active
 user-directives are NEVER auto-retired. See `agents/kb-reconciler.md` for the
 full process and the single-write-path rule.
 

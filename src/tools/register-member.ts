@@ -8,7 +8,7 @@ import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
-import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
+import { addAgent, getAgent, getAllAgents, hasDuplicateFolder, updateAgent } from '../services/registry.js';
 import { credentialResolve, credentialSet } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
@@ -125,7 +125,17 @@ function interactiveBootstrapEnabled(): boolean {
   return false;
 }
 
-export async function registerMember(input: RegisterMemberInput): Promise<string> {
+export interface RegisterMemberOptions {
+  /**
+   * Pre-assigned member id (CLI `--id`). Registering the same id again updates
+   * that registry entry in place instead of minting a new one; a folder owned
+   * by a different id is refused with E-FOLDER-TAKEN. Deliberately not part of
+   * registerMemberSchema (the MCP tool input), so the tool surface is unchanged.
+   */
+  id?: string;
+}
+
+export async function registerMember(input: RegisterMemberInput, opts: RegisterMemberOptions = {}): Promise<string> {
   const warnings: string[] = [];
   const isLocal = input.member_type === 'local';
   const isCloud = !!input.cloud_provider;
@@ -224,9 +234,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // --- Duplicate folder check ---
-  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port)) {
+  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port, opts.id)) {
     const scope = isLocal ? 'this machine' : `host ${input.host}:${input.port}`;
-    return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Member was NOT registered.`;
+    const code = opts.id ? 'E-FOLDER-TAKEN: ' : '';
+    return `❌ ${code}Another member already uses folder "${input.work_folder}" on ${scope}. Member was NOT registered.`;
   }
 
   // --- Cloud: get instance state and resolve host ---
@@ -280,7 +291,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   // --- Build tempAgent ---
   const tempAgent: Agent = {
-    id: uuid(),
+    id: opts.id ?? uuid(),
     friendlyName: input.friendly_name,
     agentType: input.member_type,
     host: isLocal ? undefined : (resolvedHost ?? ''),
@@ -513,10 +524,15 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // Auto-assign icon
-  tempAgent.icon = assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
+  const existing = opts.id ? getAgent(opts.id) : undefined;
+  tempAgent.icon = existing?.icon ?? assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
 
-  // Persist
-  addAgent(tempAgent);
+  // Persist. A repeated pre-assigned id updates its one entry in place.
+  if (existing) {
+    updateAgent(tempAgent.id, { ...tempAgent, createdAt: existing.createdAt });
+  } else {
+    addAgent(tempAgent);
+  }
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
 

@@ -293,7 +293,7 @@ describe('SqliteProvider.resolveContradiction (T3.1, D4 HARDENED, winner-path or
     expect(after.flagged_for_review).toBe(0);
     expect(after.stale).toBe(0); // proves the flag-clear-before-predicate order
 
-    const confirmedList = await provider.list({ confidence: 'CONFIRMED' });
+    const confirmedList = await provider.list({ confidence: ['CONFIRMED'] });
     expect(confirmedList.some(e => e.id === winnerId)).toBe(true);
 
     const loser = rawRow(challengerOut.id);
@@ -343,7 +343,7 @@ describe('SqliteProvider.reconcilePrefilter (T3.1, D4 HARDENED, resolution R1)',
     expect(loser.stale).toBe(1);
     expect(loser.flagged_for_review).toBe(0);
 
-    const confirmedList = await provider.list({ confidence: 'CONFIRMED' });
+    const confirmedList = await provider.list({ confidence: ['CONFIRMED'] });
     expect(confirmedList.some(e => e.id === challengerId)).toBe(true);
     expect(confirmedList.some(e => e.id === originalId)).toBe(false);
   });

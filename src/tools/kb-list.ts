@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.3 (F8a, D8): kb_list -- a read-only audit view over the CONFIRMED (or any
@@ -9,11 +8,8 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // since inspecting the KB's trust tiers is not "retrieval" for the purposes
 // of that telemetry.
 export const kbListSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
-  confidence: z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED']).optional()
-    .describe('Filter by confidence tier'),
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only return entries whose confidence tier is in this list (e.g. ["INFERRED","UNVERIFIED"]). Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive']).optional()
     .describe('Filter by content type'),
   module: z.string().optional().describe('Filter by exact module name'),
@@ -22,14 +18,18 @@ export const kbListSchema = z.object({
   limit: z.number().optional().describe('Max entries to return (default: no limit)'),
 });
 
+const DEFAULT_CONFIDENCE: Array<'CONFIRMED' | 'INFERRED' | 'UNVERIFIED'> = ['CONFIRMED'];
+
 export type KbListInput = z.infer<typeof kbListSchema>;
 
-export async function kbList(input: KbListInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<string> {
+  const providers = await getSelfKbProviders(anchor);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_list');
 
   const entries = await sqliteProvider.list({
-    confidence: input.confidence,
+    confidence: input.confidence?.length ? input.confidence : DEFAULT_CONFIDENCE,
+    // Default read is CONFIRMED *and* undisputed; an explicit tier list opts out.
+    exclude_disputed: !input.confidence?.length,
     type: input.type,
     module: input.module,
     symbol: input.symbol,

@@ -204,7 +204,7 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     expect(before.project).toBeInstanceOf(SqliteProvider);
     expect(before.project).not.toBeInstanceOf(HttpKbProvider);
 
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
     const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
     expect(remote.project).toBeInstanceOf(HttpKbProvider);
     // The remote provider falls back to the SAME project SqliteProvider the
@@ -213,7 +213,7 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     expect(remote.global).toBe(before.global);
     expect(remote.projectSlug).toBe(before.projectSlug);
 
-    await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+    await kbSetup({ provider: 'sqlite' }, { folder: repoPath });
     const after = await getKbProviders(repoPath, REMOTE_REPO_URL);
     expect(after.project).toBeInstanceOf(SqliteProvider);
     expect(after.project).not.toBeInstanceOf(HttpKbProvider);
@@ -224,7 +224,7 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     const repoPath = makeRepoPath();
     await getKbProviders(repoPath, REMOTE_REPO_URL);
 
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
     const first = await getKbProviders(repoPath, REMOTE_REPO_URL);
     const second = await getKbProviders(repoPath, REMOTE_REPO_URL);
 
@@ -237,12 +237,12 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     const baseline = process.listenerCount('beforeExit');
 
     for (let i = 0; i < 5; i++) {
-      await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+      await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
       const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
       expect(remote.project).toBeInstanceOf(HttpKbProvider);
       expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
 
-      await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+      await kbSetup({ provider: 'sqlite' }, { folder: repoPath });
       const local = await getKbProviders(repoPath, REMOTE_REPO_URL);
       expect(local.project).not.toBeInstanceOf(HttpKbProvider);
       expect(process.listenerCount('beforeExit')).toBe(baseline);
@@ -251,12 +251,12 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
 
   it('warns, naming the count and kb_harvest, when a replaced HttpKbProvider still had queued captures', async () => {
     const repoPath = makeRepoPath();
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
     const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
     const httpProvider = remote.project as HttpKbProvider;
     httpProvider.offlineQueue.push({ op: 'invalidate', files: ['a.ts'] }, { op: 'invalidate', files: ['b.ts'] });
 
-    await kbSetup({ repo_path: repoPath, provider: 'sqlite' });
+    await kbSetup({ provider: 'sqlite' }, { folder: repoPath });
     await getKbProviders(repoPath, REMOTE_REPO_URL);
 
     await flushLogWithSentinel();
@@ -270,10 +270,10 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     const repoPath = makeRepoPath();
     const baseline = process.listenerCount('beforeExit');
 
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN });
+    await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
     const first = await getKbProviders(repoPath, REMOTE_REPO_URL);
 
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: `${REMOTE_KB_URL}/v2`, token: FAKE_TOKEN });
+    await kbSetup({ provider: 'http', remote: `${REMOTE_KB_URL}/v2`, token: FAKE_TOKEN }, { folder: repoPath });
     const second = await getKbProviders(repoPath, REMOTE_REPO_URL);
 
     expect(second.project).toBeInstanceOf(HttpKbProvider);

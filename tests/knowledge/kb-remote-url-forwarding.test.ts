@@ -7,26 +7,21 @@ import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KbProviders } from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.js';
+import type { KbAnchor } from '../../src/services/knowledge/kb-self.js';
 
-// apra-fleet-b4g.1.6: apra-fleet-b4g.1.3 wired repo_remote_url through the
-// three hot-path kb tool schemas and forwarded it to getKbProviders as the
-// second argument at kb-capture.ts:53, kb-harvest.ts:107 and
-// kb-session-prime.ts:185, but shipped with no automated coverage. zod strips
-// unknown keys silently, so a dropped `...kbScopeFields` spread would resolve
-// to an empty KB rather than error. This file pins both halves of the wiring:
-// the schema layer (case 1) and the handler forwarding (cases 2-3), plus the
-// slug-resolution consequence of a remote-scoped call (case 4).
+// KB anchor wiring for every kb_* tool that resolves providers (kb_setup never
+// calls getKbProviders). No kb_* request declares a scope field -- the KB is
+// the calling session's own (src/services/knowledge/kb-self.ts). The one way
+// to name a repo is the in-process KbAnchor passed as the handler's second
+// argument (execute_prompt's post-dispatch harvest, the kb CLIs), which no MCP
+// request can carry. This file pins, per tool: (1) the schema declares no scope
+// field and strips one sent anyway; (2) the anchor's folder AND remoteUrl reach
+// getKbProviders; (3) an anchor without remoteUrl injects no default.
 //
-// TABLE-DRIVEN over the three wired tools (case 1-3) rather than three
-// copy-pasted describe blocks: apra-fleet-b4g.1.4 extends this same table to
-// the remaining kb tools once it wires them, and depends on this shape --
-// adding a tool requires no new assertion code, only a new TOOLS entry.
-//
-// apra-fleet-b4g.1.4: extends the table with the 12 remaining wired tools
-// (kb-setup is excluded -- it never calls getKbProviders, see kb-setup.ts).
-// kb_export and kb_import validate repo_path against the real filesystem
-// (resolveRepoPath) before ever reaching the mocked getKbProviders, so those
-// two entries anchor on real tmpdir fixtures instead of an arbitrary string.
+// TABLE-DRIVEN: adding a tool requires no new assertion code, only a new TOOLS
+// entry. kb_export and kb_import check the anchor folder against the real
+// filesystem before ever reaching the mocked getKbProviders, so those two
+// entries anchor on real tmpdir fixtures instead of an arbitrary string.
 
 const mockGetKbProviders = vi.hoisted(() => vi.fn());
 
@@ -50,8 +45,8 @@ import { kbImportSchema, kbImport } from '../../src/tools/kb-import.js';
 import { kbStatsSchema, kbStats } from '../../src/tools/kb-stats.js';
 import { kbExportSchema, kbExport } from '../../src/tools/kb-export.js';
 
-// kb_export writes <repo_path>/.fleet/kb-canonical.json; kb_import reads it.
-// Both validate repo_path against the real filesystem before the mocked
+// kb_export writes <folder>/.fleet/kb-canonical.json; kb_import reads it.
+// Both validate the anchor folder against the real filesystem before the mocked
 // getKbProviders is ever reached, so each needs its own real tmpdir.
 const exportTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-fwd-'));
 const importTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-import-fwd-'));
@@ -205,8 +200,10 @@ function primedContext() {
 interface ToolCase {
   name: string;
   schema: z.ZodTypeAny;
-  call: (input: unknown) => Promise<string>;
-  // Fields (besides repo_path/repo_remote_url) needed to satisfy the schema
+  call: (input: unknown, anchor: KbAnchor) => Promise<string>;
+  // Anchor folder; defaults to a fake path the mocked getKbProviders never checks.
+  folder?: string;
+  // Fields needed to satisfy the schema
   // and to make the handler actually reach getKbProviders (kb_harvest early-
   // returns before calling it when session_transcript is absent).
   minimalInput: Record<string, unknown>;
@@ -222,7 +219,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_capture',
     schema: kbCaptureSchema,
-    call: input => kbCapture(input as Parameters<typeof kbCapture>[0]),
+    call: (input, anchor) => kbCapture(input as Parameters<typeof kbCapture>[0], anchor),
     minimalInput: { type: 'knowledge', title: 't', summary: 's', content: 'c' },
     providersStub: () => ({
       project: { capture: vi.fn().mockResolvedValue({ id: 'id1', audn_decision: 'add' }) } as any,
@@ -233,7 +230,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_harvest',
     schema: kbHarvestSchema,
-    call: input => kbHarvest(input as Parameters<typeof kbHarvest>[0]),
+    call: (input, anchor) => kbHarvest(input as Parameters<typeof kbHarvest>[0], anchor),
     // A plain sentence yields no LEARNING_PATTERNS match, so provider.capture
     // is never invoked -- only the early-return guard (session_transcript
     // absent) needs to be avoided.
@@ -247,7 +244,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_session_prime',
     schema: kbSessionPrimeSchema,
-    call: input => kbSessionPrime(input as Parameters<typeof kbSessionPrime>[0]),
+    call: (input, anchor) => kbSessionPrime(input as Parameters<typeof kbSessionPrime>[0], anchor),
     minimalInput: {},
     providersStub: () => ({
       project: { prime: vi.fn().mockResolvedValue(primedContext()) } as any,
@@ -258,7 +255,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_list',
     schema: kbListSchema,
-    call: input => kbList(input as Parameters<typeof kbList>[0]),
+    call: (input, anchor) => kbList(input as Parameters<typeof kbList>[0], anchor),
     minimalInput: {},
     providersStub: () => ({
       project: listProvider,
@@ -269,7 +266,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_invalidate',
     schema: kbInvalidateSchema,
-    call: input => kbInvalidate(input as Parameters<typeof kbInvalidate>[0]),
+    call: (input, anchor) => kbInvalidate(input as Parameters<typeof kbInvalidate>[0], anchor),
     minimalInput: { files: ['src/fixture.ts'] },
     providersStub: () => ({
       project: { invalidate: vi.fn().mockResolvedValue({ invalidated: 0 }) } as any,
@@ -280,7 +277,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_resolve_contradiction',
     schema: kbResolveContradictionSchema,
-    call: input => kbResolveContradiction(input as Parameters<typeof kbResolveContradiction>[0]),
+    call: (input, anchor) => kbResolveContradiction(input as Parameters<typeof kbResolveContradiction>[0], anchor),
     minimalInput: { winnerId: 'w1', loserId: 'l1', evidence: 'e' },
     providersStub: () => ({
       project: resolveContradictionProvider,
@@ -292,7 +289,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_reconcile_prefilter',
     schema: kbReconcilePrefilterSchema,
-    call: input => kbReconcilePrefilter(input as Parameters<typeof kbReconcilePrefilter>[0]),
+    call: (input, anchor) => kbReconcilePrefilter(input as Parameters<typeof kbReconcilePrefilter>[0], anchor),
     minimalInput: {},
     providersStub: () => ({
       project: reconcilePrefilterProvider,
@@ -303,7 +300,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_context',
     schema: kbContextSchema,
-    call: input => kbContext(input as Parameters<typeof kbContext>[0]),
+    call: (input, anchor) => kbContext(input as Parameters<typeof kbContext>[0], anchor),
     minimalInput: { files: ['src/fixture.ts'] },
     providersStub: () => ({
       // status 'fresh' short-circuits before the global fallback is reached.
@@ -315,7 +312,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_freshness_sweep',
     schema: kbFreshnessSweepSchema,
-    call: input => kbFreshnessSweep(input as Parameters<typeof kbFreshnessSweep>[0]),
+    call: (input, anchor) => kbFreshnessSweep(input as Parameters<typeof kbFreshnessSweep>[0], anchor),
     minimalInput: {},
     providersStub: () => ({
       project: freshnessSweepProvider,
@@ -326,7 +323,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_feedback',
     schema: kbFeedbackSchema,
-    call: input => kbFeedback(input as Parameters<typeof kbFeedback>[0]),
+    call: (input, anchor) => kbFeedback(input as Parameters<typeof kbFeedback>[0], anchor),
     minimalInput: { id: 'id1', reason: 'wrong in practice' },
     providersStub: () => ({
       project: feedbackProvider,
@@ -337,7 +334,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_promote',
     schema: kbPromoteSchema,
-    call: input => kbPromote(input as Parameters<typeof kbPromote>[0]),
+    call: (input, anchor) => kbPromote(input as Parameters<typeof kbPromote>[0], anchor),
     minimalInput: { id: 'id1' },
     providersStub: () => ({
       project: { promote: vi.fn().mockResolvedValue({ id: 'id1', confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' }) } as any,
@@ -348,7 +345,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_query',
     schema: kbQuerySchema,
-    call: input => kbQuery(input as Parameters<typeof kbQuery>[0]),
+    call: (input, anchor) => kbQuery(input as Parameters<typeof kbQuery>[0], anchor),
     // Empty results keep top5Ids empty, so the L2 fetch branch is never reached.
     minimalInput: { query: 'test' },
     providersStub: () => ({
@@ -360,7 +357,7 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_stats',
     schema: kbStatsSchema,
-    call: input => kbStats(input as Parameters<typeof kbStats>[0]),
+    call: (input, anchor) => kbStats(input as Parameters<typeof kbStats>[0], anchor),
     minimalInput: {},
     providersStub: () => ({
       project: statsProvider,
@@ -371,10 +368,11 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_export',
     schema: kbExportSchema,
-    call: input => kbExport(input as Parameters<typeof kbExport>[0]),
-    // repo_path must resolve on the real filesystem (resolveRepoPath), and is
-    // not a git repo so the auto-commit path never shells out to git.
-    minimalInput: { repo_path: exportTmpDir },
+    call: (input, anchor) => kbExport(input as Parameters<typeof kbExport>[0], anchor),
+    // The anchor folder must exist on the real filesystem (requireLocalFolder),
+    // and is not a git repo so the auto-commit path never shells out to git.
+    minimalInput: {},
+    folder: exportTmpDir,
     providersStub: () => ({
       project: exportProjectProvider,
       global: { list: vi.fn().mockResolvedValue([]) } as any,
@@ -384,11 +382,12 @@ const TOOLS: ToolCase[] = [
   {
     name: 'kb_import',
     schema: kbImportSchema,
-    call: input => kbImport(input as Parameters<typeof kbImport>[0]),
-    // repo_path resolves to a real tmpdir seeded with an empty bible array so
+    call: (input, anchor) => kbImport(input as Parameters<typeof kbImport>[0], anchor),
+    // The anchor folder is a real tmpdir seeded with an empty bible array so
     // the entry loop is a no-op and only the getKbProviders forwarding, plus
     // the trailing freshnessSweep() call, are exercised.
-    minimalInput: { repo_path: importTmpDir },
+    minimalInput: {},
+    folder: importTmpDir,
     providersStub: () => ({
       project: importProjectProvider,
       global: {} as any,
@@ -397,56 +396,52 @@ const TOOLS: ToolCase[] = [
   },
 ];
 
-describe.each(TOOLS)('$name repo_remote_url wiring', ({ schema, call, minimalInput, providersStub, resetFixture }) => {
+const SCOPE_FIELDS = ['repo', 'repo_path', 'repo_remote_url'];
+const FAKE_FOLDER = '/kb-anchor-wiring/not-a-real-folder';
+
+describe.each(TOOLS)('$name KB anchor wiring', ({ schema, call, minimalInput, folder, providersStub, resetFixture }) => {
   beforeEach(async () => {
     await resetFixture?.();
     mockGetKbProviders.mockReset();
     mockGetKbProviders.mockResolvedValue(providersStub());
   });
 
-  // Case 1: the schema accepts repo_remote_url and preserves it through
-  // .parse(). Guards the zod silent-strip mode if kbScopeFields is ever
-  // dropped from a tool's schema spread.
-  it('schema accepts and preserves repo_remote_url through .parse()', () => {
+  it('schema declares no scope field, and strips one sent anyway', () => {
+    const shape = (schema as unknown as z.ZodObject<z.ZodRawShape>).shape;
+    for (const field of SCOPE_FIELDS) expect(Object.keys(shape)).not.toContain(field);
     const parsed = schema.parse({
       ...minimalInput,
+      repo_path: '/elsewhere',
       repo_remote_url: 'https://example.com/acme/repo.git',
-    }) as { repo_remote_url?: string };
-    expect(parsed.repo_remote_url).toBe('https://example.com/acme/repo.git');
+    }) as Record<string, unknown>;
+    for (const field of SCOPE_FIELDS) expect(parsed[field]).toBeUndefined();
   });
 
-  // Case 2: the handler forwards repo_remote_url to getKbProviders as the
-  // SECOND argument. Fails if that argument is ever deleted from the call
-  // site.
-  it('forwards repo_remote_url to getKbProviders as the second argument', async () => {
-    await call({ ...minimalInput, repo_remote_url: 'https://example.com/acme/repo.git' });
+  it('forwards the in-process anchor folder and remoteUrl to getKbProviders', async () => {
+    const anchorFolder = folder ?? FAKE_FOLDER;
+    await call({ ...minimalInput }, { folder: anchorFolder, remoteUrl: 'https://example.com/acme/repo.git' });
 
     expect(mockGetKbProviders).toHaveBeenCalledTimes(1);
+    expect(mockGetKbProviders.mock.calls[0][0]).toBe(anchorFolder);
     expect(mockGetKbProviders.mock.calls[0][1]).toBe('https://example.com/acme/repo.git');
   });
 
-  // Case 3: omitting repo_remote_url keeps the pre-change one-argument
-  // behaviour -- no default is injected, the second argument stays undefined,
-  // and the field stays optional at the schema layer.
-  it('omitting repo_remote_url keeps the pre-change behaviour (no default injected)', async () => {
-    const parsed = schema.parse({ ...minimalInput }) as { repo_remote_url?: string };
-    expect(parsed.repo_remote_url).toBeUndefined();
-
-    await call({ ...minimalInput });
+  it('an anchor without remoteUrl injects no default', async () => {
+    await call({ ...minimalInput }, { folder: folder ?? FAKE_FOLDER });
 
     expect(mockGetKbProviders).toHaveBeenCalledTimes(1);
     expect(mockGetKbProviders.mock.calls[0][1]).toBeUndefined();
   });
 });
 
-// Case 4: slug resolution for a nonexistent remote-style repo_path. Uses the
+// Case 4: slug resolution for a nonexistent remote-style folder. Uses the
 // REAL kb-providers module (bypassing the vi.mock above via importActual) so
 // resolveProjectSlug's remote-URL short-circuit is genuinely exercised --
 // NOT a capture-then-read round trip, since sqlite-provider.ts:323 rejects
 // any capture whose source files cannot resolve under a repoPath that does
 // not exist on disk, before or after this sprint's fixes (that end-to-end
 // case belongs to apra-fleet-b4g.1.5, which uses a real tmpdir fixture).
-describe('slug resolution: nonexistent remote-style repo_path + fake remote URL', () => {
+describe('slug resolution: nonexistent remote-style folder + fake remote URL', () => {
   afterEach(async () => {
     const real = await vi.importActual<typeof import('../../src/services/knowledge/kb-providers.js')>(
       '../../src/services/knowledge/kb-providers.js',

@@ -61,43 +61,35 @@ the bead open and return `status: "BLOCKED"` with `notes` stating it needs
 integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
 explicitly names an already-collected evidence artifact to verify against.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
-   working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
-   about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. Retrieve first, then read source: before reading an unfamiliar file or function, run
-   `mcp__apra-fleet__kb_query({ query: "<name>" })`. Work from a CONFIRMED entry directly;
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the beads you were assigned.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the files and symbols you are about to touch.
+2. Retrieve first, then read source: when the tools are present, run `kb_query` on an
+   unfamiliar file or function before reading it. Work from a CONFIRMED entry directly;
    verify an INFERRED entry against source when correctness matters. Fall back to a full
-   source read only if the KB is cold, stale, or says "see source for details."
-4. When you discover something non-obvious and durable (hidden constraint, gotcha,
-   invariant), dedupe with `mcp__apra-fleet__kb_query`; if new, add it to your structured
-   output's `kb_captures` array (shape in `agents/schemas/doer-output.json`) -- the engine
-   makes the actual `kb_capture` call. Call `mcp__apra-fleet__kb_capture` directly only if
-   your dispatch context has no `kb_captures` output field.
-5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
-6. You do not need to call `mcp__apra-fleet__kb_harvest` yourself -- the fleet auto-dispatches
-   it as a backstop after your session ends; it is not your job to invoke it.
-7. Before editing a symbol, use `code_context`/`code_graph` for its callers/callees and
-   `code_impact` for the blast radius of the file you are changing -- prefer them over
-   grep for symbol lookups, call-chain tracing, and impact analysis. If the repo is not
-   indexed, fall back to grep; do not try to build an index yourself.
-
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+   source read when the KB is cold, stale, or says "see source for details."
+3. When you discover something non-obvious and durable (hidden constraint, gotcha,
+   invariant), dedupe it against the KB (`kb_query` when present, otherwise the block); if
+   new, add it to your structured output's `kb_captures` array (shape in
+   `agents/schemas/doer-output.json`) -- the engine records it. Do not write to the KB
+   yourself. If a KB entry you relied on proves wrong in practice, say so in your final
+   `notes`, naming the entry and what was wrong.
+4. Before editing a symbol, when the code tools are present, use `code_context`/`code_graph`
+   for its callers/callees and `code_impact` for the blast radius of the file you are
+   changing -- prefer them over grep for symbol lookups, call-chain tracing, and impact
+   analysis. If they are absent, fail, or report the repo is not indexed, fall back to
+   grep; do not try to build an index yourself.
 
 ## Step 1 -- Work only your assigned bead ids
 

@@ -167,6 +167,10 @@ export interface PrimeOptions {
   hint_symbols?: string[];
   hint_modules?: string[];
   decay_after_days?: number;
+  // Tier allow-list for the entries prime surfaces. Absent = no tier filter at
+  // this layer (the kb_session_prime tool applies the CONFIRMED-undisputed default).
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
 }
 
 export interface PrimedContext {
@@ -244,7 +248,7 @@ export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[]): Promise<FileContextResult[]>;
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;

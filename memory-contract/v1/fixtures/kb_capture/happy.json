@@ -3,8 +3,6 @@
   "case": "happy",
   "kind": "happy",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "type": "knowledge",
     "title": "exampleFn returns x + 1",
     "summary": "exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.",
@@ -21,7 +19,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"id\":\"e12c88e9-0a56-44dd-b1ee-c522b3559a3e\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+        "text": "{\"id\":\"5dfe9670-72fc-4231-b4f4-a0cd99137775\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
       }
     ]
   }

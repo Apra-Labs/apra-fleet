@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.1 (F5 step 3, D4 HARDENED, resolution R7): kb_resolve_contradiction --
@@ -24,9 +23,6 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // refusal-on-invalid-state methods (kb_promote's directive refusal, kb_feedback's
 // missing-entry error).
 export const kbResolveContradictionSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   winnerId: z.string().min(1).describe('ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear.'),
   loserId: z.string().min(1).describe('ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted.'),
   evidence: z.string().min(1).describe('Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim "hash-basis match on merged worktree" when called by kb_reconcile_prefilter.'),
@@ -34,8 +30,8 @@ export const kbResolveContradictionSchema = z.object({
 
 export type KbResolveContradictionInput = z.infer<typeof kbResolveContradictionSchema>;
 
-export async function kbResolveContradiction(input: KbResolveContradictionInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+export async function kbResolveContradiction(input: KbResolveContradictionInput, anchor?: KbAnchor): Promise<string> {
+  const providers = await getSelfKbProviders(anchor);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_resolve_contradiction');
   const result = await sqliteProvider.resolveContradiction(input.winnerId, input.loserId, input.evidence);
   return JSON.stringify(result);

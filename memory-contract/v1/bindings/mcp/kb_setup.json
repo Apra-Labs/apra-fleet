@@ -1,7 +1,7 @@
 {
   "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_setup.json#",
   "name": "kb_setup",
-  "description": "Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.",
+  "description": "Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).",
   "request": {
     "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.request.json#"
   },

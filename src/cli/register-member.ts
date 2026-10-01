@@ -27,6 +27,9 @@ Required:
 Common:
   --type <local|remote>    Member type (default: remote)
   --llm <provider>         LLM provider: claude|codex|copilot|agy|opencode|none (default: claude)
+  --id <uuid>              Register under this member id (idempotent: the same id again
+                           updates that entry; a folder owned by another id fails with
+                           E-FOLDER-TAKEN)
   --category <label>       Optional group label (e.g. "doers")
   --tags <a,b,c>           Comma-separated free-form tags (max 10)
   --unattended <mode>      Permission mode: false|auto|dangerous
@@ -56,11 +59,13 @@ Models:
 
 // Flags that take a value (everything else is treated as an error).
 const VALUE_FLAGS = new Set([
-  '--name', '--path', '--type', '--llm', '--category', '--tags', '--unattended',
+  '--name', '--path', '--id', '--type', '--llm', '--category', '--tags', '--unattended',
   '--host', '--port', '--username', '--auth', '--password', '--key-path',
   '--git-access', '--git-repos', '--vcs-provider',
   '--model-cheap', '--model-standard', '--model-premium', '--model-tier',
 ]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ParsedFlags {
   values: Record<string, string>;
@@ -157,8 +162,14 @@ export async function runRegisterMember(args: string[]): Promise<void> {
   }
 
   let raw: Record<string, unknown>;
+  let memberId: string | undefined;
   try {
-    raw = buildRawInput(parseFlags(args));
+    const flags = parseFlags(args);
+    raw = buildRawInput(flags);
+    memberId = flags.values['--id'];
+    if (memberId !== undefined && !UUID_RE.test(memberId)) {
+      throw new Error(`--id must be a UUID (got "${memberId}").`);
+    }
   } catch (err: any) {
     console.error(`Error: ${err.message}`);
     process.exitCode = 1;
@@ -191,7 +202,7 @@ export async function runRegisterMember(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await registerMember(parsed);
+  const result = await registerMember(parsed, memberId ? { id: memberId } : {});
   // registerMember returns a human-readable string. The success path always
   // contains "registered successfully"; every failure path returns a message
   // stating the member was NOT registered. Mirror that into an exit code.

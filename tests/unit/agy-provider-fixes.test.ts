@@ -13,6 +13,7 @@ import {
   formatAgyPermissionRules,
   buildAgyNodeCommand,
 } from '../../src/providers/agy.js';
+import { MEMBER_ALLOWED_TOOLS, REGISTERED_TOOL_NAMES } from '../../src/services/member-tool-allowlist.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
 import { CodexProvider } from '../../src/providers/codex.js';
@@ -321,6 +322,21 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
 
       expect(missing).toEqual([]);
       expect(duplicates).toEqual([]);
+    });
+
+    it('derives AGY_MEMBER_ALLOWED_TOOLS from the shared member allowlist', () => {
+      expect(AGY_MEMBER_ALLOWED_TOOLS).toEqual([...MEMBER_ALLOWED_TOOLS]);
+    });
+
+    it('derives AGY_ORCHESTRATOR_DENIED_TOOLS as every registered tool outside the member allowlist', () => {
+      const allowed = new Set(MEMBER_ALLOWED_TOOLS);
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toEqual(REGISTERED_TOOL_NAMES.filter(t => !allowed.has(t)));
+    });
+
+    it('keeps send_message and respond_to_message denied for agy (agy members are not channel-capable)', () => {
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toContain('send_message');
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toContain('respond_to_message');
+      expect(AGY_MEMBER_ALLOWED_TOOLS).not.toContain('respond_to_message');
     });
   });
 });

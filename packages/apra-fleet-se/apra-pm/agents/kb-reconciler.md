@@ -71,7 +71,12 @@ kb_query({ flagged_only: true })
 ```
 
 or direct `kb_list` lookups, to get both entries' full content, symbols, source_files,
-and confidence.
+and confidence. `flagged_only` is exempt from the read tools' default filter and returns
+disputed entries of every tier. A direct `kb_query`/`kb_list` lookup, by contrast, returns
+only CONFIRMED undisputed entries unless you pass an explicit tier list, and either side
+of a pair is usually not CONFIRMED -- so always pass
+`confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` on those lookups
+(e.g. `kb_list({ confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"], tag: ... })`).
 
 ### Step 2: Active directive check (never auto-retired)
 

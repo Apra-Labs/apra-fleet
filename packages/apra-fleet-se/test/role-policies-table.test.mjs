@@ -1122,8 +1122,8 @@ const STEP_EVIDENCE = {
         scope: 'global',
         pattern: (p) => ({
             doer: /kbWork\.apply\(ROLE_DOER,/,
-            reviewer: /kbWork\.apply\(ROLE_REVIEWER, kbPriming\.folderOf\(/,
-            'final-review': /kbWork\.apply\(ROLE_REVIEWER, finalReviewRepoPath,/,
+            reviewer: /kbWork\.apply\(ROLE_REVIEWER, kbMember\(/,
+            'final-review': /kbWork\.apply\(ROLE_REVIEWER, finalReviewKbMember,/,
             harvester: /kbWork\.apply\('harvester',/,
         }[p.ladder]),
     },

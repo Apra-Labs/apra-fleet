@@ -2,28 +2,18 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
-  ...kbScopeFields,
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only surface entries whose confidence tier is in this list. Default when omitted: ["CONFIRMED"] (undisputed) -- INFERRED and UNVERIFIED entries are surfaced only when listed explicitly.'),
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
-  // F4 (T1.6): repo path resolution precedence for the canonical-bible
-  // cold-seed below -- (1) this explicit repo_path input, validated (must
-  // exist and be a directory); (2) validated session context -- this
-  // process's own working directory, used ONLY when repo_path is omitted,
-  // put through the exact same existence + isDirectory check, never trusted
-  // blindly; (3) neither validates -- the cold-seed block is skipped
-  // silently (the existing non-fatal hard-skip contract: prime must never
-  // fail because the repo root could not be validated). There is no bare
-  // process.cwd() fallback: the fallback tier is validated the same way
-  // explicit input is.
-  repo_path: z.string().optional().describe('Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently.'),
 });
 
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
@@ -101,16 +91,13 @@ function canonicalMatchesHints(
   return false;
 }
 
-// F4 (T1.6): shared validation for both precedence tiers -- an explicit
-// repo_path (tier 1) and the session working directory fallback (tier 2, used
-// only when repo_path is omitted) go through the identical existence +
-// isDirectory check. Neither tier is ever trusted without it. Returns null
-// (rather than throwing) when nothing validates, so the caller can hard-skip
-// per the existing non-fatal cold-seed contract.
-function resolveRepoPath(explicit?: string): string | null {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return null;
-  return candidate;
+// The cold-seed below reads <folder>/.fleet/kb-canonical.json, so it needs the
+// anchor folder to be a readable directory on THIS host. Returns null (rather
+// than throwing) when it is not -- a remote member's folder -- so the caller
+// can hard-skip per the existing non-fatal cold-seed contract.
+function localDirOrNull(folder: string): string | null {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return null;
+  return folder;
 }
 
 // T3.5 (F9c, D8): `via` param added, defaulting to 'canonical-bible' so the
@@ -178,30 +165,24 @@ function parseContextNeighbors(result: unknown): string[] {
   }
 }
 
-export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string> {
+export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnchor): Promise<string> {
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
-  // Prime the KB belonging to the repo being primed, not the server's cwd.
-  //
-  // apra-fleet-b4g.4: an explicitly supplied repo_path is passed through
-  // VERBATIM, even when it does not exist on this host (a remote member's
-  // Windows work folder). Routing it through resolveRepoPath() here turned
-  // such a path into null and then, via `?? undefined`, into getKbProviders'
-  // `cwd ?? process.cwd()` -- so the provider serving that member ended up
-  // anchored at the FLEET SERVER'S OWN working directory while repo_remote_url
-  // pointed it at the real shared project KB, and prime re-hashed every
-  // candidate entry's basis against a tree that does not describe it. Keeping
-  // the caller's path means the anchor is honestly "a path this host cannot
-  // see", which SqliteProvider.anchorIsMissing() handles by declining to
-  // produce a freshness verdict at all. resolveRepoPath still guards the
-  // omitted-repo_path fallback (never a bare process.cwd()) and the cold-seed
-  // block below, which does need a readable directory.
-  const providers = await getKbProviders(
-    input.repo_path ?? resolveRepoPath() ?? undefined,
-    input.repo_remote_url,
-  );
+  // Prime the calling session's own KB (kb-self.ts): a member session's work
+  // folder, else the server's folder. A remote member's folder is carried
+  // verbatim even though this host cannot see it -- SqliteProvider.
+  // anchorIsMissing() then declines to produce a freshness verdict rather
+  // than re-hashing against an unrelated tree.
+  const resolved = resolveKbAnchor(anchor);
+  const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+
+  // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
+  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);
+  const exclude_disputed = !input.confidence?.length;
 
   const result = await providers.project.prime({
+    confidence,
+    exclude_disputed,
     session_files: input.session_files,
     hint_symbols: input.hint_symbols,
     hint_modules: input.hint_modules,
@@ -222,6 +203,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
         l1_only: true,
         limit: 10,
         include_stale: false,
+        confidence,
+        exclude_disputed,
       });
       const globalEntries = globalResult.results
         .filter(e => e.type === 'knowledge')
@@ -277,6 +260,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
           l1_only: true,
           limit: 10,
           include_stale: false,
+          confidence,
+          exclude_disputed,
         });
 
         // Merge below direct hits: skip ids already present (direct + global),
@@ -309,7 +294,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   // exactly as built above (same contract as the neighbor block).
   if ((result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
-      const repoRoot = resolveRepoPath(input.repo_path);
+      const repoRoot = localDirOrNull(resolved.folder);
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
       if (canonicalPath && fs.existsSync(canonicalPath)) {
         const raw = fs.readFileSync(canonicalPath, 'utf-8');

@@ -526,8 +526,9 @@ export async function runDevelopPhase({
                 // and titles the engine already holds; expand_related on
                 // that call is what traverses the refines/contradiction_of
                 // edges.
-                const doerRepoPath = kbPriming.folderOf(doerMember);
-                const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                // Read AS the doer member: its session resolves its own repo's KB.
+                const doerKbMember = typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(doerMember) : null;
+                const doerKnowledge = await kbWork.relevantKnowledge(doerKbMember, kbQueryTerms(streak, actualBeadIds));
                 const basePrompt = buildDoerPrompt({
                     beadIds: actualBeadIds,
                     branch: validated.branch,

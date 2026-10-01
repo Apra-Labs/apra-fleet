@@ -61,6 +61,7 @@ export const GUARDED_MODULES = [
     'vcs-auth.mjs',
     'mcp-result.mjs',
     'member-target.mjs',
+    'member-call.mjs',
     'abort.mjs',
     'branch-ensure.mjs',
     'prompts.mjs',

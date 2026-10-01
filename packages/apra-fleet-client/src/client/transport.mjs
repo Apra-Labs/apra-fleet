@@ -142,7 +142,11 @@ export class StreamableHttpTransport extends EventEmitter {
             });
             
             if (!postResponse.ok) {
-                throw new Error(`Init POST error! status: ${postResponse.status}`);
+                const initErr = new Error(`Init POST error! status: ${postResponse.status}`);
+                // Typed so callers can tell a refused member identity (403) from a network failure.
+                initErr.status = postResponse.status;
+                initErr.code = `HTTP_${postResponse.status}`;
+                throw initErr;
             }
 
             this.sessionId = postResponse.headers.get('mcp-session-id');
@@ -318,6 +322,30 @@ export class StreamableHttpTransport extends EventEmitter {
         });
     }
     
+    /**
+     * Release the server-side session (HTTP DELETE with the session id, best
+     * effort and short-bounded), then stop(). stop() alone only aborts the
+     * local streams and leaves the server's session, McpServer and any member
+     * registry entry alive; short-lived callers (apra-fleet call, memberCall)
+     * must use close().
+     */
+    async close() {
+        const sid = this.sessionId;
+        if (sid) {
+            try {
+                const res = await undiciFetch(this.url, {
+                    method: 'DELETE',
+                    headers: { 'mcp-session-id': sid, ...(this.options.headers || {}) },
+                    signal: AbortSignal.timeout(5000),
+                    dispatcher: sseDispatcher,
+                });
+                if (res && res.body) await res.body.cancel().catch(() => {});
+            } catch { /* best effort: the server may already be gone */ }
+            this.sessionId = null;
+        }
+        this.stop();
+    }
+
     stop() {
         if (this.controller) {
             this.controller.abort();

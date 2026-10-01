@@ -1,5 +1,4 @@
-// KB (Knowledge Bank) work for fleet-sprint: the URL-based repo scope
-// selector, the per-dispatch relevance-ranked read (kb_query), the vetting
+// KB (Knowledge Bank) work for fleet-sprint: the per-dispatch relevance-ranked read (kb_query), the vetting
 // and forwarding of a role's kb_captures/kb_promotions payload (kb_capture/
 // kb_promote), the canonical-bible publish (kb_export), the once-per-sprint
 // priming client (kb_session_prime/kb_import) and the prompt-construction
@@ -12,12 +11,18 @@
 // fleet-sprint/runner.js resolve unchanged.
 //
 // Every kb_* call here is BEST-EFFORT and NON-FATAL: a KB outage (cold KB,
-// unreachable server, a rejected or throwing callTool) must only be logged,
-// never fail a dispatch. Every call also spreads repo_path AND the scopeOf()
-// URL-scope fields -- omitting either was a real defect (apra-fleet-23c
-// zod-validation failures without repo_path/content, apra-fleet-tm7's
-// repo-blindness without the URL scope) and both must keep flowing on every
-// site this module owns.
+// unreachable server, a rejected or throwing member call) must only be logged,
+// never fail a dispatch.
+//
+// SCOPE IS THE SESSION, NOT AN ARGUMENT. No kb_* tool takes a repo/scope
+// argument: a kb_* call operates on the calling session's own KB, and a
+// MEMBER session resolves that member's registered work folder. So every
+// member-targeted kb_* call here goes through the injected memberCall(member,
+// tool, args) (member-call.mjs) -- a member-scoped session on that member --
+// rather than the orchestrator's own callTool, whose FULL session would
+// resolve the server's folder instead (the apra-fleet-tm7 repo-blindness
+// class). The orchestrator's callTool is used only for member_detail, to
+// learn each member's id and type.
 
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
@@ -71,26 +76,6 @@ export function isInjectableKbEntry(e) {
 }
 
 /**
- * The URL-based KB scope selector, spread into a kb_* call's arguments.
- *
- * repo_path alone is only sufficient for a LOCAL member: resolveProjectSlug
- * (src/services/knowledge/project-slug.ts) runs git in that directory to derive
- * the project slug. A remote member's work folder is a path on another host, so
- * both git probes fail and the slug degrades to 'default' -- collapsing every
- * remote member's knowledge into one shared KB. repo_remote_url selects the DB
- * directly (apra-fleet-b4g.1) and is what makes a sprint's kb_* calls land in
- * the member's own project KB.
- *
- * Absent when no URL is known: an omitted scope is the honest pre-existing
- * degradation, while a fabricated one routes writes into a slug that does not
- * match the repo's real local-clone slug. The engine never derives a URL -- it
- * forwards only what member_detail reports (knownRepoRemoteUrl's rule).
- */
-export function kbScope(remoteUrl) {
-    return (typeof remoteUrl === 'string' && remoteUrl.length > 0) ? { repo_remote_url: remoteUrl } : {};
-}
-
-/**
  * KB trust pipeline Phase 2, execution half for this engine.
  *
  * The role output schemas are SHARED with apra-pm (contracts.mjs loads them from
@@ -101,8 +86,8 @@ export function kbScope(remoteUrl) {
  *
  * Unlike apra-pm's auto-sprint.js -- a Claude Workflow script with no tool
  * access, which must hand its vetted payload to an executor subagent -- this
- * engine runs in-process with an injected callTool, so it makes the kb_capture
- * and kb_promote calls DIRECTLY. Judgment still belongs to the role; execution
+ * engine runs in-process with an injected memberCall, so it makes the kb_capture
+ * and kb_promote calls DIRECTLY, as the member whose repo learned them. Judgment still belongs to the role; execution
  * belongs here.
  *
  * Validation mirrors lib/vet-kb-work.mjs in apra-pm and the provider invariants
@@ -111,8 +96,8 @@ export function kbScope(remoteUrl) {
  * recorded evidence string, and kb_promotions is refused from any role other
  * than reviewer -- widening capture to four roles must not widen promotion.
  *
- * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
- * @returns {{ apply: (role: string, repoPath: string, result: any) => Promise<{captured: number, promoted: number, refused: number}> }}
+ * @param {{ memberCall?: (member: object, name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {{ apply: (role: string, member: object, result: any) => Promise<{captured: number, promoted: number, refused: number}> }}
  */
 export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
 export const KB_MIN_PROMOTE_REASON = 20;
@@ -121,7 +106,8 @@ export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook
 /**
  * True when an MCP tool result represents a tool-level failure. The MCP client
  * resolves such results instead of throwing (apra-fleet-23c), so callers that
- * only catch exceptions silently treat failures as successes.
+ * only catch exceptions silently treat failures as successes. (memberCall
+ * throws a typed MemberCallError instead; both shapes are handled.)
  */
 function isToolError(res) {
     return !!(res && typeof res === 'object' && res.isError === true);
@@ -186,23 +172,14 @@ export function vetKbWork(role, result) {
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
 
-export function createKbWorkClient(opts = {}) {
-    const { callTool, log = () => {}, remoteUrlFor } = opts;
-    const active = typeof callTool === 'function';
+/** Display label for a member record in log lines. */
+function memberLabel(member) {
+    return (member && (member.name || member.id)) || 'unknown member';
+}
 
-    /**
-     * The URL-based KB scope for a repo path, resolved through the injected
-     * lookup (createKbPrimingClient's remoteUrlForPath). Deliberately NOT an
-     * extra parameter on the methods below: they are called from nine places
-     * across runSprintCycle/finalReview/harvest, and an omitted argument is
-     * indistinguishable from "no URL known" -- it would silently reinstate the
-     * repo-blindness this exists to fix. With no lookup injected (every
-     * construction site predating this, and direct unit calls) the scope is
-     * absent and behaviour is exactly as before.
-     */
-    function scopeOf(repoPath) {
-        return kbScope(typeof remoteUrlFor === 'function' ? remoteUrlFor(repoPath) : null);
-    }
+export function createKbWorkClient(opts = {}) {
+    const { memberCall, log = () => {} } = opts;
+    const active = typeof memberCall === 'function';
 
     /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
     function parseResult(result) {
@@ -230,16 +207,14 @@ export function createKbWorkClient(opts = {}) {
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
          */
-        async promotionCandidates(repoPath) {
-            // Without a repo path kb_list would resolve against the fleet
-            // server's cwd and offer entries from an unrelated project's KB
-            // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
-            if (!active || !repoPath) return [];
+        async promotionCandidates(member) {
+            // Without a resolved member there is no session to scope kb_list
+            // to; refuse rather than read some other KB (the apra-fleet-tm7
+            // repo-blindness class).
+            if (!active || !member) return [];
             try {
-                const parsed = parseResult(await callTool('kb_list', {
-                    repo_path: repoPath,
-                    ...scopeOf(repoPath),
-                    confidence: 'INFERRED',
+                const parsed = parseResult(await memberCall(member, 'kb_list', {
+                    confidence: ['INFERRED'],
                     limit: KB_MAX_PROMOTION_CANDIDATES,
                 }));
                 const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
@@ -250,7 +225,7 @@ export function createKbWorkClient(opts = {}) {
                     .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive')
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
             } catch (err) {
-                log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
+                log(`[kb-work] could not list promotion candidates for ${memberLabel(member)} (non-fatal): ${err.message}`);
                 return [];
             }
         },
@@ -277,25 +252,23 @@ export function createKbWorkClient(opts = {}) {
          * so neither side is safe to hand a role as knowledge until the pair is
          * resolved.
          *
-         * Best-effort, like every other KB read here: no repo path, no terms, a
+         * Best-effort, like every other KB read here: no member, no terms, a
          * cold KB or an unreachable one all degrade to "no knowledge", never to
          * a failed dispatch.
          */
-        async relevantKnowledge(repoPath, terms) {
-            if (!active || !repoPath || !Array.isArray(terms) || terms.length === 0) return [];
+        async relevantKnowledge(member, terms) {
+            if (!active || !member || !Array.isArray(terms) || terms.length === 0) return [];
             const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
             if (!query) return [];
             try {
-                const res = await callTool('kb_query', {
-                    repo_path: repoPath,
-                    ...scopeOf(repoPath),
+                const res = await memberCall(member, 'kb_query', {
                     query,
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
                     confidence: ['CONFIRMED'],
                     exclude_disputed: true,
                 });
-                // apra-fleet-23c: an MCP callTool RESOLVES with {isError:true}
+                // apra-fleet-23c: an MCP tool call can RESOLVE with {isError:true}
                 // for a tool-level failure rather than throwing, so this was
                 // the one kb_* failure path in this module that stayed
                 // silent -- parseResult() returns null for that envelope,
@@ -304,7 +277,7 @@ export function createKbWorkClient(opts = {}) {
                 // misconfigured KB degrades visibly, like every other kb_*
                 // call here.
                 if (isToolError(res)) {
-                    log(`[kb-work] kb_query rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
+                    log(`[kb-work] kb_query rejected for ${memberLabel(member)} (non-fatal): ${toolErrorText(res)}`);
                     return [];
                 }
                 const parsed = parseResult(res);
@@ -328,11 +301,11 @@ export function createKbWorkClient(opts = {}) {
                 }
                 return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
             } catch (err) {
-                log(`[kb-work] kb_query failed for ${repoPath} (non-fatal): ${err.message}`);
+                log(`[kb-work] kb_query failed for ${memberLabel(member)} (non-fatal): ${err.message}`);
                 return [];
             }
         },
-        async apply(role, repoPath, result) {
+        async apply(role, member, result) {
             const { captures, promotions, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
@@ -340,11 +313,11 @@ export function createKbWorkClient(opts = {}) {
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
 
-            // Without a repo path a capture would land in whichever KB the fleet
-            // server's cwd resolves to -- the tm7 defect. Refuse rather than guess.
-            if (!active || !repoPath) {
-                if ((captures.length || promotions.length) && !repoPath) {
-                    log(`[kb-work] no repo path for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+            // Without a resolved member there is no session whose KB the capture
+            // belongs to -- the tm7 defect. Refuse rather than guess.
+            if (!active || !member) {
+                if ((captures.length || promotions.length) && !member) {
+                    log(`[kb-work] no member resolved for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
                 }
                 return { captured: 0, promoted: 0, refused: refused.length };
             }
@@ -353,7 +326,7 @@ export function createKbWorkClient(opts = {}) {
             let promoted = 0;
             for (const c of captures) {
                 try {
-                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath, ...scopeOf(repoPath) });
+                    const res = await memberCall(member, 'kb_capture', { ...c });
                     // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
                     // tool-level failure rather than throwing, so counting every
                     // non-throwing call as a success reported captures that never
@@ -369,14 +342,12 @@ export function createKbWorkClient(opts = {}) {
             }
             for (const p of promotions) {
                 try {
-                    // apra-fleet-0ef: repo_path is REQUIRED here, exactly as on
-                    // the kb_capture call above. Omitting it resolved the
-                    // promotion against the fleet server's cwd -- a different
-                    // project's KB, where the id does not exist -- so every
-                    // promotion would have failed "Entry not found" (the
-                    // apra-fleet-tm7 repo-blindness class, fixed for capture
-                    // but missed here).
-                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath, ...scopeOf(repoPath) });
+                    // apra-fleet-0ef: the promotion MUST run as the same member
+                    // as the capture above. Resolving it in any other session
+                    // targets a different project's KB, where the id does not
+                    // exist, so every promotion would fail "Entry not found"
+                    // (the apra-fleet-tm7 repo-blindness class).
+                    const res = await memberCall(member, 'kb_promote', { id: p.id, reason: p.reason });
                     if (isToolError(res)) {
                         log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
                         continue;
@@ -411,21 +382,20 @@ export function createKbWorkClient(opts = {}) {
          * decision (kb_export's own autoCommit config) -- this does not widen
          * the engine's git authority.
          */
-        async exportBible(repoPath) {
+        async exportBible(member) {
             // Same repo-blindness guard as every other call here: without a
-            // path kb_export would resolve against the fleet server's cwd and
-            // write an unrelated project's bible.
-            if (!active || !repoPath) return false;
+            // member there is no session whose repo the bible belongs to.
+            if (!active || !member) return false;
             try {
-                const res = await callTool('kb_export', { repo_path: repoPath, ...scopeOf(repoPath) });
+                const res = await memberCall(member, 'kb_export', {});
                 if (isToolError(res)) {
-                    log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
+                    log(`[kb-work] kb_export rejected for ${memberLabel(member)} (non-fatal): ${toolErrorText(res)}`);
                     return false;
                 }
-                log(`[kb-work] exported the canonical bible for ${repoPath}`);
+                log(`[kb-work] exported the canonical bible for ${memberLabel(member)}`);
                 return true;
             } catch (err) {
-                log(`[kb-work] kb_export failed for ${repoPath} (non-fatal): ${err.message}`);
+                log(`[kb-work] kb_export failed for ${memberLabel(member)} (non-fatal): ${err.message}`);
                 return false;
             }
         },
@@ -436,32 +406,34 @@ export function createKbWorkClient(opts = {}) {
  * apra-fleet-e28 / KB trust pipeline Phase 2: KB priming for the fleet-sprint
  * engine, which had none -- it lived only in the Claude workflow copy.
  *
- * `callTool` is injected exactly like `createMemberReservationClient`'s, so this
- * stays transport-agnostic and unit-testable without a live fleet server.
+ * `callTool` (the orchestrator's own session, used only for member_detail) and
+ * `memberCall` (member-call.mjs: a MEMBER-scoped session on that member) are
+ * injected, so this stays transport-agnostic and unit-testable without a live
+ * fleet server.
  *
- * WHY PER MEMBER, NOT PER SPRINT: this engine has no repo path of its own. It
+ * WHY PER MEMBER, NOT PER SPRINT: this engine has no repo of its own. It
  * coordinates members by name and branch; the repo lives on each member's side,
- * possibly on a different host at a different path. `kb_session_prime` selects
- * WHICH project KB is read from its `repo_path`, and omitting that argument
- * falls back to the fleet server's own cwd -- collapsing every member's
- * knowledge into whichever repo the server happens to sit in, which is exactly
- * the apra-fleet-tm7 / apra-fleet-3zl repo-blindness defect. So the work folder
- * is resolved per member via `member_detail` (which reports it as `folder`) and
- * each member is primed against its own repo.
+ * possibly on a different host at a different path. A kb_* call operates on
+ * the CALLING SESSION's own KB -- a member session resolves that member's
+ * registered work folder -- so each member is primed through its own member
+ * session. Priming through the orchestrator's session would read whichever
+ * repo the fleet server sits in (the apra-fleet-tm7 / apra-fleet-3zl
+ * repo-blindness defect). member_detail supplies the member's id and type
+ * (what memberCall needs) and its work folder.
  *
  * Best-effort throughout, matching the reservation client's precedent: a member
- * whose folder cannot be resolved, or whose prime call fails, is logged and
- * skipped. A sprint must not fail because the KB is cold -- priming is an
- * optimisation, and every role contract's Step 0 already degrades gracefully
- * when the KB tools are unavailable.
+ * that cannot be resolved, or whose prime call fails, is logged and skipped. A
+ * sprint must not fail because the KB is cold -- priming is an optimisation,
+ * and every role contract's Step 0 already degrades gracefully when the KB
+ * tools are unavailable.
  *
- * @param {{ callTool?: (name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, memberCall?: (member: object, name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
  * @returns {{ primeAll: () => Promise<{primed: number, skipped: number}> }}
  */
 
 export function createKbPrimingClient(opts = {}) {
-    const { callTool, members = [], log = () => {} } = opts;
-    const active = typeof callTool === 'function' && members.length > 0;
+    const { callTool, memberCall, members = [], log = () => {} } = opts;
+    const active = typeof callTool === 'function' && typeof memberCall === 'function' && members.length > 0;
 
     function parseResult(result) {
         if (result && typeof result === 'string') { try { return JSON.parse(result); } catch { return null; } }
@@ -471,42 +443,34 @@ export function createKbPrimingClient(opts = {}) {
         return (result && typeof result === 'object') ? result : null;
     }
 
-    async function scopeFor(member) {
+    async function resolveMember(member) {
         // apra-fleet-n78: format:'json' is REQUIRED. member_detail defaults to
         // 'compact', whose renderer emits no folder at all -- `folder` is set only
         // on the json path (src/tools/member-detail.ts). Omitting it made this
         // return null for every member, so the KB was never primed for anyone.
         const detail = parseResult(await callTool('member_detail', { member_name: member, format: 'json' }));
-        // member_detail reports the work folder as `folder` and the repo origin
-        // URL as `repo_remote_url` (src/tools/member-detail.ts). The URL is
-        // reported only when the member's registration record proves it, so an
-        // absent one is normal and must stay absent rather than be derived here.
-        const folder = detail && (detail.folder || (detail.member && detail.member.folder));
-        const url = detail && (detail.repo_remote_url || (detail.member && detail.member.repo_remote_url));
+        const d = detail && (detail.member && typeof detail.member === 'object' ? { ...detail.member, ...detail } : detail);
+        const folder = d && d.folder;
+        const id = d && d.id;
         return {
             folder: (typeof folder === 'string' && folder.length > 0) ? folder : null,
-            remoteUrl: (typeof url === 'string' && url.length > 0) ? url : null,
+            // The record memberCall needs: the member's id (session identity)
+            // and type (local -> in-process session, remote/relay -> the member's
+            // own `apra-fleet call`).
+            record: (typeof id === 'string' && id.length > 0)
+                ? { id, name: member, type: typeof d.type === 'string' ? d.type : undefined }
+                : null,
         };
     }
 
-    // member -> work folder, populated by primeAll(). createKbWorkClient reads
-    // it so a capture lands in the repo the member actually worked in, rather
-    // than being resolved against the fleet server's cwd.
+    // member -> work folder, populated by primeAll(). Informational: no kb_*
+    // call takes it any more (the member session resolves it server-side).
     const folders = new Map();
 
-    // member -> the repo origin URL member_detail reported for it, when it
-    // reported one. This is what scopes a REMOTE member's kb_* calls to its own
-    // project KB instead of the shared 'default' one (see kbScope).
-    const remoteUrls = new Map();
-
-    // work folder -> that folder's origin URL, or CONFLICTING_URL when two
-    // members claim the same path string for DIFFERENT repos. The work client
-    // resolves its scope through this map rather than taking the URL as an
-    // extra argument at each of its nine call sites: threading the repo path is
-    // then the same act as threading the scope, so a site cannot forget one
-    // while remembering the other.
-    const urlByFolder = new Map();
-    const CONFLICTING_URL = Symbol('conflicting-remote-url');
+    // member name -> the member record memberCall needs ({id, name, type}).
+    // createKbWorkClient's calls take this record, so a capture lands in the
+    // KB of the member that actually did the work.
+    const records = new Map();
 
     // member -> the entries kb_session_prime returned for that member.
     //
@@ -526,24 +490,9 @@ export function createKbPrimingClient(opts = {}) {
         folderOf(member) {
             return folders.get(member) || null;
         },
-        remoteUrlOf(member) {
-            return remoteUrls.get(member) || null;
-        },
-        /**
-         * The URL scoping kb_* calls made against `repoPath`, or null.
-         *
-         * Null for an unknown path, for a local member (no URL was reported),
-         * and for a path two members claim with different URLs. Members on
-         * different hosts can share a work-folder path string while being
-         * clones of different repos; picking either URL there would route one
-         * member's captures into the other's KB, which is strictly worse than
-         * the 'default' degradation this scoping exists to remove. Refusing
-         * leaves that case exactly as it was before.
-         */
-        remoteUrlForPath(repoPath) {
-            if (typeof repoPath !== 'string' || repoPath.length === 0) return null;
-            const url = urlByFolder.get(repoPath);
-            return (typeof url === 'string') ? url : null;
+        /** The member record ({id, name, type}) kb work for `member` runs as, or null. */
+        memberOf(member) {
+            return records.get(member) || null;
         },
         knowledgeOf(member) {
             return knowledge.get(member) || [];
@@ -554,25 +503,17 @@ export function createKbPrimingClient(opts = {}) {
             let skipped = 0;
             for (const member of members) {
                 try {
-                    const { folder: repoPath, remoteUrl } = await scopeFor(member);
-                    if (repoPath) folders.set(member, repoPath);
-                    if (remoteUrl) remoteUrls.set(member, remoteUrl);
-                    if (repoPath && remoteUrl) {
-                        const known = urlByFolder.get(repoPath);
-                        if (known !== undefined && known !== remoteUrl) {
-                            urlByFolder.set(repoPath, CONFLICTING_URL);
-                            log(`[kb-prime] work folder ${repoPath} is claimed by two different repos -- KB calls for it stay unscoped`);
-                        } else {
-                            urlByFolder.set(repoPath, remoteUrl);
-                        }
-                    }
-                    if (!repoPath) {
-                        // No folder means no repo to scope the KB to. Priming without
-                        // one would read the fleet server's own KB, so skip instead.
-                        log(`[kb-prime] no work folder for member '${member}' -- skipping (KB stays cold)`);
+                    const { folder, record } = await resolveMember(member);
+                    if (folder) folders.set(member, folder);
+                    if (!record) {
+                        // No member id means no member session to scope the KB to.
+                        // Priming any other way would read the fleet server's own
+                        // KB, so skip instead.
+                        log(`[kb-prime] could not resolve member '${member}' -- skipping (KB stays cold)`);
                         skipped++;
                         continue;
                     }
+                    records.set(member, record);
                     // Land the committed bible in the WARM KB before priming.
                     //
                     // Without this the bible is reachable only through
@@ -599,15 +540,17 @@ export function createKbPrimingClient(opts = {}) {
                     // it; prime()'s own bounded checkFreshness still guards each
                     // entry it actually returns.
                     try {
-                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, ...kbScope(remoteUrl), skip_sweep: true }));
+                        // No `path`: the member session imports its OWN folder's
+                        // committed bible (<work folder>/.fleet/kb-canonical.json).
+                        const imported = parseResult(await memberCall(record, 'kb_import', { skip_sweep: true }));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
-                            log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
+                            log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }
                     } catch (err) {
-                        log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
+                        log(`[kb-prime] kb_import skipped for '${member}' (non-fatal): ${err.message}`);
                     }
 
-                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) }));
+                    const primeResult = parseResult(await memberCall(record, 'kb_session_prime', {}));
                     // Same injection rule as relevantKnowledge, applied BEFORE the
                     // cap so a prime dominated by INFERRED captures does not
                     // crowd out the CONFIRMED entries behind them.

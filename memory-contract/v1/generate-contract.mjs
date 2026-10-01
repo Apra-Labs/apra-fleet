@@ -148,7 +148,12 @@ const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per 
 // tool-registry.ts -- same rationale as KB_MODULES/CODE_EXPORTS above. This is
 // the "registration description text captured in INVENTORY.md" this task's
 // binding definitions embed per its acceptance criteria.
-const DESCRIPTIONS = {
+// Every kb_* registration appends KB_SELF_NOTE (src/services/knowledge/kb-self.ts),
+// reproduced byte-exact here for the same no-runtime-dependency reason.
+const KB_SELF_NOTE =
+  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+
+const BASE_DESCRIPTIONS = {
   kb_capture:
     'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED, and a user-directive is stored UNVERIFIED as a pending proposal until a human approves it; confidence_clamped:true whenever the stored confidence differs from the requested one (default INFERRED). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=same-topic predecessor linked (refines; both entries stay live), flagged=contradiction flagged for review. Pass supersedes:<id> to retire that entry instead (only takes effect if AUDN independently matched it).',
   kb_invalidate:
@@ -158,9 +163,9 @@ const DESCRIPTIONS = {
   kb_session_prime:
     'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.',
   kb_query:
-    'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged. Pass confidence (a tier allow-list, e.g. ["CONFIRMED"]) and/or exclude_disputed: true to restrict every returned entry -- related_claims included -- to that tier and to entries outside any unresolved contradiction; both default off.',
+    'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged. With no confidence filter the default is confidence ["CONFIRMED"] plus exclude_disputed: true, so only CONFIRMED entries outside any unresolved contradiction are returned (related_claims included). Pass an explicit confidence list (e.g. ["CONFIRMED","INFERRED","UNVERIFIED"]) to opt into other tiers; exclude_disputed then defaults off unless set true. flagged_only is exempt.',
   kb_list:
-    'List KB entries by confidence/type/module/symbol/tag -- audit the CONFIRMED set (or any tier) without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}.',
+    'List KB entries by confidence/type/module/symbol/tag -- audit the KB. With no confidence filter, returns only CONFIRMED, undisputed entries; pass an explicit confidence list (e.g. ["INFERRED","UNVERIFIED"]) to see other tiers without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}.',
   kb_harvest:
     'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.',
   kb_promote:
@@ -168,7 +173,7 @@ const DESCRIPTIONS = {
   kb_freshness_sweep:
     'Bounded full-KB bidirectional freshness sweep: re-hash every entry that has a stored per-file basis against the CURRENT worktree, mark mismatches stale, and revive stale entries whose full basis matches again (superseded, feedback-downvoted, and invalidated entries stay retired). This is the branch-switch revival surface kb_session_prime cannot be (prime excludes stale entries). Returns {checked, staled, unstaled}.',
   kb_import:
-    'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Accepts BOTH bible shapes: a legacy bare JSON array and the v2 {version, provenance:{commit, branch, entry_count}, entries} envelope. Entries with no source_files, or citing files absent from this worktree, are REJECTED (an entry with no checkable basis can never be staled, so nothing could falsify it) -- re-importing a legacy bible deliberately drops those. Returns {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}. Pass skip_sweep: true to skip the post-import freshness sweep -- the sweep re-judges EVERY entry against the given worktree, which is right for a deliberate audit but wrong for a routine warm-the-KB import (it mass-stales entries merely because unrelated files moved on, which in turn empties the promotion candidates kb_list returns). Accepts `repo_path` as an alias for `repo`, matching every other kb_* tool (the apra-fleet-src input-name trap: zod strips an unknown key silently, so the mismatched name resolved against the server cwd instead of erroring). TRUST BOUNDARY: importing the repo-resolved bible is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote. Directives are quarantined either way; activation stays CLI-only.',
+    'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Accepts BOTH bible shapes: a legacy bare JSON array and the v2 {version, provenance:{commit, branch, entry_count}, entries} envelope. Entries with no source_files, or citing files absent from this worktree, are REJECTED (an entry with no checkable basis can never be staled, so nothing could falsify it) -- re-importing a legacy bible deliberately drops those. Returns {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}. Pass skip_sweep: true to skip the post-import freshness sweep -- the sweep re-judges EVERY entry against the given worktree, which is right for a deliberate audit but wrong for a routine warm-the-KB import (it mass-stales entries merely because unrelated files moved on, which in turn empties the promotion candidates kb_list returns). `path` names only the bible file to read, never which KB is written. TRUST BOUNDARY: importing the repo-resolved bible is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote. Directives are quarantined either way; activation stays CLI-only.',
   kb_resolve_contradiction:
     'Resolve a KB contradiction pair: {winnerId, loserId, evidence}. The SINGLE write path for reconcile resolutions (used by kb_reconcile_prefilter and the reconciler agent alike). Winner ends confidence=CONFIRMED with the evidence note appended and both flag fields cleared (flagged_for_review + contradiction_of); stale is cleared ONLY if the D2 un-stale predicate holds on the post-flag-clear row (so a downvoted or invalidated winner still stays retired -- it wins the contradiction, not its reputation). Loser ends superseded_at=now + stale=1 + flag cleared, never deleted. REFUSES (throws, writes nothing) when either id is missing, either entry is already superseded, the ids do not form a genuinely linked contradiction pair, or the pair involves an ACTIVE user-directive.',
   kb_reconcile_prefilter:
@@ -197,14 +202,18 @@ const DESCRIPTIONS = {
     'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.',
 };
 
+const DESCRIPTIONS = Object.fromEntries(
+  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, tool.startsWith('kb_') ? text + KB_SELF_NOTE : text]),
+);
+
 // x-invariant stamping (GENERATOR-DECISION.md section 4): this is the "only
 // code that knows which tool a given document came from", so it is this
 // script's job -- not postprocess-2020-12.mjs's -- to apply the id -> tool
 // mapping from the Applies-to column of that table.
-const REQUEST_INVARIANTS = {
+// INV-05 (session-scoped KB, no scope field) applies to EVERY kb_* request and
+// is merged in below rather than repeated per tool.
+const REQUEST_INVARIANTS_BASE = {
   kb_capture: ['INV-01', 'INV-02', 'INV-03', 'INV-04', 'INV-07'],
-  kb_import: ['INV-05'],
-  kb_stats: ['INV-05'],
   kb_setup: ['INV-06'],
   // INV-08's second half is a request-side guard: "at least one of query, tag
   // or flagged_only MUST be supplied; the handler throws when all three are
@@ -213,6 +222,10 @@ const REQUEST_INVARIANTS = {
   // it is annotated on the request document too, not just the response.
   kb_query: ['INV-08'],
 };
+const REQUEST_INVARIANTS = Object.fromEntries(
+  KB_MODULES.map(([tool]) => [tool, [...(REQUEST_INVARIANTS_BASE[tool] ?? []), 'INV-05'].sort()]),
+);
+for (const [tool, ids] of Object.entries(REQUEST_INVARIANTS_BASE)) REQUEST_INVARIANTS[tool] ??= ids;
 // INV-09 ("no tool declares a response zod schema; shapes are OBSERVED, not
 // authoritative") applies to every response document. INV-08 (kb_query's two
 // mutually exclusive response shapes) additionally applies to kb_query's.

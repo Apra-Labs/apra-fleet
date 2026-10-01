@@ -98,17 +98,18 @@ and are classified `pure read` here at the fleet boundary; the ACTIVE PROVIDER
 owns the real effect and idempotency of its own payload (`INVENTORY.md`
 section 4.3).
 
-### 2.4 Repo-path validation is not uniform across tools (KB constraint)
+### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
 
-Some tools that route to the same provider method validate `repo_path` against
-the real filesystem and refuse before the provider is ever reached
-(`kb_export`, `kb_import` -- `E-REPO-PATH-INVALID`); others pass `repo_path`
-through verbatim and tolerate a missing anchor (`kb_session_prime`,
-`kb_stats`, and every other `kb_*` tool). This is recorded per affected method,
-per tool, in `methods.json`'s `_meta.kb_constraint_repo_path_validation` and in
-each affected method entry's `tools[].repo_path_validation` field -- not
-flattened into one blanket statement here, because `list` and `capture` are
-each reached by tools on both sides of the split.
+No `kb_*` tool takes a repo/scope argument. The KB a call reads/writes is the
+calling session's own: a member session resolves its registered work folder,
+any other session the fleet server's working folder. A folder that cannot
+carry a KB identity is refused before the provider is reached
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
+member's folder lives on another host: the read tools carry it verbatim and
+tolerate the missing anchor, while the writing tools (`kb_export`,
+`kb_import`) refuse with `E-REPO-PATH-INVALID`. This is recorded in
+`methods.json`'s `_meta.kb_self_resolution` and per tool in each method
+entry's `tools[].anchor_validation` field.
 
 ## 3. Error model
 
@@ -129,7 +130,10 @@ backwards:
 - `validation` vs `provider_internal`: a refusal decided from the caller's
   input alone before any provider exists is validation, even when it is raised
   by a tool that is about to talk to a provider. This is the recorded decision
-  for `E-REPO-PATH-INVALID` (see its `group_decision` field).
+  for `E-REPO-PATH-INVALID` (see its `group_decision` field). The self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`)
+  codes are the converse: no request field is wrong (there is no scope field),
+  the session's resolved KB configuration cannot serve the call, so they are
+  `provider_internal` (see their `group_decision` fields).
 - `authority` vs `governance`: authority refuses an attempt to write trust
   above the INFERRED ceiling; governance refuses an attempt to retire,
   override, or activate an entry regardless of tier.
@@ -144,9 +148,9 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   confidence clamp, the AUDN `none` (dedup) decision, and the AUDN `flagged`
   (contradiction) decision. Each is reported in a named response field, so a
   caller can already see exactly what happened.
-- **A read tolerated a missing anchor** -- the verbatim `repo_path`
-  passthrough. The writing branch of that same one policy does refuse, and that
-  branch is the one with a code.
+- **A read tolerated a missing anchor** -- a remote member session's folder,
+  carried verbatim. The writing branch of that same one policy does refuse, and
+  that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   and missing-index results, the swallowed bible read, the emptied
   `related_claims`, the unknown author role, and a provider reporting stats as
@@ -197,70 +201,53 @@ else").
 
 ### 4.1 Scope resolution and repo aliasing
 
-**THE RULE.** Wherever a tool exposes both `repo` and `repo_path` as scope
-inputs for the same call, a provider MUST resolve the effective repo path as
-`input.repo ?? input.repo_path`, with `repo` taking precedence. A generated
-binding MUST carry BOTH field names into its request shape for `kb_import`
-and `kb_stats`; it MUST NOT keep only one, because zod strips an unrecognized
-key silently rather than rejecting it -- a binding that drops one name does
-not fail the call, it silently degrades to reading the wrong repo (or none),
-and reports an EMPTY or ZEROED knowledge base instead of an error. `kb_setup`'s
-`repo_path` MUST NOT be read as a scope-resolution input by any consumer: it
-carries no project-KB scope semantics at all. (INV-05, INV-06)
+**THE RULE.** No `kb_*` request carries a scope field: a binding MUST NOT
+declare `repo`, `repo_path` or `repo_remote_url` on any `kb_*` request. A
+provider MUST resolve the KB from the CALLING SESSION -- a member session's
+registered work folder, otherwise the server's own working folder -- and MUST
+refuse a folder that cannot carry a KB identity with the matching typed code
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`), each with a
+one-line remediation, rather than degrading to a directory-name or `default`
+KB. `kb_import`'s `path` names a bible file and MUST NOT select which KB is
+written. `kb_setup` installs its hook into the session's folder and writes one
+global config; when the folder cannot carry a KB identity it skips the hook
+and reports the typed reason rather than refusing. (INV-05, INV-06)
 
-**THE PROOF.** `kb_import` declares both fields (`src/tools/kb-import.ts:39-40`
-`repo`, `:48-49` `repo_path`, described as an alias "ignored when repo is
-also supplied") and resolves `input.repo ?? input.repo_path` at
-`src/tools/kb-import.ts:137`. `kb_stats` does the same: both fields at
-`src/tools/kb-stats.ts:18-19` and `:27-28`, resolved at
-`src/tools/kb-stats.ts:50`. The shared `kbScopeFields` spread
-(`src/services/knowledge/kb-scope-input.ts:8-11`) supplies only
-`repo_remote_url` -- `repo_path` itself is declared individually per tool
-(e.g. `src/tools/kb-list.ts:12`, `kb-context.ts:8`, `kb-invalidate.ts:10`),
-not by the shared spread; `INVENTORY.md`'s line describing `kbScopeFields` as
-where both names "come from" (section 2.1) is imprecise on this point, though
-its `kb_setup`-exclusion and alias-pair claims both verify against source.
+**THE PROOF.** `src/services/knowledge/kb-self.ts` owns the resolution:
+`resolveSelfAnchor()` reads the session member id (`getSessionMemberId()`,
+`src/services/tool-scope.ts`), looks the member up in the registry and
+validates its folder (`validateSelfFolder()`: exists, `git rev-parse` succeeds,
+`git remote get-url origin` succeeds); with no member identity it validates
+`process.cwd()`. Every `kb_*` handler calls it (`getSelfKbProviders()` or
+`resolveKbAnchor()`), and none of `src/tools/kb-*.ts` declares a scope field.
+A remote member (agentType not local) cannot be checked on this host, so its
+KB identity is its single known origin remote (`knownRepoRemoteUrl`) and the
+folder is passed verbatim; `kb_session_prime` and `kb_stats` tolerate that
+missing anchor (`taxonomy.json` non_error_outcomes
+`N-ANCHOR-VERBATIM-MISSING`), while `kb_export` and `kb_import` refuse with
+`E-REPO-PATH-INVALID` (`requireLocalFolder`). In-process callers that already
+know the repo (the post-dispatch harvest in `src/tools/execute-prompt.ts`, the
+`kb commit` / `kb import` CLIs) pass an explicit anchor as the handler's second
+argument, which no MCP request can carry.
 `src/services/knowledge/kb-providers.ts` caches provider instances by
-`providerKey(slug, repoPath)` (`:59-61`), NUL-joined and used as the map key
-at `:88` -- deliberately NOT slug alone, per the comment at `:49-56`, so two
-callers resolving to the same project slug but different repo paths get
-distinct anchors rather than sharing the first caller's. `kb-setup.ts:8-17`
-does not spread `kbScopeFields`; its `repo_path` (`:9-10`) is used only to
-build `gitDir` and call `installKbPostCommitHook` (`:28-31`, the hook 4.5
-already covers), and the tool writes ONE config to a module-level
-`KB_CONFIG_PATH` (`:22`, `:55`) with no slug or repo dimension at all.
-Validation differs per tool on this same field: `kb_import` and `kb_export`
-validate `repo`/`repo_path` against the real filesystem and refuse before a
-provider exists (`E-REPO-PATH-INVALID`, `taxonomy.json` groups.validation,
-raised at `src/tools/kb-import.ts:75`); `kb_stats` passes its resolved value
-straight into `getKbProviders` verbatim (`src/tools/kb-stats.ts:65-68`) and
-only runs a filesystem check separately, and non-fatally, for the
-bible-drift read (`:86`); `kb_session_prime` is the other verbatim-passthrough
-tool named in `taxonomy.json`'s `_meta.anchor_policy_note`. Both are read-only,
-so an unreachable anchor degrades to "no knowledge here yet" rather than a
-refusal (`taxonomy.json` non_error_outcomes `N-ANCHOR-VERBATIM-MISSING`,
-`_meta.anchor_policy_note`).
+`providerKey(slug, repoPath)`, NUL-joined -- deliberately NOT slug alone, so
+two anchors resolving to the same project slug but different folders get
+distinct basis-hash roots rather than sharing the first caller's.
 
-**THE OBLIGATION.** A generated binding for `kb_import` or `kb_stats` MUST
-expose both `repo` and `repo_path` as independent request fields, with `repo`
-taking precedence when both are supplied -- omitting either name is not a
-safe simplification. A binding or second implementation MUST NOT infer
-project-KB scope-resolution behavior for `kb_setup` merely because it has a
-`repo_path` field; that field's only effect is locating a `.git` directory
-for hook installation. Any provider-instance cache MUST key on the (slug,
-repoPath) pair, not slug alone, or two callers sharing a slug but not a repo
-path will silently share one anchor and one basis-hash root. An
-implementation MUST preserve which tools validate-and-refuse versus
-pass-through-and-tolerate on this field -- turning `kb_stats`/
-`kb_session_prime` into validators would push callers toward omitting
-`repo_path` altogether, which is the one thing the passthrough design exists
-to avoid.
+**THE OBLIGATION.** A generated binding MUST NOT reintroduce a scope field on
+any `kb_*` request; scope is a property of the session, not of the call. An
+implementation MUST derive KB identity from the resolved folder's origin
+remote and MUST surface the three self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) codes rather than guessing. Any
+provider-instance cache MUST key on the (slug, repoPath) pair, not slug
+alone. An implementation MUST preserve which tools refuse versus tolerate an
+unreachable remote folder -- read tools tolerate, writing tools refuse.
 
-**THE TEST HOOK.** No assertion in the conformance list matches this
-directly. The round-trip harness exercises `kb_import`/`kb_stats`/`kb_setup`
-happy-path fixtures (`tests/roundtrip-harness.mjs`) at the request-schema
-level, but has no dedicated alias-precedence assertion; the `repo_path`-
-vs-filesystem gap is `tests/DEGRADATION.md` D-1 and the (slug, repoPath)
+**THE TEST HOOK.** The round-trip harness dispatches every fixture as a
+registered member session (`tests/roundtrip-harness.mjs` `ENVIRONMENT.sessions`)
+and carries one refusal fixture per self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) code
+(`kb_query/refusal-self-no-workfolder`, `kb_stats/refusal-self-not-a-repo`,
+`kb_list/refusal-self-no-remote`); the request schemas' `additionalProperties:
+false` rejects a scope field before dispatch. The (slug, repoPath)
 cache-keying invariant is `tests/DEGRADATION.md` D-2.
 
 ### 4.2 Capture provenance and confidence clamp
@@ -587,8 +574,8 @@ by setting `content_hash = 'invalidated'` for files named in a commit
 (`src/services/knowledge/sqlite-provider.ts:1119-1139`, the SET clause at
 `:1137`); the git hook that calls it is installed by
 `installKbPostCommitHook` (`src/tools/kb-invalidate.ts:25-32`), which
-`kb-setup.ts:31` invokes when `repo_path` is supplied -- hook installation is
-the only thing that `repo_path` argument does in `kb-setup.ts` (see 4.1).
+`kb-setup.ts` invokes for the calling session's own folder when it carries a
+KB identity and has a `.git` directory (see 4.1).
 
 **THE OBLIGATION.** A second implementation MUST reproduce the silence, on
 the route that computes `content_hash` at all (`kb_capture`):
@@ -676,14 +663,19 @@ attempting discriminator-style dispatch against the emitted schema, since the
 emitted `anyOf` carries no machine-readable discriminant mapping.
 
 **TRUST FILTERS.** The default (non-`flagged_only`) branch accepts two
-optional, default-off filters: `confidence`, a non-empty allow-list of tiers
+optional filters: `confidence`, a non-empty allow-list of tiers
 (`CONFIRMED`/`INFERRED`/`UNVERIFIED`), and `exclude_disputed`, which drops any
 entry on either side of an unresolved contradiction (`flagged_for_review`
 true, or `contradiction_of` set). When supplied, an implementation MUST apply
 them to every entry the response carries -- `l1_results`, `l2_expanded` AND
 `related_claims` -- so a filtered caller is never handed an excluded entry
-through the graph expansion instead. When both are absent the response MUST
-be exactly what it was without them. The `flagged_only` branch ignores both
+through the graph expansion instead. When `confidence` is
+absent the default is `["CONFIRMED"]` with `exclude_disputed` true: INFERRED,
+UNVERIFIED and disputed entries are returned only when the caller lists the
+tiers explicitly (an explicit `confidence` defaults `exclude_disputed` to
+false). The same default applies to `kb_list` (whose `confidence` is an array
+of tiers), `kb_session_prime` and `kb_context` (both accept the same optional
+`confidence` array). The `flagged_only` branch ignores both
 (listing disputed entries is its purpose). An implementation backed by a
 store that cannot filter MUST filter the merged result itself before
 responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
