@@ -344,6 +344,9 @@ session (`session.id`, the current session ID or `null`), work folder
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
+| `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
+
+`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -414,6 +417,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
+| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 
 

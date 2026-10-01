@@ -190,6 +190,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
+ * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
@@ -228,6 +229,17 @@
  */
 
 /**
+ * A member's own apra-fleet MCP observation (src/types.ts FleetMcpStatus).
+ * @typedef {Object} FleetMcpStatus
+ * @property {"available" | "unavailable"} state
+ * @property {string} [reason] - Machine-readable cause when unavailable (e.g. install-too-old, E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp)
+ * @property {string} [version] - apra-fleet version the member's own install reports
+ * @property {string} checkedAt - ISO 8601 time of the probe
+ * @property {string} [detail] - Human-readable diagnostic
+ * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
+ */
+
+/**
  * Structured result returned by memberDetail() when called with format: 'json'
  * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
  * instead returns a plain multi-line text summary, not this shape.
@@ -256,6 +268,8 @@
  * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project
  *   (~/.gemini/config/projects/<id>.json), passed as `--project <id>` on every dispatch; null until
  *   provisioned (compose_permissions/execute_prompt provision it on first use)
+ * @property {FleetMcpStatus|null} fleetMcp - Last recorded state of the member's own apra-fleet MCP
+ *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -654,7 +668,7 @@ export class ApraFleet {
 
     /**
      * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
-     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json', refresh?: boolean }} options
      * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
      *   "compact" (default), or the structured MemberDetailResult object when format is "json".
      */
