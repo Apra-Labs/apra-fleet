@@ -227,7 +227,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const ctxConfidence = url.searchParams.get('confidence')
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
-        const result = await provider.context(files, ctxConfidence);
+        const result = await provider.context(files, ctxConfidence, url.searchParams.get('exclude_disputed') === 'true');
         return jsonResponse(res, 200, { results: result });
       }
 

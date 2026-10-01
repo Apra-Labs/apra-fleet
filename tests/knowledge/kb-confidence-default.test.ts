@@ -94,6 +94,8 @@ describe('default (no confidence filter) is CONFIRMED + undisputed', () => {
     expect(got).toContain(ids.confirmed);
     expect(got).not.toContain(ids.inferred);
     expect(got).not.toContain(ids.unverified);
+    expect(got).not.toContain(ids.flagged);
+    expect(got).not.toContain(ids.challenger);
     for (const e of parsed.results) expect(e.confidence).toBe('CONFIRMED');
   });
 
@@ -125,6 +127,27 @@ describe('default (no confidence filter) is CONFIRMED + undisputed', () => {
 
     const explicit = JSON.parse(await kbContext({ files, confidence: ['INFERRED'] } as any));
     expect(explicit.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-inferred.ts']);
+  });
+
+  it('kb_context excludes disputed CONFIRMED cache entries by default', async () => {
+    const mk = (file: string, o: Partial<KBEntryInput>) => makeInput({
+      type: 'context-cache', title: `cache ${file}`, source_files: [file],
+      content_hash: 'invalidated', ...o,
+    });
+    const flaggedId = (await provider.capture(
+      mk('src/cd/ctx-flagged.ts', { confidence: 'CONFIRMED', flagged_for_review: true }), { importMode: true })).id;
+    await provider.capture(
+      mk('src/cd/ctx-challenger.ts', { confidence: 'CONFIRMED', contradiction_of: flaggedId } as Partial<KBEntryInput>),
+      { importMode: true });
+    const files = ['src/cd/ctx-flagged.ts', 'src/cd/ctx-challenger.ts'];
+
+    const byDefault = JSON.parse(await kbContext({ files } as any));
+    expect(byDefault.missing.sort()).toEqual([...files].sort());
+    expect(byDefault.stale).toEqual([]);
+
+    // An explicit tier list opts out of the dispute filter.
+    const explicit = JSON.parse(await kbContext({ files, confidence: ['CONFIRMED'] } as any));
+    expect(explicit.stale.map((r: any) => r.file).sort()).toEqual([...files].sort());
   });
 });
 

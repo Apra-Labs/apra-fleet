@@ -248,7 +248,7 @@ export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[], confidence?: Confidence[]): Promise<FileContextResult[]>;
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;

@@ -1083,12 +1083,12 @@ export class SqliteProvider implements MemoryProvider {
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
 
-  async context(files: string[], confidence?: Confidence[]): Promise<FileContextResult[]> {
+  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]> {
     const db = this.getDb();
     const results: FileContextResult[] = [];
-    const confClause = confidence?.length
+    const confClause = (confidence?.length
       ? `AND confidence IN (${confidence.map(() => '?').join(',')})`
-      : '';
+      : '') + (excludeDisputed ? ' AND flagged_for_review = 0 AND contradiction_of IS NULL' : '');
     const confParams: SQLInputValue[] = confidence?.length ? [...confidence] : [];
 
     const fileEntries = new Map<string, KBEntry>();
@@ -1235,7 +1235,7 @@ export class SqliteProvider implements MemoryProvider {
     this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
 
     const fileResults = opts.session_files?.length
-      ? await this.context(opts.session_files, opts.confidence)
+      ? await this.context(opts.session_files, opts.confidence, opts.exclude_disputed)
       : [];
 
     const stale_files = fileResults
@@ -1331,10 +1331,14 @@ export class SqliteProvider implements MemoryProvider {
     symbol?: string;
     tag?: string;
     limit?: number;
+    exclude_disputed?: boolean;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
     const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
     const params: SQLInputValue[] = [];
+    if (opts.exclude_disputed) {
+      conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
+    }
 
     if (opts.confidence?.length) {
       conditions.push(`e.confidence IN (${opts.confidence.map(() => '?').join(',')})`);

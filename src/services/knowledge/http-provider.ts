@@ -201,18 +201,19 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  async context(files: string[], confidence?: Confidence[]): Promise<FileContextResult[]> {
+  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]> {
     await this.tryFlushQueue();
     try {
       const ctxParams: Record<string, string> = { files: files.join(',') };
       if (confidence?.length) ctxParams.confidence = confidence.join(',');
+      if (excludeDisputed) ctxParams.exclude_disputed = 'true';
       const result = await this.rawRequest<{ results: FileContextResult[] }>(
         'GET', '/api/kb/context', undefined, ctxParams
       );
       return result.results;
     } catch (err) {
       if (isConnectionError(err)) {
-        return this.fallback.context(files, confidence);
+        return this.fallback.context(files, confidence, excludeDisputed);
       }
       throw err;
     }

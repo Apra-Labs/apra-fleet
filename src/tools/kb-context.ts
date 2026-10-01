@@ -20,12 +20,14 @@ export async function kbContext(input: KbContextInput): Promise<string> {
   const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
 
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbContextInput['confidence']>);
-  let results = await providers.project.context(input.files, confidence);
+  // Default-trusted read: CONFIRMED and undisputed unless a tier list is given.
+  const excludeDisputed = !input.confidence?.length;
+  let results = await providers.project.context(input.files, confidence, excludeDisputed);
 
   // Fallback to global if project has no results
   const hasFresh = results.some(r => r.status === 'fresh');
   if (!hasFresh) {
-    const globalResults = await providers.global.context(input.files, confidence);
+    const globalResults = await providers.global.context(input.files, confidence, excludeDisputed);
     const hasFreshGlobal = globalResults.some(r => r.status === 'fresh');
     if (hasFreshGlobal) {
       results = globalResults;

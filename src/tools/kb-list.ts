@@ -32,6 +32,8 @@ export async function kbList(input: KbListInput): Promise<string> {
 
   const entries = await sqliteProvider.list({
     confidence: input.confidence?.length ? input.confidence : DEFAULT_CONFIDENCE,
+    // Default read is CONFIRMED *and* undisputed; an explicit tier list opts out.
+    exclude_disputed: !input.confidence?.length,
     type: input.type,
     module: input.module,
     symbol: input.symbol,
