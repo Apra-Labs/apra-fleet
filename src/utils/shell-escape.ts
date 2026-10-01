@@ -52,15 +52,20 @@ export function escapeWindowsArg(s: string): string {
  * out for the same reason as escapeShellArgInner above: a value that must sit
  * INSIDE an already-open PowerShell single-quoted string reuses this directly
  * instead of re-implementing the doubling rule (apra-fleet-3swo.7.16).
+ *
+ * PowerShell treats U+2018..U+201B (curly/low-9/reversed single quotes) as
+ * single-quote characters too, so any of them would end the literal. Each
+ * quote character is doubled as itself, which PowerShell reads back as that
+ * one literal character. Strings without these characters are unchanged.
  */
 export function escapePowerShellArgInner(s: string): string {
-  return s.replace(/'/g, "''");
+  return s.replace(/['\u2018-\u201B]/g, '$&$&');
 }
 
 /**
  * Escape a string for safe use as a PowerShell single-quoted string literal.
  * Single-quoted strings in PowerShell are fully literal — no variable expansion.
- * Internal single quotes are escaped by doubling them: ' → ''
+ * Internal single quotes (ASCII ' and U+2018..U+201B) are escaped by doubling them.
  * Returns the value wrapped in single quotes.
  */
 export function escapePowerShellArg(s: string): string {

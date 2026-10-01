@@ -112,8 +112,10 @@ function shQuote(value, os, shell) {
         // above (what the NATIVE child parses), then PowerShell's own
         // single-quoted-string escape (what PowerShell parses to get the
         // value it hands the binder) -- a lone `'` inside a `'...'` string
-        // is written as `''`.
-        return `'${escapeForWindowsArgv(value).replace(/'/g, "''")}'`;
+        // is written as `''`. PowerShell also ends a single-quoted string on
+        // U+2018..U+201B (common in LLM-written PR text), so each of those is
+        // doubled as itself too.
+        return `'${escapeForWindowsArgv(value).replace(/['\u2018-\u201B]/g, '$&$&')}'`;
     }
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }

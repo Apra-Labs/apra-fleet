@@ -4,7 +4,7 @@ import { removeAgent as removeFromRegistry, getAllAgents } from '../services/reg
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { escapeShellArgInner, escapeSedBasicRegex } from '../utils/shell-escape.js';
+import { escapeShellArgInner, escapeSedBasicRegex, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
@@ -98,10 +98,11 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             const keyMatch = parts.slice(0, 2).join(' ');
             const isWindows = getAgentOS(agent) === 'windows';
             const removeKeyCmd = isWindows
-              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
+              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${escapePowerShellArgInner(keyMatch)}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
               // Escape for a /-delimited sed BRE, then for the single-quoted shell
               // argument (key_path is caller-supplied, so the .pub content is not
-              // trusted). A well-formed key (type + base64) is byte-identical.
+              // trusted). A well-formed key still matches the same line (types
+              // with a `.`, e.g. sk-/cert keys, now carry `\.` in the pattern).
               : `sed -i '/${escapeShellArgInner(escapeSedBasicRegex(keyMatch))}/d' ~/.ssh/authorized_keys`;
             try {
               const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);

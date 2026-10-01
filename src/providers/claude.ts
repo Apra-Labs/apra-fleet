@@ -1,3 +1,4 @@
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -819,7 +820,7 @@ function psGated(script: string): string {
  *  POSIX heredoc form is unchanged. */
 export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
   return opts.isWindows
-    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
+    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
     : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
 }
 

@@ -68,6 +68,44 @@ describe('escapePowerShellArg', () => {
     expect(escapePowerShellArg("it's")).toBe("'it''s'");
     expect(escapePowerShellArg("a'b'c")).toBe("'a''b''c'");
   });
+
+  // PowerShell also ends a single-quoted literal on U+2018..U+201B. Built
+  // with fromCharCode so this source file stays ASCII.
+  const SMART_QUOTES = [0x2018, 0x2019, 0x201a, 0x201b].map((c) => String.fromCharCode(c));
+
+  for (const q of SMART_QUOTES) {
+    it(`doubles U+${q.charCodeAt(0).toString(16).toUpperCase()} as itself`, () => {
+      expect(escapePowerShellArgInner(`a${q}b`)).toBe(`a${q}${q}b`);
+      expect(escapePowerShellArg(`${q}; Write-Output pwned; ${q}`)).toBe(`'${q}${q}; Write-Output pwned; ${q}${q}'`);
+    });
+  }
+
+  it('leaves strings without single-quote characters unchanged', () => {
+    const plain = 'C:\\Program Files\\x "y" $env:PATH `z`';
+    expect(escapePowerShellArgInner(plain)).toBe(plain);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'round-trips hostile smart-quote values literally through real powershell -EncodedCommand',
+    async () => {
+      const { execFileSync } = await import('node:child_process');
+      const rsq = String.fromCharCode(0x2019);
+      const values = [
+        `a${rsq}; Write-Output pwned; ${rsq}b`,
+        `${SMART_QUOTES.join('x')}'mixed'${rsq}`,
+      ];
+      for (const v of values) {
+        const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write(${escapePowerShellArg(v)})`;
+        const out = execFileSync(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+          { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        expect(out).toBe(v);
+      }
+    },
+    30000,
+  );
 });
 
 // apra-fleet-3swo.7.16 criterion 2 (anti-drift invariant): escapeShellArg and
