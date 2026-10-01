@@ -1,3 +1,4 @@
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -621,7 +622,7 @@ async function deliverConfigFile(
 
   const writeCmd = posix
     ? `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
-    : `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`;
+    : `[System.IO.File]::WriteAllText("${winPath}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false)))`;
   const writeResult = await strategy.execCommand(writeCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(

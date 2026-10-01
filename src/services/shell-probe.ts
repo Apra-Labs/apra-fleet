@@ -22,6 +22,7 @@
  * so it survives regardless of whether the member's SSH default shell is
  * cmd.exe or PowerShell -- no quoting of ours ever reaches an unknown parser.
  */
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import type { MemberShell } from '../os/os-commands.js';
 import type { RemoteOS } from '../utils/platform.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
@@ -90,11 +91,11 @@ export function isWslLauncherPath(candidatePath: string): boolean {
  *  process's own. */
 export function buildGitBashDiscoveryCommand(): string {
   const machineCandidates = GIT_BASH_MACHINE_CANDIDATES
-    .map((p) => `'${p.replace(/'/g, "''")}'`)
+    .map((p) => `'${escapePowerShellArgInner(p)}'`)
     .join(',');
   const ps = [
     `$c = @(${machineCandidates})`,
-    `if ($env:LOCALAPPDATA) { $c += (Join-Path $env:LOCALAPPDATA '${GIT_BASH_USER_SUFFIX.replace(/'/g, "''")}') }`,
+    `if ($env:LOCALAPPDATA) { $c += (Join-Path $env:LOCALAPPDATA '${escapePowerShellArgInner(GIT_BASH_USER_SUFFIX)}') }`,
     `$c += @(Get-Command bash.exe -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })`,
     `$c | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique | ForEach-Object { Write-Output ('${BASH_CANDIDATE_MARKER}' + $_) }`,
   ].join('; ');
@@ -105,7 +106,7 @@ export function buildGitBashDiscoveryCommand(): string {
  *  it is. `&` is the call operator -- without it PowerShell would merely echo the
  *  quoted path back, exit 0, and look like a success. */
 export function buildGitBashProbeCommand(bashPath: string): string {
-  const quoted = bashPath.replace(/'/g, "''");
+  const quoted = escapePowerShellArgInner(bashPath);
   return wrapPowerShellEncoded(`& '${quoted}' -lc 'uname -s'`);
 }
 

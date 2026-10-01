@@ -37,7 +37,7 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 - Spawn succeeds -> process exits immediately -> **"[FAIL] Password entry cancelled"** error fires.
 - The error implies the user cancelled, not that the environment is headless.
 
-The same issue on Windows: `start /wait cmd.exe` opens a window on the physical console, invisible to the SSH user.
+The same issue on Windows: the credential console (a hidden PowerShell launcher running `Start-Process -Wait`; cmd.exe is never used, so prompt text is never parsed by it) opens a window on the physical console, invisible to the SSH user.
 
 ### Solution
 
@@ -59,7 +59,7 @@ export function hasInteractiveDesktop(): boolean {
 `launchAuthTerminal` checks these **before** attempting any terminal emulator:
 
 - **Linux, `$DISPLAY` and `$WAYLAND_DISPLAY` both unset:** Skip all GUI terminal emulators. Return actionable fallback message.
-- **Windows, `SESSIONNAME !== 'Console'`:** Skip `cmd.exe start /wait`. Return actionable fallback message.
+- **Windows, `SESSIONNAME !== 'Console'`:** Skip the console launch. Return actionable fallback message.
 - **GUI desktop (display available):** Unchanged -- auto-launches terminal as before.
 
 ### Why check env vars rather than probing the socket

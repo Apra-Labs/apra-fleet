@@ -977,6 +977,51 @@ test('(ta3.4-4) isMissingRemoteRefError: matches git\'s exact wording case-insen
     check(isMissingRemoteRefError(undefined) === false, 'undefined input must not match (defaults to empty string, never throws)');
 });
 
+// apra-fleet-ta3 (G-pull half): a G-pull fetch of a sprint branch not yet on
+// origin fails with "couldn't find remote ref", which classifies 'unknown';
+// runGitStep used to route it into the auth self-heal (provision_vcs_auth +
+// retry) before syncMemberBefore's own missing-ref no-op could run.
+test('(ta3-gpull-1) G-pull: sprint branch absent on origin -> pull skipped as a no-op, NO auth self-heal, fetch issued once, no merge', async () => {
+    const { command, calls } = makeCommandMock({
+        'git fetch': [fail("Exit code: 128\n[stderr]\nfatal: couldn't find remote ref feat/x")],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const logs = [];
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure, log: (l) => logs.push(l) });
+
+    check(res.ok === true, `expected ok:true no-op, got ${JSON.stringify(res)}`);
+    check(healCalls === 0, `a missing remote ref must never invoke the auth self-heal, saw ${healCalls} call(s)`);
+    check(calls.filter((c) => /git fetch/.test(c.cmd)).length === 1, `expected exactly one fetch (no post-heal retry), saw ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    check(!calls.some((c) => /git merge|git reset/.test(c.cmd)), 'no merge/reset may run when there is nothing on the remote to pull');
+    check(!logs.some((l) => /self-heal|unknown git failure|auth/i.test(l)), `no auth/self-heal log line expected, got ${JSON.stringify(logs)}`);
+    check(logs.some((l) => /does not exist on 'origin' yet/.test(l)), `expected the clear "not pushed yet" skip log line, got ${JSON.stringify(logs)}`);
+});
+
+test('(ta3-gpull-2) G-pull: sprint branch present on origin -> fetch + ff-only merge run as before', async () => {
+    const { command, calls } = makeCommandMock({});
+    let healCalls = 0;
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure: async () => { healCalls += 1; } });
+
+    check(res.ok === true, `expected ok:true, got ${JSON.stringify(res)}`);
+    check(healCalls === 0, 'no self-heal on a clean pull');
+    const cmds = calls.map((c) => c.cmd);
+    check(cmds[0] === 'git fetch origin feat/x', `expected the fetch first, got ${JSON.stringify(cmds)}`);
+    check(cmds.includes('git merge --ff-only origin/feat/x'), `expected the ff-only merge to run, got ${JSON.stringify(cmds)}`);
+});
+
+test('(ta3-gpull-3) G-pull: a non-missing-ref unknown fetch failure still gets the one-shot self-heal (guard is narrow)', async () => {
+    const { command, calls } = makeCommandMock({
+        'git fetch': [fail('fatal: some novel provider failure text'), OK],
+    });
+    let healCalls = 0;
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure: async () => { healCalls += 1; } });
+
+    check(res.ok === true, `expected success after the healed retry, got ${JSON.stringify(res)}`);
+    check(healCalls === 1, `expected exactly one self-heal for an unknown non-missing-ref failure, saw ${healCalls}`);
+    check(calls.filter((c) => /git fetch/.test(c.cmd)).length === 2, 'fetch retried once after the self-heal');
+});
+
 test('(ported) syncMemberAfterOrdered: clean G-push publishes, then D-push runs (both succeed)', async () => {
     const { command, calls } = makeCommandMock({});
     const res = await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true });

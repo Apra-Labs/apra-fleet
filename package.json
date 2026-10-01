@@ -51,8 +51,8 @@
     "access": "public"
   },
   "overrides": {
-    "undici": "^7.29.0",
-    "fast-uri": "4.1.2"
+    "undici": "^7.30.0",
+    "fast-uri": "^4.1.5"
   },
   "scripts": {
     "build": "npm run build:contract && tsc",
@@ -99,9 +99,9 @@
     "@modelcontextprotocol/sdk": "^1.27.0",
     "ajv": "^8.12.0",
     "pg": "^8.22.0",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.7.1",
     "ssh2": "^1.17.0",
-    "undici": "^7.29.0",
+    "undici": "^7.30.0",
     "uuid": "^14.0.0",
     "zod": "^3.25.0"
   },
@@ -115,7 +115,8 @@
     "pg-mem": "^3.0.14",
     "postject": "^1.0.0-alpha.6",
     "typescript": "^5.5.0",
-    "vitest": "^4.0.18",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11",
     "yaml": "^2.9.0",
     "zod-to-json-schema": "^3.25.1"
   }
