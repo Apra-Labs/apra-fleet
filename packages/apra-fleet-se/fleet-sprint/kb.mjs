@@ -391,11 +391,17 @@ export function createKbWorkClient(opts = {}) {
         // G-pull BEFORE every batch: the maintainer's checkout must hold the
         // files the queued captures cite before kb_capture's basis check runs.
         if (typeof gPull === 'function') {
+            // Register the pull in inFlight so dispatchStarted() waits it out
+            // instead of running its own G-pull concurrently on the same checkout.
+            const pull = Promise.resolve().then(() => gPull(maintainer));
+            inFlight.set(maintainer, pull.then(() => {}, () => {}));
             try {
-                await gPull(maintainer);
+                await pull;
             } catch (err) {
                 log(`[kb-work] WARN: G-pull on maintainer '${maintainer}' failed (${err && err.message ? err.message : String(err)}) -- maintainer unreachable; ${queue.length} KB write(s) for ${repo} stay queued`);
                 return counts;
+            } finally {
+                inFlight.delete(maintainer);
             }
         }
         const batch = queue.splice(0, queue.length);

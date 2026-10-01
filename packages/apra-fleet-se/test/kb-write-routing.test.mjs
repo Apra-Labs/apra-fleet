@@ -188,6 +188,23 @@ describe('KB write routing: busy maintainer', () => {
         await Promise.all([applying, starting]);
         assert.deepEqual(order, ['write-done', 'dispatch-start']);
     });
+
+    test('dispatchStarted waits out a queue G-pull already in flight to the maintainer', async () => {
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const order = [];
+        const h = harness({ gPull: async () => { await gate; order.push('gpull-done'); } });
+        const applying = h.client.apply('doer', 'doer-a', { kb_captures: [CAPTURE] });
+        await new Promise((r) => setImmediate(r));
+        const starting = h.client.dispatchStarted('maint-a').then(() => order.push('dispatch-start'));
+        await new Promise((r) => setImmediate(r));
+        assert.deepEqual(order, [], 'the dispatch must not start while the queue G-pull is in flight');
+        release();
+        await Promise.all([applying, starting]);
+        assert.deepEqual(order, ['gpull-done', 'dispatch-start']);
+        assert.equal(h.calls().length, 0, 'no write lands once the dispatch has started');
+        assert.equal(h.client.pendingCount(REPO_A), 1);
+    });
 });
 
 describe('KB write routing: unreachable maintainer', () => {
