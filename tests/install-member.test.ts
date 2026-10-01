@@ -139,4 +139,22 @@ describe('install --member', () => {
     expect(err).toContain('E-MEMBER-AUTOSTART');
     expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
   });
+
+  it('fails with E-MEMBER-AUTOSTART for --transport stdio and installs nothing', async () => {
+    await runInstall(['--transport', 'stdio', '--member']);
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
+    expect(mockSvcMgr.register).not.toHaveBeenCalled();
+    expect(mcpAdds()).toEqual([]);
+  });
+
+  it('fails with E-MEMBER-AUTOSTART for a non-SEA install', async () => {
+    _setSeaOverride(false);
+    await runInstall(['--transport', 'http', '--member']);
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
+    expect(mockSvcMgr.register).not.toHaveBeenCalled();
+  });
 });

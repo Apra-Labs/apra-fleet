@@ -1196,6 +1196,20 @@ Options:
   }
 
   const serviceStep = isSea() && transport === 'http';
+  // A member install exists to leave an auto-starting server behind. With no
+  // service step (stdio transport or non-SEA install) nothing would register
+  // the auto-start, so fail loudly before touching anything.
+  if (memberMode && !serviceStep) {
+    const why = transport !== 'http'
+      ? `--transport ${transport} has no auto-start (use --transport http)`
+      : 'a non-SEA (dev) install has no auto-start (use the SEA binary)';
+    console.error(`
+Error: E-MEMBER-AUTOSTART: --member requires the user-mode auto-start, but ${why}.
+Nothing was installed.
+`);
+    process.exitCode = 1;
+    return;
+  }
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
