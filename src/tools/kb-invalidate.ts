@@ -3,7 +3,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import { getSessionMemberId } from '../services/tool-scope.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbInvalidateSchema = z.object({
@@ -36,8 +35,8 @@ export async function kbInvalidate(input: KbInvalidateInput, anchor?: KbAnchor):
   }
   if (input.ids) {
     const providers = await getSelfKbProviders(anchor);
-    const memberId = getSessionMemberId();
-    const result = await providers.project.discard(input.ids, memberId ? { ownerTag: `member:${memberId}` } : undefined);
+    const ownerTag = memberOwnerTag(anchor);
+    const result = await providers.project.discard(input.ids, ownerTag !== undefined ? { ownerTag } : undefined);
     return JSON.stringify(result);
   }
   validateFilePaths(input.files!);

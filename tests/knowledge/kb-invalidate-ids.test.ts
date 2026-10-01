@@ -8,7 +8,7 @@ const providerState = vi.hoisted(() => ({ p: undefined as unknown }));
 vi.mock('../../src/services/tool-scope.js', () => ({ getSessionMemberId: () => memberState.id }));
 vi.mock('../../src/services/knowledge/kb-self.js', () => ({
   getSelfKbProviders: async () => ({ project: providerState.p, global: {}, projectSlug: 'slug' }),
-  memberOwnerTag: () => (memberState.id === undefined ? undefined : `member:${memberState.id}`),
+  memberOwnerTag: (anchor?: unknown) => (anchor !== undefined || memberState.id === undefined ? undefined : `member:${memberState.id}`),
 }));
 
 import { kbInvalidate } from '../../src/tools/kb-invalidate.js';
@@ -76,6 +76,13 @@ describe('kb_invalidate {ids}', () => {
     expect(ids).toContain(untagged.id);
     const row = (provider as any).getDb().prepare('SELECT superseded_at FROM entries WHERE id = ?').get(other.id);
     expect(row.superseded_at).toBeNull();
+  });
+
+  it('MEMBER session with an explicit in-process anchor discards another member\'s entry (full scope, like kb_promote/kb_capture)', async () => {
+    const other = await provider.capture(input('etaone', [`member:${B}`]));
+    memberState.id = A;
+    const out = JSON.parse(await kbInvalidate({ ids: [other.id] } as any, { folder: '/tmp/x', remoteUrl: 'https://example.invalid/r.git' } as any));
+    expect(out).toEqual({ discarded: [other.id], not_found: [], already_discarded: [] });
   });
 
   it('FULL session may discard any entry', async () => {
