@@ -222,22 +222,21 @@ for the exact selection rule and its fallback-construction invariant.
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
-that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
-post-commit hook; it does not scope the config. On a shared fleet server,
+that server. `kb_setup` only places the git post-commit hook (in the calling
+session's own repo); it does not scope the config. On a shared fleet server,
 treat `kb_setup --remote` as a change for all of its users.
 
-Every KB tool call is scoped to the repo it is about -- a fleet server
-handling many members across many repos never lets one repo's learnings land
-in another repo's KB. Scope is normally derived from the caller's repo path;
-tools also accept an explicit `repo_remote_url` so a remote member (whose
-work folder is a path on another host, unreachable from the fleet server's
-filesystem) resolves to the same project KB as a local clone of that repo
-instead of a shared fallback database. The automatic post-prompt harvest and
-the `code_context` KB enrichment path both forward this URL too, and an
-unreachable work-folder path is never silently swapped for the fleet
-server's own working directory -- see
+Every KB tool call is scoped to the calling session's own repo -- a fleet
+server handling many members across many repos never lets one repo's
+learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
+a member session uses its registered work folder and any other session uses
+the fleet server's working folder, and a folder that is not a git repository
+with an origin remote is refused with a typed `E-SELF-*` error. Member
+sessions get a reduced tool list (`kb_*`, `code_*` and a few self-reporting
+tools), and the `apra-fleet call` verb lets a process call tools as a member.
+KB reads default to CONFIRMED, undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the full anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.

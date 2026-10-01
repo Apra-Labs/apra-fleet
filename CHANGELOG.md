@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign: self-scoped KB, member tool scope, `apra-fleet call`
+
+Sprint goal: make the knowledge bank scope itself from the calling session instead of caller-supplied paths, and give member sessions a restricted, callable tool surface.
+
+- `kb_*` tools no longer accept `repo_path`, `repo` or `repo_remote_url` (schemas and memory contract updated). A member session resolves to its registered work folder, any other session to the server's folder; unusable folders fail with typed `E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO` or `E-SELF-NO-REMOTE` errors.
+- Member sessions get a reduced tool list derived from one shared allowlist (`kb_*`, `code_*`, `version`, `report_status`, `session_stats`); other tools are omitted and an unregistered `?member=` gets 403. The agy member lists derive from the same allowlist.
+- New `apra-fleet call` CLI verb (args from a file, typed errors), an engine `memberCall` helper (local in-process, remote via `send_files` + `execute_command`) and client `listTools`/`connectFleetMember` with HTTP `DELETE` session release. Engine KB calls now run as the member.
+- `kb_query`, `kb_list` and `kb_context` default to CONFIRMED, undisputed entries; `flagged_only` is exempt and internal callers pass confidence explicitly.
+- `register_member --id` is idempotent and returns `E-FOLDER-TAKEN` on folder conflicts; `install --member` installs only the server and its auto-start and fails with `E-MEMBER-AUTOSTART` when none runs.
+- Role prompt Step 0 uses KB/code tools when present, otherwise the injected KNOWLEDGE BANK block, and never blocks on tool failure; a contract test guards the tool names.
+
+Carried forward: remote-member KB calls fail (non-fatal) until `apra-fleet` is installed and registered on the member; the remote branch of anchor resolution is untested; member sessions can reach write/admin KB tools by design; remote KB captures are not batched.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $34.4210.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1149 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
 
 A G-pull fetch of a sprint branch that is not on origin yet (`fatal: couldn't find remote ref`)
