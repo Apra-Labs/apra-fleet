@@ -250,7 +250,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },

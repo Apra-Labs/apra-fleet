@@ -111,6 +111,21 @@ tolerate the missing anchor, while the writing tools (`kb_export`,
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
+### 2.5 MEMBER-session behaviour (bible view and own-scope writes)
+
+In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
+`kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
+member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
+changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
+returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
+on entries carrying that tag and report any other id as not found, changing
+nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+the entries (sets `superseded_at`, never deletes) and returns
+`{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
+`E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
+unchanged.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of

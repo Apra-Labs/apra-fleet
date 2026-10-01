@@ -94,10 +94,18 @@ const KB_RESPONSE_BODIES = {
     audn_decision: z.enum(['add', 'update', 'flagged', 'none']),
     confidence_clamped: z.boolean(),
   }),
-  kb_invalidate: z.object({
-    invalidated: z.number(),
-    files: z.array(z.string()),
-  }),
+  // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
+  kb_invalidate: z.union([
+    z.object({
+      invalidated: z.number(),
+      files: z.array(z.string()),
+    }),
+    z.object({
+      discarded: z.array(z.string()),
+      not_found: z.array(z.string()),
+      already_discarded: z.array(z.string()),
+    }),
+  ]),
   // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`
   // and `stale` are NOT string arrays. src/tools/kb-context.ts:32-33 filters
   // the provider's result objects (`{file, status, reason, entry_id}`) and

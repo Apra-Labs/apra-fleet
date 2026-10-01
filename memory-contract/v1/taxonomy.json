@@ -432,6 +432,18 @@
           "retryable": false,
           "remediation": "Run 'git remote add origin <url>' in the folder (remote member: record the origin URL on the member's git_repos).",
           "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* requests carry no scope argument. The KB configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders, on every kb_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+        },
+        {
+          "code": "E-MEMBER-VIEW-READ-ONLY",
+          "meaning": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+          "raising_methods": [
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-feedback.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the session kind cannot perform the operation. Thrown before any KB is opened and writes nothing."
         }
       ]
     }
