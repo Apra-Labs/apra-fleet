@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
     "branch": "main",
-    "entry_count": 255
+    "entry_count": 256
   },
   "entries": [
     {
@@ -1882,6 +1882,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
+      "type": "knowledge",
+      "title": "execute_prompt checks detectUsageLimit after every parseResponse and fails with reason 'usage_limit'",
+      "summary": "execute-prompt.ts's checkUsageLimit runs provider.detectUsageLimit after all five parseResponse calls (initial dispatch, stale-session retry, overloaded retry, orphan recovery, trust-heal retry), regardless of exit code. On a signal it records the session and returns isError with reason 'usage_limit', a usageLimit block (resumeAt/resumeAtSource/message) and sessionId; it never burns the stale-session or overloaded retries. The workflow layer forwards usageLimit and sessionId onto AgentDispatchError.details unchanged.",
+      "symbols": [
+        "checkUsageLimit",
+        "detectUsageLimit",
+        "AgentDispatchError"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "tests/execute-prompt.test.ts",
+        "packages/apra-fleet-workflow/test/apra-fleet-workflow-errors.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-09-29T06:24:09.270Z"
     },
     {
       "id": "589cae8c-4b30-4561-bc80-6e5cb2fd77be",
