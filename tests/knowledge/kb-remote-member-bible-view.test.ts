@@ -10,10 +10,13 @@ import { exec } from 'node:child_process';
 // standing in for the member's host.
 
 const execLog: string[] = [];
+let transport: 'ok' | 'reject' | 'nonzero' = 'ok';
 vi.mock('../../src/services/strategy.js', () => ({
   getStrategy: () => ({
-    execCommand: (command: string) => new Promise(resolve => {
+    execCommand: (command: string) => new Promise((resolve, reject) => {
       execLog.push(command);
+      if (transport === 'reject') { reject(new Error('connect ETIMEDOUT')); return; }
+      if (transport === 'nonzero') { resolve({ stdout: '', stderr: 'ssh: host unreachable', code: 255 }); return; }
       exec(command, { shell: '/bin/sh' }, (err, stdout, stderr) =>
         resolve({ stdout, stderr, code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 }));
     }),
@@ -65,7 +68,7 @@ afterAll(() => {
   restoreRegistry();
   fs.rmSync(scratch, { recursive: true, force: true });
 });
-beforeEach(() => { resetMemberBibleViews(); execLog.length = 0; });
+beforeEach(() => { resetMemberBibleViews(); execLog.length = 0; transport = 'ok'; });
 
 describe('MEMBER session on a remote (non-local) member reads its checkout bible', () => {
   it('kb_query and kb_stats serve the bible CONFIRMED set, no E-MEMBER-VIEW-REMOTE', async () => {
@@ -74,7 +77,7 @@ describe('MEMBER session on a remote (non-local) member reads its checkout bible
     expect(ids(out.l1_results)).toEqual(['r-1', 'r-2']);
     const stats = await asMember(() => kbStats({}));
     expect(stats).not.toContain('E-MEMBER-VIEW-REMOTE');
-    expect(stats).toContain('CONFIRMED');
+    expect(JSON.parse(stats).totals.by_confidence.CONFIRMED).toBe(2);
   });
 
   it('refetches the bible only when mtime/size changed (one stat per read)', async () => {
@@ -91,10 +94,18 @@ describe('MEMBER session on a remote (non-local) member reads its checkout bible
     expect(execLog.filter(c => c.startsWith('cat ')).length).toBe(2);
   });
 
-  it('an unreachable member fails loudly instead of falling back to the per-repo DB', async () => {
+  it('a malformed bible fails loudly instead of falling back to the per-repo DB', async () => {
     fs.rmSync(path.join(folder, '.fleet'), { recursive: true, force: true });
     fs.mkdirSync(path.join(folder, '.fleet'));
     fs.writeFileSync(bible(), '{ not json', 'utf-8');
     await expect(asMember(() => kbQuery({ query: 'sprocket' }))).rejects.toThrow(/E-BIBLE-MALFORMED|not valid JSON/);
+  });
+
+  it.each(['reject', 'nonzero'] as const)('an unreachable member (%s) fails with E-MEMBER-VIEW-REMOTE and never reads the per-repo DB', async mode => {
+    writeBible([entry('r-1')]);
+    transport = mode;
+    await expect(asMember(() => kbQuery({ query: 'sprocket gearbox' }))).rejects.toThrow(/E-MEMBER-VIEW-REMOTE/);
+    await expect(asMember(() => kbStats({}))).rejects.toThrow(/E-MEMBER-VIEW-REMOTE/);
+    expect(execLog.every(c => !c.startsWith('cat '))).toBe(true);
   });
 });
