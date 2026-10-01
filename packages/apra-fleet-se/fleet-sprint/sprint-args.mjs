@@ -91,6 +91,11 @@ const KNOWN_ARG_KEYS = new Set([
     // itself -- see docs/fleet-sprint-cli-contract.md's "Dormant argument
     // audit" section for the full record.
     'assignee',
+    // Explicitly skip the once-per-sprint regression pass (launch option:
+    // the CLI's --skip-regression, the supervisor's phases.regression:"skip").
+    // Never silent: the engine logs it and the sprint report and PR body say
+    // "skipped by launch option". The integration-test phase is unaffected.
+    'skip_regression',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -379,6 +384,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
     }
 
+    // --- skip_regression (optional, default false) -------------------------
+    const skipRegression = args.skip_regression === undefined ? false : args.skip_regression;
+    if (typeof skipRegression !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid skip_regression "${skipRegression}": must be a boolean.`);
+    }
+
     // --- resume_model_switch (optional, default false) ---------------------
     const resumeModelSwitch = args.resume_model_switch === undefined ? false : args.resume_model_switch;
     if (typeof resumeModelSwitch !== 'boolean') {
@@ -446,6 +457,7 @@ export function validateArgs(args) {
         azdevopsPatSecretName: args.azdevops_pat_secret_name,
         doerWorklistMode,
         resumeModelSwitch,
+        skipRegression,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
