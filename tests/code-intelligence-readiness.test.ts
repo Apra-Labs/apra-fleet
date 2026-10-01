@@ -16,7 +16,7 @@ import { REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js'
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
 import {
   handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext,
-  handleCodeMap, handleCodeFlow, handleCodeTests, withIndexedCommit,
+  handleCodeMap, handleCodeFlow, handleCodeTests, handleCodeReindex, handleCodeStatus, withIndexedCommit,
 } from '../src/tools/code-intelligence.js';
 
 let scratch: string;
@@ -74,9 +74,25 @@ describe('indexedCommit on every code_* result', () => {
     ['code_tests', 'tests', handleCodeTests],
   ];
 
-  it('the parameterised cases cover every registered provider-backed code_* tool', () => {
-    const registered = REGISTERED_TOOL_NAMES.filter(n => n.startsWith('code_') && !['code_reindex', 'code_status'].includes(n));
-    expect(cases.map(c => c[0]).sort()).toEqual([...registered].sort());
+  // code_reindex / code_status are not provider-backed: they read the index
+  // state directly. A held analyze lock (live pid) makes code_reindex answer
+  // 'already-running' without spawning anything, so no analyze runs here.
+  const indexCases: Array<[string, (i: Record<string, unknown>, s: { repo: string; remote?: boolean }) => Promise<unknown>]> = [
+    ['code_reindex', handleCodeReindex as (i: Record<string, unknown>, s: { repo: string }) => Promise<unknown>],
+    ['code_status', handleCodeStatus as (i: Record<string, unknown>, s: { repo: string }) => Promise<unknown>],
+  ];
+
+  it('the parameterised cases cover every registered code_* tool, with no exclusions', () => {
+    const registered = REGISTERED_TOOL_NAMES.filter(n => n.startsWith('code_'));
+    expect([...cases.map(c => c[0]), ...indexCases.map(c => c[0])].sort()).toEqual([...registered].sort());
+  });
+
+  it.each(indexCases)('%s carries indexedCommit (local and remote)', async (_tool, handler) => {
+    const repo = repoWith({ lastCommit: 'deadbeef' }, { pid: process.pid, token: 't' });
+    const out = await handler({}, { repo, memberId: 'm' } as { repo: string }) as { indexedCommit: string | null };
+    expect(out.indexedCommit).toBe('deadbeef');
+    const remote = await handler({}, { repo, memberId: 'm', remote: true } as { repo: string }) as Record<string, unknown>;
+    expect(remote).toHaveProperty('indexedCommit', null);
   });
 
   it.each(cases)('%s carries indexedCommit', async (_tool, method, handler) => {
