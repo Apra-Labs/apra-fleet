@@ -137,7 +137,13 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  *   fleetApi: object|null,
  *   resolveMemberProvider: ((member: string) => Promise<string|undefined>)|undefined,
  *   resolveSettleShell: (opts: { member: string, log?: Function }) => Promise<string>,
+ *   dispatchToolCalls: object[],
  * }}
+ *
+ * `dispatchToolCalls` is the sprint's per-dispatch kb_* and code_* call record
+ * list (dispatch-accounting.mjs appends one entry per member dispatch, from
+ * session_stats snapshots taken before and after it). The sprint summary and
+ * the viewer read it from here.
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';
@@ -159,5 +165,6 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
         resolveSettleShell({ member, log: callLog = log } = {}) {
             return resolveSettleShellWith({ fleetApi, member, log: callLog });
         },
+        dispatchToolCalls: [],
     };
 }

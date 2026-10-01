@@ -95,6 +95,8 @@ export async function runHarvestPhase({
     finalDeferredAtGoalIds,
     regressionResult,
     regressionSkippedBy = null,
+    // Sprint state's per-dispatch kb_* and code_* call records (dispatch-accounting.mjs).
+    dispatchToolCalls = null,
     // Defined BY runner.js; injected to avoid a circular import (see header).
     computeBranchSlug,
     buildAnalysisText,
@@ -129,6 +131,7 @@ export async function runHarvestPhase({
         finalDeferredAtGoalIds,
         regressionResult,
         regressionSkippedBy,
+        dispatchToolCalls,
     });
     const costAnalysis = buildCostAnalysis(budget, {
         spend: integTestRunnerSpend,

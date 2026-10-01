@@ -383,6 +383,9 @@ export const GUARDED_MODULES = [
     'beads-memory-hygiene.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
+    // Per-dispatch kb_* and code_* accounting: reads session_stats through the
+    // injected memberCall around each dispatch. No command() or agent() site.
+    'dispatch-accounting.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

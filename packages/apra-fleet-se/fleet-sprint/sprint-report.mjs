@@ -22,6 +22,7 @@
 
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
+import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
 
 // ---------------------------------------------------------------------------
 // PR body/title text sanitization. The final reviewer's verdict notes are LLM
@@ -88,6 +89,10 @@ export function buildAnalysisText({
     // Set when the pass was deliberately skipped (e.g. 'launch option'), so the
     // report says so instead of the misleading "no playbook" line.
     regressionSkippedBy = null,
+    // Per-dispatch kb_* and code_* call records (sprint state's dispatchToolCalls,
+    // from session_stats snapshots). Omitted -> no section; an unknown count
+    // is printed as unknown, never 0.
+    dispatchToolCalls = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -147,6 +152,16 @@ export function buildAnalysisText({
         '',
         ...regressionLines,
     ];
+    if (Array.isArray(dispatchToolCalls)) {
+        lines.push(
+            '',
+            '## KB and code tool calls per member per dispatch',
+            '',
+            "Counted by each member's own fleet server (session_stats before/after each dispatch; the engine's own reads are excluded). 'unknown' means the count could not be read -- it is not zero.",
+            '',
+            ...formatDispatchToolCalls(dispatchToolCalls),
+        );
+    }
     return lines.join('\n');
 }
 
