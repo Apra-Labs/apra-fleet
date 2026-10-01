@@ -10,6 +10,8 @@ import {
 } from '../fleet-sprint/vcs-module.mjs';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
+import { finalizeAbort } from '../fleet-sprint/runner.js';
+import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { nativeDashDPayload } from './helpers/windows-argv.mjs';
 
 // =============================================================================
@@ -161,6 +163,15 @@ describe('run history marker round-trip', () => {
         const body = sampleBody({ previousBody: legacy });
         assert.equal(body, EXPECTED_BODY);
         assert.ok(!body.includes('Previous runs'));
+    });
+
+    test('a CRLF body (saved from a web editor) still carries its history forward', () => {
+        const run1 = sampleBody({ verdict: 'FAIL', runId: 'run-1', now: new Date('2026-09-30T08:00:00Z') });
+        const crlf = run1.replace(/\n/g, '\r\n');
+        assert.ok(crlf.includes('v1\r\n['), 'sanity: the marker lines really are CRLF');
+        assert.deepEqual(parseRunHistory(crlf), [{ run: 'run-1', date: '2026-09-30T08:00Z', verdict: 'FAIL' }]);
+        const run2 = sampleBody({ runId: 'run-2', previousBody: crlf });
+        assert.deepEqual(parseRunHistory(run2).map((e) => e.run), ['run-2', 'run-1']);
     });
 
     test('a malformed or tampered marker is ignored, never thrown on', () => {
@@ -366,6 +377,56 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-4', member: 'pub-auth-heal' });
         assert.deepEqual(gh.calls, ['POST', 'GET', 'PATCH', 'PATCH']);
         assert.equal(gh.pr.title, 'Auto-sprint [PASS]: feat/x');
+    });
+});
+
+// The [ABORTED] PR path (finalizeAbort) shares the same update hook.
+function abortCommand() {
+    return async (cmd, opts = {}) => {
+        const out = (output) => (opts.failSoft ? { ok: true, output, error: null } : output);
+        if (/^git fetch origin\b/.test(cmd)) return out('');
+        if (/^git rev-list --count\b/.test(cmd)) return out('2');
+        if (/^git push\b/.test(cmd)) return out('To mock-remote');
+        if (/^git remote get-url origin\b/.test(cmd)) return out('https://github.com/acme/widgets.git');
+        throw new Error(`abortCommand: unexpected command '${cmd}'`);
+    };
+}
+
+async function abortRun({ gh, member }) {
+    const logs = [];
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null }),
+        branch: 'feat/x', baseBranch: 'main', member, command: abortCommand(),
+        log: (m) => logs.push(m), callTool: gh.callTool, runId: 'run-abort',
+    });
+    return { result, logs };
+}
+
+describe('finalizeAbort: an abort on a branch with an existing PR rewrites it as ABORTED', () => {
+    test('PASS -> ABORTED: title and body updated, the PASS run kept in history', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'fine', runId: 'run-ok', member: 'abort-upd' });
+        const { result, logs } = await abortRun({ gh, member: 'abort-upd' });
+        assert.equal(result.reason, 'already-exists');
+        assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
+        assert.equal(gh.pr.title, 'Auto-sprint [ABORTED]: feat/x');
+        assert.ok(gh.pr.body.startsWith('## Sprint verdict: ABORTED'));
+        assert.ok(gh.pr.body.includes('### Abort details') && gh.pr.body.includes('- Error code: SPRINT_PLAN_REJECTED'));
+        assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-abort:ABORTED', 'run-ok:PASS']);
+        assert.ok(logs.some((m) => m.includes('updated the existing PR') && m.includes('(ABORTED)')), JSON.stringify(logs));
+    });
+
+    test('an update failure logs a WARNING, leaves the PR as it was and never throws', async () => {
+        const gh = fakeGitHub({ existing: { title: 'Auto-sprint [PASS]: feat/x', body: 'old' } });
+        const origExec = gh.exec;
+        gh.exec = (cmd) => (/-X PATCH/.test(cmd)
+            ? { content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify({ message: 'Server Error' })}\n500`, stderr: '' } }
+            : origExec(cmd));
+        const { result, logs } = await abortRun({ gh, member: 'abort-warn' });
+        assert.equal(result.reason, 'already-exists');
+        assert.equal(result.pushed, true);
+        assert.equal(gh.pr.title, 'Auto-sprint [PASS]: feat/x');
+        assert.ok(logs.some((m) => m.includes('WARNING') && m.includes('could NOT update the existing PR') && m.includes('HTTP 500')), JSON.stringify(logs));
     });
 });
 

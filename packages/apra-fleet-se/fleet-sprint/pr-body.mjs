@@ -141,7 +141,9 @@ export function runStamp(now = new Date()) {
  */
 export function parseRunHistory(body) {
     const text = String(body ?? '');
-    const re = /<!-- fleet-sprint:run-history v1\n([\s\S]*?)\n-->/g;
+    // \r?\n: a body saved from a web editor (GitHub's PR edit box) comes back
+    // with CRLF line endings; that must not silently reset the history.
+    const re = /<!-- fleet-sprint:run-history v1\r?\n([\s\S]*?)\r?\n-->/g;
     let last = null;
     for (const m of text.matchAll(re)) last = m[1];
     if (last === null) return [];
