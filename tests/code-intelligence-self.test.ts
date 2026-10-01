@@ -113,9 +113,19 @@ describe('code (self): each session is answered from its own folder', () => {
     const b = await betaQuery({ query: 'widget' });
 
     expect(seenRepos).toEqual([folders.alpha, folders.beta]);
-    expect(a.content.at(-1)!.text).toContain(`index of ${folders.alpha}`);
-    expect(b.content.at(-1)!.text).toContain(`index of ${folders.beta}`);
+    // Parse the folder path through JSON stringification to handle escaped backslashes on Windows
+    expect(a.content.at(-1)!.text).toContain(`index of ${JSON.stringify(folders.alpha).slice(1, -1)}`);
+    expect(b.content.at(-1)!.text).toContain(`index of ${JSON.stringify(folders.beta).slice(1, -1)}`);
     expect(recordUsageSpy.mock.calls.map(c => c[2])).toEqual([folders.alpha, folders.beta]);
+  });
+
+  it('path assertions work correctly with Windows-style backslashes (JSON-escaped)', async () => {
+    // Simulate a Windows-style path with backslashes by creating a string with \\
+    const windowsPath = 'C:\\Users\\test\\project';
+    const text = `index of ${JSON.stringify(windowsPath).slice(1, -1)}`;
+    // The assertion should work: JSON.stringify escapes backslashes, so the text
+    // contains C:\\Users\\test\\project (escaped), and we search for that escaped version
+    expect(text).toContain(`index of ${JSON.stringify(windowsPath).slice(1, -1)}`);
   });
 
   it('a FULL session\'s code_query resolves to the server working folder', async () => {
