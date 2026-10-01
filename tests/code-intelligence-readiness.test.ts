@@ -12,6 +12,7 @@ vi.mock('../src/services/registry.js', async importOriginal => {
 });
 
 import { codeIndexReadiness, readGitNexusIndexState } from '../src/tools/code-intelligence-readiness.js';
+import { REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
 import {
   handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext,
@@ -72,6 +73,11 @@ describe('indexedCommit on every code_* result', () => {
     ['code_flow', 'flow', handleCodeFlow],
     ['code_tests', 'tests', handleCodeTests],
   ];
+
+  it('the parameterised cases cover every registered provider-backed code_* tool', () => {
+    const registered = REGISTERED_TOOL_NAMES.filter(n => n.startsWith('code_') && !['code_reindex', 'code_status'].includes(n));
+    expect(cases.map(c => c[0]).sort()).toEqual([...registered].sort());
+  });
 
   it.each(cases)('%s carries indexedCommit', async (_tool, method, handler) => {
     const repo = repoWith({ lastCommit: 'deadbeef' });

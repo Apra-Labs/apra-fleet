@@ -18,7 +18,7 @@ full. Do not copy invariant prose between this file, `methods.json`, and
 
 ## 1. Envelope
 
-Every one of the 23 tools (16 `kb_*`, 7 `code_*`) is registered through the
+Every one of the 25 tools (16 `kb_*`, 9 `code_*`) is registered through the
 shared `wrapTool` helper (`src/services/tool-registry.ts`), so every response is
 wrapped in the same minimal text-content envelope, current fields only:
 
@@ -90,13 +90,20 @@ array, and not counted against "every method has an entry").
 A binding generated only against the declared `MemoryProvider` interface is
 INCOMPLETE without this set (`INVENTORY.md` section 4.2).
 
-### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-7)
+### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
 `graph`, `impact`, `query`, `context`, `map`, `flow`, `tests`. All seven are
 pure proxies to the active provider (`codebase-memory`, `gitnexus`, or `none`)
 and are classified `pure read` here at the fleet boundary; the ACTIVE PROVIDER
 owns the real effect and idempotency of its own payload (`INVENTORY.md`
 section 4.3).
+
+C-8 `reindex` (`code_reindex`) and C-9 `status` (`code_status`) are fleet-level index
+maintenance tools, not provider proxies: `code_reindex` starts a detached
+`gitnexus analyze` for the calling session's own folder (output captured to
+`<data>/code-index/<slug>/analyze.log`, state in `status.json`) and returns
+after the first tick; `code_status` reads that state plus live readiness and
+the indexed commit.
 
 ### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
 

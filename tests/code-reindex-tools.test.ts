@@ -18,6 +18,7 @@ const sandbox = vi.hoisted(() => {
 });
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { handleCodeReindex, handleCodeStatus } from '../src/tools/code-intelligence.js';
@@ -27,6 +28,11 @@ import { codeIndexReadiness } from '../src/tools/code-intelligence-readiness.js'
 const isWin = process.platform === 'win32';
 const realPath = process.env.PATH ?? '';
 const pids = new Set<number>();
+function realCodeIndex(): string[] {
+  const d = path.join(os.homedir(), '.apra-fleet', 'data', 'code-index');
+  try { return fs.readdirSync(d).sort(); } catch { return []; }
+}
+const realCodeIndexBefore = realCodeIndex();
 let repo: string;
 let head: string;
 let n = 0;
@@ -177,3 +183,28 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
   });
 });
 
+
+describe('client exports and sandbox hygiene', () => {
+  it('apra-fleet-client exports code_reindex and code_status', async () => {
+    const { ApraFleet } = await import('../packages/apra-fleet-client/src/client/api.mjs');
+    expect(typeof ApraFleet.prototype.codeReindex).toBe('function');
+    expect(typeof ApraFleet.prototype.codeStatus).toBe('function');
+  });
+
+  it('server registers code_reindex/code_status as member-allowed tools', async () => {
+    const { REGISTERED_TOOL_NAMES } = await import('../src/services/member-tool-allowlist.js');
+    expect(REGISTERED_TOOL_NAMES).toContain('code_reindex');
+    expect(REGISTERED_TOOL_NAMES).toContain('code_status');
+  });
+
+  it('writes nothing to the real user data dir', () => {
+    expect(realCodeIndex()).toEqual(realCodeIndexBefore);
+  });
+
+  it('writes only under the sandbox data dir', () => {
+    expect(process.env.APRA_FLEET_DATA_DIR).toBe(sandbox.data);
+    for (const entry of fs.existsSync(sandbox.data) ? fs.readdirSync(sandbox.data) : []) {
+      expect(['code-index', 'logs']).toContain(entry);
+    }
+  });
+});

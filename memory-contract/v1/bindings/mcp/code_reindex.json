@@ -1,0 +1,19 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/code_reindex.json#",
+  "name": "code_reindex",
+  "description": "Rebuild the code index of the calling session's own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome \"started\" (lock held, process alive, output seen), \"up-to-date\", \"starting\" (running, no tick yet), \"already-running\", or \"not-started\" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member). Poll code_status for completion. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_reindex.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_reindex.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/4"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/5"
+    }
+  ]
+}

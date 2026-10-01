@@ -271,6 +271,8 @@ export const SCENARIO = [
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-self-no-workfolder' },
   { tool: 'code_map', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_reindex', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_status', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-intel-disabled' },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },

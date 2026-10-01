@@ -404,7 +404,9 @@
             { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
             { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
             { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
-            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",
@@ -443,7 +445,9 @@
             { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
             { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
             { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
-            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",

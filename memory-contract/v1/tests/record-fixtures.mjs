@@ -486,7 +486,7 @@ await recordHappy('kb_invalidate', 'happy', {
   files: ['src/example.ts'],
 });
 
-// --- code_* (7 tools) -- code (self): no repo argument; the CODE member
+// --- code_* (7 provider tools; code_reindex/code_status below) -- code (self): no repo argument; the CODE member
 // session (provider pinned to gitnexus) resolves its own work folder, a git
 // repo with no .gitnexus/meta.json, so every tool honestly refuses with
 // E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
@@ -535,6 +535,10 @@ await withSession('NO_WORKFOLDER', () => recordRefusal('code_query', 'refusal-se
   query: 'exampleFn',
 }, 'E-SELF-NO-WORKFOLDER'));
 await withSession('NOT_A_REPO', () => recordRefusal('code_map', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
+// code_reindex / code_status resolve (self) the same way; a refusal is the
+// deterministic case (a happy code_reindex would spawn a real analyze).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_reindex', 'refusal-self-no-workfolder', {}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_status', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 
 await recordRefusal('kb_import', 'refusal-bible-not-found', {
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),

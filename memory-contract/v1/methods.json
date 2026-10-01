@@ -442,6 +442,36 @@
       "idempotent": true,
       "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
+    },
+    {
+      "id": "C-8",
+      "member": "reindex",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "() => Promise<CodeReindexResult>",
+      "purpose": "Rebuild the calling session's own code index (detached gitnexus analyze, output captured to analyze.log); returns after the first tick with a typed outcome or not-started reason.",
+      "tools": [
+        { "name": "code_reindex", "request_schema_ref": "schemas/code_reindex.request.json", "response_schema_ref": "schemas/code_reindex.response.json" }
+      ],
+      "side_effect_class": "starts a detached analyze process; writes analyze.log and status.json under the server data dir",
+      "idempotent": false,
+      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO"],
+      "see_also": ["C-9"]
+    },
+    {
+      "id": "C-9",
+      "member": "status",
+      "kind": "interface-method",
+      "interface": "CodeIntelligenceProvider",
+      "signature": "() => Promise<CodeStatusResult>",
+      "purpose": "Report the last analyze run (status.json), live index readiness and the indexed commit for the calling session's own repo.",
+      "tools": [
+        { "name": "code_status", "request_schema_ref": "schemas/code_status.request.json", "response_schema_ref": "schemas/code_status.response.json" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO"],
+      "see_also": ["C-8"]
     }
   ]
 }

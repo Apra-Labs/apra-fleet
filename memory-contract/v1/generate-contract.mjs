@@ -138,8 +138,10 @@ const CODE_EXPORTS = [
   ['code_map', 'codeMapSchema'],
   ['code_flow', 'codeFlowSchema'],
   ['code_tests', 'codeTestsSchema'],
+  ['code_reindex', 'codeReindexSchema'],
+  ['code_status', 'codeStatusSchema'],
 ];
-const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per INVENTORY.md section 1
+const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 25 (23 per INVENTORY.md section 1, plus code_reindex/code_status)
 
 // Registration description text, byte-exact from src/services/tool-registry.ts
 // (verified against INVENTORY.md Appendix A, which states it was "captured
@@ -205,6 +207,10 @@ const BASE_DESCRIPTIONS = {
     'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.',
   code_tests:
     'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.',
+  code_reindex:
+    'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member). Poll code_status for completion.',
+  code_status:
+    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit.',
 };
 
 const DESCRIPTIONS = Object.fromEntries(
