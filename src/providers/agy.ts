@@ -10,6 +10,7 @@ import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
+import { MEMBER_ALLOWED_TOOLS, REGISTERED_TOOL_NAMES } from '../services/member-tool-allowlist.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -736,26 +737,15 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
   return { actions, denials, suggestedGrants, hint, signals };
 }
 
-export const AGY_MEMBER_ALLOWED_TOOLS = [
-  'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
-  'code_flow', 'code_tests', 'kb_session_prime', 'kb_query', 'kb_stats',
-  'kb_capture', 'kb_feedback', 'kb_list',
-];
+// Derived from the shared member allowlist (src/services/member-tool-allowlist.ts)
+// rather than hand-listed: agy members get exactly the base member allowlist,
+// and the agy orchestrator denies every other registered tool. agy members are
+// not channel-capable, so MEMBER_CHANNEL_TOOLS (respond_to_message) stays denied.
+export const AGY_MEMBER_ALLOWED_TOOLS: string[] = [...MEMBER_ALLOWED_TOOLS];
 
-export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
-  'register_member', 'list_members', 'get_member_model_pricing', 'remove_member',
-  'update_member', 'dolt_push_mutex', 'child_id_allocator', 'member_reservation',
-  'send_files', 'receive_files', 'execute_prompt', 'execute_command',
-  'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
-  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
-  'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
-  'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
-  'credential_store_list', 'credential_store_delete', 'credential_store_update',
-  'send_email', 'send_message', 'report_status', 'respond_to_message',
-  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
-  'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
-  'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
-];
+export const AGY_ORCHESTRATOR_DENIED_TOOLS: string[] = REGISTERED_TOOL_NAMES.filter(
+  tool => !MEMBER_ALLOWED_TOOLS.includes(tool),
+);
 
 export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [
   `mcp(apra-fleet/${tool})`,
