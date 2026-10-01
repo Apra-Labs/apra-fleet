@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
@@ -38,8 +37,10 @@ export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<s
   // member's folder is carried verbatim even though this host cannot see it --
   // SqliteProvider.anchorIsMissing() then declines to produce a freshness
   // verdict rather than hashing against an unrelated tree.
-  const resolved = resolveKbAnchor(anchor);
-  const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+  // A MEMBER session reports on its checkout bible view (kb-self.ts
+  // getSelfReadKb): totals.by_confidence.CONFIRMED is the bible's CONFIRMED
+  // count. kb_stats takes no tier filter, so a member always gets the view.
+  const { providers, anchor: resolved } = await getSelfReadKb(anchor);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at

@@ -26,7 +26,8 @@ import { execFileSync } from 'node:child_process';
 import { getSessionMemberId } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getMemberBibleView } from './member-bible-view.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -144,6 +145,45 @@ export function resolveKbAnchor(anchor?: KbAnchor): KbAnchor {
 export async function getSelfKbProviders(anchor?: KbAnchor): Promise<KbProviders> {
   const resolved = resolveKbAnchor(anchor);
   return getKbProviders(resolved.folder, resolved.remoteUrl);
+}
+
+/** KB providers for a read-only kb_* call, plus the anchor they were resolved from. */
+export interface SelfReadKb {
+  providers: KbProviders;
+  anchor: KbAnchor;
+  /** True when `providers.project` is the member's in-memory bible view. */
+  memberView: boolean;
+}
+
+/**
+ * Providers for the read tools (kb_query, kb_session_prime, kb_list,
+ * kb_context, kb_stats). A MEMBER session (no explicit anchor) reads its own
+ * checkout bible through the in-memory view (member-bible-view.ts); the
+ * per-repo DB is shared by every member of the repo, whichever branch each is
+ * on. Everything else keeps the per-repo DB: FULL sessions, in-process callers
+ * passing an explicit KbAnchor, and a MEMBER request that explicitly names the
+ * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
+ * tiers are not the view's to answer). The global KB is unchanged either way.
+ */
+export async function getSelfReadKb(
+  anchor?: KbAnchor,
+  confidence?: readonly string[],
+): Promise<SelfReadKb> {
+  const resolved = resolveKbAnchor(anchor);
+  const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
+  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier) {
+    const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
+    return {
+      providers: { project, global, projectSlug: getProjectSlug(resolved.folder, resolved.remoteUrl) },
+      anchor: resolved,
+      memberView: true,
+    };
+  }
+  return {
+    providers: await getKbProviders(resolved.folder, resolved.remoteUrl),
+    anchor: resolved,
+    memberView: false,
+  };
 }
 
 /** Appended to every kb_* tool description so callers know there is no scope argument. */

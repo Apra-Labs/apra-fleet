@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
@@ -173,8 +172,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // verbatim even though this host cannot see it -- SqliteProvider.
   // anchorIsMissing() then declines to produce a freshness verdict rather
   // than re-hashing against an unrelated tree.
-  const resolved = resolveKbAnchor(anchor);
-  const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+  // A MEMBER session primes from its checkout bible view unless it explicitly
+  // asks for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb).
+  const { providers, anchor: resolved } = await getSelfReadKb(anchor, input.confidence);
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);

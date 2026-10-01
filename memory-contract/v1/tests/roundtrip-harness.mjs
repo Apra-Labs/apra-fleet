@@ -231,11 +231,14 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
+  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
+  // below reads it back through the path anchor, no derive needed. It runs
+  // BEFORE the CONFIRMED-only read and kb_stats because a member session's
+  // default (CONFIRMED) reads come from its checkout bible: the promoted entry
+  // is visible to them once it has been exported into that bible.
+  { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
-  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
-  // below reads it back through the path anchor, no derive needed.
-  { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },

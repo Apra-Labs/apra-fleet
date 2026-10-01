@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 
 const L2_CONTENT_CAP = 3200;
 
@@ -51,7 +51,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
-  const providers = await getSelfKbProviders(anchor);
+  // A MEMBER session reads its checkout bible view unless it explicitly asks
+  // for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb); flagged_only ignores
+  // the confidence filter, so it is answered from the view too.
+  const { providers } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
 
   if (input.flagged_only) {
     const flaggedOpts = {

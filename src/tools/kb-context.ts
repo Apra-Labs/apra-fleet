@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbContextSchema = z.object({
@@ -13,7 +13,8 @@ export type KbContextInput = z.infer<typeof kbContextSchema>;
 export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promise<string> {
   validateFilePaths(input.files);
 
-  const providers = await getSelfKbProviders(anchor);
+  // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
+  const { providers } = await getSelfReadKb(anchor, input.confidence);
 
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbContextInput['confidence']>);
   // Default-trusted read: CONFIRMED and undisputed unless a tier list is given.

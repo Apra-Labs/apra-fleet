@@ -400,6 +400,13 @@ if (idFoo) {
   });
 }
 
+// --- kb_export --------------------------------------------------------
+// Before the CONFIRMED-only read and kb_stats: a member session's default
+// (CONFIRMED) reads come from its checkout bible, so the promoted entry is
+// visible to them once kb_export has written it there.
+await recordHappy('kb_export', 'happy', {
+});
+
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
 // Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
 // entries: the INFERRED context-cache entry that happy.json returns must be
@@ -418,9 +425,6 @@ await recordHappy('kb_stats', 'happy', {
   symbols: ['exampleFn'],
 });
 
-// --- kb_export --------------------------------------------------------
-await recordHappy('kb_export', 'happy', {
-});
 const bibleFromA = path.join(repoA, '.fleet', 'kb-canonical.json');
 
 // --- kb_import (into a genuinely separate KB -- repoB / REMOTE_B slug) ----
