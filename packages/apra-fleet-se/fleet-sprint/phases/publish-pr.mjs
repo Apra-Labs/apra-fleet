@@ -241,6 +241,7 @@ export async function runPublishPrPhase({
             '',
             `Final Verdict: ${finalVerdictLabel}`,
             safeNotes ? `Notes: ${safeNotes}` : null,
+            validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
             '',
             'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
         ].filter((line) => line !== null).join('\n');

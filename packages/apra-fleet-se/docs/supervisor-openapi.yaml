@@ -349,6 +349,20 @@ paths:
                 budget:
                   type: number
                   description: USD ceiling forwarded into the child's --budget argv
+                phases:
+                  type: object
+                  additionalProperties: false
+                  description: >
+                    Per-launch phase settings. regression "skip" forwards
+                    --skip-regression: the once-per-sprint regression pass is
+                    skipped and the log, sprint analysis and PR body say
+                    "skipped by launch option". Unknown keys or values -> 400
+                    (field phases). Integration tests are not affected.
+                  properties:
+                    regression:
+                      type: string
+                      enum: [run, skip]
+                      default: run
                 overrideRelaunchGate:
                   type: boolean
                   description: >
