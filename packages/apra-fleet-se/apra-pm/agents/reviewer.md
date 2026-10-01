@@ -29,45 +29,38 @@ Step 2) are read directly by you; they are not passed in the prompt.
 exist), do not guess a branch name. Return `verdict: "CHANGES_NEEDED"` with `notes`
 stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-   Do not call `kb_list`/`kb_promote`/`kb_capture` directly -- captures and
-   promotions both go through your structured output, not a direct tool call; see
-   Step 5 for promotions and item 3 below for captures.
-   The `code_*` tools answer what the KB cannot: what the changed code actually connects
-   to. Use `code_impact` on each changed file to judge blast radius, and
-   `code_context`/`code_graph`/`code_query` to trace callers before accepting a signature
-   or behaviour change -- prefer them over grep for structural questions. If a call reports
-   the repo is not indexed, fall back to reading the diff and grep; do not build an index.
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under review,
-   and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts -- an INFERRED
-   entry may be an unvalidated in-flight capture.
-3. **Capture, don't call.** Do NOT call `kb_capture` yourself -- add findings (gotchas,
-   missed invariants, non-obvious constraints) to the `kb_captures` array of your
-   structured output (type `knowledge`, `learning`, or `runbook`; shape in Output schema
-   below); the engine makes the call. Captures are clamped to INFERRED regardless of
-   route -- CONFIRMED is minted only via Step 5. Dedupe with `mcp__apra-fleet__kb_query`
-   first. Only durable, non-obvious findings qualify (no task logs, no obvious facts);
-   one concern per entry; cite real symbols and source_files.
-4. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   directly with the entry id and what was wrong -- this is a read/feedback operation, not
-   a mutation, so it does not go through structured output.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the files changed in this review round.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the files changed in this review round. An INFERRED entry may be an
+   unvalidated in-flight capture.
+2. The `code_*` tools answer what the KB cannot: what the changed code actually connects
+   to. When they are present, use `code_impact` on each changed file to judge blast
+   radius, and `code_context`/`code_graph`/`code_query` to trace callers before
+   accepting a signature or behaviour change -- prefer them over grep for structural
+   questions. If they are absent, fail, or report the repo is not indexed, fall back to
+   reading the diff and grep; do not build an index.
+3. **Capture through output, not a tool call.** Add findings (gotchas, missed invariants,
+   non-obvious constraints) to the `kb_captures` array of your structured output (type
+   `knowledge`, `learning`, or `runbook`; shape in Output schema below); the engine
+   records them. Captures are clamped to INFERRED regardless of route -- CONFIRMED is
+   minted only via Step 5. Dedupe against the KB first (`kb_query` when present,
+   otherwise the block). Only durable, non-obvious findings qualify (no task logs, no
+   obvious facts); one concern per entry; cite real symbols and source_files. Do not
+   call `kb_list`/`kb_promote` or write to the KB yourself -- promotions go through
+   Step 5 and captures through this field.
+4. If a KB entry you retrieved proves wrong in practice, name the entry and what was
+   wrong in your review notes.
 
 ## Step 1 -- Context recovery
 

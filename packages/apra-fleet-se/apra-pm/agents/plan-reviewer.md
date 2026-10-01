@@ -50,40 +50,25 @@ to satisfy a criterion as SETTLED for the rest of the cycle:
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-Use the live KB tools when they are available; otherwise use the pre-fetched
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the features in the DAG under review. On a dispatched
-member the fleet MCP server (mcp__apra-fleet__*) is usually disabled for this role, so
-expect to be on the fallback. A missing or failing KB tool never means "no KB": when
-the tools are unavailable, the pre-fetched block IS this repo's knowledge, and any
-judgment that depends on KB coverage (e.g. whether a task touches unexplored code and
-needs a stronger model tier) must be made from that block, not from the tool failure.
-You have no KB context only when the tools are unavailable AND the block is absent.
-None of these tool calls is ever a requirement.
+the orchestrator fetched for the features in the DAG under review.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-1. When the KB tools are available, prime from them first.
-   Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
-   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
-   for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under
-   review. If ToolSearch surfaces no KB tools or a call fails, use the pre-fetched
-   block instead -- that is the fallback, not a gap.
-<!-- else-tool: ToolSearch -->
-1. When your environment exposes the KB tools, prime from them first (no
-   tool-discovery step is needed on this provider): call
-   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being planned
-   for, and `hint_symbols`/`hint_modules` relevant to the features in the DAG under
-   review. If those tools are not available or a call fails, use the pre-fetched
-   block instead -- that is the fallback, not a gap.
-<!-- end-tool: ToolSearch -->
-2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
-   as hints, not facts. An entry recording that a module is harder than it looks is a
-   task-sizing input.
-3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
-   an invariant), call `mcp__apra-fleet__kb_capture` with type "knowledge" or "learning"
-   if it is reachable -- it usually is not on a dispatched environment, in which case
-   simply note the finding in your own review notes instead.
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the features in the DAG under review.
+2. Any judgment that depends on KB coverage (e.g. whether a task touches unexplored code
+   and needs a stronger model tier) is made from the live result or the injected block,
+   never inferred from a tool failure. An entry recording that a module is harder than
+   it looks is a task-sizing input.
+3. This role has no KB-capture channel: note a non-obvious, durable finding (a hidden
+   constraint, a gotcha, an invariant) -- or a KB entry that proved wrong in practice --
+   in your own review notes.
 
 ## Step 1 -- Inspect the DAG
 

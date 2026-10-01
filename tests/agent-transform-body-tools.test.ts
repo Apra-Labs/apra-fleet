@@ -188,10 +188,15 @@ describe('the Claude path is not regressed by the conditional mechanism', () => 
     (role, content) => {
       const output = transformAgentForClaude(content, `${role}.md`);
       expect(output).toMatch(/^## Step 0[a-z]? -- Knowledge Bank/m);
-      // The discovery step and its query survive intact on the Claude path.
+      // Step 0 still names the KB tools on the Claude path. Roles that use the kb_*
+      // tools directly when present carry no discovery query; a role that still has
+      // one (a ToolSearch query) must keep it intact and naming KB tools.
+      expect(output, `${role}: Claude output names no KB tool`).toMatch(/\bkb_[a-z_]+/);
       const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(output);
-      expect(query, `${role}: Claude output lost its Step 0 tool-discovery query`).not.toBeNull();
-      expect(query![1]).toContain('mcp__apra-fleet__kb_');
+      if (/Run ToolSearch with query/.test(content)) {
+        expect(query, `${role}: Claude output lost its Step 0 tool-discovery query`).not.toBeNull();
+        expect(query![1]).toContain('mcp__apra-fleet__kb_');
+      }
       // Every KB tool the source names is still named after transformation.
       for (const tool of frontmatterTools(content)) {
         expect(output, `${role}: Claude output lost tool "${tool}"`).toContain(tool);

@@ -22,28 +22,24 @@ Your dispatch prompt must supply ONE of the two scoping forms:
 `expectedHeadSha` missing), do not guess or check an arbitrary branch. Return
 `status: "pending"` with `notes` stating which input was missing.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose CI you
-   are checking, and `hint_modules` naming its CI workflow files. Trust CONFIRMED entries
-   fully. Use INFERRED entries as hints, not facts. Known-flaky tests and known CI failure
-   modes are the point here -- they change how you read a red run.
-3. Do NOT capture. You poll a status API; you verify no claim about this repository, so you
-   have no basis to write one down.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the repo whose CI you are checking.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
+   repo's CI workflow files. Known-flaky tests and known CI failure modes are the point
+   here -- they change how you read a red run.
+2. Record nothing in the KB. You poll a status API; you verify no claim about this
+   repository, so you have no basis to write one down. If a known failure mode explains
+   a red run, say so in your `notes`.
 
 ## Step 1 -- List recent CI runs
 
