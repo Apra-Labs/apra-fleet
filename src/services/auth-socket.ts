@@ -7,7 +7,7 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
-import { escapeShellArg, escapeAppleScriptString } from '../utils/shell-escape.js';
+import { escapeShellArg, escapeAppleScriptString, quoteWindowsArgv } from '../utils/shell-escape.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
 import { fleetEvents } from './event-bus.js';
@@ -379,7 +379,7 @@ async function collectOobInput(
     const raceResult = await Promise.race([passwordPromise, cancellationPromise]);
 
     if (raceResult === null) {
-      // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
+      // The terminal exited with code 0 (some terminal launchers exit 0 even
       // on user-close). Wait briefly for any in-flight socket message — if the user
       // genuinely submitted, the password arrives within milliseconds of process exit.
       // If nothing arrives in 500 ms, treat it as a user cancellation.
@@ -645,6 +645,43 @@ export function buildMacTerminalAppleScript(fullArgs: string[], tmpFile: string)
           `;
 }
 
+/** Title of the Windows credential-entry console window (set by the child). */
+export const WINDOWS_AUTH_WINDOW_TITLE = 'Fleet Password Entry';
+
+/** Env var the `secret` CLI reads to title its console window on Windows. */
+export const OOB_WINDOW_TITLE_ENV = 'APRA_FLEET_OOB_WINDOW_TITLE';
+
+// Fixed launcher script: the executable and its argument line arrive via env
+// vars, so no caller-influenced text is ever parsed by cmd.exe or PowerShell.
+// Start-Process passes the argument line verbatim to CreateProcess, where the
+// child's CRT splits it (see quoteWindowsArgv).
+const WINDOWS_AUTH_LAUNCHER_PS = [
+  "$ErrorActionPreference = 'Stop'",
+  '$exe = $env:APRA_FLEET_OOB_EXE',
+  '$argLine = $env:APRA_FLEET_OOB_ARGS',
+  'Remove-Item Env:APRA_FLEET_OOB_EXE, Env:APRA_FLEET_OOB_ARGS -ErrorAction SilentlyContinue',
+  '$p = Start-Process -FilePath $exe -ArgumentList $argLine -Wait -PassThru',
+  'exit $p.ExitCode',
+].join('; ');
+
+/**
+ * Build the spawn() call that opens the Windows credential-entry console.
+ * Returns the file/argv for a hidden PowerShell launcher plus the env vars it
+ * reads. Exported for tests.
+ */
+export function buildWindowsAuthLaunch(fullArgs: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  const [exe, ...rest] = fullArgs;
+  return {
+    file: 'powershell',
+    args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_AUTH_LAUNCHER_PS, 'utf16le').toString('base64')],
+    env: {
+      APRA_FLEET_OOB_EXE: exe,
+      APRA_FLEET_OOB_ARGS: rest.map(quoteWindowsArgv).join(' '),
+      [OOB_WINDOW_TITLE_ENV]: WINDOWS_AUTH_WINDOW_TITLE,
+    },
+  };
+}
+
 /**
  * Launch a new terminal window running `apra-fleet secret --set <memberName>` or `apra-fleet auth <memberName>`.
  * Records the spawned PID in the pending request so it can be killed when credential is received.
@@ -723,11 +760,12 @@ export function launchAuthTerminal(
       })();
       return 'launched';
     } else if (platform === 'win32') {
-      // Windows: start /wait ensures that the parent cmd.exe process waits for the new
-      // terminal window to be closed. This allows us to capture the exit event.
-      // The title argument to start is required.
-      const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
-      child = spawn('cmd', spawnArgs, { stdio: 'ignore' });
+      // Windows: a hidden PowerShell launcher opens the new console window with
+      // Start-Process -Wait, so the exit event fires when that window closes.
+      // cmd.exe is deliberately not involved (it expands % and treats & | ^ as
+      // operators inside the --prompt text); see buildWindowsAuthLaunch.
+      const launch = buildWindowsAuthLaunch(fullArgs);
+      child = spawn(launch.file, launch.args, { stdio: 'ignore', windowsHide: true, env: { ...process.env, ...launch.env } });
       if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;

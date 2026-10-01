@@ -103,6 +103,30 @@ export function escapeAppleScriptString(s: string): string {
 }
 
 /**
+ * Quote one argument for a Windows command line as parsed by the MSVC CRT /
+ * CommandLineToArgvW (what node.exe and most native programs use). Backslashes
+ * are literal unless they precede a double quote, so runs of backslashes before
+ * a quote (or the closing quote) are doubled. This is NOT cmd.exe quoting --
+ * the result must never be handed to cmd.exe, which also expands % and treats
+ * & | ^ < > as operators.
+ */
+export function quoteWindowsArgv(arg: string): string {
+  if (arg !== '' && !/[\s"]/.test(arg)) return arg;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') { backslashes++; continue; }
+    if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2 + 1) + '"';
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+    }
+    backslashes = 0;
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"';
+}
+
+/**
  * Validate and sanitize a session ID to prevent injection.
  * Session IDs must be alphanumeric with dashes and underscores only.
  * Throws if the ID contains invalid characters.
