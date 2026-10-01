@@ -728,6 +728,20 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's DISCARD judgement, mirroring reviewer-output.json's
+        // kb_discards: same {id, reason} shape as kb_promotions, executed by the
+        // same kbWork.apply path. Optional: discarding nothing is the common answer.
+        kb_discards: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

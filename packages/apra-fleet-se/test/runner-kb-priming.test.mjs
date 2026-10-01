@@ -759,22 +759,24 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
         assert.equal(out.captured, 1);
         assert.equal(out.promoted, 1);
         const workCalls = calls.filter((c) => ['kb_list', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export'].includes(c.name));
-        assert.deepEqual(workCalls.map((c) => c.name), ['kb_list', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export']);
+        // The candidate read and the per-dispatch read are both kb_query.
+        assert.deepEqual(workCalls.map((c) => c.name), ['kb_query', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export']);
         for (const c of workCalls) {
             assert.equal(c.member, remote, `${c.name} must run as the member whose repo it is about`);
             assertNoScopeArgs(c);
         }
     });
 
-    test('the explicit confidence lists survive the move: kb_list INFERRED, kb_query CONFIRMED', async () => {
+    test('the explicit confidence lists survive the move: candidates INFERRED, per-dispatch read CONFIRMED', async () => {
         const { calls, memberCall } = sprintFleet({ candidates: [] });
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         await client.promotionCandidates(ALPHA);
         await client.relevantKnowledge(ALPHA, ['x']);
 
-        assert.deepEqual(calls.find((c) => c.name === 'kb_list').args.confidence, ['INFERRED']);
-        assert.deepEqual(calls.find((c) => c.name === 'kb_query').args.confidence, ['CONFIRMED']);
+        const [candidateRead, knowledgeRead] = calls.filter((c) => c.name === 'kb_query');
+        assert.deepEqual(candidateRead.args.confidence, ['INFERRED']);
+        assert.deepEqual(knowledgeRead.args.confidence, ['CONFIRMED']);
     });
 
     test('no memberCall injected means no kb work at all -- never the orchestrator session', async () => {

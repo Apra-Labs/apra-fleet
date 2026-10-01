@@ -106,7 +106,7 @@ describe('KB write routing: the queue and the maintainer session', () => {
         const out = await h.client.apply('doer', 'scratch', { kb_captures: [CAPTURE] });
         assert.equal(out.captured, 0);
         assert.deepEqual(h.events, [], 'no G-pull and no kb_* call for a non-repository member');
-        assert.ok(h.logs.includes("[kb-work] WARN: member 'scratch' (doer): work folder is not a repository -- 1 capture(s) and 0 promotion(s) dropped"), JSON.stringify(h.logs));
+        assert.ok(h.logs.includes("[kb-work] WARN: member 'scratch' (doer): work folder is not a repository -- 1 capture(s) dropped"), JSON.stringify(h.logs));
         assert.equal(h.client.pendingCount(), 0, 'dropped, not queued');
     });
 

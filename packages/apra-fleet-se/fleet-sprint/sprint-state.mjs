@@ -137,6 +137,7 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  *   fleetApi: object|null,
  *   resolveMemberProvider: ((member: string) => Promise<string|undefined>)|undefined,
  *   resolveSettleShell: (opts: { member: string, log?: Function }) => Promise<string>,
+ *   startedAtMs: number,
  * }}
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
@@ -152,7 +153,14 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
     // createMemberVcsProviderResolver and is unchanged by the relocation.
     const resolveMemberProvider = active ? createMemberVcsProviderResolver({ callTool, log }) : undefined;
 
+    // The sprint's ONE start stamp, taken when the state is built at the top
+    // of runSprintCycle. Every "since this sprint started" decision reads it
+    // (the stale in_progress reclaim, the KB promotion-candidate window)
+    // rather than taking its own Date.now().
+    const startedAtMs = Date.now();
+
     return {
+        startedAtMs,
         callTool: active ? callTool : undefined,
         fleetApi,
         resolveMemberProvider,

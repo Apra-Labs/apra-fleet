@@ -199,10 +199,10 @@ export async function runFinalReviewPhase({
     // per-round reviewer gets. Fetched once, before the dispatch, so the retry
     // and resume paths reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
-    // Read (and later export) AS the final reviewer member: its session
-    // resolves its own repo's KB.
+    // Candidates are read from (and the bible later exported from) the
+    // reviewer's repository kb_maintainer, whose KB every write is routed to.
     const finalReviewKbMember = typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(getMemberForRole('reviewer')) : null;
-    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewKbMember);
+    const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }

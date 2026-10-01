@@ -156,6 +156,14 @@ decisions.
    `"verified against src/auth/token.ts:88 and the expired-token test"`. The orchestrator
    makes the `kb_promote` calls.
 4. Promote nothing else. `kb_promotions: []` is a valid, common answer.
+5. **Discard** a candidate only when you showed its claim to be WRONG during this review
+   -- the cited code says otherwise, or a test you ran contradicts it. Return it in the
+   `kb_discards` field as `[{id, reason}]` with the same evidence bar (minimum 20
+   characters, stating what you checked that contradicts the claim). The orchestrator
+   discards it, so it drops out of every later read. An entry you merely could not
+   confirm is not wrong: leave it INFERRED. Never list the same id in both
+   `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
+   `kb_discards: []` is a valid, common answer.
 
 Hard limits:
 
@@ -168,11 +176,12 @@ Hard limits:
   verified even when the code needs rework.
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
-- **Never invent an id.** Only ids from the candidate block are promotable; a promotion
-  naming any other id is silently dropped.
+- **Never invent an id.** Only ids from the candidate block are promotable or
+  discardable; a promotion or discard naming any other id is dropped.
 
-Promotion is a KB decision, not a beads mutation -- it does not conflict with the "never
-mutate beads" rule below. Report what you promoted in `notes` as well.
+Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
+the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as
+well.
 
 ## Step 6 -- Verdict
 
@@ -219,6 +228,9 @@ placeholder):
   "kb_promotions": [
     { "id": "kb-0042", "reason": "verified against src/auth/token.ts:88 and the expired-token test" }
   ],
+  "kb_discards": [
+    { "id": "kb-0051", "reason": "src/auth/session.ts:40 refreshes eagerly; the entry's lazy-refresh claim is wrong" }
+  ],
   "kb_captures": [
     {
       "type": "knowledge",
@@ -231,8 +243,8 @@ placeholder):
 }
 ```
 
-`kb_promotions` and `kb_captures` are both optional -- omit them, or send `[]`, when you
-have nothing to promote or capture this round.
+`kb_promotions`, `kb_discards` and `kb_captures` are all optional -- omit them, or send
+`[]`, when you have nothing to promote, discard or capture this round.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match

@@ -1355,6 +1355,9 @@ async function runSprintCycle(context) {
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName) => gitSync.pullGitBefore(maintainerName),
+        // Promotion candidates are limited to entries created since the
+        // sprint started -- the sprint state's one start stamp.
+        sprintStartMs: () => sprintState.startedAtMs,
         log,
     });
     // Dispatch lifecycle for the KB write queue: a member is busy from the
@@ -1728,10 +1731,10 @@ async function runSprintCycle(context) {
     // just within one call.
     const staleInProgressReclaimCounts = new Map();
     const STALE_IN_PROGRESS_RECLAIM_LIMIT = 2;
-    // Stamped once, on the FIRST call to reclaimStaleInProgress (the
-    // pre-sprint one) -- runSprintCycle's `context` carries no injected clock,
-    // so this is a plain Date.now(), same as the other direct call sites
-    // already in this file. Declared here (not at the capture site) so its
+    // Read once, on the FIRST call to reclaimStaleInProgress (the pre-sprint
+    // one), from the sprint state's start stamp (createSprintState) -- the
+    // same instant the KB promotion-candidate window starts at, so the sprint
+    // has one start time, not two. Declared here (not at the capture site) so its
     // TDZ covers every call to reclaimStaleInProgress, including the
     // pre-sprint one.
     let sprintLaunchTime = null;
@@ -1770,7 +1773,7 @@ async function runSprintCycle(context) {
      * @returns {Promise<{ reclaimedIds: string[], cappedIds: string[] }>}
      */
     async function reclaimStaleInProgress({ notDoneBeads, reasonTag }) {
-        if (sprintLaunchTime === null) sprintLaunchTime = Date.now();
+        if (sprintLaunchTime === null) sprintLaunchTime = sprintState.startedAtMs;
         const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
         const unmetBlockers = (bead) => (bead.dependencies || [])
             .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
@@ -1820,11 +1823,12 @@ async function runSprintCycle(context) {
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
         // `kb_promotions` comes back empty every round -- which is exactly why
-        // kb_promote had never once fired. Read AS the reviewer member (same
-        // session kbWork.apply uses to route the writes), and best-effort: a
+        // kb_promote had never once fired. Read from the reviewer's
+        // repository kb_maintainer -- the session every KB write is routed to,
+        // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
         const reviewerKbMember = kbMember(reviewerPool[0]);
-        const kbCandidates = await kbWork.promotionCandidates(reviewerKbMember);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
