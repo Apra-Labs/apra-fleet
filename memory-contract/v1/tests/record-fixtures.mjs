@@ -504,6 +504,11 @@ await withSession('CODE', async () => {
 await withSession('CODE_OFF', () => recordRefusal('code_query', 'refusal-intel-disabled', { query: 'exampleFn' }, 'E-CODE-INTEL-DISABLED'));
 await withSession('CODE_OFF', () => recordRefusal('code_reindex', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
 await withSession('CODE_OFF', () => recordRefusal('code_status', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+// Provider 'codebase-memory' (any non-gitnexus, non-none provider): a typed
+// not-started result, not an error, and gitnexus analyze is never spawned.
+const providerNote = "code_reindex/code_status gate on the member's provider: only 'gitnexus' runs the fleet-level analyze/status; any other configured provider returns { outcome:'not-started', reason:'provider-not-supported', provider, indexedCommit:null, detail } as a normal result (no taxonomy code).";
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_reindex', 'non-error-provider-not-supported', {}, providerNote));
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_status', 'non-error-provider-not-supported', {}, providerNote));
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error

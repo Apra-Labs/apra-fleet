@@ -99,7 +99,12 @@ owns the real effect and idempotency of its own payload (`INVENTORY.md`
 section 4.3).
 
 C-8 `reindex` (`code_reindex`) and C-9 `status` (`code_status`) are fleet-level index
-maintenance tools, not provider proxies: `code_reindex` starts a detached
+maintenance tools, not provider proxies, and are gated on the calling member's
+code-intelligence provider. Provider `none` is refused (`E-CODE-INTEL-DISABLED`, never an
+ok "disabled" payload). Any provider other than `gitnexus` (e.g. `codebase-memory`, which
+manages its own index) returns the normal typed result
+`{ outcome: 'not-started', reason: 'provider-not-supported', provider, indexedCommit: null, detail }`
+without spawning anything. Only `gitnexus` runs the tool: `code_reindex` starts a detached
 `gitnexus analyze` for the calling session's own folder (output captured to
 `<data>/code-index/<slug>/analyze.log`, state in `status.json`) and returns
 after the first tick; `code_status` reads that state plus live readiness and

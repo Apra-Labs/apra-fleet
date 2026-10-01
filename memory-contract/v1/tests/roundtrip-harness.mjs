@@ -167,6 +167,7 @@ export const ENVIRONMENT = {
     // outcome never depends on the host's global code-intelligence config.
     CODE: { member: 'contract-code', kind: 'local', repo: 'CODE', codeIntelProvider: 'gitnexus' },
     CODE_OFF: { member: 'contract-code-off', kind: 'local', repo: 'CODE', codeIntelProvider: 'none' },
+    CODE_CM: { member: 'contract-code-cm', kind: 'local', repo: 'CODE', codeIntelProvider: 'codebase-memory' },
     NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
@@ -180,6 +181,15 @@ export const ENVIRONMENT = {
 // rather than a thrown error. Each mirrors the assertion record-fixtures.mjs
 // made at recording time, so a silently-changed behaviour fails here too.
 // ---------------------------------------------------------------------------
+function assertProviderNotSupported(parsed) {
+  return parsed?.outcome === 'not-started'
+    && parsed?.reason === 'provider-not-supported'
+    && parsed?.provider === 'codebase-memory'
+    && parsed?.indexedCommit === null
+    ? null
+    : `expected { outcome:'not-started', reason:'provider-not-supported', provider:'codebase-memory', indexedCommit:null }, got ${JSON.stringify(parsed)}`;
+}
+
 function assertImportRejected(parsed) {
   return typeof parsed?.rejected === 'number' && parsed.rejected >= 1
     ? null
@@ -276,6 +286,8 @@ export const SCENARIO = [
   { tool: 'code_query', case: 'refusal-intel-disabled' },
   { tool: 'code_reindex', case: 'refusal-intel-disabled' },
   { tool: 'code_status', case: 'refusal-intel-disabled' },
+  { tool: 'code_reindex', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
+  { tool: 'code_status', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {

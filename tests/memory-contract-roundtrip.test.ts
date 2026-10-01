@@ -178,7 +178,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(59); // 2 code_reindex/code_status intel-disabled refusals + 2 code_reindex/code_status (self) refusals + 55: 48 + kb_query/happy-confirmed-only (trust filters) + 3 kb (self) refusals + 2 code (self) refusals + code_query/refusal-intel-disabled
+    expect(report.steps.length).toBe(61); // 2 code_reindex/code_status provider-not-supported outcomes + 2 code_reindex/code_status intel-disabled refusals + 2 code_reindex/code_status (self) refusals + 55: 48 + kb_query/happy-confirmed-only (trust filters) + 3 kb (self) refusals + 2 code (self) refusals + code_query/refusal-intel-disabled
   });
 
   it('covers all 25 inventoried tools', () => {
