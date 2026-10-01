@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, buildReviewerPrompt } from '../fleet-sprint/runner.js';
+import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // apra-fleet-0ef: kb_promote succeeded ZERO times across ~10 capture rounds in
 // two live sprints -- every entry stayed INFERRED -- and the sprint logs
@@ -92,10 +93,19 @@ describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
 });
 
 describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)', () => {
-    test('runs kb_promote as the member, exactly as kb_capture is', async () => {
+    test("runs kb_promote in the repository maintainer's session, exactly as kb_capture is", async () => {
+        // The promotion candidates are read from the maintainer's KB, so the
+        // promotion must run there too -- in the reviewer's own session the id
+        // would not exist and every promotion would fail "Entry not found".
+        const MAINTAINER = Object.freeze({ id: 'id-warehouse-maint', name: 'warehouse-maint', type: 'remote' });
         const calls = [];
         const client = createKbWorkClient({
             memberCall: async (member, name, args) => { calls.push({ name, args, member }); return {}; },
+            maintainers: fakeMaintainerSelector({
+                repoOf: { [REVIEWER.name]: 'example.com/warehouse', [MAINTAINER.name]: 'example.com/warehouse' },
+                maintainerOf: { 'example.com/warehouse': MAINTAINER },
+            }),
+            gPull: async () => {},
             log: () => {},
         });
 
@@ -105,11 +115,7 @@ describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)',
 
         const promoteCall = calls.find((c) => c.name === 'kb_promote');
         assert.ok(promoteCall, 'kb_promote was never called');
-        assert.equal(
-            promoteCall.member,
-            REVIEWER,
-            'kb_promote outside the member session would resolve another KB and fail "Entry not found"'
-        );
+        assert.equal(promoteCall.member, MAINTAINER, 'kb_promote must run in the maintainer session that holds the entry');
         assert.equal(promoteCall.args.repo_path, undefined);
         assert.equal(result.promoted, 1);
     });

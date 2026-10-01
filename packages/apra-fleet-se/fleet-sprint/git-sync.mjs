@@ -490,7 +490,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
 export function createGitSync(deps = {}) {
     const brackets = deps.brackets ?? createSyncBrackets({ setPauseGuard: deps.setPauseGuard });
     const ctx = { ...deps, brackets };
-    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberAfter } = ctx;
+    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberBefore, syncMemberAfter } = ctx;
     return {
         brackets,
         /** Current number of open sync brackets -- read-only observability. */
@@ -543,6 +543,15 @@ export function createGitSync(deps = {}) {
          */
         pushBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
             () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
+        ),
+        /**
+         * A standalone bracketed G-pull through runner.js's syncMemberBefore()
+         * -- the same pull every dispatch bracket opens with, for a caller
+         * that must freshen a member's checkout outside a dispatch (the KB
+         * write queue G-pulls the kb_maintainer before each batch).
+         */
+        pullGitBefore: (memberName, options = {}) => brackets.withOpenSyncBracket(
+            () => syncMemberBefore(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
         ),
         /**
          * A standalone bracketed G-push through runner.js's syncMemberAfter().

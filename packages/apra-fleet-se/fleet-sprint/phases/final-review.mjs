@@ -271,7 +271,19 @@ export async function runFinalReviewPhase({
     // of the run, so the bible carries every CONFIRMED entry including the ones
     // minted a line above. Without this the sprint's knowledge never left the
     // member's local sqlite store -- see createKbWorkClient.exportBible.
-    await kbWork.exportBible(finalReviewKbMember);
+    //
+    // KB writes are routed to each repository's kb_maintainer, so the bible
+    // is exported from the maintainer's KB -- the one that holds the
+    // sprint's captures and promotions. Writes still queued behind a busy
+    // maintainer get one last attempt first; any that remain (an
+    // unreachable maintainer) are reported with a WARN, never dropped
+    // silently.
+    if (typeof kbWork.flushAll === 'function') await kbWork.flushAll();
+    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
+    const exportKbMember = (typeof kbWork.maintainerRecordFor === 'function'
+        ? kbWork.maintainerRecordFor(getMemberForRole('reviewer'))
+        : null) ?? finalReviewKbMember;
+    await kbWork.exportBible(exportKbMember);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

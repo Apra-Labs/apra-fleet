@@ -942,12 +942,32 @@ async function runSprintCycle(context) {
             });
             if (block) finalPrompt = prompt + '\n\n' + block;
         }
-        try {
-            return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
-        } finally {
-            if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
-        }
+        return withKbDispatchLifecycle(opts.member_name, async () => {
+            try {
+                return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+            } finally {
+                if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
+            }
+        });
     };
+
+    // KB write queue dispatch lifecycle (kb.mjs createKbWorkClient): bound
+    // once kbWork exists below. A member is BUSY for the whole of every
+    // dispatch -- the agent() call here and, through the withGitSync alias,
+    // its entire sync bracket -- so a KB write for a repository it maintains
+    // is never applied during one; the end of its last open dispatch applies
+    // what queued up behind it. The hooks never throw (kbWork logs and keeps
+    // writes queued instead), so they cannot replace a dispatch's own result.
+    let kbDispatchHooks = null;
+    async function withKbDispatchLifecycle(memberName, fn) {
+        const hooks = memberName ? kbDispatchHooks : null;
+        if (hooks) await hooks.started(memberName);
+        try {
+            return await fn();
+        } finally {
+            if (hooks) await hooks.ended(memberName);
+        }
+    }
 
     // The global dolt push mutex client. Every D-push below serializes through
     // it so two sprints never push at the same time. Four sources, in
@@ -1321,12 +1341,30 @@ async function runSprintCycle(context) {
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
     // This is the consumer: without it those fields would be gathered and
     // silently dropped. Unlike apra-pm's workflow script, this engine can call
-    // tools itself, so the kb_capture/kb_promote calls are made directly -- as
-    // the member whose work produced them (kbMember below).
+    // tools itself, so the kb_capture/kb_promote calls are made directly.
+    //
+    // Every KB WRITE is routed through the producing member's repository
+    // kb_maintainer (kbMaintainers above), never the producing member itself
+    // and never the orchestrator's own session: queued per repository, G-pulled
+    // on the maintainer before each batch (gitSync.pullGitBefore -- the same
+    // syncMemberBefore every dispatch bracket opens with), and held while the
+    // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
+    // gitSync is bound further down; the G-pull closure resolves it lazily,
+    // and no KB write can be applied before the first dispatch completes.
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
+        maintainers: () => context.kbMaintainers,
+        gPull: (maintainerName) => gitSync.pullGitBefore(maintainerName),
         log,
     });
+    // Dispatch lifecycle for the KB write queue: a member is busy from the
+    // moment its dispatch bracket opens until it closes, and writes queued for
+    // a repository it maintains are applied when it goes idle. Both hooks are
+    // optional on an injected kbWork stub.
+    kbDispatchHooks = {
+        started: (memberName) => (typeof kbWork.dispatchStarted === 'function' ? kbWork.dispatchStarted(memberName) : undefined),
+        ended: (memberName) => (typeof kbWork.dispatchEnded === 'function' ? kbWork.dispatchEnded(memberName) : undefined),
+    };
     // The member record kb work for a member name runs as. context.kbPriming is
     // an injection seam; a stub without memberOf degrades to "no member", which
     // every kbWork method treats as a best-effort no-op.
@@ -1478,7 +1516,12 @@ async function runSprintCycle(context) {
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
-    const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
+    // The KB write queue sees the whole bracket (G-pull, dispatch, G-push) as
+    // the member being busy -- see kbDispatchHooks.
+    const withGitSync = (member, pushCode, dispatchFn, options) => withKbDispatchLifecycle(
+        member,
+        () => gitSync.withGitSync(member, pushCode, dispatchFn, options),
+    );
 
     // --- usage-limit pause/resume controller (apra-fleet-hzeb.4.2) -----------
     // The budgets the controller reads: role-policies.mjs's frozen defaults,
@@ -1559,7 +1602,10 @@ async function runSprintCycle(context) {
             // one implementation serves the harvester, the doer, the per-round
             // reviewer and the final review alike.
             'kb-apply': async ({ policy, value, member }) => {
-                await kbWork.apply(policy.agentType, kbMember(member), value);
+                // `member` is the member the engine dispatched: it names the
+                // repository the writes belong to, and kbWork routes them to
+                // that repository's kb_maintainer.
+                await kbWork.apply(policy.agentType, member, value);
             },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN

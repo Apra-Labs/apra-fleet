@@ -177,9 +177,75 @@ function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
 }
 
+/**
+ * memberCall error codes that mean the TOOL refused the call (the member was
+ * reached and answered). Every other coded error -- a connect failure, a
+ * send_files failure, an unparseable remote reply -- means the member could
+ * not be reached, so the write stays queued for a later attempt.
+ */
+const KB_TOOL_REJECTION_CODES = Object.freeze(new Set(['E-TOOL', 'E-USAGE', 'E-ARGS-FILE', 'E-CALL']));
+
+/** True when a thrown memberCall error means the member was unreachable. */
+function isUnreachableError(err) {
+    return !!(err && typeof err.code === 'string' && err.code.length > 0 && !KB_TOOL_REJECTION_CODES.has(err.code));
+}
+
+/** The member name a kb work call names (a member record or a bare name). */
+function memberNameOf(member) {
+    if (typeof member === 'string') return member;
+    return (member && typeof member.name === 'string') ? member.name : null;
+}
+
+/**
+ * Every KB write for a repository goes through that repository's
+ * kb_maintainer (kb-maintainer.mjs), in the maintainer's MEMBER session --
+ * never through the member whose dispatch produced it, and never through the
+ * orchestrator's own session.
+ *
+ *   - apply() vets a role's kb_captures / kb_promotions, then QUEUES them per
+ *     repository and flushes that repository's queue.
+ *   - A flush runs the existing G-pull (opts.gPull -> git-sync's bracketed
+ *     syncMemberBefore) on the maintainer BEFORE the batch, so the
+ *     maintainer's checkout holds the files a capture cites and the KB's
+ *     basis check passes. A G-pull failure means the maintainer is
+ *     unreachable: the batch stays queued and a WARN is logged.
+ *   - A maintainer that is mid-dispatch (it is usually also a doer) is BUSY:
+ *     its repository's writes stay queued and are applied between its
+ *     dispatches, never during one. runner.js reports the dispatch lifecycle
+ *     through dispatchStarted()/dispatchEnded(); the end of a dispatch
+ *     flushes whatever queued up behind it.
+ *   - A capture from a member whose work folder is not a repository has no
+ *     maintainer and is dropped with a WARN.
+ *   - A write the maintainer cannot be reached for mid-batch is put back at
+ *     the head of the queue: nothing is lost and nothing is silently dropped.
+ *
+ * @param {{
+ *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
+ *   maintainers?: object|(() => object),
+ *   gPull?: (memberName: string) => Promise<any>,
+ *   log?: Function,
+ * }} opts
+ */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, log = () => {} } = opts;
+    const { memberCall, gPull, log = () => {} } = opts;
     const active = typeof memberCall === 'function';
+
+    /** The kb_maintainer selector (createKbMaintainerSelector), or null. */
+    function selector() {
+        const m = typeof opts.maintainers === 'function' ? opts.maintainers() : opts.maintainers;
+        return (m && typeof m.maintainerForMember === 'function') ? m : null;
+    }
+
+    /** repo -> queued writes, oldest first: { kind, role, payload }. */
+    const queues = new Map();
+    /** repo -> tail of the serialized flush chain for that repository. */
+    const flushChains = new Map();
+    /** member name -> open dispatch count (nested brackets count once each). */
+    const busy = new Map();
+    /** member name -> the write currently in flight to it, if any. */
+    const inFlight = new Map();
+
+    const isBusy = (memberName) => (busy.get(memberName) || 0) > 0;
 
     /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
     function parseResult(result) {
@@ -190,7 +256,182 @@ export function createKbWorkClient(opts = {}) {
         return (result && typeof result === 'object') ? result : null;
     }
 
+    /**
+     * The maintainer selection ({repo, member, record}) KB writes produced by
+     * `memberName` go to, or null. A member whose own work folder is not a
+     * repository has none.
+     */
+    function maintainerFor(memberName) {
+        const sel = selector();
+        if (!sel || !memberName) return null;
+        const m = sel.maintainerForMember(memberName);
+        return (m && m.member && m.record) ? m : null;
+    }
+
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+
+    const OPS = {
+        capture: {
+            tool: 'kb_capture',
+            args: (p) => ({ ...p }),
+            subject: (p) => `"${p.title}"`,
+            counter: 'captured',
+        },
+        promote: {
+            tool: 'kb_promote',
+            args: (p) => ({ id: p.id, reason: p.reason }),
+            subject: (p) => p.id,
+            counter: 'promoted',
+        },
+    };
+
+    /**
+     * Apply one repository's queue in the maintainer's session. Never throws.
+     * @returns {Promise<{captured: number, promoted: number, discarded: number}>}
+     */
+    async function flushRepo(repo) {
+        const counts = zeroCounts();
+        const queue = queues.get(repo);
+        if (!queue || queue.length === 0) return counts;
+        const sel = selector();
+        const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
+        if (!target || !target.record) {
+            log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${queue.length} KB write(s) stay queued`);
+            return counts;
+        }
+        const maintainer = target.member;
+        if (isBusy(maintainer)) {
+            log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${queue.length} KB write(s) for ${repo} stay queued until its dispatch ends`);
+            return counts;
+        }
+        // G-pull BEFORE every batch: the maintainer's checkout must hold the
+        // files the queued captures cite before kb_capture's basis check runs.
+        if (typeof gPull === 'function') {
+            try {
+                await gPull(maintainer);
+            } catch (err) {
+                log(`[kb-work] WARN: G-pull on maintainer '${maintainer}' failed (${err && err.message ? err.message : String(err)}) -- maintainer unreachable; ${queue.length} KB write(s) for ${repo} stay queued`);
+                return counts;
+            }
+        }
+        const batch = queue.splice(0, queue.length);
+        for (let i = 0; i < batch.length; i++) {
+            const op = batch[i];
+            if (isBusy(maintainer)) {
+                // A dispatch started on the maintainer while this batch ran:
+                // no write may land during it.
+                queue.unshift(...batch.slice(i));
+                log(`[kb-work] maintainer '${maintainer}' started a dispatch -- ${batch.length - i} KB write(s) for ${repo} stay queued until it ends`);
+                break;
+            }
+            const spec = OPS[op.kind];
+            const call = memberCall(target.record, spec.tool, spec.args(op.payload));
+            inFlight.set(maintainer, call.then(() => {}, () => {}));
+            let res;
+            try {
+                res = await call;
+            } catch (err) {
+                if (isUnreachableError(err)) {
+                    queue.unshift(...batch.slice(i));
+                    log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+                    break;
+                }
+                log(`[kb-work] ${spec.tool} failed for ${spec.subject(op.payload)} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+                continue;
+            } finally {
+                inFlight.delete(maintainer);
+            }
+            // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
+            // tool-level failure rather than throwing, so a non-throwing call
+            // is not by itself a success.
+            if (isToolError(res)) {
+                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${toolErrorText(res)}`);
+                continue;
+            }
+            if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
+            counts[spec.counter]++;
+        }
+        if (counts.captured || counts.promoted || counts.discarded) {
+            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}`);
+        }
+        return counts;
+    }
+
+    /** Serialize flushes per repository so two never interleave on one queue. */
+    function flush(repo) {
+        const prev = flushChains.get(repo) || Promise.resolve();
+        const next = prev.then(() => flushRepo(repo), () => flushRepo(repo));
+        flushChains.set(repo, next.then(() => {}, () => {}));
+        return next;
+    }
+
+    function enqueue(repo, kind, role, payload) {
+        if (!queues.has(repo)) queues.set(repo, []);
+        queues.get(repo).push({ kind, role, payload });
+    }
+
+    /** Repositories whose maintainer is `memberName`. */
+    function reposMaintainedBy(memberName) {
+        const sel = selector();
+        if (!sel || typeof sel.maintainers !== 'function') return [];
+        const out = [];
+        for (const [repo, m] of sel.maintainers()) if (m && m.member === memberName) out.push(repo);
+        return out;
+    }
+
     return {
+        /**
+         * Dispatch lifecycle: a dispatch is starting on `memberName`. Marks it
+         * busy (no queued KB write starts on it from here on) and waits out a
+         * write already in flight to it. Never throws.
+         */
+        async dispatchStarted(memberName) {
+            if (!memberName) return;
+            busy.set(memberName, (busy.get(memberName) || 0) + 1);
+            const pending = inFlight.get(memberName);
+            if (pending) await pending;
+        },
+        /**
+         * Dispatch lifecycle: a dispatch on `memberName` ended. When it was the
+         * last open one, apply the writes that queued up behind it for every
+         * repository it maintains. Never throws.
+         */
+        async dispatchEnded(memberName) {
+            if (!memberName) return;
+            const n = (busy.get(memberName) || 0) - 1;
+            if (n > 0) { busy.set(memberName, n); return; }
+            busy.delete(memberName);
+            for (const repo of reposMaintainedBy(memberName)) {
+                try { await flush(repo); } catch (err) { log(`[kb-work] flush for ${repo} failed (non-fatal): ${err.message}`); }
+            }
+        },
+        /** Try every repository's queue (e.g. before the canonical-bible export). Never throws. */
+        async flushAll() {
+            const counts = zeroCounts();
+            for (const repo of [...queues.keys()]) {
+                const c = await flush(repo);
+                for (const k of Object.keys(counts)) counts[k] += c[k];
+            }
+            return counts;
+        },
+        /** Number of KB writes still queued (all repositories, or one). */
+        pendingCount(repo) {
+            if (repo) return (queues.get(repo) || []).length;
+            let n = 0;
+            for (const q of queues.values()) n += q.length;
+            return n;
+        },
+        /** Log a WARN for every repository that still has queued writes. */
+        warnPending() {
+            for (const [repo, q] of queues) {
+                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable) -- not applied`);
+            }
+        },
+        /** The maintainer member record KB writes from `member` go to, or null. */
+        maintainerRecordFor(member) {
+            const m = maintainerFor(memberNameOf(member));
+            return m ? m.record : null;
+        },
         /**
          * apra-fleet-0ef: the INFERRED entries this reviewer may promote.
          *
@@ -305,6 +546,18 @@ export function createKbWorkClient(opts = {}) {
                 return [];
             }
         },
+        /**
+         * Vet a role's KB work and route it to the producing member's
+         * repository maintainer: queued per repository, then applied in the
+         * maintainer's MEMBER session after a G-pull (see the client header).
+         * `member` names the member whose dispatch produced `result` (a member
+         * record or a bare name); it decides WHICH repository, never which
+         * session -- no write is ever sent to it unless it is the maintainer.
+         *
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         *   counts of the writes applied by this call's flush (writes left
+         *   queued for a busy or unreachable maintainer are not counted).
+         */
         async apply(role, member, result) {
             const { captures, promotions, refused } = vetKbWork(role, result);
 
@@ -313,52 +566,29 @@ export function createKbWorkClient(opts = {}) {
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
 
-            // Without a resolved member there is no session whose KB the capture
-            // belongs to -- the tm7 defect. Refuse rather than guess.
-            if (!active || !member) {
-                if ((captures.length || promotions.length) && !member) {
-                    log(`[kb-work] no member resolved for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
-                }
-                return { captured: 0, promoted: 0, refused: refused.length };
-            }
+            const done = (counts) => ({ ...counts, refused: refused.length });
+            if (captures.length === 0 && promotions.length === 0) return done(zeroCounts());
 
-            let captured = 0;
-            let promoted = 0;
-            for (const c of captures) {
-                try {
-                    const res = await memberCall(member, 'kb_capture', { ...c });
-                    // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
-                    // tool-level failure rather than throwing, so counting every
-                    // non-throwing call as a success reported captures that never
-                    // persisted ("captured 3" against a KB that stayed empty).
-                    if (isToolError(res)) {
-                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${toolErrorText(res)}`);
-                        continue;
-                    }
-                    captured++;
-                } catch (err) {
-                    log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
-                }
+            const producer = memberNameOf(member);
+            // Without a resolved member there is no repository the writes
+            // belong to -- the tm7 defect. Refuse rather than guess.
+            if (!active || !producer) {
+                log(`[kb-work] WARN: no member resolved for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                return done(zeroCounts());
             }
-            for (const p of promotions) {
-                try {
-                    // apra-fleet-0ef: the promotion MUST run as the same member
-                    // as the capture above. Resolving it in any other session
-                    // targets a different project's KB, where the id does not
-                    // exist, so every promotion would fail "Entry not found"
-                    // (the apra-fleet-tm7 repo-blindness class).
-                    const res = await memberCall(member, 'kb_promote', { id: p.id, reason: p.reason });
-                    if (isToolError(res)) {
-                        log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
-                        continue;
-                    }
-                    promoted++;
-                } catch (err) {
-                    log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
-                }
+            const sel = selector();
+            if (sel && typeof sel.isNonRepoMember === 'function' && sel.isNonRepoMember(producer)) {
+                log(`[kb-work] WARN: member '${producer}' (${role}): work folder is not a repository -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                return done(zeroCounts());
             }
-            if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
-            return { captured, promoted, refused: refused.length };
+            const target = maintainerFor(producer);
+            if (!target) {
+                log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                return done(zeroCounts());
+            }
+            for (const c of captures) enqueue(target.repo, 'capture', role, c);
+            for (const p of promotions) enqueue(target.repo, 'promote', role, p);
+            return done(await flush(target.repo));
         },
 
         /**
