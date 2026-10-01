@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9eb97b3c06e7669b4c8f1d8e41c5e3a62a98040c",
     "branch": "chore/v05-kb-superset",
-    "entry_count": 374
+    "entry_count": 368
   },
   "entries": [
     {
@@ -358,30 +358,6 @@
       "updated_at": "2026-09-14T04:43:59.559Z"
     },
     {
-      "id": "1b58527a-40fd-4096-a223-836b69f81b4d",
-      "type": "knowledge",
-      "title": "Streaks are anonymous bead arrays by the time they reach the doer dispatch, so the sync bracket deliberately carries no streak identity",
-      "summary": "groupStreaksFromLaneMetadata discards metadata.streak after grouping, selectStreaks never has a lane id, and harvester has no streak -- so streak identity is unavailable on 2 of 3 pushCode:true paths, and there is no per-streak branch to key exclusivity on.",
-      "symbols": [
-        "CODE_WRITE_BRACKET_KEY",
-        "withOpenSyncBracket",
-        "withGitSync",
-        "groupStreaksFromLaneMetadata",
-        "selectStreaks",
-        "runStreakTurn",
-        "globalDoerTurn",
-        "createGitSync"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
-        "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/test/sync-bracket-mutual-exclusion.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-09T10:02:55.468Z"
-    },
-    {
       "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
       "type": "knowledge",
       "title": "bd prints literal JSON null, not [], for an empty dolt remote list",
@@ -396,25 +372,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:38.829Z"
-    },
-    {
-      "id": "1c40559a-d468-4da4-b986-c92e91a18f0a",
-      "type": "knowledge",
-      "title": "GUARDED_MODULES literal-['runner.js']-baseline KB entry is stale; guard tests derive dynamically",
-      "summary": "A KB entry claims four guard test files deepStrictEqual GUARDED_MODULES against a hardcoded ['runner.js'] array, but on the current tree GUARDED_MODULES already lists 9+ non-runner modules and every guard test (dispatch-safety-guard, dolt-literal-guard, guarded-modules-coverage, full-db-fetch-tripwire, pause-guard-push-holes) asserts against guardedModuleBasenames()/GUARDED_MODULES read dynamically, not a literal array.",
-      "symbols": [
-        "GUARDED_MODULES",
-        "guardedModuleBasenames"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
-        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
-        "packages/apra-fleet-se/test/dolt-literal-guard.test.mjs",
-        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
-        "packages/apra-fleet-se/test/pause-guard-push-holes.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-08T08:45:09.646Z"
     },
     {
       "id": "1c4d6528-ced2-49d3-a737-84705e230f40",
@@ -1571,27 +1528,6 @@
       "updated_at": "2026-09-10T11:06:51.961Z"
     },
     {
-      "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
-      "type": "knowledge",
-      "title": "Four distinct git-credential-helper file shapes exist across member OS/shell combinations",
-      "summary": "The deployed credential helper differs by member OS AND shell: POSIX writes an extensionless $HOME script, windows-powershell writes $env:USERPROFILE\\...bat, and windows-gitbash writes a .bat but is invoked through bash -- so any read-side builder needs all three forms plus the PowerShell call operator.",
-      "symbols": [
-        "gitCredentialHelperWrite",
-        "gitCredentialHelperRead",
-        "WindowsGitBashCommands"
-      ],
-      "source_files": [
-        "src/os/linux.ts",
-        "src/os/windows.ts",
-        "src/os/windows-gitbash.ts",
-        "src/os/os-commands.ts",
-        "src/tools/vcs-credential-exec.ts",
-        "packages/apra-fleet-se/fleet-sprint/se-windows-gitbash.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-07T22:40:14.339Z"
-    },
-    {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
       "type": "knowledge",
       "title": "A directly launched sprint's deployer self-id is the branch name, not a ledger uuid",
@@ -1814,28 +1750,6 @@
       "updated_at": "2026-09-07T16:36:39.527Z"
     },
     {
-      "id": "aa8a2378-f266-41ac-bfff-3a9fe9596388",
-      "type": "knowledge",
-      "title": "openSyncBracketCount is a pure aggregate counter; cross-owner bracket overlap is legitimate and relied upon, not a bug",
-      "summary": "git-sync.mjs's sync-bracket counter has no owner/nesting awareness by design -- runner.js's globalDoerTurn FIFO gate (not the bracket counter) is what keeps code-writing (pushCode:true) dispatches from ever overlapping, and D-push overlap across members is independently safe via the injected dolt push mutex.",
-      "symbols": [
-        "createSyncBrackets",
-        "withOpenSyncBracket",
-        "withGitSync",
-        "globalDoerTurn",
-        "CODE_WRITE_BRACKET_KEY",
-        "ConcurrentSyncBracketError"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/test/git-sync-brackets.test.mjs",
-        "packages/apra-fleet-se/test/sync-bracket-mutual-exclusion.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-09T09:20:49.633Z"
-    },
-    {
       "id": "acd2585c-ba7e-4580-a33a-809bd77eb8f5",
       "type": "knowledge",
       "title": "retry.infraResumeAttempts is a boolean gate, not a count -- a value above 1 is silently ignored",
@@ -2048,26 +1962,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.692Z"
-    },
-    {
-      "id": "ce77f60f-7377-46e2-94f4-348c7b04c8f0",
-      "type": "knowledge",
-      "title": "The sync-bracket guarantee is now mechanically scanned by a fifth guard, not just a convention",
-      "summary": "As of e9e585c4 a fifth guard scans every guarded module for bare sync primitives, superseding the earlier claim that nothing enforced the bracket rule.",
-      "symbols": [
-        "checkUnbracketedPushModules",
-        "unbracketedPushModulePaths",
-        "UNBRACKETED_PUSH_EXEMPT",
-        "runAllGuards"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/unbracketed-push-guard.mjs",
-        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
-        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
-        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-08T08:45:09.650Z"
     },
     {
       "id": "ce93654a-b7a2-4ccf-a9e2-2c166d11e6aa",
@@ -2659,9 +2553,13 @@
     {
       "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
       "type": "knowledge",
-      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
-      "summary": "execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
-      "symbols": [],
+      "title": "execute_prompt checks detectUsageLimit after every parseResponse and fails with reason 'usage_limit'",
+      "summary": "execute-prompt.ts's checkUsageLimit runs provider.detectUsageLimit after all five parseResponse calls (initial dispatch, stale-session retry, overloaded retry, orphan recovery, trust-heal retry), regardless of exit code. On a signal it records the session and returns isError with reason 'usage_limit', a usageLimit block (resumeAt/resumeAtSource/message) and sessionId; it never burns the stale-session or overloaded retries. The workflow layer forwards usageLimit and sessionId onto AgentDispatchError.details unchanged.",
+      "symbols": [
+        "checkUsageLimit",
+        "detectUsageLimit",
+        "AgentDispatchError"
+      ],
       "source_files": [
         "src/tools/execute-prompt.ts",
         "packages/apra-fleet-workflow/src/workflow/index.mjs",
@@ -4963,26 +4861,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.427Z"
-    },
-    {
-      "id": "a3fdac5d-31b6-4b87-9456-10d813aa095b",
-      "type": "knowledge",
-      "title": "Only roles with a kb-apply post-result step have their kb_captures recorded",
-      "summary": "A dispatched role's kb_captures output is applied only if its role-policies.mjs row lists 'kb-apply' in postResult; planner, plan-reviewer, the scoped-replan roles, deployer, integ-test-runner and regression-test-runner have none, yet the injected KNOWLEDGE BANK block tells them the orchestrator will record their kb_captures.",
-      "symbols": [
-        "kbKnowledgeBlock",
-        "composePermissionConfig",
-        "POST_RESULT_STEPS",
-        "ROLE_POLICIES"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "src/providers/claude.ts",
-        "packages/apra-fleet-se/apra-pm/agents/planner.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.190Z"
     },
     {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
