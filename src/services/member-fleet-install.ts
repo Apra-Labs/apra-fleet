@@ -36,7 +36,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Agent, LlmProvider, SSHExecResult } from '../types.js';
+import type { Agent, FleetMcpStatus, LlmProvider, SSHExecResult } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
 import { getMemberHomeDir } from './member-home.js';
@@ -45,6 +45,10 @@ import { escapePowerShellArgInner, escapeShellArgInner } from '../utils/shell-es
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from './update-check.js';
+import { recordFleetMcpStatus } from './registry.js';
+import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
+import { OPENCODE_PROJECT_CONFIG } from '../providers/opencode.js';
+import { readMemberJson, joinMemberPath, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
 
 type MemberShell = ReturnType<typeof getAgentShell>;
 
@@ -524,4 +528,390 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps): Promise<M
     };
   }
   return { state: 'available', version: after.version, installed: true, source: source.kind, binPath };
+}
+
+// ---------------------------------------------------------------------------
+// Self-registration, MEMBER-session verification and the fleetMcp status
+// (apra-fleet-b4g.56.2)
+// ---------------------------------------------------------------------------
+
+/** Machine-readable fleetMcp reasons beyond the install reasons above. */
+export type FleetMcpUnavailableReason =
+  | FleetInstallUnavailableReason
+  /** The member's install predates `register-member --id`. */
+  | 'install-too-old'
+  /** The member's own install has the work folder registered under another id. */
+  | 'E-FOLDER-TAKEN'
+  /** register-member on the member's own install failed for another reason. */
+  | 'register-failed'
+  /** The per-folder apra-fleet MCP entry compose_permissions writes is absent
+   *  or does not point at ?member=<uuid>. */
+  | 'mcp-entry-missing'
+  /** agy has no per-project MCP config fleet can point at the member session. */
+  | 'no-per-project-mcp'
+  /** The member's LLM provider has no MCP entry fleet configures. */
+  | 'provider-unsupported'
+  /** A MEMBER session could not be opened or its version call failed. */
+  | 'member-session-failed'
+  /** The MEMBER session answered but did not list kb_* and code_* tools. */
+  | 'member-tools-missing';
+
+/** A MEMBER session's client surface (subset of the MCP client). */
+export interface MemberSession {
+  mcpClient: {
+    callTool(name: string, args: unknown): Promise<unknown>;
+    listTools(): Promise<unknown>;
+  };
+  close?: () => Promise<void>;
+  transport?: { stop?: () => void };
+}
+
+export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
+  /** Open a direct MEMBER session (?member=<uuid>) to THIS orchestrator's server (local members). */
+  connectLocalMember(memberId: string): Promise<MemberSession>;
+  now(): Date;
+  /** Persist the observation on the member registry entry. */
+  record(memberId: string, status: FleetMcpStatus): void;
+}
+
+
+export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
+  return {
+    ...defaultMemberFleetInstallDeps(),
+    connectLocalMember: async (memberId: string) => {
+      const m = await import('@apralabs/apra-fleet-client/server-resolution');
+      return m.connectFleetMember(memberId) as unknown as MemberSession;
+    },
+    now: () => new Date(),
+    record: (memberId, status) => { recordFleetMcpStatus(memberId, status); },
+  };
+}
+
+const MEMBER_CALL_TIMEOUT_MS = 60_000;
+
+/** `register-member` on the member's own install, as a LOCAL member under the
+ *  orchestrator's id for it (exported for tests). */
+export function buildSelfRegisterCommand(binPath: string, agent: Agent, targetOs: TargetOS, shell: MemberShell): string {
+  const args = [
+    'register-member', '--type', 'local', '--id', agent.id,
+    '--name', agent.friendlyName, '--path', agent.workFolder,
+    '--llm', agent.llmProvider ?? 'claude',
+  ];
+  return memberCommandFor(targetOs, shell, {
+    posix: `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')}`,
+    powershell: `& ${psQuote(binPath)} ${args.map(psQuote).join(' ')}`,
+  });
+}
+
+/** `remove-member` on the member's own install (exported for tests). */
+export function buildSelfRemoveCommand(binPath: string, memberId: string, targetOs: TargetOS, shell: MemberShell): string {
+  const args = ['remove-member', '--id', memberId, '--force'];
+  return memberCommandFor(targetOs, shell, {
+    posix: `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')}`,
+    powershell: `& ${psQuote(binPath)} ${args.map(psQuote).join(' ')}`,
+  });
+}
+
+/** `call --member <uuid> version` (with a `{}` args file written first) or
+ *  `call --member <uuid> --list-tools`, on the member (exported for tests). */
+export function buildMemberCallCommand(
+  binPath: string,
+  memberId: string,
+  what: 'version' | 'list-tools',
+  argsPath: string,
+  targetOs: TargetOS,
+  shell: MemberShell,
+): string {
+  const callArgs = what === 'list-tools'
+    ? ['call', '--member', memberId, '--list-tools']
+    : ['call', '--member', memberId, 'version', '--args-file', argsPath, '--rm-args-file'];
+  if (what === 'list-tools') {
+    return memberCommandFor(targetOs, shell, {
+      posix: `${posixQuote(binPath)} ${callArgs.map(posixQuote).join(' ')}`,
+      powershell: `& ${psQuote(binPath)} ${callArgs.map(psQuote).join(' ')}`,
+    });
+  }
+  return memberCommandFor(targetOs, shell, {
+    posix: `printf '%s' '{}' > ${posixQuote(argsPath)} && ${posixQuote(binPath)} ${callArgs.map(posixQuote).join(' ')}`,
+    powershell:
+      `Set-Content -LiteralPath ${psQuote(argsPath)} -Value '{}' -NoNewline -Encoding ascii; ` +
+      `& ${psQuote(binPath)} ${callArgs.map(psQuote).join(' ')}`,
+  });
+}
+
+/** Last parseable JSON object line in command output. */
+function lastJsonObject(text: string): Record<string, unknown> | null {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].startsWith('{')) continue;
+    try {
+      const v = JSON.parse(lines[i]);
+      if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+function toolResultText(result: unknown): string {
+  const content = (result as { content?: Array<{ text?: string }> } | null)?.content;
+  return Array.isArray(content) ? content.map(c => c?.text ?? '').join('\n') : '';
+}
+
+function toolNames(list: unknown): string[] {
+  const tools = (list as { tools?: Array<{ name?: string }> } | null)?.tools;
+  return Array.isArray(tools) ? tools.map(t => String(t?.name ?? '')).filter(Boolean) : [];
+}
+
+const VERSION_TOKEN_RE = /v?\d+\.\d+\.\d+[^\s"',]*/;
+
+/** Judge a MEMBER session's version + tools/list answers. */
+function judgeSession(versionResult: unknown, list: unknown): { ok: true; version?: string } | { ok: false; reason: FleetMcpUnavailableReason; detail: string } {
+  if ((versionResult as { isError?: boolean } | null)?.isError) {
+    return { ok: false, reason: 'member-session-failed', detail: `version returned an error: ${toolResultText(versionResult).slice(0, 200)}` };
+  }
+  const names = toolNames(list);
+  const hasKb = names.some(n => n.startsWith('kb_'));
+  const hasCode = names.some(n => n.startsWith('code_'));
+  if (!hasKb || !hasCode) {
+    return {
+      ok: false,
+      reason: 'member-tools-missing',
+      detail: `member session tools/list lacks ${[!hasKb && 'kb_*', !hasCode && 'code_*'].filter(Boolean).join(' and ')} (got ${names.length} tools)`,
+    };
+  }
+  const m = VERSION_TOKEN_RE.exec(toolResultText(versionResult));
+  return { ok: true, version: m?.[0] };
+}
+
+/** Parse `apra-fleet call` output; a {"error":{code,message}} line is a failure. */
+function parseCallOutput(r: SSHExecResult, what: string): { ok: true; value: Record<string, unknown> } | { ok: false; detail: string } {
+  const parsed = lastJsonObject(`${r.stdout}\n${r.stderr}`);
+  const err = parsed?.error as { code?: string; message?: string } | undefined;
+  if (err && typeof err === 'object') return { ok: false, detail: `${what}: ${err.code ?? 'E-REMOTE'}: ${err.message ?? ''}`.trim() };
+  if (r.code !== 0) return { ok: false, detail: `${what} exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-300)}` };
+  if (!parsed) return { ok: false, detail: `${what}: unparseable output: ${r.stdout.trim().slice(0, 200)}` };
+  return { ok: true, value: parsed };
+}
+
+/**
+ * The URL of the member's per-folder apra-fleet MCP entry written by
+ * compose_permissions, or null when there is none. claude:
+ * <config dir>/.claude.json projects[<folder>].mcpServers['apra-fleet'].url;
+ * opencode: <workFolder>/opencode.json mcp['apra-fleet'].url.
+ */
+export async function readMemberMcpEntryUrl(agent: Agent, home: string, deps: Pick<MemberFleetInstallDeps, 'exec'>): Promise<string | null> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+  const isWindows = targetOs === 'windows';
+  const posix = isPosixShell(targetOs, shell);
+  const exec = (cmd: string, t?: number) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS);
+  const rec = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+  try {
+    if ((agent.llmProvider ?? 'claude') === 'claude') {
+      const configDir = await probeMemberClaudeConfigDir(exec, targetOs, shell);
+      const file = claudeLocalScopeConfigFile(configDir, home, isWindows, shell).file;
+      const config = await readMemberJson(exec, file, posix);
+      const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+      const entry = rec(rec(rec(rec(config.projects)?.[key])?.mcpServers)?.[MEMBER_MCP_SERVER_NAME]);
+      return typeof entry?.url === 'string' ? entry.url : null;
+    }
+    const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, shell);
+    const config = await readMemberJson(exec, file, posix);
+    const entry = rec(rec(config.mcp)?.[MEMBER_MCP_SERVER_NAME]);
+    return typeof entry?.url === 'string' ? entry.url : null;
+  } catch {
+    return null;
+  }
+}
+
+function memberQuery(agent: Agent): string {
+  return `?member=${encodeURIComponent(agent.id)}`;
+}
+
+/** Providers whose per-folder apra-fleet entry this module can verify. */
+const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
+
+/**
+ * Observe a member's apra-fleet MCP server and return its fleetMcp status.
+ * Never throws and never records -- see refreshMemberFleetMcp for that.
+ *
+ *  - agy: unavailable(no-per-project-mcp), unverified; nothing is probed.
+ *  - providers with no per-folder fleet entry: unavailable(provider-unsupported), unverified.
+ *  - LOCAL members: no install; a direct MEMBER session to this server.
+ *  - remote members: ensure the install (opts.install, default true; false
+ *    only probes the version), register the member on its own install
+ *    (`register-member --type local --id <uuid>`), check the per-folder MCP
+ *    entry, then verify a MEMBER session through `apra-fleet call` on the member.
+ */
+export async function probeMemberFleetMcp(
+  agent: Agent,
+  deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
+  opts: { install?: boolean } = {},
+): Promise<FleetMcpStatus> {
+  const checkedAt = () => deps.now().toISOString();
+  const unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra: Partial<FleetMcpStatus> = {}): FleetMcpStatus => ({
+    state: 'unavailable', reason, checkedAt: checkedAt(), ...(detail ? { detail } : {}), ...extra,
+  });
+  try {
+    const provider: LlmProvider = agent.llmProvider ?? 'claude';
+    if (provider === 'agy') {
+      return unavailable('no-per-project-mcp', 'agy has no per-project MCP config fleet can point at the member session', { unverified: true });
+    }
+    if (!PER_FOLDER_PROVIDERS.has(provider)) {
+      return unavailable('provider-unsupported', `fleet writes no per-folder apra-fleet MCP entry for provider "${provider}"`, { unverified: true });
+    }
+
+    if (agent.agentType === 'local') return await probeLocal(agent, deps, unavailable, checkedAt);
+    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt);
+  } catch (err: unknown) {
+    return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: Partial<FleetMcpStatus>) => FleetMcpStatus;
+
+async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: Unavailable, checkedAt: () => string): Promise<FleetMcpStatus> {
+  let session: MemberSession;
+  try {
+    session = await deps.connectLocalMember(agent.id);
+  } catch (err: unknown) {
+    const e = err as { status?: number; message?: string };
+    return unavailable('member-session-failed', e.status === 403
+      ? `server refused member ${agent.id}: not a registered member (HTTP 403)`
+      : `could not open a member session: ${e.message ?? String(err)}`);
+  }
+  try {
+    const versionResult = await session.mcpClient.callTool('version', {});
+    const list = await session.mcpClient.listTools();
+    const judged = judgeSession(versionResult, list);
+    if (!judged.ok) return unavailable(judged.reason, judged.detail);
+    return { state: 'available', checkedAt: checkedAt(), ...(judged.version ? { version: judged.version } : {}) };
+  } catch (err: unknown) {
+    return unavailable('member-session-failed', `member session call failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    try {
+      if (session.close) await session.close(); else session.transport?.stop?.();
+    } catch { /* ignore */ }
+  }
+}
+
+async function probeRemote(
+  agent: Agent,
+  deps: MemberFleetMcpDeps,
+  install: boolean,
+  unavailable: Unavailable,
+  checkedAt: () => string,
+): Promise<FleetMcpStatus> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+
+  const home = await deps.resolveHome(agent);
+  if (!home) return unavailable('home-unresolved', 'the member home directory could not be probed');
+  const binPath = memberBinPath(home, targetOs, shell);
+
+  // 1. Install (or, when not installing, just observe the version).
+  let version: string | undefined;
+  if (install) {
+    const r = await ensureMemberFleetInstall(agent, deps);
+    if (r.state === 'available') version = r.version;
+    else if (r.version) version = r.version; // an older install is still there: try to use it
+    else return unavailable(r.reason, r.detail);
+  } else {
+    const p = await probeMemberFleetVersion(agent, binPath, deps);
+    if (p.kind === 'probe-failed') return unavailable('probe-failed', p.detail);
+    if (p.kind !== 'installed') return unavailable('install-unverified', p.kind === 'broken' ? p.detail : 'apra-fleet is not installed on the member');
+    version = p.version;
+  }
+  const withVersion = { version };
+
+  // 2. Register the member on its own install under the orchestrator's id.
+  const reg = await deps.exec(agent, buildSelfRegisterCommand(binPath, agent, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
+  if (reg.code !== 0) {
+    const out = `${reg.stdout}\n${reg.stderr}`;
+    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', out.trim().slice(-300), withVersion);
+    if (/unknown or unexpected argument "--id"/i.test(out) || /unknown (?:option|command|argument)[^\n]*(?:--id|register-member)/i.test(out)) {
+      return unavailable('install-too-old', `the member's apra-fleet ${version} does not support register-member --id`, withVersion);
+    }
+    return unavailable('register-failed', `register-member exited ${reg.code}: ${out.trim().slice(-300)}`, withVersion);
+  }
+
+  // 3. The per-folder MCP entry compose_permissions writes must point at this member.
+  const url = await readMemberMcpEntryUrl(agent, home, deps);
+  if (!url || !url.endsWith(memberQuery(agent))) {
+    return unavailable('mcp-entry-missing', url
+      ? `per-folder apra-fleet entry points at ${url}, not ${memberQuery(agent)}`
+      : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions', withVersion);
+  }
+
+  // 4. A MEMBER session on the member answers version and lists kb_* / code_*.
+  const argsPath = memberJoin(targetOs, shell, home, '.apra-fleet', `version-args-${agent.id}.json`);
+  const v = parseCallOutput(
+    await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'version', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),
+    'call version',
+  );
+  if (!v.ok) return unavailable('member-session-failed', v.detail, withVersion);
+  const l = parseCallOutput(
+    await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'list-tools', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),
+    'call --list-tools',
+  );
+  if (!l.ok) return unavailable('member-session-failed', l.detail, withVersion);
+  const judged = judgeSession(v.value, l.value);
+  if (!judged.ok) return unavailable(judged.reason, judged.detail, withVersion);
+  return { state: 'available', version, checkedAt: checkedAt() };
+}
+
+/**
+ * Probe and RECORD the member's fleetMcp status on its registry entry. The
+ * record is an observation, overwritten on every call, so a re-probe after a
+ * manual fix flips unavailable -> available with no restart.
+ */
+export async function refreshMemberFleetMcp(
+  agent: Agent,
+  deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
+  opts: { install?: boolean } = {},
+): Promise<FleetMcpStatus> {
+  const status = await probeMemberFleetMcp(agent, deps, opts);
+  deps.record(agent.id, status);
+  return status;
+}
+
+export type SelfRemoveResult =
+  | { removed: boolean; detail: string }
+  | { removed: false; reason: 'home-unresolved' | 'install-too-old' | 'remove-failed' | 'probe-failed'; detail: string };
+
+/**
+ * Remove the member's self-registration from its OWN install (remove_member's
+ * counterpart of the register step). Local members share this orchestrator's
+ * install, whose registry remove_member already edits, so nothing runs for
+ * them. A member with no install has nothing to remove. Never throws.
+ */
+export async function removeMemberFromOwnInstall(
+  agent: Agent,
+  deps: MemberFleetInstallDeps = defaultMemberFleetInstallDeps(),
+): Promise<SelfRemoveResult> {
+  if (agent.agentType === 'local') return { removed: false, detail: 'local member: shares this install; nothing to remove member-side' };
+  try {
+    const targetOs = getAgentOS(agent) as TargetOS;
+    const shell = getAgentShell(agent);
+    const home = await deps.resolveHome(agent);
+    if (!home) return { removed: false, reason: 'home-unresolved', detail: 'the member home directory could not be probed' };
+    const binPath = memberBinPath(home, targetOs, shell);
+    const probe = await probeMemberFleetVersion(agent, binPath, deps);
+    if (probe.kind === 'missing') return { removed: false, detail: 'apra-fleet is not installed on the member; nothing to remove' };
+    if (probe.kind === 'probe-failed') return { removed: false, reason: 'probe-failed', detail: probe.detail };
+    const r = await deps.exec(agent, buildSelfRemoveCommand(binPath, agent.id, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
+    const out = `${r.stdout}\n${r.stderr}`;
+    if (r.code === 0) {
+      return /E-NOT-REGISTERED/.test(out)
+        ? { removed: false, detail: `member ${agent.id} was not registered on its own install` }
+        : { removed: true, detail: `removed member ${agent.id} from its own install` };
+    }
+    if (/unknown (?:option|command|argument)[^\n]*remove-member/i.test(out) || /remove-member/.test(out) && /unknown/i.test(out)) {
+      return { removed: false, reason: 'install-too-old', detail: 'the member install has no remove-member verb' };
+    }
+    return { removed: false, reason: 'remove-failed', detail: `remove-member exited ${r.code}: ${out.trim().slice(-300)}` };
+  } catch (err: unknown) {
+    return { removed: false, reason: 'remove-failed', detail: err instanceof Error ? err.message : String(err) };
+  }
 }
