@@ -46,13 +46,12 @@
 // orchestratorMember: a credential-file read plus a REST call, and beads
 // mutations, neither of which needs a git checkout (section 4.6).
 //
-// WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. sanitizePrText is defined
-// in ../runner.js, so importing it would be a circular import back into the
-// file this module was sliced out of -- it is injected exactly as
-// ./final-review.mjs injects it. command, gitSync, getMemberForRole and args
-// are runSprintCycle-scoped, so there is nothing to import; vcsCapabilities,
-// raiseVcsPrForMember, ApraFleet and CommandError live in real modules and are
-// imported directly.
+// WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. command, gitSync,
+// getMemberForRole and args are runSprintCycle-scoped, so there is nothing to
+// import; vcsCapabilities, raiseVcsPrForMember, the ../pr-body.mjs builders,
+// ApraFleet and CommandError live in real modules and are imported directly.
+// (sanitizePrText used to be injected for the notes; the body no longer uses
+// it -- see the PR body comment below.)
 //
 // GUARD COVERAGE: registered as 'phases/publish-pr.mjs' in
 // ../guarded-modules.mjs. It took TWO member_name-bearing command() call sites
@@ -70,6 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
+import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -98,8 +98,6 @@ export async function runPublishPrPhase({
     getMemberForRole,
     // The verdict this phase publishes but must never change.
     finalVerdictResult,
-    // Exported BY runner.js; injected to avoid a circular import (see header).
-    sanitizePrText,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -228,22 +226,32 @@ export async function runPublishPrPhase({
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
     } else {
-        // finalVerdictResult.notes is LLM-authored free text -- sanitize with
-        // sanitizePrText() (see the comment above its definition) BEFORE it is
-        // ever embedded in the VCSModule-built create-pull-request command()
-        // string below. validated.goal/validated.branch need no sanitization
-        // here: both are already validated against shell-injection-safe patterns
-        // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
-        const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
-        const safeNotes = sanitizePrText(finalVerdictResult.notes);
-        const prBody = [
-            `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
-            '',
-            `Final Verdict: ${finalVerdictLabel}`,
-            safeNotes ? `Notes: ${safeNotes}` : null,
-            '',
-            'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
-        ].filter((line) => line !== null).join('\n');
+        // finalVerdictResult.notes is LLM-authored free text. It used to go
+        // through sanitizePrText() (a single-line shell-argument sanitizer
+        // that maps every newline to a space), which is what flattened the
+        // reviewer's paragraphs and bullets into one line. The body never
+        // reaches a shell as raw text -- every provider builder JSON-encodes
+        // it and quotes the JSON per member shell -- so ../pr-body.mjs now
+        // applies markdown/transport hygiene instead (no raw HTML, no
+        // credential-placeholder spelling, balanced fences, ASCII, capped)
+        // while keeping the line structure.
+        const prTitle = buildSprintPrTitle({ verdict: finalVerdictLabel, branch: validated.branch });
+        const runId = validated.runId || (args && args.run_id) || '';
+        const now = new Date();
+        const buildBody = (previousBody = '') => buildSprintPrBody({
+            verdict: finalVerdictLabel,
+            goal: validated.goal,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            runId,
+            now,
+            notes: finalVerdictResult.notes,
+            details: [
+                validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
+            ],
+            previousBody,
+        });
+        const prBody = buildBody();
 
         // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
         // gh-based path is gone). A push+pr credential is minted just-in-time immediately
@@ -295,6 +303,10 @@ export async function runPublishPrPhase({
                 // worktree-model-v2.md section 4.6: this call stays workspace-
                 // independent by design, credential-file-read + REST only).
                 remoteUrlOverride: originUrl,
+                // A relaunch on a branch that already has a PR rewrites that
+                // PR's title and body for THIS run's verdict, carrying the
+                // earlier runs forward from the old body's history block.
+                updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildBody(oldBody) }),
             });
             if (!prResult.ok) {
                 if (prResult.authFailure) {
@@ -314,7 +326,11 @@ export async function runPublishPrPhase({
                     );
                 }
             } else if (prResult.alreadyExists) {
-                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
+                if (prResult.updated) {
+                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- updated its title and body to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+                } else {
+                    log(`[Publish PR] WARNING: a PR for branch '${validated.branch}' already exists but could NOT be updated to this run's verdict (${finalVerdictLabel}) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
+                }
             }
         }
     }

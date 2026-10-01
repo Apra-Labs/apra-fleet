@@ -121,6 +121,90 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
     };
 }
 
+/** Map one GitHub pull object (list or single) to the provider-neutral
+ *  { id, title, body, url } shape the existing-PR update path reads. */
+function mapGitHubPull(pr) {
+    const src = (pr && typeof pr === 'object') ? pr : {};
+    const id = typeof src.number === 'number' && Number.isFinite(src.number) ? src.number : null;
+    return {
+        id,
+        title: typeof src.title === 'string' ? src.title : '',
+        body: typeof src.body === 'string' ? src.body : '',
+        url: typeof src.html_url === 'string' ? src.html_url : null,
+    };
+}
+
+/** Build the GitHub REST "find the open pull request for head -> base" curl
+ *  command, used on the already-exists path to learn the existing PR's
+ *  number and current body (the create call's 422 carries neither).
+ *  GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&base={base}&state=open
+ *  -- see https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
+ *  The URL carries '&', so it is quoted like every other argument. */
+function buildGitHubFindPrCommand({ repo, base, head, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
+    const owner = safeRepo.split('/')[0];
+    const query = `head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}&state=open&per_page=10`;
+    const url = `${GITHUB_API}/repos/${safeRepo}/pulls?${query}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'find-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body (an array of pulls) -> [{ id, title, body, url }]. */
+        mapResponse: (respBody) => (Array.isArray(respBody) ? respBody.map(mapGitHubPull).filter((p) => p.id !== null) : []),
+    };
+}
+
+/** Build the GitHub REST "update a pull request" curl command (title + body).
+ *  PATCH /repos/{owner}/{repo}/pulls/{pull_number} -- see
+ *  https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request */
+function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, title, body, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    const id = String(pullRequestId ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build an update-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build an update-pull-request command.');
+
+    const payload = { title };
+    if (body !== undefined) payload.body = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${GITHUB_API}/repos/${safeRepo}/pulls/${id}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X PATCH`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'update-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        mapResponse: (respBody) => mapGitHubPull(respBody),
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Pull-request RESPONSE mapping (apra-fleet-lzfv.4)
 // ---------------------------------------------------------------------------
@@ -377,6 +461,8 @@ export const GitHubVCS = Object.freeze({
     builders: Object.freeze({
         'create-pull-request': buildGitHubCreatePrCommand,
         comment: buildGitHubCommentCommand,
+        'find-pull-request': buildGitHubFindPrCommand,
+        'update-pull-request': buildGitHubUpdatePrCommand,
     }),
 });
 

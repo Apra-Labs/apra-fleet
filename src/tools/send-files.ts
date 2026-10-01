@@ -111,10 +111,10 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     if (!result.ok) return result.error;
 
     // Write transformed content to temp dir preserving basenames; transfer those paths.
-    const tmpId = `apra-fleet-subst-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    tempDir = path.join(os.tmpdir(), tmpId);
     try {
-      fs.mkdirSync(tempDir, { recursive: true });
+      // mkdtemp: atomic, unpredictable, owner-only (0700) -- the substituted
+      // content may carry resolved secrets and os.tmpdir() can be shared.
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-subst-'));
       transferPaths = input.local_paths.map((p, i) => {
         const tmpPath = path.join(tempDir!, path.basename(p));
         fs.writeFileSync(tmpPath, result.outputs[i], 'utf-8');

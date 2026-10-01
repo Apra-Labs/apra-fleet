@@ -29,6 +29,11 @@ on:
         default: ''
         type: string
 
+# GITHUB_TOKEN is only used by actions/checkout; toy-repo writes use the
+# E2E_GH_TOKEN PAT secret, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: 'pm e2e - ${{ inputs.suite }}'

@@ -11,6 +11,9 @@ name: Spike - SEA dynamic import() of on-disk ESM (apra-fleet-7pm.1)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   spike:
     name: Spike (${{ matrix.os }}, useCodeCache=${{ matrix.code-cache }})

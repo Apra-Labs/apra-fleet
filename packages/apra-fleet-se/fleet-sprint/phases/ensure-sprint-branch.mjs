@@ -289,6 +289,7 @@ export async function runEnsureSprintBranchPhase({
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         requirementsFile: validated.requirementsFile || null,
+        regression: validated.skipRegression ? 'skip' : 'run',
     });
     endGroup();
 }

@@ -244,14 +244,25 @@ function bareTokenSyntheticSessionFields(): Record<string, unknown> {
   };
 }
 
-function deepMerge(
+// Keys that would reach Object.prototype through plain-object assignment.
+// The source is a JSON.parse result (a user-pasted credential blob or the
+// existing credentials file), where "__proto__" is an ordinary own key.
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+export function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>,
 ): Record<string, unknown> {
   for (const key of Object.keys(source)) {
+    if (UNSAFE_MERGE_KEYS.has(key)) continue;
     const sv = source[key];
     if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
-      const tv = (target[key] as Record<string, unknown> | undefined) ?? {};
+      // Own plain-object values only: an inherited member (e.g. toString)
+      // must never become the merge target.
+      const own = Object.prototype.hasOwnProperty.call(target, key) ? target[key] : undefined;
+      const tv = own && typeof own === 'object' && !Array.isArray(own)
+        ? own as Record<string, unknown>
+        : {};
       target[key] = deepMerge(tv, sv as Record<string, unknown>);
     } else {
       target[key] = sv;
