@@ -153,6 +153,11 @@ const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per 
 const KB_SELF_NOTE =
   ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
 
+// Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
+// reproduced byte-exact here for the same no-runtime-dependency reason.
+const CODE_SELF_NOTE =
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.';
+
 const BASE_DESCRIPTIONS = {
   kb_capture:
     'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED, and a user-directive is stored UNVERIFIED as a pending proposal until a human approves it; confidence_clamped:true whenever the stored confidence differs from the requested one (default INFERRED). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=same-topic predecessor linked (refines; both entries stay live), flagged=contradiction flagged for review. Pass supersedes:<id> to retire that entry instead (only takes effect if AUDN independently matched it).',
@@ -203,7 +208,7 @@ const BASE_DESCRIPTIONS = {
 };
 
 const DESCRIPTIONS = Object.fromEntries(
-  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, tool.startsWith('kb_') ? text + KB_SELF_NOTE : text]),
+  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, text + (tool.startsWith('kb_') ? KB_SELF_NOTE : CODE_SELF_NOTE)]),
 );
 
 // x-invariant stamping (GENERATOR-DECISION.md section 4): this is the "only

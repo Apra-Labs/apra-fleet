@@ -361,17 +361,24 @@
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
-            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
           ],
-          "source": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder)",
+          "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Create the folder or re-register the member with an existing work folder (register_member / update_member).",
-          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* requests carry no scope argument. The KB configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders, on every kb_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
         },
         {
           "code": "E-SELF-NOT-A-REPO",
-          "meaning": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it.",
+          "meaning": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
@@ -393,13 +400,20 @@
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
-            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
           ],
-          "source": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder)",
+          "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Run 'git init' (or clone the project) in the folder and add an origin remote.",
-          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* requests carry no scope argument. The KB configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders, on every kb_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
         },
         {
           "code": "E-SELF-NO-REMOTE",

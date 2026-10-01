@@ -4,8 +4,7 @@
   "kind": "happy",
   "request": {
     "target": "exampleFn",
-    "direction": "upstream",
-    "repo": "<SCRATCH_REPO_CODE>"
+    "direction": "upstream"
   },
   "response": {
     "content": [
@@ -14,5 +13,6 @@
         "text": "{\"content\":[{\"type\":\"text\",\"text\":\"No code intelligence index found for <SCRATCH_REPO_CODE>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.\"}],\"isError\":true}"
       }
     ]
-  }
+  },
+  "session": "CODE"
 }

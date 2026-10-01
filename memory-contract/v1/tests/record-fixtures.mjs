@@ -124,7 +124,6 @@ const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services
 const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
 
 const RECORDED_REMOTES = { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED };
-const REMOTE_A = RECORDED_REMOTE_A;
 
 const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
   remoteUrl: (key) => RECORDED_REMOTES[key],
@@ -487,16 +486,19 @@ await recordHappy('kb_invalidate', 'happy', {
   files: ['src/example.ts'],
 });
 
-// --- code_* (7 tools) -- all against a repo with no .gitnexus/meta.json, so
-// the real, honest "missing index" structured result is what gets recorded,
-// without ever spawning the gitnexus child process.
-await recordHappy('code_graph', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
-await recordHappy('code_impact', 'happy-no-index', { target: 'exampleFn', direction: 'upstream', repo: repoCode });
-await recordHappy('code_query', 'happy-no-index', { query: 'exampleFn', repo: repoCode });
-await recordHappy('code_context', 'happy-no-index', { name: 'exampleFn', repo: repoCode, repo_remote_url: REMOTE_A });
-await recordHappy('code_map', 'happy-no-index', { repo: repoCode });
-await recordHappy('code_flow', 'happy-no-index', { name: 'exampleFn', repo: repoCode });
-await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
+// --- code_* (7 tools) -- code (self): no repo argument; the CODE member
+// session resolves its own work folder, a git repo with no
+// .gitnexus/meta.json, so the real, honest "missing index" structured result
+// is what gets recorded, without ever spawning the gitnexus child process.
+await withSession('CODE', async () => {
+  await recordHappy('code_graph', 'happy-no-index', { symbol: 'exampleFn' });
+  await recordHappy('code_impact', 'happy-no-index', { target: 'exampleFn', direction: 'upstream' });
+  await recordHappy('code_query', 'happy-no-index', { query: 'exampleFn' });
+  await recordHappy('code_context', 'happy-no-index', { name: 'exampleFn' });
+  await recordHappy('code_map', 'happy-no-index', {});
+  await recordHappy('code_flow', 'happy-no-index', { name: 'exampleFn' });
+  await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn' });
+});
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error
@@ -524,6 +526,12 @@ await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self
 }, 'E-SELF-NO-WORKFOLDER'));
 await withSession('NOT_A_REPO', () => recordRefusal('kb_stats', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 await withSession('NO_REMOTE', () => recordRefusal('kb_list', 'refusal-self-no-remote', {}, 'E-SELF-NO-REMOTE'));
+// code (self) resolution refusals: the same shared resolver, minus the
+// origin-remote check (a code index is keyed by folder, not KB identity).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_query', 'refusal-self-no-workfolder', {
+  query: 'exampleFn',
+}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_map', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 
 await recordRefusal('kb_import', 'refusal-bible-not-found', {
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),

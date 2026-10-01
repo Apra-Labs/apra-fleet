@@ -111,6 +111,25 @@ tolerate the missing anchor, while the writing tools (`kb_export`,
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
+### 2.5 Every code_* call is scoped to the calling session (code constraint)
+
+No `code_*` tool takes a repo/scope argument either. The repo a call is about
+is resolved exactly as for `kb_*` (section 2.4): a member session's registered
+work folder, any other session the fleet server's working folder. A local
+folder that is missing or is not a git repository is refused before the
+provider is reached (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`); unlike
+`kb_*`, no origin remote is required, because a code index is keyed by folder,
+not by KB identity. A member session never falls back to the server folder.
+A remote member's folder lives on another host and is passed to the provider
+verbatim. The resolved folder is what the provider receives as its repo, what
+usage telemetry records, and (for `code_context`) whose KB enriches the result.
+Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
+shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
+`src/services/knowledge/kb-self.ts`. Fixtures
+`code_query/refusal-self-no-workfolder` and `code_map/refusal-self-not-a-repo`
+pin the two refusals; every `code_*` happy fixture runs as the `CODE` member
+session.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of

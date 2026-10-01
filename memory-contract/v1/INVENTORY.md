@@ -80,16 +80,21 @@ identity.
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
-| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
-| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
-| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
-| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
-| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
-| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
-| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
+| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
+| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
+| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
+| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
+| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
+| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
 
-`code_context` is the only `code_*` tool that takes `repo_remote_url`, because it
-is the only one that touches the KB.
+No `code_*` tool takes a repo/scope argument (`repo`, `repo_path`,
+`repo_remote_url`): like `kb_*`, the repo a call is about is the calling
+session's own folder (`resolveCodeSelf()`, `src/tools/code-intelligence.ts`,
+over the shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
+`src/services/knowledge/kb-self.ts`), refused with `E-SELF-NO-WORKFOLDER` /
+`E-SELF-NOT-A-REPO`. No origin remote is required. `code_context` enriches from
+the KB of that same resolved folder.
 
 Registration descriptions for all 23 tools are reproduced verbatim in Appendix A.
 
@@ -548,42 +553,42 @@ Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks 
 ### code_graph
 
 ```text
-Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_impact
 
 ```text
-Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_query
 
 ```text
-Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_context
 
 ```text
-Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_map
 
 ```text
-Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.
+Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_flow
 
 ```text
-Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.
+Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 
 ### code_tests
 
 ```text
-Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.
+Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
 ```
 

@@ -143,7 +143,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/3",
-      "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it.",
+      "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
       "status": 500
     },
     {

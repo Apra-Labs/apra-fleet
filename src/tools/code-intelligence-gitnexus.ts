@@ -149,8 +149,10 @@ function appendFreshnessNote(result: unknown, note: string): unknown {
 //
 // Pre-flight (F3.1): when the call carries a non-empty `repo` param, verify
 // the repo has been indexed (`<repo>/.gitnexus/meta.json` exists) BEFORE ever
-// touching the child process. Calls without a `repo` param are forwarded
-// untouched -- the check only applies when a repo is named.
+// touching the child process. Every code_* tool call carries the calling
+// session's resolved (self) folder as `repo` (resolveCodeSelf in
+// code-intelligence.ts); a direct provider call without one is forwarded
+// untouched.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
   const hasRepo = typeof repo === 'string' && repo.length > 0;

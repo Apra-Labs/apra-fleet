@@ -145,7 +145,9 @@ export const ENVIRONMENT = {
       },
     },
     { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, git: true, remote: 'B', files: {} },
-    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, files: {} },
+    // code_* (self): a git repository (E-SELF-NOT-A-REPO otherwise) with no
+    // code index; code tools need no origin remote.
+    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, git: true, remote: null, files: {} },
     { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, git: true, remote: 'IMPORT_REJECTED', files: {} },
     // E-SELF-NOT-A-REPO: a plain directory, never `git init`ed.
     { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
@@ -161,6 +163,7 @@ export const ENVIRONMENT = {
     A: { member: 'contract-a', kind: 'local', repo: 'A' },
     B: { member: 'contract-b', kind: 'local', repo: 'B' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
+    CODE: { member: 'contract-code', kind: 'local', repo: 'CODE' },
     NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
@@ -263,6 +266,8 @@ export const SCENARIO = [
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_map', case: 'refusal-self-not-a-repo' },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {
