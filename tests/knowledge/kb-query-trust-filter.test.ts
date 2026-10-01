@@ -146,11 +146,10 @@ describe('kb_query tool trust filters', () => {
     }
   });
 
-  it('with no filter the tool result still carries every tier (default unchanged)', async () => {
+  it('with no filter the tool returns only CONFIRMED undisputed entries (default)', async () => {
     useProvider(provider);
     const parsed = JSON.parse(await kbQuery({ query: 'trustfilter', limit: 50 }));
-    const got = parsed.l1_results.map((e: KBEntry) => e.id);
-    for (const id of Object.values(ids)) expect(got).toContain(id);
+    expect(parsed.l1_results.map((e: KBEntry) => e.id)).toEqual([ids.confirmed]);
   });
 
   it('filters even when the provider ignores the options (older remote KB server)', async () => {

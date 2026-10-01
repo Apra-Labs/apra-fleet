@@ -5,7 +5,10 @@
   "request": {
     "repo_path": "<SCRATCH_REPO_A>",
     "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
-    "type": "user-directive"
+    "type": "user-directive",
+    "confidence": [
+      "UNVERIFIED"
+    ]
   },
   "response": {
     "content": [

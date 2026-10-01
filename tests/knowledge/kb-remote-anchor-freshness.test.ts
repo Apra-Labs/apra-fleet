@@ -83,6 +83,7 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
 
     // The remote member's session begins with a prime against the shared KB.
     await kbSessionPrime({
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       repo_path: fakeRemotePath,
       repo_remote_url: remoteUrl,
       hint_symbols: [`anchorHealthySymbol${tok}`],
@@ -90,7 +91,7 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
 
     expect(await rawStale(localClone, title)).toBe(0);
 
-    const listed = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
+    const listed = JSON.parse(await kbList({ repo_path: localClone, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
     expect(listed.results.some((e: any) => e.title === title)).toBe(true);
   });
 
@@ -114,6 +115,7 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
     fs.writeFileSync(path.join(localClone, 'src', 'fixture.ts'), 'export const fixture = 2; // changed\n');
 
     await kbSessionPrime({
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       repo_path: localClone,
       repo_remote_url: remoteUrl,
       hint_symbols: [`anchorChangedSymbol${tok}`],

@@ -153,8 +153,8 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     expect(fs.existsSync(dbB)).toBe(true);
     expect(dbA).not.toBe(dbB);
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50 }));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50 }));
+    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
+    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
 
     expect(fromA.results.some((e: any) => e.summary.includes('alpha'))).toBe(true);
     expect(fromA.results.some((e: any) => e.summary.includes('beta'))).toBe(false);

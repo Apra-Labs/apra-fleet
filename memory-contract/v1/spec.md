@@ -676,14 +676,19 @@ attempting discriminator-style dispatch against the emitted schema, since the
 emitted `anyOf` carries no machine-readable discriminant mapping.
 
 **TRUST FILTERS.** The default (non-`flagged_only`) branch accepts two
-optional, default-off filters: `confidence`, a non-empty allow-list of tiers
+optional filters: `confidence`, a non-empty allow-list of tiers
 (`CONFIRMED`/`INFERRED`/`UNVERIFIED`), and `exclude_disputed`, which drops any
 entry on either side of an unresolved contradiction (`flagged_for_review`
 true, or `contradiction_of` set). When supplied, an implementation MUST apply
 them to every entry the response carries -- `l1_results`, `l2_expanded` AND
 `related_claims` -- so a filtered caller is never handed an excluded entry
-through the graph expansion instead. When both are absent the response MUST
-be exactly what it was without them. The `flagged_only` branch ignores both
+through the graph expansion instead. When `confidence` is
+absent the default is `["CONFIRMED"]` with `exclude_disputed` true: INFERRED,
+UNVERIFIED and disputed entries are returned only when the caller lists the
+tiers explicitly (an explicit `confidence` defaults `exclude_disputed` to
+false). The same default applies to `kb_list` (whose `confidence` is an array
+of tiers), `kb_session_prime` and `kb_context` (both accept the same optional
+`confidence` array). The `flagged_only` branch ignores both
 (listing disputed entries is its purpose). An implementation backed by a
 store that cannot filter MUST filter the merged result itself before
 responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of

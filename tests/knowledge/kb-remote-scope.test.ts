@@ -133,10 +133,10 @@ describe('kb_capture + kb_list: remote member work folder round trip', () => {
       repo_remote_url: remoteUrl,
     } as any);
 
-    const withUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, repo_remote_url: remoteUrl, limit: 50 } as any));
+    const withUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, repo_remote_url: remoteUrl, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
     expect(withUrl.results.some((e: any) => e.title === 'Remote member fact')).toBe(true);
 
-    const withoutUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, limit: 50 } as any));
+    const withoutUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
     expect(withoutUrl.results.some((e: any) => e.title === 'Remote member fact')).toBe(false);
   });
 });

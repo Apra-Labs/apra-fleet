@@ -272,7 +272,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(loser.stale).toBe(1);
     expect(loser.flagged_for_review).toBe(0);
 
-    const confirmedList = await provider.list({ confidence: 'CONFIRMED' });
+    const confirmedList = await provider.list({ confidence: ['CONFIRMED'] });
     expect(confirmedList.some(e => e.id === bContraId)).toBe(true);
     expect(confirmedList.some(e => e.id === aContra.id)).toBe(false);
 

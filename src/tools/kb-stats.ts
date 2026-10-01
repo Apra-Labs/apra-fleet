@@ -96,7 +96,7 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
   } else {
     bible = { present: false, entries: 0, drift: 0 };
     try {
-      const liveConfirmed = await project.list({ confidence: 'CONFIRMED' });
+      const liveConfirmed = await project.list({ confidence: ['CONFIRMED'] });
       const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
       // Degraded-safe fallback shared by every "can't use the bible file" path
       // below (absent, unreadable, malformed JSON, non-array shape): drift

@@ -143,13 +143,14 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
 
     // --- Act as the remote member: prime, stats, list from the fake path -
     await kbSessionPrime({
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       repo_path: fakeRemotePath,
       repo_remote_url: remoteUrl,
       hint_symbols: [`remoteE2eHealthy${tok}`, `remoteE2eChanged${tok}`],
     } as any);
 
     const statsOut = JSON.parse(await kbStats({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl } as any));
-    const listOut = JSON.parse(await kbList({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl, limit: 50 } as any));
+    const listOut = JSON.parse(await kbList({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
 
     const remoteCalls = recorded.slice(beforeRemoteCalls);
 
@@ -179,7 +180,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
     // prime above -- raw sqlite row AND a subsequent kb_list from the local
     // clone.
     expect(await rawStale(localClone, healthyTitle)).toBe(0);
-    const relistedFromLocal = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
+    const relistedFromLocal = JSON.parse(await kbList({ repo_path: localClone, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
     expect(relistedFromLocal.results.some((e: any) => e.title === healthyTitle)).toBe(true);
 
     // ASSERTION 4 -- FRESHNESS NOT DISABLED: a prime from the REAL local
@@ -187,6 +188,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
     // apra-fleet-b4g.4 narrowed freshness checking rather than disabling it.
     fs.writeFileSync(path.join(localClone, 'src', 'fixture2.ts'), 'export const fixture2 = 2; // changed\n');
     await kbSessionPrime({
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       repo_path: localClone,
       repo_remote_url: remoteUrl,
       hint_symbols: [`remoteE2eChanged${tok}`],

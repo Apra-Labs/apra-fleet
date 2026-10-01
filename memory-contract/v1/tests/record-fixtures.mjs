@@ -741,7 +741,7 @@ const idDirective = parseEnvelopeText(captureDirective)?.id;
 await recordObservedEffect(
   'kb_list',
   'observed-directive-quarantine',
-  { repo_path: repoA, repo_remote_url: REMOTE_A, type: 'user-directive', symbol: undefined },
+  { repo_path: repoA, repo_remote_url: REMOTE_A, type: 'user-directive', confidence: ['UNVERIFIED'], symbol: undefined },
   'E-DIRECTIVE-QUARANTINE',
   'kb_list observation of the pending directive proposal captured in kb_capture/happy-user-directive-proposal.json. ' +
     'E-DIRECTIVE-QUARANTINE (governance group, surfaced: response-field) is raised at capture time by kb_capture, ' +

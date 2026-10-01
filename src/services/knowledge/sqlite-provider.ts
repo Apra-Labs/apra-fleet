@@ -1083,9 +1083,13 @@ export class SqliteProvider implements MemoryProvider {
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
 
-  async context(files: string[]): Promise<FileContextResult[]> {
+  async context(files: string[], confidence?: Confidence[]): Promise<FileContextResult[]> {
     const db = this.getDb();
     const results: FileContextResult[] = [];
+    const confClause = confidence?.length
+      ? `AND confidence IN (${confidence.map(() => '?').join(',')})`
+      : '';
+    const confParams: SQLInputValue[] = confidence?.length ? [...confidence] : [];
 
     const fileEntries = new Map<string, KBEntry>();
     for (const file of files) {
@@ -1093,10 +1097,11 @@ export class SqliteProvider implements MemoryProvider {
         SELECT * FROM entries
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
+          ${confClause}
           AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(file) as Record<string, unknown>[];
+      `).all(...confParams, file) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -1230,7 +1235,7 @@ export class SqliteProvider implements MemoryProvider {
     this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
 
     const fileResults = opts.session_files?.length
-      ? await this.context(opts.session_files)
+      ? await this.context(opts.session_files, opts.confidence)
       : [];
 
     const stale_files = fileResults
@@ -1259,6 +1264,8 @@ export class SqliteProvider implements MemoryProvider {
           l1_only: true,
           limit: 10,
           include_stale: false,
+          confidence: opts.confidence,
+          exclude_disputed: opts.exclude_disputed,
         });
         top_entries = l1.results
           .filter(e => e.type !== 'context-cache')
@@ -1318,7 +1325,7 @@ export class SqliteProvider implements MemoryProvider {
   // excludes superseded and stale entries (no override -- this is an
   // audit-the-live-set tool, not a full-history query).
   async list(opts: {
-    confidence?: Confidence;
+    confidence?: Confidence[];
     type?: KBEntry['type'];
     module?: string;
     symbol?: string;
@@ -1329,9 +1336,9 @@ export class SqliteProvider implements MemoryProvider {
     const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
     const params: SQLInputValue[] = [];
 
-    if (opts.confidence) {
-      conditions.push('e.confidence = ?');
-      params.push(opts.confidence);
+    if (opts.confidence?.length) {
+      conditions.push(`e.confidence IN (${opts.confidence.map(() => '?').join(',')})`);
+      params.push(...opts.confidence);
     }
     if (opts.type) {
       conditions.push('e.type = ?');

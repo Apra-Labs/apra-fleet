@@ -63,11 +63,11 @@
             ]
           },
           "minItems": 1,
-          "description": "Only return entries whose confidence tier is in this list (e.g. [\"CONFIRMED\"]). Applies to l1_results, l2_expanded and related_claims alike. Omit for every tier. Ignored when flagged_only is true."
+          "description": "Only return entries whose confidence tier is in this list (e.g. [\"CONFIRMED\"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: [\"CONFIRMED\"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true."
         },
         "exclude_disputed": {
           "type": "boolean",
-          "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default false. Ignored when flagged_only is true."
+          "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true."
         }
       },
       "additionalProperties": false

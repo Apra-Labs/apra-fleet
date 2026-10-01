@@ -10,6 +10,8 @@ import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
   ...kbScopeFields,
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only surface entries whose confidence tier is in this list. Default when omitted: ["CONFIRMED"] (undisputed) -- INFERRED and UNVERIFIED entries are surfaced only when listed explicitly.'),
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
@@ -201,7 +203,13 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
     input.repo_remote_url,
   );
 
+  // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
+  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);
+  const exclude_disputed = !input.confidence?.length;
+
   const result = await providers.project.prime({
+    confidence,
+    exclude_disputed,
     session_files: input.session_files,
     hint_symbols: input.hint_symbols,
     hint_modules: input.hint_modules,
@@ -222,6 +230,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
         l1_only: true,
         limit: 10,
         include_stale: false,
+        confidence,
+        exclude_disputed,
       });
       const globalEntries = globalResult.results
         .filter(e => e.type === 'knowledge')
@@ -277,6 +287,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
           l1_only: true,
           limit: 10,
           include_stale: false,
+          confidence,
+          exclude_disputed,
         });
 
         // Merge below direct hits: skip ids already present (direct + global),

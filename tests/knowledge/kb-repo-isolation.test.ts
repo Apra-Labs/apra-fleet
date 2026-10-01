@@ -102,8 +102,8 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
       repo_path: repoA,
     } as any);
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50 } as any));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50 } as any));
+    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
 
     expect(fromA.results.some((e: any) => e.title === 'Alpha-only fact')).toBe(true);
     expect(fromB.results.some((e: any) => e.title === 'Alpha-only fact')).toBe(false);
@@ -126,8 +126,8 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
       repo_path: repoA,
     } as any);
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50 } as any));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50 } as any));
+    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
 
     expect(fromA.results.map((e: any) => e.title)).toEqual(['Alpha-only fact']);
     expect(fromB.results.map((e: any) => e.title)).toEqual(['Beta-only fact']);

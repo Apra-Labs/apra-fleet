@@ -335,7 +335,7 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   // used to end up serialised into repo B's committed bible.
   const providers = await getKbProviders(repoPath, input.repo_remote_url);
   const source = scope === 'global' ? providers.global : requireSqliteProject(providers.project, 'kb_export');
-  const entries = await source.list({ confidence: 'CONFIRMED' });
+  const entries = await source.list({ confidence: ['CONFIRMED'] });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries

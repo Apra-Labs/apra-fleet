@@ -14,6 +14,19 @@
           "type": "string",
           "description": "Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly."
         },
+        "confidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "CONFIRMED",
+              "INFERRED",
+              "UNVERIFIED"
+            ]
+          },
+          "minItems": 1,
+          "description": "Only consider cached file entries whose confidence tier is in this list. Default when omitted: [\"CONFIRMED\"] -- INFERRED and UNVERIFIED entries are considered only when listed explicitly."
+        },
         "files": {
           "type": "array",
           "items": {
