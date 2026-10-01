@@ -36,7 +36,12 @@ kb_maintainer, chosen once at sprint setup and logged one line per repository.
 A member belongs to a repository when its work folder's normalized `origin`
 matches. Selection order: (a) an explicit `roleMap.kb_maintainer` member;
 (b) a role-less member (named in no dispatched role); (c) any role-mapped
-member whose checkout is that repository. The first candidate whose
+member whose checkout is that repository. A member mapped to
+`roleMap.orchestrator` is never a maintainer under any rule (an explicit
+`roleMap.kb_maintainer` naming it is ignored with a WARNING), and is never
+added to the sprint-branch ensure set through the maintainer path; if it is the
+only member with a checkout of a repository, that repository gets no maintainer
+and a `[kb-maintainer]` WARNING says so. The first candidate whose
 availability probe (a read-only `kb_stats` as that member) succeeds wins;
 skipped candidates are logged as replacements. A member whose work folder is
 not a repository can never be a maintainer, and its captures are dropped with

@@ -28,6 +28,11 @@
 // succeeds is the maintainer. Each skipped candidate is logged as a
 // replacement, naming the next eligible member and the probe error.
 //
+// A member mapped to roleMap.orchestrator is NEVER a maintainer under any rule
+// (explicit included): the orchestrator may be a shared member that cannot sit
+// on every sprint's branch. If it is the only member with a checkout of a
+// repository, that repository gets no maintainer and a loud WARNING is logged.
+//
 // kb_maintainer is NOT a dispatched role: no agent() call ever targets it,
 // and runner.js leaves it out of the role-mapped "specialist" set so naming a
 // member as maintainer does not take it out of the generalist pool.
@@ -73,13 +78,20 @@ export function roleMappedMembers(roleMap) {
     return out;
 }
 
+/** Members named under roleMap.orchestrator. */
+export function orchestratorMembers(roleMap) {
+    const list = roleMap && typeof roleMap === 'object' ? roleMap.orchestrator : undefined;
+    return new Set(Array.isArray(list) ? list : []);
+}
+
 /**
  * Pure ordering of maintainer candidates for one repository.
  * @param {{ repo: string, members: string[], repoOf: Map<string,string>, roleMap?: object }} opts
  * @returns {Array<{ member: string, rule: string }>}
  */
 export function orderMaintainerCandidates({ repo, members, repoOf, roleMap }) {
-    const inRepo = (m) => repoOf.get(m) === repo;
+    const orch = orchestratorMembers(roleMap);
+    const inRepo = (m) => repoOf.get(m) === repo && !orch.has(m);
     const explicit = (roleMap && Array.isArray(roleMap[ROLE_KB_MAINTAINER])) ? roleMap[ROLE_KB_MAINTAINER] : [];
     const mapped = roleMappedMembers(roleMap);
     const seen = new Set();
@@ -100,6 +112,9 @@ export function orderMaintainerCandidates({ repo, members, repoOf, roleMap }) {
  * @param {{ repo: string, member: string|null, rule: string|null }} sel
  */
 export function formatSelectionLine(sel) {
+    if (!sel.member && sel.orchestratorOnly) {
+        return `${LOG_PREFIX} WARNING: repository ${sel.repo}: no maintainer selected -- the only member with a checkout of the repository is the orchestrator, which is never a maintainer; KB writes for it have no target this sprint`;
+    }
     if (!sel.member) {
         return `${LOG_PREFIX} repository ${sel.repo}: no available maintainer (every eligible member failed its probe); KB writes for it have no target this sprint`;
     }
@@ -178,13 +193,18 @@ export function createKbMaintainerSelector(opts = {}) {
             }
             return { repo, member, record: records.get(member), rule, replaced };
         }
-        return { repo, member: null, record: null, rule: null, replaced };
+        const orch = orchestratorMembers(roleMap);
+        const orchestratorOnly = candidates.length === 0 && members.some((m) => repoOf.get(m) === repo && orch.has(m));
+        return { repo, member: null, record: null, rule: null, replaced, orchestratorOnly };
     }
 
     function warnUnusableExplicit() {
         const explicit = (roleMap && Array.isArray(roleMap[ROLE_KB_MAINTAINER])) ? roleMap[ROLE_KB_MAINTAINER] : [];
+        const orch = orchestratorMembers(roleMap);
         for (const m of explicit) {
-            if (!members.includes(m)) {
+            if (orch.has(m)) {
+                log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', which is the orchestrator member -- ignored (the orchestrator is never a maintainer)`);
+            } else if (!members.includes(m)) {
                 log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', which is not a sprint member -- ignored`);
             } else if (!repoOf.has(m)) {
                 log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', whose work folder is not a repository -- ignored`);

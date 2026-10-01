@@ -506,11 +506,15 @@ export { resolveDispatchInactivityTimeoutS };
 // De-duplicated, roles first. A selector without maintainers() (an injected
 // stub) or a repository with no selected maintainer contributes nothing.
 // Exported so tests drive the production list, not a re-derivation of it.
-function computeBranchEnsureMembers(getMembersForRole, kbMaintainers) {
+// orchestratorMembers (roleMap.orchestrator): such a member is never added
+// through the maintainer path (defence in depth); a dispatch role still
+// includes it.
+function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, orchestratorMembers) {
+    const orchestrators = new Set(orchestratorMembers || []);
     const maintainerMembers = [];
     if (kbMaintainers && typeof kbMaintainers.maintainers === 'function') {
         for (const sel of kbMaintainers.maintainers().values()) {
-            if (sel && typeof sel.member === 'string' && sel.member) maintainerMembers.push(sel.member);
+            if (sel && typeof sel.member === 'string' && sel.member && !orchestrators.has(sel.member)) maintainerMembers.push(sel.member);
         }
     }
     return [...new Set([
@@ -2018,7 +2022,7 @@ async function runSprintCycle(context) {
     // explicitly role-maps a dispatch member (doer/reviewer/planner/etc.) as
     // orchestrator too, that member is still included below via its dispatch
     // role, so the ensure-everywhere guarantee is unaffected for that case.
-    const branchEnsureMembers = computeBranchEnsureMembers(getMembersForRole, context.kbMaintainers);
+    const branchEnsureMembers = computeBranchEnsureMembers(getMembersForRole, context.kbMaintainers, orchestratorRoleMapMembers);
 
     // Read the requirementsFile (if any) once, up front, so its content can
     // be threaded into every Plan-phase planner prompt.
