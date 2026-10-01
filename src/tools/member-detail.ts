@@ -11,11 +11,13 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
   ...memberIdentifier,
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
+  refresh: z.boolean().optional().describe('Re-probe the member\'s own apra-fleet MCP (fleetMcp) now and record the new status. Without it the last recorded fleetMcp status is returned and nothing is probed. Re-probe after fixing the cause of an unavailable fleetMcp (no restart needed); this does not install.'),
 });
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
@@ -63,6 +65,17 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // git_access (the engine then falls back to its provisioning default).
     gitAccess: agent.gitAccess ?? undefined,
   };
+
+  // -- fleetMcp: the recorded status; refresh:true re-probes (without installing) and records --
+  let fleetMcp = agent.fleetMcp;
+  if (input.refresh === true) {
+    try {
+      fleetMcp = await refreshMemberFleetMcp(agent, getMemberFleetMcpDeps(), { install: false });
+    } catch (e: unknown) {
+      fleetMcp = { state: 'unavailable', reason: 'probe-failed', detail: e instanceof Error ? e.message : String(e), checkedAt: new Date().toISOString() };
+    }
+  }
+  result.fleetMcp = fleetMcp ?? null;
 
   // -- Cloud Info (parallel with connectivity check) --
   let cloudSection: Record<string, unknown> | undefined;
@@ -294,6 +307,10 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;
+
+  if (fleetMcp) {
+    t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version}` : ''}\n`;
+  }
 
   if (cloudSection) {
     const cs = cloudSection as Record<string, unknown>;
