@@ -827,6 +827,32 @@ export class ApraFleet {
     }
 
     /**
+     * code_reindex -- rebuild the code index of the calling session's own repo
+     * (a member session's work folder, otherwise the fleet server's folder;
+     * there is no repo argument). Starts gitnexus analyze detached with its
+     * output captured to <data>/code-index/<slug>/analyze.log and returns
+     * after the first tick. Extract the JSON with parseToolJson(): `outcome`
+     * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
+     * 'not-started'; a not-started result carries a typed `reason`
+     * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
+     * 'spawn-failed' | 'remote-member'). Poll codeStatus() for completion.
+     */
+    async codeReindex() {
+        return this.mcpClient.callTool('code_reindex', {});
+    }
+
+    /**
+     * code_status -- the calling session's own code index state: the last
+     * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
+     * 'incomplete' | 'failed', lastLine, ...), live `readiness`
+     * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
+     * `logPath`. Extract the JSON with parseToolJson().
+     */
+    async codeStatus() {
+        return this.mcpClient.callTool('code_status', {});
+    }
+
+    /**
      * List stored credentials (names and metadata only -- no values).
      * The result payload is a JSON array of { name, scope, ... } entries;
      * extract it with parseToolJson().

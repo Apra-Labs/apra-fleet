@@ -551,6 +551,21 @@ it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
 `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
 
+#### `codeReindex()` / `codeStatus()`
+
+Calls `code_reindex` / `code_status` -- index maintenance for the calling
+session's own repo (a member session's registered work folder, otherwise the
+fleet server's folder; neither takes arguments). `codeReindex()` starts a
+detached `gitnexus analyze`, captures its output to
+`<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
+`outcome` is `started`, `up-to-date`, `starting`, `already-running` or
+`not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
+`analyze-failed`, `spawn-failed`, `remote-member`). `codeStatus()` returns the
+last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
+`incomplete` | `failed`, `analyze.lastLine`), live `readiness`
+(`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
+`parseToolJson()`.
+
 #### `doltPushMutex(options)`
 
 Calls `dolt_push_mutex` -- the fleet-server-hosted global dolt push mutex

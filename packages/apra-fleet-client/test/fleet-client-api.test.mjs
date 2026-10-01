@@ -392,4 +392,15 @@ describe('ApraFleet', () => {
 
         assert.deepStrictEqual(calledOpts, { timeoutMs: 2000 });
     });
+
+    test('exports code_reindex and code_status wrappers that call the tools with no arguments', async () => {
+        const calls = [];
+        const mockClient = { async callTool(name, args) { calls.push([name, args]); return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        assert.strictEqual(typeof fleet.codeReindex, 'function');
+        assert.strictEqual(typeof fleet.codeStatus, 'function');
+        await fleet.codeReindex();
+        await fleet.codeStatus();
+        assert.deepStrictEqual(calls, [['code_reindex', {}], ['code_status', {}]]);
+    });
 });
