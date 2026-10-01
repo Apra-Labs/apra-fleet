@@ -441,7 +441,7 @@ export async function resolveGitProviderForClassification(resolveMemberProvider,
     try {
         return await resolveMemberProvider(member);
     } catch (err) {
-        log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+        log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for members already on it): ${err.message}`);
         return undefined;
     }
 }

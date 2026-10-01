@@ -48,6 +48,7 @@ const defaultSuites = [
     // packages/apra-fleet-se/apra-pm is NOT an npm workspace, so it is
     // otherwise unreached by any --workspace(s) invocation above.
     { name: 'apra-pm', cmd: npmCmd, args: ['test', '--prefix', 'packages/apra-fleet-se/apra-pm'] },
+    { name: 'apra-fleet-bridge', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-bridge'] },
 ];
 
 const suites = process.env.APRA_TEST_SUITES_JSON

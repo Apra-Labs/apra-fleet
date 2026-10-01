@@ -57,6 +57,7 @@ allowed.
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
 | `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the orchestrator member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
+| `--vcs-pat-secret-name <name>` | | no | string | provider's own default | Credential-store secret name holding the VCS provider's PAT/token to provision, for operators whose credential for this project is not stored under the provider's default secret name (e.g. because that name is already committed to a different project). Forwarded to `runner.js`'s `args.azdevops_pat_secret_name` (see "Runner arguments" below for why that internal key keeps its pre-existing name). |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
@@ -71,11 +72,18 @@ value; use the comma-separated form for `--issue`/`--members` instead.
 `runner.js`'s `validateArgs()` allow-list (`KNOWN_ARG_KEYS`) recognizes
 several keys `bin/cli.mjs` never sets, so they stay at their defaults for
 every CLI-launched sprint: the legacy singular `target_issue`, `assignee`,
-`doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
-`azdevops_pat_secret_name`, and the engine-injected `callTool`. See
-`docs/fleet-sprint-cli-contract.md` for that contract, and its "Dormant
-argument audit" section specifically for the productize-or-prune decision on
-`assignee`, `doer_worklist_mode` and `resume_model_switch` (apra-fleet-3swo.7.13).
+`doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, and the
+engine-injected `callTool`. See `docs/fleet-sprint-cli-contract.md` for that
+contract, and its "Dormant argument audit" section specifically for the
+productize-or-prune decision on `assignee`, `doer_worklist_mode` and
+`resume_model_switch` (apra-fleet-3swo.7.13).
+
+`azdevops_pat_secret_name` is a related but DIFFERENT case: it is not
+dormant -- `--vcs-pat-secret-name` above sets it -- it simply has a
+provider-neutral public flag name while keeping its own pre-existing internal
+key name unchanged (that key is sprint-args.mjs's own, shared with ~60
+call sites this rename deliberately left alone; see bin/cli.mjs's
+`buildRunnerArgs()` for the full rationale).
 
 ### Environment variables
 

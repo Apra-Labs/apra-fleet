@@ -395,6 +395,53 @@ describe('--service-url flag (apra-fleet-f34.1)', () => {
 // call isn't independently exported/pure like buildRunnerArgs.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// --vcs-pat-secret-name flag: lets an operator override the VCS provider's
+// default PAT/token secret name when their credential for THIS project is
+// not stored under it (e.g. that default name is already committed to a
+// different project). This CLI flag is public engine surface and must stay
+// provider-neutral (docs/generic-engine-boundary.md), so it maps onto
+// buildRunnerArgs' `vcsPatSecretName` option -- but the produced runner arg
+// stays `args.azdevops_pat_secret_name`, sprint-args.mjs's own pre-existing
+// internal key (unrelated to this rename, deliberately left as-is; see
+// buildRunnerArgs()'s comment in bin/cli.mjs). sprint-args.mjs already
+// validates and threads it into provisionVcsAuthForMember()'s secretName.
+// Absent, provisioning falls back to the provider's own DEFAULT_PAT_SECRET,
+// unchanged from before this flag existed.
+// ---------------------------------------------------------------------------
+
+describe('--vcs-pat-secret-name flag', () => {
+    test('parseCliArgs accepts --vcs-pat-secret-name', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--vcs-pat-secret-name', 'fleet_bridge_azdevops_pat']);
+        assert.strictEqual(values['vcs-pat-secret-name'], 'fleet_bridge_azdevops_pat');
+    });
+
+    test('buildRunnerArgs threads --vcs-pat-secret-name through as args.azdevops_pat_secret_name', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            vcsPatSecretName: 'fleet_bridge_azdevops_pat',
+        });
+        assert.strictEqual(args.azdevops_pat_secret_name, 'fleet_bridge_azdevops_pat');
+
+        // Round-trips through runner.js's own validateArgs without throwing.
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.azdevopsPatSecretName, 'fleet_bridge_azdevops_pat');
+    });
+
+    test('buildRunnerArgs omits args.azdevops_pat_secret_name entirely when the flag is not passed (unchanged fallback behavior)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            vcsPatSecretName: undefined,
+        });
+        assert.strictEqual('azdevops_pat_secret_name' in args, false);
+
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.azdevopsPatSecretName, undefined);
+    });
+});
+
 describe('--run-id flag (apra-fleet-k7b.1)', () => {
     test('parseCliArgs accepts --run-id', () => {
         const { values } = parseCliArgs([...BASE_ARGV, '--run-id', 'bd-1-abc123']);

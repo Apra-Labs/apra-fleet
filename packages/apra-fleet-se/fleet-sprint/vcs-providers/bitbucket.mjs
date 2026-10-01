@@ -32,6 +32,12 @@
  * help).
  *
  * ASCII only.
+ *
+ * GENERIC-BOUNDARY-EXCEPTION: this file IS the Bitbucket provider's own
+ * implementation module (fleet-sprint/vcs-providers/bitbucket.mjs) -- its
+ * 'bitbucket' registration string is provider-local self-description, not a
+ * leak. Dated 2026-09-21 (the fleet-bridge PR that added the
+ * generic-boundary provider-branding check).
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';

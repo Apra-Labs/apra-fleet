@@ -353,3 +353,81 @@ test('vcsCapabilities: dev.azure.com reports canOpenPullRequest true; github.com
     const glCaps = vcsCapabilities('https://gitlab.com/mock-org/mock-repo.git');
     check(glCaps.canOpenPullRequest === false, `Expected gitlab.com (no registered provider) to remain non-PR-capable, got: ${JSON.stringify(glCaps)}`);
 });
+
+// -----------------------------------------------------------------------
+// The operator-chosen Azure DevOps PAT secret name reaches the PR-raising
+// provisioning call through finalizeAbort().
+//
+// finalizeAbort's [ABORTED] PR mints a just-in-time push+pr credential.
+// Until this was threaded, that mint always used the provider DEFAULT secret
+// name ('azdevops_pat'), which is unusable on an operator machine where that
+// name is already committed to an unrelated project -- and provisioning the
+// wrong PAT there does double damage: the PR 401s AND the bad credential
+// overwrites the member's working git credential on disk.
+//
+// Asserted on the provision_vcs_auth ARGUMENTS the real path dispatched,
+// never on source text.
+// -----------------------------------------------------------------------
+function capturingCallTool(vcsProvider, opts, command, provisionArgs) {
+    const inner = mockCallTool(vcsProvider, opts, command);
+    return async (name, toolArgs) => {
+        if (name === 'provision_vcs_auth') provisionArgs.push(toolArgs);
+        return inner(name, toolArgs);
+    };
+}
+
+test('finalizeAbort (Azure DevOps): threads azdevopsPatSecretName into the push+pr provision call', async () => {
+    const { command } = buildMockCommand({
+        originUrl: AZ_ORIGIN,
+        credentialFiles: ADO_ONLY_FILES,
+        prResponder: () => `${JSON.stringify({ pullRequestId: 556 })}\n201`,
+    });
+    const provisionArgs = [];
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null }),
+        branch: 'auto-sprint/abort-ado-secret-name',
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: () => {},
+        callTool: capturingCallTool(
+            'azure-devops',
+            { availableSecrets: ['fleet_bridge_azdevops_pat'] },
+            command,
+            provisionArgs,
+        ),
+        azdevopsPatSecretName: 'fleet_bridge_azdevops_pat',
+    });
+
+    check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)}`);
+    check(provisionArgs.length === 1, `Expected exactly one provision_vcs_auth dispatch, got ${provisionArgs.length}`);
+    check(
+        provisionArgs[0].pat === '{{secret.fleet_bridge_azdevops_pat}}',
+        `Expected the operator-chosen secret name in the PAT placeholder, got: ${provisionArgs[0].pat}`,
+    );
+});
+
+test('finalizeAbort (Azure DevOps): with no azdevopsPatSecretName the provision falls back to the provider default, unchanged', async () => {
+    const { command } = buildMockCommand({
+        originUrl: AZ_ORIGIN,
+        credentialFiles: ADO_ONLY_FILES,
+        prResponder: () => `${JSON.stringify({ pullRequestId: 557 })}\n201`,
+    });
+    const provisionArgs = [];
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null }),
+        branch: 'auto-sprint/abort-ado-default-secret',
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: () => {},
+        callTool: capturingCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }, command, provisionArgs),
+    });
+
+    check(result.reason === 'aborted-pr-created', `Expected reason 'aborted-pr-created', got: ${JSON.stringify(result)}`);
+    check(provisionArgs.length === 1, `Expected exactly one provision_vcs_auth dispatch, got ${provisionArgs.length}`);
+    check(
+        provisionArgs[0].pat === '{{secret.azdevops_pat}}',
+        `Expected the provider default secret name, got: ${provisionArgs[0].pat}`,
+    );
+});

@@ -37,6 +37,8 @@ in the script):
 |------|------|-----------------|
 | `fleet-sprint/**/*.{js,mjs,cjs}` | engine code | string literals only, comments stripped (own-line comments inside template literals too) |
 | `apra-pm/agents/**/*.md` | role prompts | the whole file minus HTML comments |
+| `bin/*.{js,mjs,cjs}` | CLI entry points (`fleet-sprint`, `fleet-se-serve`) | string literals only, `vcs-provider-branding` ONLY -- see below |
+| `src/supervisor/{api,spawner}.mjs` | supervisor HTTP/argv wire contract | string literals only, `vcs-provider-branding` ONLY -- see below |
 
 Everything there ships to every target. Only LLM-facing text is scanned, on
 purpose: `process.env.APRA_FLEET_DATA_DIR` as an identifier is the product
@@ -47,9 +49,25 @@ in comments and docs but never in prompts or runtime strings. A raw grep for
 thousand legitimate mentions in comments, imports and design notes, and a
 check that fires on all of them is noise nobody respects.
 
-Not in scope: `src/` (the MCP server), `bin/cli.mjs`, the supervisor, tests,
-`docs/`, and apra-fleet's own `deploy.md`/playbooks/`CLAUDE.md` -- those are
-either the product itself or apra-fleet acting as a target.
+The last two rows are the engine's PUBLIC entry-point surface (this package's
+two declared `bin` targets, and the supervisor's `POST /api/sprints` wire
+contract) rather than agent-dispatch text -- a PR once promoted a
+provider-branded `--azdevops-pat-secret-name` flag/field onto exactly this
+surface undetected, because none of it was scanned at all. They are scanned
+for `vcs-provider-branding` ONLY (see below), not the four
+apra-fleet-as-target patterns or the heading rule: those exist to catch a
+dispatch/role prompt assuming its TARGET is apra-fleet, and bin/cli.mjs's
+--help text describing apra-fleet's OWN supervisor (its real default port, the
+real env vars its own process reads) is accurate self-documentation, not a
+target leak. Deliberately excluded from these two rows: the rest of
+`src/supervisor/**` (`ledger.mjs`, `server.mjs`, `dashboard.mjs`,
+`watchdog.mjs`, etc.) -- internal supervisor machinery with no caller-visible
+flag/field vocabulary of its own -- and `bin/serve.mjs`'s sibling files under
+`src/supervisor/lib/`.
+
+Not in scope: the rest of `src/` (the MCP server), the rest of the supervisor,
+tests, `docs/`, and apra-fleet's own `deploy.md`/playbooks/`CLAUDE.md` --
+those are either the product itself or apra-fleet acting as a target.
 
 ## What it catches
 
@@ -65,6 +83,15 @@ content belongs instead.
 | `apra-fleet-service-endpoint` | `localhost:8787`, `127.0.0.1:8787`, `port 8787` | the target's `deploy.md` / `integ-test-playbook.md` |
 | `apra-fleet-repo-internals` | `packages/apra-fleet-se`, `packages/apra-fleet-client`, `apra-pm/agents`, `apra-pm/skills`, `src/tools/`, `feat/pm-reorg` | the target's `CLAUDE.md` / `AGENTS.md` |
 | `bead-id-in-llm-text` | a `bd` issue id of this repo (`apra-fleet-417.5`, `apra-fleet-eft.37.5`, `apra-fleet-5co8`) | a code comment beside the logic, or `docs/` |
+| `vcs-provider-branding` | `azdevops`, `azure-devops`/`Azure DevOps`, `github`, `bitbucket`, `gitlab` (case-insensitive, whole word) | a provider's OWN implementation module (`fleet-sprint/vcs-providers/<provider>.mjs`); everywhere else, phrase it generically ("the VCS provider") |
+
+`vcs-provider-branding` is the SAME leak class as apra-fleet-as-target, one
+level down: the engine supports more than one VCS provider
+(`fleet-sprint/vcs-providers/**`), so a CLI flag, `--help` text, an HTTP
+field, or a dispatch/role prompt naming one provider assumes every
+operator/target uses it. Applies to every row in the file-set table above
+(fleet-sprint/apra-pm get it alongside the other four patterns; bin/**
+and the supervisor's api.mjs/spawner.mjs get it exclusively).
 
 Heading rule (`undocumented-target-section`): the engine may name the
 target-owned files `deploy.md`, `integ-test-playbook.md` and
@@ -102,10 +129,19 @@ reviewed in the diff:
    the `reason`.
 
 A finding with no entry fails; an entry with no anchor throws; an entry that no
-longer covers a finding fails as stale, so the allowlist cannot rot. The one
-current exception is `fleet-sprint/contracts.mjs`'s version-pin Error: a
+longer covers a finding fails as stale, so the allowlist cannot rot. The
+original exception is `fleet-sprint/contracts.mjs`'s version-pin Error: a
 module-load message read by an apra-fleet developer, never dispatched to a
 sprint agent, that has to name the package whose vendored schema drifted.
+
+Adding the `vcs-provider-branding` pattern (2026-09-21) surfaced a further
+batch, all dated the same day: each `fleet-sprint/vcs-providers/<provider>.mjs`
+module and the provider registry (`index.mjs`) naming their own provider,
+`guarded-modules.mjs`'s facade-pin list naming those same module files,
+`dolt-settle.mjs`'s `github.com` download URL for the (unrelated) Dolt binary
+release, and `apra-pm/agents/ci-watcher.md` disclosing its GitHub-only CI-check
+limitation rather than assuming it. See `ALLOWED_EXCEPTIONS` in
+`scripts/check-generic-boundary.mjs` for the exact reasoning on each.
 
 The bar for an exception is "this text describes the product, and no sprint
 agent ever reads it". A dispatch prompt or role prompt never qualifies: move

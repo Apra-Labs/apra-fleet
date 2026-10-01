@@ -952,9 +952,26 @@ export const beadsExtension = {
 
             bodyEl.textContent = 'Loading...';
             try {
-                const res = await fetch('/extensions/beads/detail/' + encodeURIComponent(id));
-                if (!res.ok) { bodyEl.textContent = '(description unavailable)'; return; }
-                const data = await res.json();
+                // fleet-bridge Part D2: route through the generic viewer's
+                // data-provider seam when it is present (window.dataProvider,
+                // set by viewer/index.mjs's HTML_TEMPLATE script) -- this is
+                // what lets the blob-hosted read-only SPA resolve a bead's
+                // full description from its materialized per-item blob
+                // instead of this live-only route, with NO knowledge of
+                // "beads" added to the generic viewer (this extension still
+                // supplies its own extId, 'beads'). Falls back to the
+                // original direct fetch when no provider is present (e.g.
+                // this module embedded on its own, or under test with no
+                // 'window' global), so behavior here is unchanged in every
+                // context that predates this seam.
+                const provider = (typeof window !== 'undefined') ? window.dataProvider : null;
+                const data = (provider && typeof provider.getExtensionDetail === 'function')
+                    ? await provider.getExtensionDetail('beads', id)
+                    : await (async () => {
+                        const res = await fetch('/extensions/beads/detail/' + encodeURIComponent(id));
+                        return res.ok ? res.json() : null;
+                    })();
+                if (!data) { bodyEl.textContent = '(description unavailable)'; return; }
                 const description = data.text || '(no description)';
                 bodyEl.textContent = description;
                 bodyEl.dataset.loaded = 'true';
