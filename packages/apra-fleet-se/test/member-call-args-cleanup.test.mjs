@@ -22,7 +22,7 @@ const POSIX = getSeCommands({ os: 'linux', shell: '' });
 const PS = getSeCommands({ os: 'windows', shell: 'powershell' });
 
 const isWin = process.platform === 'win32';
-const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'member-call-args-cleanup-'));
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-args-cleanup-'));
 after(() => {
     fs.rmSync(sandbox, { recursive: true, force: true });
     assert.equal(fs.existsSync(sandbox), false, 'test sandbox removed');
