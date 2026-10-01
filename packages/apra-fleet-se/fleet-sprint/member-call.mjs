@@ -20,6 +20,23 @@
 // a work-folder-relative path (execute_command runs in the member's work
 // folder), so the same string is valid in bash and PowerShell.
 //
+// ENGINE-OWNED ARGS-FILE CLEANUP (remote | relay): the member-side verb deletes
+// the delivered file itself (--rm-args-file), but that only happens if the verb
+// actually runs -- a member without apra-fleet, a released binary without the
+// `call` verb ("unknown option 'call'"), a timeout or a crash would otherwise
+// leave the JSON untracked in the member's git checkout. So the engine also:
+//   1. before the FIRST send_files to a member (per createMemberCall instance),
+//      runs getSeCommands(target).ensureGitExcluded('.apra-call/') so the args
+//      dir is in the member repo's git exclude file (failure is logged loudly
+//      but does not break the call; retried on the next call);
+//   2. in a finally around send_files + the call, runs
+//      getSeCommands(target).removeFile(argsPath) regardless of outcome --
+//      success, isError, unparseable output, or a thrown executeCommand
+//      (a client-side timeout throws; a server-side one returns isError --
+//      both reach the finally). A failed delete is logged and swallowed so it
+//      never masks the call's own result or typed error.
+// --list-tools delivers no file and issues neither command.
+//
 // The engine's own orchestrator work keeps its FULL session -- the injected
 // callTool used elsewhere is untouched by this module.
 //
@@ -155,19 +172,57 @@ export function createMemberCall(deps = {}) {
         }
     }
 
+    /** Member ids whose repo already lists the args dir in its git exclude file (this instance only). */
+    const excludedMembers = new Set();
+
+    /** Short description of an executeCommand failure (isError result) for logs; null when it succeeded. */
+    function commandFailure(res) {
+        return res && res.isError ? (resultText(res) || 'isError result') : null;
+    }
+
+    async function ensureArgsDirExcluded(member, cmds) {
+        const memberId = memberIdOf(member);
+        if (excludedMembers.has(memberId)) return;
+        try {
+            const res = await fleetApi.executeCommand({ member_id: memberId, command: cmds.ensureGitExcluded(`${MEMBER_CALL_ARGS_DIR}/`) });
+            const failure = commandFailure(res);
+            if (failure) throw new Error(failure);
+            excludedMembers.add(memberId);
+        } catch (err) {
+            log(`[member-call] WARNING: could not add ${MEMBER_CALL_ARGS_DIR}/ to the git exclude file on member '${member.name || memberId}' (continuing; the args file is still deleted engine-side): ${err && err.message || err}`);
+        }
+    }
+
+    async function deleteRemoteArgsFile(member, cmds, argsPath) {
+        const memberId = memberIdOf(member);
+        try {
+            const res = await fleetApi.executeCommand({ member_id: memberId, command: cmds.removeFile(argsPath) });
+            const failure = commandFailure(res);
+            if (failure) throw new Error(failure);
+        } catch (err) {
+            log(`[member-call] WARNING: could not delete args file ${argsPath} on member '${member.name || memberId}': ${err && err.message || err}`);
+        }
+    }
+
     async function runRemote(member, spec, what) {
         const target = await resolveTarget({ fleetApi, member: member.name, log });
-        let localDir = null;
-        let argsPath;
-        if (!spec.listTools) {
-            localDir = fsImpl.mkdtempSync(path.join(tmpdir, 'member-call-'));
-            const fileName = `call-${crypto.randomBytes(6).toString('hex')}.json`;
-            const localFile = path.join(localDir, fileName);
-            fsImpl.writeFileSync(localFile, JSON.stringify(spec.args ?? {}));
-            argsPath = `${MEMBER_CALL_ARGS_DIR}/${fileName}`;
+        const memberId = memberIdOf(member);
+        if (spec.listTools) {
+            const command = buildRemoteCallCommand(target, { memberId, listTools: true });
+            const res = await fleetApi.executeCommand({ member_id: memberId, command });
+            return parseRemoteOutput(res, what);
+        }
+        const cmds = getSeCommands(target);
+        await ensureArgsDirExcluded(member, cmds);
+        const localDir = fsImpl.mkdtempSync(path.join(tmpdir, 'member-call-'));
+        const fileName = `call-${crypto.randomBytes(6).toString('hex')}.json`;
+        const localFile = path.join(localDir, fileName);
+        const argsPath = `${MEMBER_CALL_ARGS_DIR}/${fileName}`;
+        try {
             try {
+                fsImpl.writeFileSync(localFile, JSON.stringify(spec.args ?? {}));
                 const sent = await fleetApi.sendFiles({
-                    member_id: memberIdOf(member),
+                    member_id: memberId,
                     local_paths: [localFile],
                     dest_subdir: MEMBER_CALL_ARGS_DIR,
                 });
@@ -177,12 +232,13 @@ export function createMemberCall(deps = {}) {
             } finally {
                 try { fsImpl.rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
             }
+            const command = buildRemoteCallCommand(target, { memberId, tool: spec.tool, argsPath });
+            const res = await fleetApi.executeCommand({ member_id: memberId, command });
+            return parseRemoteOutput(res, what);
+        } finally {
+            // Even after a failed send_files: a partial delivery may have landed.
+            await deleteRemoteArgsFile(member, cmds, argsPath);
         }
-        const command = buildRemoteCallCommand(target, {
-            memberId: memberIdOf(member), tool: spec.tool, argsPath, listTools: spec.listTools,
-        });
-        const res = await fleetApi.executeCommand({ member_id: memberIdOf(member), command });
-        return parseRemoteOutput(res, what);
     }
 
     return {
