@@ -784,7 +784,11 @@ export class ApraFleet {
     }
 
     /**
-     * Compose and deliver a scoped permission profile to a member.
+     * Compose and deliver a scoped permission profile to a member. Also writes
+     * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
+     * the member provider's own per-project config, with deny rules for every
+     * fleet tool outside the member allowlist (claude, agy); see
+     * docs/api-reference.md.
      * @param {ComposePermissionsOptions} options
      */
     async composePermissions(options) {

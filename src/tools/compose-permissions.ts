@@ -10,7 +10,9 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
-import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { ensureGitExcluded, memberMcpUrl, pruneLegacyMcpEntries } from '../services/member-config-io.js';
+import type { ProviderAdapter } from '../providers/provider.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
@@ -525,6 +527,11 @@ async function deliverConfigFile(
     } catch {
       // file missing, empty, or not JSON -- start from an empty object
     }
+    // Drop the superseded fleet MCP entries (the old blanket
+    // mcpServers['apra-fleet'] {disabled:true} switch and the retired
+    // apra-fleet-member url+bearer entry) before merging -- deepMerge alone
+    // would preserve them forever.
+    pruneLegacyMcpEntries(existing);
     mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMerge(existing, content);
   }
 
@@ -579,6 +586,48 @@ async function deliverConfigFile(
       );
     }
   }
+}
+
+/**
+ * Writes the member's per-folder apra-fleet MCP entry (?member=<uuid>) through
+ * the provider's own mechanism, prunes legacy entries, and keeps every
+ * work-folder file compose wrote out of the clone's `git status` via
+ * .git/info/exclude (never a tracked file such as .gitignore or .mcp.json).
+ * Returns a failure message, or null on success.
+ */
+async function syncMemberMcpConfig(
+  agent: Agent,
+  provider: ProviderAdapter,
+  strategy: Awaited<ReturnType<typeof getStrategy>>,
+  permissionPaths: string[],
+  memberHomeDir: string | null,
+): Promise<string | null> {
+  const agentOs = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
+  const shell = getAgentShell(agent);
+  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+  const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
+  try {
+    if (provider.syncMemberMcpEntry) {
+      // The member MCP wiring touches home-anchored files too (~/.claude.json,
+      // agy/opencode global MCP configs), so resolve the home here when the
+      // permission paths did not already need it.
+      const homeDir = memberHomeDir ?? await getMemberHomeDir(agent);
+      const result = await provider.syncMemberMcpEntry({
+        agent,
+        execCommand: exec,
+        memberHomeDir: homeDir,
+        agentOs,
+        shell,
+        transport: workspaceTrustTransportFor(agent, strategy),
+        url: memberMcpUrl(agent),
+      });
+      workFolderFiles.push(...result.workFolderFiles);
+    }
+    await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell);
+  } catch (e: any) {
+    return `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}`;
+  }
+  return null;
 }
 
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
@@ -700,6 +749,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       }
       throw e;
     }
+    const memberMcpFailure = await syncMemberMcpConfig(agent, provider, strategy, paths, memberHomeDir);
+    if (memberMcpFailure) return memberMcpFailure;
 
     // Update ledger (only reached when every config file verifiably landed)
     if (input.project_folder) {
@@ -754,6 +805,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
     throw e;
   }
+  const memberMcpFailure = await syncMemberMcpConfig(agent, provider, strategy, paths, memberHomeDir);
+  if (memberMcpFailure) return memberMcpFailure;
 
   // Update ledger stacks (only reached when every config file verifiably landed)
   if (input.project_folder) {

@@ -85,9 +85,9 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
       const denyList: string[] = cfg.permissionGrants.permissionGrants.deny;
       expect(denyList).toEqual(AGY_ORCHESTRATOR_DENY_RULES);
       expect(denyList).toContain('mcp(apra-fleet/remove_member)');
-      expect(denyList).toContain('mcp(apra-fleet-member/remove_member)');
+      // The retired apra-fleet-member alias is pruned, not denied.
+      expect(denyList.some(r => r.startsWith('mcp(apra-fleet-member/'))).toBe(false);
       expect(denyList).toContain('mcp(apra-fleet/execute_prompt)');
-      expect(denyList).toContain('mcp(apra-fleet-member/execute_prompt)');
       expect(denyList).toContain('mcp(apra-fleet/shutdown_server)');
 
       // Member-needed read tools must NOT be in deny list

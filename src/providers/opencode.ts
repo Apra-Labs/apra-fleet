@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -7,9 +7,22 @@ import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
+import {
+  deleteMemberFile,
+  joinMemberPath,
+  pruneLegacyMcpInMemberFile,
+  readMemberJson,
+  writeMemberJson,
+  LEGACY_MEMBER_MCP_SERVER_NAME,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+/** Work-folder-relative project config opencode reads MCP servers from. */
+export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
 
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
@@ -254,6 +267,50 @@ export class OpenCodeProvider implements ProviderAdapter {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
     }
     return [{ permission: { edit: 'deny', write: 'allow', bash: 'allow' } }];
+  }
+
+  /** Writes (or removes) mcp['apra-fleet'] in <workFolder>/opencode.json -- the
+   *  project-scope config opencode reads -- and prunes the retired
+   *  apra-fleet-member entry there and in the global
+   *  ~/.config/opencode/opencode.json. opencode gets no MCP deny rules: the
+   *  server already serves a member session only the member allowlist. On
+   *  removal the file is deleted when nothing else remains in it. */
+  async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
+    const { agent, url } = ctx;
+    const isWindows = ctx.agentOs === 'windows';
+    const posix = isPosixShell(isWindows, ctx.shell);
+    const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, ctx.shell);
+
+    const config = await readMemberJson(ctx.execCommand, file, posix);
+    const mcp: Record<string, unknown> = (config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp))
+      ? config.mcp as Record<string, unknown>
+      : {};
+    delete mcp[LEGACY_MEMBER_MCP_SERVER_NAME];
+    let detail: string;
+    if (url !== null) {
+      mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
+      config.mcp = mcp;
+      await writeMemberJson(ctx.execCommand, file, config, posix);
+      detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+    } else {
+      delete mcp[MEMBER_MCP_SERVER_NAME];
+      if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
+      if (Object.keys(config).length === 0) {
+        await deleteMemberFile(ctx.execCommand, file, posix);
+        detail = `opencode: removed ${file}`;
+      } else {
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `opencode: removed ${MEMBER_MCP_SERVER_NAME} from ${file}`;
+      }
+    }
+
+    if (ctx.memberHomeDir) {
+      const globalFile = joinMemberPath(ctx.memberHomeDir.trim(), '.config/opencode/opencode.json', isWindows, ctx.shell);
+      if (await pruneLegacyMcpInMemberFile(ctx.execCommand, globalFile, posix)) {
+        detail += `; pruned apra-fleet-member from ${globalFile}`;
+      }
+    }
+    return { workFolderFiles: [OPENCODE_PROJECT_CONFIG], detail };
   }
 
   supportsOAuthCopy(): boolean {

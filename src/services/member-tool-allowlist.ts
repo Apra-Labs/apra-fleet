@@ -70,3 +70,12 @@ export function isMemberAllowedTool(name: string): boolean {
 export const MEMBER_ALLOWED_TOOLS: readonly string[] = Object.freeze(
   REGISTERED_TOOL_NAMES.filter(isMemberAllowedTool),
 );
+
+/**
+ * The complement of MEMBER_ALLOWED_TOOLS: every registered tool a member
+ * session may NOT use. Providers that support client-side deny rules (claude,
+ * agy) deny exactly these on the member's apra-fleet MCP entry.
+ */
+export const MEMBER_DENIED_TOOLS: readonly string[] = Object.freeze(
+  REGISTERED_TOOL_NAMES.filter(name => !MEMBER_ALLOWED_TOOLS.includes(name)),
+);

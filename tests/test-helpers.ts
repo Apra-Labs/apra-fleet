@@ -50,6 +50,11 @@ export function makeConfigAwareExec(defaultStdout = 'Linux'): (cmd: string, ...r
     // Windows read (Get-Content -Raw "<path>" ...)
     m = cmd.match(/Get-Content -Raw "(.+?)"/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Member home-directory probe (src/services/member-home.ts) -- compose
+    // writes the per-folder member MCP entry under the member's home.
+    if (cmd === 'printf \'%s\' "$HOME"') return { stdout: '/home/testuser', stderr: '', code: 0 };
+    // git exclude lookup: the simulated work folder is not a git repository.
+    if (cmd.startsWith('git -C ')) return { stdout: '', stderr: 'fatal: not a git repository', code: 128 };
     // OS detection, CLI checks, mkdir, ls, workspace-trust, everything else
     return { stdout: defaultStdout, stderr: '', code: 0 };
   };

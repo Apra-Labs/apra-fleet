@@ -49,11 +49,22 @@ const OK: SSHExecResult = { stdout: '', stderr: '', code: 0 };
  * (forward slashes for POSIX, back slashes for Windows).
  */
 function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout?: number) => Promise<SSHExecResult> {
-  const files = new Map<string, string>(Object.entries(seed));
+  const store = new Map<string, string>(Object.entries(seed));
+  // Trust seeding addresses the home file as "$HOME/.claude.json" (a real shell
+  // expands it); key it the same as the resolved "/home/testuser" spelling.
+  const norm = (k: string) => k.replace('$HOME', '/home/testuser');
+  const files = {
+    get: (k: string) => store.get(norm(k)),
+    set: (k: string, v: string) => { store.set(norm(k), v); },
+  };
   return async (cmd: string): Promise<SSHExecResult> => {
     // POSIX write (heredoc)
     let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
     if (m) { files.set(m[1], m[2]); return { stdout: '', stderr: '', code: 0 }; }
+    // POSIX ~/.claude.json atomic write (stage + mv) used by trust seeding and
+    // the per-folder member MCP entry.
+    m = cmd.match(/^cat > (.+?) << 'FLEET_TRUST_EOF'\n([\s\S]*)\nFLEET_TRUST_EOF\nmv .+? (.+)$/);
+    if (m) { files.set(m[3], m[2]); return { stdout: '', stderr: '', code: 0 }; }
     // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
     if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
@@ -361,9 +372,11 @@ describe('composePermissions -- Claude proactive', () => {
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
     expect(writeCmd).toContain('"permissions"');
     expect(writeCmd).toContain('"allow"');
-    // settings.local.json must suppress fleet-mcp (#151)
-    expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('disabled');
+    // settings.local.json carries the member deny rules, never the old blanket
+    // {disabled:true} switch for the apra-fleet server.
+    expect(writeCmd).toContain('"deny"');
+    expect(writeCmd).toContain('mcp__apra-fleet__execute_prompt');
+    expect(writeCmd).not.toContain('disabled');
   });
 
   it('delivers reviewer config with restricted allow list', async () => {
@@ -610,83 +623,108 @@ describe('composePermissions -- no llmProvider defaults to Claude', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #151 -- fleet-mcp disabled in member config
+// Per-folder member MCP entry: the old blanket mcpServers.apra-fleet
+// {disabled:true} switch (#151) and the retired apra-fleet-member url+bearer
+// entry are pruned from settings.local.json; the per-folder entry lives in
+// Claude's local scope (~/.claude.json projects[<folder>].mcpServers).
 // ---------------------------------------------------------------------------
 
-describe('composePermissions -- fleet-mcp disabled in member config (#151)', () => {
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
+function heredocJson(writeCmd: string): any {
+  return JSON.parse(writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0]);
+}
+
+describe('composePermissions -- legacy fleet MCP entries pruned from settings.local.json', () => {
+  it('drops a pre-existing apra-fleet {disabled:true} and apra-fleet-member entry, keeping other servers', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    installFsMock();
+    installFsMock({
+      '"/home/testuser/project/.claude/settings.local.json"': JSON.stringify({
+        mcpServers: {
+          'apra-fleet': { disabled: true },
+          'apra-fleet-member': { type: 'http', url: 'http://localhost:1234/mcp?member=abc-123', headers: { Authorization: 'Bearer super-secret-jwt' } },
+          deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' },
+        },
+      }),
+    });
 
-    await composePermissions({ member_id: member.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Permissions composed');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
-    expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
-    expect(writeCmd).toContain('apra-fleet');
-    expect(writeCmd).toContain('"disabled":');
+    const written = heredocJson(writeCmd);
+    expect(written.mcpServers).toEqual({ deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' } });
+    expect(writeCmd).not.toContain('super-secret-jwt');
   });
 
-  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (reactive grant)', async () => {
+  it('a reactive grant also writes no {disabled:true} switch', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
+    installFsMock({
+      '"/home/testuser/project/.claude/settings.local.json"': JSON.stringify({ permissions: { allow: ['Read'] }, mcpServers: { 'apra-fleet': { disabled: true } } }),
+    });
 
-    const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write'] } });
-    mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
-    installFsMock();
-
-    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'] });
+    const result = await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'] });
+    expect(result).toContain('Granted');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
-    expect(writeCmd).toBeDefined();
-    expect(writeCmd).toContain('mcpServers');
-    expect(writeCmd).toContain('apra-fleet');
+    const written = heredocJson(writeCmd);
+    expect(written.mcpServers).toBeUndefined();
+    expect(written.permissions.allow).toEqual(expect.arrayContaining(['Read', 'Bash(npm:*)']));
+  });
+
+  it('writes the per-folder apra-fleet entry (?member=<uuid>) into the member ~/.claude.json local scope', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    installFsMock();
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Permissions composed');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const trustWrite = allCmds.find(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'))!;
+    expect(trustWrite).toBeDefined();
+    const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'\n")[1].split('\nFLEET_TRUST_EOF')[0]);
+    expect(body.projects['/home/testuser/project'].mcpServers['apra-fleet']).toEqual({
+      type: 'http',
+      url: `http://localhost:7523/mcp?member=${member.id}`,
+    });
+    // Never a tracked project .mcp.json.
+    expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('.mcp.json'))).toBe(false);
   });
 });
 
-describe('composePermissions -- preserves register_member mcpServers entry (apra-fleet-2xs.1)', () => {
-  it('does not destroy mcpServers["apra-fleet-member"] (the JWT-bearing entry register_member wrote) on first compose', async () => {
-    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(member);
+describe('composePermissions -- member MCP commands carry resolved paths, never shell expansion', () => {
+  const MEMBER_MCP_FILES = /opencode\.json|mcp_config\.json|info\/exclude|git -C|\/home\/testuser\/\.claude\.json/;
 
-    // Simulates the file exactly as register_member leaves it: an mcpServers
-    // entry carrying the member's live JWT, and nothing else yet.
-    const registeredByMember = JSON.stringify({
-      mcpServers: {
-        'apra-fleet-member': {
-          type: 'http',
-          url: 'http://localhost:1234/mcp?member=abc-123',
-          headers: { Authorization: 'Bearer super-secret-jwt' },
-        },
-      },
+  for (const provider of ['claude', 'opencode', 'agy'] as const) {
+    it(`${provider}: no $VAR, ~/ or backtick in any command touching member MCP files`, async () => {
+      const member = makeTestAgent({
+        friendlyName: `${provider}-noexpand`,
+        llmProvider: provider,
+        os: 'linux',
+        ...(provider === 'agy' ? { agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } : {}),
+      });
+      addAgent(member);
+      installFsMock({
+        '"/home/testuser/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json"': JSON.stringify({ id: '1afd6dbb-498f-4918-a9d9-6da64b75a204' }),
+        '"/home/testuser/.gemini/config/mcp_config.json"': JSON.stringify({ mcpServers: { 'apra-fleet-member': { url: 'x' } } }),
+        '"/home/testuser/.config/opencode/opencode.json"': JSON.stringify({ mcp: { 'apra-fleet-member': { url: 'x' } } }),
+      });
+
+      const result = await composePermissions({ member_id: member.id, role: 'doer' });
+      expect(result).toContain('Permissions composed');
+
+      const cmds = mockExecCommand.mock.calls.map(c => c[0] as string).filter(c => MEMBER_MCP_FILES.test(c));
+      expect(cmds.length).toBeGreaterThan(0);
+      for (const cmd of cmds) {
+        expect(cmd).not.toMatch(/\$[A-Za-z_{]|\$env:/);
+        expect(cmd).not.toContain('~/');
+        expect(cmd).not.toContain('`');
+      }
     });
-    // Seed the file exactly as register_member left it; the merge-read returns
-    // it, the merged write persists it, and the read-back verifies it landed.
-    // Keyed by the absolute (workFolder-resolved), quoted path -- the same key
-    // shape the fs mock's read/write regexes extract from the real commands.
-    installFsMock({ '"/home/testuser/project/.claude/settings.local.json"': registeredByMember });
-
-    await composePermissions({ member_id: member.id, role: 'doer' });
-
-    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
-    expect(writeCmd).toBeDefined();
-
-    const heredocBody = writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
-    const written = JSON.parse(heredocBody);
-
-    // The register_member entry -- including its live JWT -- must survive.
-    expect(written.mcpServers['apra-fleet-member']).toEqual({
-      type: 'http',
-      url: 'http://localhost:1234/mcp?member=abc-123',
-      headers: { Authorization: 'Bearer super-secret-jwt' },
-    });
-    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
-    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
-  });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1187,11 +1225,15 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     await composePermissions({ member_id: member.id, role: 'doer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const trustWrite = allCmds.find(cmd => cmd.includes('FLEET_TRUST_EOF'));
+    // The LAST ~/.claude.json write is trust seeding (the per-folder member MCP
+    // entry is written to the same file just before it).
+    const trustWrite = allCmds.filter(cmd => cmd.includes('FLEET_TRUST_EOF')).pop();
     expect(trustWrite).toBeDefined();
     const heredocMatch = trustWrite!.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
     const written = JSON.parse(heredocMatch![1]);
     expect(written.projects['/home/testuser/project'].hasTrustDialogAccepted).toBe(true);
+    // Trust seeding merged onto (did not clobber) the member MCP entry.
+    expect(written.projects['/home/testuser/project'].mcpServers['apra-fleet'].url).toContain(`?member=${member.id}`);
   });
 
   it('is a no-op for non-Claude providers (e.g. AGY) -- never touches the trust delivery channel', async () => {

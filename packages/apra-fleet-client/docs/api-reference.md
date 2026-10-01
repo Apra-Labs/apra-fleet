@@ -511,6 +511,18 @@ request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
 containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
 -- rejected outright, for every caller.
 
+Every compose (proactive or `grant`) also wires the member's per-folder
+`apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude
+writes it to Claude's local scope (`projects[<workFolder>].mcpServers` in the
+member's `~/.claude.json`), opencode to `<workFolder>/opencode.json`, and agy
+gets none (it has no per-project MCP config). claude and agy also receive
+client-side deny rules for exactly the registered fleet tools outside the
+member allowlist; opencode gets none. The retired `apra-fleet-member`
+url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
+touched, a tracked `.mcp.json` is never written, and work-folder files compose
+writes are listed in the clone's `.git/info/exclude` so it stays clean. A
+failure to write the entry is returned as a `[FAIL]` result.
+
 #### `setupSshKey(options: SetupSshKeyOptions)`
 
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key

@@ -299,7 +299,30 @@ export interface RegisterMcpEndpointResult {
  *  SSH for remote members, local shell exec for local members). Kept as a narrow function
  *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
  *  services/strategy.ts. */
-export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+/** Context for {@link ProviderAdapter.syncMemberMcpEntry}. */
+export interface MemberMcpSyncContext {
+  agent: import('../types.js').Agent;
+  execCommand: WorkspaceTrustExecFn;
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir); null when unresolvable. */
+  memberHomeDir: string | null;
+  agentOs: 'linux' | 'macos' | 'windows';
+  shell?: MemberShell;
+  /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
+  transport?: WorkspaceTrustTransport;
+  /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
+   *  the entry this provider wrote for the member's folder (provider switch cleanup). */
+  url: string | null;
+}
+
+export interface MemberMcpSyncResult {
+  /** Work-folder-relative files this provider owns for the member MCP entry -- the
+   *  caller keeps them out of `git status` via the clone's .git/info/exclude. */
+  workFolderFiles: string[];
+  /** Human-readable summary for logs/tool output. */
+  detail: string;
+}
+
+export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
 /** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
  *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
@@ -522,6 +545,13 @@ export interface ProviderAdapter {
    *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
    *  Returns what was done, for logging/audit. */
   registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+
+  /** Writes (ctx.url set) or removes (ctx.url null) the member's PER-FOLDER `apra-fleet`
+   *  MCP entry in this provider's native per-project config, and prunes the legacy
+   *  `apra-fleet-member` url+bearer entry wherever this provider keeps MCP servers.
+   *  Never writes a tracked project `.mcp.json`; never touches deepwiki or any other
+   *  server. Omitted by providers with nothing to write or prune. */
+  syncMemberMcpEntry?(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult>;
 
   /** Optional provider-NATIVE usage/quota read for execute_prompt budget
    *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
