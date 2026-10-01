@@ -56,6 +56,7 @@ import {
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
+import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -393,6 +394,10 @@ export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 };
+// member-call.mjs is the single owner of memberCall/listTools (a MEMBER-scoped
+// tool call: local in-process session, or remote/relay via send_files +
+// execute_command of `apra-fleet call`). Re-exported on the runner facade.
+export { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR };
 // Re-exported so importers of the verify-set classifier from runner.js keep
 // working; beads-scope.mjs is the single source of truth for its
 // implementation, and for the BFS scope-discovery rule it now shares with
