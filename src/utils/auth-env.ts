@@ -1,7 +1,7 @@
 import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
 import { decryptPassword } from './crypto.js';
-import { escapeDoubleQuoted } from './shell-escape.js';
+import { escapeDoubleQuoted, escapePowerShellArgInner } from './shell-escape.js';
 
 /**
  * Build a platform-correct inline export prefix for all stored auth env vars.
@@ -18,7 +18,7 @@ export function buildAuthEnvPrefix(agent: Agent, os: RemoteOS): string {
 
     if (os === 'windows') {
       // PowerShell: single-quote escaping (matching windows.ts envPrefix pattern)
-      const escaped = value.replace(/'/g, "''");
+      const escaped = escapePowerShellArgInner(value);
       parts.push(`$env:${name}='${escaped}'`);
     } else {
       // Linux/macOS: double-quote escaping
