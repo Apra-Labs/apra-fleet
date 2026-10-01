@@ -41,7 +41,7 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
 - New `kb_bible_commit` merges confirmed ids into the bible entry by entry with base-branch provenance and a local commit; `kb_export` gained `baseBranch`/`baseCommit`. The engine commits each round (pull, commit, push, one retry) and no longer exports the bible itself. Declared in `memory-contract/v1` and `apra-fleet-client`.
 - Design notes: docs/kb-member-view-and-maintainer.md.
 
-Carried forward items from this sprint were resolved in the entry above.
+The defects carried forward from this redesign (maintainer placement, reset data loss, owner-tag helper) were fixed in the entry above.
 
 ## [Unreleased] -- fleet-sprint: remote memberCall no longer dirties the member's git checkout
 
