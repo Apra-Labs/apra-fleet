@@ -263,3 +263,32 @@ export async function connectFleet(deps = {}) {
 
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient), mode: resolution.mode };
 }
+
+/**
+ * Resolve + connect a MEMBER session: the local HTTP singleton with
+ * `?member=<uuid>` appended, so the server scopes the session's tools to the
+ * member allowlist. A member session needs the HTTP singleton (the identity
+ * rides on the URL); a stdio self-spawn cannot carry one, so it is refused.
+ * An unregistered uuid is refused by the server with HTTP 403 at initialize;
+ * the rejection carries `.status === 403` and `.code === 'HTTP_403'`.
+ *
+ * @param {string} memberId registered member uuid
+ * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
+ *                        forwarded to the transport.
+ * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string}>}
+ */
+export async function connectFleetMember(memberId, deps = {}) {
+    if (!memberId) throw new Error('connectFleetMember requires a member id.');
+    const resolution = await resolveFleetServerConnection(deps);
+    if (resolution.mode !== 'http') {
+        throw new Error(
+            'A member session requires the local apra-fleet HTTP server, but none was resolved ' +
+                `(${resolution.reason}). Start it with 'apra-fleet start'.`,
+        );
+    }
+    const url = new URL(resolution.url);
+    url.searchParams.set('member', memberId);
+    const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
+    await transport.start();
+    return { transport, mcpClient: new McpClient(transport), mode: 'http', url: url.toString() };
+}

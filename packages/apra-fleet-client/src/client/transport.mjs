@@ -142,7 +142,11 @@ export class StreamableHttpTransport extends EventEmitter {
             });
             
             if (!postResponse.ok) {
-                throw new Error(`Init POST error! status: ${postResponse.status}`);
+                const initErr = new Error(`Init POST error! status: ${postResponse.status}`);
+                // Typed so callers can tell a refused member identity (403) from a network failure.
+                initErr.status = postResponse.status;
+                initErr.code = `HTTP_${postResponse.status}`;
+                throw initErr;
             }
 
             this.sessionId = postResponse.headers.get('mcp-session-id');

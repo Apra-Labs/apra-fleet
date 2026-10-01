@@ -143,6 +143,19 @@ abort support on top of a transport.
   `request('tools/call', { name, arguments: args }, opts)`. This is what
   `ApraFleet`'s methods call under the hood.
 
+- **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
+  resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
+  (`?member=<uuid>`) this is exactly the member allowlist.
+
+### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
+
+Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
+returning `{ transport, mcpClient, mode: 'http', url }`. Refuses a stdio
+resolution (a member identity rides on the URL). An unregistered uuid rejects
+with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
+`StreamableHttpTransport.start()` for any non-OK initialize response as
+`HTTP_<status>`).
+
 ## `src/client/errors.mjs`
 
 - **`class ClientError extends Error`** -- `new ClientError(message, {
