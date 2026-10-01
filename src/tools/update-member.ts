@@ -17,6 +17,7 @@ import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
@@ -338,6 +339,27 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
+  // fleetMcp: a provider change re-runs the member install with --llm <new
+  // provider>; a name or work-folder change re-runs `register-member --id` on
+  // the member's own install. Best-effort: the update itself already succeeded
+  // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
+  const nameChanged = updated.friendlyName !== existing.friendlyName;
+  const folderMoved = updated.workFolder !== existing.workFolder;
+  let fleetMcpLine: string | undefined;
+  if (oldProvider !== newProvider || nameChanged || folderMoved) {
+    try {
+      const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
+        install: oldProvider !== newProvider && updated.agentType !== 'local',
+        forceInstall: oldProvider !== newProvider,
+      });
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+    }
+  }
+
   // Re-check project-level agent files that would shadow the managed role set
   // (the work folder or provider may have changed). The dispatch-time cache is
   // always invalidated; the check itself runs only when the member is reachable
@@ -385,6 +407,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (fleetMcpLine) result += `  fleetMcp: ${fleetMcpLine}\n`;
 
   if (warnings.length > 0) {
     result += '\n';

@@ -28,6 +28,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 
@@ -76,6 +77,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  fleet_install: z.enum(['auto', 'skip']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, verify a MEMBER session; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
@@ -132,6 +134,9 @@ export interface RegisterMemberOptions {
    * registerMemberSchema (the MCP tool input), so the tool surface is unchanged.
    */
   id?: string;
+  /** Set by the shell CLI: it IS the member-side self-registration (or a manual
+   *  shell registration), so it never installs/probes fleetMcp (that would recurse). */
+  skipFleetMcp?: boolean;
 }
 
 export async function registerMember(input: RegisterMemberInput, opts: RegisterMemberOptions = {}): Promise<string> {
@@ -636,6 +641,24 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     }
   }
 
+  // --- fleetMcp: install/probe the member's own apra-fleet (apra-fleet-b4g.56) ---
+  // Never fails registration: every outcome is a recorded, recoverable status.
+  // Skipped when this call IS a member self-registration (CLI --id, run by the
+  // orchestrator on the member's own install): probing from there would recurse.
+  let fleetMcpLine: string | undefined;
+  if (!opts.id && !opts.skipFleetMcp) {
+    try {
+      const status = await refreshMemberFleetMcp(
+        tempAgent, getMemberFleetMcpDeps(), { install: (input.fleet_install ?? 'auto') !== 'skip' },
+      );
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+    }
+  }
+
   let result = `✅ Member registered successfully!\n\n`;
   result += `  Icon:    ${tempAgent.icon}\n`;
   result += `  ID:      ${tempAgent.id}\n`;
@@ -688,6 +711,9 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     if (connResult.latencyMs !== undefined) {
       result += `  Latency: ${connResult.latencyMs}ms\n`;
     }
+  }
+  if (fleetMcpLine) {
+    result += `  fleetMcp: ${fleetMcpLine}\n`;
   }
   if (isCloud && cloudConfig) {
     result += `  Cloud:   ${cloudConfig.provider} / ${cloudConfig.instanceId} / ${cloudConfig.region}\n`;

@@ -439,15 +439,16 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
 export async function ensureMemberFleetInstall(
   agent: Agent,
   deps: MemberFleetInstallDeps = defaultMemberFleetInstallDeps(),
+  opts: { force?: boolean } = {},
 ): Promise<MemberFleetInstallResult> {
   try {
-    return await ensureOnce(agent, deps);
+    return await ensureOnce(agent, deps, opts.force === true);
   } catch (err: unknown) {
     return { state: 'unavailable', reason: 'probe-failed', detail: `install flow threw: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps): Promise<MemberFleetInstallResult> {
+async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boolean): Promise<MemberFleetInstallResult> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
   const provider: LlmProvider = agent.llmProvider ?? 'claude';
@@ -463,7 +464,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps): Promise<M
   if (before.kind === 'probe-failed') {
     return { state: 'unavailable', reason: 'probe-failed', detail: before.detail };
   }
-  if (before.kind === 'installed' && !isOlderThan(before.version, orchestratorVersion)) {
+  if (!force && before.kind === 'installed' && !isOlderThan(before.version, orchestratorVersion)) {
     return { state: 'available', version: before.version, installed: false, binPath };
   }
   const priorVersion = before.kind === 'installed' ? before.version : undefined;
@@ -574,6 +575,18 @@ export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
   record(memberId: string, status: FleetMcpStatus): void;
 }
 
+
+let mcpDepsOverride: MemberFleetMcpDeps | null = null;
+
+/** Test-only: replace the production transports used by register/update/remove_member and member_detail. Pass null to restore. */
+export function __setMemberFleetMcpDeps(deps: MemberFleetMcpDeps | null): void {
+  mcpDepsOverride = deps;
+}
+
+/** The deps the tool handlers use (production transports unless a test injected fakes). */
+export function getMemberFleetMcpDeps(): MemberFleetMcpDeps {
+  return mcpDepsOverride ?? defaultMemberFleetMcpDeps();
+}
 
 export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
   return {
@@ -747,7 +760,7 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
 export async function probeMemberFleetMcp(
   agent: Agent,
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
-  opts: { install?: boolean } = {},
+  opts: { install?: boolean; forceInstall?: boolean } = {},
 ): Promise<FleetMcpStatus> {
   const checkedAt = () => deps.now().toISOString();
   const unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra: Partial<FleetMcpStatus> = {}): FleetMcpStatus => ({
@@ -763,7 +776,7 @@ export async function probeMemberFleetMcp(
     }
 
     if (agent.agentType === 'local') return await probeLocal(agent, deps, unavailable, checkedAt);
-    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt);
+    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true);
   } catch (err: unknown) {
     return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -802,6 +815,7 @@ async function probeRemote(
   install: boolean,
   unavailable: Unavailable,
   checkedAt: () => string,
+  forceInstall = false,
 ): Promise<FleetMcpStatus> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -813,7 +827,7 @@ async function probeRemote(
   // 1. Install (or, when not installing, just observe the version).
   let version: string | undefined;
   if (install) {
-    const r = await ensureMemberFleetInstall(agent, deps);
+    const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
     if (r.state === 'available') version = r.version;
     else if (r.version) version = r.version; // an older install is still there: try to use it
     else return unavailable(r.reason, r.detail);
@@ -869,7 +883,7 @@ async function probeRemote(
 export async function refreshMemberFleetMcp(
   agent: Agent,
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
-  opts: { install?: boolean } = {},
+  opts: { install?: boolean; forceInstall?: boolean } = {},
 ): Promise<FleetMcpStatus> {
   const status = await probeMemberFleetMcp(agent, deps, opts);
   deps.record(agent.id, status);
