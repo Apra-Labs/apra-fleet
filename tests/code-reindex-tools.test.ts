@@ -17,6 +17,11 @@ const sandbox = vi.hoisted(() => {
   return { root, data, bin: path.join(root, 'bin') };
 });
 
+vi.mock('../src/services/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/registry.js')>();
+  return { ...actual, getAgent: () => ({ codeIntelProvider: 'gitnexus' }) };
+});
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -118,7 +123,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
   it('returns after the first tick, then code_status reports indexed with the commit', async () => {
     process.env.FAKE_MODE = 'index';
     const t0 = Date.now();
-    const r = await handleCodeReindex({}, { repo });
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r.outcome).toBe('started');
     if (r.outcome === 'started' && r.pid) pids.add(r.pid);
     expect(Date.now() - t0).toBeLessThan(5000);
@@ -129,7 +134,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
       const s = codeStatus(repo);
       return s.analyze?.phase === 'done' ? s : undefined;
     });
-    const viaTool = await handleCodeStatus({}, { repo });
+    const viaTool = await handleCodeStatus({}, { repo, memberId: 'm' });
     expect(viaTool).toMatchObject({ ready: true, indexedCommit: head });
     expect(done.analyze.result).toBe('indexed');
     expect(done.ready).toBe(true);
@@ -138,7 +143,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
 
   it('analyze.log holds the analyze output', async () => {
     process.env.FAKE_MODE = 'index';
-    await handleCodeReindex({}, { repo });
+    await handleCodeReindex({}, { repo, memberId: 'm' });
     await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
     const log = logOf(repo);
     expect(log).toContain('Analyzing repository');
@@ -147,7 +152,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
 
   it('an Already up to date run reports up-to-date', async () => {
     process.env.FAKE_MODE = 'uptodate';
-    const r = await handleCodeReindex({}, { repo });
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r.outcome).toBe('up-to-date');
     const s = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
     expect(s.analyze?.result).toBe('up-to-date');
@@ -157,28 +162,28 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     const saved = process.env.PATH;
     process.env.PATH = path.join(sandbox.root, 'empty');
     try {
-      const r = await handleCodeReindex({}, { repo });
+      const r = await handleCodeReindex({}, { repo, memberId: 'm' });
       expect(r).toMatchObject({ outcome: 'not-started', reason: 'npx-not-found' });
     } finally { process.env.PATH = saved; }
   });
 
   it('missing gitnexus (npx cannot resolve it) is a typed not-started, never started', async () => {
     process.env.FAKE_MODE = 'notfound';
-    const r = await handleCodeReindex({}, { repo });
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r).toMatchObject({ outcome: 'not-started', reason: 'gitnexus-not-found' });
   });
 
   it('a second code_reindex while one runs does not start another analyze', async () => {
     process.env.FAKE_MODE = 'index';
-    const first = await handleCodeReindex({}, { repo });
+    const first = await handleCodeReindex({}, { repo, memberId: 'm' });
     if (first.outcome === 'started' && first.pid) pids.add(first.pid);
-    const second = await handleCodeReindex({}, { repo });
+    const second = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(second.outcome).toBe('already-running');
     await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
   });
 
   it('a remote member folder is a typed not-started', async () => {
-    const r = await handleCodeReindex({}, { repo: '/elsewhere', remote: true });
+    const r = await handleCodeReindex({}, { repo: '/elsewhere', memberId: 'm', remote: true });
     expect(r).toMatchObject({ outcome: 'not-started', reason: 'remote-member' });
   });
 });

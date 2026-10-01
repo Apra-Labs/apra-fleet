@@ -171,6 +171,39 @@ export async function handleCodeTests(input: Record<string, unknown>, self?: Cod
   return runCodeTool('tests', input, self);
 }
 
+/**
+ * Typed result for code_reindex / code_status when the member's provider is
+ * neither gitnexus nor none: the analyze/readiness machinery is gitnexus-only,
+ * so such a provider gets this shape (identical for both tools), never
+ * gitnexus readiness. Provider 'none' throws E-CODE-INTEL-DISABLED instead.
+ */
+export interface ProviderNotSupportedResult {
+  outcome: 'not-started';
+  reason: 'provider-not-supported';
+  provider: string;
+  indexedCommit: null;
+  detail: string;
+}
+
+/**
+ * Resolve the member's provider BEFORE any spawn/status IO. Returns null for
+ * gitnexus (caller proceeds), throws E-CODE-INTEL-DISABLED for none, else the
+ * typed not-supported result.
+ */
+async function gateOnProvider(tool: 'code_reindex' | 'code_status', self: CodeSelf): Promise<ProviderNotSupportedResult | null> {
+  const provider = await getProvider(self.memberId);
+  if (provider instanceof GitNexusProvider) return null;
+  if (provider instanceof NullProvider) throw codeIntelDisabledError(tool);
+  const name = Object.keys(PROVIDERS).find((k) => PROVIDERS[k] === provider) ?? 'unknown';
+  return {
+    outcome: 'not-started',
+    reason: 'provider-not-supported',
+    provider: name,
+    indexedCommit: null,
+    detail: `${tool} only applies to the 'gitnexus' provider; this member uses '${name}', which manages its own index.`,
+  };
+}
+
 export const codeReindexSchema = z.object({});
 export const codeStatusSchema = z.object({});
 
@@ -181,7 +214,9 @@ export const codeStatusSchema = z.object({});
  * (lock held + process alive + a log line, or 'Already up to date'). A missing
  * npx/gitnexus is a typed not-started reason, never 'started'.
  */
-export async function handleCodeReindex(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeReindexResult> {
+export async function handleCodeReindex(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeReindexResult | ProviderNotSupportedResult> {
+  const gated = await gateOnProvider('code_reindex', self);
+  if (gated) return gated;
   if (self.remote) {
     return {
       outcome: 'not-started',
@@ -194,7 +229,9 @@ export async function handleCodeReindex(_input: Record<string, unknown>, self: C
 }
 
 /** code_status: last analyze run (status.json), live readiness, and the indexed commit. */
-export async function handleCodeStatus(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeStatusResult | { remote: true; repo: string; indexedCommit: null; detail: string }> {
+export async function handleCodeStatus(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeStatusResult | ProviderNotSupportedResult | { remote: true; repo: string; indexedCommit: null; detail: string }> {
+  const gated = await gateOnProvider('code_status', self);
+  if (gated) return gated;
   if (self.remote) {
     return { remote: true, repo: self.repo, indexedCommit: null, detail: `The work folder '${self.repo}' is on another host; run code_status from a session on that host.` };
   }
