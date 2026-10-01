@@ -199,9 +199,9 @@ export async function runFinalReviewPhase({
     // per-round reviewer gets. Fetched once, before the dispatch, so the retry
     // and resume paths reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
-    // Candidates are read from (and the bible later exported from) the
-    // reviewer's repository kb_maintainer, whose KB every write is routed to.
-    const finalReviewKbMember = typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(getMemberForRole('reviewer')) : null;
+    // Candidates are read from (and the confirmations later committed to the
+    // bible on) the reviewer's repository kb_maintainer, whose KB every write
+    // is routed to.
     const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
@@ -267,23 +267,24 @@ export async function runFinalReviewPhase({
     // fabricated by the engine and carries no KB fields at all, so there is
     // nothing to apply.
 
-    // Publish what this sprint confirmed. Immediately after the LAST promotion
-    // of the run, so the bible carries every CONFIRMED entry including the ones
-    // minted a line above. Without this the sprint's knowledge never left the
-    // member's local sqlite store -- see createKbWorkClient.exportBible.
+    // Commit the final review round's confirmations to the bible on each
+    // repository's kb_maintainer (G-pull, kb_bible_commit, G-push) -- unless
+    // the verdict is FAIL: a FAIL sprint commits nothing further to the bible
+    // and its queued confirmations are not flushed. A degraded FAIL counts
+    // too: the engine fabricated it, so no reviewer stood behind it.
     //
-    // KB writes are routed to each repository's kb_maintainer, so the bible
-    // is exported from the maintainer's KB -- the one that holds the
-    // sprint's captures and promotions. Writes still queued behind a busy
-    // maintainer get one last attempt first; any that remain (an
-    // unreachable maintainer) are reported with a WARN, never dropped
-    // silently.
-    if (typeof kbWork.flushAll === 'function') await kbWork.flushAll();
+    // Writes still queued behind a busy maintainer get one last attempt
+    // first (the commit itself applies them before committing); any that
+    // remain (an unreachable maintainer) are reported with a WARN, never
+    // dropped silently.
+    if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
+        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL');
+    } else if (typeof kbWork.commitRound === 'function') {
+        await kbWork.commitRound('final review');
+    } else if (typeof kbWork.flushAll === 'function') {
+        await kbWork.flushAll();
+    }
     if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
-    const exportKbMember = (typeof kbWork.maintainerRecordFor === 'function'
-        ? kbWork.maintainerRecordFor(getMemberForRole('reviewer'))
-        : null) ?? finalReviewKbMember;
-    await kbWork.exportBible(exportKbMember);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

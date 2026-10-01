@@ -491,6 +491,14 @@ export function createGitSync(deps = {}) {
     const brackets = deps.brackets ?? createSyncBrackets({ setPauseGuard: deps.setPauseGuard });
     const ctx = { ...deps, brackets };
     const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberBefore, syncMemberAfter } = ctx;
+    /**
+     * A standalone bracketed G-push through runner.js's syncMemberAfter().
+     * This is what closes the Publish-PR git-push hole: that site used to
+     * call syncMemberAfter() bare, outside any bracket.
+     */
+    const pushGitAfter = (memberName, options = {}) => brackets.withOpenSyncBracket(
+        () => syncMemberAfter(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
+    );
     return {
         brackets,
         /** Current number of open sync brackets -- read-only observability. */
@@ -553,13 +561,47 @@ export function createGitSync(deps = {}) {
         pullGitBefore: (memberName, options = {}) => brackets.withOpenSyncBracket(
             () => syncMemberBefore(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
         ),
+        /** The standalone bracketed G-push (see pushGitAfter above). */
+        pushGitAfter,
         /**
-         * A standalone bracketed G-push through runner.js's syncMemberAfter().
-         * This is what closes the Publish-PR git-push hole: that site used to
-         * call syncMemberAfter() bare, outside any bracket.
+         * The KB bible commit's G-push on the repository's kb_maintainer
+         * (kb.mjs commitRound): the same bracketed syncMemberAfter() as
+         * pushGitAfter(), under its own name so the sprint branch's
+         * Publish-PR push stays the only pushGitAfter() caller.
          */
-        pushGitAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => syncMemberAfter(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
-        ),
+        pushBibleCommit: (memberName) => pushGitAfter(memberName),
+        /**
+         * A bracketed `git rebase --abort` on a member, for a caller retrying
+         * after a rejected G-push (the KB bible commit). There is no portable
+         * probe for "a rebase is in progress" across member shells, so the
+         * abort itself is the probe: it fails harmlessly (failSoft) when no
+         * rebase is in progress. Resolves true when a rebase was aborted.
+         */
+        abortRebase: (memberName) => brackets.withOpenSyncBracket(async () => {
+            const res = await command('git rebase --abort', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `rebase --abort before the bible-commit retry on '${memberName}'`,
+            });
+            const aborted = !!(res && res.ok);
+            if (aborted) log(`[Sync] aborted an in-progress rebase on member '${memberName}' before retrying its bible commit.`);
+            return aborted;
+        }),
+        /**
+         * The base a KB bible commit records as provenance, resolved on the
+         * member's checkout: the sprint's TARGET BASE branch, and the commit
+         * the sprint branch forked from it (`git merge-base HEAD
+         * origin/<baseBranch>`) -- the base the confirmed entries were
+         * verified against. Resolves null when either cannot be determined.
+         */
+        resolveBibleBase: async (memberName) => {
+            const baseBranch = ctx.baseBranch;
+            if (typeof baseBranch !== 'string' || baseBranch.length === 0) return null;
+            const res = await command(`git merge-base HEAD origin/${baseBranch}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `resolve the base commit for the bible commit on '${memberName}'`,
+            });
+            const sha = res && res.ok && typeof res.output === 'string' ? res.output.trim().split(/\s+/)[0] : '';
+            return /^[0-9a-f]{7,64}$/i.test(sha) ? { baseBranch, baseCommit: sha } : null;
+        },
     };
 }

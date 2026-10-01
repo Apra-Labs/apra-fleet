@@ -379,7 +379,7 @@ export {
     createMemberReservationClient,
 };
 // Re-exported so importers of the KB work helpers (kb_query,
-// kb_capture/kb_promote vetting+forwarding, kb_export) from runner.js keep
+// kb_capture/kb_promote vetting+forwarding, the bible commit) from runner.js keep
 // working; kb.mjs is the single source of truth for their implementation
 // (apra-fleet-3swo.4.4).
 export {
@@ -1354,12 +1354,22 @@ async function runSprintCycle(context) {
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
-        gPull: (maintainerName) => gitSync.pullGitBefore(maintainerName),
+        gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
+        // The review-round bible commit (kbWork.commitRound): G-push, the
+        // retry's rebase --abort, and the base branch/commit recorded as the
+        // bible's provenance -- all on the maintainer, all bracketed.
+        gPush: (maintainerName) => gitSync.pushBibleCommit(maintainerName),
+        abortRebase: (maintainerName) => gitSync.abortRebase(maintainerName),
+        bibleBase: (maintainerName) => gitSync.resolveBibleBase(maintainerName),
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,
         log,
     });
+    // Stored on the sprint context (like kbMaintainers) so the terminal-abort
+    // handler can seal the bible commit: an aborted sprint commits nothing
+    // further to the bible.
+    context.kbWork = kbWork;
     // Dispatch lifecycle for the KB write queue: a member is busy from the
     // moment its dispatch bracket opens until it closes, and writes queued for
     // a repository it maintains are applied when it goes idle. Both hooks are
@@ -1925,6 +1935,11 @@ async function runSprintCycle(context) {
         // A degraded round counts toward the bounded stall-abort budget like
         // every other role's dispatch failure -- it is NOT a reviewer contract
         // violation, which is what the dispatchFailed marker records.
+        // The round's confirmations go to the bible on each repository's
+        // kb_maintainer: G-pull, kb_bible_commit, G-push. Covers both callers
+        // (the per-round review and the scope-wide re-review); a round with
+        // no confirmations makes no call. Never throws.
+        if (typeof kbWork.commitRound === 'function') await kbWork.commitRound(`review C${cycle}`);
         return reviewOutcome.value;
     }
 
@@ -3257,6 +3272,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
+        kbWork,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 
@@ -3373,6 +3389,11 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
+        // An aborted sprint commits nothing further to the KB bible: its
+        // queued confirmations are not flushed.
+        if (runContext.kbWork && typeof runContext.kbWork.seal === 'function') {
+            runContext.kbWork.seal(`sprint aborted: ${err && err.message ? err.message : String(err)}`);
+        }
         if (!isTerminalSprintFailure(err)) {
             throw err;
         }
