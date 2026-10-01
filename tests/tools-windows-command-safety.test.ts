@@ -258,6 +258,22 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     expect(akCmd).toBe(`sed -i '/${escaped}/d' ~/.ssh/authorized_keys`);
   });
 
+  it('item 4 (linux): a hostile .pub file cannot break out of the sed quoting or regex', async () => {
+    // key_path is caller-supplied, so the .pub content is untrusted input.
+    fs.writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAA'$(touch${IFS}/tmp/pwn)'.*\\x fleet@apra\n", 'utf-8');
+    const member = makeTestAgent({ friendlyName: 'linux-remove-hostile', os: 'linux' as any, keyPath });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
+    const akCmd = cmds.find((c) => c.includes('authorized_keys'));
+    // Each ' closes/escapes/reopens the shell quote; $ / . * \ are escaped for the BRE.
+    expect(akCmd).toBe(
+      "sed -i '/ssh-ed25519 AAAA'\\''\\$(touch\\${IFS}\\/tmp\\/pwn)'\\''\\.\\*\\\\x/d' ~/.ssh/authorized_keys",
+    );
+  });
+
   it('item 5 (windows): cleanup command failure is surfaced as a warning, not swallowed', async () => {
     const member = makeTestAgent({ friendlyName: 'win-remove-fail', os: 'windows' as any, keyPath });
     addAgent(member);
