@@ -11,6 +11,8 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
+import { assertSafeRelativePath } from './se-posix.mjs';
+
 /**
  * PowerShell command primitives for a Windows member.
  */
@@ -123,6 +125,56 @@ export class SeWindowsCommands {
       .split(bq).join(bq + bq)
       .replace(/\$/g, `${bq}$`)
       .replace(/"/g, `${bq}"`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureGitExcluded: idempotently add
+   * `entry` as a line of the exclude file git itself resolves
+   * (`git rev-parse --git-path info/exclude`, run in the work folder), creating
+   * its directory if missing; silent exit-0 no-op outside a git repo or with
+   * no git on PATH.
+   *
+   * Shape notes (all load-bearing):
+   *  - the git call sits in its own try/catch because wrapForMember sets
+   *    $ErrorActionPreference = 'Stop', under which Windows PowerShell 5.1
+   *    turns a redirected native stderr line ("fatal: not a git repository")
+   *    into a terminating error;
+   *  - $global:LASTEXITCODE is reset at the end so the envelope's native
+   *    exit-code check does not turn git's non-repo exit 128 into a failure;
+   *  - the line is written with an explicit LF ([char]10) and -NoNewline,
+   *    not Add-Content's platform CRLF, and no backtick escape is used
+   *    anywhere -- the only variables are script-local ones this string
+   *    assigns; nothing reads the member's environment ($env:, ~/).
+   * Caller: member-call.mjs runRemote (args-file cleanup).
+   * @param {string} entry validated
+   * @returns {string}
+   */
+  ensureGitExcluded(entry) {
+    const e = assertSafeRelativePath(entry, 'git-exclude entry');
+    const script = [
+      `$excl = $null`,
+      `try { $out = @(git rev-parse --git-path info/exclude 2>$null); if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0) { $excl = [string]$out[0] } } catch { $excl = $null }`,
+      `if ($excl) { `
+        + `$dir = Split-Path -Parent $excl; `
+        + `if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }; `
+        + `$raw = ''; if (Test-Path -LiteralPath $excl) { $raw = [string](Get-Content -LiteralPath $excl -Raw) }; `
+        + `if (@($raw -split '\\r?\\n') -notcontains '${e}') { `
+        + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+        + `Add-Content -LiteralPath $excl -NoNewline -Value ($prefix + '${e}' + $lf) } }`,
+      `$global:LASTEXITCODE = 0`,
+    ].join('; ');
+    return this.wrapForMember(script);
+  }
+
+  /**
+   * Delete a work-folder-relative file, never erroring when it is absent.
+   * Caller: member-call.mjs runRemote (engine-side args-file delete).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Remove-Item -LiteralPath '${p}' -Force }`);
   }
 
   /**
