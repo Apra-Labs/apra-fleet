@@ -6,6 +6,7 @@ import { fleetEvents, FleetEventMap } from './event-bus.js';
 import { getOrCreateKey, type JwtClaims } from './jwt.js';
 import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
+import { FULL_TOOL_SCOPE, memberToolScope, type ToolScope } from './tool-scope.js';
 import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
@@ -21,7 +22,11 @@ interface Session {
 }
 
 export interface HttpTransportOptions {
-  registerTools: (server: McpServer) => void | Promise<void>;
+  /** Registers the tool surface for ONE session. `scope` is derived from the
+   *  session's identity at initialize (see the initialize branch): MEMBER for
+   *  a valid member JWT or a registered ?member=, FULL otherwise. An
+   *  implementation that ignores it registers whatever it always did. */
+  registerTools: (server: McpServer, scope: ToolScope) => void | Promise<void>;
   preferredPort?: number;
 }
 
@@ -247,13 +252,23 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // (unauthenticated local fallback) historically carried the friendly
         // name; new URLs carry the UUID, and legacy friendly names are resolved
         // to the UUID via the agent registry here.
+        //
+        // The param must name a REGISTERED member: an id that resolves through
+        // neither getAgent nor findAgentByName is refused with 403 rather than
+        // conjuring a member identity (and a member session) from a raw string.
         let fallbackMemberId: string | null = null;
         let fallbackWorkFolder = '';
         if (postClaims === null && memberParam !== null) {
           const agent = getAgent(memberParam) ?? findAgentByName(memberParam);
-          fallbackMemberId = agent?.id ?? memberParam;
-          fallbackWorkFolder = agent?.workFolder ?? '';
-          if (agent && agent.id !== memberParam) {
+          if (!agent) {
+            logLine('session', `rejected initialize: unknown member_param=${memberParam}`);
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unknown member' }));
+            return;
+          }
+          fallbackMemberId = agent.id;
+          fallbackWorkFolder = agent.workFolder ?? '';
+          if (agent.id !== memberParam) {
             logLine('session', `resolved URL member param '${memberParam}' to member_id=${agent.id}`);
           }
         }
@@ -261,6 +276,17 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // from this machine (server binds 127.0.0.1), so they belong to the
         // local workspace. Authenticated sessions use the JWT's workspace_id.
         const sessionWorkspaceId = postClaims?.workspace_id ?? localWorkspaceId();
+
+        // Tool scope from the identity resolved above. A valid member JWT (a
+        // doer subprocess connect-back or an interactive member) or a
+        // registered ?member= makes this a MEMBER session: the base member
+        // allowlist, plus the channel tools (respond_to_message) only when the
+        // client declared claude/channel. No member identity at all is the
+        // local orchestrator/PM/tool session and keeps the FULL set.
+        const sessionMemberId = postClaims?.member_id ?? fallbackMemberId;
+        const toolScope: ToolScope = sessionMemberId
+          ? memberToolScope(sessionMemberId, channelCapable)
+          : FULL_TOOL_SCOPE;
 
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
@@ -271,7 +297,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
             const hasMember = !!(postClaims || fallbackMemberId);
-            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
+            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
             // Register interactive member session when JWT claims are present.
             //
             // apra-fleet-eft.28.5: carry forward the launch-time pid captured
@@ -353,7 +379,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             }
           },
         });
-        await registerTools(sessionServer);
+        await registerTools(sessionServer, toolScope);
         await sessionServer.connect(sessionTransport);
         await sessionTransport.handleRequest(req, res, parsedBody);
         return;

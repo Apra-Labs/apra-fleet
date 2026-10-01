@@ -1,6 +1,37 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeMemberId, type ToolScope } from './tool-scope.js';
 
-export async function registerAllTools(server: McpServer): Promise<void> {
+export type { ToolScope } from './tool-scope.js';
+
+/**
+ * Wrap a session's McpServer so every server.tool(...) registration below goes
+ * through the scope gate: an out-of-scope tool is simply never registered
+ * (deny by omission -- absent from tools/list, unknown when called). Every
+ * other property is forwarded to the real server unchanged.
+ */
+function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
+  if (scope.kind === 'full') return base;
+  return new Proxy(base, {
+    get(target, prop, receiver) {
+      if (prop === 'tool') {
+        return (name: string, ...rest: unknown[]) => {
+          if (!isToolInScope(name, scope)) return undefined;
+          return (target.tool as (...args: unknown[]) => unknown).call(target, name, ...rest);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
+/**
+ * Register the fleet tool surface on ONE session's McpServer. `scope` is
+ * derived from the session's identity by the HTTP transport; it defaults to
+ * FULL (every tool), which is also what the stdio path uses.
+ */
+export async function registerAllTools(baseServer: McpServer, scope: ToolScope = FULL_TOOL_SCOPE): Promise<void> {
+  const server = scopeGatedServer(baseServer, scope);
+  const sessionMemberId = scopeMemberId(scope);
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -94,7 +125,15 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
   function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
     return async (input: any, extra?: any) => {
-      const raw = await handler(input, extra);
+      // Every handler can read the calling session's member id: on the extra
+      // (extra.sessionMemberId) and, for code further down the call chain,
+      // via getSessionMemberId() (src/services/tool-scope.ts). Undefined for a
+      // FULL session.
+      // (extra stays exactly as received for a FULL session called without one.)
+      const scopedExtra = extra === undefined && sessionMemberId === undefined
+        ? undefined
+        : { ...(extra ?? {}), sessionMemberId };
+      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra));
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);
