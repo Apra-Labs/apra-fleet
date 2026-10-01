@@ -191,6 +191,11 @@ write/admin KB tools (`kb_setup`, `kb_promote`, `kb_resolve_contradiction`,
 `kb_export`), so a member session can mint CONFIRMED entries and reconfigure
 the KB; this matches the specification and is a known trust boundary.
 
+The per-folder MCP entry that gives a member this scoped session, and its
+install/verification flow, are described in
+[member-fleet-mcp-wiring.md](member-fleet-mcp-wiring.md); code tool readiness in
+[code-index-readiness.md](code-index-readiness.md).
+
 Per-member call counts: the server counts every `kb_*` and `code_*` call
 made from a MEMBER session against that member's uuid, aggregated across all
 of its sessions, in memory (`src/services/member-call-counts.ts`, recorded in
