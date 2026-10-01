@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -17,9 +17,6 @@ import {
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 
 /** Work-folder-relative project config opencode reads MCP servers from. */
 export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
@@ -252,16 +249,10 @@ export class OpenCodeProvider implements ProviderAdapter {
   // `permission:` schema only has the three coarse categories below (edit/write/bash)
   // -- no per-tool or per-server MCP granularity exists to map onto (confirmed against
   // docs/opencode-exploration.md's live investigation). MCP tool access under OpenCode
-  // would be all-or-nothing at the SERVER level via registerMcpEndpoint's
-  // `mcp.apra-fleet-member` registration (unconditionally enabled, no per-tool gate) --
-  // not by this permission map. NOTE: registerMcpEndpoint is currently unreachable for
-  // every provider (its one caller in register-member.ts is gated behind
-  // interactiveBootstrapEnabled(), hardcoded to return false, and behind
-  // memberProvider === 'claude' besides), so no MCP server is actually registered this
-  // way for anyone today -- this comment describes the mechanism's shape, not a live
-  // path. Either way, this is a genuine platform limitation, not a gap to fix here; do
-  // not add MCP entries to the returned permission object, they would not be understood
-  // by OpenCode's schema.
+  // is all-or-nothing at the SERVER level: the member's per-folder apra-fleet entry in
+  // <workFolder>/opencode.json (syncMemberMcpEntry) is enabled outright, and the fleet
+  // server itself serves a ?member= session only the member allowlist. Do not add MCP
+  // entries to the returned permission object; OpenCode's schema would not understand them.
   composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
     if (role === 'doer') {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
@@ -339,50 +330,6 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
-  }
-
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // OpenCode has no non-interactive registration verb for token-based auth --
-    // `opencode mcp auth <server>` is for interactive OAuth entry only, not a
-    // pre-minted bearer token from the hub/local server. Its native config file
-    // (opencode.json) supports remote MCP servers with bearer-auth headers
-    // natively: { type: 'remote', url, headers: { Authorization: 'Bearer ...' } }.
-    // Live-verified: a local HTTP listener confirmed OpenCode sends the
-    // Authorization header exactly as configured (see docs/member-onboarding-journey.md
-    // 3a and apra-fleet-fnz.3). Read-modify-write, same shape as AGY, scoped by
-    // `opts.scope`: 'project' writes workFolder/opencode.json, 'user' writes the
-    // global ~/.config/opencode/opencode.json.
-    const configFile = opts.scope === 'project'
-      ? path.join(opts.workFolder, 'opencode.json')
-      : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-
-    fs.mkdirSync(path.dirname(configFile), { recursive: true });
-
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(configFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      } catch {
-        // malformed file -- start fresh rather than write on top of unparseable state
-        settings = {};
-      }
-    }
-
-    const mcp = (settings.mcp as Record<string, unknown> | undefined) ?? {};
-    mcp['apra-fleet-member'] = {
-      type: 'remote',
-      url: opts.url,
-      enabled: true,
-      headers: { Authorization: `Bearer ${opts.token}` },
-    };
-    settings.mcp = mcp;
-
-    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
-
-    return {
-      mechanism: 'config-file-merge',
-      detail: `merged apra-fleet-member into ${configFile} (mcp.apra-fleet-member, remote+bearer-auth headers)`,
-    };
   }
 
   async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {

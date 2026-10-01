@@ -278,27 +278,6 @@ export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): b
   return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
 }
 
-export interface RegisterMcpEndpointOptions {
-  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
-  url: string;
-  /** JWT bearer token for the member's fleet MCP session. */
-  token: string;
-  workFolder: string;
-  scope: 'project' | 'user';
-}
-
-export interface RegisterMcpEndpointResult {
-  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
-  mechanism: string;
-  /** Human-readable detail for logging/audit -- what file or command was used. */
-  detail: string;
-}
-
-/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
- *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
- *  SSH for remote members, local shell exec for local members). Kept as a narrow function
- *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
- *  services/strategy.ts. */
 /** Context for {@link ProviderAdapter.syncMemberMcpEntry}. */
 export interface MemberMcpSyncContext {
   agent: import('../types.js').Agent;
@@ -538,13 +517,6 @@ export interface ProviderAdapter {
   /** Args for headless invocation with a safe literal prompt string.
    *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
-
-  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
-   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
-   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
-   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
-   *  Returns what was done, for logging/audit. */
-  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
 
   /** Writes (ctx.url set) or removes (ctx.url null) the member's PER-FOLDER `apra-fleet`
    *  MCP entry in this provider's native per-project config, and prunes the legacy

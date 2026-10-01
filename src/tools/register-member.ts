@@ -100,10 +100,9 @@ export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
 export interface InteractiveBootstrapDeps {
   checkRunningInstance: typeof checkRunningInstance;
   spawn: typeof spawn;
-  getProvider: typeof getProvider;
 }
 
-const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn, getProvider };
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn };
 let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
 
 /** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
@@ -598,43 +597,12 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     if (!instance.running) {
       return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
     }
-    const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
 
-    // Mint through the pluggable issuer: workspace_id is the hard security
-    // boundary (docs/hub-spoke-master-plan.md section 3); the local dev-mode
-    // issuer derives it from this install's identity (one machine == one
-    // workspace). A hub-era issuer swaps in behind the same interface.
+    // The member reaches the fleet server through the per-folder apra-fleet
+    // MCP entry compose_permissions already wrote above (?member=<uuid>); the
+    // issuer here only scopes the session registry to this workspace.
     const { getTokenIssuer } = await import('../services/token-issuer.js');
     const issuer = getTokenIssuer();
-    const token = issuer.issue({
-      member_id: tempAgent.id,
-      role: 'doer',
-      work_folder: input.work_folder,
-    });
-
-    // Registration uses the provider's OWN native mechanism (apra-fleet-fnz.1,
-    // docs/member-onboarding-journey.md section 3/4 Journey A) rather than
-    // hand-writing a config file -- this is also what makes the mechanism
-    // provider-agnostic (AGY/OpenCode implement the same interface method with
-    // their own native paths) and avoids fighting compose_permissions' own
-    // writes to the same provider config (apra-fleet-2xs.1).
-    const memberProviderAdapter = interactiveBootstrapDeps.getProvider(tempAgent.llmProvider);
-    if (memberProviderAdapter.registerMcpEndpoint) {
-      try {
-        await memberProviderAdapter.registerMcpEndpoint({
-          // Identity is keyed on the member UUID everywhere -- the URL fallback
-          // param carries the UUID, matching the JWT's member_id claim.
-          url: mcpUrl + '?member=' + tempAgent.id,
-          token,
-          workFolder: input.work_folder,
-          scope: 'project',
-        });
-      } catch (e: any) {
-        warnings.push(`Could not register MCP endpoint: ${e.message}`);
-      }
-    } else {
-      warnings.push(`Provider "${memberProviderAdapter.name}" has no registerMcpEndpoint() -- interactive session bootstrap skipped.`);
-    }
 
     // CRITICAL-2: Kill existing claude process for this member before re-spawning
     const { sessionRegistry } = await import('../services/session-registry.js');

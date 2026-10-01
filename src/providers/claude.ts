@@ -1,8 +1,6 @@
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -20,7 +18,6 @@ import {
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
 
-const execFileAsync = promisify(execFile);
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
 // transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
@@ -622,29 +619,6 @@ export class ClaudeProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
-  }
-
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // Live-verified (apra-fleet-2xs.5, docs/member-onboarding-journey.md 3a): `claude
-    // mcp add` is Claude's own native registration mechanism -- it writes .mcp.json
-    // (project scope) or the user-scope config itself, round-tripping the bearer
-    // header intact. Shelling out here (rather than hand-writing .mcp.json) means
-    // future changes to Claude Code's config format are Anthropic's problem, not
-    // ours, and it composes correctly with whatever the user does afterward via the
-    // same CLI.
-    const args = [
-      'mcp', 'add',
-      '--transport', 'http',
-      '--scope', opts.scope,
-      'apra-fleet-member',
-      opts.url,
-      '--header', `Authorization: Bearer ${opts.token}`,
-    ];
-    await execFileAsync('claude', args, { cwd: opts.workFolder });
-    return {
-      mechanism: 'cli-verb',
-      detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
-    };
   }
 
   async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult> {
