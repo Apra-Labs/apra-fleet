@@ -22,9 +22,30 @@ export const kbQuerySchema = z.object({
   // entry is exactly who needs to know that entry has been refined or disputed.
   expand_related: z.boolean().optional()
     .describe('Append entries connected to the top hits by a refines or contradiction_of edge, as related_claims. These are the KB\'s own judgements about its contents -- "there is a newer framing of this" and "something disputes this" -- which a text match cannot surface. shares_file/shares_symbol edges are NOT traversed: FTS over the same fields already finds those. Default false, in which case related_claims is absent.'),
+  // Retrieval-trust filters. Opt-in and default-off (absent = every tier, disputed
+  // entries included -- the pre-existing behaviour). An allow-list rather than a
+  // min_confidence threshold so the contract does not bake in a tier ordering and
+  // matches kb_list's `confidence` naming.
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Omit for every tier. Ignored when flagged_only is true.'),
+  exclude_disputed: z.boolean().optional()
+    .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default false. Ignored when flagged_only is true.'),
 });
 
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
+
+// Re-applies the trust filters to entries a provider returned. The sqlite
+// provider already filters in SQL; this is the backstop for a provider that
+// does not (a remote KB server predating the filter ignores unknown params),
+// so the filter is a guarantee of this tool, not of whichever store answered.
+function passesTrustFilter(
+  e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null },
+  input: KbQueryInput,
+): boolean {
+  if (input.confidence?.length && !input.confidence.includes(e.confidence as NonNullable<KbQueryInput['confidence']>[number])) return false;
+  if (input.exclude_disputed && (e.flagged_for_review || e.contradiction_of)) return false;
+  return true;
+}
 
 export async function kbQuery(input: KbQueryInput): Promise<string> {
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
@@ -73,16 +94,37 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     l1_only: true,
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
+    confidence: input.confidence,
+    exclude_disputed: input.exclude_disputed,
   };
 
-  const projectL1 = await providers.project.query(queryOpts);
-  const globalL1 = await providers.global.query(queryOpts);
+  // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
+  // after the merge would let an excluded project entry shadow an admissible
+  // global entry of the same title and then vanish, taking both with it.
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed);
+  const trustedL1 = async (provider: typeof providers.project) => {
+    const first = await provider.query(queryOpts);
+    if (!filtering) return first.results;
+    let kept = first.results.filter(e => passesTrustFilter(e, input));
+    // A provider that ignored the filter may have spent its whole limit on
+    // entries just dropped here. A full page that filtered short is the only
+    // signal of that (the sqlite provider filters in SQL, so it never trips
+    // this); re-ask once with a wider window and trim back to the limit.
+    if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
+      const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
+      kept = wider.results.filter(e => passesTrustFilter(e, input));
+    }
+    return kept.slice(0, queryOpts.limit);
+  };
+
+  const projectL1 = await trustedL1(providers.project);
+  const globalL1 = await trustedL1(providers.global);
 
   // Merge project first, deduplicate global entries by title
-  const seen = new Set(projectL1.results.map(e => e.title));
+  const seen = new Set(projectL1.map(e => e.title));
   const mergedL1 = [
-    ...projectL1.results,
-    ...globalL1.results.filter(e => !seen.has(e.title)),
+    ...projectL1,
+    ...globalL1.filter(e => !seen.has(e.title)),
   ];
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
@@ -113,7 +155,10 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
   let relatedClaims: Awaited<ReturnType<typeof providers.project.relatedClaims>> = [];
   if (input.expand_related && top5Ids.length > 0) {
     try {
-      relatedClaims = await providers.project.relatedClaims(top5Ids);
+      relatedClaims = (await providers.project.relatedClaims(top5Ids, undefined, {
+        confidence: input.confidence,
+        exclude_disputed: input.exclude_disputed,
+      })).filter(e => passesTrustFilter(e, input));
     } catch {
       relatedClaims = [];
     }

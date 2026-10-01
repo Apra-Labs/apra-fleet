@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { loadAgentAssets } from '../src/cli/install.js';
+import { transformAgentForAgy, transformAgentForClaude } from '../src/cli/agent-transform.js';
 
 /**
  * The KB contracts are only real if they are present in what the installer actually
@@ -45,6 +46,38 @@ function toolsLine(content: string): string {
 // Scoped out of the priming-specific assertion below; still covered by the other three.
 const KB_PRIMING_ROLES = ROLES.filter((r) => r !== 'kb-reconciler');
 
+// apra-fleet-9jmc.1: these five role prompts are DELIBERATELY INVERTED from the other
+// six. A dispatched member running one of them usually cannot reach the fleet MCP
+// server (disabled -- see src/providers/claude.ts's composePermissionConfig) and has no
+// working kb_captures apply path (packages/apra-fleet-se/fleet-sprint/role-policies.mjs:
+// each row is kbInjection 'wrapper' with no 'kb-apply' postResult step). So unlike the
+// six REQUIRED_KB_ROLES below -- which open Step 0 with an unconditional "Run ToolSearch
+// with query" -- these five use the live KB tools only WHEN AVAILABLE and otherwise fall
+// back to the orchestrator's pre-fetched "KNOWLEDGE BANK" block, which then IS the
+// repo's knowledge: a missing/failing tool is never read as "no KB". No KB tool call is
+// ever a requirement for them.
+//
+// Hand-kept in sync with packages/apra-fleet-se/test/kb-prompt-contract-wrapper-roles.
+// test.mjs, which derives the equivalent role SET straight from role-policies.mjs (the
+// actual source of truth) and would fail first if these two lists ever drifted apart --
+// see that file's wrapperRowsWithoutKbApply().
+const OPTIONAL_KB_ROLES = ['planner', 'plan-reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner'];
+const REQUIRED_KB_ROLES = ROLES.filter((r) => !OPTIONAL_KB_ROLES.includes(r));
+
+// The wording every one of the five must carry, in BOTH rendered branches.
+const TOOLS_FIRST = 'Use the live KB tools when they are available; otherwise use the pre-fetched "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt';
+const NEVER_NO_KB = 'A missing or failing KB tool never means "no KB": when the tools are unavailable, the pre-fetched block IS this repo\'s knowledge';
+const BRANCH_FALLBACK = 'use the pre-fetched block instead -- that is the fallback, not a gap';
+const NOT_REQUIRED = 'None of these tool calls is ever a requirement';
+
+// This repo's prompt markdown hard-wraps prose across physical lines (e.g. "... the
+// pre-fetched block IS this repo's\nknowledge ..."), so a multi-word phrase check on raw
+// `content` is fragile -- collapse whitespace first, exactly like
+// kb-prompt-contract-wrapper-roles.test.mjs's own findUnconditionalKbToolCall() does.
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ');
+}
+
 describe('every role contract carries working KB wiring', () => {
   const byRole = assetsByRole();
 
@@ -58,15 +91,70 @@ describe('every role contract carries working KB wiring', () => {
     expect(content).toContain('kb_session_prime');
   });
 
-  it.each(ROLES)('%s can actually reach the KB tools it is told to call', (role) => {
+  it.each(REQUIRED_KB_ROLES)('%s can actually reach the KB tools it is told to call', (role) => {
     const content = byRole.get(role)!;
     // Every Knowledge Bank block opens by loading the MCP tools through ToolSearch.
     expect(content).toContain('Run ToolSearch with query');
     expect(toolsLine(content)).toContain('ToolSearch');
   });
 
-  it.each(ROLES)('%s degrades gracefully when the MCP server is not running', (role) => {
+  it.each(REQUIRED_KB_ROLES)('%s degrades gracefully when the MCP server is not running', (role) => {
     expect(byRole.get(role)!).toContain('If ToolSearch returns no KB tools');
+  });
+
+  it.each(OPTIONAL_KB_ROLES)('%s prefers the live KB tools when available, never as a requirement', (role) => {
+    const content = normalizeWhitespace(byRole.get(role)!);
+    // The tools frontmatter still lists ToolSearch: the live path is the
+    // preferred one whenever it is reachable.
+    expect(toolsLine(byRole.get(role)!)).toContain('ToolSearch');
+    expect(content).toContain(TOOLS_FIRST);
+    expect(content).toContain(NOT_REQUIRED);
+    expect(content).toContain('When the KB tools are available, prime from them first. Run ToolSearch with query');
+  });
+
+  it.each(OPTIONAL_KB_ROLES)('%s treats the pre-fetched block as the knowledge when the tools are unavailable', (role) => {
+    const content = normalizeWhitespace(byRole.get(role)!);
+    expect(content).toContain('fleet MCP server (mcp__apra-fleet__*) is usually disabled for this role');
+    expect(content).toContain(NEVER_NO_KB);
+    expect(content).toContain('must be made from that block, not from the tool failure');
+  });
+});
+
+// The KB wording sits inside the provider-conditional ToolSearch markers
+// (src/cli/agent-transform.ts). Both rendered branches must keep the same contract:
+// live tools first when available, the pre-fetched block as the fallback that IS the
+// knowledge. The Claude branch keeps the ToolSearch discovery step; the
+// ToolSearch-less (agy) branch names the KB tool directly and never mentions ToolSearch.
+describe('optional-KB roles render the same contract on both ToolSearch branches', () => {
+  const byRole = assetsByRole();
+
+  function renderAgy(content: string, role: string): string {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      return transformAgentForAgy(content, `${role}.md`);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  }
+
+  it.each(OPTIONAL_KB_ROLES)('%s: Claude branch primes via ToolSearch when available, else falls back to the block', (role) => {
+    const out = normalizeWhitespace(transformAgentForClaude(byRole.get(role)!, `${role}.md`));
+    expect(out).toContain(TOOLS_FIRST);
+    expect(out).toContain(NEVER_NO_KB);
+    expect(out).toContain('When the KB tools are available, prime from them first. Run ToolSearch with query');
+    expect(out).toContain(`If ToolSearch surfaces no KB tools or a call fails, ${BRANCH_FALLBACK}`);
+    expect(out).not.toContain('no tool-discovery step is needed');
+  });
+
+  it.each(OPTIONAL_KB_ROLES)('%s: ToolSearch-less branch calls the KB tool directly when exposed, else falls back to the block', (role) => {
+    const out = normalizeWhitespace(renderAgy(byRole.get(role)!, role));
+    expect(out).toContain(TOOLS_FIRST);
+    expect(out).toContain(NEVER_NO_KB);
+    expect(out).toContain('When your environment exposes the KB tools, prime from them first (no tool-discovery step is needed on this provider)');
+    expect(out).toContain(`If those tools are not available or a call fails, ${BRANCH_FALLBACK}`);
+    expect(out).toContain('mcp__apra-fleet__kb_session_prime');
+    expect(out).not.toContain('ToolSearch');
+    expect(out).not.toMatch(/Knowledge Bank \(required/);
   });
 });
 

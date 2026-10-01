@@ -6,31 +6,45 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 # Regression Test Execution
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE bringing the sandbox up)
+## Step 0 -- Knowledge Bank (do this BEFORE bringing the sandbox up)
+
+Use the live KB tools when they are available; otherwise use the pre-fetched
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the subsystems `regression-test-playbook.md` exercises.
+On a dispatched member the fleet MCP server (mcp__apra-fleet__*) is usually disabled
+for this role, so expect to be on the fallback. A missing or failing KB tool never
+means "no KB": when the tools are unavailable, the pre-fetched block IS this repo's
+knowledge, and any judgment that depends on what the KB does or does not record (e.g.
+whether a red run matches a known-flaky test) must be made from that block, not from
+the tool failure. You have no KB context only when the tools are unavailable AND the
+block is absent. None of these tool calls is ever a requirement.
 
 <!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. When the KB tools are available, prime from them first.
+   Run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. If
+   ToolSearch surfaces no KB tools or a call fails, use the pre-fetched block instead
+   -- that is the fallback, not a gap.
 <!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
+1. When your environment exposes the KB tools, prime from them first (no
+   tool-discovery step is needed on this provider): call
+   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. If
+   those tools are not available or a call fails, use the pre-fetched block instead
+   -- that is the fallback, not a gap.
 <!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
-   `hint_modules` naming the subsystems `regression-test-playbook.md` exercises. Trust
-   CONFIRMED entries fully. Use INFERRED entries as hints, not facts. Known-flaky tests and
-   known sandbox setup/teardown gotchas are the point here -- they change whether a red run
-   is a real regression or a known environment failure.
-3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns out
-   to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture` with type
-   "runbook" or "learning". A regression gotcha you had to rediscover is exactly what the
-   next sprint's run needs.
-
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
+   as hints, not facts. Known-flaky tests and known sandbox setup/teardown gotchas are
+   the point here -- they change whether a red run is a real regression or a known
+   environment failure.
+3. When a playbook step fails for a non-obvious reason, or the sandbox lifecycle turns
+   out to need a step the playbook does not record, call `mcp__apra-fleet__kb_capture`
+   with type "runbook" or "learning" if it is reachable -- it usually is not on a
+   dispatched environment, in which case simply note the regression gotcha in your own
+   report instead. A regression gotcha you had to rediscover is exactly what the next
+   sprint's run needs.
 
 You own `regression-test-playbook.md` end to end: bring the test sandbox
 up, run both playbook parts, and ALWAYS tear the sandbox down -- pass or
