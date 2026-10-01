@@ -54,6 +54,8 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './t
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const INDEX_FILE = '.fake-code-index.json';
 const CODE_TOOLS = ['code_graph', 'code_impact', 'code_query', 'code_context', 'code_map', 'code_flow', 'code_tests'];
+// Tools that manage the index itself; they exist in tools/list but are not provider queries.
+const INDEX_TOOLS = ['code_reindex', 'code_status'];
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
 // Answers ONLY from the index file inside params.repo -- the folder the
@@ -177,7 +179,7 @@ describe('code (self) over HTTP: each session is answered from its own folder', 
   it('no code_* tool in tools/list exposes repo or repo_path (member and FULL sessions)', async () => {
     for (const client of [await connect(members.alpha), await connect()]) {
       const tools = (await client.listTools()).tools.filter(t => t.name.startsWith('code_'));
-      expect(tools.map(t => t.name).sort()).toEqual([...CODE_TOOLS].sort());
+      expect(tools.map(t => t.name).sort()).toEqual([...CODE_TOOLS, ...INDEX_TOOLS].sort());
       for (const tool of tools) {
         const props = Object.keys((tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
         expect(props, tool.name).not.toContain('repo');
