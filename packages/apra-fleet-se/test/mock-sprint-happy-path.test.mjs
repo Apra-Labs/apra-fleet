@@ -393,7 +393,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
         // `--body` flags -- match the new JSON shape.
         check(
-            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /Final Verdict: PASS/.test(run1.commandLog[prIdx]),
+            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /## Sprint verdict: PASS/.test(run1.commandLog[prIdx]),
             `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
         );
 

@@ -3185,7 +3185,6 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, orchestratorMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult,
-        sanitizePrText,
     });
 
     endGroup();
@@ -3327,6 +3326,7 @@ export async function main(context) {
                     log,
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+                    runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
                 });
             } catch (finalizeErr) {
                 log(

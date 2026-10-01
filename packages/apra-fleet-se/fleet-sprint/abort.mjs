@@ -32,6 +32,7 @@ import {
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
+import { buildSprintPrBody } from './pr-body.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -287,7 +288,7 @@ export function isTypedAbortError(err) {
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId }) {
     // Built up-front (not just at the PR-creation step further down) so the
     // SAME ApraFleet client can also resolve `member`'s VCS provider
     // (apra-fleet-417.7) for the runGitStep calls below -- avoids
@@ -405,15 +406,27 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     const safeDetails = sanitizePrText(
         error && error.details !== undefined ? JSON.stringify(error.details) : ''
     );
-    const prBody = [
-        `Automated apra-fleet-se sprint ABORTED before reaching a final PASS/FAIL verdict.`,
-        '',
-        safeCode ? `Error code: ${safeCode}` : null,
-        safeMessage ? `Error message: ${safeMessage}` : null,
-        safeDetails ? `Error details: ${safeDetails}` : null,
-        '',
-        'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
-    ].filter((line) => line !== null).join('\n');
+    // Same markdown body builder as the PASS/FAIL Publish PR step
+    // (pr-body.mjs), so an abort after an earlier PASS/FAIL run also rewrites
+    // the existing PR and carries that run forward in its history.
+    const abortNow = new Date();
+    const buildAbortBody = (previousBody = '') => buildSprintPrBody({
+        verdict: 'ABORTED',
+        branch,
+        baseBranch,
+        runId,
+        now: abortNow,
+        notesHeading: 'Abort details',
+        notes: [
+            'The sprint ABORTED before reaching a final PASS/FAIL verdict.',
+            '',
+            safeCode ? `- Error code: ${safeCode}` : null,
+            safeMessage ? `- Error message: ${safeMessage}` : null,
+            safeDetails ? `- Error details: ${safeDetails}` : null,
+        ].filter((line) => line !== null).join('\n'),
+        previousBody,
+    });
+    const prBody = buildAbortBody();
 
     // The reverted gh-based PR creation is gone (apra-fleet-tfx.8): raise the [ABORTED] PR via
     // VCSModule's orchestrator-built curl command, dispatched to `member`
@@ -450,6 +463,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be orchestratorMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
+        updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),
     });
 
     if (!prResult.ok) {
@@ -474,6 +488,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // Idempotent: the desired end state -- a PR open for this branch --
         // already holds, so this is swallowed rather than thrown.
         log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success.`);
+        if (prResult.updated) {
+            log(`finalizeAbort: updated the existing PR for branch '${branch}' to this run's verdict (ABORTED)${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+        } else {
+            log(`finalizeAbort: WARNING: could NOT update the existing PR for branch '${branch}' to this run's verdict (ABORTED) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
+        }
         return { prUrl: prResult.prUrl, reason: 'already-exists', pushed: true, commitCount };
     }
 
