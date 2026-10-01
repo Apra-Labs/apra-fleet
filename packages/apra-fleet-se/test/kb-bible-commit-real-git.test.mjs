@@ -19,6 +19,11 @@
 // origin's sprint-branch tip, the tip SHA, merge commits -- never about a
 // command string.
 //
+// FALSIFICATION: reverting the kb_maintainer half of runner.js
+// computeBranchEnsureMembers makes scenario 9 fail -- the role-less
+// maintainer is never put on the sprint branch, so the bible-commit branch
+// guard refuses the commit and nothing reaches origin.
+//
 // FALSIFICATION: removing the retry path in kb.mjs commitRepo (the second
 // bibleAttempt after a rejected G-push) makes scenario 3 fail -- the
 // concurrent change's rebase conflicts on .fleet/kb-canonical.json, the
@@ -33,6 +38,7 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
@@ -41,7 +47,9 @@ import {
     syncMemberAfter,
     syncMemberAfterOrdered,
     isNoMutationDispatchFailure,
+    computeBranchEnsureMembers,
 } from '../fleet-sprint/runner.js';
+import { runEnsureSprintBranchPhase } from '../fleet-sprint/phases/ensure-sprint-branch.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
@@ -55,6 +63,11 @@ const BASE_BRANCH = 'main';
 const MAINT_NAME = 'maint';
 const MAINT = { id: 'id-maint', name: MAINT_NAME, type: 'local' };
 const REASON = 'verified against the merged code in this round';
+
+/** A read-only git query straight against a repository directory (never through command()). */
+function gitIn(dir, args) {
+    return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+}
 
 function entry(id) {
     return { id, type: 'knowledge', title: `entry ${id}`, summary: `summary of ${id}`, confidence: 'CONFIRMED' };
@@ -141,6 +154,7 @@ function makeEngine(fixture, fakeKb) {
         abortRebase: (m) => gitSync.abortRebase(m),
         bibleBase: (m) => gitSync.resolveBibleBase(m),
         canResetCheckout: (m, f) => gitSync.canResetBibleCheckout(m, f),
+        checkedOutBranch: (m) => gitSync.checkedOutBranch(m),
         log,
     });
     return { kbWork, gitSync, logs };
@@ -358,5 +372,43 @@ describe('review-round bible commit against a real git origin', { skip: support.
         assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'README.md'), 'utf8'), 'edited by the doer, uncommitted\n');
         assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
         assert.ok(logs.some((l) => /not resetting maintainer 'maint'.*unrelated local work was preserved/.test(l)), logs.join('\n'));
+    });
+
+    test('9. a role-less maintainer starting on another branch is put on the sprint branch at setup; the bible lands on the sprint branch and the other branch is untouched', async () => {
+        // The maintainer clone starts on the base branch, carrying a local
+        // commit origin does not have.
+        const co = await fixture.command(`git checkout -b ${BASE_BRANCH} origin/${BASE_BRANCH}`);
+        assert.ok(co.ok, co.error);
+        fixture.memberCommit('base-local-work');
+        const otherTip = fixture.localTip();
+        const originBaseBefore = gitIn(fixture.originDir, ['rev-parse', `refs/heads/${BASE_BRANCH}`]);
+
+        // Every dispatched role is held by other members; the maintainer holds
+        // none. Only the maintainer's commands reach its clone -- the other
+        // members are other machines.
+        const roles = { doer: ['dev'], reviewer: ['rev'] };
+        const getMembersForRole = (role) => roles[role] || ['dev'];
+        const selector = selfMaintainer(MAINT, [MAINT_NAME, 'reviewer-1']);
+        const branchEnsureMembers = computeBranchEnsureMembers(getMembersForRole, selector);
+        const maintCommand = (cmd, opts = {}) => (opts.member_name === MAINT_NAME ? fixture.command(cmd, opts) : Promise.resolve({ ok: true, output: '', error: null }));
+        const noop = () => {};
+        await runEnsureSprintBranchPhase({
+            command: maintCommand, log: noop, group: noop, phase: noop, endGroup: noop, publishState: noop,
+            branchEnsureMembers,
+            validated: { branch: fixture.branch, baseBranch: BASE_BRANCH, goal: 'P1/P2', maxCycles: 1 },
+        });
+
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const out = await reviewRound(kbWork, ['e1', 'e2']);
+
+        assert.deepEqual(out, { committed: 2, pending: 0 }, logs.join('\n'));
+        const bible = readBible(fixture.originFileAt(BIBLE));
+        assert.ok(bible, 'the bible reached origin on the sprint branch');
+        assert.deepEqual(bible.entries.map((e) => e.id), ['e1', 'e2']);
+        assert.equal(gitIn(fixture.clonePath, ['rev-parse', '--abbrev-ref', 'HEAD']), fixture.branch, 'HEAD is the sprint branch');
+        assert.equal(gitIn(fixture.clonePath, ['rev-parse', `refs/heads/${BASE_BRANCH}`]), otherTip, 'the other branch is untouched');
+        assert.equal(gitIn(fixture.originDir, ['rev-parse', `refs/heads/${BASE_BRANCH}`]), originBaseBefore, "origin's base branch is untouched");
+        assert.equal(fixture.originTip(), fixture.localTip(), 'the maintainer is in sync with origin');
     });
 });

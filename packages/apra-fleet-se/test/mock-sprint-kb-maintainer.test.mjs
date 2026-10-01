@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
@@ -179,3 +179,79 @@ test('mock sprint: a member whose work folder is not a repository is never selec
         assert.ok(!r.kbStatsProbes.includes('scratch'), 'a non-repository member is never probed as a candidate');
     });
 });
+
+// =============================================================================
+// A kb_maintainer that holds NO dispatched role is still put on the sprint
+// branch: the initial sprint-branch ensure and the per-cycle re-ensure both run
+// on it (runner.js computeBranchEnsureMembers). Every dispatched role is
+// role-mapped to other members, so the maintainer is reachable ONLY through the
+// maintainer half of that list -- reverting it leaves no command for it.
+// Cycle 1 closes A and leaves B blocked, so a second cycle runs and issues the
+// re-ensure.
+// =============================================================================
+
+const ALL_ROLES_ELSEWHERE = {
+    orchestrator: ['orch'],
+    doer: ['dev'],
+    reviewer: ['rev'],
+    planner: ['dev'],
+    'plan-reviewer': ['rev'],
+    deployer: ['dev'],
+    'integ-test-runner': ['rev'],
+    'regression-test-runner': ['rev'],
+    harvester: ['dev'],
+};
+
+const blockBDoer = (titleB) => async ({ opts, tempDir: td }) => {
+    const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+    const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const listRes = JSON.parse((await runCmd('bd list --json', td)).stdout || '[]');
+    const b = listRes.find((x) => x.title === titleB);
+    const closedIds = [];
+    for (const id of ids) {
+        if (b && id === b.id) {
+            await runCmd(`bd update ${id} --status=blocked`, td);
+        } else {
+            await runCmd(`bd close ${id}`, td);
+            closedIds.push(id);
+        }
+    }
+    return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; left B blocked.' }) }] };
+};
+
+for (const [label, roleMap, rule] of [
+    ['a rule-(b) role-less maintainer', ALL_ROLES_ELSEWHERE, 'role-less'],
+    ['an explicit roleMap.kb_maintainer-only maintainer', { ...ALL_ROLES_ELSEWHERE, kb_maintainer: ['kbm'] }, 'explicit'],
+]) {
+    test(`mock sprint: ${label} with no dispatched role gets the sprint-branch ensure and the re-ensure`, { timeout: scaledTimeout(240000) }, async () => {
+        const tag = `kbmaint-branch-${rule}`;
+        await withScenarioMarkers(`kb maintainer branch ensure (${rule})`, async () => {
+            const titleB = `Task: B stays blocked (${tag})`;
+            const callToolFactory = (executeCommand) => buildCallTool({ executeCommand }).callTool;
+            const origins = { orch: REPO_A, dev: REPO_A, rev: REPO_A, kbm: REPO_A };
+            const beadsIdentity = {};
+            for (const [m, origin] of Object.entries(origins)) beadsIdentity[m] = { repoRemote: origin };
+            const r = await runDevelopLoopScenario(tag, {
+                members: ['orch', 'dev', 'rev', 'kbm'],
+                taskSpecs: [{ title: `Task: A closes (${tag})` }, { title: titleB }],
+                doerHandler: blockBDoer(titleB),
+                reviewerHandler: approvedReviewer,
+                maxCycles: 2,
+                callToolFactory,
+                beadsIdentity,
+                roleMap,
+            });
+            assert.deepEqual(selectionLines(r.logs), [selectionLine(A, 'kbm', rule)], 'kbm is the selected maintainer');
+            const kbmCmds = r.commandLogDetailed.filter((c) => c.member === 'kbm').map((c) => c.command);
+            // The initial ensure (ensure-sprint-branch.mjs): the sprint-branch
+            // fetch and the local-branch probe are issued only by that phase.
+            assert.ok(kbmCmds.includes(`git fetch origin ${r.branch} --quiet`), `sprint-branch fetch on kbm: ${JSON.stringify(kbmCmds)}`);
+            assert.ok(kbmCmds.includes(`git rev-parse --verify --quiet refs/heads/${r.branch}`), `ensure probe on kbm: ${JSON.stringify(kbmCmds)}`);
+            assert.ok(kbmCmds.some((c) => c.startsWith('git checkout') && c.includes(r.branch)), `sprint-branch checkout on kbm: ${JSON.stringify(kbmCmds)}`);
+            // The re-ensure at the start of cycle 2.
+            assert.ok(kbmCmds.includes(`git checkout ${r.branch}`), `re-ensure on kbm: ${JSON.stringify(kbmCmds)}`);
+            // kbm was never dispatched: it holds no role.
+            assert.ok(!r.dispatched.some((d) => d && (d.member === 'kbm' || d.member_name === 'kbm')), 'kbm is never dispatched');
+        });
+    });
+}
