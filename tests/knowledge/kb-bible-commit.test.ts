@@ -5,11 +5,14 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
+import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// kb_bible_commit against a REAL temp git setup: a bare origin plus a clone.
-// The tool runs in the clone; the bare origin's refs prove nothing is pushed.
+// kb_bible_commit (and kb_export provenance) against a REAL temp git setup: a
+// bare origin plus a clone. The tool runs in the clone; the bare origin's refs
+// prove nothing is pushed. Every temp repo lives under one root removed in
+// afterEach.
 
 const BIBLE_REL = '.fleet/kb-canonical.json';
 
@@ -172,5 +175,80 @@ describe('kb_bible_commit', () => {
     await expect(kbBibleCommit({ ids: [a], baseBranch: 'main', baseCommit: 'c' }, { folder: clone }))
       .rejects.toThrow(/refusing to overwrite/);
     expect(fs.readFileSync(path.join(clone, BIBLE_REL), 'utf-8')).toBe('{ not json');
+  });
+});
+
+describe('kb_bible_commit: concurrent change, retried after a rejected rebase', () => {
+  it('after rebase --abort, dropping the local bible commit, pulling and re-running with the same ids, the bible holds both clones\' entries', async () => {
+    // Clone 1 commits its round locally (not pushed yet).
+    const mine = await confirmed(provider, 'Mine');
+    const first = JSON.parse(await kbBibleCommit(
+      { ids: [mine], baseBranch: 'main', baseCommit: 'base-commit-clone-1' }, { folder: clone },
+    ));
+    expect(first.committed).toBe(true);
+
+    // Clone 2, with its own KB, commits and pushes a different entry first.
+    const clone2 = path.join(root, 'clone2');
+    execFileSync('git', ['clone', '--quiet', origin, clone2], { stdio: ['ignore', 'pipe', 'pipe'] });
+    gitIdentity(clone2);
+    const provider2 = new SqliteProvider(path.join(root, 'kb2.sqlite'), clone2);
+    await provider2.init();
+    try {
+      const theirs = await confirmed(provider2, 'Theirs');
+      vi.mocked(kbProvidersModule.getKbProviders).mockResolvedValueOnce({
+        project: provider2, global: provider2, projectSlug: 'test',
+      } as any);
+      const second = JSON.parse(await kbBibleCommit(
+        { ids: [theirs], baseBranch: 'main', baseCommit: 'base-commit-clone-2' }, { folder: clone2 },
+      ));
+      expect(second.committed).toBe(true);
+      git(clone2, ['push', '--quiet', 'origin', 'main']);
+
+      // Clone 1 cannot simply rebase its bible commit onto the new remote HEAD.
+      expect(() => git(clone, ['pull', '--rebase', '--quiet', 'origin', 'main'])).toThrow();
+      git(clone, ['rebase', '--abort']);
+
+      // Retry: drop the local bible commit, take the remote, re-run with the SAME ids.
+      git(clone, ['reset', '--hard', '--quiet', 'HEAD~1']);
+      git(clone, ['pull', '--ff-only', '--quiet', 'origin', 'main']);
+      const retry = JSON.parse(await kbBibleCommit(
+        { ids: [mine], baseBranch: 'main', baseCommit: 'base-commit-clone-1' }, { folder: clone },
+      ));
+      expect(retry.committed).toBe(true);
+
+      const ids = readBible(clone).entries.map(e => e.id);
+      expect(ids).toEqual(['kb-existing-1', 'kb-existing-2', mine, theirs].sort());
+      // No manual merge needed: the retried commit fast-forwards origin.
+      git(clone, ['push', '--quiet', 'origin', 'main']);
+      expect(originHead()).toBe(git(clone, ['rev-parse', 'HEAD']).trim());
+    } finally {
+      provider2.close();
+    }
+  });
+});
+
+describe('bible provenance names the target base branch, not HEAD', () => {
+  it('kb_bible_commit writes the given baseBranch/baseCommit even when HEAD is on a different branch', async () => {
+    const base = git(clone, ['rev-parse', 'HEAD']).trim();
+    git(clone, ['checkout', '--quiet', '-b', 'feature/sprint-work']);
+    const a = await confirmed(provider, 'Alpha');
+    const result = JSON.parse(await kbBibleCommit({ ids: [a], baseBranch: 'main', baseCommit: base }, { folder: clone }));
+    expect(result.committed).toBe(true);
+    const bible = readBible(clone);
+    expect(bible.provenance.branch).toBe('main');
+    expect(bible.provenance.commit).toBe(base);
+    // The commit landed on the checked-out feature branch, locally only.
+    expect(git(clone, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe('feature/sprint-work');
+    expect(originHead()).toBe(base);
+  });
+
+  it('kb_export with an explicit target branch writes that branch into provenance', async () => {
+    const base = git(clone, ['rev-parse', 'HEAD']).trim();
+    git(clone, ['checkout', '--quiet', '-b', 'feature/export-work']);
+    await confirmed(provider, 'Alpha');
+    await kbExport({ baseBranch: 'main', baseCommit: base }, { folder: clone });
+    const bible = readBible(clone);
+    expect(bible.provenance.branch).toBe('main');
+    expect(bible.provenance.commit).toBe(base);
   });
 });
