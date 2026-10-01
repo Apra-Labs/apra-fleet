@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { LinuxCommands } from './linux.js';
 import { wrapPowerShellEncoded } from './windows.js';
-import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, sanitizeSessionId } from '../utils/shell-escape.js';
+import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
 import type { ProviderAdapter } from './os-commands.js';
@@ -153,7 +153,7 @@ export class WindowsGitBashCommands extends LinuxCommands {
     // values literal (no regex metacharacter surprises).
     const pname = processName ?? 'claude';
     if (!/^[A-Za-z0-9._-]+$/.test(pname)) throw new Error('Invalid process name: ' + pname);
-    const psLiteral = (s: string) => s.replace(/'/g, "''");
+    const psLiteral = (s: string) => escapePowerShellArgInner(s);
     const matches = [`$_.CommandLine.Contains('${psLiteral(folder)}')`];
     if (sessionId) matches.push(`$_.CommandLine.Contains('${psLiteral(sanitizeSessionId(sessionId))}')`);
     const script = [

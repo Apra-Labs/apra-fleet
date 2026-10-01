@@ -465,11 +465,29 @@ export function createSprintController(deps = {}) {
         if (body.sync !== undefined && typeof body.sync !== 'boolean') {
             throw new ApiError(400, `[Arg Contract] sync must be a boolean, got ${typeof body.sync} (${JSON.stringify(body.sync)}).`, 'sync');
         }
+        // phases (optional): per-launch phase settings. Only `regression` is
+        // supported: "run" (default) or "skip". Anything else is rejected here,
+        // before any spawn, so a typo can never silently run or skip a phase.
+        let skipRegression = false;
+        if (body.phases !== undefined) {
+            const phases = body.phases;
+            if (phases === null || typeof phases !== 'object' || Array.isArray(phases)) {
+                throw new ApiError(400, 'phases must be an object, e.g. {"regression":"skip"}', 'phases');
+            }
+            const unknownPhaseKeys = Object.keys(phases).filter((k) => k !== 'regression');
+            if (unknownPhaseKeys.length > 0) {
+                throw new ApiError(400, `phases has unknown key(s): ${unknownPhaseKeys.join(', ')}; only "regression" is supported`, 'phases');
+            }
+            if (phases.regression !== undefined && phases.regression !== 'run' && phases.regression !== 'skip') {
+                throw new ApiError(400, `phases.regression must be "run" or "skip", got ${JSON.stringify(phases.regression)}`, 'phases');
+            }
+            skipRegression = phases.regression === 'skip';
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -562,7 +580,7 @@ export function createSprintController(deps = {}) {
                 throw err;
             }
         }
-        const { issue, issueIds, branch, base, members } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
@@ -662,6 +680,7 @@ export function createSprintController(deps = {}) {
             roleMap,
             budget: body.budget,
             runId: sprintId,
+            skipRegression,
             ...(body.sync === true ? { extraArgs: ['--sync'] } : {}),
         };
         // apra-fleet-i9ag.15.2: a runner-resolution failure (spawner.mjs's

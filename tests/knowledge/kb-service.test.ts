@@ -11,6 +11,11 @@ vi.mock('node:child_process', () => ({
   execFile: mockExecFile,
 }));
 
+const mockLogWarn = vi.hoisted(() => vi.fn());
+vi.mock('../../src/utils/log-helpers.js', () => ({
+  logWarn: mockLogWarn,
+}));
+
 import { computeFileHash, computeFileHashBatch, checkStaleness } from '../../src/services/knowledge/kb-service.js';
 import type { KBEntry } from '../../src/services/knowledge/types.js';
 
@@ -73,6 +78,7 @@ let tmpDir: string;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-service-test-'));
   mockExecFile.mockReset();
+  mockLogWarn.mockReset();
   setupGitSuccess();
 });
 
@@ -138,6 +144,51 @@ describe('computeFileHashBatch', () => {
       expect(result[f]).not.toBeNull();
       expect(result[f]!.type).toBe('git');
     }
+  });
+});
+
+describe('computeFileHashBatch -- Windows command-line limit', () => {
+  // Enough long paths that one `git hash-object <all paths>` argv would exceed
+  // the Windows 32767-char command-line limit (the bug: git failed, every file
+  // fell back to sha256, and the freshness sweep staled every KB entry).
+  function makeLongPathFiles(count: number): string[] {
+    const deep = path.join(tmpDir, 'a-deliberately-long-directory-name-to-push-the-argv-length-up'.repeat(2));
+    fs.mkdirSync(deep, { recursive: true });
+    const files: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const f = path.join(deep, `file-number-${String(i).padStart(4, '0')}-with-a-long-descriptive-name.mjs`);
+      fs.writeFileSync(f, `export const v${i} = ${i};`);
+      files.push(f);
+    }
+    return files;
+  }
+
+  it('splits the hash-object argv so no single call exceeds the Windows limit, and every file stays git-hashed', async () => {
+    const files = makeLongPathFiles(200);
+    expect(files.join(' ').length).toBeGreaterThan(32767);
+
+    const result = await computeFileHashBatch(files);
+
+    expect(mockExecFile.mock.calls.length).toBeGreaterThan(1);
+    for (const call of mockExecFile.mock.calls) {
+      const argv = call[1] as string[];
+      expect(['git', ...argv].join(' ').length).toBeLessThan(32767);
+    }
+    for (const f of files) {
+      expect(result[f]).toEqual({ hash: gitBlobHash(fs.readFileSync(f)), type: 'git' });
+    }
+    expect(mockLogWarn).not.toHaveBeenCalled();
+  });
+
+  it('warns instead of silently falling back when a git call fails', async () => {
+    const files = makeLongPathFiles(3);
+    setupGitFailure();
+
+    const result = await computeFileHashBatch(files);
+
+    for (const f of files) expect(result[f]!.type).toBe('sha256');
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    expect(mockLogWarn.mock.calls[0][1]).toMatch(/git hash-object failed for 3 file\(s\)/);
   });
 });
 

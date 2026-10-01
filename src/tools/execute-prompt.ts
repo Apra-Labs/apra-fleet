@@ -1,3 +1,4 @@
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -233,7 +234,7 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
     for (let i = 0; i < chunks.length; i++) {
       const setup = i === 0 ? `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; ` : '';
       const cmdlet = i === 0 ? 'Set-Content' : 'Add-Content';
-      const psScript = `${setup}Set-Location "${escapedFolder}"; ${cmdlet} -Path "${promptFileName}" -Value '${chunks[i].replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+      const psScript = `${setup}Set-Location "${escapedFolder}"; ${cmdlet} -Path "${promptFileName}" -Value '${escapePowerShellArgInner(chunks[i])}' -NoNewline -Encoding UTF8`;
       const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
       // eslint-disable-next-line no-await-in-loop -- each chunk must land before the next appends
       await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);

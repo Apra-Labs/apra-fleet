@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { escapePowerShellArg } from '../utils/shell-escape.js';
 
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
@@ -243,14 +244,25 @@ function bareTokenSyntheticSessionFields(): Record<string, unknown> {
   };
 }
 
-function deepMerge(
+// Keys that would reach Object.prototype through plain-object assignment.
+// The source is a JSON.parse result (a user-pasted credential blob or the
+// existing credentials file), where "__proto__" is an ordinary own key.
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+export function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>,
 ): Record<string, unknown> {
   for (const key of Object.keys(source)) {
+    if (UNSAFE_MERGE_KEYS.has(key)) continue;
     const sv = source[key];
     if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
-      const tv = (target[key] as Record<string, unknown> | undefined) ?? {};
+      // Own plain-object values only: an inherited member (e.g. toString)
+      // must never become the merge target.
+      const own = Object.prototype.hasOwnProperty.call(target, key) ? target[key] : undefined;
+      const tv = own && typeof own === 'object' && !Array.isArray(own)
+        ? own as Record<string, unknown>
+        : {};
       target[key] = deepMerge(tv, sv as Record<string, unknown>);
     } else {
       target[key] = sv;
@@ -380,9 +392,21 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
 
 function setApiKeyInProfiles(envVarName: string, value: string): void {
   if (process.platform === 'win32') {
-    // Windows: set as user-level persistent environment variable
-    const escaped = value.replace(/'/g, "''"); // PowerShell single-quote escape
-    execSync(`powershell -Command "[Environment]::SetEnvironmentVariable('${envVarName}', '${escaped}', 'User')"`, { stdio: 'pipe' });
+    // Windows: set as user-level persistent environment variable. The script is
+    // passed via -EncodedCommand with no cmd.exe in between, so only PowerShell
+    // parses it; escapePowerShellArg doubles every PowerShell single-quote
+    // character (ASCII ' and U+2018..U+201B), so the value stays inside the
+    // single-quoted literal.
+    const script = `[Environment]::SetEnvironmentVariable(${escapePowerShellArg(envVarName)}, ${escapePowerShellArg(value)}, 'User')`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    try {
+      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
+    } catch (err: any) {
+      // Node's error message embeds the full command line (and PowerShell's
+      // stderr can echo the script), both of which carry the key -- never
+      // surface either; report only the exit status.
+      throw new Error(`powershell exited with status ${err?.status ?? 'unknown'} while setting ${envVarName}`);
+    }
     return;
   }
 

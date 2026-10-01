@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
+
+A G-pull fetch of a sprint branch that is not on origin yet (`fatal: couldn't find remote ref`)
+no longer triggers the VCS-auth self-heal (`provision_vcs_auth` + retry); the pull is skipped with
+a "not pushed yet" log line. Other unknown git failures still get the one-shot self-heal.
+
 ## [Unreleased] -- fleet-sprint: scoped re-plan findings, truthful role KB contract, shell-guard gap
 
 - Scoped in-cycle re-plan: the planner prompt now carries the code reviewer's findings for each flagged bead (capped at 4000 characters with a visible truncation marker).

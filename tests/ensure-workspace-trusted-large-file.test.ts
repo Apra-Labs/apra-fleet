@@ -27,7 +27,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeProvider, buildChunkedTrustWriteCommands, WORKSPACE_TRUST_MAX_COMMAND_CHARS } from '../src/providers/claude.js';
+import { ClaudeProvider, buildChunkedTrustWriteCommands, WORKSPACE_TRUST_MAX_COMMAND_CHARS, workspaceTrustStagingNames } from '../src/providers/claude.js';
 import type { WorkspaceTrustTransport } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -476,5 +476,20 @@ describe('workspaceTrustTransportFor', () => {
     const failing = { transferFiles: vi.fn(async () => ({ success: [], failed: [{ path: 'f', error: 'sftp: permission denied' }] })) } as any;
     await expect(workspaceTrustTransportFor(agent, failing)!.writeHomeFile!('f', 'c'))
       .rejects.toThrow(/sftp: permission denied/);
+  });
+});
+
+describe('workspaceTrustStagingNames', () => {
+  it('derives the staging-name token from a CSPRNG, not Math.random', () => {
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const a = workspaceTrustStagingNames();
+      const b = workspaceTrustStagingNames();
+      expect(a.tmpRel).toMatch(/^\.claude\.json\.fleet-trust-\d+-[a-f0-9]{8}\.tmp$/);
+      expect(a.tmpRel).not.toBe(b.tmpRel);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

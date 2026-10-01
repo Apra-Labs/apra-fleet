@@ -94,6 +94,7 @@ export async function runHarvestPhase({
     finalOpenAtGoalCount,
     finalDeferredAtGoalIds,
     regressionResult,
+    regressionSkippedBy = null,
     // Defined BY runner.js; injected to avoid a circular import (see header).
     computeBranchSlug,
     buildAnalysisText,
@@ -127,6 +128,7 @@ export async function runHarvestPhase({
         finalOpenAtGoalCount,
         finalDeferredAtGoalIds,
         regressionResult,
+        regressionSkippedBy,
     });
     const costAnalysis = buildCostAnalysis(budget, {
         spend: integTestRunnerSpend,

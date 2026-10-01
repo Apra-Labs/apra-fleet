@@ -2055,6 +2055,9 @@ export async function runDevelopLoopScenario(tag, {
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
     // string or record) the supervisor would pass as `--expect-beads`.
     beadsIdentity, expectBeads,
+    // Optional passthrough for args.skip_regression (the --skip-regression
+    // launch option), so a scenario can prove the regression phase is skipped.
+    skipRegression,
     // Seeded beads memories for the sprint-start memory sweep -- see
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
@@ -2169,6 +2172,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
             }, true);
         } catch (err) {
             error = err;

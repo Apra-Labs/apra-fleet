@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { KBEntry, StalenessResult } from './types.js';
+import { logWarn } from '../../utils/log-helpers.js';
 
 // T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): computeFileHashBatch
 // gains an optional { cwd } anchor so a caller resolving a bible/basis against
@@ -77,38 +78,69 @@ export async function computeFileHashBatch(
 
   if (existing.length === 0) return result;
 
-  let gitSucceeded = false;
-  try {
-    const { stdout } = await execFileAsync(
-      'git',
-      ['hash-object', ...existing.map(resolvePath)],
-      root ? { cwd: root } : undefined
-    );
-    const lines = stdout.trim().split('\n');
-    if (lines.length === existing.length) {
-      for (let i = 0; i < existing.length; i++) {
-        const hash = lines[i].trim();
-        if (hash.length > 0) {
-          result[existing[i]] = { hash, type: 'git' };
-        } else {
-          result[existing[i]] = { hash: sha256File(resolvePath(existing[i])), type: 'sha256' };
+  // One `git hash-object` per chunk, each kept under HASH_ARGV_CHAR_BUDGET:
+  // a single argv holding every path overflowed the Windows command-line limit
+  // (32767 chars) for large bibles / long checkout paths, git failed, and the
+  // sha256 fallback below then never matched the stored git-type basis -- so
+  // freshnessSweep silently staled EVERY entry.
+  for (const chunk of chunkByArgvLength(existing, resolvePath)) {
+    let gitSucceeded = false;
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['hash-object', ...chunk.map(resolvePath)],
+        root ? { cwd: root } : undefined
+      );
+      const lines = stdout.trim().split('\n');
+      if (lines.length === chunk.length) {
+        for (let i = 0; i < chunk.length; i++) {
+          const hash = lines[i].trim();
+          if (hash.length > 0) {
+            result[chunk[i]] = { hash, type: 'git' };
+          } else {
+            result[chunk[i]] = { hash: sha256File(resolvePath(chunk[i])), type: 'sha256' };
+          }
         }
+        gitSucceeded = true;
       }
-      gitSucceeded = true;
+    } catch (err) {
+      // Not silent: a sha256 fallback cannot match a git-type basis, so every
+      // entry citing these files will look stale until git hashing works again.
+      logWarn('kb_hash', `git hash-object failed for ${chunk.length} file(s); falling back to sha256, so freshness checks against git-type bases will report them stale: ${(err as Error)?.message ?? String(err)}`);
     }
-  } catch {
-    // fall through to per-file sha256
-  }
 
-  if (!gitSucceeded) {
-    for (const p of existing) {
-      if (!result[p]) {
-        result[p] = { hash: sha256File(resolvePath(p)), type: 'sha256' };
+    if (!gitSucceeded) {
+      for (const p of chunk) {
+        if (!result[p]) {
+          result[p] = { hash: sha256File(resolvePath(p)), type: 'sha256' };
+        }
       }
     }
   }
 
   return result;
+}
+
+// Well under the Windows 32767-char command-line limit (and POSIX ARG_MAX),
+// leaving room for the executable path and quoting overhead.
+const HASH_ARGV_CHAR_BUDGET = 8000;
+
+function chunkByArgvLength(paths: string[], resolvePath: (p: string) => string): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let length = 0;
+  for (const p of paths) {
+    const cost = resolvePath(p).length + 3; // separator + possible quotes
+    if (current.length > 0 && length + cost > HASH_ARGV_CHAR_BUDGET) {
+      chunks.push(current);
+      current = [];
+      length = 0;
+    }
+    current.push(p);
+    length += cost;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 export async function checkStaleness(entry: KBEntry): Promise<StalenessResult> {
