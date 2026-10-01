@@ -1,0 +1,12 @@
+{
+  "tool": "kb_list",
+  "case": "refusal-self-no-remote",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "E-SELF-NO-REMOTE: The member 'contract-no-remote' work folder '<SCRATCH_ROOT>/repo-no-remote' has no origin remote, so it has no KB identity. Remediation: Run 'git remote add origin <url>' in '<SCRATCH_ROOT>/repo-no-remote'.",
+    "thrown": true
+  },
+  "expected_error_code": "E-SELF-NO-REMOTE",
+  "session": "NO_REMOTE"
+}

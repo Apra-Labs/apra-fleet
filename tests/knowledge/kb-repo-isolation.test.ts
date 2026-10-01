@@ -99,11 +99,10 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
       summary: 'Belongs exclusively to repo alpha.',
       content: 'If this shows up under beta, repo scoping is broken.',
       source_files: ['src/fixture.ts'],
-      repo_path: repoA,
-    } as any);
+    } as any, { folder: repoA });
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const fromA = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: repoA }));
+    const fromB = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: repoB }));
 
     expect(fromA.results.some((e: any) => e.title === 'Alpha-only fact')).toBe(true);
     expect(fromB.results.some((e: any) => e.title === 'Alpha-only fact')).toBe(false);
@@ -117,17 +116,15 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
       type: 'knowledge', title: 'Beta-only fact',
       summary: 'Belongs exclusively to repo beta.', content: 'x',
       source_files: ['src/fixture.ts'],
-      repo_path: repoB,
-    } as any);
+    } as any, { folder: repoB });
     await kbCapture({
       type: 'knowledge', title: 'Alpha-only fact',
       summary: 'Belongs exclusively to repo alpha.', content: 'y',
       source_files: ['src/fixture.ts'],
-      repo_path: repoA,
-    } as any);
+    } as any, { folder: repoA });
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const fromA = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: repoA }));
+    const fromB = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: repoB }));
 
     expect(fromA.results.map((e: any) => e.title)).toEqual(['Alpha-only fact']);
     expect(fromB.results.map((e: any) => e.title)).toEqual(['Beta-only fact']);

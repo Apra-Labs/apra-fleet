@@ -1,13 +1,9 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 
 const L2_CONTENT_CAP = 3200;
 
 export const kbQuerySchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
@@ -47,7 +43,7 @@ function passesTrustFilter(
   return true;
 }
 
-export async function kbQuery(input: KbQueryInput): Promise<string> {
+export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<string> {
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
@@ -55,7 +51,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const providers = await getSelfKbProviders(anchor);
 
   if (input.flagged_only) {
     const flaggedOpts = {

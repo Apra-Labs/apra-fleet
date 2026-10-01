@@ -129,14 +129,12 @@ describe('kb_capture + kb_list: remote member work folder round trip', () => {
       summary: 'Captured from a work folder with no local git origin.',
       content: 'If this is not visible via repo_path+repo_remote_url, remote scoping is broken.',
       source_files: ['src/fixture.ts'],
-      repo_path: memberWorkFolder,
-      repo_remote_url: remoteUrl,
-    } as any);
+    } as any, { folder: memberWorkFolder, remoteUrl: remoteUrl });
 
-    const withUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, repo_remote_url: remoteUrl, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const withUrl = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: memberWorkFolder, remoteUrl: remoteUrl }));
     expect(withUrl.results.some((e: any) => e.title === 'Remote member fact')).toBe(true);
 
-    const withoutUrl = JSON.parse(await kbList({ repo_path: memberWorkFolder, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any));
+    const withoutUrl = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: memberWorkFolder }));
     expect(withoutUrl.results.some((e: any) => e.title === 'Remote member fact')).toBe(false);
   });
 });

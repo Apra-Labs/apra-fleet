@@ -2,7 +2,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../services/knowledge/types.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
@@ -34,20 +34,8 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // directive gate quarantines them either way.
 
 export const kbImportSchema = z.object({
-  ...kbScopeFields,
   path: z.string().optional()
-    .describe('Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
-  repo: z.string().optional()
-    .describe('Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory.'),
-  // KB audit 2026-08-11: the apra-fleet-src trap again. Every other kb_* tool
-  // names this input `repo_path`; kb_import alone took `repo`, and zod strips
-  // unknown keys silently -- so calling it the way every sibling is called did
-  // not error, it resolved against the SERVER's cwd and imported an unrelated
-  // repo's bible. Invisible, because it still reports a successful import. The
-  // sprint engine calls this per member, which is precisely the repo-blindness
-  // class per-member path resolution exists to prevent.
-  repo_path: z.string().optional()
-    .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
+    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
   // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
@@ -65,17 +53,14 @@ export const kbImportSchema = z.object({
 
 export type KbImportInput = z.infer<typeof kbImportSchema>;
 
-// F4 (D3, KB d5193cb9): repo path resolution precedence, mirroring kb-export --
-// (1) explicit repo, validated (must exist and be a directory) or refuse; (2)
-// validated process working directory when repo is omitted (same check, not a
-// blind default); (3) neither validates -> throw. kb_import is an explicit
-// command, so it throws like kb_export rather than silently skipping.
-function resolveRepoPath(explicit?: string): string {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
-    throw new Error('kb_import: repo does not exist or is not a directory: ' + candidate);
+// The KB anchor is the calling session's own folder (kb-self.ts). kb_import
+// reads the bible and sweeps against that folder on THIS host, so an anchor
+// naming a folder on another host refuses rather than silently skipping.
+function requireLocalFolder(folder: string): string {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
+    throw new Error('kb_import: repo folder does not exist or is not a directory on this host: ' + folder);
   }
-  return candidate;
+  return folder;
 }
 
 const VALID_TYPES: readonly ContentType[] = ['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'];
@@ -133,9 +118,9 @@ export interface KbImportReport {
   sweep: { checked: number; staled: number; unstaled: number };
 }
 
-export async function kbImport(input: KbImportInput): Promise<string> {
-  // `repo` wins over the `repo_path` alias so existing callers are unaffected.
-  const repoAnchor = resolveRepoPath(input.repo ?? input.repo_path);
+export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
+  const resolved = resolveKbAnchor(anchor);
+  const repoAnchor = requireLocalFolder(resolved.folder);
   const biblePath = input.path ?? path.join(repoAnchor, '.fleet', 'kb-canonical.json');
 
   // Validate the file resolves and parses to the bible array shape BEFORE
@@ -171,7 +156,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
-  const providers = await getKbProviders(repoAnchor, input.repo_remote_url);
+  const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
   const provider = requireSqliteProject(providers.project, 'kb_import');
 
   let imported = 0;

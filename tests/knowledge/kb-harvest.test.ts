@@ -137,10 +137,10 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     const transcriptA = `Note: Repo alpha's registry module in src/registry.ts uses a lazy singleton via getOrCreate.`;
     const transcriptB = `Bug: Repo beta's cleanup handler in src/registry.ts leaks a database connection on double-close.`;
 
-    const resultA = JSON.parse(await kbHarvest({ repo_path: repoA, session_transcript: transcriptA }));
+    const resultA = JSON.parse(await kbHarvest({ session_transcript: transcriptA }, { folder: repoA }));
     expect(resultA.entries_captured).toBeGreaterThanOrEqual(1);
 
-    const resultB = JSON.parse(await kbHarvest({ repo_path: repoB, session_transcript: transcriptB }));
+    const resultB = JSON.parse(await kbHarvest({ session_transcript: transcriptB }, { folder: repoB }));
     expect(resultB.entries_captured).toBeGreaterThanOrEqual(1);
 
     const slugA = resolveProjectSlug(repoA);
@@ -153,8 +153,8 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     expect(fs.existsSync(dbB)).toBe(true);
     expect(dbA).not.toBe(dbB);
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
+    const fromA = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }, { folder: repoA }));
+    const fromB = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }, { folder: repoB }));
 
     expect(fromA.results.some((e: any) => e.summary.includes('alpha'))).toBe(true);
     expect(fromA.results.some((e: any) => e.summary.includes('beta'))).toBe(false);

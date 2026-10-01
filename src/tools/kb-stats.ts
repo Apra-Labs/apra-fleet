@@ -2,7 +2,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
@@ -15,18 +15,6 @@ import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js
 // bible drift is VISIBILITY for the machine that owns the KB -- CI cannot see
 // the local kb.sqlite, so no CI gate reads this tool or its drift number.
 export const kbStatsSchema = z.object({
-  ...kbScopeFields,
-  repo: z.string().optional()
-    .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to repo_path, then to the validated session working directory (same validation as kb_export/kb_session_prime); if none validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this.'),
-  // apra-fleet-src: every other kb_* tool (kb_list, kb_capture, kb_promote,
-  // kb_session_prime, kb_export) names this input `repo_path`. kb_stats alone
-  // took `repo`, and zod strips unknown keys silently -- so calling it the way
-  // every sibling is called did not error, it fell back to the SERVER's cwd and
-  // reported a fully-zeroed KB for a populated repo. A confidently wrong "there
-  // is nothing here" is worse than a failure, because kb_stats is exactly the
-  // tool an operator reaches for to ask whether the KB is working.
-  repo_path: z.string().optional()
-    .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
   symbols: z.array(z.string()).optional()
     .describe('Symbols to check coverage for: per-symbol boolean (a live CONFIRMED entry whose symbols array contains it, exact match) plus the overall fraction.'),
 });
@@ -37,36 +25,21 @@ interface BibleEntryShape {
   updated_at?: unknown;
 }
 
-// F4 (T1.6) precedence pattern, reused here: explicit input > validated
-// process.cwd() > null (non-fatal -- kb_stats never throws over a bad repo
-// path, it just reports bible.present = false).
-function resolveRepoPath(explicit?: string): string | null {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return null;
-  return candidate;
+// The bible-drift read needs the anchor folder to be a readable directory on
+// THIS host; null (non-fatal -- kb_stats never throws over it, it just reports
+// bible.present = false) when it is not, e.g. a remote member's folder.
+function localDirOrNull(folder: string): string | null {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return null;
+  return folder;
 }
 
-export async function kbStats(input: KbStatsInput): Promise<string> {
-  // `repo` wins over the `repo_path` alias so existing callers are unaffected.
-  const requestedRepo = input.repo ?? input.repo_path;
-  // Stats must describe the repo asked about, not the server's cwd.
-  //
-  // apra-fleet-b4g.7: an explicitly supplied repo path is passed through
-  // VERBATIM, exactly as kb_session_prime does (see the note at
-  // kb-session-prime.ts:186). Routing it through resolveRepoPath() here turned
-  // a remote member's unreachable work folder into null and then, via
-  // `?? undefined`, into getKbProviders' `cwd ?? process.cwd()` -- so the slug
-  // came from repo_remote_url (the REAL shared project KB) while the anchor
-  // became the fleet server's own working directory, and every basis hash was
-  // computed against a tree that does not describe those entries. Keeping the
-  // caller's path means the anchor is honestly "a path this host cannot see",
-  // which SqliteProvider.anchorIsMissing() handles by declining to produce a
-  // freshness verdict at all. resolveRepoPath still guards the omitted-path
-  // fallback and the bible-drift read below, which does need a readable dir.
-  const providers = await getKbProviders(
-    requestedRepo ?? resolveRepoPath() ?? undefined,
-    input.repo_remote_url,
-  );
+export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<string> {
+  // Stats describe the calling session's own KB (kb-self.ts). A remote
+  // member's folder is carried verbatim even though this host cannot see it --
+  // SqliteProvider.anchorIsMissing() then declines to produce a freshness
+  // verdict rather than hashing against an unrelated tree.
+  const resolved = resolveKbAnchor(anchor);
+  const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
@@ -103,7 +76,7 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
       // equals ALL live CONFIRMED entries per D5, never silently lost to 0.
       bible = { present: false, entries: 0, drift: liveConfirmed.length };
 
-      const repoPath = resolveRepoPath(requestedRepo);
+      const repoPath = localDirOrNull(resolved.folder);
       const biblePath = repoPath ? path.join(repoPath, '.fleet', 'kb-canonical.json') : null;
 
       if (biblePath && fs.existsSync(biblePath)) {

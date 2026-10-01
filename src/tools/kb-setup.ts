@@ -6,10 +6,9 @@ import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { resolveKbAnchor, KbSelfError, type KbAnchor } from '../services/knowledge/kb-self.js';
 
 export const kbSetupSchema = z.object({
-  repo_path: z.string().optional()
-    .describe('Path to git repository for post-commit hook installation (default: current directory)'),
   provider: z.enum(['sqlite', 'http']).optional()
     .describe('KB provider type (default: sqlite)'),
   remote: z.string().optional()
@@ -137,7 +136,7 @@ function writeConfig(config: KbConfigFile): void {
   fs.chmodSync(KB_CONFIG_PATH, KB_CONFIG_FILE_MODE);
 }
 
-export async function kbSetup(input: KbSetupInput): Promise<string> {
+export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<string> {
   const steps: string[] = [];
   // Validate before any side effect, so a bad remote installs no hook and
   // leaves any existing config untouched.
@@ -146,14 +145,23 @@ export async function kbSetup(input: KbSetupInput): Promise<string> {
     logWarn('kb_setup', warning);
   }
 
-  // Install git post-commit hook
-  const repoPath = input.repo_path || process.cwd();
-  const gitDir = path.join(repoPath, '.git');
-  if (fs.existsSync(gitDir)) {
-    installKbPostCommitHook(repoPath);
-    steps.push('Installed git post-commit hook for KB invalidation');
-  } else {
-    steps.push('Skipped git hook: no .git directory found at ' + repoPath);
+  // Install git post-commit hook into the calling session's own repo (kb-self.ts).
+  // A folder that cannot carry a KB identity skips the hook with the typed
+  // reason; the provider config below is machine-wide and is still written.
+  let repoPath: string | null = null;
+  try {
+    repoPath = resolveKbAnchor(anchor).folder;
+  } catch (err) {
+    if (!(err instanceof KbSelfError)) throw err;
+    steps.push('Skipped git hook: ' + err.message);
+  }
+  if (repoPath !== null) {
+    if (fs.existsSync(path.join(repoPath, '.git'))) {
+      installKbPostCommitHook(repoPath);
+      steps.push('Installed git post-commit hook for KB invalidation');
+    } else {
+      steps.push('Skipped git hook: no .git directory found at ' + repoPath);
+    }
   }
 
   const config = readExistingConfig(warnings);

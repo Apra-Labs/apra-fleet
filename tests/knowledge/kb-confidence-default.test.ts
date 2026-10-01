@@ -101,9 +101,8 @@ describe('default (no confidence filter) is CONFIRMED + undisputed', () => {
 
   it('kb_session_prime', async () => {
     const parsed = JSON.parse(await kbSessionPrime({
-      repo_path: tmpDir,
       hint_symbols: ['confdefault'],
-    } as any));
+    } as any, { folder: tmpDir }));
     const got = parsed.top_entries.map((e: any) => e.id);
     expect(got).toContain(ids.confirmed);
     expect(got).not.toContain(ids.inferred);
@@ -163,9 +162,8 @@ describe('explicit confidence opts in to other tiers', () => {
   });
 
   it('kb_session_prime accepts a confidence array', async () => {
-    const parsed = JSON.parse(await kbSessionPrime({
-      repo_path: tmpDir, hint_symbols: ['confdefault'], confidence: ['INFERRED'],
-    } as any));
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['confdefault'], confidence: ['INFERRED'],
+    } as any, { folder: tmpDir }));
     expect(parsed.top_entries.map((e: any) => e.id)).toContain(ids.inferred);
   });
 

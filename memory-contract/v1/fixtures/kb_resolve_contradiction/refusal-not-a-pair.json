@@ -3,14 +3,12 @@
   "case": "refusal-not-a-pair",
   "kind": "refusal",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
-    "winnerId": "e12c88e9-0a56-44dd-b1ee-c522b3559a3e",
-    "loserId": "bce6c4af-2d17-4858-8e5f-0556ccfef745",
+    "winnerId": "5dfe9670-72fc-4231-b4f4-a0cd99137775",
+    "loserId": "e50e3742-5ae8-491c-8a8e-dc46547b4cc4",
     "evidence": "These two entries were never linked as a contradiction pair."
   },
   "error": {
-    "message": "resolveContradiction: refused -- ids do not form a genuine contradiction pair (winner=e12c88e9-0a56-44dd-b1ee-c522b3559a3e, loser=bce6c4af-2d17-4858-8e5f-0556ccfef745)",
+    "message": "resolveContradiction: refused -- ids do not form a genuine contradiction pair (winner=5dfe9670-72fc-4231-b4f4-a0cd99137775, loser=e50e3742-5ae8-491c-8a8e-dc46547b4cc4)",
     "thrown": true
   },
   "expected_error_code": "E-RESOLVE-NOT-A-PAIR"

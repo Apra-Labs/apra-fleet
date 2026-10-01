@@ -138,7 +138,7 @@ function headSha(): string {
 
 describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree missing cited files', () => {
   it('counts the entries it drops instead of losing them silently', async () => {
-    const report = JSON.parse(await kbImport({ path: biblePath, repo: repoDir }));
+    const report = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
 
     // Three entries cannot be checked against this worktree: two cite absent
     // files, one cites nothing at all. Phase 1 refuses them at the capture
@@ -151,8 +151,8 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
   it('does not commit the shrunken bible, leaving the artifact at HEAD intact', async () => {
     const shaBefore = headSha();
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
 
     // The export DOES shrink: 5 committed entries in, 2 exported out.
     expect(result.exported).toBe(2);
@@ -170,8 +170,8 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
   });
 
   it('leaves the truncation as a reviewable working-tree diff', async () => {
-    await kbImport({ path: biblePath, repo: repoDir });
-    await kbExport({ repo_path: repoDir });
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
 
     // The shrink is on disk and dirty -- a human can see and reject it. The
     // whole point of defaulting auto-commit off is that this diff gets read.
@@ -181,8 +181,8 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
   });
 
   it('makes the shrink legible in the diff via the v2 entry_count', async () => {
-    await kbImport({ path: biblePath, repo: repoDir });
-    await kbExport({ repo_path: repoDir });
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
 
     const written = JSON.parse(fs.readFileSync(biblePath, 'utf-8'));
     // A reader diffing this file sees the count drop, not just a shorter list.
@@ -193,13 +193,13 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
   });
 
   it('survives a re-import of its own truncated output without further loss', async () => {
-    await kbImport({ path: biblePath, repo: repoDir });
-    await kbExport({ repo_path: repoDir });
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
 
     // Round two, against the v2 file the export just wrote. The two survivors
     // are already present by id, so they are skipped rather than re-added, and
     // nothing new is rejected: the truncation does not compound on each cycle.
-    const second = JSON.parse(await kbImport({ path: biblePath, repo: repoDir }));
+    const second = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
     expect(second.rejected).toBe(0);
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(2);
@@ -211,8 +211,8 @@ describe('apra-fleet-ong: the explicit autoCommit opt-in is an override, not a g
     fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
 
     // Recorded honestly: opting in re-arms the original failure. There is no
     // shrink-size guard -- the protection is that this is off by default and

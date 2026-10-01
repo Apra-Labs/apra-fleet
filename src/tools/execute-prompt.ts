@@ -1836,12 +1836,12 @@ session: ${parsed.sessionId}`;
       // rejected count is the invariant working, not a regression to tune away.
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
+          // Explicit in-process anchor (not a tool input): this harvest is for
+          // the dispatched member's repo, not the server's own session.
           kbHarvest({
-            repo_path: resolvedWorkFolder,
-            repo_remote_url: knownRepoRemoteUrl(agent),
             session_transcript: parsed.result,
             session_id: parsed.sessionId,
-          })
+          }, { folder: resolvedWorkFolder, remoteUrl: knownRepoRemoteUrl(agent) })
         )
         .then((raw: string) => {
           try {

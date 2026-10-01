@@ -183,7 +183,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const biblePath = writeBible([bDup, bRefine, bContra, bUndecided, bDirective]);
 
     // --- Step 3: kb_import it ---------------------------------------------
-    const importReport = JSON.parse(await kbImport({ repo: repoDir, path: biblePath }));
+    const importReport = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
     expect(importReport.skipped).toBeGreaterThanOrEqual(1); // the duplicate
     expect(importReport.linked).toBeGreaterThanOrEqual(1); // the refinement
     expect(importReport.flagged).toBeGreaterThanOrEqual(2); // both contradictions
@@ -282,7 +282,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(rawRow(bUndecidedId).contradiction_of).toBe(aUndecided.id);
 
     // --- Step 6: kb_export writes the reconciled bible --------------------
-    const exportReport = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(exportReport.exported).toBeGreaterThanOrEqual(1);
 
     const canonicalPath = path.join(fleetDir, 'kb-canonical.json');

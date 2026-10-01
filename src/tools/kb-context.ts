@@ -1,12 +1,8 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 
 export const kbContextSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
     .describe('Only consider cached file entries whose confidence tier is in this list. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are considered only when listed explicitly.'),
   files: z.array(z.string()).min(1).describe('File paths to check freshness for'),
@@ -14,10 +10,10 @@ export const kbContextSchema = z.object({
 
 export type KbContextInput = z.infer<typeof kbContextSchema>;
 
-export async function kbContext(input: KbContextInput): Promise<string> {
+export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promise<string> {
   validateFilePaths(input.files);
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const providers = await getSelfKbProviders(anchor);
 
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbContextInput['confidence']>);
   // Default-trusted read: CONFIRMED and undisputed unless a tier list is given.

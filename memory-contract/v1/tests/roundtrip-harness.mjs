@@ -35,10 +35,20 @@
 //     prepareEnvironment(env)              // materialise ENVIRONMENT, return
 //        -> { substitutions: { paths, literals } },
 //     applySetup(ops) -> Promise<void>,    // execute declared precondition ops
-//     call(tool, request) -> Promise<envelope>,   // resolves with the wrapTool
-//                                          // envelope, or REJECTS for a thrown
-//                                          // refusal
+//     call(tool, request, session) -> Promise<envelope>,   // resolves with the
+//                                          // wrapTool envelope, or REJECTS for a
+//                                          // thrown refusal
 //   }
+//
+// SESSIONS, NOT SCOPE ARGUMENTS
+// -----------------------------
+// No kb_* request carries a repo/scope argument: a kb_* call always operates on
+// the CALLING SESSION's own KB (a member session -> that member's registered
+// work folder). So every fixture names the session it was recorded in
+// (fixture.session, default ENVIRONMENT.defaultSession), ENVIRONMENT.sessions
+// declares what each session is (a local member on one of the scratch repos, a
+// local member whose folder is missing, a remote member whose folder is on
+// another host), and the provider dispatches each call AS that session.
 //
 // Provider identity is keyed on the (slug, repoPath) PAIR, not on the slug
 // alone (src/services/knowledge/kb-providers.ts: `_providers` is a Map keyed by
@@ -116,25 +126,47 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  * `<SCRATCH_ROOT>/repo-import-rejected` literally, so the provider must place
  * that repo at exactly that name under its own scratch root.
  */
+export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
+
 export const ENVIRONMENT = {
   repos: [
     {
       key: 'A',
       dir: 'repo-a',
       placeholder: PATH_PLACEHOLDERS.REPO_A,
-      // NOT a git repo on purpose: kb_setup then installs no real git hook and
-      // kb_export's isGitRepo() check stays false, so no `git add`/`git commit`
-      // ever runs (record-fixtures.mjs header, same reasoning).
+      // A git repository with an origin remote: a kb_* session needs both
+      // (E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE otherwise). kb_export therefore
+      // auto-commits its bible into this scratch repo -- scratch-only.
+      git: true,
+      remote: 'A',
       files: {
         'src/example.ts': 'export function exampleFn(x: number): number {\n  return x + 1;\n}\n',
         'src/helper.ts': 'export function helperBar(): void {\n  // placeholder\n}\n',
       },
     },
-    { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, files: {} },
+    { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, git: true, remote: 'B', files: {} },
     { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, files: {} },
-    { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, files: {} },
+    { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, git: true, remote: 'IMPORT_REJECTED', files: {} },
+    // E-SELF-NOT-A-REPO: a plain directory, never `git init`ed.
+    { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
+    // E-SELF-NO-REMOTE: a git repository with no origin remote.
+    { key: 'NO_REMOTE', dir: 'repo-no-remote', placeholder: null, git: true, remote: null, files: {} },
   ],
-  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B },
+  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED },
+  // Each session is one registered member. `repo` names a scratch repo above;
+  // `dir` names a folder under the scratch root that is never created. A
+  // `remote` member's folder lives on another host, so its KB identity is its
+  // recorded origin remote (`remote` names a key of `remotes`).
+  sessions: {
+    A: { member: 'contract-a', kind: 'local', repo: 'A' },
+    B: { member: 'contract-b', kind: 'local', repo: 'B' },
+    IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
+    NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
+    NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
+    NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
+    REMOTE_UNREACHABLE: { member: 'contract-remote', kind: 'remote', dir: 'this-directory-does-not-exist', remote: 'A' },
+  },
+  defaultSession: 'A',
 };
 
 // ---------------------------------------------------------------------------
@@ -229,6 +261,9 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'refusal-no-selector' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
+  { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
+  { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
+  { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {
     tool: 'kb_import',
@@ -693,6 +728,11 @@ export async function runRoundTrip(provider, rosterTools) {
 
     failures.push(...taxonomyFailures(fixture, taxonomyIndex).map((m) => `${key}: ${m}`));
 
+    if (fixture.session !== undefined && !Object.hasOwn(ENVIRONMENT.sessions, fixture.session)) {
+      fail(`fixture names session ${JSON.stringify(fixture.session)}, which ENVIRONMENT.sessions does not declare`);
+      continue;
+    }
+
     if (step.setup) await provider.applySetup(step.setup);
 
     // 1. request validates BEFORE dispatch
@@ -716,7 +756,7 @@ export async function runRoundTrip(provider, rosterTools) {
     let envelope;
     let thrown;
     try {
-      envelope = await provider.call(step.tool, request);
+      envelope = await provider.call(step.tool, request, fixture.session ?? ENVIRONMENT.defaultSession);
       record.dispatched = true;
     } catch (err) {
       thrown = err;

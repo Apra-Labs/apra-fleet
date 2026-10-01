@@ -139,7 +139,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
     const remote = `http://127.0.0.1:${port}`;
 
-    const setupResult = JSON.parse(await kbSetup({ repo_path: repoPath, provider: 'http', remote, token }));
+    const setupResult = JSON.parse(await kbSetup({ provider: 'http', remote, token }, { folder: repoPath }));
     expect(setupResult.success).toBe(true);
     expect(fs.existsSync(KB_CONFIG_PATH)).toBe(true);
 
@@ -179,7 +179,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
   it('resetKbProviders removes the beforeExit listener the HTTP project provider registered', async () => {
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: `http://127.0.0.1:${port}`, token });
+    await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: repoPath });
 
     const baseline = process.listenerCount('beforeExit');
     const providers = await getKbProviders(repoPath, remoteUrl);
@@ -198,7 +198,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     try {
       const repoPath = makeRepoPath();
       const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
-      await kbSetup({ repo_path: repoPath, provider: 'http', remote: `http://127.0.0.1:${port}`, token });
+      await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: repoPath });
 
       const baseline = process.listenerCount('beforeExit');
       for (let i = 0; i < 15; i++) {
@@ -235,7 +235,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
 
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
-    await kbSetup({ repo_path: repoPath, provider: 'http', remote: `http://127.0.0.1:${port}`, token });
+    await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: repoPath });
     const providers = await getKbProviders(repoPath, remoteUrl);
     await providers.project.capture(makeEntry({ symbols: ['kbHttpProviderE2eNoStray'] }));
 
