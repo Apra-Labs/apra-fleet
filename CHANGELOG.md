@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint: remote memberCall no longer dirties the member's git checkout
+
+Sprint goal: a remote `memberCall` left its args file untracked in the member's git checkout. The engine now git-excludes `.apra-call/` before the first send to a member and deletes the args file after every call (success, error, unparseable output, timeout, failed send); failures of either step are logged and never hide the call's result. New per-shell `ensureGitExcluded` and `removeFile` command primitives (POSIX and PowerShell) validate paths strictly. Tests run the commands for real, against a temp git repo and real bash and PowerShell.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.5865.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0237 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 9 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: each remote member call makes one to two extra execute_command round trips (exclude on the first call, delete on every call); filed as a follow-up.
+
 ## [Unreleased] -- KB redesign: self-scoped KB, member tool scope, `apra-fleet call`
 
 Sprint goal: make the knowledge bank scope itself from the calling session instead of caller-supplied paths, and give member sessions a restricted, callable tool surface.

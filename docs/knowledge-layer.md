@@ -201,7 +201,18 @@ The client's `connectFleetMember` and `close()` release the session with an
 HTTP `DELETE`. Consequences: a remote member needs `apra-fleet` installed and
 registered on it (see `apra-fleet install --member`) or its KB calls fail
 (logged as non-fatal), and each remote KB call costs one file transfer plus
-one command execution -- captures are not batched. Short-lived tool-only
+one command execution -- captures are not batched. The args file is staged
+under `.apra-call/` in the member's work folder, which sits inside its git
+checkout, so the engine must never leave it behind as untracked content:
+before the first send to a member it appends `.apra-call/` to the checkout's
+git exclude file (resolved with `git rev-parse --git-path info/exclude`, so
+subdirectories and linked worktrees work; idempotent; a no-op outside a git
+repo), and after every call, whatever its outcome, it deletes the args file.
+A failed exclude or delete is logged and never masks the call's own result.
+Both operations are built per member shell (POSIX and PowerShell
+`-EncodedCommand`) from strictly validated relative paths that are rejected,
+never escaped. This adds one to two extra command round trips per remote call.
+Short-lived tool-only
 member sessions register in the session registry when no live channel
 session exists, so they can briefly appear as the member's online session.
 
