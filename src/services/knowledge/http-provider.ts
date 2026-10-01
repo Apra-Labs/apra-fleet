@@ -7,6 +7,7 @@ import type {
   KBEntry,
   KBEntryInput,
   QueryOptions,
+  EntryTrustFilter,
   KBResult,
   FileContextResult,
   PrimeOptions,
@@ -187,6 +188,8 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.l1_only) params.l1_only = 'true';
     if (opts.include_stale) params.include_stale = 'true';
     if (opts.include_superseded) params.include_superseded = 'true';
+    if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
+    if (opts.exclude_disputed) params.exclude_disputed = 'true';
 
     try {
       return await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
@@ -246,9 +249,9 @@ export class HttpKbProvider implements MemoryProvider {
   // Delegated to the local store like getLinked: the graph lives alongside the
   // entries, and there is no remote route for it. Never throws -- a graph miss
   // must degrade to "no related claims", not fail a prime.
-  async relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]> {
+  async relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]> {
     try {
-      return await this.fallback.relatedClaims(ids, limit);
+      return await this.fallback.relatedClaims(ids, limit, filter);
     } catch {
       return [];
     }

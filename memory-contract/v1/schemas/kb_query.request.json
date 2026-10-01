@@ -51,6 +51,23 @@
         "expand_related": {
           "type": "boolean",
           "description": "Append entries connected to the top hits by a refines or contradiction_of edge, as related_claims. These are the KB's own judgements about its contents -- \"there is a newer framing of this\" and \"something disputes this\" -- which a text match cannot surface. shares_file/shares_symbol edges are NOT traversed: FTS over the same fields already finds those. Default false, in which case related_claims is absent."
+        },
+        "confidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "CONFIRMED",
+              "INFERRED",
+              "UNVERIFIED"
+            ]
+          },
+          "minItems": 1,
+          "description": "Only return entries whose confidence tier is in this list (e.g. [\"CONFIRMED\"]). Applies to l1_results, l2_expanded and related_claims alike. Omit for every tier. Ignored when flagged_only is true."
+        },
+        "exclude_disputed": {
+          "type": "boolean",
+          "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default false. Ignored when flagged_only is true."
         }
       },
       "additionalProperties": false

@@ -29,6 +29,7 @@ import type {
   KBEntryInput,
   CaptureOpts,
   QueryOptions,
+  EntryTrustFilter,
   KBResult,
   FileContextResult,
   PrimeOptions,
@@ -65,6 +66,23 @@ class NotImplementedError extends Error {
     super(`SqliteProvider.${method}() not yet implemented`);
     this.name = 'NotImplementedError';
   }
+}
+
+// SQL for the opt-in retrieval-trust filters (QueryOptions.confidence /
+// exclude_disputed), shared by query() and relatedClaims() so the direct hits
+// and the graph-expanded claims of one kb_query obey the same rule. An empty
+// or absent filter yields no conditions -- the default-off contract.
+function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: string[]; params: SQLInputValue[] } {
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filter?.confidence?.length) {
+    conditions.push(`e.confidence IN (${filter.confidence.map(() => '?').join(',')})`);
+    params.push(...filter.confidence);
+  }
+  if (filter?.exclude_disputed) {
+    conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
+  }
+  return { conditions, params };
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -1000,6 +1018,11 @@ export class SqliteProvider implements MemoryProvider {
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     } else {
+      // Retrieval-trust filters (opt-in). Not applied to flagged_only, whose
+      // whole purpose is listing the disputed entries these would drop.
+      const trust = trustFilterSql(opts);
+      conditions.push(...trust.conditions);
+      params.push(...trust.params);
       // H2 (F1, D1, closes yashr-9ha): default retrieval NEVER surfaces a
       // pending or rejected directive PROPOSAL (type='user-directive' with
       // confidence != 'CONFIRMED'). Only an ACTIVE (CONFIRMED) directive
@@ -1173,13 +1196,20 @@ export class SqliteProvider implements MemoryProvider {
   //
   // Superseded rows are excluded (they are already retired) and the input ids are
   // never echoed back. `limit` caps the total, since this rides into a prompt.
-  async relatedClaims(ids: string[], limit: number = 5): Promise<KBEntry[]> {
+  //
+  // `filter` (optional) applies the same retrieval-trust filters kb_query's
+  // direct hits use, so a CONFIRMED-only caller cannot be handed an INFERRED or
+  // disputed claim through the graph instead.
+  async relatedClaims(ids: string[], limit: number = 5, filter?: EntryTrustFilter): Promise<KBEntry[]> {
     if (ids.length === 0) return [];
     const db = this.getDb();
     const ph = ids.map(() => '?').join(',');
+    const trust = trustFilterSql(filter);
+    const trustWhere = trust.conditions.map(c => `AND ${c}`).join(' ');
     const rows = db.prepare(`
       SELECT DISTINCT e.* FROM entries e
       WHERE e.superseded_at IS NULL
+        ${trustWhere}
         AND e.id NOT IN (${ph})
         AND (
           EXISTS (
@@ -1192,7 +1222,7 @@ export class SqliteProvider implements MemoryProvider {
           OR e.id IN (SELECT contradiction_of FROM entries WHERE id IN (${ph}) AND contradiction_of IS NOT NULL)
         )
       LIMIT ?
-    `).all(...ids, ...ids, ...ids, ...ids, ...ids, limit) as Record<string, unknown>[];
+    `).all(...trust.params, ...ids, ...ids, ...ids, ...ids, ...ids, limit) as Record<string, unknown>[];
     return rows.map(r => this.rowToEntry(r));
   }
 

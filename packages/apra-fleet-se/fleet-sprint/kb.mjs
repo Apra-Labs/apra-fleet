@@ -49,6 +49,28 @@ const ROLE_DOER = kbRoleConst('doer');
 export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
 
 /**
+ * The injection rule for every engine-built knowledge block: only CONFIRMED
+ * entries that sit outside any unresolved contradiction reach a role prompt.
+ * INFERRED/UNVERIFIED entries are the sprint's own unreviewed captures, and a
+ * flagged or contradiction_of entry is one the KB itself says is disputed --
+ * neither is knowledge a role should build on without checking.
+ *
+ * kb_query is ASKED for exactly this set (confidence + exclude_disputed), but
+ * the engine re-applies it on every path regardless: an older fleet server
+ * ignores the unknown params, kb_session_prime has no such filter, and a
+ * hand-edited bible can carry anything. Defense in depth, not duplication.
+ *
+ * @param {object} e
+ * @returns {boolean}
+ */
+export function isInjectableKbEntry(e) {
+    return Boolean(e)
+        && e.confidence === 'CONFIRMED'
+        && !e.flagged_for_review
+        && !e.contradiction_of;
+}
+
+/**
  * The URL-based KB scope selector, spread into a kb_* call's arguments.
  *
  * repo_path alone is only sufficient for a LOCAL member: resolveProjectSlug
@@ -245,10 +267,15 @@ export function createKbWorkClient(opts = {}) {
          * been writing `refines` and `contradiction_of` edges since AUDN
          * shipped and traversing none of them: 554 edges, 0 reads. A role about
          * to act on an entry is precisely who needs to know that entry has a
-         * newer framing or a standing dispute -- especially since confidence
-         * tier does NOT track correctness across a contradiction chain (the
-         * warehouse chain-A shape, where the incorrect entry outranks both of
-         * its corrections).
+         * newer framing -- a CONFIRMED refinement arrives as a related claim.
+         *
+         * Only CONFIRMED, undisputed entries are requested and kept (see
+         * isInjectableKbEntry). A contradiction pair is excluded on BOTH sides
+         * rather than shown as a dispute: confidence tier does NOT track
+         * correctness across a contradiction chain (the warehouse chain-A
+         * shape, where the incorrect entry outranks both of its corrections),
+         * so neither side is safe to hand a role as knowledge until the pair is
+         * resolved.
          *
          * Best-effort, like every other KB read here: no repo path, no terms, a
          * cold KB or an unreachable one all degrade to "no knowledge", never to
@@ -265,6 +292,8 @@ export function createKbWorkClient(opts = {}) {
                     query,
                     limit: KB_MAX_KNOWLEDGE_ENTRIES,
                     expand_related: true,
+                    confidence: ['CONFIRMED'],
+                    exclude_disputed: true,
                 });
                 // apra-fleet-23c: an MCP callTool RESOLVES with {isError:true}
                 // for a tool-level failure rather than throwing, so this was
@@ -285,7 +314,7 @@ export function createKbWorkClient(opts = {}) {
                 const seen = new Set();
                 const out = [];
                 for (const e of hits) {
-                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
                     seen.add(e.id);
                     out.push(e);
                 }
@@ -293,7 +322,7 @@ export function createKbWorkClient(opts = {}) {
                 // so a role can tell "the KB matched this" from "the KB says
                 // something about what it matched".
                 for (const e of related) {
-                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
                     seen.add(e.id);
                     out.push({ ...e, via: 'kb-graph' });
                 }
@@ -579,8 +608,11 @@ export function createKbPrimingClient(opts = {}) {
                     }
 
                     const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath, ...kbScope(remoteUrl) }));
+                    // Same injection rule as relevantKnowledge, applied BEFORE the
+                    // cap so a prime dominated by INFERRED captures does not
+                    // crowd out the CONFIRMED entries behind them.
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
-                        ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
+                        ? primeResult.top_entries.filter((e) => typeof e?.id === 'string' && isInjectableKbEntry(e))
                         : [];
                     if (entries.length > 0) knowledge.set(member, entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES));
                     primed++;
@@ -625,9 +657,11 @@ export function createKbPrimingClient(opts = {}) {
  * (an apra-pm orchestrator session running these contracts as local subagents,
  * where the MCP server is present), so both paths now get knowledge.
  *
- * The trust ladder is restated here rather than assumed: these entries are
- * agent-authored claims from earlier sprints, and CONFIRMED means a reviewer
- * verified the claim, not that it is currently true of this branch's tree.
+ * Only CONFIRMED, undisputed entries are rendered (isInjectableKbEntry) --
+ * every caller's source is already filtered, and this is the last chokepoint
+ * before the prompt. CONFIRMED means a reviewer verified the claim when it was
+ * captured, not that it is currently true of this branch's tree, which is why
+ * the header still tells the role the code wins.
  *
  * Returns a single-element array (or an empty one) so callers can spread it
  * into their prompt-section list, matching kbPromotionBlock.
@@ -678,25 +712,28 @@ export function kbQueryTerms(beads, beadIds) {
 // must not promise that the orchestrator records a capture: those roles'
 // prompts tell them to note the finding in their own report instead.
 export function kbKnowledgeBlock(entries, { captureChannel = true } = {}) {
-    if (!Array.isArray(entries) || entries.length === 0) return [];
+    if (!Array.isArray(entries)) return [];
+    // Filter only -- the sources (relevantKnowledge, primeAll) own the entry cap,
+    // so this block never drops what a caller deliberately handed it.
+    const injectable = entries.filter(isInjectableKbEntry);
+    if (injectable.length === 0) return [];
     const captureLine = captureChannel
         ? 'If you discover something non-obvious and durable while working, report it in the '
             + '`kb_captures` field of your structured output and the orchestrator will record it.\n'
         : 'If you discover something non-obvious and durable while working, note it in your '
             + 'own report.\n';
     return [
-        'KNOWLEDGE BANK -- what this repo already knows. These entries were captured and '
-        + 'verified during earlier work on this repository, and are provided so you do not '
-        + 'rediscover them the hard way. Read them BEFORE you start.\n'
-        + 'CONFIRMED entries were independently verified by a reviewer: trust them. INFERRED '
-        + 'entries are unverified hints: treat them as leads to check, not as facts. An entry '
-        + 'describes the tree it was captured against, so if one contradicts what you actually '
-        + 'observe in the code right now, the code wins -- say so in your notes rather than '
-        + 'bending your work to fit the entry.\n'
+        'KNOWLEDGE BANK -- what this repo already knows. These entries were captured during '
+        + 'earlier work on this repository and are provided so you do not rediscover them the '
+        + 'hard way. Read them BEFORE you start.\n'
+        + 'Only CONFIRMED entries are included: a reviewer promoted each claim on evidence when '
+        + 'it was captured. An entry describes the tree it was captured against, so if one '
+        + 'contradicts what you actually observe in the code right now, the code wins -- say so '
+        + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need to call any kb_* tool to read these. '
         + captureLine
         + wrapUntrustedBlock('kb_session_prime --top_entries', JSON.stringify(
-            entries.map((e) => ({
+            injectable.map((e) => ({
                 confidence: e.confidence,
                 title: e.title,
                 summary: e.summary,
