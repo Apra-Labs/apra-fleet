@@ -69,10 +69,10 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
     if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
     // POSIX read (cat <path> 2>/dev/null ...) -- both merge-read and read-back
-    m = cmd.match(/^cat (.+?) 2>\/dev\/null/);
+    m = cmd.match(/^cat (.+?) 2>\/dev\/null/) ?? cmd.match(/^if test -e (".+?"); then cat \1; fi$/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
     // Windows read (Get-Content -Raw "<path>" ...)
-    m = cmd.match(/Get-Content -Raw "(.+?)"/);
+    m = cmd.match(/Get-Content -Raw (?:-LiteralPath )?"(.+?)"/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
     // Member home-directory probe (src/services/member-home.ts). A remote
     // member's real shell answers this; without it, every home-anchored
@@ -672,6 +672,27 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     const written = heredocJson(writeCmd);
     expect(written.mcpServers).toBeUndefined();
     expect(written.permissions.allow).toEqual(expect.arrayContaining(['Read', 'Bash(npm:*)']));
+  });
+
+  it('an exists-but-unreadable ~/.claude.json is never written: compose succeeds, fleetMcp unavailable/member-config-unreadable', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-locked', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const fs0 = makeFsHandler();
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('/home/testuser/.claude.json') && cmd.includes('cat "/home/testuser/.claude.json"') && !cmd.includes('cat >')) {
+        return { stdout: '', stderr: 'cat: Permission denied', code: 1 };
+      }
+      return fs0(cmd);
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).not.toContain('[FAIL]');
+    expect(result).toContain('Permissions composed');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('/home/testuser/.claude.json'))).toBe(false);
+    const { getAgent } = await import('../src/services/registry.js');
+    expect(getAgent(member.id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unreadable' });
   });
 
   it('writes the per-folder apra-fleet entry (?member=<uuid>) into the member ~/.claude.json local scope', async () => {

@@ -552,6 +552,14 @@ export type FleetMcpUnavailableReason =
   | 'no-per-project-mcp'
   /** The member's LLM provider has no MCP entry fleet configures. */
   | 'provider-unsupported'
+  /** A member config file compose must edit exists but could not be read; compose wrote nothing to it. */
+  | 'member-config-unreadable'
+  /** A member config file compose must edit is not strict JSON; compose wrote nothing to it. */
+  | 'member-config-unparseable'
+  /** The work folder's opencode.json is tracked by git; compose left it untouched. */
+  | 'opencode-config-tracked'
+  /** The work folder's opencode.json is not strict JSON (e.g. JSONC); compose left it untouched. */
+  | 'opencode-config-unparseable'
   /** A MEMBER session could not be opened or its version call failed. */
   | 'member-session-failed'
   /** The MEMBER session answered but did not list kb_* and code_* tools. */

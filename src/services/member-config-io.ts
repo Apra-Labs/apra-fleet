@@ -107,18 +107,73 @@ function dirOf(absPath: string, posix: boolean): string {
     : absPath.replace(/\//g, '\\').split('\\').slice(0, -1).join('\\');
 }
 
-/** Read a member-side text file. A missing file reads as ''. */
+/**
+ * A member-side config file the apra-fleet MCP sync cannot safely touch
+ * (unreadable, not strict JSON, git-tracked, ...). compose_permissions treats it
+ * as a RECOVERABLE condition: nothing is written to that file, the member's
+ * fleetMcp status is recorded unavailable with `reason`, and the rest of
+ * compose carries on.
+ */
+export class MemberConfigError extends Error {
+  constructor(
+    public readonly code: string,
+    /** Machine-readable fleetMcp unavailable reason recorded by compose. */
+    public readonly reason: string,
+    public readonly filePath: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MemberConfigError';
+  }
+}
+
+/** The file exists but could not be read (EACCES, sharing violation, ...). */
+export class MemberConfigUnreadableError extends MemberConfigError {
+  constructor(filePath: string, detail?: string) {
+    super(
+      'E-MEMBER-CONFIG-UNREADABLE',
+      'member-config-unreadable',
+      filePath,
+      `E-MEMBER-CONFIG-UNREADABLE: ${filePath} exists but could not be read${detail ? ` (${detail})` : ''}; refusing to treat it as empty or rewrite it`,
+    );
+    this.name = 'MemberConfigUnreadableError';
+  }
+}
+
+/** The file exists and was read, but is not a strict JSON object (e.g. JSONC). */
+export class MemberConfigNotJsonError extends MemberConfigError {
+  constructor(filePath: string, detail: string, reason = 'member-config-unparseable') {
+    super('E-MEMBER-CONFIG-NOT-JSON', reason, filePath, `E-MEMBER-CONFIG-NOT-JSON: ${filePath} ${detail}; refusing to rewrite it`);
+    this.name = 'MemberConfigNotJsonError';
+  }
+}
+
+/**
+ * The read command for a member-side file. The existence test is built here in
+ * JavaScript per shell (never shell-variable expansion): a MISSING file yields
+ * empty output and exit 0, an EXISTING file that cannot be read yields a
+ * non-zero exit -- the exit code is never swallowed.
+ */
+export function readMemberFileCommand(absPath: string, posix: boolean): string {
+  if (posix) return `if test -e "${absPath}"; then cat "${absPath}"; fi`;
+  const win = absPath.replace(/\//g, '\\');
+  return `if (Test-Path -LiteralPath "${win}") { Get-Content -Raw -LiteralPath "${win}" -ErrorAction Stop }`;
+}
+
+/** Read a member-side text file. A missing file reads as ''; an existing file
+ *  that cannot be read THROWS MemberConfigUnreadableError (never reads as ''). */
 export async function readMemberFile(exec: MemberExecFn, absPath: string, posix: boolean): Promise<string> {
-  const cmd = posix
-    ? `cat "${absPath}" 2>/dev/null || true`
-    : `Get-Content -Raw "${absPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`;
-  const r = await exec(cmd, FS_OP_TIMEOUT_MS);
+  const r = await exec(readMemberFileCommand(absPath, posix), FS_OP_TIMEOUT_MS);
+  if (typeof r.code === 'number' && r.code !== 0) {
+    throw new MemberConfigUnreadableError(absPath, `exit ${r.code}${stderrExcerpt(r)}`);
+  }
   return r.stdout ?? '';
 }
 
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty
- *  file; THROWS for a non-empty file that is not a JSON object, so a caller
- *  can never clobber a file it could not understand. */
+ *  file; THROWS a typed MemberConfigError for an unreadable file or a non-empty
+ *  file that is not a JSON object, so a caller can never clobber a file it
+ *  could not understand. */
 export async function readMemberJson(exec: MemberExecFn, absPath: string, posix: boolean): Promise<Record<string, unknown>> {
   const raw = (await readMemberFile(exec, absPath, posix)).trim();
   if (!raw) return {};
@@ -126,9 +181,9 @@ export async function readMemberJson(exec: MemberExecFn, absPath: string, posix:
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error(`${absPath} exists but is not valid JSON; refusing to rewrite it`);
+    throw new MemberConfigNotJsonError(absPath, 'exists but is not valid JSON');
   }
-  if (!isPlainObject(parsed)) throw new Error(`${absPath} is not a JSON object; refusing to rewrite it`);
+  if (!isPlainObject(parsed)) throw new MemberConfigNotJsonError(absPath, 'is not a JSON object');
   return parsed;
 }
 

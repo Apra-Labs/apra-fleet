@@ -17,6 +17,7 @@ import {
   memberMcpUrl,
   pruneLegacyMcpEntries,
   readMemberFile,
+  MemberConfigError,
   readMemberJson,
   removeGitExcluded,
   writeMemberJson,
@@ -27,6 +28,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { recordFleetMcpStatus } from '../services/registry.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
@@ -634,6 +636,17 @@ async function syncMemberMcpConfig(
     }
     await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell);
   } catch (e: any) {
+    if (e instanceof MemberConfigError) {
+      // Recoverable: the sync wrote NOTHING to the file it could not safely
+      // edit. Record why on the member and let the rest of compose succeed.
+      recordFleetMcpStatus(agent.id, {
+        state: 'unavailable',
+        reason: e.reason,
+        checkedAt: new Date().toISOString(),
+        detail: e.message,
+      });
+      return null;
+    }
     return `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}`;
   }
   return null;

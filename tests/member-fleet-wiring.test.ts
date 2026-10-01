@@ -89,7 +89,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       if (c.includes('uname -m')) return ok(world.arch);
       if (c.includes("'install'")) { world.installed = VERSION; return ok('installed'); }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
-      if (c.startsWith('cat ') && c.includes('.claude.json')) {
+      if (c.includes('cat "') && c.includes('.claude.json')) {
         return ok(world.entry
           ? JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } })
           : '');

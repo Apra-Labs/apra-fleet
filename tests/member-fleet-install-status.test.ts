@@ -69,7 +69,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
       if (c.includes('uname -m')) return ok('x86_64');
       if (c.includes("'install'")) { world.installed = VERSION; return ok('installed'); }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
-      if (c.startsWith('cat ') && c.includes('.claude.json')) return ok(world.claudeJson ? JSON.stringify(world.claudeJson) : '');
+      if (c.includes('cat "') && c.includes('.claude.json')) return ok(world.claudeJson ? JSON.stringify(world.claudeJson) : '');
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
     },
     transfer: async (_a, localPaths) => { world.transfers++; return { success: localPaths, failed: [] }; },
