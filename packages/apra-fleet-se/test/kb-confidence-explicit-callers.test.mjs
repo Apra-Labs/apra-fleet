@@ -9,7 +9,7 @@ import { createKbWorkClient } from '../fleet-sprint/runner.js';
 // that needs non-CONFIRMED entries must therefore pass an explicit confidence
 // list. The three prompt files are read verbatim (they ARE the caller: an LLM
 // follows them), and the engine's promotion listing is exercised through an
-// injected fake callTool that captures the kb_list args.
+// injected fake memberCall that captures the kb_list args.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (rel) => fs.readFileSync(path.join(here, '..', rel), 'utf8');
@@ -38,12 +38,12 @@ describe('callers needing non-CONFIRMED KB entries pass an explicit confidence l
 
     test('kb.mjs promotion listing passes confidence as an array including INFERRED', async () => {
         const calls = [];
-        const callTool = async (name, args) => {
-            calls.push({ name, args });
+        const memberCall = async (member, name, args) => {
+            calls.push({ name, args, member });
             return { content: [{ type: 'text', text: JSON.stringify({ results: [], total: 0 }) }] };
         };
-        const client = createKbWorkClient({ callTool, log: () => {} });
-        await client.promotionCandidates('/srv/repo');
+        const client = createKbWorkClient({ memberCall, log: () => {} });
+        await client.promotionCandidates({ id: 'id-reviewer', name: 'reviewer', type: 'local' });
 
         const listCall = calls.find((c) => c.name === 'kb_list');
         assert.ok(listCall, 'kb_list was never called');

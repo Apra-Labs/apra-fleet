@@ -203,8 +203,7 @@ import {
     createMcpDoltPushMutexClient, createMcpChildIdAllocatorClient,
     createMemberReservationClient,
 } from './coordination.mjs';
-// The KB work concern: the URL-based scope selector, the per-dispatch
-// kb_query read, kb_captures/kb_promotions vetting and forwarding, and the
+// The KB work concern: the per-dispatch kb_query read, kb_captures/kb_promotions vetting and forwarding, and the
 // canonical-bible publish. Moved verbatim out of runner.js
 // (apra-fleet-3swo.4.4). KB_MAX_KNOWLEDGE_ENTRIES is imported back here so it
 // can be re-exported below for existing importers of runner.js.
@@ -217,7 +216,7 @@ import {
 // check, the per-dispatch kb_query FTS terms, and the two "KNOWLEDGE BANK"
 // prompt blocks). Moved verbatim out of runner.js into the existing
 // kb.mjs (apra-fleet-3swo.6.11) -- kb.mjs already owned the rest of the KB
-// surface (createKbWorkClient, kbScope, vetKbWork, the KB_* limit
+// surface (createKbWorkClient, vetKbWork, the KB_* limit
 // constants), so these five join that single home rather than starting a
 // second one.
 import {
@@ -378,7 +377,7 @@ export {
     createMcpDoltPushMutexClient, createMcpChildIdAllocatorClient,
     createMemberReservationClient,
 };
-// Re-exported so importers of the KB work helpers (scope, kb_query,
+// Re-exported so importers of the KB work helpers (kb_query,
 // kb_capture/kb_promote vetting+forwarding, kb_export) from runner.js keep
 // working; kb.mjs is the single source of truth for their implementation
 // (apra-fleet-3swo.4.4).
@@ -1271,8 +1270,24 @@ async function runSprintCycle(context) {
     // the Step 0 Knowledge Bank block in every role contract has something warm
     // to read. This engine had no KB priming at all -- it lived only in the
     // Claude workflow copy. Best-effort: a cold KB never fails a sprint.
+    //
+    // Every member-targeted kb_* call runs AS that member (memberCall: a
+    // member-scoped session, so the KB resolves the member's own work folder;
+    // no kb_* tool takes a repo/scope argument). The orchestrator's callTool
+    // is only used for member_detail. context.memberCall is a test seam.
+    // Built lazily, on the first kb call, so a sprint that never reaches one
+    // constructs nothing extra.
+    let memberCaller = context.memberCall ?? null;
+    const canMemberCall = !!memberCaller || !!(args && typeof args.callTool === 'function');
+    const kbMemberCall = canMemberCall
+        ? (member, tool, toolArgs) => {
+            memberCaller ??= createMemberCall({ fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }), log });
+            return memberCaller.memberCall(member, tool, toolArgs);
+        }
+        : undefined;
     const kbPriming = context.kbPriming ?? createKbPrimingClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        memberCall: kbMemberCall,
         members: physicalMembers,
         log,
     });
@@ -1281,21 +1296,17 @@ async function runSprintCycle(context) {
     // The role output schemas are shared with apra-pm, so every role dispatched
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
     // This is the consumer: without it those fields would be gathered and
-    // silently dropped. Unlike apra-pm's workflow script, this engine has a real
-    // callTool, so the kb_capture/kb_promote calls are made directly.
+    // silently dropped. Unlike apra-pm's workflow script, this engine can call
+    // tools itself, so the kb_capture/kb_promote calls are made directly -- as
+    // the member whose work produced them (kbMember below).
     const kbWork = context.kbWork ?? createKbWorkClient({
-        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        memberCall: kbMemberCall,
         log,
-        // Scope every kb_* call below to the member's OWN project KB. The repo
-        // path each call site already threads is a path on the MEMBER's host,
-        // so the server cannot derive a slug from it -- without this lookup a
-        // remote member's reads and writes all land in the shared 'default' KB
-        // (apra-fleet-b4g.15). Resolved through the path rather than passed
-        // per call site so no site can thread the path and forget the scope.
-        // context.kbPriming above is an injection seam; a stub that predates
-        // remoteUrlForPath degrades to no scope rather than crashing a sprint.
-        remoteUrlFor: (repoPath) => (typeof kbPriming.remoteUrlForPath === 'function' ? kbPriming.remoteUrlForPath(repoPath) : null),
     });
+    // The member record kb work for a member name runs as. context.kbPriming is
+    // an injection seam; a stub without memberOf degrades to "no member", which
+    // every kbWork method treats as a best-effort no-op.
+    const kbMember = (member) => (typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(member) : null);
     // A member named in ANY roleMap value is a "specialist" for whatever
     // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been
     // deliberately reserved for review. Without this, a role the caller left
@@ -1519,7 +1530,7 @@ async function runSprintCycle(context) {
             // one implementation serves the harvester, the doer, the per-round
             // reviewer and the final review alike.
             'kb-apply': async ({ policy, value, member }) => {
-                await kbWork.apply(policy.agentType, kbPriming.folderOf(member), value);
+                await kbWork.apply(policy.agentType, kbMember(member), value);
             },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
@@ -1734,18 +1745,18 @@ async function runSprintCycle(context) {
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
         // `kb_promotions` comes back empty every round -- which is exactly why
-        // kb_promote had never once fired. Scoped to the reviewer's OWN work
-        // folder (same source kbWork.apply uses to route the writes), and
-        // best-effort: a cold KB must not fail the review.
-        const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
-        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
+        // kb_promote had never once fired. Read AS the reviewer member (same
+        // session kbWork.apply uses to route the writes), and best-effort: a
+        // cold KB must not fail the review.
+        const reviewerKbMember = kbMember(reviewerPool[0]);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerKbMember);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
-        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
+        const reviewerQueried = await kbWork.relevantKnowledge(reviewerKbMember, kbQueryTerms([], beadIds));
         const reviewerKnowledge = reviewerQueried.length > 0
             ? reviewerQueried
             : kbPriming.knowledgeOf(reviewerPool[0]);

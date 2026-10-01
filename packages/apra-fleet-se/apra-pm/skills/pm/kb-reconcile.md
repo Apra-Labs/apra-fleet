@@ -33,14 +33,16 @@ CLI-only (`apra-fleet kb approve-directive`).
 ### Step 1: Import the merged bible
 
 ```
-kb_import({ repo: "<merged worktree path>" })
+kb_import({ path: "<merged worktree path>/.fleet/kb-canonical.json" })
 ```
 
-or the CLI equivalent, `apra-fleet kb import --repo <path>`, for a human
-running this post-merge by hand. Omit `path` to resolve
-`<repo>/.fleet/kb-canonical.json` (the trusted channel); pass an explicit
-`path` only when importing a bible from somewhere else (caller-asserted
-trust, see above).
+or the CLI equivalent, `apra-fleet kb import --path <file>`, for a human
+running this post-merge by hand. `path` names the bible FILE only: kb tools
+take no repo/scope argument and always write the calling session's own KB (a
+member session uses its registered work folder; any other session the fleet
+server's working folder). Omitting `path` resolves
+`<own folder>/.fleet/kb-canonical.json` (the trusted channel); a bible from
+anywhere else is caller-asserted trust (see above).
 
 Report: `{ imported, skipped, linked, flagged, sweep }`. `kb_import`
 already runs a freshness sweep internally at the end of its own run, scoped

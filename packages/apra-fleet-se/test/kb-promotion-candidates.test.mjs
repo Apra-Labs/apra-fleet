@@ -15,20 +15,20 @@ import { createKbWorkClient, buildReviewerPrompt } from '../fleet-sprint/runner.
 //    name a single id and kb_promotions was structurally always empty.
 //    kb_captures worked precisely because a capture needs no pre-existing id.
 //
-// 2. WRONG KB. The kb_promote call omitted repo_path while kb_capture passed
-//    it. Per src/tools/kb-promote.ts a server-handled call without repo_path
-//    resolves against the fleet server's cwd, so every promotion would have
+// 2. WRONG KB. The kb_promote call was not scoped the way kb_capture was, so
+//    it resolved the fleet server's own KB and every promotion would have
 //    failed "Entry not found" even once ids were supplied (the apra-fleet-tm7
-//    repo-blindness class, fixed for capture but never for promote).
+//    repo-blindness class, fixed for capture but never for promote). Today a
+//    kb_* call is scoped by its SESSION: both run AS the reviewer member.
 
-const REPO = '/srv/warehouse/repo';
+const REVIEWER = Object.freeze({ id: 'id-warehouse-reviewer', name: 'warehouse-reviewer', type: 'local' });
 
 function makeCallTool(entries, opts = {}) {
     const calls = [];
     return {
         calls,
-        callTool: async (name, args) => {
-            calls.push({ name, args });
+        memberCall: async (member, name, args) => {
+            calls.push({ name, args, member });
             if (name === 'kb_list') {
                 if (opts.throwOnList) throw new Error('kb unavailable');
                 return { content: [{ type: 'text', text: JSON.stringify({ results: entries, total: entries.length }) }] };
@@ -44,71 +44,73 @@ const INFERRED_ENTRIES = [
 ];
 
 describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
-    test('asks kb_list for INFERRED entries scoped to the reviewer repo', async () => {
-        const { calls, callTool } = makeCallTool(INFERRED_ENTRIES);
-        const client = createKbWorkClient({ callTool, log: () => {} });
+    test('asks kb_list for INFERRED entries, as the reviewer member', async () => {
+        const { calls, memberCall } = makeCallTool(INFERRED_ENTRIES);
+        const client = createKbWorkClient({ memberCall, log: () => {} });
 
-        const candidates = await client.promotionCandidates(REPO);
+        const candidates = await client.promotionCandidates(REVIEWER);
 
         const listCall = calls.find((c) => c.name === 'kb_list');
         assert.ok(listCall, 'kb_list was never called -- the reviewer gets no candidates');
         assert.deepEqual(listCall.args.confidence, ['INFERRED']);
-        assert.equal(listCall.args.repo_path, REPO, 'kb_list must be scoped to the repo under review');
+        assert.equal(listCall.member, REVIEWER, 'kb_list must run as the reviewer member, whose session is its repo');
+        assert.equal(listCall.args.repo_path, undefined);
         assert.deepEqual(candidates.map((c) => c.id), ['kb-aaa', 'kb-bbb']);
     });
 
     test('never offers a user-directive as a candidate (kb_promote refuses them)', async () => {
-        const { callTool } = makeCallTool([
+        const { memberCall } = makeCallTool([
             ...INFERRED_ENTRIES,
             { id: 'kb-ddd', type: 'user-directive', confidence: 'INFERRED', title: 'pending directive', summary: 'x', source_files: ['a.js'] },
         ]);
-        const client = createKbWorkClient({ callTool, log: () => {} });
+        const client = createKbWorkClient({ memberCall, log: () => {} });
 
-        const candidates = await client.promotionCandidates(REPO);
+        const candidates = await client.promotionCandidates(REVIEWER);
 
         assert.ok(!candidates.some((c) => c.id === 'kb-ddd'), 'a pending user-directive was offered for promotion');
     });
 
-    test('returns [] rather than reading the wrong KB when no repo path is known', async () => {
-        const { calls, callTool } = makeCallTool(INFERRED_ENTRIES);
-        const client = createKbWorkClient({ callTool, log: () => {} });
+    test('returns [] rather than reading the wrong KB when no member is resolved', async () => {
+        const { calls, memberCall } = makeCallTool(INFERRED_ENTRIES);
+        const client = createKbWorkClient({ memberCall, log: () => {} });
 
         assert.deepEqual(await client.promotionCandidates(null), []);
-        assert.equal(calls.filter((c) => c.name === 'kb_list').length, 0, 'kb_list called with no repo path -- would read the server cwd KB');
+        assert.equal(calls.filter((c) => c.name === 'kb_list').length, 0, 'kb_list called with no member -- would read some other KB');
     });
 
     test('a cold or broken KB yields [] and never throws into the dispatch', async () => {
-        const { callTool } = makeCallTool([], { throwOnList: true });
-        const client = createKbWorkClient({ callTool, log: () => {} });
+        const { memberCall } = makeCallTool([], { throwOnList: true });
+        const client = createKbWorkClient({ memberCall, log: () => {} });
 
-        assert.deepEqual(await client.promotionCandidates(REPO), []);
+        assert.deepEqual(await client.promotionCandidates(REVIEWER), []);
     });
 
-    test('inactive client (no callTool) yields []', async () => {
+    test('inactive client (no memberCall) yields []', async () => {
         const client = createKbWorkClient({ log: () => {} });
-        assert.deepEqual(await client.promotionCandidates(REPO), []);
+        assert.deepEqual(await client.promotionCandidates(REVIEWER), []);
     });
 });
 
-describe('createKbWorkClient.apply: kb_promote repo scoping (apra-fleet-0ef)', () => {
-    test('passes repo_path on kb_promote, exactly as it does on kb_capture', async () => {
+describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)', () => {
+    test('runs kb_promote as the member, exactly as kb_capture is', async () => {
         const calls = [];
         const client = createKbWorkClient({
-            callTool: async (name, args) => { calls.push({ name, args }); return {}; },
+            memberCall: async (member, name, args) => { calls.push({ name, args, member }); return {}; },
             log: () => {},
         });
 
-        const result = await client.apply('reviewer', REPO, {
+        const result = await client.apply('reviewer', REVIEWER, {
             kb_promotions: [{ id: 'kb-aaa', reason: 'verified against server/transit.js and the reopen test' }],
         });
 
         const promoteCall = calls.find((c) => c.name === 'kb_promote');
         assert.ok(promoteCall, 'kb_promote was never called');
         assert.equal(
-            promoteCall.args.repo_path,
-            REPO,
-            'kb_promote omitted repo_path -- it would resolve against the fleet server cwd and fail "Entry not found"'
+            promoteCall.member,
+            REVIEWER,
+            'kb_promote outside the member session would resolve another KB and fail "Entry not found"'
         );
+        assert.equal(promoteCall.args.repo_path, undefined);
         assert.equal(result.promoted, 1);
     });
 });

@@ -23,7 +23,6 @@ export default {
     "packages/apra-fleet-se/apra-pm/docs/auto-sprint-slides.html": 13,
     "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs": 1,
     "packages/apra-fleet-se/test/final-review-auth-self-heal.test.mjs": 2,
-    "packages/apra-fleet-se/test/runner-kb-priming.test.mjs": 1,
     "packages/apra-fleet-workflow/test/apra-fleet-workflow-busy-and-empty.test.mjs": 1,
     "packages/fleet-api-contract/tests/schemas.test.ts": 1,
     "scripts/build-sea.mjs": 5,
