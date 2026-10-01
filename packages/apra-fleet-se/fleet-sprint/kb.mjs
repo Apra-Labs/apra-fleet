@@ -239,7 +239,7 @@ export function createKbWorkClient(opts = {}) {
                 const parsed = parseResult(await callTool('kb_list', {
                     repo_path: repoPath,
                     ...scopeOf(repoPath),
-                    confidence: 'INFERRED',
+                    confidence: ['INFERRED'],
                     limit: KB_MAX_PROMOTION_CANDIDATES,
                 }));
                 const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];

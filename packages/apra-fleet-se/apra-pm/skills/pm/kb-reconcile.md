@@ -96,7 +96,7 @@ with that array. It reads the MERGED code via `code_context`/`code_impact`/
 `code_query` (never Glob/Grep) for each remaining pair, resolves what the
 code decides via `kb_resolve_contradiction`, falls back to a trust-tier
 tiebreak (`CONFIRMED > INFERRED > UNVERIFIED`) when the code is silent, and
-leaves genuinely undecidable pairs flagged for `/pm kb-review`. Active
+leaves genuinely undecidable pairs flagged for `/pm kb-review`. Any `kb_query`/`kb_list` lookup of a pair's entries must pass an explicit `confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` list: the read tools default to CONFIRMED undisputed entries only, and a disputed or unpromoted side would otherwise be invisible (`kb_query({ flagged_only: true })` is exempt). Active
 user-directives are NEVER auto-retired. See `agents/kb-reconciler.md` for the
 full process and the single-write-path rule.
 

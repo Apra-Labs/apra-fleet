@@ -52,7 +52,7 @@ describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
 
         const listCall = calls.find((c) => c.name === 'kb_list');
         assert.ok(listCall, 'kb_list was never called -- the reviewer gets no candidates');
-        assert.equal(listCall.args.confidence, 'INFERRED');
+        assert.deepEqual(listCall.args.confidence, ['INFERRED']);
         assert.equal(listCall.args.repo_path, REPO, 'kb_list must be scoped to the repo under review');
         assert.deepEqual(candidates.map((c) => c.id), ['kb-aaa', 'kb-bbb']);
     });
