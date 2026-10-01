@@ -95,7 +95,8 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
-import { verifyBeadsIdentity } from './beads-identity-check.mjs';
+import { verifyBeadsIdentity, createBeadsIdentityProber } from './beads-identity-check.mjs';
+import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
@@ -1285,6 +1286,29 @@ async function runSprintCycle(context) {
             return memberCaller.memberCall(member, tool, toolArgs);
         }
         : undefined;
+    // One beads-identity prober per run, shared by kb_maintainer selection
+    // (which reads each member's origin remote from it) and the beads identity
+    // precondition below: each member's probes run once, never twice.
+    const beadsIdentityProber = createBeadsIdentityProber({ command });
+
+    // kb_maintainer selection: one member per repository receives every KB
+    // write for that repository (kb-maintainer.mjs). Computed once here --
+    // after members are resolved, before any KB priming -- logged one line
+    // per repository, and stored on the sprint context (context.kbMaintainers,
+    // also the test seam) for the write-routing step and later phases. Only
+    // members member_detail resolves to an id are probed, so a sprint without
+    // member access issues no extra command.
+    const kbMaintainers = context.kbMaintainers ?? createKbMaintainerSelector({
+        members: physicalMembers,
+        roleMap: validated.roleMap,
+        resolveMember: (kbMemberCall && args && typeof args.callTool === 'function') ? createMemberDetailResolver(args.callTool) : undefined,
+        probeOrigin: async (member) => (await beadsIdentityProber.probe(member)).identity.repoRemote,
+        probeMember: kbMemberCall ? (record) => kbMemberCall(record, 'kb_stats', {}) : undefined,
+        log,
+    });
+    await kbMaintainers.selectAll();
+    context.kbMaintainers = kbMaintainers;
+
     const kbPriming = context.kbPriming ?? createKbPrimingClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
@@ -1323,7 +1347,11 @@ async function runSprintCycle(context) {
     // whenever roleMap is absent entirely (every member is a generalist).
     const roleMapSpecialists = new Set();
     if (validated.roleMap) {
-        for (const list of Object.values(validated.roleMap)) {
+        for (const [role, list] of Object.entries(validated.roleMap)) {
+            // kb_maintainer is not a dispatched role: naming a member as its
+            // repository's KB maintainer must not take it out of the
+            // generalist pool for unmapped roles.
+            if (role === ROLE_KB_MAINTAINER) continue;
             if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
         }
     }
@@ -1412,6 +1440,7 @@ async function runSprintCycle(context) {
         orchestratorMember,
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
+        prober: beadsIdentityProber,
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /

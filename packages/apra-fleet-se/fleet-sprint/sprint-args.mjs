@@ -6,6 +6,7 @@
 // unchanged. This is a move-only extraction: behaviour, validation order and
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
+import { ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
 
 // ---------------------------------------------------------------------------
@@ -301,6 +302,21 @@ export function validateArgs(args) {
                 );
             }
             normalizedRoleMap[key] = value;
+        }
+        // kb_maintainer is an accepted roleMap key but NOT a dispatched role:
+        // it names the member(s) that receive every KB write for their own
+        // repository (kb-maintainer.mjs). Its members must be sprint members,
+        // since selection probes them through the sprint's member access.
+        if (Object.prototype.hasOwnProperty.call(normalizedRoleMap, ROLE_KB_MAINTAINER)) {
+            const list = normalizedRoleMap[ROLE_KB_MAINTAINER];
+            if (!Array.isArray(list) || list.some((m) => typeof m !== 'string' || m.length === 0)) {
+                throw new Error(`[Arg Contract] Invalid roleMap.${ROLE_KB_MAINTAINER}: must be an array of non-empty member names.`);
+            }
+            const stray = list.filter((m) => !args.members.includes(m));
+            if (stray.length > 0) {
+                const quoted = stray.map((m) => '"' + m + '"').join(', ');
+                throw new Error(`[Arg Contract] Invalid roleMap.${ROLE_KB_MAINTAINER}: ${quoted} not in members.`);
+            }
         }
     }
 

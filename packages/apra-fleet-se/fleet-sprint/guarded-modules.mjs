@@ -70,6 +70,10 @@ export const GUARDED_MODULES = [
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
+    // Per-repository kb_maintainer selection. Issues no fleet call itself
+    // (every member access is injected by runner.js), registered so a future
+    // direct call added here is scanned from the start.
+    'kb-maintainer.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
