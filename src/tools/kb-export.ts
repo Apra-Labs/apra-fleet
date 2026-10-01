@@ -8,6 +8,7 @@ import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
+import type { KBEntry } from '../services/knowledge/types.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
@@ -40,7 +41,7 @@ export const kbExportSchema = z.object({
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
 
-interface CanonicalEntry {
+export interface CanonicalEntry {
   id: string;
   type: string;
   title: string;
@@ -56,7 +57,7 @@ interface CanonicalEntry {
  * legacy bare array, selecting on Array.isArray -- an older bible must keep
  * importing unchanged.
  */
-interface CanonicalBible {
+export interface CanonicalBible {
   version: 2;
   provenance: {
     /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
@@ -65,6 +66,59 @@ interface CanonicalBible {
     entry_count: number;
   };
   entries: CanonicalEntry[];
+}
+
+/** Map a KB entry to the bible's stable field set. Shared with kb_bible_commit. */
+export function toCanonicalEntry(e: KBEntry): CanonicalEntry {
+  return {
+    id: e.id,
+    type: e.type,
+    title: e.title,
+    summary: e.summary,
+    symbols: e.symbols,
+    source_files: e.source_files,
+    confidence: e.confidence,
+    updated_at: e.promoted_at || e.created_at,
+  };
+}
+
+/** Deterministic id ordering so re-exports produce meaningful diffs. */
+export function compareById(a: { id: string }, b: { id: string }): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * The entries of the bible already on disk, in either shape (legacy bare array
+ * or v2 envelope). null when the file is absent or unparseable.
+ */
+export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
+  if (!fs.existsSync(outPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+    const existing = Array.isArray(parsed)
+      ? parsed
+      : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
+    return existing as CanonicalEntry[] | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PATHSPEC-ONLY commit of the bible file with the dedicated pm-kb identity:
+ * git add <path> then a commit scoped to -- <path>, so unrelated staged or
+ * dirty working-tree state is never swept in. Throws on any git failure; the
+ * caller decides whether that is fatal. Never pushes.
+ */
+export function commitBiblePath(repoPath: string, outPath: string, message: string): void {
+  execFileSync('git', ['add', outPath], {
+    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  execFileSync(
+    'git',
+    ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
+    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
 }
 
 /**
@@ -124,7 +178,7 @@ function gitOrNull(repoPath: string, args: string[]): string | null {
 // ASCII too) and avoids template literals -- the pre-commit hook's
 // backtick-n/t/r scan false-positives on template-literal escape sequences,
 // the same gotcha T2.3's promote() fix worked around.
-function asciiSafeStringify(value: unknown): string {
+export function asciiSafeStringify(value: unknown): string {
   const json = JSON.stringify(value, null, 2);
   const maxAsciiCode = 127;
   const escapePrefix = String.fromCharCode(92) + 'u'; // backslash + 'u', built at runtime
@@ -145,9 +199,9 @@ function asciiSafeStringify(value: unknown): string {
 // The resolved anchor folder must exist on THIS host: kb_export writes the
 // bible file there, so an anchor naming a folder on another host (a remote
 // member's work folder) has nothing meaningful to do and must refuse.
-function requireLocalFolder(folder: string): string {
+export function requireLocalFolder(folder: string, toolName = 'kb_export'): string {
   if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
-    throw new Error('kb_export: repo folder does not exist or is not a directory on this host: ' + folder);
+    throw new Error(toolName + ': repo folder does not exist or is not a directory on this host: ' + folder);
   }
   return folder;
 }
@@ -227,7 +281,7 @@ export function _autoCommitEnabledForTest(): boolean {
   return autoCommitEnabled();
 }
 
-function isGitRepo(repoPath: string): boolean {
+export function isGitRepo(repoPath: string): boolean {
   return fs.existsSync(path.join(repoPath, '.git'));
 }
 
@@ -236,7 +290,7 @@ function isGitRepo(repoPath: string): boolean {
 // already matches HEAD for this one path -- re-exporting an identical bible
 // is a no-op, so there is nothing to commit. Any output (modified, or a
 // brand-new untracked file on the very first export) means it changed.
-function bibleContentChanged(repoPath: string, outPath: string): boolean {
+export function bibleContentChanged(repoPath: string, outPath: string): boolean {
   const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
     cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
   });
@@ -289,16 +343,9 @@ function maybeAutoCommitBible(
   try {
     if (!bibleContentChanged(repoPath, outPath)) return false;
 
-    execFileSync('git', ['add', outPath], {
-      cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
-    });
     const scopeLabel = scope === 'global' ? 'global knowledge bible' : 'knowledge bible';
     const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries';
-    execFileSync(
-      'git',
-      ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
-      { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    commitBiblePath(repoPath, outPath, message);
     return true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -325,17 +372,8 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries
-    .map(e => ({
-      id: e.id,
-      type: e.type,
-      title: e.title,
-      summary: e.summary,
-      symbols: e.symbols,
-      source_files: e.source_files,
-      confidence: e.confidence,
-      updated_at: e.promoted_at || e.created_at,
-    }))
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .map(toCanonicalEntry)
+    .sort(compareById);
 
   const fleetDir = path.join(repoPath, '.fleet');
   if (!fs.existsSync(fleetDir)) {

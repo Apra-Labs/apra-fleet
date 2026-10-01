@@ -205,7 +205,7 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
 describe('kb (self): no kb_* tool input schema declares a scope parameter', () => {
   it('every kb_* tool listed over HTTP declares none of repo, repo_path, repo_remote_url', async () => {
     const tools = (await (await connect()).listTools()).tools.filter(t => t.name.startsWith('kb_'));
-    expect(tools.length).toBe(16);
+    expect(tools.length).toBe(17);
     const offenders = tools.flatMap(t =>
       SCOPE_FIELDS.filter(f => Object.prototype.hasOwnProperty.call((t.inputSchema as { properties?: object }).properties ?? {}, f))
         .map(f => `${t.name}.${f}`));

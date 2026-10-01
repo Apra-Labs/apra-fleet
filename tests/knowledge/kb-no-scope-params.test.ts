@@ -25,7 +25,7 @@ async function registeredKbShapes(): Promise<Map<string, Record<string, unknown>
 describe('kb_* tool input schemas declare no scope parameter', () => {
   it('enumerates every registered kb_* tool and finds no repo, repo_path or repo_remote_url', async () => {
     const shapes = await registeredKbShapes();
-    expect(shapes.size).toBe(16);
+    expect(shapes.size).toBe(17);
     const offenders: string[] = [];
     for (const [tool, shape] of shapes) {
       for (const field of SCOPE_FIELDS) {
