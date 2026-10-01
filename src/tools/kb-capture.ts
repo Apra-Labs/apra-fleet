@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { computeFileHash } from '../services/knowledge/kb-service.js';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import type { Author, CaptureSource } from '../services/knowledge/types.js';
 
@@ -118,6 +118,15 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
     if (!tags.includes('directive:pending')) {
       tags = [...tags, 'directive:pending'];
     }
+  }
+
+  // A MEMBER session's capture lands in the machine's per-repo DB tagged with
+  // the caller's member:<uuid>, so its unconfirmed knowledge stays its own:
+  // MEMBER INFERRED/UNVERIFIED reads, kb_promote and kb_invalidate only ever
+  // see entries carrying that tag (kb-self.ts memberOwnerTag).
+  const ownerTag = memberOwnerTag(anchor);
+  if (ownerTag !== undefined && !tags.includes(ownerTag)) {
+    tags = [...tags, ownerTag];
   }
 
   // my-beads-db-0d3.2: derived, not set per branch. The flag used to be set

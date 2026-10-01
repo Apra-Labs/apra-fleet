@@ -116,6 +116,10 @@ export interface CaptureOpts {
 export interface EntryTrustFilter {
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope (kb-self.ts memberOwnerTag): only entries whose tags carry
+  // this exact value (member:<uuid>). Internal only -- set by the tool handlers
+  // from the session identity, never from a deserialized route.
+  owner_tag?: string;
 }
 
 export interface QueryOptions {
@@ -150,6 +154,8 @@ export interface QueryOptions {
   // to list exactly the disputed entries.
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -179,6 +185,8 @@ export interface PrimeOptions {
   // this layer (the kb_session_prime tool applies the CONFIRMED-undisputed default).
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
 }
 
 export interface PrimedContext {

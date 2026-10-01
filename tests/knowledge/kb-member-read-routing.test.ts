@@ -125,12 +125,14 @@ describe('MEMBER session reads come from the checkout bible view', () => {
     expect(out.bible).toMatchObject({ present: true, entries: 3 });
   });
 
-  it('an explicit INFERRED/UNVERIFIED request keeps the per-repo behaviour', async () => {
+  it('an explicit INFERRED/UNVERIFIED request goes to the per-repo DB, own captures only', async () => {
+    // The per-repo 'repo-*' rows carry no member:<uuid> tag, so they are not
+    // this member's own: the request returns neither the bible nor them.
+    // Positive own-scope coverage: kb-member-own-scope.test.ts.
     const q = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo pipeline', confidence: [...ALL_TIERS] })));
-    expect(ids(q.l1_results)).toEqual(expect.arrayContaining(['repo-1', 'repo-inferred']));
-    expect(ids(q.l1_results)).not.toContain('bible-1');
+    expect(ids(q.l1_results)).toEqual([]);
     const l = JSON.parse(await asMember(() => kbList({ confidence: ['INFERRED'] })));
-    expect(ids(l.results)).toEqual(['repo-inferred']);
+    expect(ids(l.results)).toEqual([]);
   });
 });
 

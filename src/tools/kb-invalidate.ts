@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { getSessionMemberId } from '../services/tool-scope.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
@@ -42,6 +43,11 @@ export async function kbInvalidate(input: KbInvalidateInput, anchor?: KbAnchor):
   validateFilePaths(input.files!);
 
   const providers = await getSelfKbProviders(anchor);
-  const { invalidated } = await providers.project.invalidate(input.files!);
+  // MEMBER session: only the caller's own captures (member:<uuid>) for these
+  // files are invalidated; other members' entries are left untouched.
+  const ownerTag = memberOwnerTag(anchor);
+  const { invalidated } = ownerTag !== undefined
+    ? await requireSqliteProject(providers.project, 'kb_invalidate').invalidate(input.files!, { ownerTag })
+    : await providers.project.invalidate(input.files!);
   return JSON.stringify({ invalidated, files: input.files });
 }

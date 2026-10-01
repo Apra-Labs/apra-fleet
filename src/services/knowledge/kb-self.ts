@@ -149,12 +149,32 @@ export async function getSelfKbProviders(anchor?: KbAnchor): Promise<KbProviders
   return getKbProviders(resolved.folder, resolved.remoteUrl);
 }
 
+/**
+ * The own-scope tag of the calling MEMBER session, 'member:<uuid>', or
+ * undefined for a FULL session or an in-process caller passing an explicit
+ * KbAnchor (same predicate getSelfReadKb uses to pick the bible view).
+ * MEMBER captures carry this tag, and MEMBER INFERRED/UNVERIFIED reads,
+ * kb_promote and kb_invalidate act only on entries carrying it.
+ */
+export function memberOwnerTag(anchor?: KbAnchor): string | undefined {
+  if (anchor !== undefined) return undefined;
+  const memberId = getSessionMemberId();
+  return memberId === undefined ? undefined : `member:${memberId}`;
+}
+
 /** KB providers for a read-only kb_* call, plus the anchor they were resolved from. */
 export interface SelfReadKb {
   providers: KbProviders;
   anchor: KbAnchor;
   /** True when `providers.project` is the member's in-memory bible view. */
   memberView: boolean;
+  /**
+   * Set when a MEMBER session explicitly asked for INFERRED/UNVERIFIED: the
+   * request is answered from the per-repo DB and every read must return only
+   * entries carrying this tag (member:<uuid>), so a member never sees another
+   * member's unconfirmed captures even when they share a machine.
+   */
+  ownerTag?: string;
 }
 
 /**
@@ -166,6 +186,7 @@ export interface SelfReadKb {
  * passing an explicit KbAnchor, and a MEMBER request that explicitly names the
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
  * tiers are not the view's to answer). The global KB is unchanged either way.
+ * That last MEMBER case carries `ownerTag`: it sees only its own captures.
  */
 export async function getSelfReadKb(
   anchor?: KbAnchor,
@@ -181,10 +202,12 @@ export async function getSelfReadKb(
       memberView: true,
     };
   }
+  const ownerTag = memberOwnerTag(anchor);
   return {
     providers: await getKbProviders(resolved.folder, resolved.remoteUrl),
     anchor: resolved,
     memberView: false,
+    ...(ownerTag !== undefined ? { ownerTag } : {}),
   };
 }
 

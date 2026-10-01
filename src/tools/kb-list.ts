@@ -24,7 +24,9 @@ export type KbListInput = z.infer<typeof kbListSchema>;
 
 export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<string> {
   // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
-  const { providers } = await getSelfReadKb(anchor, input.confidence);
+  // An explicit INFERRED/UNVERIFIED request goes to the per-repo DB, own
+  // captures only (ownerTag).
+  const { providers, ownerTag } = await getSelfReadKb(anchor, input.confidence);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_list');
 
   const entries = await sqliteProvider.list({
@@ -35,6 +37,7 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
     module: input.module,
     symbol: input.symbol,
     tag: input.tag,
+    owner_tag: ownerTag,
     limit: input.limit,
   });
 

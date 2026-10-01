@@ -241,7 +241,9 @@ export const SCENARIO = [
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
-  { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
+  // Every session here is a MEMBER session, so kb_feedback is the typed
+  // E-MEMBER-VIEW-READ-ONLY refusal (the member's bible view is read-only).
+  { tool: 'kb_feedback', case: 'refusal-member-view-read-only', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
   { tool: 'kb_capture', case: 'happy-contradiction-a', captureId: 'BROKEN' },
   { tool: 'kb_capture', case: 'happy-contradiction-b', captureId: 'FIXED' },

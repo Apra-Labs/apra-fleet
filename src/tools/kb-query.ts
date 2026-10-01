@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 const L2_CONTENT_CAP = 3200;
 
@@ -35,9 +36,11 @@ export type KbQueryInput = z.infer<typeof kbQuerySchema>;
 // does not (a remote KB server predating the filter ignores unknown params),
 // so the filter is a guarantee of this tool, not of whichever store answered.
 function passesTrustFilter(
-  e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null },
+  e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null; tags?: string[] },
   input: KbQueryInput,
+  ownerTag?: string,
 ): boolean {
+  if (ownerTag !== undefined && !(e.tags ?? []).includes(ownerTag)) return false;
   if (input.confidence?.length && !input.confidence.includes(e.confidence as NonNullable<KbQueryInput['confidence']>[number])) return false;
   if (input.exclude_disputed && (e.flagged_for_review || e.contradiction_of)) return false;
   return true;
@@ -54,7 +57,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // A MEMBER session reads its checkout bible view unless it explicitly asks
   // for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb); flagged_only ignores
   // the confidence filter, so it is answered from the view too.
-  const { providers } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
+  // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
+  // per-repo DB and sees only the caller's own captures (ownerTag).
+  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
+  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
 
   if (input.flagged_only) {
     const flaggedOpts = {
@@ -104,23 +110,24 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     include_superseded: input.include_stale ?? false,
     confidence: input.confidence,
     exclude_disputed: input.exclude_disputed,
+    owner_tag: ownerTag,
   };
 
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
   // after the merge would let an excluded project entry shadow an admissible
   // global entry of the same title and then vanish, taking both with it.
-  const filtering = Boolean(input.confidence?.length || input.exclude_disputed);
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
   const trustedL1 = async (provider: typeof providers.project) => {
     const first = await provider.query(queryOpts);
     if (!filtering) return first.results;
-    let kept = first.results.filter(e => passesTrustFilter(e, input));
+    let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
     // A provider that ignored the filter may have spent its whole limit on
     // entries just dropped here. A full page that filtered short is the only
     // signal of that (the sqlite provider filters in SQL, so it never trips
     // this); re-ask once with a wider window and trim back to the limit.
     if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
       const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
-      kept = wider.results.filter(e => passesTrustFilter(e, input));
+      kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
     }
     return kept.slice(0, queryOpts.limit);
   };
@@ -166,7 +173,8 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
       relatedClaims = (await providers.project.relatedClaims(top5Ids, undefined, {
         confidence: input.confidence,
         exclude_disputed: input.exclude_disputed,
-      })).filter(e => passesTrustFilter(e, input));
+        owner_tag: ownerTag,
+      })).filter(e => passesTrustFilter(e, input, ownerTag));
     } catch {
       relatedClaims = [];
     }

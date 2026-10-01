@@ -8,6 +8,7 @@ const providerState = vi.hoisted(() => ({ p: undefined as unknown }));
 vi.mock('../../src/services/tool-scope.js', () => ({ getSessionMemberId: () => memberState.id }));
 vi.mock('../../src/services/knowledge/kb-self.js', () => ({
   getSelfKbProviders: async () => ({ project: providerState.p, global: {}, projectSlug: 'slug' }),
+  memberOwnerTag: () => (memberState.id === undefined ? undefined : `member:${memberState.id}`),
 }));
 
 import { kbInvalidate } from '../../src/tools/kb-invalidate.js';

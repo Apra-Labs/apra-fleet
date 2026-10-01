@@ -40,7 +40,7 @@ import { wrapPowerShellEncoded } from '../../os/windows.js';
 import type { Agent } from '../../types.js';
 import type { KbAnchor } from './kb-self.js';
 
-export type KbMemberViewErrorCode = 'E-MEMBER-VIEW-REMOTE';
+export type KbMemberViewErrorCode = 'E-MEMBER-VIEW-REMOTE' | 'E-MEMBER-VIEW-READ-ONLY';
 
 export class KbMemberViewError extends Error {
   readonly code: KbMemberViewErrorCode;

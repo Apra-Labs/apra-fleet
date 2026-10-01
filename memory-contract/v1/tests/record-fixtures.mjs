@@ -438,12 +438,15 @@ await recordHappy('kb_freshness_sweep', 'happy', {
 });
 
 // --- kb_feedback ------------------------------------------------------
+// Every recorded session is a MEMBER session, whose KB reads come from the
+// read-only checkout bible view: kb_feedback refuses with
+// E-MEMBER-VIEW-READ-ONLY before any KB is opened and changes nothing.
 if (idFoo) {
-  await recordHappy('kb_feedback', 'happy', {
+  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', {
     id: idFoo,
     reason: 'On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.',
     role: 'reviewer',
-  });
+  }, 'E-MEMBER-VIEW-READ-ONLY');
 }
 
 // --- kb_harvest -------------------------------------------------------
