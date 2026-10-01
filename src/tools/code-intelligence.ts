@@ -186,6 +186,7 @@ export async function handleCodeReindex(_input: Record<string, unknown>, self: C
     return {
       outcome: 'not-started',
       reason: 'remote-member',
+      indexedCommit: null,
       detail: `The work folder '${self.repo}' is on another host; run code_reindex from a session on that host.`,
     };
   }
@@ -193,9 +194,9 @@ export async function handleCodeReindex(_input: Record<string, unknown>, self: C
 }
 
 /** code_status: last analyze run (status.json), live readiness, and the indexed commit. */
-export async function handleCodeStatus(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeStatusResult | { remote: true; repo: string; detail: string }> {
+export async function handleCodeStatus(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeStatusResult | { remote: true; repo: string; indexedCommit: null; detail: string }> {
   if (self.remote) {
-    return { remote: true, repo: self.repo, detail: `The work folder '${self.repo}' is on another host; run code_status from a session on that host.` };
+    return { remote: true, repo: self.repo, indexedCommit: null, detail: `The work folder '${self.repo}' is on another host; run code_status from a session on that host.` };
   }
   return codeStatus(self.repo);
 }

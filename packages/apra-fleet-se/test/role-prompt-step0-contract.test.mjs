@@ -220,9 +220,9 @@ test('direct kb_capture: an instruction is caught, a prohibition and the kb_capt
 });
 
 test('allowlist: a kb_/code_ tool name the member allowlist lacks is caught; output fields are not', () => {
-    assert.ok(!MEMBER_ALLOWED_TOOLS.includes('code_reindex'), 'premise: code_reindex is not registered');
-    const v = step0Violations('When present, call `code_reindex` first, then `kb_query`.', CTX_FIXTURE());
-    assert.ok(v.includes('names a tool outside the member allowlist: code_reindex'), JSON.stringify(v));
+    assert.ok(!MEMBER_ALLOWED_TOOLS.includes('code_nonexistent'), 'premise: code_nonexistent is not registered');
+    const v = step0Violations('When present, call `code_nonexistent` first, then `kb_query`.', CTX_FIXTURE());
+    assert.ok(v.includes('names a tool outside the member allowlist: code_nonexistent'), JSON.stringify(v));
     assert.ok(!v.some((x) => /kb_query/.test(x)));
     const fields = step0Violations('Return `kb_captures` and `kb_promotions`.', CTX_FIXTURE());
     assert.ok(!fields.some((x) => /allowlist/.test(x)), JSON.stringify(fields));

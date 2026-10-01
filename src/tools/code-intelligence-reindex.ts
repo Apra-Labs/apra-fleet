@@ -296,7 +296,10 @@ const FIRST_TICK_POLL_MS = 100;
 // file to observe; after this grace a live process with output is a tick.
 const LOCK_OBSERVE_GRACE_MS = 1500;
 
-export type CodeReindexResult =
+/** Every code_reindex response carries the commit the index is built at (null when none/remote). */
+export type CodeReindexResult = { indexedCommit: string | null } & CodeReindexOutcome;
+
+export type CodeReindexOutcome =
   | { outcome: 'started'; pid: number | null; lastLine: string; lockHeld: boolean; logPath: string }
   | { outcome: 'up-to-date'; lastLine: string; logPath: string }
   | { outcome: 'starting'; firstTick: false; pid: number | null; note: string; logPath: string }
@@ -314,6 +317,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * outcome is 'starting' (firstTick false), still not 'started'.
  */
 export async function codeReindex(repo: string, boundMs: number = FIRST_TICK_BOUND_MS): Promise<CodeReindexResult> {
+  const r = await codeReindexOutcome(repo, boundMs);
+  let indexedCommit: string | null = null;
+  try { indexedCommit = readGitNexusIndexState(repo).lastCommit || null; } catch { /* never throw on IO */ }
+  return { ...r, indexedCommit };
+}
+
+async function codeReindexOutcome(repo: string, boundMs: number): Promise<CodeReindexOutcome> {
   const out = spawnAnalyze(repo);
   if (!out.started) {
     if (out.reason === 'already-running') {

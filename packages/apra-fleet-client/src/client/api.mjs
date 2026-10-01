@@ -849,7 +849,9 @@ export class ApraFleet {
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
      * 'not-started'; a not-started result carries a typed `reason`
      * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
-     * 'spawn-failed' | 'remote-member'). Poll codeStatus() for completion.
+     * 'spawn-failed' | 'remote-member'). Every result carries
+     * `indexedCommit` (the commit the index is built at, or null when there
+     * is no index or the folder is remote). Poll codeStatus() for completion.
      */
     async codeReindex() {
         return this.mcpClient.callTool('code_reindex', {});
@@ -860,7 +862,8 @@ export class ApraFleet {
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
      * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
-     * `logPath`. Extract the JSON with parseToolJson().
+     * `logPath`. A remote work folder returns { remote: true, repo,
+     * indexedCommit: null, detail }. Extract the JSON with parseToolJson().
      */
     async codeStatus() {
         return this.mcpClient.callTool('code_status', {});
