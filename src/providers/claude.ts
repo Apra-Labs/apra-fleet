@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
@@ -737,7 +738,9 @@ export interface WorkspaceTrustStagingNames {
 }
 
 export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
-  const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  // CSPRNG, not Math.random: the names sit in the member's home next to
+  // .claude.json, so they should not be predictable.
+  const token = `${process.pid}-${randomBytes(4).toString('hex')}`;
   return {
     tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
     b64Rel: `.claude.json.fleet-trust-${token}.b64`,
