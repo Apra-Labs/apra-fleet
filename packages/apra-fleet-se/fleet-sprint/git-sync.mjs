@@ -624,6 +624,46 @@ export function createGitSync(deps = {}) {
             return { safe: true };
         },
         /**
+         * Whether origin's sprint branch holds the member checkout's bible --
+         * asked when kb_bible_commit committed nothing, so a bible commit an
+         * earlier round could not push is not mistaken for a published one.
+         * Resolves { unpushed: true } when a local-only commit
+         * (origin/<branch>..HEAD) touches `bibleFile`, { unpushed: false }
+         * when no uncommitted bible change exists and the bible at HEAD equals
+         * origin's, and { unpushed: null, reason } otherwise (an uncommitted
+         * bible change, a HEAD whose bible differs from origin's with no
+         * local-only commit holding it, any git failure). Git strings are
+         * built in JS (no shell expansion) so a PowerShell member works.
+         */
+        bibleUnpushed: async (memberName, bibleFile) => {
+            if (typeof branch !== 'string' || branch.length === 0) return { unpushed: null, reason: 'no sprint branch is bound' };
+            const remoteTip = `origin/${branch}`;
+            const status = await command(`git status --porcelain --untracked-files=all -- ${bibleFile}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `check for an uncommitted bible change on '${memberName}'`,
+            });
+            if (!status || !status.ok) return { unpushed: null, reason: 'could not read the working tree status of the bible' };
+            if (typeof status.output === 'string' && status.output.trim().length > 0) {
+                return { unpushed: null, reason: `${bibleFile} has an uncommitted change that no commit holds` };
+            }
+            const local = await command(`git log -m --name-only --pretty=format: ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `list local-only commits for the bible publication check on '${memberName}'`,
+            });
+            if (!local || !local.ok) return { unpushed: null, reason: `could not list local-only commits against ${remoteTip}` };
+            const files = String(local.output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            if (files.includes(bibleFile)) return { unpushed: true };
+            const diff = await command(`git diff --name-only ${remoteTip} HEAD -- ${bibleFile}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `compare the bible with ${remoteTip} on '${memberName}'`,
+            });
+            if (!diff || !diff.ok) return { unpushed: null, reason: `could not compare ${bibleFile} with ${remoteTip}` };
+            if (typeof diff.output === 'string' && diff.output.trim().length > 0) {
+                return { unpushed: null, reason: `${bibleFile} at HEAD differs from ${remoteTip} and no local-only commit holds it` };
+            }
+            return { unpushed: false };
+        },
+        /**
          * The branch a member currently has checked out, next to the sprint
          * branch it is expected to be on -- the KB bible commit's guard, so
          * no G-pull, reset, commit or push ever runs on a maintainer that sits

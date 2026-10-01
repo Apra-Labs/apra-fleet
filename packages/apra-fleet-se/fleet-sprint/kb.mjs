@@ -215,6 +215,9 @@ function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
 }
 
+/** The committed bible, relative to the maintainer's checkout root. */
+const BIBLE_FILE = '.fleet/kb-canonical.json';
+
 /**
  * memberCall error codes that mean the TOOL refused the call (the member was
  * reached and answered). Every other coded error -- a connect failure, a
@@ -268,8 +271,12 @@ function memberNameOf(member) {
  * in-progress rebase, G-pull onto the new remote tip, kb_bible_commit again
  * with the same ids (it merges at entry level, so the concurrent change's
  * entries survive with no manual merge) and G-push again. A second failure
- * keeps the ids queued for the next round with a WARN. After seal() (a FAIL
- * verdict or an aborted sprint) nothing further is committed.
+ * keeps the ids queued for the next round with a WARN. When kb_bible_commit
+ * commits nothing (committed:false) the ids leave the queue only once origin
+ * is shown to hold the bible (opts.bibleUnpushed): an earlier round's bible
+ * commit still unpushed on the maintainer is G-pushed (same retry and reset
+ * guards), and an undecidable check keeps the ids queued with a WARN. After
+ * seal() (a FAIL verdict or an aborted sprint) nothing further is committed.
  *
  * @param {{
  *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
@@ -280,12 +287,13 @@ function memberNameOf(member) {
  *   bibleBase?: (memberName: string) => Promise<{ baseBranch: string, baseCommit: string }|null>,
  *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
  *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
+ *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
  *   sprintStartMs?: number|(() => number),
  *   log?: Function,
  * }} opts
  */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, log = () => {} } = opts;
+    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, log = () => {} } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
@@ -524,15 +532,42 @@ export function createKbWorkClient(opts = {}) {
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
-        // Nothing committed (every id skipped, or the entry set unchanged):
-        // there is nothing to publish.
-        if (result.committed === false) return { ok: true, result, pushed: false };
+        // Nothing committed (every id skipped, or the entry set unchanged).
+        // That alone does not mean the entries are published: an earlier
+        // round's bible commit may still sit unpushed on the maintainer (its
+        // G-push was rejected and the reset onto the remote tip was refused to
+        // protect unrelated local work). Only origin decides: when it already
+        // holds the checkout's bible there is nothing to push; when a local
+        // commit holds it, push that commit; otherwise (or when it cannot be
+        // established) the ids stay queued.
+        if (result.committed === false) {
+            const where = await bibleOnOrigin(maintainer);
+            if (where.unpushed === false) return { ok: true, result, pushed: false };
+            if (where.unpushed !== true) return { ok: false, stage: 'publication check', error: where.reason || 'whether origin holds the bible could not be established' };
+            log(`[kb-work] kb_bible_commit made no new commit on maintainer '${maintainer}', but an earlier bible commit is not on origin yet -- pushing it`);
+        }
         try {
             await gPush(maintainer);
         } catch (err) {
             return { ok: false, stage: 'G-push', error: errText(err) };
         }
         return { ok: true, result, pushed: true };
+    }
+
+    /**
+     * Whether origin's sprint branch already holds the maintainer checkout's
+     * bible, through the injected bibleUnpushed probe. Resolves
+     * { unpushed: false } when it does, { unpushed: true } when a local-only
+     * commit holds the bible, or { unpushed: null, reason } when that cannot
+     * be established (no probe wired, a git failure, a bible change that is
+     * not committed) -- never assumes published. Never throws.
+     */
+    async function bibleOnOrigin(maintainer) {
+        if (typeof bibleUnpushed !== 'function') return { unpushed: null, reason: 'no publication check is wired for the bible commit' };
+        let r;
+        try { r = await bibleUnpushed(maintainer, BIBLE_FILE); } catch (err) { return { unpushed: null, reason: errText(err) }; }
+        if (r && (r.unpushed === true || r.unpushed === false)) return { unpushed: r.unpushed };
+        return { unpushed: null, reason: (r && r.reason) || 'the publication check returned no answer' };
     }
 
     /**
@@ -544,7 +579,7 @@ export function createKbWorkClient(opts = {}) {
     async function resetIsSafe(maintainer, repo) {
         if (typeof canResetCheckout !== 'function') return true;
         let verdict;
-        try { verdict = await canResetCheckout(maintainer, '.fleet/kb-canonical.json'); } catch (err) { verdict = { safe: false, reason: errText(err) }; }
+        try { verdict = await canResetCheckout(maintainer, BIBLE_FILE); } catch (err) { verdict = { safe: false, reason: errText(err) }; }
         if (verdict && verdict.safe) return true;
         log(`[kb-work] WARN: not resetting maintainer '${maintainer}' (${repo}) onto the remote tip: ${(verdict && verdict.reason) || 'unknown'} -- unrelated local work was preserved; the bible confirmations stay queued for the next round`);
         return false;
@@ -762,6 +797,18 @@ export function createKbWorkClient(opts = {}) {
             const out = [];
             for (const ids of confirmations.values()) out.push(...ids);
             return out;
+        },
+        /**
+         * Per repository, the confirmations not yet in a pushed bible commit,
+         * for the persisted sprint analysis: [{ repo, count }] (repositories
+         * with none are left out), plus why bible commits were sealed, if
+         * they were.
+         * @returns {{ repos: Array<{ repo: string, count: number }>, sealedReason: string|null }}
+         */
+        unpublishedBible() {
+            const repos = [];
+            for (const [repo, ids] of confirmations) if (ids.size > 0) repos.push({ repo, count: ids.size });
+            return { repos, sealedReason };
         },
         /**
          * The maintainer member record a reviewer's KB reads and judgements

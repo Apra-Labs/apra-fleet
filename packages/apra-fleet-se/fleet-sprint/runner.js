@@ -1393,6 +1393,9 @@ async function runSprintCycle(context) {
         // The bible-commit branch guard: no G-pull, reset, commit or push on a
         // maintainer whose checkout is not the sprint branch.
         checkedOutBranch: (maintainerName) => gitSync.checkedOutBranch(maintainerName),
+        // After a kb_bible_commit that committed nothing: does origin hold the
+        // bible, or is an earlier round's bible commit still unpushed?
+        bibleUnpushed: (maintainerName, bibleFile) => gitSync.bibleUnpushed(maintainerName, bibleFile),
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,

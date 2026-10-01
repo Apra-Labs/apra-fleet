@@ -22,7 +22,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -46,6 +46,13 @@ function harness({ pushFailures = 0, committed = true } = {}) {
         },
         abortRebase: async (m) => { events.push({ ev: 'rebase--abort', member: m }); return false; },
         bibleBase: async () => BASE,
+        // The publication check after a committed:false: `unpushed` answers it
+        // (false: origin holds the bible; true: a local bible commit is not
+        // pushed; null: undecidable).
+        bibleUnpushed: async (m, file) => {
+            events.push({ ev: 'publication-check', member: m, file });
+            return unpushed === null ? { unpushed: null, reason: 'git failed in the test' } : { unpushed };
+        },
         log: (m) => logs.push(m),
     });
     return { client, events, logs };
@@ -141,7 +148,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
 
         await client.commitRound();
 
-        assert.deepEqual(gitAndBible(events.slice(before)), ['G-pull', 'kb_bible_commit']);
+        assert.deepEqual(gitAndBible(events.slice(before)), ['G-pull', 'kb_bible_commit', 'publication-check']);
         assert.deepEqual(client.pendingConfirmations(), []);
     });
 

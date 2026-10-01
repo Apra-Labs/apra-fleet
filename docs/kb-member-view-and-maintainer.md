@@ -96,5 +96,16 @@ preserved. The doer-retry reset to the remote tip is a separate path and is
 unchanged. The guard compares against `origin/<branch>`; it assumes the default
 remote.
 
+A `committed:false` answer (entry set unchanged) does not by itself mean the
+round is published: when the reset guard refused a reset, an earlier round's
+bible commit can still sit unpushed on the maintainer. After `committed:false`
+the engine checks the checkout against `origin/<branch>`: if a local-only
+commit touches the bible it is pushed (same retry and reset guards as a new
+commit); if origin already holds the bible the ids leave the queue with
+"already in the bible -- nothing to push"; otherwise (an uncommitted bible
+change, a git failure, no check wired) the ids stay queued with a warning.
+Confirmations still unpublished when the analysis document is written are
+listed in its "KB bible" section, per repository with a count.
+
 `kb_bible_commit` is declared in `memory-contract/v1` and the
 `apra-fleet-client` package.
