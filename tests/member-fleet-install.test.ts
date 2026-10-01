@@ -250,7 +250,8 @@ describe('version probe', () => {
   });
 
   const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
-  it.skipIf(!hasPwsh || process.platform === 'win32')('live pwsh: a native exe that prints a version but exits non-zero is reported EXEC_FAILED', () => {
+  // Three pwsh spawns on cold start take ~2s each, so 6s minimum + margin for setup/teardown
+  it.skipIf(!hasPwsh || process.platform === 'win32')('live pwsh: a native exe that prints a version but exits non-zero is reported EXEC_FAILED', { timeout: 20000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mfi-probe-'));
     try {
       const failing = path.join(dir, 'apra-fleet');
