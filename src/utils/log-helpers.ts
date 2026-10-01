@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomInt } from 'node:crypto';
 import { FLEET_DIR } from '../paths.js';
 import { redactSecretTokens } from '../services/secret-token.js';
 
@@ -78,6 +79,21 @@ const LEVEL_PREFIX: Record<'info' | 'warn' | 'error', string> = {
   error: '[fleet:error]',
 };
 
+const INV_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
+const INV_LENGTH = 5;
+
+/**
+ * Per-invocation correlation id: 5 lowercase base36 chars. CSPRNG, not
+ * Math.random -- besides tagging log lines and the prompt instruction, the
+ * id names the durable output file a Linux member tees into under the
+ * shared /tmp (see durableOutputPath), so it must not be predictable.
+ */
+export function newInvocationId(): string {
+  let id = '';
+  for (let i = 0; i < INV_LENGTH; i++) id += INV_ALPHABET[randomInt(INV_ALPHABET.length)];
+  return id;
+}
+
 export class LogScope {
   private readonly inv: string;
   private readonly start: number;
@@ -85,7 +101,7 @@ export class LogScope {
   private readonly agent?: LogAgent;
 
   constructor(tag: string, entryMsg: string, agent?: LogAgent) {
-    this.inv   = Math.random().toString(36).slice(2, 7);
+    this.inv   = newInvocationId();
     this.start = Date.now();
     this.tag   = tag;
     this.agent = agent;

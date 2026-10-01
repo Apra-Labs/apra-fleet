@@ -174,6 +174,11 @@ export function buildOptionsSpec() {
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
         // shared-workspace mode (same-HEAD). Mode is never inferred silently.
         sync: { type: 'boolean' },
+        // Explicitly skip the once-per-sprint regression pass (forwarded as the
+        // runner's skip_regression arg; the supervisor sets it from the launch
+        // body's phases.regression:"skip"). Never silent: logged, and reported in
+        // the sprint analysis and the PR body.
+        'skip-regression': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -223,6 +228,8 @@ Options:
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
                                 uses legacy shared-workspace mode (all members on the same HEAD).
+      --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
+                                sprint analysis and the PR body. Integration tests still run.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -323,7 +330,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -352,6 +359,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // dispatch so deploy.md's active-sprints gate can recognize this sprint's
     // OWN reservation instead of stopping on it.
     if (runId !== undefined) args.run_id = runId;
+    // Only forwarded when set, so a default launch's runner args are unchanged.
+    if (skipRegression === true) args.skip_regression = true;
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
@@ -1038,6 +1047,7 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                skipRegression: Boolean(values['skip-regression']),
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

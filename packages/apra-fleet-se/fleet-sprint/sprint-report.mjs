@@ -85,12 +85,17 @@ export function buildAnalysisText({
     // as "nothing was skipped".
     finalDeferredAtGoalIds = [],
     regressionResult = null,
+    // Set when the pass was deliberately skipped (e.g. 'launch option'), so the
+    // report says so instead of the misleading "no playbook" line.
+    regressionSkippedBy = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
     // beads, so they never appear in the open-at-goal count and are reported
     // separately here.
-    const regressionLines = regressionResult === null
+    const regressionLines = regressionSkippedBy
+        ? [`Regression pass: skipped by ${regressionSkippedBy} -- not run this sprint.`]
+        : regressionResult === null
         ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
         : [
             `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'} `
