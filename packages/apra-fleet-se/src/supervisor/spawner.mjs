@@ -195,13 +195,13 @@ export async function allocateFreePort(opts = {}) {
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
- *   extraArgs?: string[],
+ *   extraArgs?: string[], skipRegression?: boolean,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -225,6 +225,7 @@ export function buildSprintArgv(opts = {}) {
         args.push('--role-map', typeof roleMap === 'string' ? roleMap : JSON.stringify(roleMap));
     }
     if (budget !== undefined) args.push('--budget', String(budget));
+    if (skipRegression === true) args.push('--skip-regression');
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into

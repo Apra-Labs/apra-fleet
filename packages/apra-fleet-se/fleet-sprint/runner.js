@@ -3118,8 +3118,17 @@ async function runSprintCycle(context) {
     // part 2 provisions its own fresh sandbox install, so neither depends on
     // the per-cycle Deploy target.
     let regressionResult = null;
-    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md', getMemberForRole('regression-test-runner'));
-    if (hasRegressionPlaybook) {
+    // An explicit launch option (skip_regression) skips the pass outright --
+    // checked BEFORE the playbook probe so a deliberate skip is never reported
+    // as "no playbook found". The skip is carried to the sprint report and the
+    // PR body (regressionSkippedBy) so it can never read as a pass.
+    const regressionSkippedBy = validated.skipRegression ? 'launch option' : null;
+    const hasRegressionPlaybook = regressionSkippedBy
+        ? false
+        : await probeFileExists('regression-test-playbook.md', getMemberForRole('regression-test-runner'));
+    if (regressionSkippedBy) {
+        log(`Skipping Regression Test Phase: skipped by ${regressionSkippedBy} (skip_regression).`);
+    } else if (hasRegressionPlaybook) {
         // The phase body lives in ./phases/regression-test.mjs
         // (apra-fleet-3swo.6.6). The probeFileExists call that produces
         // hasRegressionPlaybook, the `let regressionResult = null` default and
@@ -3152,7 +3161,7 @@ async function runSprintCycle(context) {
         closedCountHistory, highWaterClosedCount,
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
-        finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult,
+        finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

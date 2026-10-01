@@ -25,6 +25,9 @@ short-circuits before anything downstream runs:
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
    and the engine itself re-check, single source of truth); `members` (a
    string array or a comma-separated string) non-empty after normalization.
+   Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
+   is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
+   `--skip-regression` to the child.
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
