@@ -29,6 +29,11 @@
 // concurrent change's rebase conflicts on .fleet/kb-canonical.json, the
 // ladder aborts it, and without the retry e1 never reaches origin.
 //
+// FALSIFICATION: reverting the committed:false publication check in kb.mjs
+// bibleAttempt (back to "committed:false -> nothing to publish") makes
+// scenarios 10 and 11 fail -- round 2 drops the ids (committed 0, pending 0)
+// while origin's bible never receives the entries.
+//
 // HOST GATING mirrors git-sync-real-repo.test.mjs: a host without a usable
 // git skips WITH the reason attached. Each test removes its temp repos.
 //
@@ -50,6 +55,7 @@ import {
     computeBranchEnsureMembers,
 } from '../fleet-sprint/runner.js';
 import { runEnsureSprintBranchPhase } from '../fleet-sprint/phases/ensure-sprint-branch.mjs';
+import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
@@ -110,6 +116,12 @@ function createFakeKb(fixture, { afterBibleCommit } = {}) {
             for (const id of merged) byId.set(id, { ...kb.get(id) });
             const entries = [...byId.values()];
             if (merged.length === 0) return { content: [{ text: JSON.stringify({ merged, skipped, entry_count: existing.length, committed: false }) }] };
+            // As the real handler: an unchanged entry set is a no-op -- no
+            // rewrite, no commit, committed:false (merged still lists the ids).
+            const canon = (list) => JSON.stringify([...list].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+            if (fs.existsSync(file) && canon(existing) === canon(entries)) {
+                return { content: [{ text: JSON.stringify({ merged, skipped, entry_count: entries.length, committed: false }) }] };
+            }
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.writeFileSync(file, serializeBible(entries, { commit: args.baseCommit, branch: args.baseBranch }), 'utf8');
             const add = await fixture.command(`git add -- ${BIBLE}`);
@@ -155,6 +167,7 @@ function makeEngine(fixture, fakeKb) {
         bibleBase: (m) => gitSync.resolveBibleBase(m),
         canResetCheckout: (m, f) => gitSync.canResetBibleCheckout(m, f),
         checkedOutBranch: (m) => gitSync.checkedOutBranch(m),
+        bibleUnpushed: (m, f) => gitSync.bibleUnpushed(m, f),
         log,
     });
     return { kbWork, gitSync, logs };
@@ -372,6 +385,101 @@ describe('review-round bible commit against a real git origin', { skip: support.
         assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'README.md'), 'utf8'), 'edited by the doer, uncommitted\n');
         assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
         assert.ok(logs.some((l) => /not resetting maintainer 'maint'.*unrelated local work was preserved/.test(l)), logs.join('\n'));
+    });
+
+    /** Commit unpushed doer work on the maintainer (it is usually also a doer); returns its sha. */
+    async function commitDoerWork() {
+        fs.writeFileSync(path.join(fixture.clonePath, 'doer-work.txt'), 'unpushed doer work\n', 'utf8');
+        assert.ok((await fixture.command('git add -- doer-work.txt')).ok);
+        const c = await fixture.command('git commit -m doer-unpushed-work');
+        assert.ok(c.ok, c.error);
+        return fixture.localTip();
+    }
+
+    test('10. an unpushed bible commit left by a refused reset (unpushed doer commit) is pushed by the next round although kb_bible_commit commits nothing', async () => {
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const hook = installRejectingHook(fixture);
+        const doerCommit = await commitDoerWork();
+        const tipBefore = fixture.originTip();
+
+        hook.on();
+        const first = await reviewRound(kbWork, ['e1']);
+        assert.deepEqual(first, { committed: 0, pending: 1 }, 'round 1: push rejected, reset refused');
+        assert.equal(fixture.originTip(), tipBefore, 'round 1 published nothing');
+        assert.ok(logs.some((l) => /not resetting maintainer 'maint'/.test(l)), logs.join('\n'));
+
+        hook.off();
+        const mark = fakeKb.calls.length;
+        const second = await kbWork.commitRound('review');
+
+        const commits = fakeKb.calls.slice(mark).filter((c) => c.tool === 'kb_bible_commit');
+        assert.equal(commits.length, 1, 'round 2 called kb_bible_commit once');
+        assert.deepEqual(second, { committed: 1, pending: 0 }, logs.join('\n'));
+        assert.deepEqual(kbWork.pendingConfirmations(), []);
+        const bible = readBible(fixture.originFileAt(BIBLE));
+        assert.ok(bible, 'the bible reached origin');
+        assert.deepEqual(bible.entries.map((e) => e.id), ['e1']);
+        assert.equal(fixture.originTip(), fixture.localTip(), 'the maintainer is in sync with origin');
+        assert.ok(fixture.isAncestor(doerCommit, 'HEAD'), 'the doer commit was never reset away');
+        assert.ok(logs.some((l) => /an earlier bible commit is not on origin yet -- pushing it/.test(l)), logs.join('\n'));
+        assert.ok(!logs.some((l) => /already in the bible -- nothing to push/.test(l)), 'never reported as already published');
+    });
+
+    test('11. an unpushed bible commit left by a refused reset (uncommitted tracked change) is pushed by the next round although kb_bible_commit commits nothing', async () => {
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const hook = installRejectingHook(fixture);
+        fs.writeFileSync(path.join(fixture.clonePath, 'README.md'), 'edited by the doer, uncommitted\n', 'utf8');
+        const tipBefore = fixture.originTip();
+
+        hook.on();
+        const first = await reviewRound(kbWork, ['e1']);
+        assert.deepEqual(first, { committed: 0, pending: 1 });
+        assert.equal(fixture.originTip(), tipBefore);
+
+        hook.off();
+        const second = await kbWork.commitRound('review');
+
+        assert.deepEqual(second, { committed: 1, pending: 0 }, logs.join('\n'));
+        assert.deepEqual(kbWork.pendingConfirmations(), []);
+        const bible = readBible(fixture.originFileAt(BIBLE));
+        assert.ok(bible, 'the bible reached origin');
+        assert.deepEqual(bible.entries.map((e) => e.id), ['e1']);
+        assert.equal(fixture.originTip(), fixture.localTip());
+        assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'README.md'), 'utf8'), 'edited by the doer, uncommitted\n', 'the uncommitted edit survives');
+    });
+
+    test('12. a push rejected in every round through the end keeps the ids pending, WARNs, and the sprint analysis names the repository and count', async () => {
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const hook = installRejectingHook(fixture);
+        await commitDoerWork();
+        const tipBefore = fixture.originTip();
+
+        hook.on();
+        await reviewRound(kbWork, ['e1', 'e2']);
+        const second = await kbWork.commitRound('final review');
+        const third = await kbWork.commitRound('harvest');
+        kbWork.warnPending();
+
+        assert.deepEqual(second, { committed: 0, pending: 2 });
+        assert.deepEqual(third, { committed: 0, pending: 2 });
+        assert.deepEqual(kbWork.pendingConfirmations(), ['e1', 'e2']);
+        assert.equal(fixture.originTip(), tipBefore, 'nothing ever reached origin');
+        assert.equal(logs.filter((l) => /^\[kb-work\] WARN: not resetting maintainer 'maint'.*stay queued/.test(l)).length, 3, 'each round WARNs and keeps the ids');
+        assert.ok(logs.some((l) => /^\[kb-work\] WARN: 2 confirmation\(s\) for example\.com\/org\/repo are not in a pushed bible commit/.test(l)), logs.join('\n'));
+        assert.ok(!logs.some((l) => /already in the bible -- nothing to push/.test(l)));
+
+        const analysis = buildAnalysisText({
+            targetIssues: ['scope-1'], branch: fixture.branch, baseBranch: BASE_BRANCH, cyclesRun: 1,
+            closedCountHistory: [], highWaterClosedCount: 0, deployFailures: [], integFailures: [], rejectedNewTasks: [],
+            finalVerdictResult: { verdict: 'PASS', notes: '' }, finalClosedCount: 0, finalOpenAtGoalCount: 0,
+            kbBibleUnpublished: kbWork.unpublishedBible(),
+        });
+        assert.match(analysis, /## KB bible/);
+        assert.match(analysis, /WARNING: bible not published/);
+        assert.match(analysis, /- example\.com\/org\/repo: 2 unpublished confirmation\(s\)\./);
     });
 
     test('9. a role-less maintainer starting on another branch is put on the sprint branch at setup; the bible lands on the sprint branch and the other branch is untouched', async () => {

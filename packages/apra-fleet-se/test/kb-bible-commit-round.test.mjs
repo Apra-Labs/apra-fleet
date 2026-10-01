@@ -152,6 +152,89 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.deepEqual(client.pendingConfirmations(), []);
     });
 
+    test('committed:false with origin already holding the entries removes the ids without a push', async () => {
+        const { client, events, logs } = harness({ committed: false, unpushed: false });
+        await confirm(client, ['e1', 'e2']);
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        const round = gitAndBible(events.slice(before));
+        assert.deepEqual(round, ['G-pull', 'kb_bible_commit', 'publication-check']);
+        assert.ok(!round.includes('G-push'), 'no push');
+        assert.equal(events.find((e) => e.ev === 'publication-check').file, '.fleet/kb-canonical.json');
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+        assert.ok(logs.some((l) => /2 confirmation\(s\) already in the bible -- nothing to push$/.test(l)), logs.join('\n'));
+    });
+
+    test('committed:false with an unpushed local bible commit pushes it and only then removes the ids', async () => {
+        const { client, events, logs } = harness({ committed: false, unpushed: true });
+        await confirm(client, ['e1']);
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(gitAndBible(events.slice(before)), ['G-pull', 'kb_bible_commit', 'publication-check', 'G-push']);
+        assert.deepEqual(out, { committed: 1, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+        assert.ok(!logs.some((l) => /already in the bible/.test(l)), logs.join('\n'));
+    });
+
+    test('committed:false with an unpushed bible commit whose push is rejected takes the same retry path and keeps the ids on a second failure', async () => {
+        const { client, events, logs } = harness({ committed: false, unpushed: true, pushFailures: 2 });
+        await confirm(client, ['e1']);
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(gitAndBible(events.slice(before)), [
+            'G-pull', 'kb_bible_commit', 'publication-check', 'G-push',
+            'rebase--abort', 'G-pull(reset)', 'kb_bible_commit', 'publication-check', 'G-push',
+            'rebase--abort', 'G-pull(reset)',
+        ]);
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.deepEqual(client.pendingConfirmations(), ['e1']);
+        assert.ok(logs.some((l) => /WARN: bible commit for .* failed at G-push/.test(l)), logs.join('\n'));
+    });
+
+    test('committed:false when the publication check cannot decide keeps the ids queued with a WARN and pushes nothing', async () => {
+        const { client, events, logs } = harness({ committed: false, unpushed: null });
+        await confirm(client, ['e1']);
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        assert.ok(!gitAndBible(events.slice(before)).includes('G-push'));
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.deepEqual(client.pendingConfirmations(), ['e1']);
+        assert.ok(logs.some((l) => /^\[kb-work\] WARN: bible commit for .* failed at publication check \(git failed in the test\) -- 1 confirmation\(s\) stay queued/.test(l)), logs.join('\n'));
+        assert.deepEqual(client.unpublishedBible(), { repos: [{ repo: REPO, count: 1 }], sealedReason: null });
+    });
+
+    test('committed:false with no publication check wired keeps the ids queued with a WARN -- never assumed published', async () => {
+        const logs = [];
+        const events = [];
+        const client = createKbWorkClient({
+            memberCall: async (m, tool, args) => {
+                events.push(tool);
+                return tool === 'kb_bible_commit' ? { merged: args.ids, skipped: [], committed: false } : {};
+            },
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async () => {},
+            gPush: async () => { events.push('G-push'); },
+            bibleBase: async () => BASE,
+            log: (m) => logs.push(m),
+        });
+        await confirm(client, ['e1']);
+
+        const out = await client.commitRound();
+
+        assert.ok(!events.includes('G-push'));
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.ok(logs.some((l) => /WARN: bible commit .* failed at publication check \(no publication check is wired/.test(l)), logs.join('\n'));
+    });
+
     test('after seal() (a FAIL verdict or an abort) nothing further is committed and the queue is not flushed', async () => {
         const { client, events } = harness();
         await confirm(client, ['e1']);
@@ -324,4 +407,60 @@ describe('commitRound: the branch guard on the maintainer checkout', () => {
         assert.equal(round[0], 'git rev-parse --abbrev-ref HEAD', JSON.stringify(round));
         assert.ok(round.some((c) => /^git push\b/.test(c)), JSON.stringify(round));
     });
+});
+
+// =============================================================================
+// createGitSync().bibleUnpushed: the publication probe over a fake command().
+// Every git string names only the sprint branch, carries no shell expansion,
+// and any git failure is undecidable (never "published").
+// =============================================================================
+
+function probeHarness(answers) {
+    const commands = [];
+    const command = async (cmd) => {
+        commands.push(cmd);
+        for (const [prefix, res] of answers) if (cmd.startsWith(prefix)) return res;
+        return { ok: true, output: '', error: null };
+    };
+    const gitSync = createGitSync({
+        brackets: createSyncBrackets(), command, log: () => {}, branch: SPRINT_BRANCH, baseBranch: 'main', args: {},
+        sprintId: 'sprint-kb-probe', ensureVcsAuthFresh: async () => {},
+        syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+    });
+    return { probe: (f = '.fleet/kb-canonical.json') => gitSync.bibleUnpushed('maint', f), commands };
+}
+
+describe('bibleUnpushed: does origin hold the maintainer checkout\'s bible?', () => {
+    const BIBLE = '.fleet/kb-canonical.json';
+    test('a local-only commit touching the bible is unpushed', async () => {
+        const { probe, commands } = probeHarness([['git log -m --name-only', { ok: true, output: `doer.txt\n${BIBLE}\n` }]]);
+        assert.deepEqual(await probe(), { unpushed: true });
+        for (const c of commands) {
+            assert.ok(!/[$`~]/.test(c), `no shell expansion: ${c}`);
+            for (const b of branchesNamed(c)) assert.equal(b, SPRINT_BRANCH, c);
+        }
+    });
+    test('a clean bible equal to origin with no local bible commit is published', async () => {
+        const { probe, commands } = probeHarness([['git log -m --name-only', { ok: true, output: 'doer.txt\n' }]]);
+        assert.deepEqual(await probe(), { unpushed: false });
+        assert.ok(commands.includes(`git diff --name-only origin/${SPRINT_BRANCH} HEAD -- ${BIBLE}`), JSON.stringify(commands));
+    });
+    test('an uncommitted bible change is undecidable', async () => {
+        const { probe } = probeHarness([['git status --porcelain', { ok: true, output: ` M ${BIBLE}\n` }]]);
+        const r = await probe();
+        assert.equal(r.unpushed, null);
+        assert.match(r.reason, /uncommitted change/);
+    });
+    test('a HEAD bible that differs from origin with no local commit holding it is undecidable', async () => {
+        const { probe } = probeHarness([['git diff --name-only', { ok: true, output: `${BIBLE}\n` }]]);
+        assert.equal((await probe()).unpushed, null);
+    });
+    for (const failing of ['git status --porcelain', 'git log -m --name-only', 'git diff --name-only']) {
+        test(`a failing '${failing}' is undecidable, never published`, async () => {
+            const { probe } = probeHarness([[failing, { ok: false, output: '', error: 'fatal: boom' }]]);
+            const r = await probe();
+            assert.equal(r.unpushed, null);
+            assert.ok(r.reason);
+        });
+    }
 });
