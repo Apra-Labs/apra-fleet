@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import { EventEmitter } from 'events';
 import { fileURLToPath } from 'url';
-import { createDashboardViewer } from '../src/viewer/index.mjs';
+import { createDashboardViewer, HTML_TEMPLATE } from '../src/viewer/index.mjs';
 import { resolveStringRefs } from '../src/viewer/lean-state.mjs';
 
 // Unit coverage for the generic once-per-publish summary hook and the
@@ -231,6 +231,34 @@ describe('viewer run summary (GET /state?summary=1)', () => {
             console.warn = origWarn;
         }
         assert.ok(warnings.some((w) => /summarize\(\) for namespace 'x' threw: boom/.test(w)));
+    });
+
+    test('client renderState dispatches workflow:summary:NS (null when absent) before workflow:state:NS', () => {
+        const html = HTML_TEMPLATE([]);
+        const start = html.indexOf('// Generic per-namespace summary hand-off');
+        assert.ok(start !== -1, 'template must contain the summary hand-off block');
+        const end = html.indexOf('if (isAutoScrolling)', start);
+        assert.ok(end !== -1);
+        const block = html.slice(start, end);
+        const events = [];
+        const doc = { dispatchEvent(e) { events.push([e.type, e.detail]); } };
+        class FakeCustomEvent { constructor(type, init) { this.type = type; this.detail = init.detail; } }
+        const run = new Function('state', 'document', 'CustomEvent', block);
+        run({
+            extensions: { a: { raw: 1 }, b: { raw: 2 } },
+            summary: { extensions: { a: { publishedAt: 't', n: 5 } } }
+        }, doc, FakeCustomEvent);
+        assert.deepStrictEqual(events, [
+            ['workflow:summary:a', { publishedAt: 't', n: 5 }],
+            ['workflow:summary:b', null],
+            ['workflow:state:a', { raw: 1 }],
+            ['workflow:state:b', { raw: 2 }]
+        ]);
+        // A frozen state with no summary at all (e.g. an older persisted
+        // run) dispatches null summaries and does not throw.
+        events.length = 0;
+        run({ extensions: { a: {} } }, doc, FakeCustomEvent);
+        assert.deepStrictEqual(events, [['workflow:summary:a', null], ['workflow:state:a', {}]]);
     });
 
     test('core summary code names no extension', () => {

@@ -1958,6 +1958,10 @@ async function runSprintCycle(context) {
     // round.
     async function updateDashboard() {
         let sprintTasks = [];
+        // When the sprint-tree bd fetch completed -- carried in the beads
+        // payload so the viewer's progress summary reports data age, not
+        // render/publish time.
+        let fetchedAt = null;
         try {
             // The no-args path is required here: any non-empty rest args route
             // through a second `bd list` query, and plain `bd list` defaults to
@@ -1965,6 +1969,7 @@ async function runSprintCycle(context) {
             // dashboard's sprint tree. No-args returns the shared `bd list
             // --all` fetch filtered to scope -- every status, one query fewer.
             sprintTasks = await bdListScoped('');
+            fetchedAt = new Date().toISOString();
             // A bead whose stored `status` is 'open' but which is NOT in the
             // scope's `--ready` set is blocked. The viewer only sees stored
             // status, so without this flag a deadlocked bead renders
@@ -2016,6 +2021,7 @@ async function runSprintCycle(context) {
             payload.decomposedParentIds = [...new Set(
                 sprintTasks.filter((b) => b && b.parent).map((b) => b.parent)
             )];
+            payload.fetchedAt = fetchedAt;
             publishState('beads', payload);
         }
     }

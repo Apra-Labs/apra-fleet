@@ -893,6 +893,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
         renderTreeIncremental(state.tree);
 
+        // Generic per-namespace summary hand-off (GET /state?summary=1's
+        // extensions map, computed server-side once per publish): dispatched
+        // BEFORE the matching workflow:state:NS event so an extension can
+        // cache it and render from it on that event. detail is null when
+        // the namespace has no summary yet.
+        const summaryExts = (state.summary && state.summary.extensions) || {};
+        const summaryNamespaces = new Set([...Object.keys(state.extensions || {}), ...Object.keys(summaryExts)]);
+        for (const ns of summaryNamespaces) {
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ns, { detail: summaryExts[ns] || null }));
+        }
+
         if (state.extensions) {
             for (const [ns, data] of Object.entries(state.extensions)) {
                 const extEvent = new CustomEvent('workflow:state:' + ns, { detail: data });
