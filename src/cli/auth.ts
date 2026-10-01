@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { escapePowerShellArg } from '../utils/shell-escape.js';
 
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
@@ -380,9 +381,19 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
 
 function setApiKeyInProfiles(envVarName: string, value: string): void {
   if (process.platform === 'win32') {
-    // Windows: set as user-level persistent environment variable
-    const escaped = value.replace(/'/g, "''"); // PowerShell single-quote escape
-    execSync(`powershell -Command "[Environment]::SetEnvironmentVariable('${envVarName}', '${escaped}', 'User')"`, { stdio: 'pipe' });
+    // Windows: set as user-level persistent environment variable. The script is
+    // passed via -EncodedCommand with no cmd.exe in between, so no quote in the
+    // value can escape the PowerShell single-quoted literal.
+    const script = `[Environment]::SetEnvironmentVariable(${escapePowerShellArg(envVarName)}, ${escapePowerShellArg(value)}, 'User')`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    try {
+      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
+    } catch (err: any) {
+      // Node's error message embeds the full command line (and PowerShell's
+      // stderr can echo the script), both of which carry the key -- never
+      // surface either; report only the exit status.
+      throw new Error(`powershell exited with status ${err?.status ?? 'unknown'} while setting ${envVarName}`);
+    }
     return;
   }
 

@@ -83,6 +83,50 @@ export function escapeGrepPattern(s: string): string {
 }
 
 /**
+ * Escape a literal string for use inside a sed POSIX basic regular expression
+ * delimited by `/`. Backslash is escaped first so an input backslash can never
+ * combine with a following character into an escape sequence. Characters that
+ * are only special in ERE (+ ? | ( ) { }) are left alone: GNU sed gives `\+`
+ * etc. a special meaning in BRE, so escaping them would change the match.
+ */
+export function escapeSedBasicRegex(s: string): string {
+  return s.replace(/[\\/.*[\]^$]/g, '\\$&');
+}
+
+/**
+ * Escape a string for use inside an AppleScript double-quoted string literal.
+ * Backslash is the AppleScript escape character, so it is doubled first;
+ * then embedded double quotes are backslash-escaped.
+ */
+export function escapeAppleScriptString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Quote one argument for a Windows command line as parsed by the MSVC CRT /
+ * CommandLineToArgvW (what node.exe and most native programs use). Backslashes
+ * are literal unless they precede a double quote, so runs of backslashes before
+ * a quote (or the closing quote) are doubled. This is NOT cmd.exe quoting --
+ * the result must never be handed to cmd.exe, which also expands % and treats
+ * & | ^ < > as operators.
+ */
+export function quoteWindowsArgv(arg: string): string {
+  if (arg !== '' && !/[\s"]/.test(arg)) return arg;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') { backslashes++; continue; }
+    if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2 + 1) + '"';
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+    }
+    backslashes = 0;
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"';
+}
+
+/**
  * Validate and sanitize a session ID to prevent injection.
  * Session IDs must be alphanumeric with dashes and underscores only.
  * Throws if the ID contains invalid characters.

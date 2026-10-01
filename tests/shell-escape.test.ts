@@ -7,8 +7,46 @@ import {
   escapeDoubleQuoted,
   escapeWindowsArg,
   escapeGrepPattern,
+  escapeSedBasicRegex,
+  escapeAppleScriptString,
+  quoteWindowsArgv,
   sanitizeSessionId,
 } from '../src/utils/shell-escape.js';
+
+describe('escapeSedBasicRegex', () => {
+  it('leaves a well-formed ssh key (type + base64) unchanged except for /', () => {
+    expect(escapeSedBasicRegex('ssh-ed25519 AAAA+b/c=')).toBe('ssh-ed25519 AAAA+b\\/c=');
+  });
+
+  it('escapes backslash first, then BRE metacharacters and the / delimiter', () => {
+    expect(escapeSedBasicRegex('a\\.b*[c]^$/')).toBe('a\\\\\\.b\\*\\[c\\]\\^\\$\\/');
+  });
+});
+
+describe('quoteWindowsArgv', () => {
+  it('leaves simple args bare and quotes empty/space-containing ones', () => {
+    expect(quoteWindowsArgv('--set')).toBe('--set');
+    expect(quoteWindowsArgv('C:\\a\\b')).toBe('C:\\a\\b');
+    expect(quoteWindowsArgv('')).toBe('""');
+    expect(quoteWindowsArgv('a b')).toBe('"a b"');
+  });
+
+  it('escapes quotes and doubles backslashes only before a quote or the closing quote', () => {
+    expect(quoteWindowsArgv('a"b')).toBe('"a\\"b"');
+    expect(quoteWindowsArgv('a\\"b')).toBe('"a\\\\\\"b"');
+    expect(quoteWindowsArgv('C:\\dir with space\\')).toBe('"C:\\dir with space\\\\"');
+  });
+});
+
+describe('escapeAppleScriptString', () => {
+  it('doubles backslashes before escaping double quotes', () => {
+    expect(escapeAppleScriptString('a\\"b')).toBe('a\\\\\\"b');
+  });
+
+  it('leaves plain text unchanged', () => {
+    expect(escapeAppleScriptString("it's $HOME")).toBe("it's $HOME");
+  });
+});
 
 describe('escapeShellArg', () => {
   it('wraps in single quotes and escapes embedded single quotes', () => {
