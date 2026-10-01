@@ -13,6 +13,9 @@ import {
   joinMemberPath,
   pruneLegacyMcpInMemberFile,
   readMemberJson,
+  MemberConfigError,
+  MemberConfigNotJsonError,
+  isGitTracked,
   writeMemberJson,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
@@ -272,17 +275,45 @@ export class OpenCodeProvider implements ProviderAdapter {
     const posix = isPosixShell(isWindows, ctx.shell);
     const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, ctx.shell);
 
-    const config = await readMemberJson(ctx.execCommand, file, posix);
+    let config: Record<string, unknown>;
+    try {
+      config = await readMemberJson(ctx.execCommand, file, posix);
+    } catch (e) {
+      // JSONC (comments / trailing commas) is common in opencode.json: report it
+      // as a typed, recoverable status and never rewrite the file.
+      if (e instanceof MemberConfigNotJsonError) {
+        throw new MemberConfigNotJsonError(file, 'is not strict JSON (JSONC comments or trailing commas?)', 'opencode-config-unparseable');
+      }
+      throw e;
+    }
     const mcp: Record<string, unknown> = (config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp))
       ? config.mcp as Record<string, unknown>
       : {};
+    const hadLegacy = LEGACY_MEMBER_MCP_SERVER_NAME in mcp;
     delete mcp[LEGACY_MEMBER_MCP_SERVER_NAME];
+    const fileExists = Object.keys(config).length > 0;
     let detail: string;
     if (url !== null) {
-      mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
-      config.mcp = mcp;
-      await writeMemberJson(ctx.execCommand, file, config, posix);
-      detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      const current = !!cur && typeof cur === 'object' && cur.type === 'remote' && cur.url === url && cur.enabled === true && Object.keys(cur).length === 3;
+      if (current && !hadLegacy) {
+        detail = `opencode: ${file} already up to date`;
+      } else {
+        if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+          throw new MemberConfigError(
+            'E-OPENCODE-CONFIG-TRACKED',
+            'opencode-config-tracked',
+            file,
+            `E-OPENCODE-CONFIG-TRACKED: ${file} is tracked by git; compose left it untouched (writing the member URL would dirty the repo). Untrack it or add the apra-fleet MCP entry to it yourself.`,
+          );
+        }
+        mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
+        config.mcp = mcp;
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      }
+    } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+      detail = `opencode: ${file} is tracked by git; left untouched`;
     } else {
       delete mcp[MEMBER_MCP_SERVER_NAME];
       if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
@@ -297,8 +328,15 @@ export class OpenCodeProvider implements ProviderAdapter {
 
     if (ctx.memberHomeDir) {
       const globalFile = joinMemberPath(ctx.memberHomeDir.trim(), '.config/opencode/opencode.json', isWindows, ctx.shell);
-      if (await pruneLegacyMcpInMemberFile(ctx.execCommand, globalFile, posix)) {
-        detail += `; pruned apra-fleet-member from ${globalFile}`;
+      try {
+        if (await pruneLegacyMcpInMemberFile(ctx.execCommand, globalFile, posix)) {
+          detail += `; pruned apra-fleet-member from ${globalFile}`;
+        }
+      } catch (e) {
+        // The global config is only pruned best-effort (it is often JSONC):
+        // an unreadable/unparseable one is left alone and never fails compose.
+        if (!(e instanceof MemberConfigError)) throw e;
+        detail += `; skipped pruning ${globalFile} (${e.code})`;
       }
     }
     return { workFolderFiles: [OPENCODE_PROJECT_CONFIG], detail };

@@ -639,6 +639,8 @@ async function syncMemberMcpConfig(
     if (e instanceof MemberConfigError) {
       // Recoverable: the sync wrote NOTHING to the file it could not safely
       // edit. Record why on the member and let the rest of compose succeed.
+      // Files compose DID write (permission configs) still stay out of `git status`.
+      try { await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell); } catch { /* best effort */ }
       recordFleetMcpStatus(agent.id, {
         state: 'unavailable',
         reason: e.reason,

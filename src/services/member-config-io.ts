@@ -170,6 +170,24 @@ export async function readMemberFile(exec: MemberExecFn, absPath: string, posix:
   return r.stdout ?? '';
 }
 
+/**
+ * True when git tracks `relPath` in the member work folder
+ * (`git ls-files --error-unmatch`). Not a repo / git missing / untracked all
+ * read as false. The command carries a resolved path only (no expansion), with
+ * the path form the member's shell expects.
+ */
+export async function isGitTracked(
+  exec: MemberExecFn,
+  workFolder: string,
+  relPath: string,
+  isWindows: boolean,
+  posix: boolean,
+): Promise<boolean> {
+  const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
+  const r = await exec(`git -C "${wf}" ls-files --error-unmatch -- "${relPath}"`, FS_OP_TIMEOUT_MS);
+  return r.code === 0;
+}
+
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty
  *  file; THROWS a typed MemberConfigError for an unreadable file or a non-empty
  *  file that is not a JSON object, so a caller can never clobber a file it
