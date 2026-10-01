@@ -164,6 +164,15 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**CI-status criteria never go on doer tasks**: a doer dispatch cannot trigger or
+re-run the target repository's CI workflows (its credential is refused), so a task
+whose acceptance criteria say "CI is green" / "the CI workflow passes on every OS"
+can never be closed by its doer and loops between doer and reviewer. Put such a
+criterion on the parent feature/bug instead, where the engine's CI gate (configured
+per sprint, not per task) triggers and awaits CI on the branch head and hands the
+engine-verified result to the reviewer. Doer tasks state what the doer can check
+locally (build, lint, the tests it can run itself).
+
 **Model tier** (required on every task, both impl and test): set the model tier as beads
 metadata at creation time, not in `--notes`:
 ```bash

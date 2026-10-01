@@ -29,7 +29,7 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
   `dispatch_timeout_s`, `usage_limit_max_wait_s`,
   `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `assignee`,
   `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
-  `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
+  `azdevops_pat_secret_name`, `ci_gate`, `callTool`). Several of these have no CLI flag
   and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
 - Re-validates issue ids and branch names against the same
   `ISSUE_ID_PATTERN`/`BRANCH_NAME_PATTERN` the CLI already checked (A7

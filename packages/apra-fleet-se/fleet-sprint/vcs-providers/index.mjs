@@ -251,6 +251,21 @@
  *                                          //   every AUTH_DENIED it produces
  *                                          //   keeps today's self-heal
  *                                          //   treatment.
+ *     ciGate: {                           // OPTIONAL; engine CI gate axis
+ *       requiredPermission: string,       //   (../ci-gate.mjs). Lets the
+ *       build(action, params),            //   orchestrator trigger and await
+ *       isPermissionRefusal(status, text),//   a CI workflow run on the sprint
+ *       parseBranchHead(body),            //   branch head. `build` returns a
+ *       parseFindRuns(body, sha),         //   { command, logSafeCommand }
+ *       parseRun(body),                   //   curl for one of 'branch-head',
+ *       isRunComplete(run),               //   'find-runs', 'dispatch',
+ *       isRunSuccess(run),                //   'get-run', 'list-jobs'; the
+ *       parseJobs(body),                  //   parse hooks keep every REST
+ *     }                                   //   field name in the provider.
+ *                                          //   Omitted = no CI support:
+ *                                          //   supportsCiGate() is false and
+ *                                          //   a configured gate fails loudly
+ *                                          //   naming the provider.
  *   }
  *
  * The manifest is an explicit import list rather than a directory scan on
@@ -404,8 +419,42 @@ export function registerVcsProvider(impl) {
             }
         }
     }
+    if (impl.ciGate != null) {
+        if (typeof impl.ciGate !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object ciGate.`);
+        }
+        for (const hook of CI_GATE_HOOKS) {
+            if (typeof impl.ciGate[hook] !== 'function') {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a ciGate with a non-function ${hook}.`);
+            }
+        }
+        if (typeof impl.ciGate.requiredPermission !== 'string' || !impl.ciGate.requiredPermission.trim()) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a ciGate with no non-empty string requiredPermission.`);
+        }
+    }
     registry.set(impl.name, impl);
     return impl.name;
+}
+
+/** Every function a provider's `ciGate` descriptor must declare (see the
+ *  header's ciGate contract and ../ci-gate.mjs, its only consumer). */
+const CI_GATE_HOOKS = Object.freeze([
+    'build', 'isPermissionRefusal', 'parseBranchHead', 'parseFindRuns',
+    'parseRun', 'isRunComplete', 'isRunSuccess', 'parseJobs',
+]);
+
+/**
+ * The engine CI gate's provider capability flag: whether `impl` can trigger
+ * and await a CI workflow run on a branch head (its descriptor declares a
+ * `ciGate`). A provider without it (generic-git, bitbucket, azure-devops
+ * today) makes a configured gate FAIL LOUDLY naming the provider -- never a
+ * silent skip (see ../ci-gate.mjs).
+ *
+ * @param {object|undefined} impl
+ * @returns {boolean}
+ */
+export function supportsCiGate(impl) {
+    return !!impl && !!impl.ciGate && typeof impl.ciGate === 'object';
 }
 
 /** Remove a registered provider. Intended for tests that register a throwaway

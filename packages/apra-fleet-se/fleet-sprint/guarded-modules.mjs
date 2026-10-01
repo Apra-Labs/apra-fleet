@@ -385,6 +385,9 @@ export const GUARDED_MODULES = [
     // command() sites (the memory list and the per-key forget), no agent(),
     // and its push goes through an injected bracketed callback.
     'beads-memory-hygiene.mjs',
+    // The engine CI gate: ONE member_name-bearing command() site (the
+    // origin-remote read on the git-capable member), no agent(), no push.
+    'ci-gate.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',

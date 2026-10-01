@@ -132,6 +132,14 @@ const KNOWN_ARG_KEYS = new Set([
     // formula units). Default DEFAULT_EFFORT_THRESHOLD.
     // No CLI flag sets this today; only test/programmatic callers pass it.
     'worklist_effort_budget',
+    // Engine CI gate (optional): { workflow, timeout_s }. When set, the
+    // orchestrator triggers/awaits that CI workflow on the sprint branch head
+    // before each reviewer dispatch and hands the result to the reviewer, so
+    // "CI green" is an engine-verified fact rather than a doer criterion.
+    // Absent: no CI calls at all, and one 'CI gate not configured' log line.
+    // Validated by validateCiGate() below; consumed by ci-gate.mjs. CLI:
+    // --ci-gate <json>.
+    'ci_gate',
     // An optional live `(name, args) => Promise<any>` MCP tool-call function,
     // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
     // Consumed by createMemberSessionGuard() to call the fleet's own
@@ -174,6 +182,47 @@ export function validateExpectBeads(raw) {
         throw new Error('[Arg Contract] Invalid expect_beads: must carry at least one of prefix, syncRemote, repoRemote.');
     }
     return parsed;
+}
+
+/** Default CI gate timeout (seconds) when ci_gate omits timeout_s. */
+export const DEFAULT_CI_GATE_TIMEOUT_S = 3600;
+// A workflow file name ("ci.yml") or numeric workflow id -- interpolated into
+// a provider REST path, so restrictive by design.
+const CI_GATE_WORKFLOW_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Validates the optional ci_gate arg: { workflow: string, timeout_s?: positive
+ * integer (default 3600) }. Accepts the object, or its JSON string form (the
+ * CLI forwards --ci-gate verbatim). Absent -> undefined (gate not configured).
+ * @param {unknown} raw
+ * @returns {{ workflow: string, timeoutS: number }|undefined}
+ */
+export function validateCiGate(raw) {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    let value = raw;
+    if (typeof raw === 'string') {
+        try {
+            value = JSON.parse(raw);
+        } catch {
+            throw new Error(`[Arg Contract] Invalid ci_gate: not valid JSON (${JSON.stringify(raw).slice(0, 200)}). Expected {"workflow": "<workflow file name or id>", "timeout_s": <positive integer>}.`);
+        }
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('[Arg Contract] Invalid ci_gate: must be an object {"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}.');
+    }
+    const unknown = Object.keys(value).filter((k) => k !== 'workflow' && k !== 'timeout_s');
+    if (unknown.length > 0) {
+        throw new Error(`[Arg Contract] Invalid ci_gate: unknown key(s) ${unknown.join(', ')}. Known keys: workflow, timeout_s.`);
+    }
+    const workflow = value.workflow;
+    if (typeof workflow !== 'string' || workflow.length === 0 || !CI_GATE_WORKFLOW_PATTERN.test(workflow)) {
+        throw new Error(`[Arg Contract] Invalid ci_gate.workflow "${workflow}": required; must be a workflow file name or numeric id matching ${CI_GATE_WORKFLOW_PATTERN}.`);
+    }
+    const timeoutS = value.timeout_s === undefined ? DEFAULT_CI_GATE_TIMEOUT_S : value.timeout_s;
+    if (typeof timeoutS !== 'number' || !Number.isInteger(timeoutS) || timeoutS <= 0) {
+        throw new Error(`[Arg Contract] Invalid ci_gate.timeout_s "${timeoutS}": must be a positive integer (seconds).`);
+    }
+    return { workflow, timeoutS };
 }
 
 /**
@@ -456,6 +505,9 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
+    // --- ci_gate (optional) -----------------------------------------------
+    const ciGate = validateCiGate(args.ci_gate);
+
     return {
         targetIssues,
         members: args.members,
@@ -478,5 +530,6 @@ export function validateArgs(args) {
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
+        ciGate,
     };
 }

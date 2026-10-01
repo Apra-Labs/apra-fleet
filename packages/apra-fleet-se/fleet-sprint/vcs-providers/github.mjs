@@ -345,6 +345,141 @@ function capabilitiesForHost(_host) {
     return { canOpenPullRequest: true };
 }
 
+// ---------------------------------------------------------------------------
+// Engine CI gate axis (see ../ci-gate.mjs and ./index.mjs's `ciGate` contract)
+// ---------------------------------------------------------------------------
+//
+// The orchestrator -- never a doer -- triggers and awaits the target repo's
+// CI workflow on the sprint branch head, so "CI is green" becomes an
+// engine-verified fact handed to the reviewer instead of an acceptance
+// criterion a doer dispatch cannot satisfy (a doer's credential is refused
+// workflow_dispatch with HTTP 403 "Resource not accessible by integration").
+//
+// Every GitHub REST literal the gate needs lives HERE; ../ci-gate.mjs only
+// sequences the five actions below and reads their answers through the parse
+// hooks, so it never learns a GitHub field name. All five are plain curl
+// commands built the same way as the PR builders above (token placeholder
+// substituted server-side by vcs_credential_exec, -w '\n%{http_code}' status
+// trailer), so they run through the same credential handoff.
+//
+// REST endpoints:
+//   branch-head GET  /repos/{r}/branches/{branch}
+//   find-runs   GET  /repos/{r}/actions/workflows/{wf}/runs?head_sha={sha}
+//   dispatch    POST /repos/{r}/actions/workflows/{wf}/dispatches {ref}
+//   get-run     GET  /repos/{r}/actions/runs/{id}
+//   list-jobs   GET  /repos/{r}/actions/runs/{id}/jobs
+
+const CI_WORKFLOW_RE = /^[A-Za-z0-9._-]+$/;
+const CI_SHA_RE = /^[0-9a-f]{7,64}$/i;
+const CI_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
+
+function assertCiParam(value, re, label) {
+    const text = String(value ?? '');
+    if (!re.test(text)) {
+        throw new Error(`ERROR: VCSModule: invalid CI gate ${label} "${value}".`);
+    }
+    return text;
+}
+
+/** Build one CI-gate curl command. `action` is one of the five above. */
+function buildGitHubCiCommand(action, { repo, workflow, branch, sha, runId, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    const base = `${GITHUB_API}/repos/${safeRepo}`;
+    let method = 'GET';
+    let url;
+    let payloadJson = null;
+    switch (action) {
+        case 'branch-head':
+            url = `${base}/branches/${assertCiParam(branch, CI_BRANCH_RE, 'branch')}`;
+            break;
+        case 'find-runs':
+            url = `${base}/actions/workflows/${assertCiParam(workflow, CI_WORKFLOW_RE, 'workflow')}/runs?head_sha=${assertCiParam(sha, CI_SHA_RE, 'head sha')}&per_page=20`;
+            break;
+        case 'dispatch':
+            method = 'POST';
+            url = `${base}/actions/workflows/${assertCiParam(workflow, CI_WORKFLOW_RE, 'workflow')}/dispatches`;
+            payloadJson = JSON.stringify({ ref: assertCiParam(branch, CI_BRANCH_RE, 'branch') });
+            break;
+        case 'get-run':
+            url = `${base}/actions/runs/${assertCiParam(runId, /^\d+$/, 'run id')}`;
+            break;
+        case 'list-jobs':
+            url = `${base}/actions/runs/${assertCiParam(runId, /^\d+$/, 'run id')}/jobs?per_page=100`;
+            break;
+        default:
+            throw new Error(`ERROR: VCSModule: unknown CI gate action "${action}".`);
+    }
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X ${method}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        ...(payloadJson !== null
+            ? [`-H ${shQuote('Content-Type: application/json', os, shell)}`, `-d ${shQuoteJson(payloadJson, os, shell)}`]
+            : []),
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'github',
+        action: `ci-${action}`,
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+    };
+}
+
+function normalizeGitHubRun(run) {
+    if (!run || typeof run !== 'object') return null;
+    const id = typeof run.id === 'number' || (typeof run.id === 'string' && /^\d+$/.test(run.id)) ? String(run.id) : null;
+    if (!id) return null;
+    return {
+        id,
+        url: typeof run.html_url === 'string' ? run.html_url : null,
+        headSha: typeof run.head_sha === 'string' ? run.head_sha : null,
+        status: typeof run.status === 'string' ? run.status : null,
+        conclusion: typeof run.conclusion === 'string' ? run.conclusion : null,
+        createdAt: typeof run.created_at === 'string' ? run.created_at : null,
+    };
+}
+
+const githubCiGate = Object.freeze({
+    /** What an operator must grant for the gate to trigger a run. Quoted
+     *  verbatim into the FAILED-TO-RUN log line. */
+    requiredPermission: "actions:write on the workflow (GitHub App 'Actions' repository permission: Read and write)",
+    build: buildGitHubCiCommand,
+    /** A trigger/read refusal that is a missing permission, not a transient
+     *  failure: 403, or GitHub's integration-scope wording at any status. */
+    isPermissionRefusal(status, text) {
+        return status === 403 || /Resource not accessible by (integration|personal access token)/i.test(String(text || ''));
+    },
+    parseBranchHead(body) {
+        const sha = body && body.commit && typeof body.commit.sha === 'string' ? body.commit.sha : null;
+        return sha && CI_SHA_RE.test(sha) ? sha : null;
+    },
+    /** Newest run in a find-runs listing whose head sha is exactly `sha`. */
+    parseFindRuns(body, sha) {
+        const runs = body && Array.isArray(body.workflow_runs) ? body.workflow_runs : [];
+        const matching = runs.map(normalizeGitHubRun).filter((r) => r && r.headSha === sha);
+        matching.sort((a, b) => Number(b.id) - Number(a.id));
+        return matching[0] || null;
+    },
+    parseRun: normalizeGitHubRun,
+    isRunComplete(run) {
+        return !!run && run.status === 'completed';
+    },
+    isRunSuccess(run) {
+        return !!run && run.conclusion === 'success';
+    },
+    parseJobs(body) {
+        const jobs = body && Array.isArray(body.jobs) ? body.jobs : [];
+        return jobs.map((j) => ({
+            name: typeof j.name === 'string' ? j.name : '(unnamed job)',
+            conclusion: typeof j.conclusion === 'string' ? j.conclusion : (typeof j.status === 'string' ? j.status : 'unknown'),
+        }));
+    },
+});
+
 export const GitHubVCS = Object.freeze({
     name: 'github',
     extends: 'generic-git',
@@ -374,6 +509,8 @@ export const GitHubVCS = Object.freeze({
     // apra-fleet-lzfv.4: GitHub's create-pull-request response dialect, stated
     // explicitly instead of left implicit in a caller (see above).
     pullRequestResponse,
+    // Engine CI gate axis (see above and ./index.mjs supportsCiGate()).
+    ciGate: githubCiGate,
     builders: Object.freeze({
         'create-pull-request': buildGitHubCreatePrCommand,
         comment: buildGitHubCommentCommand,

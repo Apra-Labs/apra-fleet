@@ -76,7 +76,32 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `ci_gate`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+
+`ci_gate` (optional; CLI `--ci-gate <json>`, forwarded verbatim) configures
+the engine CI gate (`fleet-sprint/ci-gate.mjs`). Shape:
+`{"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}`.
+`validateArgs()` (`validateCiGate`) rejects bad JSON, a non-object, unknown
+keys, a missing/malformed `workflow` (must match `^[A-Za-z0-9._-]+$`) and a
+non-positive or non-integer `timeout_s` with an `[Arg Contract] Invalid ci_gate...`
+error, before any dispatch. Behavior:
+- Absent: no CI calls at all, and exactly one `[CI Gate] CI gate not configured ...` log line per sprint.
+- Set: before each reviewer dispatch the ORCHESTRATOR resolves the sprint
+  branch head sha on the remote, locates the run of that workflow already
+  triggered for that sha (or triggers one on the branch), polls it to
+  completion bounded by `timeout_s`, and records run id, url, head sha and
+  per-job conclusion in the sprint log. The reviewer prompt carries that result
+  and tells the reviewer CI is engine-verified and never to ask the doer to
+  trigger CI. An unchanged head reuses its previous PASS/FAIL result.
+- Never a silent pass: a refused trigger (e.g. HTTP 403 "Resource not
+  accessible by integration") is logged as an ERROR naming the missing
+  permission and the credential in use and recorded `FAILED-TO-RUN`; a run
+  that does not finish in time is recorded `TIMEOUT` with the run url; a
+  remote whose VCS provider has no CI-trigger support (only `github` declares
+  one today) is recorded `FAILED-TO-RUN` naming the provider.
+- Credential: the orchestrator's just-in-time push+pr VCS credential (the same
+  one Publish PR mints), run through `vcs_credential_exec` -- doers never need
+  CI permissions.
 
 `expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
 `validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at

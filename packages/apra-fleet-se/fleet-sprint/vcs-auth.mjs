@@ -451,7 +451,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
  * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
  * @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
  */
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
+export async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
     return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
 }
 
