@@ -747,17 +747,14 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     expect(result).toBe(original);
   });
 
-  it('does not append a note when meta.json is unreadable/invalid JSON', async () => {
+  it('treats an unparseable meta.json as no index (not ready) rather than answering', async () => {
     writeFileSync(join(tempRepo, '.gitnexus', 'meta.json'), '{ not valid json');
     mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
 
     const provider = new GitNexusProvider();
-    const original = { content: [{ type: 'text', text: 'call graph result' }] };
-    mockCallTool.mockResolvedValueOnce(original);
-
-    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
-
-    expect(result).toBe(original);
+    await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo }))
+      .rejects.toThrow(/E-CODE-INDEX-NOT-READY/);
+    expect(mockCallTool).not.toHaveBeenCalled();
   });
 });
 

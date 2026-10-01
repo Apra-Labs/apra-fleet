@@ -7,7 +7,7 @@ import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { resolveSelfSession, validateSelfRepoFolder } from '../services/knowledge/kb-self.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
-import { codeIntelDisabledError } from './code-intelligence-readiness.js';
+import { codeIntelDisabledError, indexedCommitOf } from './code-intelligence-readiness.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -123,7 +123,21 @@ async function runCodeTool(
   self: CodeSelf = resolveCodeSelf(),
 ): Promise<unknown> {
   const provider = await getProvider(self.memberId);
-  return provider[method]({ ...input, repo: self.repo });
+  const result = await provider[method]({ ...input, repo: self.repo });
+  return withIndexedCommit(result, provider instanceof GitNexusProvider ? indexedCommitOf(self.repo) : null);
+}
+
+/**
+ * Stamp the commit an answer was served from onto a code_* result. Providers
+ * with no commit notion (codebase-memory, none) report null rather than omit
+ * the field, so every code_* response has the same envelope key.
+ */
+export function withIndexedCommit(result: unknown, commit: string | null): unknown {
+  const indexedCommit = commit && commit.length > 0 ? commit : null;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    return { ...(result as Record<string, unknown>), indexedCommit };
+  }
+  return { result, indexedCommit };
 }
 
 export async function handleCodeGraph(input: Record<string, unknown>, self?: CodeSelf): Promise<unknown> {
