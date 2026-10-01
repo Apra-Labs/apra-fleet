@@ -140,6 +140,7 @@ function makeEngine(fixture, fakeKb) {
         gPush: (m) => gitSync.pushBibleCommit(m),
         abortRebase: (m) => gitSync.abortRebase(m),
         bibleBase: (m) => gitSync.resolveBibleBase(m),
+        canResetCheckout: (m, f) => gitSync.canResetBibleCheckout(m, f),
         log,
     });
     return { kbWork, gitSync, logs };
@@ -319,5 +320,43 @@ describe('review-round bible commit against a real git origin', { skip: support.
         assert.equal(bible.provenance.commit, baseSha);
         const call = fakeKb.calls.find((c) => c.tool === 'kb_bible_commit');
         assert.deepEqual(call.args, { ids: ['e1'], baseBranch: BASE_BRANCH, baseCommit: baseSha });
+    });
+
+    test('7. a twice-rejected G-push never resets away the maintainer\'s unpushed non-bible commit', async () => {
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const hook = installRejectingHook(fixture);
+        // The maintainer is also a doer whose own bracket G-push failed: it
+        // holds an unpushed code commit.
+        fs.writeFileSync(path.join(fixture.clonePath, 'doer-work.txt'), 'unpushed doer work\n', 'utf8');
+        assert.ok((await fixture.command('git add -- doer-work.txt')).ok);
+        const c = await fixture.command('git commit -m doer-unpushed-work');
+        assert.ok(c.ok, c.error);
+        const doerCommit = fixture.localTip();
+
+        hook.on();
+        const out = await reviewRound(kbWork, ['e1']);
+
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.ok(fixture.isAncestor(doerCommit, 'HEAD'), 'the unpushed doer commit is still reachable from HEAD');
+        assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'doer-work.txt'), 'utf8'), 'unpushed doer work\n');
+        assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
+        assert.ok(logs.some((l) => /^\[kb-work\] WARN: not resetting maintainer 'maint'.*unrelated local work was preserved/.test(l)), logs.join('\n'));
+        assert.equal(fakeKb.calls.filter((c2) => c2.tool === 'kb_bible_commit').length, 1, 'no retry ran');
+    });
+
+    test('8. a twice-rejected G-push never resets away an uncommitted change to a tracked non-bible file', async () => {
+        const fakeKb = createFakeKb(fixture);
+        const { kbWork, logs } = makeEngine(fixture, fakeKb);
+        const hook = installRejectingHook(fixture);
+        fs.writeFileSync(path.join(fixture.clonePath, 'README.md'), 'edited by the doer, uncommitted\n', 'utf8');
+
+        hook.on();
+        const out = await reviewRound(kbWork, ['e1']);
+
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'README.md'), 'utf8'), 'edited by the doer, uncommitted\n');
+        assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
+        assert.ok(logs.some((l) => /not resetting maintainer 'maint'.*unrelated local work was preserved/.test(l)), logs.join('\n'));
     });
 });

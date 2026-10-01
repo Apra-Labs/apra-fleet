@@ -1361,6 +1361,7 @@ async function runSprintCycle(context) {
         gPush: (maintainerName) => gitSync.pushBibleCommit(maintainerName),
         abortRebase: (maintainerName) => gitSync.abortRebase(maintainerName),
         bibleBase: (maintainerName) => gitSync.resolveBibleBase(maintainerName),
+        canResetCheckout: (maintainerName, bibleFile) => gitSync.canResetBibleCheckout(maintainerName, bibleFile),
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,

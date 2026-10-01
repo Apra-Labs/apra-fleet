@@ -587,6 +587,43 @@ export function createGitSync(deps = {}) {
             return aborted;
         }),
         /**
+         * Whether a hard reset onto the remote tip would discard ONLY a local
+         * bible commit on this member's checkout: every local-only commit
+         * (origin/<branch>..HEAD) touches nothing but `bibleFile` and the
+         * working tree has no uncommitted tracked change. The kb_maintainer is
+         * usually also a doer, so unrelated unpushed work or edits must never
+         * be thrown away by the bible-commit retry. Git strings are built in JS
+         * (no shell expansion) so a PowerShell member works. Resolves
+         * { safe: true } or { safe: false, reason }; any git failure is unsafe.
+         */
+        canResetBibleCheckout: async (memberName, bibleFile) => {
+            const remoteTip = `origin/${branch}`;
+            const status = await command('git status --porcelain --untracked-files=no', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `check the working tree before the bible-commit reset on '${memberName}'`,
+            });
+            if (!status || !status.ok) return { safe: false, reason: 'could not read the working tree status' };
+            if (typeof status.output === 'string' && status.output.trim().length > 0) {
+                return { safe: false, reason: 'the working tree has uncommitted changes' };
+            }
+            const log_ = await command(`git log -m --name-only --pretty=format: ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `list local-only commits before the bible-commit reset on '${memberName}'`,
+            });
+            if (!log_ || !log_.ok) return { safe: false, reason: `could not list local-only commits against ${remoteTip}` };
+            const files = String(log_.output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const other = files.filter((f) => f !== bibleFile);
+            if (other.length > 0) return { safe: false, reason: `unpushed local commits touch ${[...new Set(other)].slice(0, 3).join(', ')}` };
+            const count = await command(`git rev-list --count ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `count local-only commits before the bible-commit reset on '${memberName}'`,
+            });
+            const n = count && count.ok ? parseInt(String(count.output || '').trim(), 10) : NaN;
+            if (!Number.isFinite(n)) return { safe: false, reason: 'could not count local-only commits' };
+            if (n > 0 && files.length === 0) return { safe: false, reason: 'unpushed local commits touch no recognizable file' };
+            return { safe: true };
+        },
+        /**
          * The base a KB bible commit records as provenance, resolved on the
          * member's checkout: the sprint's TARGET BASE branch, and the commit
          * the sprint branch forked from it (`git merge-base HEAD

@@ -278,12 +278,13 @@ function memberNameOf(member) {
  *   gPush?: (memberName: string) => Promise<any>,
  *   abortRebase?: (memberName: string) => Promise<any>,
  *   bibleBase?: (memberName: string) => Promise<{ baseBranch: string, baseCommit: string }|null>,
+ *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
  *   sprintStartMs?: number|(() => number),
  *   log?: Function,
  * }} opts
  */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, log = () => {} } = opts;
+    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, log = () => {} } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
@@ -534,6 +535,21 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /**
+     * True when a hard reset onto the remote tip would drop nothing but the
+     * bible commit. When it would drop anything else (or that cannot be
+     * established), logs a WARN and returns false -- the caller keeps the ids
+     * queued and does not reset. Without an injected guard the reset is allowed.
+     */
+    async function resetIsSafe(maintainer, repo) {
+        if (typeof canResetCheckout !== 'function') return true;
+        let verdict;
+        try { verdict = await canResetCheckout(maintainer, '.fleet/kb-canonical.json'); } catch (err) { verdict = { safe: false, reason: errText(err) }; }
+        if (verdict && verdict.safe) return true;
+        log(`[kb-work] WARN: not resetting maintainer '${maintainer}' (${repo}) onto the remote tip: ${(verdict && verdict.reason) || 'unknown'} -- unrelated local work was preserved; the bible confirmations stay queued for the next round`);
+        return false;
+    }
+
+    /**
      * Commit one repository's pending confirmations to the bible on its
      * maintainer. Never throws; ids that do not reach a pushed commit stay
      * pending for the next round.
@@ -568,6 +584,10 @@ export function createKbWorkClient(opts = {}) {
                 if (typeof abortRebase === 'function') {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
+                // The reset throws away the maintainer's local-only commits and
+                // uncommitted changes; it is usually also a doer, so only reset
+                // when that is the bible commit alone.
+                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
                 outcome = await bibleAttempt(target, ids, { resetToRemoteTip: true });
                 if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
                     // Leave the checkout on the remote tip: an unpushed bible
@@ -577,7 +597,7 @@ export function createKbWorkClient(opts = {}) {
                     if (typeof abortRebase === 'function') {
                         try { await abortRebase(maintainer); } catch { /* best-effort */ }
                     }
-                    try { await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
+                    try { if (await resetIsSafe(maintainer, repo)) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
                         log(`[kb-work] WARN: could not reset maintainer '${maintainer}' onto the remote tip after the failed bible commit: ${errText(err)}`);
                     }
                 }
