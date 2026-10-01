@@ -64,7 +64,8 @@ export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listT
     } else {
         if (!TOOL_RE.test(String(tool))) throw new MemberCallError('E-USAGE', `unsafe tool name '${tool}'`);
         if (!/^[A-Za-z0-9._\/-]+$/.test(String(argsPath))) throw new MemberCallError('E-USAGE', `unsafe args path '${argsPath}'`);
-        script += ` ${tool} --args-file ${argsPath}`;
+        // --rm-args-file: the verb deletes the delivered file itself (shell-independent), so the member's work tree stays clean.
+        script += ` ${tool} --args-file ${argsPath} --rm-args-file`;
     }
     return getSeCommands(target).wrapForMember(script);
 }
@@ -147,7 +148,10 @@ export function createMemberCall(deps = {}) {
         try {
             return await fn(session.mcpClient);
         } finally {
-            try { session.transport && session.transport.stop && session.transport.stop(); } catch { /* ignore */ }
+            try {
+                if (typeof session.close === 'function') await session.close();
+                else if (session.transport && session.transport.stop) session.transport.stop();
+            } catch { /* ignore */ }
         }
     }
 

@@ -331,7 +331,16 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
               // pid for the interactive liveness check to test.
-              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid
+              const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+              if (existing?.channelCapable && existing.server && !channelCapable) {
+                // A short-lived tool-only member session (apra-fleet call,
+                // memberCall) must not displace the member's live
+                // channel-capable interactive session: execute_prompt and
+                // send_message route through that registry entry.
+                logLine('session', `kept existing channel-capable member member_id=${fallbackMemberId} sid=${existing.sessionId}; tool-only sid=${sid} not registered`);
+                return;
+              }
+              const priorPid = existing?.pid
                 ?? sessionRegistry.lastKnownPid(sessionWorkspaceId, fallbackMemberId);
               sessionRegistry.register({
                 member_id: fallbackMemberId,

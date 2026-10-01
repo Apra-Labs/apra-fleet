@@ -275,7 +275,9 @@ export async function connectFleet(deps = {}) {
  * @param {string} memberId registered member uuid
  * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
  *                        forwarded to the transport.
- * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string}>}
+ * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string, close: () => Promise<void>}>}
+ *          Always `await close()` when done: it DELETEs the server session so no
+ *          McpServer or registry entry is leaked (`transport.stop()` does not).
  */
 export async function connectFleetMember(memberId, deps = {}) {
     if (!memberId) throw new Error('connectFleetMember requires a member id.');
@@ -290,5 +292,12 @@ export async function connectFleetMember(memberId, deps = {}) {
     url.searchParams.set('member', memberId);
     const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
     await transport.start();
-    return { transport, mcpClient: new McpClient(transport), mode: 'http', url: url.toString() };
+    return {
+        transport,
+        mcpClient: new McpClient(transport),
+        mode: 'http',
+        url: url.toString(),
+        /** Release the server-side member session (HTTP DELETE) and stop the transport. */
+        close: () => transport.close(),
+    };
 }

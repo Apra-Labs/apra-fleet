@@ -20,6 +20,7 @@ Usage:
 
   --member <uuid>       Registered member id (an unregistered id fails with HTTP 403)
   --args-file <path>    JSON file holding the tool arguments (a JSON object)
+  --rm-args-file        Delete the args file once read (used by remote memberCall)
   --list-tools          Print the member session's tools/list
   --help, -h            Show this help`;
 
@@ -31,9 +32,12 @@ export interface CallIo {
 export interface CallDeps {
   io?: CallIo;
   readFile?: (p: string) => string;
+  removeFile?: (p: string) => void;
   /** Connect a member session; defaults to the client's connectFleetMember. */
   connect?: (memberId: string) => Promise<{
     transport: { stop?: () => void };
+    /** Releases the server-side session (HTTP DELETE); preferred over transport.stop(). */
+    close?: () => Promise<void>;
     mcpClient: {
       callTool(name: string, args: unknown): Promise<unknown>;
       listTools(): Promise<unknown>;
@@ -45,16 +49,18 @@ interface Parsed {
   member?: string;
   tool?: string;
   argsFile?: string;
+  rmArgsFile: boolean;
   listTools: boolean;
   help: boolean;
 }
 
 function parse(argv: string[]): Parsed | { error: string } {
-  const out: Parsed = { listTools: false, help: false };
+  const out: Parsed = { listTools: false, rmArgsFile: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') out.help = true;
     else if (a === '--list-tools') out.listTools = true;
+    else if (a === '--rm-args-file') out.rmArgsFile = true;
     else if (a === '--member' || a === '--args-file') {
       const v = argv[++i];
       if (v === undefined || v.startsWith('--')) return { error: `${a} requires a value` };
@@ -91,6 +97,10 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
       args = JSON.parse((deps.readFile ?? (p => fs.readFileSync(p, 'utf8')))(parsed.argsFile!));
     } catch (e) {
       return fail(io, 'E-ARGS-FILE', `cannot read JSON from ${parsed.argsFile}: ${(e as Error).message}`);
+    } finally {
+      if (parsed.rmArgsFile) {
+        try { (deps.removeFile ?? (p => fs.rmSync(p, { force: true })))(parsed.argsFile!); } catch { /* ignore */ }
+      }
     }
     if (args === null || typeof args !== 'object' || Array.isArray(args)) {
       return fail(io, 'E-ARGS-FILE', `${parsed.argsFile} must contain a JSON object`);
@@ -128,7 +138,9 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
   } catch (e) {
     return fail(io, 'E-CALL', (e as Error).message, { tool: parsed.tool });
   } finally {
-    try { session.transport.stop?.(); } catch { /* ignore */ }
+    try {
+      if (session.close) await session.close(); else session.transport.stop?.();
+    } catch { /* ignore */ }
   }
 }
 

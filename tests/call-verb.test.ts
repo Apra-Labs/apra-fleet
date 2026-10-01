@@ -13,7 +13,7 @@ import { registerAllTools } from '../src/services/tool-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
-import { getTokenIssuer, localWorkspaceId } from '../src/services/token-issuer.js';
+import { localWorkspaceId } from '../src/services/token-issuer.js';
 import { MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
 import { runCall } from '../src/cli/call.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
@@ -36,8 +36,6 @@ beforeEach(async () => {
 afterEach(async () => {
   try { await handle.close(); } catch { /* ignore */ }
   fleetEvents.removeAllListeners();
-  sessionRegistry.unregister(localWorkspaceId(), memberId);
-  sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
   restoreRegistry();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -62,6 +60,36 @@ async function run(argv: string[]) {
 }
 
 describe('apra-fleet call', () => {
+  it('releases the server session: no registry entry or open session is left after a call', async () => {
+    const r = await run(['--member', memberId, 'version', '--args-file', argsFile('{}')]);
+    expect(r.code).toBe(0);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+    const l = await run(['--member', memberId, '--list-tools']);
+    expect(l.code).toBe(0);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
+
+  it('a pre-registered channel-capable member session survives a short-lived call', async () => {
+    const fakeServer = {} as never;
+    sessionRegistry.register({
+      member_id: memberId, workspace_id: localWorkspaceId(), role: 'doer', work_folder: '/tmp/call-verb-work',
+      server: fakeServer, sessionId: 'live-sid', status: 'online', channelCapable: true,
+    });
+    const r = await run(['--member', memberId, 'version', '--args-file', argsFile('{}')]);
+    expect(r.code).toBe(0);
+    const entry = sessionRegistry.get(localWorkspaceId(), memberId);
+    expect(entry?.sessionId).toBe('live-sid');
+    expect(entry?.channelCapable).toBe(true);
+    sessionRegistry.unregister(localWorkspaceId(), memberId);
+  });
+
+  it('--rm-args-file deletes the args file after reading it', async () => {
+    const f = argsFile('{}');
+    const r = await run(['--member', memberId, 'version', '--args-file', f, '--rm-args-file']);
+    expect(r.code).toBe(0);
+    expect(fs.existsSync(f)).toBe(false);
+  });
+
   it('version call succeeds as a MEMBER session', async () => {
     const r = await run(['--member', memberId, 'version', '--args-file', argsFile('{}')]);
     expect(r.code).toBe(0);

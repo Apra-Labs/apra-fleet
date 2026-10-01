@@ -32,7 +32,7 @@ describe('memberCall local adapter', () => {
                 calls.push(['connect', id]);
                 return {
                     mcpClient: { callTool: async (t, a) => { calls.push(['callTool', t, a]); return text('{"ok":1}'); }, listTools: async () => ({ tools: [] }) },
-                    transport: { stop: () => { stopped = true; } },
+                    close: async () => { stopped = true; },
                 };
             },
         });
@@ -41,6 +41,17 @@ describe('memberCall local adapter', () => {
         assert.deepStrictEqual(order, [], 'no send_files/execute_command (nothing spawned) for a local member');
         assert.strictEqual(stopped, true);
         assert.strictEqual(res.content[0].text, '{"ok":1}');
+    });
+
+    test('releases the server session via close() even when the call throws', async () => {
+        let closed = 0;
+        const mc = createMemberCall({ connectLocal: async () => ({
+            mcpClient: { callTool: async () => { throw new Error('boom'); } },
+            close: async () => { closed++; },
+            transport: { stop: () => { throw new Error('stop must not be used when close exists'); } },
+        }) });
+        await assert.rejects(() => mc.memberCall(local, 'version', {}), /boom/);
+        assert.strictEqual(closed, 1);
     });
 
     test('a 403 on connect is a typed E-MEMBER-FORBIDDEN error', async () => {
@@ -76,11 +87,25 @@ describe('memberCall remote/relay adapter', () => {
             assert.deepStrictEqual(JSON.parse(order[0].content), { query: 'hello' });
             assert.strictEqual(order[0].o.dest_subdir, '.apra-call');
             const fileName = path.basename(order[0].o.local_paths[0]);
-            assert.strictEqual(order[1].o.command, `apra-fleet call --member ${MID} kb_query --args-file .apra-call/${fileName}`);
+            assert.strictEqual(order[1].o.command, `apra-fleet call --member ${MID} kb_query --args-file .apra-call/${fileName} --rm-args-file`);
             assert.strictEqual(res.content[0].text, 'ok');
             assert.strictEqual(tmpBefore(), before, 'local temp args dir cleaned up');
         });
     }
+
+    test('remote args file is deleted by the member-side verb (--rm-args-file), on success and on a failed call', async () => {
+        for (const fail of [false, true]) {
+            const order = [];
+            const mc = createMemberCall({
+                fleetApi: makeFleetApi(order, fail ? { execText: '{"error":{"code":"E-TOOL","message":"bad"}}', execError: true } : {}),
+                resolveTarget: async () => ({ os: 'linux', shell: '' }),
+            });
+            await mc.memberCall(remote, 'version', {}).catch(() => {});
+            assert.match(order[1].o.command, / --rm-args-file$/);
+        }
+        const ps = buildRemoteCallCommand({ os: 'windows', shell: '' }, { memberId: MID, tool: 'version', argsPath: '.apra-call/c.json' });
+        assert.ok(Buffer.from(ps.split(' ')[2], 'base64').toString('utf16le').includes('--rm-args-file'));
+    });
 
     test('typed error from the remote call output is surfaced', async () => {
         const mc = createMemberCall({
@@ -108,7 +133,7 @@ describe('remote command shape per shell', () => {
 
     test('bash member: plain command, no wrapper, no shell expansion', () => {
         const cmd = buildRemoteCallCommand({ os: 'linux', shell: '' }, spec);
-        assert.strictEqual(cmd, `apra-fleet call --member ${MID} kb_query --args-file .apra-call/call-ab12.json`);
+        assert.strictEqual(cmd, `apra-fleet call --member ${MID} kb_query --args-file .apra-call/call-ab12.json --rm-args-file`);
         assert.ok(!/[$`~]/.test(cmd), 'no $VAR, backtick or ~ expansion');
         assert.strictEqual(buildRemoteCallCommand({ os: 'windows', shell: 'gitbash' }, spec), cmd);
     });
@@ -117,7 +142,7 @@ describe('remote command shape per shell', () => {
         const cmd = buildRemoteCallCommand({ os: 'windows', shell: '' }, spec);
         assert.match(cmd, /^powershell -EncodedCommand [A-Za-z0-9+/=]+$/);
         const decoded = Buffer.from(cmd.split(' ')[2], 'base64').toString('utf16le');
-        assert.ok(decoded.includes(`apra-fleet call --member ${MID} kb_query --args-file .apra-call/call-ab12.json`));
+        assert.ok(decoded.includes(`apra-fleet call --member ${MID} kb_query --args-file .apra-call/call-ab12.json --rm-args-file`));
         assert.ok(!/\$env:|\$HOME|~\//.test(decoded.replace(/\$ErrorActionPreference|\$LASTEXITCODE|\$_/g, '')), 'no member-side expansion in the script');
     });
 
