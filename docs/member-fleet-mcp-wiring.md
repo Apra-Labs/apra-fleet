@@ -24,6 +24,20 @@ provider's composed config and re-composes for the new one.
 The former global endpoint-registration path was deleted; there is exactly one
 mechanism.
 
+## Config-file safety
+
+Compose edits files the user may own, so it never destroys them:
+
+- OpenCode: the write is skipped when the entry is already current (no mtime
+  churn). A git-tracked `opencode.json` (including an empty or `{}`-only one)
+  is never modified; compose fails with `E-OPENCODE-CONFIG-TRACKED`. A JSONC
+  file (comments) is not rewritten; it is reported with the typed reason
+  `opencode-config-unparseable`.
+- Claude: reading the member's config distinguishes "missing" from
+  "unreadable" (existence is tested first, and the read's exit code is kept).
+  An unreadable `~/.claude.json` raises `MemberConfigUnreadableError` and trust
+  seeding never replaces it, so a permission problem cannot turn into data loss.
+
 ## Member-side install
 
 `register_member` and `update_member` ensure a remote member runs its own

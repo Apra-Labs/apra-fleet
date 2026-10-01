@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 2b follow-up: provider gate and config-file safety
+
+Sprint goal: close review findings on stage 2b -- `code_reindex`/`code_status` honour the member's provider, compose never clobbers a member's config files, and CI portability fixes. The sprint verdict was FAIL: the product fixes are in and the local suite is green, but CI was not verified on all three OSes (the `llms-full.txt` freshness check failed first) and two goal items remain open.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.6223.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0549 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 34 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `code_reindex` and `code_status` are gated on the member's provider first and throw `E-CODE-INTEL-DISABLED` for the null provider; contract fixtures, spec and client updated.
+- OpenCode compose skips the write when the entry is current, refuses a git-tracked `opencode.json` (`E-OPENCODE-CONFIG-TRACKED`) and reports JSONC as `opencode-config-unparseable`.
+- An unreadable member config is distinguished from a missing one; compose and trust seeding never overwrite it.
+- Windows JSON-path assertion and live PowerShell test timeout fixes; CI now runs on feat/fix/chore pushes and the CI watcher fails loudly on a refused dispatch.
+
+Carried forward: regenerate `llms-full.txt` so the CI freshness check passes, then obtain a green run on ubuntu, windows and macos; make the code-intelligence self test assert on the parsed result rather than JSON-escaped text.
+
 ## [Unreleased] -- KB redesign stage 2b: member MCP wiring, truthful code index, call counts
 
 Sprint goal: make a member's own session reliably reach the apra-fleet KB and code tools, make code-index answers honest, and measure tool use per dispatch.

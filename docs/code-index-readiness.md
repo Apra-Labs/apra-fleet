@@ -37,6 +37,12 @@ registered `code_*` tool.
   checks the first tick so an immediate failure is reported rather than lost.
 - `code_status` reports readiness from `status.json` plus the log tail.
 
+Both are gated on the member's provider before anything else runs (including
+any filesystem or process work): when the provider has no code intelligence
+(the null provider) they throw `E-CODE-INTEL-DISABLED`, the same typed refusal
+as the query tools. The refusal is part of the memory-contract v1 fixtures and
+the client package.
+
 Both are member-allowed by the rule that every `code_*` tool is on the member
 allowlist. Their schemas live in the memory-contract v1 spec, schemas,
 fixtures and roster, and in the client package exports.
