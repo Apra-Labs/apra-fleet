@@ -75,7 +75,10 @@ describe('launchAuthTerminal -- Windows console launch quoting', () => {
       const out = real.spawnSync(
         process.execPath,
         ['-e', quoteWindowsArgv(code), call.opts.env!.APRA_FLEET_OOB_ARGS],
-        { windowsVerbatimArguments: true, windowsHide: true, encoding: 'utf8' },
+        // windowsVerbatimArguments makes libuv write argv[0] unquoted, so an
+        // exec path containing a space (e.g. under Program Files) would be split
+        // by the child CRT. Quote argv0 explicitly.
+        { argv0: quoteWindowsArgv(process.execPath), windowsVerbatimArguments: true, windowsHide: true, encoding: 'utf8' },
       );
       expect(out.status).toBe(0);
       const argv = JSON.parse(out.stdout) as string[];
