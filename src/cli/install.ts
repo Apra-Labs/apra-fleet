@@ -1033,6 +1033,7 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
+  apra-fleet install --member          Member install: server + user-mode auto-start only (see below)
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
@@ -1046,6 +1047,10 @@ Options:
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
+  --member                Install only the server and its user-mode auto-start. Implies
+                          --skill none --workflows none; writes NO user-scope MCP entry,
+                          hooks/statusline/permissions settings or ~/.claude/CLAUDE.md block.
+                          Fails with E-MEMBER-AUTOSTART if the auto-start cannot be registered.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
@@ -1159,8 +1164,15 @@ Options:
   }
 
   // Reject unknown flags to catch typos early
+  const memberMode = args.includes('--member');
+  if (memberMode) {
+    // A member install carries the server only: no skills, no workflows.
+    skillMode = 'none';
+    workflowsMode = 'none';
+  }
+
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1347,7 +1359,9 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // --- Step 4: Configure hooks + statusline in settings.json ---
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
   // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
-  if (llm !== 'opencode') {
+  if (memberMode) {
+    console.log('    Skipped (--member): user-scope settings are left untouched.');
+  } else if (llm !== 'opencode') {
     const installedHooksConfig = JSON.parse(
       fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
     );
@@ -1366,7 +1380,11 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const fleetPort = DEFAULT_PORT;
   const fleetUrl = `http://localhost:${fleetPort}/mcp`;
 
-  if (transport === 'http') {
+  if (memberMode) {
+    // The per-folder member entry is written by compose_permissions; a member
+    // install must never register apra-fleet in any provider's user-scope config.
+    console.log('    Skipped (--member): no user-scope MCP registration.');
+  } else if (transport === 'http') {
     if (llm === 'claude') {
       if (!isCommandAvailable('claude')) {
         console.warn(
@@ -1777,7 +1795,8 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
-  try {
+  // (never for a --member install: that file belongs to the member's user)
+  if (!memberMode) try {
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
     const sentinel = '<!-- apra-fleet:code-intelligence -->';
     const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
@@ -1793,7 +1812,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
   // a top-level "permissions" key is invalid in opencode.json
-  if (llm !== 'opencode') {
+  if (llm !== 'opencode' && !memberMode) {
     const extraPerms = (llm === 'claude' && installPm)
       ? ['Bash(*)', 'Skill(auto-sprint)', 'Workflow(auto-sprint)']
       : [];
@@ -1822,6 +1841,17 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+      // A member install exists to leave an auto-starting server behind; without
+      // the auto-start it is not a success, so say so with a typed status.
+      if (memberMode) {
+        console.error(`
+Error: E-MEMBER-AUTOSTART: the member install could not register the user-mode
+auto-start (${(err as Error).message}). The server binary is installed but will
+not start automatically.
+`);
+        process.exitCode = 1;
+        return;
+      }
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
         const restartHint = guardStoppedService

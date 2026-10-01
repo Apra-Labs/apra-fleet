@@ -10,6 +10,7 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
+  apra-fleet install --member          Member install: server + user-mode auto-start only (see below)
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
@@ -23,6 +24,10 @@ Options:
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
+  --member                Install only the server and its user-mode auto-start. Implies
+                          --skill none --workflows none; writes NO user-scope MCP entry,
+                          hooks/statusline/permissions settings or ~/.claude/CLAUDE.md block.
+                          Fails with E-MEMBER-AUTOSTART if the auto-start cannot be registered.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
