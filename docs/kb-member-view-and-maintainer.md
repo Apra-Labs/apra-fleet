@@ -52,13 +52,19 @@ maintainer by member tag within the sprint window; `kb_promotions` confirm and
 ### Invariant: the maintainer must be on the sprint branch
 
 The fast-forward pull, the bible commit and the push all assume the
-maintainer's checkout is on the sprint branch. The engine only ensures the
-sprint branch for members drawn from the dispatched role pools. A maintainer
-outside every pool (a role-less member, or an explicit maintainer with no
-other role) is not ensured, so writes would pull into, commit on and fail to
-push from whatever branch it has checked out. This is a known open defect; any
-change to branch ensuring or maintainer selection must keep the maintainer
-on the sprint branch before the first write batch.
+maintainer's checkout is on the sprint branch. The engine guarantees it two ways:
+
+- Branch ensuring covers every selected maintainer, not only members of the
+  dispatched role pools. A role-less maintainer (or an explicit maintainer with
+  no other role) gets the first sprint-branch ensure and every later re-ensure,
+  but is never dispatched. Selection runs before the ensure list is built.
+- Before the first bible attempt, before the retry reset and before the cleanup
+  reset, the engine reads the maintainer's current branch (built in JS, no shell
+  expansion). If it differs from the sprint branch, or cannot be read, nothing
+  is pulled, committed, pushed or reset; a warning names both branches and the
+  ids stay queued.
+
+Any change to branch ensuring or maintainer selection must preserve both.
 
 ## Round bible commit (kb_bible_commit)
 
@@ -80,9 +86,15 @@ If the push is rejected, it resets to the new remote head (which may hold
 another clone's entries) and repeats the same ids; because the merge is
 entry-level, the result holds both sets. A second failure leaves the round
 queued. Nothing is committed after a FAIL verdict or abort except the final
-seal. Caveat: the retry's hard reset discards unpushed commits and
-uncommitted changes on the maintainer, so the maintainer's checkout must be
-dedicated to KB commits.
+seal.
+
+Reset guard: before either bible-commit reset path, the engine requires a
+clean tracked tree and that every local-only commit (remote tip..HEAD) touches
+only `.fleet/kb-canonical.json`. Otherwise nothing is reset, a warning is
+logged and the ids stay queued, so unrelated unpushed work on the maintainer is
+preserved. The doer-retry reset to the remote tip is a separate path and is
+unchanged. The guard compares against `origin/<branch>`; it assumes the default
+remote.
 
 `kb_bible_commit` is declared in `memory-contract/v1` and the
 `apra-fleet-client` package.
