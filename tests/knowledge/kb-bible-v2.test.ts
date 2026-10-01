@@ -114,6 +114,24 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     expect(typeof bible.provenance.branch).toBe('string');
   }, 20000);
 
+  it('writes an explicit target base branch and base commit into provenance, not the HEAD branch', async () => {
+    await seedConfirmed(['Target claim']);
+    execFileSync('git', ['checkout', '-q', '-b', 'feature/not-the-target'], { cwd: repo });
+    await kbExport({ baseBranch: 'release/main-target', baseCommit: 'feedface' }, { folder: repo });
+
+    const bible = readBible();
+    expect(bible.provenance.branch).toBe('release/main-target');
+    expect(bible.provenance.commit).toBe('feedface');
+  }, 20000);
+
+  it('omitting baseBranch keeps the export HEAD branch (unchanged behaviour)', async () => {
+    await seedConfirmed(['Head claim']);
+    execFileSync('git', ['checkout', '-q', '-b', 'feature/head-branch'], { cwd: repo });
+    await kbExport({}, { folder: repo });
+
+    expect(readBible().provenance.branch).toBe('feature/head-branch');
+  }, 20000);
+
   it('entry_count matches the entry array, making truncation visible in a diff', async () => {
     await seedConfirmed(['One claim', 'Two claim', 'Three claim']);
     await kbExport({}, { folder: repo });

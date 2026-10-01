@@ -25,7 +25,7 @@
     "projection_rule": "Only 'thrown' and 'response-field' codes are projectable into a wire error payload. A 'silent' code MUST NOT be projected into a wire enum: the server never emits it, so a consumer branching on it would branch on something unreachable. Silent codes are documented-only until a task gives them a real signal.",
     "retryable_semantics": "true means retrying the IDENTICAL request unchanged can succeed. Changing the request (fixing a path, supplying a reason) is not a retry.",
     "retryable_finding": "No code in this closed set is retryable. Every transient failure in this surface is degraded to a non-error outcome rather than propagated as an error: the code_* adapters convert connect and dead-client failures into a structured offline result (see non_error_outcomes N-CODE-PROVIDER-OFFLINE), kb_stats swallows bible read failures, and kb_query swallows relatedClaims failures. There is therefore no retry-with-backoff class in v1.",
-    "anchor_policy_note": "KB constraint, verified against source: the KB a kb_* call reads/writes is the CALLING SESSION's own (src/services/knowledge/kb-self.ts) -- there is no repo/scope request argument. ONE policy, THREE branches, and the closed set accounts for all three. (1) The session's folder cannot carry a KB identity (missing, not a git repository, no origin remote): every kb_* tool refuses before getKbProviders with E-SELF-NO-WORKFOLDER / E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE. (2) A remote member's folder is on another host and its identity is its known origin remote: the READ tools (kb_session_prime, kb_stats) carry the folder verbatim and it stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (3) The WRITING tools kb_export and kb_import need that folder on this host and refuse with E-REPO-PATH-INVALID, before getKbProviders, so they never anchor anywhere else.",
+    "anchor_policy_note": "KB constraint, verified against source: the KB a kb_* call reads/writes is the CALLING SESSION's own (src/services/knowledge/kb-self.ts) -- there is no repo/scope request argument. ONE policy, THREE branches, and the closed set accounts for all three. (1) The session's folder cannot carry a KB identity (missing, not a git repository, no origin remote): every kb_* tool refuses before getKbProviders with E-SELF-NO-WORKFOLDER / E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE. (2) A remote member's folder is on another host and its identity is its known origin remote: the READ tools (kb_session_prime, kb_stats) carry the folder verbatim and it stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (3) The WRITING tools kb_export, kb_bible_commit and kb_import need that folder on this host and refuse with E-REPO-PATH-INVALID, before getKbProviders, so they never anchor anywhere else.",
     "directive_activation_absence": {
       "constraint": "The quarantine of directive activation is expressed by ABSENCE, not by a refusal shape. Any consumer of this file MUST NOT emit a path, an operation, a code, or a schema shape for approving, rejecting or activating a user-directive -- not even one that always refuses. A documented-but-forbidden route is still a route.",
       "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
@@ -64,9 +64,10 @@
           "meaning": "The calling session's resolved folder is not a directory on this host (a remote member session), so a tool that writes into it refuses rather than writing anywhere else.",
           "raising_methods": [
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-export.ts (requireLocalFolder), src/tools/kb-import.ts (requireLocalFolder)",
+          "source": "src/tools/kb-export.ts (requireLocalFolder), src/tools/kb-bible-commit.ts (requireLocalFolder), src/tools/kb-import.ts (requireLocalFolder)",
           "surfaced": "thrown",
           "retryable": false,
           "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by calling from a session on the member's own host. Both tools that raise it write into the folder, which is why they refuse where the verbatim-passthrough read tools tolerate a missing anchor (_meta.anchor_policy_note)."
@@ -356,6 +357,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
@@ -388,6 +390,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
@@ -420,6 +423,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },

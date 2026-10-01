@@ -108,7 +108,7 @@ const GROUP_HTTP_STATUS = {
 // task (T1.3.3) adds under bindings/openapi/.
 const OPENAPI_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/openapi';
 
-// Same 23-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
+// Same 24-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
 // reproduced here rather than imported so this script has no runtime
 // dependency on a file owned by T1.2.1. Any drift between the two lists is
 // itself a signal INVENTORY.md's tool count (section 1) needs re-checking.
@@ -129,6 +129,7 @@ const KB_MODULES = [
   ['kb_export', 'kb-export.js', 'kbExportSchema'],
   ['kb_stats', 'kb-stats.js', 'kbStatsSchema'],
   ['kb_feedback', 'kb-feedback.js', 'kbFeedbackSchema'],
+  ['kb_bible_commit', 'kb-bible-commit.js', 'kbBibleCommitSchema'],
 ];
 const CODE_EXPORTS = [
   ['code_graph', 'codeGraphSchema'],
@@ -139,7 +140,7 @@ const CODE_EXPORTS = [
   ['code_flow', 'codeFlowSchema'],
   ['code_tests', 'codeTestsSchema'],
 ];
-const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per INVENTORY.md section 1
+const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 24, per INVENTORY.md section 1
 
 // Registration description text, byte-exact from src/services/tool-registry.ts
 // (verified against INVENTORY.md Appendix A, which states it was "captured
@@ -181,7 +182,9 @@ const BASE_DESCRIPTIONS = {
   kb_setup:
     'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.',
   kb_export:
-    'Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}, recording the commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed). An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.',
+    'Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}. provenance.branch is the target base branch (the branch the entries merge into) and provenance.commit the base commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed): pass baseBranch and baseCommit to state them explicitly; when omitted they default to the export folder HEAD branch and commit. An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.',
+  kb_bible_commit:
+    'Commit one round of confirmed entries to the bible: { ids, baseBranch, baseCommit }. Merges exactly the given ids from this repository\'s KB into <repo>/.fleet/kb-canonical.json at ENTRY level -- every entry already in the file is kept, only the given ids are added or replaced, and an entry in the file but not in the KB is never dropped -- in kb_export\'s stable serialization (v2 envelope, id order, ASCII-safe). provenance.branch is baseBranch (the sprint\'s target base branch) and provenance.commit is baseCommit (the base commit the entries were verified against), never the working folder HEAD. Then makes a local commit scoped to that one path (identity pm-kb). It NEVER pushes. Re-running with the same ids after resetting to a newer HEAD re-merges at entry level, so a rejected push can be retried with no manual merge. Ids that are unknown, stale, superseded, or not CONFIRMED are SKIPPED (never an error) and reported in skipped. No ids, no mergeable ids, or an unchanged entry set: no write and no commit. Refuses (throws) when the existing bible file is unreadable, or when the local commit fails. Returns {path, merged, skipped, entry_count, committed}.',
   kb_stats:
     'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it. In a MEMBER session the counts describe the member\'s checkout bible.',
   kb_feedback:

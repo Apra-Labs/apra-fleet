@@ -494,6 +494,27 @@ rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
 
+#### `kbExport(options?: KbExportOptions)`
+
+Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
+canonical bible file and auto-commits it locally (never pushed). Options:
+`scope?` (`"project" | "global"`), `baseBranch?`, `baseCommit?`. When given,
+`baseBranch` (the target base branch the entries merge into) and `baseCommit`
+are written to the bible's `provenance.branch` / `provenance.commit`; when
+omitted they default to the export folder's HEAD branch and commit. Result
+JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
+
+#### `kbBibleCommit(options: KbBibleCommitOptions)`
+
+Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
+(every existing entry is kept; only the given ids are added or replaced),
+writes `baseBranch` / `baseCommit` into provenance, and makes a local commit
+scoped to the bible path. It never pushes. Ids that are not live CONFIRMED
+entries are skipped and listed in `skipped`; no mergeable ids or an unchanged
+entry set makes no commit. Re-running with the same ids after resetting to a
+newer HEAD re-merges, so a rejected push can be retried without a manual
+merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.
+
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission

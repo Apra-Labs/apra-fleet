@@ -75,7 +75,7 @@ const toolTextContentItem = z.object({
 });
 
 /**
- * The shared MCP text-content envelope every one of the 23 handlers uses.
+ * The shared MCP text-content envelope every one of the 24 handlers uses.
  * 1..3 content items (onboarding preamble + payload + nudge suffix, in that
  * order, preamble/suffix optional), plus an optional `structuredContent`
  * sibling (wrapTool returns it whenever the handler's raw return value was
@@ -202,6 +202,19 @@ const KB_RESPONSE_BODIES = {
     exported: z.number(),
     path: z.string(),
     scope: z.enum(['project', 'global']),
+    committed: z.boolean(),
+  }),
+  // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
+  // this KB) or skipped with a reason; committed is true only when a local
+  // commit of the bible path was made (never pushed).
+  kb_bible_commit: z.object({
+    path: z.string(),
+    merged: z.array(z.string()),
+    skipped: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['not_confirmed_or_unknown']),
+    })),
+    entry_count: z.number(),
     committed: z.boolean(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are

@@ -483,6 +483,26 @@
  */
 
 /**
+ * @typedef {Object} KbExportOptions
+ * @property {"project" | "global"} [scope] - project (default): export the project KB to
+ *   .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json.
+ * @property {string} [baseBranch] - The target base branch (the branch the entries merge
+ *   into), written to provenance.branch. Omitted: the export folder HEAD branch.
+ * @property {string} [baseCommit] - The base commit the entries were verified against,
+ *   written to provenance.commit. Omitted: the export folder HEAD commit.
+ */
+
+/**
+ * @typedef {Object} KbBibleCommitOptions
+ * @property {string[]} ids - Ids of the entries confirmed this round. Ids that are not
+ *   live CONFIRMED entries are skipped and reported in the result's skipped list.
+ *   An empty list makes no commit.
+ * @property {string} baseBranch - The target base branch, written to provenance.branch.
+ * @property {string} baseCommit - The base commit the entries were verified against,
+ *   written to provenance.commit.
+ */
+
+/**
  * @typedef {Object} SetupSshKeyOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -789,6 +809,30 @@ export class ApraFleet {
      */
     async composePermissions(options) {
         return this.mcpClient.callTool('compose_permissions', options);
+    }
+
+    /**
+     * Export the calling session's CONFIRMED KB entries to the canonical bible
+     * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
+     * to record the target base branch and base commit in provenance.
+     * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
+     * @param {KbExportOptions} [options]
+     */
+    async kbExport(options = {}) {
+        return this.mcpClient.callTool('kb_export', options);
+    }
+
+    /**
+     * Merge exactly the given confirmed entry ids into the bible at entry level
+     * (existing entries kept), write baseBranch/baseCommit provenance, and make a
+     * local commit scoped to the bible path. Never pushes; re-running with the
+     * same ids after resetting to a newer HEAD re-merges, so a rejected push can
+     * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
+     * extract with parseToolJson().
+     * @param {KbBibleCommitOptions} options
+     */
+    async kbBibleCommit(options) {
+        return this.mcpClient.callTool('kb_bible_commit', options);
     }
 
     /**

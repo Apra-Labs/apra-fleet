@@ -34,9 +34,17 @@ import type { KBEntry } from '../services/knowledge/types.js';
 // apra-fleet platform repo, committed there per D8). Same stable field set,
 // same asciiSafeStringify + deterministic id-sorted output, and the same
 // auto-commit behavior (T2.3) applies to the global file too.
+// Provenance names the TARGET BASE branch: the branch the bible's entries will
+// merge into, not the (typically feature) branch the export ran on. baseBranch
+// and baseCommit let the caller say so explicitly; when omitted, provenance
+// falls back to the export folder's own HEAD branch and commit (unchanged).
 export const kbExportSchema = z.object({
   scope: z.enum(['project', 'global']).optional()
     .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session\'s own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
+  baseBranch: z.string().min(1).optional()
+    .describe('The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch.'),
+  baseCommit: z.string().min(1).optional()
+    .describe('The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit.'),
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
@@ -410,8 +418,8 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const bible: CanonicalBible = {
     version: 2,
     provenance: {
-      commit: resolveHeadCommit(repoPath),
-      branch: resolveBranch(repoPath),
+      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
+      branch: input.baseBranch ?? resolveBranch(repoPath),
       entry_count: canonical.length,
     },
     entries: canonical,

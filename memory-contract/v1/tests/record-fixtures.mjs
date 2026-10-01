@@ -407,6 +407,17 @@ if (idFoo) {
 await recordHappy('kb_export', 'happy', {
 });
 
+// --- kb_bible_commit -----------------------------------------------------
+// Entry-level merge of the promoted entry into repo A's bible, with explicit
+// target-base-branch provenance. Local commit only; never pushed.
+if (idFoo) {
+  await recordHappy('kb_bible_commit', 'happy', {
+    ids: [idFoo],
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  });
+}
+
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
 // Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
 // entries: the INFERRED context-cache entry that happy.json returns must be
@@ -524,6 +535,11 @@ await recordRefusal('kb_context', 'refusal-path-traversal', {
 // A remote member session: its folder lives on another host, so kb_export
 // (which writes the bible there) refuses.
 await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_export', 'refusal-repo-path-invalid', {}, 'E-REPO-PATH-INVALID'));
+await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_bible_commit', 'refusal-repo-path-invalid', {
+  ids: [],
+  baseBranch: 'main',
+  baseCommit: '0123456789abcdef0123456789abcdef01234567',
+}, 'E-REPO-PATH-INVALID'));
 
 // kb (self) resolution refusals: the calling member's folder cannot carry a KB identity.
 await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self-no-workfolder', {
