@@ -1,14 +1,14 @@
 # Sprint Analysis: feat/kb-redesign-s1
 
-Scope issue id(s): apra-fleet-b4g.53, apra-fleet-b4g.57, apra-fleet-b4g.54, apra-fleet-b4g.66, apra-fleet-b4g.62, apra-fleet-b4g.63, apra-fleet-b4g.18.1, apra-fleet-b4g.18.2.
+Scope issue id(s): apra-fleet-b4g.68.
 Base branch: feat/kb-redesign.
-Cycles run: 3.
+Cycles run: 1.
 
 ## Progress
 
-Closed-bead count history (per cycle evaluation): [15, 19, 25].
-High-water-mark closed count this sprint: 31.
-Final closed count: 25.
+Closed-bead count history (per cycle evaluation): [4].
+High-water-mark closed count this sprint: 5.
+Final closed count: 4.
 Final open-at-goal-priority count: 0.
 No beads were deferred out of scope at/above goal priority this sprint.
 
@@ -23,24 +23,25 @@ None.
 
 ## Final verdict
 
-PASS -- Final review of feat/kb-redesign..feat/kb-redesign-s1 (20 commits, 209 files). I read the net diff. Build passes and `npm test` exits 0: vitest 386 files / 5426 tests, client 43/0, workflow 321/0, apra-fleet-se 489/0, plus contract and generic-boundary checks. Tracked tree is clean. KB MCP tools could not connect, so no kb_promotions.
+PASS -- Scope: apra-fleet-b4g.68 (remote memberCall left its args file untracked in the member's git checkout) and children .68.1-.68.3. Reviewed net diff feat/kb-redesign..feat/kb-redesign-s1, focusing on db77f5db..a01112b3 (member-call.mjs, se-os-commands.mjs, se-posix.mjs, se-windows.mjs plus 3 test files).
 
-Scope beads, each checked against its criteria:
-- b4g.53: member-tool-allowlist.ts is the single source, derived from REGISTERED_TOOL_NAMES by the kb_/code_ prefix rule plus version, report_status and session_stats. tool-scope.ts uses AsyncLocalStorage to pass the session member id. The tool-registry Proxy skips any tool outside the scope (deny by omission). An unregistered ?member= gets 403 in http-transport.ts. The agy lists are derived from the allowlist. Covered by member-session-scope.test.ts.
-- b4g.57: src/cli/call.ts reads args from a file only and returns typed errors. member-call.mjs runs local calls in-process and remote calls via send_files + execute_command, with a charset-validated command string. Client connectFleetMember and close() send an HTTP DELETE.
-- b4g.54: kb-self.ts resolves the member's work folder (FULL session -> server cwd) with typed E-SELF-* errors. repo_path/repo/repo_remote_url are removed from every kb_* schema and the contract. Engine KB calls go through memberCall. Tests are over real HTTP.
-- b4g.66: reads default to CONFIRMED and undisputed; flagged_only is exempt; named callers pass confidence explicitly.
-- b4g.62: --id is idempotent and returns E-FOLDER-TAKEN on a folder conflict.
-- b4g.63: --member touches no user config and fails with E-MEMBER-AUTOSTART when no auto-start runs.
-- b4g.18.1/.2: Step 0 in the role prompts is rewritten. The contract test imports the built allowlist and uses a pre-rewrite fixture to prove it is not vacuous.
+Implementation [OK]:
+- member-call.mjs runRemote: ensureArgsDirExcluded runs getSeCommands(target).ensureGitExcluded('.apra-call/') before the first send_files to each member (cached per instance only on success, otherwise retried; a failure is logged and the call continues). An outer finally runs removeFile(argsPath) after send_files plus the call on every outcome: success, isError, unparseable output, a thrown or timed-out executeCommand, and a failed send. A failed delete is logged and swallowed, so it never hides the call's own result or typed error. --list-tools delivers no file and runs neither command.
+- se-posix.mjs: the exclude file is located with git rev-parse --git-path info/exclude, so subdirectories and linked worktrees work. The append is idempotent (grep -qxF), a missing trailing newline is repaired first, and outside a git repo the command exits 0. It uses no member env vars, ~ or backticks (per the CLAUDE.md shell rule).
+- se-windows.mjs: PowerShell twin wrapped in -EncodedCommand. The git call has its own try/catch for PS 5.1 under ErrorActionPreference Stop, LASTEXITCODE is reset, and lines end in LF.
+- assertSafeRelativePath throws on any path outside a strict charset and on '..', a leading '/' or a leading '-'. Paths are rejected, never quoted or escaped into the command.
 
-Non-blocking findings (filed as tasks):
-1. Remote members: KB calls now run `apra-fleet call` on the member, so until b4g.56 (still open) installs and registers apra-fleet there, every remote-member KB call fails, logged as non-fatal. Remote KB goes cold in the meantime, though the description of b4g.54 says engine KB behaviour is preserved. This is acceptable on the feature branch because b4g.56 and b4g.25 track it.
-2. Short-lived tool-only ?member= sessions still register in sessionRegistry when no live channel session exists. They can briefly look like the member's online session, and closing them unregisters it.
-3. The remote branch of resolveSelfAnchor (member not local -> knownRepoRemoteUrl) has no test.
-4. The member allowlist includes write/admin KB tools (kb_setup writes the machine-wide provider config, plus kb_promote, kb_resolve_contradiction and kb_export with auto-commit). This matches the spec, but member sessions can mint CONFIRMED and reconfigure the KB.
-5. README.md:225 and docs/knowledge-layer.md still document the removed repo_path/repo_remote_url inputs.
-6. Each remote kb call costs one send_files plus one execute_command; captures are not batched.
+Acceptance criteria [OK], each with a test that runs commands for real:
+- A member without the call verb leaves no file in .apra-call/.
+- Success and timeout cases leave no args file.
+- .apra-call/ is excluded before the first send, and git status --porcelain --untracked-files=all stays empty even when the delete is forced to fail. The test uses a real temp git repo and runs the commands with real bash.
+- Commands are built per shell (bash and PowerShell shape tests). pwsh is installed on this host, so the real-PowerShell tests in se-os-commands-git-exclude ran and passed.
+
+Build/tests: npm run build exit 0. npm test exit 0: vitest 386 files / 5426 tests passed (61 skipped); node suites pass=43, 321, 3587 and 489 with fail=0.
+
+Hygiene: every changed file maps to KB-redesign sprint work. sprint-analysis docs are expected.
+
+Minor (not blocking): each remote member call now makes 1 to 2 extra execute_command round trips (exclude on the first call, delete on every call). Filed as a follow-up. KB MCP was unavailable (apra-fleet ECONNREFUSED), so there are no KB promotions.
 
 ## Regression pass (once per sprint, informational)
 
