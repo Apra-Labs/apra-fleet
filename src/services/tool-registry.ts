@@ -71,7 +71,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { sendEmailSchema, sendEmail } = await import('../tools/send-email.js');
   const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
   const { respondToMessageSchema, respondToMessage } = await import('../tools/respond-to-message.js');
-  const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema, resolveCodeSelf, CODE_SELF_NOTE } = await import('../tools/code-intelligence.js');
+  const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, handleCodeReindex, handleCodeStatus, codeReindexSchema, codeStatusSchema, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema, resolveCodeSelf, CODE_SELF_NOTE } = await import('../tools/code-intelligence.js');
   const { enrichContextWithKb } = await import('../tools/code-intelligence-kb-enrich.js');
   const { recordUsage } = await import('../tools/code-intelligence-telemetry.js');
   const { kbCaptureSchema, kbCapture } = await import('../tools/kb-capture.js');
@@ -266,6 +266,16 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
     const self = resolveCodeSelf();
     recordUsage('code_tests', input.symbol, self.repo);
     return JSON.stringify(await handleCodeTests(input, self));
+  }));
+  server.tool('code_reindex', 'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member). Poll code_status for completion.' + CODE_SELF_NOTE, codeReindexSchema.shape, wrapTool('code_reindex', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_reindex', '', self.repo);
+    return JSON.stringify(await handleCodeReindex(input, self));
+  }));
+  server.tool('code_status', 'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit.' + CODE_SELF_NOTE, codeStatusSchema.shape, wrapTool('code_status', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_status', '', self.repo);
+    return JSON.stringify(await handleCodeStatus(input, self));
   }));
 
   // --- Knowledge Bank ---

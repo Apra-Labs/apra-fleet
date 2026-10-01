@@ -1,0 +1,179 @@
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+
+// code_reindex / code_status end to end against a FAKE `npx` (placed first on
+// PATH inside a temp sandbox) -- no real gitnexus analyze ever runs. The fake
+// prints lines, holds an analyze.lock, writes meta.json and exits, per
+// FAKE_MODE. The data dir is a sandbox (APRA_FLEET_DATA_DIR, set before any
+// import via vi.hoisted) so nothing is written outside it.
+
+const sandbox = vi.hoisted(() => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-reindex-')));
+  const data = path.join(root, 'data');
+  fs.mkdirSync(data);
+  process.env.APRA_FLEET_DATA_DIR = data;
+  return { root, data, bin: path.join(root, 'bin') };
+});
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { handleCodeReindex, handleCodeStatus } from '../src/tools/code-intelligence.js';
+import { codeStatus } from '../src/tools/code-intelligence-reindex.js';
+import { codeIndexReadiness } from '../src/tools/code-intelligence-readiness.js';
+
+const isWin = process.platform === 'win32';
+const realPath = process.env.PATH ?? '';
+const pids = new Set<number>();
+let repo: string;
+let head: string;
+let n = 0;
+
+const FAKE_NPX = `#!/bin/sh
+mkdir -p .gitnexus
+case "$FAKE_MODE" in
+  index)
+    echo "Analyzing repository"
+    printf '{"pid":%s,"token":"t","hostname":"h"}' $$ > .gitnexus/analyze.lock
+    echo "Parsing files"
+    sleep 1
+    printf '{"lastCommit":"%s"}' "$(git rev-parse HEAD)" > .gitnexus/meta.json
+    rm -f .gitnexus/analyze.lock
+    echo "Indexed ok"
+    ;;
+  uptodate) echo "Already up to date"; ;;
+  notfound) echo "npm error 404 Not Found - GET https://registry.npmjs.org/gitnexus"; exit 1 ;;
+esac
+`;
+
+function newRepo(): string {
+  const dir = path.join(sandbox.root, `repo${n++}`);
+  fs.mkdirSync(dir);
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir });
+  head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  return dir;
+}
+
+function logOf(dir: string): string {
+  const d = path.join(sandbox.data, 'code-index');
+  const slug = fs.readdirSync(d)[0];
+  return fs.readFileSync(path.join(d, slug, 'analyze.log'), 'utf8');
+}
+
+async function waitFor<T>(fn: () => T | undefined | false, ms = 8000): Promise<T> {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v as T;
+    if (Date.now() - t0 > ms) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+beforeAll(() => {
+  fs.mkdirSync(sandbox.bin);
+  fs.writeFileSync(path.join(sandbox.bin, 'npx'), FAKE_NPX, { mode: 0o755 });
+  process.env.PATH = sandbox.bin + path.delimiter + realPath;
+});
+
+afterAll(() => {
+  collectPids();
+  process.env.PATH = realPath;
+  delete process.env.FAKE_MODE;
+  let leaked = 0;
+  for (const pid of pids) {
+    try { process.kill(pid, 0); leaked++; try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } catch { /* gone */ }
+  }
+  fs.rmSync(sandbox.root, { recursive: true, force: true });
+  expect(leaked).toBe(0);
+});
+
+function collectPids(): void {
+  const d = path.join(sandbox.data, 'code-index');
+  if (!fs.existsSync(d)) return;
+  for (const slug of fs.readdirSync(d)) {
+    try {
+      const st = JSON.parse(fs.readFileSync(path.join(d, slug, 'status.json'), 'utf8')) as { pid?: number };
+      if (st.pid) pids.add(st.pid);
+    } catch { /* no status */ }
+  }
+}
+
+beforeEach(() => {
+  collectPids();
+  fs.rmSync(path.join(sandbox.data, 'code-index'), { recursive: true, force: true });
+  repo = newRepo();
+});
+
+describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => {
+  it('returns after the first tick, then code_status reports indexed with the commit', async () => {
+    process.env.FAKE_MODE = 'index';
+    const t0 = Date.now();
+    const r = await handleCodeReindex({}, { repo });
+    expect(r.outcome).toBe('started');
+    if (r.outcome === 'started' && r.pid) pids.add(r.pid);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    // first tick: not yet finished, the index is not ready
+    expect(codeIndexReadiness('gitnexus', repo).ready).toBe(false);
+
+    const done = await waitFor(() => {
+      const s = codeStatus(repo);
+      return s.analyze?.phase === 'done' ? s : undefined;
+    });
+    const viaTool = await handleCodeStatus({}, { repo });
+    expect(viaTool).toMatchObject({ ready: true, indexedCommit: head });
+    expect(done.analyze.result).toBe('indexed');
+    expect(done.ready).toBe(true);
+    expect(done.indexedCommit).toBe(head);
+  });
+
+  it('analyze.log holds the analyze output', async () => {
+    process.env.FAKE_MODE = 'index';
+    await handleCodeReindex({}, { repo });
+    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+    const log = logOf(repo);
+    expect(log).toContain('Analyzing repository');
+    expect(log).toContain('Indexed ok');
+  });
+
+  it('an Already up to date run reports up-to-date', async () => {
+    process.env.FAKE_MODE = 'uptodate';
+    const r = await handleCodeReindex({}, { repo });
+    expect(r.outcome).toBe('up-to-date');
+    const s = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    expect(s.analyze?.result).toBe('up-to-date');
+  });
+
+  it('missing npx is a typed not-started, never started', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = path.join(sandbox.root, 'empty');
+    try {
+      const r = await handleCodeReindex({}, { repo });
+      expect(r).toMatchObject({ outcome: 'not-started', reason: 'npx-not-found' });
+    } finally { process.env.PATH = saved; }
+  });
+
+  it('missing gitnexus (npx cannot resolve it) is a typed not-started, never started', async () => {
+    process.env.FAKE_MODE = 'notfound';
+    const r = await handleCodeReindex({}, { repo });
+    expect(r).toMatchObject({ outcome: 'not-started', reason: 'gitnexus-not-found' });
+  });
+
+  it('a second code_reindex while one runs does not start another analyze', async () => {
+    process.env.FAKE_MODE = 'index';
+    const first = await handleCodeReindex({}, { repo });
+    if (first.outcome === 'started' && first.pid) pids.add(first.pid);
+    const second = await handleCodeReindex({}, { repo });
+    expect(second.outcome).toBe('already-running');
+    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+  });
+
+  it('a remote member folder is a typed not-started', async () => {
+    const r = await handleCodeReindex({}, { repo: '/elsewhere', remote: true });
+    expect(r).toMatchObject({ outcome: 'not-started', reason: 'remote-member' });
+  });
+});
+

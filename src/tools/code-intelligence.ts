@@ -8,6 +8,7 @@ import { getAgent } from '../services/registry.js';
 import { resolveSelfSession, validateSelfRepoFolder } from '../services/knowledge/kb-self.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 import { codeIntelDisabledError, indexedCommitOf } from './code-intelligence-readiness.js';
+import { codeReindex, codeStatus, type CodeReindexResult, type CodeStatusResult } from './code-intelligence-reindex.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -95,13 +96,15 @@ export interface CodeSelf {
   memberId?: string;
   /** Known origin remote of a remote member's repo (KB enrichment only). */
   remoteUrl?: string;
+  /** True when the folder lives on another host (this process cannot run analyze there). */
+  remote?: boolean;
 }
 
 /** Resolve the calling session's own code-intelligence folder. Throws KbSelfError. */
 export function resolveCodeSelf(): CodeSelf {
   const self = resolveSelfSession();
   if (self.agent && self.agent.agentType !== 'local') {
-    return { repo: self.folder, memberId: self.memberId, remoteUrl: knownRepoRemoteUrl(self.agent) ?? undefined };
+    return { repo: self.folder, memberId: self.memberId, remoteUrl: knownRepoRemoteUrl(self.agent) ?? undefined, remote: true };
   }
   validateSelfRepoFolder(self.folder, self.memberLabel);
   return { repo: self.folder, memberId: self.memberId };
@@ -166,6 +169,35 @@ export async function handleCodeFlow(input: Record<string, unknown>, self?: Code
 
 export async function handleCodeTests(input: Record<string, unknown>, self?: CodeSelf): Promise<unknown> {
   return runCodeTool('tests', input, self);
+}
+
+export const codeReindexSchema = z.object({});
+export const codeStatusSchema = z.object({});
+
+/**
+ * code_reindex: (re)build the calling session's own code index. Starts
+ * `npx gitnexus analyze` detached, captures its output to
+ * <data>/code-index/<slug>/analyze.log, and returns after the first tick
+ * (lock held + process alive + a log line, or 'Already up to date'). A missing
+ * npx/gitnexus is a typed not-started reason, never 'started'.
+ */
+export async function handleCodeReindex(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeReindexResult> {
+  if (self.remote) {
+    return {
+      outcome: 'not-started',
+      reason: 'remote-member',
+      detail: `The work folder '${self.repo}' is on another host; run code_reindex from a session on that host.`,
+    };
+  }
+  return codeReindex(self.repo);
+}
+
+/** code_status: last analyze run (status.json), live readiness, and the indexed commit. */
+export async function handleCodeStatus(_input: Record<string, unknown>, self: CodeSelf = resolveCodeSelf()): Promise<CodeStatusResult | { remote: true; repo: string; detail: string }> {
+  if (self.remote) {
+    return { remote: true, repo: self.repo, detail: `The work folder '${self.repo}' is on another host; run code_status from a session on that host.` };
+  }
+  return codeStatus(self.repo);
 }
 
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
