@@ -16,6 +16,7 @@ import {
   MemberConfigError,
   MemberConfigNotJsonError,
   isGitTracked,
+  memberFileExists,
   writeMemberJson,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
@@ -291,7 +292,8 @@ export class OpenCodeProvider implements ProviderAdapter {
       : {};
     const hadLegacy = LEGACY_MEMBER_MCP_SERVER_NAME in mcp;
     delete mcp[LEGACY_MEMBER_MCP_SERVER_NAME];
-    const fileExists = Object.keys(config).length > 0;
+    // Check if the file actually exists on disk (even if empty or {})
+    const fileExists = await memberFileExists(ctx.execCommand, file, posix);
     let detail: string;
     if (url !== null) {
       const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;

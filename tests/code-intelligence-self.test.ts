@@ -120,12 +120,17 @@ describe('code (self): each session is answered from its own folder', () => {
   });
 
   it('path assertions work correctly with Windows-style backslashes (JSON-escaped)', async () => {
-    // Simulate a Windows-style path with backslashes by creating a string with \\
+    // Simulate a Windows-style path and verify our assertion method handles it correctly
     const windowsPath = 'C:\\Users\\test\\project';
-    const text = `index of ${JSON.stringify(windowsPath).slice(1, -1)}`;
-    // The assertion should work: JSON.stringify escapes backslashes, so the text
-    // contains C:\\Users\\test\\project (escaped), and we search for that escaped version
-    expect(text).toContain(`index of ${JSON.stringify(windowsPath).slice(1, -1)}`);
+    // Simulate what the tool returns: JSON.stringify of a structured result containing the path
+    const toolResultJson = JSON.stringify({ content: [{ type: 'text', text: `index of ${windowsPath}` }] });
+    // The MCP tool returns this JSON string as text, so consumers receive it stringified.
+    // To verify the path is present, we must compare against the JSON-escaped version,
+    // which is what JSON.stringify(windowsPath).slice(1,-1) produces.
+    expect(toolResultJson).toContain(`index of ${JSON.stringify(windowsPath).slice(1, -1)}`);
+    // Also verify that a bare raw-path assertion WOULD fail (proving the fix is necessary):
+    // the raw path contains single backslashes, but the JSON string contains escaped ones.
+    expect(toolResultJson).not.toContain(`index of ${windowsPath}`);
   });
 
   it('a FULL session\'s code_query resolves to the server working folder', async () => {

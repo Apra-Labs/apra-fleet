@@ -171,6 +171,21 @@ export async function readMemberFile(exec: MemberExecFn, absPath: string, posix:
 }
 
 /**
+ * True when the member-side file at `absPath` exists (not a directory).
+ * Handles all exit codes gracefully: missing file, unreadable file, etc. all
+ * read as false. The command carries a resolved path only (no expansion).
+ */
+export async function memberFileExists(
+  exec: MemberExecFn,
+  absPath: string,
+  posix: boolean,
+): Promise<boolean> {
+  const cmd = posix ? `test -e "${absPath}"` : `Test-Path -LiteralPath "${absPath.replace(/\//g, '\\')}"`;
+  const r = await exec(cmd, FS_OP_TIMEOUT_MS);
+  return r.code === 0;
+}
+
+/**
  * True when git tracks `relPath` in the member work folder
  * (`git ls-files --error-unmatch`). Not a repo / git missing / untracked all
  * read as false. The command carries a resolved path only (no expansion), with

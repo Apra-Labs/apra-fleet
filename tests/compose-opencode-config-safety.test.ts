@@ -112,4 +112,20 @@ describe.skipIf(process.platform === 'win32')('opencode compose leaves tracked /
       expect(h.getAgent(id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'opencode-config-unparseable' });
     });
   });
+
+  it('empty tracked opencode.json: bytes and git status unchanged, fleetMcp unavailable/opencode-config-tracked', async () => {
+    const file = path.join(work, 'opencode.json');
+    fs.writeFileSync(file, '');
+    git('add', 'opencode.json');
+    git('commit', '-qm', 'track empty opencode.json');
+    const before = fs.readFileSync(file);
+    await withMember(async (h, id) => {
+      const result = await h.composePermissions({ member_id: id, role: 'doer' });
+      expect(result).not.toContain('[FAIL]');
+      expect(result).toContain('Permissions composed');
+      expect(git('status', '--porcelain').trim()).toBe('');
+      expect(fs.readFileSync(file).equals(before)).toBe(true);
+      expect(h.getAgent(id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'opencode-config-tracked' });
+    });
+  });
 });
