@@ -10,15 +10,20 @@ import { exec } from 'node:child_process';
 // standing in for the member's host.
 
 const execLog: string[] = [];
-let transport: 'ok' | 'reject' | 'nonzero' = 'ok';
+let transport: 'ok' | 'reject' | 'nonzero' | 'badshell' = 'ok';
 vi.mock('../../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: (command: string) => new Promise((resolve, reject) => {
       execLog.push(command);
       if (transport === 'reject') { reject(new Error('connect ETIMEDOUT')); return; }
       if (transport === 'nonzero') { resolve({ stdout: '', stderr: 'ssh: host unreachable', code: 255 }); return; }
-      exec(command, { shell: '/bin/sh' }, (err, stdout, stderr) =>
-        resolve({ stdout, stderr, code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 }));
+      const shell = transport === 'badshell' ? '/nonexistent/sh' : '/bin/sh';
+      exec(command, { shell }, (err, stdout, stderr) => {
+        // A spawn failure (non-numeric err.code, e.g. ENOENT) is a transport
+        // error, not an exit status: surface it as a rejection.
+        if (err && typeof err.code !== 'number') { reject(new Error(`spawn ${shell} ${String(err.code)}`)); return; }
+        resolve({ stdout, stderr, code: err ? (err.code as number) : 0 });
+      });
     }),
   }),
 }));
@@ -70,7 +75,9 @@ afterAll(() => {
 });
 beforeEach(() => { resetMemberBibleViews(); execLog.length = 0; transport = 'ok'; });
 
-describe('MEMBER session on a remote (non-local) member reads its checkout bible', () => {
+// The member is os linux and the stub execs POSIX commands via /bin/sh, which
+// does not exist on win32: skip there (PowerShell branch is covered separately).
+describe.skipIf(process.platform === 'win32')('MEMBER session on a remote (non-local) member reads its checkout bible', () => {
   it('kb_query and kb_stats serve the bible CONFIRMED set, no E-MEMBER-VIEW-REMOTE', async () => {
     writeBible([entry('r-1'), entry('r-2'), entry('r-inferred', { confidence: 'INFERRED' })]);
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));
@@ -107,5 +114,16 @@ describe('MEMBER session on a remote (non-local) member reads its checkout bible
     await expect(asMember(() => kbQuery({ query: 'sprocket gearbox' }))).rejects.toThrow(/E-MEMBER-VIEW-REMOTE/);
     await expect(asMember(() => kbStats({}))).rejects.toThrow(/E-MEMBER-VIEW-REMOTE/);
     expect(execLog.every(c => !c.startsWith('cat '))).toBe(true);
+  });
+
+  it('a spawn failure (missing shell) is reported as a spawn/reach error, not exit 1', async () => {
+    writeBible([entry('r-1')]);
+    transport = 'badshell';
+    const err = await asMember(() => kbQuery({ query: 'sprocket gearbox' })).then(() => null, e => e as Error);
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/E-MEMBER-VIEW-REMOTE/);
+    expect(err!.message).toMatch(/Could not reach member/);
+    expect(err!.message).toMatch(/ENOENT/);
+    expect(err!.message).not.toContain('exit 1');
   });
 });
