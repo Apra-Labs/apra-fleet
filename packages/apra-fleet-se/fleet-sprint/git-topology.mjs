@@ -407,6 +407,13 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
             continue;
         }
+        // A missing remote ref means the branch was never pushed, not a bad
+        // credential: re-provisioning cannot fix it. Return it immediately so
+        // the caller's own missing-ref handling runs without a wasted
+        // self-heal (apra-fleet-ta3).
+        if (isMissingRemoteRefError(error)) {
+            return { ok: false, output: res ? res.output : '', error, kind, missingRemoteRef: true };
+        }
         if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
             log(`[Sync] ${kind} git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
@@ -421,6 +428,20 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
         }
         return { ok: false, output: res ? res.output : '', error, kind };
     }
+}
+
+/**
+ * True when `error` is git's exact "the named ref does not exist on the
+ * remote" message (`fatal: couldn't find remote ref <branch>`): a branch never
+ * pushed to the remote, so there is nothing there to fetch/rebase against.
+ * The ONE place that text is matched (apra-fleet-ta3): runGitStep skips the
+ * auth self-heal on it, and the sync brackets (member-sync.mjs, which
+ * re-exports this) treat it as a benign no-op / retry-directly signal.
+ * @param {string} error - the raw git stderr/stdout of a failed command
+ * @returns {boolean}
+ */
+export function isMissingRemoteRefError(error) {
+    return /couldn't find remote ref/i.test(error || '');
 }
 
 /**
