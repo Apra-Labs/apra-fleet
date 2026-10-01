@@ -7,8 +7,30 @@ import {
   escapeDoubleQuoted,
   escapeWindowsArg,
   escapeGrepPattern,
+  escapeSedBasicRegex,
+  escapeAppleScriptString,
   sanitizeSessionId,
 } from '../src/utils/shell-escape.js';
+
+describe('escapeSedBasicRegex', () => {
+  it('leaves a well-formed ssh key (type + base64) unchanged except for /', () => {
+    expect(escapeSedBasicRegex('ssh-ed25519 AAAA+b/c=')).toBe('ssh-ed25519 AAAA+b\\/c=');
+  });
+
+  it('escapes backslash first, then BRE metacharacters and the / delimiter', () => {
+    expect(escapeSedBasicRegex('a\\.b*[c]^$/')).toBe('a\\\\\\.b\\*\\[c\\]\\^\\$\\/');
+  });
+});
+
+describe('escapeAppleScriptString', () => {
+  it('doubles backslashes before escaping double quotes', () => {
+    expect(escapeAppleScriptString('a\\"b')).toBe('a\\\\\\"b');
+  });
+
+  it('leaves plain text unchanged', () => {
+    expect(escapeAppleScriptString("it's $HOME")).toBe("it's $HOME");
+  });
+});
 
 describe('escapeShellArg', () => {
   it('wraps in single quotes and escapes embedded single quotes', () => {

@@ -83,6 +83,26 @@ export function escapeGrepPattern(s: string): string {
 }
 
 /**
+ * Escape a literal string for use inside a sed POSIX basic regular expression
+ * delimited by `/`. Backslash is escaped first so an input backslash can never
+ * combine with a following character into an escape sequence. Characters that
+ * are only special in ERE (+ ? | ( ) { }) are left alone: GNU sed gives `\+`
+ * etc. a special meaning in BRE, so escaping them would change the match.
+ */
+export function escapeSedBasicRegex(s: string): string {
+  return s.replace(/[\\/.*[\]^$]/g, '\\$&');
+}
+
+/**
+ * Escape a string for use inside an AppleScript double-quoted string literal.
+ * Backslash is the AppleScript escape character, so it is doubled first;
+ * then embedded double quotes are backslash-escaped.
+ */
+export function escapeAppleScriptString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * Validate and sanitize a session ID to prevent injection.
  * Session IDs must be alphanumeric with dashes and underscores only.
  * Throws if the ID contains invalid characters.

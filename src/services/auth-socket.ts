@@ -7,6 +7,7 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
+import { escapeShellArg, escapeAppleScriptString } from '../utils/shell-escape.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
 import { fleetEvents } from './event-bus.js';
@@ -621,6 +622,30 @@ function findLinuxTerminal(): TerminalEntry | null {
 }
 
 /**
+ * Build the AppleScript that opens a macOS Terminal window, runs the auth
+ * command in it, and waits for it to finish. Terminal's `do script` hands the
+ * string to the user's login shell, so every argv element is POSIX
+ * single-quoted (member names and the --prompt text can carry spaces and
+ * caller-supplied host/username values), and the whole command is then escaped
+ * for the AppleScript string literal (backslash first, then double quote).
+ * The command writes its own exit code to `tmpFile` so the caller can read it.
+ * Exported for tests.
+ */
+export function buildMacTerminalAppleScript(fullArgs: string[], tmpFile: string): string {
+  const command = [...fullArgs.map(escapeShellArg), `; echo $? > ${escapeShellArg(tmpFile)}`].join(' ');
+  return `
+            tell application "Terminal"
+                activate
+                set w to do script "${escapeAppleScriptString(command)}"
+                delay 1
+                repeat while busy of w
+                    delay 0.5
+                end repeat
+            end tell
+          `;
+}
+
+/**
  * Launch a new terminal window running `apra-fleet secret --set <memberName>` or `apra-fleet auth <memberName>`.
  * Records the spawned PID in the pending request so it can be killed when credential is received.
  * Returns a user-facing message describing what happened and executes a
@@ -665,21 +690,7 @@ export function launchAuthTerminal(
         let exitCode = 1; // Default to cancellation
         const tmpFile = path.join(os.tmpdir(), `fleet-auth-exit-${Date.now()}`);
         try {
-          // The command to run in the terminal. It must be a single string.
-          // It writes its own exit code to a temp file so we can read it later.
-          const command = [...fullArgs, `; echo $? > "${tmpFile}"`].join(' ');
-
-          // AppleScript to launch terminal, run command, and wait for it to be "not busy".
-          const appleScript = `
-            tell application "Terminal"
-                activate
-                set w to do script "${command.replace(/"/g, '\\"')}"
-                delay 1
-                repeat while busy of w
-                    delay 0.5
-                end repeat
-            end tell
-          `;
+          const appleScript = buildMacTerminalAppleScript(fullArgs, tmpFile);
 
           const child = spawn('osascript', ['-']);
           child.stdin.write(appleScript);
