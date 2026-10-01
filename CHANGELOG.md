@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign: member bible view, kb_maintainer write routing, round bible commits
+
+Sprint goal: member sessions read the KB from the checkout's bible, all sprint KB writes go through one maintainer per repository, and each review round's confirmations are committed to the bible. The sprint verdict was FAIL on one defect (below); the rest passed review.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $41.9602.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0818 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 38 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- MEMBER sessions read `kb_query`/`kb_session_prime`/`kb_list`/`kb_context`/`kb_stats` from an in-memory view of the checkout bible (local and remote), rebuilt on mtime/size change, loaded verbatim. MEMBER captures are tagged by member; INFERRED reads, `kb_promote` and the new `kb_invalidate {ids}` are own-scope; `kb_feedback` returns `E-MEMBER-VIEW-READ-ONLY`.
+- One `kb_maintainer` per repository is selected at sprint setup (explicit role, role-less member, then access fallback with availability probe). All KB writes are queued per repository, pulled before each batch, and held while the maintainer is busy or unreachable.
+- New `kb_bible_commit` merges confirmed ids into the bible entry by entry with base-branch provenance and a local commit; `kb_export` gained `baseBranch`/`baseCommit`. The engine commits each round (pull, commit, push, one retry) and no longer exports the bible itself. Declared in `memory-contract/v1` and `apra-fleet-client`.
+- Design notes: docs/kb-member-view-and-maintainer.md.
+
+Carried forward: a maintainer outside every dispatched role pool is never placed on the sprint branch, so its pulls, bible commit and push target the wrong branch (open defect); the bible-commit retry's hard reset drops unpushed work on the maintainer; `kb_invalidate {ids}` should derive the owner tag via the shared helper.
+
 ## [Unreleased] -- fleet-sprint: remote memberCall no longer dirties the member's git checkout
 
 Sprint goal: a remote `memberCall` left its args file untracked in the member's git checkout. The engine now git-excludes `.apra-call/` before the first send to a member and deletes the args file after every call (success, error, unparseable output, timeout, failed send); failures of either step are logged and never hide the call's result. New per-shell `ensureGitExcluded` and `removeFile` command primitives (POSIX and PowerShell) validate paths strictly. Tests run the commands for real, against a temp git repo and real bash and PowerShell.
