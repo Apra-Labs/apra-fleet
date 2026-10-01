@@ -624,6 +624,23 @@ export function createGitSync(deps = {}) {
             return { safe: true };
         },
         /**
+         * The branch a member currently has checked out, next to the sprint
+         * branch it is expected to be on -- the KB bible commit's guard, so
+         * no G-pull, reset, commit or push ever runs on a maintainer that sits
+         * on some other branch. The git string is built in JS (no shell
+         * expansion) so a PowerShell member works. `branch` is null when it
+         * cannot be read; a detached HEAD reads as 'HEAD'.
+         * Resolves { branch: string|null, sprintBranch: string|null }.
+         */
+        checkedOutBranch: async (memberName) => {
+            const res = await command('git rev-parse --abbrev-ref HEAD', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `read the checked-out branch before the bible commit on '${memberName}'`,
+            });
+            const found = res && res.ok && typeof res.output === 'string' ? res.output.trim().split(/\r?\n/).pop().trim() : '';
+            return { branch: found || null, sprintBranch: typeof branch === 'string' && branch ? branch : null };
+        },
+        /**
          * The base a KB bible commit records as provenance, resolved on the
          * member's checkout: the sprint's TARGET BASE branch, and the commit
          * the sprint branch forked from it (`git merge-base HEAD

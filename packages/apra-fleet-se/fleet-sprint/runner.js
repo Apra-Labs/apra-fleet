@@ -499,6 +499,19 @@ function resolveDispatchInactivityTimeoutS(dispatchTimeoutS) {
 }
 export { resolveDispatchInactivityTimeoutS };
 
+// The member name of every selected kb_maintainer (one per repository), for
+// the sprint-branch ensure. A selector without maintainers() (an injected
+// stub) or a repository with no selected maintainer contributes nothing.
+function kbMaintainerMembers(selector) {
+    if (!selector || typeof selector.maintainers !== 'function') return [];
+    const out = [];
+    for (const sel of selector.maintainers().values()) {
+        if (sel && typeof sel.member === 'string' && sel.member) out.push(sel.member);
+    }
+    return out;
+}
+export { kbMaintainerMembers };
+
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
@@ -1362,6 +1375,9 @@ async function runSprintCycle(context) {
         abortRebase: (maintainerName) => gitSync.abortRebase(maintainerName),
         bibleBase: (maintainerName) => gitSync.resolveBibleBase(maintainerName),
         canResetCheckout: (maintainerName, bibleFile) => gitSync.canResetBibleCheckout(maintainerName, bibleFile),
+        // The bible-commit branch guard: no G-pull, reset, commit or push on a
+        // maintainer whose checkout is not the sprint branch.
+        checkedOutBranch: (maintainerName) => gitSync.checkedOutBranch(maintainerName),
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,
@@ -1993,6 +2009,11 @@ async function runSprintCycle(context) {
         ...getMembersForRole('integ-test-runner'),
         ...getMembersForRole('regression-test-runner'),
         ...getMembersForRole('harvester'),
+        // Every selected kb_maintainer, too: it G-pulls, bible-commits and
+        // G-pushes the sprint branch even when it holds no dispatched role
+        // (selection prefers such a member), so the initial ensure and the
+        // re-ensure must put it on the sprint branch like any dispatch member.
+        ...kbMaintainerMembers(context.kbMaintainers),
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can

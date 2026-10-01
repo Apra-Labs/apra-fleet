@@ -279,12 +279,13 @@ function memberNameOf(member) {
  *   abortRebase?: (memberName: string) => Promise<any>,
  *   bibleBase?: (memberName: string) => Promise<{ baseBranch: string, baseCommit: string }|null>,
  *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
+ *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
  *   sprintStartMs?: number|(() => number),
  *   log?: Function,
  * }} opts
  */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, log = () => {} } = opts;
+    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, log = () => {} } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
@@ -550,6 +551,33 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /**
+     * True when the maintainer's checked-out branch is the sprint branch.
+     * Checked before the first G-pull of a bible commit and before every
+     * reset onto the remote tip, so no pull, reset --hard, commit or push
+     * ever runs on any other branch. When the branch differs (or cannot be
+     * read), logs a WARN naming the maintainer and both branches and returns
+     * false -- the caller keeps the ids queued. Without an injected guard
+     * the check passes.
+     */
+    async function onSprintBranch(maintainer, repo, count) {
+        if (typeof checkedOutBranch !== 'function') return true;
+        let found = null;
+        let sprintBranch = null;
+        let readError = null;
+        try {
+            const r = await checkedOutBranch(maintainer);
+            found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+            sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+        } catch (err) {
+            readError = errText(err);
+        }
+        if (found && sprintBranch && found === sprintBranch) return true;
+        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
+        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${foundText} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no bible commit, push or reset is made there; ${count} confirmation(s) stay queued for the next round`);
+        return false;
+    }
+
+    /**
      * Commit one repository's pending confirmations to the bible on its
      * maintainer. Never throws; ids that do not reach a pushed commit stay
      * pending for the next round.
@@ -578,6 +606,7 @@ export function createKbWorkClient(opts = {}) {
         let release;
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
+            if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
             let outcome = await bibleAttempt(target, ids);
             if (!outcome.ok && outcome.stage === 'G-push') {
                 log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
@@ -587,6 +616,7 @@ export function createKbWorkClient(opts = {}) {
                 // The reset throws away the maintainer's local-only commits and
                 // uncommitted changes; it is usually also a doer, so only reset
                 // when that is the bible commit alone.
+                if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
                 if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
                 outcome = await bibleAttempt(target, ids, { resetToRemoteTip: true });
                 if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
@@ -597,7 +627,7 @@ export function createKbWorkClient(opts = {}) {
                     if (typeof abortRebase === 'function') {
                         try { await abortRebase(maintainer); } catch { /* best-effort */ }
                     }
-                    try { if (await resetIsSafe(maintainer, repo)) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
+                    try { if ((await onSprintBranch(maintainer, repo, ids.length)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
                         log(`[kb-work] WARN: could not reset maintainer '${maintainer}' onto the remote tip after the failed bible commit: ${errText(err)}`);
                     }
                 }
