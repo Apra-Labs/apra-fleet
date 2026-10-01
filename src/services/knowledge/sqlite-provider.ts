@@ -22,7 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
-import { KbCaptureRejected } from './types.js';
+import { KbCaptureRejected, type DiscardResult } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -1157,6 +1157,27 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     return results;
+  }
+
+  async discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult> {
+    const db = this.getDb();
+    const result: DiscardResult = { discarded: [], not_found: [], already_discarded: [] };
+    const now = new Date().toISOString();
+    for (const id of new Set(ids)) {
+      const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      // An entry outside the caller's own scope is indistinguishable from an unknown id.
+      if (!row || (opts?.ownerTag && !this.rowToEntry(row).tags.includes(opts.ownerTag))) {
+        result.not_found.push(id);
+        continue;
+      }
+      if (row.superseded_at) {
+        result.already_discarded.push(id);
+        continue;
+      }
+      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+      result.discarded.push(id);
+    }
+    return result;
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {

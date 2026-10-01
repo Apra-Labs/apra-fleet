@@ -16,11 +16,17 @@
           },
           "minItems": 1,
           "description": "File paths to invalidate (context-cache entries for these files will be marked stale)"
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Entry ids to discard (sets superseded_at; the entry drops from all reads). Exactly one of files or ids."
         }
       },
-      "required": [
-        "files"
-      ],
       "additionalProperties": false
     }
   }

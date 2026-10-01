@@ -252,12 +252,22 @@ export interface ProviderConfig {
   dbPath?: string;
 }
 
+export interface DiscardResult {
+  discarded: string[];
+  not_found: string[];
+  already_discarded: string[];
+}
+
 export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
   context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
+  // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
+  // read path; the row is kept. ownerTag restricts the call to entries carrying
+  // that tag (MEMBER own-scope); any other id is reported as not_found.
+  discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
