@@ -38,6 +38,8 @@ const registerMemberSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'regi
 const updateMemberSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'update-member.ts'), 'utf8');
 const resolveMemberSrc = readFileSync(path.join(repoRoot, 'src', 'utils', 'resolve-member.ts'), 'utf8');
 const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-detail.ts'), 'utf8');
+const sessionStatsSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'session-stats.ts'), 'utf8');
+const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'member-call-counts.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -211,5 +213,21 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    test('SessionStatsOptions matches sessionStatsSchema field-for-field', () => {
+        const block = extractBlock(sessionStatsSrc, 'export const sessionStatsSchema = z.object({', '\n});');
+        const schemaFields = extractTopLevelKeys(block, 2);
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsOptions');
+        assert.ok(schemaFields.has('member_id'), 'sanity: sessionStatsSchema should declare member_id');
+        assertFieldParity('SessionStatsOptions vs sessionStatsSchema', schemaFields, typedefFields);
+    });
+
+    test('SessionStatsResult matches the MemberCallStats interface session_stats returns', () => {
+        const block = extractBlock(memberCallCountsSrc, 'export interface MemberCallStats {', '\n}');
+        const resultFields = extractTopLevelKeys(block, 2);
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsResult');
+        assert.ok(resultFields.has('since') && resultFields.has('kb') && resultFields.has('code'), 'sanity: MemberCallStats should declare since, kb, code');
+        assertFieldParity('SessionStatsResult vs MemberCallStats', resultFields, typedefFields);
     });
 });

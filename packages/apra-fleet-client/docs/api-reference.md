@@ -154,7 +154,10 @@ abort support on top of a transport.
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
 Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
-returning `{ transport, mcpClient, mode: 'http', url, close }`. Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+returning `{ transport, mcpClient, mode: 'http', url, close }`. `deps.origin:
+'engine'` also appends `origin=engine` (engine-origin session: its kb_/code_
+calls are excluded from the member's `session_stats` counts; only memberCall and
+`apra-fleet call` set it). Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as

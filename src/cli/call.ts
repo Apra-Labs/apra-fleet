@@ -7,7 +7,8 @@
  * Opens a MEMBER session (?member=<uuid>) against the LOCAL server through
  * apra-fleet-client, so the server's own input schema validates the arguments
  * and the member tool allowlist applies. Arguments are ALWAYS read from a JSON
- * file -- there is deliberately no inline-JSON flag. Failures are printed as a
+ * file -- there is deliberately no inline-JSON flag. The session is opened with
+ * origin=engine, so its kb_/code_ calls are excluded from session_stats. Failures are printed as a
  * structured JSON error on stderr and the exit code is non-zero.
  */
 import fs from 'node:fs';
@@ -109,7 +110,9 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
 
   const connect = deps.connect ?? (async (id: string) => {
     const m = await import('@apralabs/apra-fleet-client/server-resolution');
-    return m.connectFleetMember(id);
+    // origin=engine: this verb is the engine acting as the member (remote
+    // memberCall), so its kb_/code_ calls are not counted in session_stats.
+    return m.connectFleetMember(id, { origin: 'engine' });
   });
 
   let session;

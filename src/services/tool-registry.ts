@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeMemberId, type ToolScope } from './tool-scope.js';
+import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeIsEngineOrigin, scopeMemberId, type ToolScope } from './tool-scope.js';
+import { recordMemberToolCall } from './member-call-counts.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -32,6 +33,7 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
 export async function registerAllTools(baseServer: McpServer, scope: ToolScope = FULL_TOOL_SCOPE): Promise<void> {
   const server = scopeGatedServer(baseServer, scope);
   const sessionMemberId = scopeMemberId(scope);
+  const engineOrigin = scopeIsEngineOrigin(scope);
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -71,6 +73,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { sendEmailSchema, sendEmail } = await import('../tools/send-email.js');
   const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
   const { respondToMessageSchema, respondToMessage } = await import('../tools/respond-to-message.js');
+  const { sessionStatsSchema, sessionStats } = await import('../tools/session-stats.js');
   const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, handleCodeReindex, handleCodeStatus, codeReindexSchema, codeStatusSchema, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema, resolveCodeSelf, CODE_SELF_NOTE } = await import('../tools/code-intelligence.js');
   const { enrichContextWithKb } = await import('../tools/code-intelligence-kb-enrich.js');
   const { recordUsage } = await import('../tools/code-intelligence-telemetry.js');
@@ -126,6 +129,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
   function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
     return async (input: any, extra?: any) => {
+      // Per-member kb_/code_ call counts (session_stats). Counted on entry, so
+      // a call that fails still counts as a call. Engine-origin and FULL
+      // sessions are not counted (see member-call-counts.ts).
+      recordMemberToolCall(sessionMemberId, toolName, engineOrigin);
       // Every handler can read the calling session's member id: on the extra
       // (extra.sessionMemberId) and, for code further down the call chain,
       // via getSessionMemberId() (src/services/tool-scope.ts). Undefined for a
@@ -190,6 +197,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('update_llm_cli', "Update or install the AI provider CLI on members. Omit member to update all online members at once. Use install_if_missing to install on members that don't have it yet.", updateAgentCliSchema.shape, wrapTool('update_llm_cli', (input) => updateAgentCli(input as any)));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, wrapTool('shutdown_server', () => shutdownServer()));
   server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, wrapTool('version', () => version()));
+  server.tool('session_stats', "Return a member's kb_* and code_* tool call counts on this server (aggregated across the member's sessions, engine-origin sessions excluded) plus the time counting started. On a member session it reports the calling member.", sessionStatsSchema.shape, wrapTool('session_stats', (input) => sessionStats(input as any)));
 
   // Permissions
   server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));

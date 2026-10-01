@@ -191,6 +191,19 @@ write/admin KB tools (`kb_setup`, `kb_promote`, `kb_resolve_contradiction`,
 `kb_export`), so a member session can mint CONFIRMED entries and reconfigure
 the KB; this matches the specification and is a known trust boundary.
 
+Per-member call counts: the server counts every `kb_*` and `code_*` call
+made from a MEMBER session against that member's uuid, aggregated across all
+of its sessions, in memory (`src/services/member-call-counts.ts`, recorded in
+the tool registry's shared handler wrapper). `session_stats` returns
+`{ member_id, since, kb, code, total, tools }` for the calling member (a FULL
+session must pass `member_id`). Sessions opened with `origin=engine` on the
+MCP URL -- set only by the engine's `memberCall` (via
+`connectFleetMember(id, { origin: 'engine' })`) and the `apra-fleet call`
+verb -- are not counted, so the engine's own reads (including the
+`session_stats` snapshots it takes around each dispatch) never inflate a
+member's numbers. `since` is the counter start (server process start); a
+change between two snapshots means the server restarted.
+
 The `apra-fleet call` CLI verb (`src/cli/call.ts`) lets a process on a member
 host call a tool as that member: arguments come from a file only (never the
 command line) and failures are typed errors. The engine's `memberCall`

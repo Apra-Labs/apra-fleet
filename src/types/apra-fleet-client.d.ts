@@ -33,7 +33,7 @@ declare module '@apralabs/apra-fleet-client/server-resolution' {
 
   export function connectFleetMember(
     memberId: string,
-    deps?: FleetResolutionDeps & { options?: Record<string, unknown> },
+    deps?: FleetResolutionDeps & { options?: Record<string, unknown>; origin?: 'engine' },
   ): Promise<{
     transport: { stop(): void; close(): Promise<void> };
     mcpClient: {

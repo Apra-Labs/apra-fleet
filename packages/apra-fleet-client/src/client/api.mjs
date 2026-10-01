@@ -133,6 +133,21 @@
  */
 
 /**
+ * @typedef {Object} SessionStatsOptions
+ * @property {string} [member_id] - Member uuid to read; omit on a member session (the calling member is used), required on a non-member session
+ */
+
+/**
+ * @typedef {Object} SessionStatsResult
+ * @property {string} member_id - Member uuid the counts belong to
+ * @property {string} since - ISO time counting started (server start); a change between two snapshots means the server restarted
+ * @property {number} kb - kb_* calls counted
+ * @property {number} code - code_* calls counted
+ * @property {number} total - kb + code
+ * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
+ */
+
+/**
  * @typedef {Object} ListMembersOptions
  * @property {"compact" | "json"} [format] - Output format
  * @property {string[]} [tags] - Filter members by tags (AND semantics)
@@ -867,6 +882,19 @@ export class ApraFleet {
      */
     async codeStatus() {
         return this.mcpClient.callTool('code_status', {});
+    }
+
+    /**
+     * session_stats -- a member's kb_* / code_* tool call counts on this
+     * server, aggregated across that member's sessions (engine-origin
+     * sessions excluded). On a member session the calling member is reported
+     * and `member_id` may be omitted; a non-member session must pass it.
+     * Extract the JSON with parseToolJson(): a SessionStatsResult.
+     *
+     * @param {SessionStatsOptions} [options]
+     */
+    async sessionStats(options = {}) {
+        return this.mcpClient.callTool('session_stats', options);
     }
 
     /**

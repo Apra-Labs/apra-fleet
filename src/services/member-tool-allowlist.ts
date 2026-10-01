@@ -16,10 +16,8 @@
 //     code_*) -- so a newly registered kb_/code_ tool (code_reindex,
 //     code_status, ...) is member-allowed as soon as it is added to
 //     REGISTERED_TOOL_NAMES;
-//   - every name in MEMBER_EXPLICIT_TOOLS that is actually registered.
-//     session_stats is listed there ahead of time: it becomes member-allowed
-//     the moment it is registered (and added to REGISTERED_TOOL_NAMES), and is
-//     simply absent until then -- no fake registration.
+//   - every name in MEMBER_EXPLICIT_TOOLS that is actually registered
+//     (version, report_status, session_stats).
 
 /**
  * Every tool name registered by registerAllTools (src/services/tool-registry.ts).
@@ -32,7 +30,7 @@ export const REGISTERED_TOOL_NAMES: readonly string[] = Object.freeze([
   'send_files', 'receive_files', 'execute_prompt', 'execute_command',
   'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
   'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
-  'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
+  'update_llm_cli', 'shutdown_server', 'version', 'session_stats', 'compose_permissions',
   'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
   'credential_store_list', 'credential_store_delete', 'credential_store_update',
   'send_email', 'send_message', 'report_status', 'respond_to_message',

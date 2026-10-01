@@ -21,12 +21,25 @@ import { isMemberAllowedTool, MEMBER_CHANNEL_TOOLS } from './member-tool-allowli
 
 export type ToolScope =
   | { kind: 'full' }
-  | { kind: 'member'; memberId: string; channelCapable: boolean };
+  | { kind: 'member'; memberId: string; channelCapable: boolean; engineOrigin?: boolean };
 
 export const FULL_TOOL_SCOPE: ToolScope = Object.freeze({ kind: 'full' as const });
 
-export function memberToolScope(memberId: string, channelCapable: boolean): ToolScope {
-  return { kind: 'member', memberId, channelCapable };
+/**
+ * `engineOrigin` marks a session the ENGINE opened as the member (origin=engine
+ * on the MCP URL: the memberCall local adapter and the `apra-fleet call` verb).
+ * Same tool surface; its kb_/code_ calls are excluded from the member's
+ * session_stats counts (src/services/member-call-counts.ts).
+ */
+export function memberToolScope(memberId: string, channelCapable: boolean, engineOrigin = false): ToolScope {
+  return engineOrigin
+    ? { kind: 'member', memberId, channelCapable, engineOrigin: true }
+    : { kind: 'member', memberId, channelCapable };
+}
+
+/** True for a member scope whose session was opened with origin=engine. */
+export function scopeIsEngineOrigin(scope: ToolScope): boolean {
+  return scope.kind === 'member' && scope.engineOrigin === true;
 }
 
 /** True when `name` may be registered on a session with the given scope. */
