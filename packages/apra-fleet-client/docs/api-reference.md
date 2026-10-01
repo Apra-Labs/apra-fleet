@@ -443,7 +443,7 @@ and means "new value for this field". Identifies the target member via
 | `cloud_profile` | `string?` | New AWS CLI profile name. |
 | `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop. |
 | `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
-| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. A real change removes what `compose_permissions` wrote for the OLD provider (its permission file, its per-folder `apra-fleet` MCP entry, its `.git/info/exclude` lines; other MCP servers such as `deepwiki` are kept) and re-runs `compose_permissions` for the new one. Passing the current provider does nothing extra. |
 | `model_cheap` | `string?` | Change custom cheap model. |
 | `model_standard` | `string?` | Change custom standard model. |
 | `model_premium` | `string?` | Change custom premium model. |

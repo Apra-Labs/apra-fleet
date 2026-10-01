@@ -696,7 +696,9 @@ export class ApraFleet {
     }
 
     /**
-     * Change a member's settings.
+     * Change a member's settings. Changing `llm_provider` removes the old
+     * provider's composed permission/MCP config and re-composes for the new
+     * provider (see docs/api-reference.md).
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
