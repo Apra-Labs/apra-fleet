@@ -370,23 +370,13 @@ describe('CodebaseMemoryProvider error handling', () => {
     });
   });
 
-  it('missing-index pre-flight check returns a structured error without connecting or calling callTool', async () => {
+  it('missing-index pre-flight check throws E-CODE-INDEX-NOT-READY without connecting or calling callTool', async () => {
     setIndexMissing();
 
-    const result = (await provider.impact({ target: 'x' })) as { isError?: boolean; content: { type: string; text: string }[] };
-
-    expect(result).toEqual({
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text:
-            'No code intelligence index found. Say "Index this project" to your agent ' +
-            "(or run 'codebase-memory-mcp cli index_repository \\'{\"repo_path\": \"<repo>\"}\\'') " +
-            'and retry.',
-        },
-      ],
-    });
+    await expect(provider.impact({ target: 'x' })).rejects.toThrow(
+      'E-CODE-INDEX-NOT-READY: No codebase-memory code index found. Remediation: Say "Index this project" to your agent ' +
+      "(or run 'codebase-memory-mcp cli index_repository' on the repo), then retry.",
+    );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
   });
@@ -403,10 +393,11 @@ describe('CodebaseMemoryProvider error handling', () => {
       provider.flow({}),
       provider.tests({ symbol: 'x' }),
     ];
-    const results = (await Promise.all(methods)) as { isError?: boolean }[];
+    const results = await Promise.allSettled(methods);
 
     for (const result of results) {
-      expect(result.isError).toBe(true);
+      expect(result.status).toBe('rejected');
+      expect(String((result as PromiseRejectedResult).reason)).toMatch(/E-CODE-INDEX-NOT-READY/);
     }
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();

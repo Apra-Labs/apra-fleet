@@ -60,6 +60,11 @@ function readAutoReindexConfig(): AutoReindexConfig {
   }
 }
 
+/** True while a background reindex this server started for `repoPath` is still running. */
+export function isReindexRunning(repoPath: string): boolean {
+  return !!state.get(repoPath)?.runningChild;
+}
+
 // Consults config + the decision function, then spawns
 // `npx gitnexus analyze` with cwd = repoPath, detached, stdio ignored except
 // a captured tail of stderr logged on non-zero exit. Never awaited on the

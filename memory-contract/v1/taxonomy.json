@@ -335,7 +335,43 @@
           "source": "src/tools/code-intelligence.ts:131-135 (per-member codeIntelProvider override), :151-155 (global config.json provider field)",
           "surfaced": "thrown",
           "retryable": false,
-          "note": "The ONLY throwing site on the code_* side. getProvider() runs before the adapter's guarded entry point, so this throw is not converted into an offline result the way connect failures are (see non_error_outcomes N-CODE-PROVIDER-OFFLINE)."
+          "note": "getProvider() runs before the adapter's guarded entry point, so this throw is not converted into an offline result the way connect failures are (see non_error_outcomes N-CODE-PROVIDER-OFFLINE). The other code_* throws are the (self) resolution codes (E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO), E-CODE-INDEX-NOT-READY and E-CODE-INTEL-DISABLED."
+        },
+        {
+          "code": "E-CODE-INDEX-NOT-READY",
+          "meaning": "The active provider has no ready code index for the calling session's resolved (self) folder: no index exists yet, or one is still being built (gitnexus: <repo>/.gitnexus/meta.json absent while an analyze is running or has begun writing <repo>/.gitnexus/).",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" }
+          ],
+          "source": "src/tools/code-intelligence-readiness.ts (codeIndexReadiness -- the one readiness check, assertCodeIndexReady, indexNotReadyError), called from callGitNexus (code-intelligence-gitnexus.ts) and callCodebaseMemory (code-intelligence-codebase-memory.ts)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run 'npx gitnexus analyze' in the repo (or /pm index), or wait for the running analyze to finish, then retry.",
+          "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. retryable stays false in the v1 sense (section 3.3): the missing case needs an index build, a new action; the building case resolves only when an external process the caller cannot observe finishes, which the remediation states as wait-then-retry guidance rather than a backoff class."
+        },
+        {
+          "code": "E-CODE-INTEL-DISABLED",
+          "meaning": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" }
+          ],
+          "source": "src/tools/code-intelligence.ts (NullProvider, every method), src/tools/code-intelligence-readiness.ts (codeIntelDisabledError)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Pick a provider: update_member code_intel_provider ('gitnexus' or 'codebase-memory'), or set \"provider\" in the code-intelligence config.json, then retry.",
+          "group_decision": "PROVIDER_INTERNAL: 'none' is a valid configured provider, not a request error and not a misconfiguration (that is E-CODE-PROVIDER-UNCONFIGURED). The session's configuration cannot serve the call, so it is refused as an error rather than answered with a payload a caller would read as success."
         },
         {
           "code": "E-SELF-NO-WORKFOLDER",
@@ -482,16 +518,10 @@
       "reason_no_code": "Flagging is the designed successful outcome of finding a conflict: both claims are kept and the disagreement is made visible for later resolution. The error side of contradictions is the REFUSED RESOLUTION, which is what the conflict group's codes cover."
     },
     {
-      "name": "E-CODE-INTEL-DISABLED",
-      "outcome": "NullProvider returns a text payload naming the disabled method.",
-      "where": "src/tools/code-intelligence.ts:22-26 (nullResult), :28-36 (class body)",
-      "reason_no_code": "'none' is a valid configured provider, not a misconfiguration. The call is answered, with an answer that says the capability is off. The misconfiguration case is a separate code, E-CODE-PROVIDER-UNCONFIGURED."
-    },
-    {
       "name": "N-CODE-PROVIDER-OFFLINE",
-      "outcome": "The code_* adapters' single guarded entry point catches connect and dead-client failures, resets the shared connection so the next call reconnects, and returns a structured offline result; codebase-memory additionally returns a missing-index result when no index exists.",
-      "where": "src/tools/code-intelligence-gitnexus.ts:172-176 (callGitNexus catch, offlineResult), src/tools/code-intelligence-codebase-memory.ts:176-189 (callCodebaseMemory, missingIndexResult and offlineResult)",
-      "reason_no_code": "Not in the T1.0.2 inventory; added here after reading the adapters, because it is the reason this closed set has no retryable code. The transient failure never reaches the caller as an error: it is converted into an actionable result at the provider boundary. Only getProvider()'s unconfigured-key resolution still throws on this side."
+      "outcome": "The code_* adapters' single guarded entry point catches connect and dead-client failures, resets the shared connection so the next call reconnects, and returns a structured offline result. (A missing or still-building index is NOT degraded this way: it throws E-CODE-INDEX-NOT-READY.)",
+      "where": "src/tools/code-intelligence-gitnexus.ts (callGitNexus catch, offlineResult), src/tools/code-intelligence-codebase-memory.ts (callCodebaseMemory catch, offlineResult)",
+      "reason_no_code": "Not in the T1.0.2 inventory; added here after reading the adapters, because it is the reason this closed set has no retryable code. The transient failure never reaches the caller as an error: it is converted into an actionable result at the provider boundary. Only configuration and readiness refusals throw on this side (E-CODE-PROVIDER-UNCONFIGURED, E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO, E-CODE-INDEX-NOT-READY, E-CODE-INTEL-DISABLED)."
     },
     {
       "name": "E-STATS-UNSUPPORTED",

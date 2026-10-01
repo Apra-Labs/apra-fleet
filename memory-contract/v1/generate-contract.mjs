@@ -156,7 +156,7 @@ const KB_SELF_NOTE =
 // Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
 // reproduced byte-exact here for the same no-runtime-dependency reason.
 const CODE_SELF_NOTE =
-  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.';
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
 
 const BASE_DESCRIPTIONS = {
   kb_capture:

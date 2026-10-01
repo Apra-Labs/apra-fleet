@@ -95,8 +95,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
 
     // Non-vacuous: the 32-fixture population the original ajv sweep measured
     // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_query/happy-confirmed-only (trust filters).
-    expect(keys.length).toBe(33);
+    // kb_query/happy-confirmed-only (trust filters), minus the 7 code_*
+    // happy-no-index fixtures that became refusal-index-not-ready (a missing
+    // index is now a thrown E-CODE-INDEX-NOT-READY, never an ok response).
+    expect(keys.length).toBe(26);
     expect(failures).toEqual([]);
   });
 
@@ -123,7 +125,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(33);
+    expect(keys.length).toBe(26);
     expect(failures).toEqual([]);
   });
 

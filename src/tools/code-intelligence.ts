@@ -7,6 +7,7 @@ import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { resolveSelfSession, validateSelfRepoFolder } from '../services/knowledge/kb-self.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
+import { codeIntelDisabledError } from './code-intelligence-readiness.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -20,20 +21,16 @@ export interface CodeIntelligenceProvider {
 
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
 
-function nullResult(method: string): { content: { type: string; text: string }[] } {
-  return {
-    content: [{ type: 'text', text: `Code intelligence is disabled for this member (method: ${method}).` }],
-  };
-}
-
+// provider 'none': every method throws E-CODE-INTEL-DISABLED -- never an ok
+// result that merely says "disabled".
 export class NullProvider implements CodeIntelligenceProvider {
-  async graph(_params: Record<string, unknown>): Promise<unknown> { return nullResult('graph'); }
-  async impact(_params: Record<string, unknown>): Promise<unknown> { return nullResult('impact'); }
-  async query(_params: Record<string, unknown>): Promise<unknown> { return nullResult('query'); }
-  async context(_params: Record<string, unknown>): Promise<unknown> { return nullResult('context'); }
-  async map(_params: Record<string, unknown>): Promise<unknown> { return nullResult('map'); }
-  async flow(_params: Record<string, unknown>): Promise<unknown> { return nullResult('flow'); }
-  async tests(_params: Record<string, unknown>): Promise<unknown> { return nullResult('tests'); }
+  async graph(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { throw codeIntelDisabledError('code_tests'); }
 }
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
@@ -112,7 +109,7 @@ export function resolveCodeSelf(): CodeSelf {
 
 /** Appended to every code_* tool description so callers know there is no repo argument. */
 export const CODE_SELF_NOTE =
-  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.';
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
 
 // ---------------------------------------------------------------------------
 // Handler functions -- resolve (self) (unless the caller already resolved it),

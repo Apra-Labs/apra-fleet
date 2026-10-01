@@ -487,18 +487,21 @@ await recordHappy('kb_invalidate', 'happy', {
 });
 
 // --- code_* (7 tools) -- code (self): no repo argument; the CODE member
-// session resolves its own work folder, a git repo with no
-// .gitnexus/meta.json, so the real, honest "missing index" structured result
-// is what gets recorded, without ever spawning the gitnexus child process.
+// session (provider pinned to gitnexus) resolves its own work folder, a git
+// repo with no .gitnexus/meta.json, so every tool honestly refuses with
+// E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
+// gitnexus child process.
 await withSession('CODE', async () => {
-  await recordHappy('code_graph', 'happy-no-index', { symbol: 'exampleFn' });
-  await recordHappy('code_impact', 'happy-no-index', { target: 'exampleFn', direction: 'upstream' });
-  await recordHappy('code_query', 'happy-no-index', { query: 'exampleFn' });
-  await recordHappy('code_context', 'happy-no-index', { name: 'exampleFn' });
-  await recordHappy('code_map', 'happy-no-index', {});
-  await recordHappy('code_flow', 'happy-no-index', { name: 'exampleFn' });
-  await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn' });
+  await recordRefusal('code_graph', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_impact', 'refusal-index-not-ready', { target: 'exampleFn', direction: 'upstream' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_query', 'refusal-index-not-ready', { query: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_context', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_map', 'refusal-index-not-ready', {}, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_flow', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_tests', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
 });
+// Provider 'none': an error result, never an ok "disabled" payload.
+await withSession('CODE_OFF', () => recordRefusal('code_query', 'refusal-intel-disabled', { query: 'exampleFn' }, 'E-CODE-INTEL-DISABLED'));
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error

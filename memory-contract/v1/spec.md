@@ -125,10 +125,15 @@ verbatim. The resolved folder is what the provider receives as its repo, what
 usage telemetry records, and (for `code_context`) whose KB enriches the result.
 Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
 shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
-`src/services/knowledge/kb-self.ts`. Fixtures
+`src/services/knowledge/kb-self.ts`. Past resolution, a folder with no ready
+code index (none yet, or one still being built) is refused with
+`E-CODE-INDEX-NOT-READY`, and provider `none` with `E-CODE-INTEL-DISABLED` --
+an error result, never an ok payload that says "disabled". Fixtures
 `code_query/refusal-self-no-workfolder` and `code_map/refusal-self-not-a-repo`
-pin the two refusals; every `code_*` happy fixture runs as the `CODE` member
-session.
+pin the two (self) refusals; every `code_*` tool has a
+`refusal-index-not-ready` fixture run as the `CODE` member session (provider
+pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
+the `CODE_OFF` member session (provider `none`).
 
 ## 3. Error model
 
@@ -171,7 +176,7 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   carried verbatim. The writing branch of that same one policy does refuse, and
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
-  and missing-index results, the swallowed bible read, the emptied
+  result, the swallowed bible read, the emptied
   `related_claims`, the unknown author role, and a provider reporting stats as
   unsupported.
 

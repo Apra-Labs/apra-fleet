@@ -163,7 +163,10 @@ export const ENVIRONMENT = {
     A: { member: 'contract-a', kind: 'local', repo: 'A' },
     B: { member: 'contract-b', kind: 'local', repo: 'B' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
-    CODE: { member: 'contract-code', kind: 'local', repo: 'CODE' },
+    // code_* sessions pin their provider (codeIntelProvider) so the recorded
+    // outcome never depends on the host's global code-intelligence config.
+    CODE: { member: 'contract-code', kind: 'local', repo: 'CODE', codeIntelProvider: 'gitnexus' },
+    CODE_OFF: { member: 'contract-code-off', kind: 'local', repo: 'CODE', codeIntelProvider: 'none' },
     NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
@@ -252,13 +255,13 @@ export const SCENARIO = [
     derive: { winnerId: 'FIXED', loserId: 'BROKEN' },
   },
   { tool: 'kb_invalidate', case: 'happy' },
-  { tool: 'code_graph', case: 'happy-no-index' },
-  { tool: 'code_impact', case: 'happy-no-index' },
-  { tool: 'code_query', case: 'happy-no-index' },
-  { tool: 'code_context', case: 'happy-no-index' },
-  { tool: 'code_map', case: 'happy-no-index' },
-  { tool: 'code_flow', case: 'happy-no-index' },
-  { tool: 'code_tests', case: 'happy-no-index' },
+  { tool: 'code_graph', case: 'refusal-index-not-ready' },
+  { tool: 'code_impact', case: 'refusal-index-not-ready' },
+  { tool: 'code_query', case: 'refusal-index-not-ready' },
+  { tool: 'code_context', case: 'refusal-index-not-ready' },
+  { tool: 'code_map', case: 'refusal-index-not-ready' },
+  { tool: 'code_flow', case: 'refusal-index-not-ready' },
+  { tool: 'code_tests', case: 'refusal-index-not-ready' },
 
   // -- PASS 2: taxonomy-coded refusals + non-error outcomes -----------------
   { tool: 'kb_query', case: 'refusal-no-selector' },
@@ -268,6 +271,7 @@ export const SCENARIO = [
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-self-no-workfolder' },
   { tool: 'code_map', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-intel-disabled' },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {

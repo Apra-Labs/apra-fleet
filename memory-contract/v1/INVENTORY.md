@@ -227,12 +227,11 @@ implementations are registered in `PROVIDERS`: `codebase-memory`, `gitnexus`, an
 | C-6 | `flow` | `code_flow` | read (proxy) |
 | C-7 | `tests` | `code_tests` | read (proxy) |
 
-`NullProvider` returns an MCP-content-shaped object -- a `content` array holding a
-single text block reading "Code intelligence is disabled for this member (method:
-X)." -- which the registry then JSON-stringifies into a text block. A disabled
-member therefore yields a nested content object inside the text, not an error.
-That is a shape a v1 response schema must tolerate; it is covered by the
-permissive `code_*` body from section 3.
+`NullProvider` throws `E-CODE-INTEL-DISABLED` from every method (one line, with a
+`Remediation:` clause), so a disabled member's call is an error result, never an
+ok payload that merely says "disabled". A missing or still-building index throws
+`E-CODE-INDEX-NOT-READY` from the adapters' pre-flight (`codeIndexReadiness`,
+`src/tools/code-intelligence-readiness.ts` -- the one readiness check).
 
 ### 4.4 Implementation-coverage cross-check: SqliteProvider vs HttpKbProvider
 
@@ -357,7 +356,6 @@ throw sites are not part of the `kb_*` grep set above.
 | `E-SUPERSEDE-CONSENT-MISSING` | `makeAudnDecision` explicit-supersede branch, `src/services/knowledge/audn.ts:145-157` | a `supersedes` request takes effect ONLY if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the request silently falls through to the ordinary paths | the named target is NOT retired and `audn_decision` is whatever the fallthrough decided. NO error is raised -- the most easily missed refusal in the surface |
 | `E-DEDUP-NONE` | `makeAudnDecision`, `src/services/knowledge/audn.ts:180-183` (exact-match pre-pass) and `:231-233` (loop) | exact content equality, or a same-topic match with no contradiction signal | `audn_decision: none` -- the capture is skipped, not failed |
 | `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` | `makeAudnDecision`, `src/services/knowledge/audn.ts:224` | an ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any `capture()` path; the loop skips past it | the candidate degrades to `flagged` (if a contradiction signal was present) or is skipped. NOT an error |
-| `E-CODE-INTEL-DISABLED` | `NullProvider`, `src/tools/code-intelligence.ts:22-26` (`nullResult`) and `:28-36` (class body) | code intelligence disabled for the member | a text payload naming the disabled method. NOT an error |
 | `E-STATS-UNSUPPORTED` | `ProviderStats.supported === false` (HTTP provider, per design D4), `src/services/knowledge/http-provider.ts:284-287` | a provider that cannot compute stats returns a documented not-supported result rather than throwing | `{supported: false, reason}` in the `kb_stats` response |
 | `E-BIBLE-READ-DEGRADED` | `src/tools/kb-stats.ts:116-122` (nested `catch` blocks) | any failure reading or comparing the canonical bible is swallowed | the response falls back to the absent/drift-zero bible shape. `kb_stats` never throws over the bible file |
 | `E-RELATED-CLAIMS-DEGRADED` | `src/tools/kb-query.ts:113-118` | `relatedClaims` throws | caught; `related_claims` becomes `[]` and the query result still returns |
@@ -418,8 +416,11 @@ unrecognised `role` degrades to the literal `unknown`. Provisional name
 
 The `code_*` tools route through `getProvider()` in
 `src/tools/code-intelligence.ts`, which is the only throwing surface on this
-side (the seven `handleCode*` wrappers and `NullProvider`, 5.1, never throw
-themselves).
+side for provider configuration (the seven `handleCode*` wrappers never throw
+themselves). The other `code_*` throws are (self) resolution
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`), a missing or still-building index
+(`E-CODE-INDEX-NOT-READY`) and provider `none` (`E-CODE-INTEL-DISABLED`, thrown by
+every `NullProvider` method); see `taxonomy.json`.
 
 | Provisional name | Where | Trigger |
 |------------------|-------|---------|
@@ -553,42 +554,42 @@ Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks 
 ### code_graph
 
 ```text
-Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_impact
 
 ```text
-Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_query
 
 ```text
-Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_context
 
 ```text
-Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_map
 
 ```text
-Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_flow
 
 ```text
-Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_tests
 
 ```text
-Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO (each with a one-line remediation) when that folder is missing or is not a git repository.
+Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
