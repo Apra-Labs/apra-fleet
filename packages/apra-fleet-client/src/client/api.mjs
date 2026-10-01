@@ -864,7 +864,11 @@ export class ApraFleet {
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
      * 'not-started'; a not-started result carries a typed `reason`
      * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
-     * 'spawn-failed' | 'remote-member'). Every result carries
+     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * gitnexus provider is supported: provider 'none' makes the tool fail with
+     * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
+     * yields { outcome: 'not-started', reason: 'provider-not-supported',
+     * provider, indexedCommit: null, detail }. Every result carries
      * `indexedCommit` (the commit the index is built at, or null when there
      * is no index or the folder is remote). Poll codeStatus() for completion.
      */
@@ -878,7 +882,12 @@ export class ApraFleet {
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
      * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
      * `logPath`. A remote work folder returns { remote: true, repo,
-     * indexedCommit: null, detail }. Extract the JSON with parseToolJson().
+     * indexedCommit: null, detail }. Same provider gate as codeReindex():
+     * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
+     * provider returns the not-supported shape { outcome: 'not-started',
+     * reason: 'provider-not-supported', provider, indexedCommit: null,
+     * detail } rather than gitnexus readiness. Extract the JSON with
+     * parseToolJson().
      */
     async codeStatus() {
         return this.mcpClient.callTool('code_status', {});

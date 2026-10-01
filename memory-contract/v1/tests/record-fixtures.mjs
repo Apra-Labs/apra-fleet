@@ -502,6 +502,8 @@ await withSession('CODE', async () => {
 });
 // Provider 'none': an error result, never an ok "disabled" payload.
 await withSession('CODE_OFF', () => recordRefusal('code_query', 'refusal-intel-disabled', { query: 'exampleFn' }, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_reindex', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_status', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error

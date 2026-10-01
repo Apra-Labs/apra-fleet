@@ -357,7 +357,7 @@
         },
         {
           "code": "E-CODE-INTEL-DISABLED",
-          "meaning": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
+          "meaning": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call (including code_reindex and code_status, which resolve the provider before spawning or reading anything) can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
           "raising_methods": [
             { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "provider" },
             { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "provider" },
@@ -365,9 +365,11 @@
             { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "provider" },
             { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "provider" },
             { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "provider" },
-            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" }
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "provider" }
           ],
-          "source": "src/tools/code-intelligence.ts (NullProvider, every method), src/tools/code-intelligence-readiness.ts (codeIntelDisabledError)",
+          "source": "src/tools/code-intelligence.ts (NullProvider, every method; gateOnProvider for code_reindex/code_status), src/tools/code-intelligence-readiness.ts (codeIntelDisabledError)",
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Pick a provider: update_member code_intel_provider ('gitnexus' or 'codebase-memory'), or set \"provider\" in the code-intelligence config.json, then retry.",

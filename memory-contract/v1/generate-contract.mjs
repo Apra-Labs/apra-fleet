@@ -208,9 +208,9 @@ const BASE_DESCRIPTIONS = {
   code_tests:
     'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.',
   code_reindex:
-    'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member). Poll code_status for completion.',
+    'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion.',
   code_status:
-    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit.',
+    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.',
 };
 
 const DESCRIPTIONS = Object.fromEntries(

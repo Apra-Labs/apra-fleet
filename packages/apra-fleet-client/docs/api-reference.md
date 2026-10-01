@@ -567,7 +567,12 @@ detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
 `not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
-`analyze-failed`, `spawn-failed`, `remote-member`). `codeStatus()` returns the
+`analyze-failed`, `spawn-failed`, `remote-member`, `provider-not-supported`). Both tools are
+gated on the member's code-intel provider: `none` fails with
+`E-CODE-INTEL-DISABLED` (nothing is spawned); any non-gitnexus provider (e.g.
+`codebase-memory`) returns `{ outcome: 'not-started', reason:
+'provider-not-supported', provider, indexedCommit: null, detail }` from both
+tools instead of gitnexus readiness. `codeStatus()` returns the
 last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 `incomplete` | `failed`, `analyze.lastLine`), live `readiness`
 (`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
