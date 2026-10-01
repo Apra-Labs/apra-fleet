@@ -88,7 +88,6 @@ export default {
     "src/utils/file-permissions.ts": 1,
     "src/utils/pid-helpers.ts": 1,
     "src/utils/secure-input.ts": 1,
-    "src/utils/shell-escape.ts": 3,
     "src/utils/ssh-error-messages.ts": 3,
     "src/utils/work-folder-validation.ts": 1,
     "tests/activity.test.ts": 2,

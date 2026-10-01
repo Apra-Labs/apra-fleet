@@ -18,7 +18,7 @@ export function escapeShellArgInner(s: string): string {
 /**
  * Escape a string for safe use inside single-quoted Unix shell arguments.
  * Handles embedded single quotes by ending the quote, adding an escaped quote, and reopening.
- * e.g. "it's" → 'it'\''s'
+ * e.g. "it's" -> 'it'\''s'
  */
 export function escapeShellArg(s: string): string {
   return "'" + escapeShellArgInner(s) + "'";
@@ -64,7 +64,7 @@ export function escapePowerShellArgInner(s: string): string {
 
 /**
  * Escape a string for safe use as a PowerShell single-quoted string literal.
- * Single-quoted strings in PowerShell are fully literal — no variable expansion.
+ * Single-quoted strings in PowerShell are fully literal -- no variable expansion.
  * Internal single quotes (ASCII ' and U+2018..U+201B) are escaped by doubling them.
  * Returns the value wrapped in single quotes.
  */
