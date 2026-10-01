@@ -671,10 +671,17 @@ export class ClaudeProvider implements ProviderAdapter {
     // exec, so the "no write when nothing to do" contract is observable as before.
     const mcpFile = `${key}/.mcp.json`;
     const SPLIT = '---FLEET_MCP_SPLIT---';
+    const HOME_UNREADABLE = 'FLEET_HOME_CONFIG_UNREADABLE';
 
+    // An EXISTING but unreadable ~/.claude.json must never be read as {} and then
+    // atomically replaced with just the trust entry (that destroys the user's MCP
+    // servers and state). The read stays a one-exec round trip; when the home
+    // file exists and cat/Get-Content fails, a sentinel (printed without echo /
+    // Write-Output, which the split-marker lookup keys on) is emitted instead
+    // of the content, and nothing is written.
     const readCmd = isWindows
-      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
-      : `cat "${homeFile}" 2>/dev/null || true; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue -ErrorVariable fleetHomeReadErr; if ($fleetHomeReadErr -and (Test-Path "${homeFile}")) { [Console]::Out.Write("${HOME_UNREADABLE}") }; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || { if test -e "${homeFile}"; then printf '%s' "${HOME_UNREADABLE}"; fi; }; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
     const readResult = await execCommand(readCmd, 10000);
 
     // Substring split (not line-split): if ~/.claude.json has no trailing newline the
@@ -684,6 +691,12 @@ export class ClaudeProvider implements ProviderAdapter {
     const splitIdx = rawStdout.indexOf(SPLIT);
     const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
     const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
+
+    if (homeRaw.includes(HOME_UNREADABLE)) {
+      const detail = `E-MEMBER-CONFIG-UNREADABLE: ${homeFile} exists but could not be read; workspace trust NOT seeded (the file is left untouched)`;
+      console.error(`[claude] workspace trust: ${detail}`);
+      return { seeded: false, detail, mcpServersSeeded: [] };
+    }
 
     let existing: Record<string, unknown> = {};
     try {
