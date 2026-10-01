@@ -184,3 +184,39 @@ describe('member bible view: missing, malformed and remote bibles', () => {
     expect(err.message).toMatch(/Remediation: /);
   });
 });
+
+describe('member bible view: the bible is reproduced verbatim, never re-curated by AUDN', () => {
+  // Entries that share a symbol and a file, one with a contradiction keyword.
+  // Imported into a live DB, AUDN would flag bib-1 as disputed, demote bib-2 to
+  // an UNVERIFIED contradiction and re-id bib-2/bib-3 with random UUIDs. The
+  // view must keep every reviewed CONFIRMED entry under its bible id.
+  const SIBLINGS = [
+    entry('bib-1', 'doWork retries on timeout', 'doWork retries the dispatch on a timeout before failing.', { symbols: ['doWork'] }),
+    entry('bib-2', 'doWork no longer logs', 'doWork no longer logs each attempt; it logs only the final failure.', { symbols: ['doWork'] }),
+    entry('bib-3', 'doWork batches widgets', 'doWork batches widget writes into one transaction per tick.', { symbols: ['doWork'] }),
+  ];
+
+  async function trustedIds(folder: string): Promise<string[]> {
+    const view = await getMemberBibleView({ folder });
+    const res = await view.query({ query: 'doWork', l1_only: true, limit: 20, confidence: ['CONFIRMED'], exclude_disputed: true });
+    return res.results.map(e => e.id).sort();
+  }
+
+  it('every CONFIRMED bible id is returned by the default-trusted query, undisputed, and stable across a rebuild', async () => {
+    const folder = checkout('a');
+    const p = writeBible(folder, SIBLINGS);
+
+    expect(await trustedIds(folder)).toEqual(['bib-1', 'bib-2', 'bib-3']);
+    const view = await getMemberBibleView({ folder });
+    for (const e of await view.list({ confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })) {
+      expect(e.confidence).toBe('CONFIRMED');
+      expect(e.flagged_for_review).toBe(false);
+    }
+    expect((await view.stats()).totals.total).toBe(3);
+
+    // Rebuild (restart): same ids, nothing re-minted.
+    resetMemberBibleViews();
+    expect(await trustedIds(folder)).toEqual(['bib-1', 'bib-2', 'bib-3']);
+    expect(memberBibleViewLoadCount(p)).toBe(1);
+  });
+});

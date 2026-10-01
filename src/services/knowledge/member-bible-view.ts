@@ -11,7 +11,10 @@
 //     -- the SAME provider class the per-repo DB uses, so ranking, prime() and
 //     relatedClaims() behave identically. Entries go through the shared
 //     bible-import loader (import mode: bible confidence preserved, directives
-//     quarantined as pending proposals), exactly as kb_import would.
+//     quarantined as pending proposals, basis check), but VERBATIM: no AUDN
+//     dedupe/update/contradiction against sibling entries, so every entry keeps
+//     its bible id and confidence and none is flagged by another. The bible is
+//     already reviewed; the view reproduces it, it does not re-curate it.
 //   - One view per bible file path, so members on different branches (different
 //     checkouts, different paths) get different views.
 //   - Each read does ONE fs.stat. When mtimeMs or size differs from the values
@@ -86,7 +89,7 @@ async function buildView(biblePath: string, repoRoot: string, missing: boolean):
   // bible against the member's own checkout.
   const provider = new SqliteProvider(':memory:', repoRoot);
   await provider.init();
-  if (entries.length > 0) await importBibleEntries(provider, entries);
+  if (entries.length > 0) await importBibleEntries(provider, entries, { verbatim: true });
   return provider;
 }
 
@@ -163,7 +166,7 @@ async function getRemoteMemberBibleView(anchor: KbAnchor): Promise<SqliteProvide
     // freshness issues no verdict (see SqliteProvider.bindRepoPath).
     const provider = new SqliteProvider(':memory:');
     await provider.init();
-    if (entries.length > 0) await importBibleEntries(provider, entries);
+    if (entries.length > 0) await importBibleEntries(provider, entries, { verbatim: true });
     provider.bindRepoPath(anchor.folder);
     return provider;
   };

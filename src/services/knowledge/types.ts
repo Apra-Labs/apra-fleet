@@ -103,6 +103,14 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
+  // Member bible view only (member-bible-view.ts): load the entry VERBATIM --
+  // skip AUDN dedupe/update/contradiction entirely, so an already-reviewed
+  // bible is reproduced as-is (every entry under its bible id, its bible
+  // confidence, never flagged/disputed by a sibling entry). Honoured only
+  // together with importMode and preferredId; the directive gate and the basis
+  // check still run. Never use it for a live per-repo DB: there AUDN is the
+  // point.
+  verbatim?: boolean;
 }
 
 export interface EntryTrustFilter {

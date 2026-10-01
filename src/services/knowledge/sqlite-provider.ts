@@ -929,7 +929,12 @@ export class SqliteProvider implements MemoryProvider {
     // gets a hash basis here regardless of type.
     const sourceFileHashes = await this.computeSourceFileHashes(input.source_files ?? []);
 
-    const candidates = this.findAudnCandidates(db, input);
+    // Verbatim (member bible view): the bible was reviewed and merged as a
+    // whole; AUDN against its own sibling entries would flag, re-id and
+    // demote them (a contradiction keyword in one summary disputes another
+    // CONFIRMED entry). Skip AUDN and keep the bible id.
+    const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
+    const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
       const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes);
       if (result) return result;

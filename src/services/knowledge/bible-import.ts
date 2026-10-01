@@ -119,7 +119,20 @@ export interface BibleImportCounts {
  * entries whose id already exists are skipped; entries failing the capture
  * basis check are counted as rejected. No freshness sweep (callers decide).
  */
-export async function importBibleEntries(provider: SqliteProvider, bibleEntries: unknown[]): Promise<BibleImportCounts> {
+export interface BibleImportOptions {
+  /**
+   * Load every valid entry verbatim (no AUDN dedupe/update/contradiction):
+   * bible id and bible confidence kept exactly. For the member bible view,
+   * which must reproduce the reviewed bible rather than re-curate it.
+   */
+  verbatim?: boolean;
+}
+
+export async function importBibleEntries(
+  provider: SqliteProvider,
+  bibleEntries: unknown[],
+  options: BibleImportOptions = {},
+): Promise<BibleImportCounts> {
   let imported = 0;
   let skipped = 0;
   let linked = 0;
@@ -171,6 +184,7 @@ export async function importBibleEntries(provider: SqliteProvider, bibleEntries:
       ({ audn_decision } = await provider.capture(kbInput, {
         importMode: true,
         preferredId: entry.id,
+        verbatim: options.verbatim === true,
       }));
     } catch (err) {
       if (err instanceof KbCaptureRejected) {
