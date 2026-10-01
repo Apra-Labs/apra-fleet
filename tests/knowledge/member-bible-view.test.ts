@@ -177,8 +177,8 @@ describe('member bible view: missing, malformed and remote bibles', () => {
     expect((await view.list({ confidence: ['CONFIRMED'] })).map(e => e.id)).toEqual(['e-1']);
   });
 
-  it('an anchor on another host is refused with a typed error, never read from elsewhere', async () => {
-    const err = await getMemberBibleView({ folder: 'C:\\work\\repo', remoteUrl: 'https://example.test/r.git' }).catch(e => e);
+  it('a remote anchor naming no registered member is refused with a typed error, never read from elsewhere', async () => {
+    const err = await getMemberBibleView({ folder: '/work/repo', remoteUrl: 'https://example.test/r.git', memberId: 'no-such-member' }).catch(e => e);
     expect(err).toBeInstanceOf(KbMemberViewError);
     expect(err.code).toBe('E-MEMBER-VIEW-REMOTE');
     expect(err.message).toMatch(/Remediation: /);

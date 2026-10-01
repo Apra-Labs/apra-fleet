@@ -41,7 +41,12 @@ export class KbBibleError extends Error {
  * Selection is on Array.isArray. The reader must never lag the writer.
  */
 export function readBibleEntries(biblePath: string, label: string): unknown[] {
-  const raw = fs.readFileSync(biblePath, 'utf-8');
+  return parseBibleText(fs.readFileSync(biblePath, 'utf-8'), biblePath, label);
+}
+
+/** Parse bible text already in memory (e.g. fetched from a remote member). */
+export function parseBibleText(raw: string, biblePath: string, label: string): unknown[] {
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);

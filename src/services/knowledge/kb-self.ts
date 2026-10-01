@@ -35,6 +35,8 @@ export interface KbAnchor {
   folder: string;
   /** Origin remote URL, when the folder lives on another host. */
   remoteUrl?: string;
+  /** Registered member whose host the folder lives on (set with remoteUrl). */
+  memberId?: string;
 }
 
 export type KbSelfErrorCode = 'E-SELF-NO-WORKFOLDER' | 'E-SELF-NOT-A-REPO' | 'E-SELF-NO-REMOTE';
@@ -131,7 +133,7 @@ export function resolveSelfAnchor(): KbAnchor {
         `Record the repo's origin URL on the member (update_member git_repos: ["<origin url>"]) or call kb tools from a session on the member's own host.`,
       );
     }
-    return { folder, remoteUrl };
+    return { folder, remoteUrl, memberId };
   }
   return validateSelfFolder(folder, label);
 }

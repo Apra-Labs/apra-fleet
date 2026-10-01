@@ -96,7 +96,7 @@ export class SqliteProvider implements MemoryProvider {
    * repo-blindness failure class of apra-fleet-tm7. Undefined for the single
    * shared global KB, which spans every repo and has no one root.
    */
-  readonly repoPath: string | undefined;
+  repoPath: string | undefined;
 
   constructor(dbPath?: string, repoPath?: string) {
     this.repoPath = repoPath;
@@ -110,6 +110,16 @@ export class SqliteProvider implements MemoryProvider {
       fs.mkdirSync(dir, { recursive: true });
       this.dbPath = path.join(dir, 'kb.sqlite');
     }
+  }
+
+  /**
+   * Re-anchor after loading. Used only by the remote member bible view: the
+   * member's checkout is not on this host, so entries are imported with no
+   * anchor (the basis gate cannot check files here), then the remote folder is
+   * bound so freshness reads treat the anchor as missing and issue no verdict.
+   */
+  bindRepoPath(repoPath: string | undefined): void {
+    this.repoPath = repoPath;
   }
 
   async init(): Promise<void> {
