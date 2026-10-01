@@ -36,8 +36,8 @@ this pair as "member identifier" rather than repeating it.
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
-**Status and maintenance:** `fleet_status`, `member_detail`, `update_llm_cli`,
-`shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
+**Status and maintenance:** `fleet_status`, `member_detail`, `session_stats`,
+`update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
 `credential_store_update`, `credential_store_delete`.
@@ -485,6 +485,24 @@ Provides a quick summary table of all fleet members.
 | Session | first 8 chars of session ID or `(none)` | Active conversation thread |
 | Last Activity | relative time (e.g. "5m ago", "2d ago") | When `execute_prompt` or `send_files` last touched this member |
 | Tokens | `in: N / out: N` or omitted | Accumulated token totals for this member |
+
+### `session_stats`
+
+A member's `kb_*` and `code_*` tool call counts on THIS server, aggregated
+across all of the member's sessions since the server started. Member-allowed.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member_id` | string | no | Omit on a member session (the calling member is reported; another id is refused). Required on a non-member session |
+
+**Returns** JSON `{ member_id, since, kb, code, total, tools }` -- `since` is
+when counting started (server start), `tools` the per-tool counts. Calls made
+from sessions opened with `origin=engine` (the engine's `memberCall` and the
+`apra-fleet call` verb) are not counted, and non-member sessions are never
+counted. fleet-sprint reads it before and after every dispatch to report calls
+per member per dispatch; see [knowledge-layer.md](knowledge-layer.md).
 
 ### `member_detail`
 

@@ -158,4 +158,18 @@ describe('session_stats: per-member kb_/code_ call counts', () => {
     expect(r.isError).toBe(true);
     expect((r.content as Array<{ text: string }>)[0].text).toMatch(/E-FORBIDDEN/);
   });
+
+  it('leaves no open session, registry entry or listening server behind', async () => {
+    const agent = await agentSession(memberId);
+    await agentCalls(agent, 1, 1);
+    await readStats(memberId);
+    for (const c of clients.splice(0)) await c.close();
+    for (const e of engineSessions.splice(0)) await e.close();
+    // Agent client close() does not DELETE the session; engine sessions do.
+    // Close the server and prove it releases everything.
+    await handle.close();
+    expect(handle.httpServer.listening).toBe(false);
+    expect(handle.sessions.size).toBe(0);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
 });
