@@ -174,3 +174,42 @@ test('mock sprint: a genuine integ test FAIL (passed:false verdict) is still rec
         );
     });
 });
+
+// The server's newer typed reasons for a dispatch that delivered no verdict --
+// a max_total_s kill (formerly surfaced as dispatch_failed) and a member whose
+// session never started -- are infra faults too: retried via resume, then
+// recorded INCONCLUSIVE, never a test FAIL.
+for (const reason of ['max_total_time', 'agent_never_started']) {
+    test(`mock sprint: an integ dispatch ${reason} that persists after resume is recorded INCONCLUSIVE, never a test FAIL`, async () => {
+        const tag = reason === 'max_total_time' ? 'integmaxtotal' : 'integneverstart';
+        await withScenarioMarkers(tag, async () => {
+            let integCalls = 0;
+            const result = await runDevelopLoopScenario(tag, {
+                members: ['local'],
+                taskSpecs: [{ title: `Task: integ infra ${reason} scenario work` }],
+                maxCycles: 1,
+                withRunbooks: true,
+                doerHandler: closeAssignedDoer,
+                reviewerHandler: approveReviewer,
+                integHandler: async () => {
+                    integCalls++;
+                    return {
+                        content: [{ text: `execute_prompt failed (${reason})` }],
+                        structuredContent: { isError: true, reason },
+                    };
+                },
+            });
+
+            check(!result.error, `Scenario should not throw: ${result.error ? result.error.message : ''}`);
+            check(integCalls >= 2, `Expected a resume retry before giving up (>=2 calls), got ${integCalls}`);
+            check(
+                result.logs.some((m) => m.includes('Integration tests INCONCLUSIVE this cycle') && m.includes(`infra dispatch failure (${reason})`)),
+                `Expected ${reason} to be recorded as INCONCLUSIVE, logs: ${JSON.stringify(result.logs)}`
+            );
+            check(
+                !result.logs.some((m) => m.includes('Integration tests FAILED this cycle')),
+                `${reason} must never be recorded as a genuine test FAILURE, logs: ${JSON.stringify(result.logs)}`
+            );
+        });
+    });
+}

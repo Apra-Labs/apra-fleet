@@ -5,7 +5,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import http from 'node:http';
-import { createHttpTransport, HttpTransportHandle, isFetchBlockedPort } from '../src/services/http-transport.js';
+import { createHttpTransport, HttpTransportHandle, isFetchBlockedPort, PortInUseError } from '../src/services/http-transport.js';
+import { portInUseMessage } from '../src/services/singleton.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
@@ -212,24 +213,45 @@ describe('(d) disconnect removes session', () => {
 });
 
 // ---------------------------------------------------------------------------
-// (e) Port fallback: when preferred port is busy, starts on random port
+// (e) Busy configured port is a hard error -- no silent random-port fallback
+// (GitHub #584: a re-homed server is unreachable by every configured client)
 // ---------------------------------------------------------------------------
-describe('(e) port fallback when preferred port is busy', () => {
-  it('starts on OS-assigned port when preferred port is in use', async () => {
-    // Occupy a port to force the fallback
+describe('(e) busy configured port is a hard error', () => {
+  it('rejects with PortInUseError naming the port when the preferred port is in use', async () => {
     const blocker = net.createServer();
     await new Promise<void>(resolve => blocker.listen(0, '127.0.0.1', resolve));
     const busyPort = (blocker.address() as net.AddressInfo).port;
 
     try {
-      const handle = await createHttpTransport({ registerTools: noop, preferredPort: busyPort });
-      handles.push(handle);
-
-      expect(handle.port).not.toBe(busyPort);
-      expect(handle.port).toBeGreaterThan(0);
+      let caught: unknown;
+      try {
+        const handle = await createHttpTransport({ registerTools: noop, preferredPort: busyPort });
+        handles.push(handle);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PortInUseError);
+      expect((caught as PortInUseError).port).toBe(busyPort);
+      expect((caught as PortInUseError).code).toBe('EADDRINUSE');
     } finally {
       await new Promise<void>(resolve => blocker.close(() => resolve()));
     }
+  });
+
+  it('explicit port 0 still binds an OS-assigned port', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    expect(handle.port).toBeGreaterThan(0);
+  });
+
+  it('portInUseMessage names the port, the server.json holder pid and APRA_FLEET_PORT', () => {
+    const withPid = portInUseMessage(7523, 4242);
+    expect(withPid).toContain('7523');
+    expect(withPid).toContain('4242');
+    expect(withPid).toContain('APRA_FLEET_PORT');
+    const noPid = portInUseMessage(7523);
+    expect(noPid).toContain('holder pid: none');
+    expect(noPid).toContain('APRA_FLEET_PORT');
   });
 });
 

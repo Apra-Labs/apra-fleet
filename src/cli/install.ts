@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
+import { DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
@@ -1754,7 +1754,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         }
       }
     } catch (err) {
-      console.warn('    ⚠ .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
+      console.warn('    [!] .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
     }
   } else {
     console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
@@ -1773,7 +1773,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
     console.log('    [OK] Code intelligence provider config written');
   } catch (err) {
-    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
+    console.warn('    [!] Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
@@ -1788,7 +1788,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
     }
   } catch (err) {
-    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+    console.warn('    [!] ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
@@ -1808,6 +1808,16 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   let serviceReused = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    // The server refuses to start when its configured port is taken (no
+    // random-port fallback, GitHub #584) -- say so here rather than leaving a
+    // service that exits on every launch with the reason only in the log.
+    {
+      const { checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid } = await import('../services/singleton.js');
+      const probe = await checkRunningInstance();
+      if (probe.state === 'gone' && await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
+        console.warn(`    Warning: ${portInUseMessage(DEFAULT_PORT, readServerInfoPid())}`);
+      }
+    }
     const svcMgr = await getServiceManager();
     try {
       serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';

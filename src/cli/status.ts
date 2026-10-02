@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import { checkRunningInstance } from '../services/singleton.js';
+import { checkRunningInstance, describePreviousServer } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
@@ -52,6 +52,9 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
 
 export async function runStatus(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
+  // GitHub #585: a stale server.json means the previous server died uncleanly.
+  const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;
+  if (previousNote) console.log(`Note: ${previousNote}; its stale server.json was removed.`);
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
@@ -62,6 +65,17 @@ export async function runStatus(_args: string[]): Promise<void> {
     serviceLabel = 'installed (enabled)';
   } else {
     serviceLabel = 'installed (disabled)';
+  }
+
+  if (instance.state === 'unresponsive') {
+    console.log('apra-fleet status');
+    console.log(`  State:    unresponsive`);
+    console.log(`  PID:      ${instance.pid}`);
+    if (instance.port) console.log(`  Port:     ${instance.port}`);
+    console.log(`  URL:      ${instance.url}`);
+    console.log(`  Service:  ${serviceLabel}`);
+    console.log('  The server process is alive but not answering /health. Run "apra-fleet stop" to stop it.');
+    return;
   }
 
   if (!instance.running) {
