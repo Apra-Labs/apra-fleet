@@ -342,6 +342,7 @@ async function startHttpServer() {
 
   const {
     checkRunningInstance, claimStartupLock, unresponsiveInstanceMessage, portInUseMessage, readServerInfoPid,
+    describePreviousServer,
   } = await import('./services/singleton.js');
   const { createHttpTransport, PortInUseError } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
@@ -360,6 +361,10 @@ async function startHttpServer() {
   if (instance.running) {
     logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
     process.exit(0);
+  }
+  if (instance.state === 'gone') {
+    const previousNote = describePreviousServer(instance.previous);
+    if (previousNote) logLine('startup', `${previousNote}; removed its stale server.json`);
   }
   if (instance.state === 'unresponsive') {
     // A live server with a blocked event loop is not dead: starting a second

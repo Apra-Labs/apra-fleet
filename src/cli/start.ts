@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import {
-  checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid, unresponsiveInstanceMessage,
+  checkRunningInstance, describePreviousServer, isPortInUse, portInUseMessage, readServerInfoPid,
+  unresponsiveInstanceMessage,
 } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_PORT, DEFAULT_HOST, isNonDefaultInstance } from '../paths.js';
@@ -68,6 +69,9 @@ export async function runStart(_args: string[]): Promise<void> {
     console.log(`Server already running at ${instance.url} pid=${instance.pid}`);
     return;
   }
+  // GitHub #585: a stale server.json means the previous server died uncleanly.
+  const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;
+  if (previousNote) console.log(`Note: ${previousNote}; its stale server.json was removed.`);
   if (instance.state === 'unresponsive') {
     console.error(unresponsiveInstanceMessage(instance));
     process.exit(1);

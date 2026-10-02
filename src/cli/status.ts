@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import { checkRunningInstance } from '../services/singleton.js';
+import { checkRunningInstance, describePreviousServer } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
@@ -52,6 +52,9 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
 
 export async function runStatus(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
+  // GitHub #585: a stale server.json means the previous server died uncleanly.
+  const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;
+  if (previousNote) console.log(`Note: ${previousNote}; its stale server.json was removed.`);
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 

@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
-import { checkRunningInstance, claimStartupLock, isPortInUse } from '../src/services/singleton.js';
+import { checkRunningInstance, claimStartupLock, isPortInUse, describePreviousServer } from '../src/services/singleton.js';
 
 describe('isPortInUse', () => {
   it('is true for a bound port and false once it is released', async () => {
@@ -57,6 +57,48 @@ describe('(a) stale server.json is cleaned up', () => {
 
     expect(result.running).toBe(false);
     expect(fs.existsSync(SERVER_INFO)).toBe(false);
+  });
+
+  // GitHub #585: a stale server.json means an unclean exit -- the probe reads
+  // the dead pid's log BEFORE removing server.json so status/start can say so.
+  it('reports the previous server (started, last log, no shutdown record) before cleaning up', async () => {
+    const deadPid = 2147483646;
+    fs.mkdirSync(path.join(TEST_DIR, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DIR, 'logs', `fleet-${deadPid}.log`),
+      JSON.stringify({ ts: '2026-10-01T10:00:00.000+05:30', level: 'info', tag: 'startup', msg: 'x' }) + '\n'
+      + JSON.stringify({ ts: '2026-10-01T11:22:33.000+05:30', level: 'info', tag: 'tool', msg: 'y' }) + '\n');
+    fs.writeFileSync(SERVER_INFO, JSON.stringify({
+      pid: deadPid, url: 'http://127.0.0.1:7523/mcp', port: 7523, startedAt: '2026-10-01T04:30:00.000Z',
+    }));
+
+    const result = await checkRunningInstance();
+
+    expect(result.state).toBe('gone');
+    expect(fs.existsSync(SERVER_INFO)).toBe(false);
+    const prev = result.state === 'gone' ? result.previous : undefined;
+    expect(prev).toMatchObject({ pid: deadPid, startedAt: '2026-10-01T04:30:00.000Z', lastLogAt: '2026-10-01T11:22:33.000+05:30' });
+    expect(prev?.shutdownReason).toBeUndefined();
+    expect(describePreviousServer(prev)).toBe(
+      `previous server pid ${deadPid} (started 2026-10-01T04:30:00.000Z, last log 2026-10-01T11:22:33.000+05:30) exited without a shutdown record`,
+    );
+  });
+
+  it('a stale server.json whose pid log HAS a shutdown record names the reason instead', async () => {
+    const deadPid = 2147483645;
+    fs.mkdirSync(path.join(TEST_DIR, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DIR, 'logs', `fleet-${deadPid}.log`),
+      JSON.stringify({ ts: '2026-10-01T11:00:00.000Z', level: 'error', tag: 'shutdown', reason: 'uncaughtException', pid: deadPid }) + '\n');
+    fs.writeFileSync(SERVER_INFO, JSON.stringify({ pid: deadPid, url: 'http://127.0.0.1:7523/mcp' }));
+
+    const result = await checkRunningInstance();
+    const prev = result.state === 'gone' ? result.previous : undefined;
+    expect(prev?.shutdownReason).toBe('uncaughtException');
+    expect(describePreviousServer(prev)).toContain('shutdown reason "uncaughtException"');
+  });
+
+  it('returns no previous-server note when server.json simply does not exist', async () => {
+    const result = await checkRunningInstance();
+    expect(result.state === 'gone' ? result.previous : 'x').toBeUndefined();
   });
 
   it('returns running=false when server.json does not exist', async () => {

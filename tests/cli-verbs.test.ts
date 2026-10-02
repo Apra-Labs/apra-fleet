@@ -133,6 +133,20 @@ describe('runStart', () => {
     expect(mockGetSvcMgr).not.toHaveBeenCalled();
   });
 
+  // GitHub #585: start reports an unclean previous exit before starting.
+  it('prints the previous-server note before starting a new server', async () => {
+    mockCheckRunning
+      .mockResolvedValueOnce({ ...STOPPED, previous: { pid: 778, startedAt: 'T1', lastLogAt: 'T2' } })
+      .mockResolvedValueOnce(RUNNING);
+    vi.useFakeTimers();
+    const p = runStart([]);
+    await vi.advanceTimersByTimeAsync(2001);
+    await p;
+    const lines = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(lines[0]).toContain('previous server pid 778 (started T1, last log T2) exited without a shutdown record');
+    expect(vi.mocked(spawn)).toHaveBeenCalled();
+  });
+
   // GitHub #584: no random-port fallback -- a taken port is a clear error.
   it('refuses with a message naming the port and APRA_FLEET_PORT when the configured port is taken', async () => {
     mockPortInUse.mockResolvedValue(true);
@@ -517,6 +531,15 @@ describe('runStatus', () => {
     expect(out).not.toContain('PID');
     expect(out).not.toContain('Port');
     expect(out).not.toContain('URL');
+  });
+
+  // GitHub #585: an unclean previous exit is reported before anything else.
+  it('prints the previous-server note first when the probe cleaned up a stale server.json', async () => {
+    mockCheckRunning.mockResolvedValue({ ...STOPPED, previous: { pid: 777, startedAt: 'T1', lastLogAt: 'T2' } });
+    await runStatus([]);
+    const lines = logSpy.mock.calls.map(c => c.join(' '));
+    expect(lines[0]).toContain('previous server pid 777 (started T1, last log T2) exited without a shutdown record');
+    expect(lines[1]).toBe('apra-fleet status');
   });
 
   // GitHub #584: alive-but-silent is reported as such, never as "stopped".

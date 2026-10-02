@@ -57,6 +57,21 @@ export interface UnresponsiveInstance {
 export interface GoneInstance {
   running: false;
   state: 'gone';
+  /**
+   * Set when this probe found (and removed) a stale server.json -- a server
+   * that died without the clean shutdown that unlinks it (GitHub #585).
+   */
+  previous?: PreviousServer;
+}
+
+/** What a stale server.json and its pid's log say about how that server ended. */
+export interface PreviousServer {
+  pid: number;
+  startedAt?: string;
+  /** ts of the last line in logs/fleet-<pid>.log (or the file's mtime). */
+  lastLogAt?: string;
+  /** reason of the {"tag":"shutdown"} record in that log, if one was written. */
+  shutdownReason?: string;
 }
 
 export type InstanceCheckResult = RunningInstance | UnresponsiveInstance | GoneInstance;
@@ -128,9 +143,53 @@ function portFromUrl(url: string): number | undefined {
   }
 }
 
+const LOG_TAIL_BYTES = 64 * 1024;
+
+/** Inspect logs/fleet-<pid>.log for how a (dead) server ended. Never throws. */
+export function inspectPreviousServer(pid: number, startedAt?: string): PreviousServer {
+  const prev: PreviousServer = { pid, ...(startedAt ? { startedAt } : {}) };
+  const logFile = path.join(getFleetDir(), 'logs', `fleet-${pid}.log`);
+  let fd: number | undefined;
+  try {
+    const st = fs.statSync(logFile);
+    fd = fs.openSync(logFile, 'r');
+    const len = Math.min(st.size, LOG_TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, st.size - len);
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const rec = JSON.parse(lines[i]) as { ts?: unknown; tag?: unknown; reason?: unknown };
+        if (prev.lastLogAt === undefined && typeof rec.ts === 'string') prev.lastLogAt = rec.ts;
+        if (rec.tag === 'shutdown' && typeof rec.reason === 'string') { prev.shutdownReason = rec.reason; break; }
+      } catch { /* partial first line of the tail window */ }
+    }
+    if (prev.lastLogAt === undefined) prev.lastLogAt = new Date(st.mtimeMs).toISOString();
+  } catch {
+    // no log for that pid
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+  return prev;
+}
+
+/**
+ * Operator-facing note about a previous server that left a stale server.json
+ * behind (a clean shutdown removes it), or null when there is nothing to say.
+ */
+export function describePreviousServer(prev: PreviousServer | undefined): string | null {
+  if (!prev) return null;
+  const started = prev.startedAt ?? 'unknown';
+  const last = prev.lastLogAt ?? 'no log';
+  if (!prev.shutdownReason) {
+    return `previous server pid ${prev.pid} (started ${started}, last log ${last}) exited without a shutdown record`;
+  }
+  return `previous server pid ${prev.pid} (started ${started}, last log ${last}) exited after shutdown reason "${prev.shutdownReason}" without removing server.json`;
+}
+
 export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   const serverInfoPath = getServerInfoPath();
-  let info: { pid?: number; url?: string; port?: number; version?: string };
+  let info: { pid?: number; url?: string; port?: number; version?: string; startedAt?: string };
   try {
     const raw = fs.readFileSync(serverInfoPath, 'utf8');
     info = JSON.parse(raw);
@@ -141,8 +200,10 @@ export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   if (!info.pid || !info.url) return { running: false, state: 'gone' };
 
   if (!isPidAlive(info.pid)) {
+    // Read how it ended BEFORE removing the evidence (GitHub #585).
+    const previous = inspectPreviousServer(info.pid, info.startedAt);
     try { fs.unlinkSync(serverInfoPath); } catch {}
-    return { running: false, state: 'gone' };
+    return { running: false, state: 'gone', previous };
   }
 
   const health = await checkHealthEndpoint(info.url);
@@ -158,8 +219,9 @@ export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   let host = '127.0.0.1';
   try { host = new URL(info.url).hostname || host; } catch { /* keep loopback */ }
   if (health === 'refused' || (port !== undefined && (await probeTcpPort(port, host)) === 'refused')) {
+    const previous = inspectPreviousServer(info.pid, info.startedAt);
     try { fs.unlinkSync(serverInfoPath); } catch {}
-    return { running: false, state: 'gone' };
+    return { running: false, state: 'gone', previous };
   }
   return { running: false, state: 'unresponsive', url: info.url, pid: info.pid, port, version: info.version };
 }
