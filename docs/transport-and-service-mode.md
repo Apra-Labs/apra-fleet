@@ -139,6 +139,15 @@ Task Scheduler RestartOnFailure is deliberately not used: it never fires for a k
 non-zero-exit process. (`APRA_FLEET_TASK_REPEAT_MINUTES`, 1..1440, overrides the interval at
 install time; test-only, not a supported setting.)
 
+The task's action is `wscript.exe //B //Nologo //E:JScript "<bin>\apra-fleet-service.js"`, a
+generated JScript launcher that runs `apra-fleet-service.bat` with window style 0 and waits:
+no console window appears on the user's desktop (running the .bat directly opened one on every
+start/revive, and closing it killed the server), and the server's exit code becomes the task's
+Last Result. JScript was chosen over a .vbs (VBScript is being deprecated) and over
+`conhost --headless` (undocumented). The .bat sets `APRA_FLEET_SERVICE=1`, re-creates the log dir
+if it was deleted (otherwise the `>>` redirect fails before the server starts), and appends the
+server's output to `fleet.log`. The HKCU Run fallback uses the same launcher.
+
 If the XML create fails and an existing `ApraFleet` task already runs our wrapper, it is reused.
 Only when there is no reusable task does install fall back to a per-user
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry (value `ApraFleet`) that starts the
