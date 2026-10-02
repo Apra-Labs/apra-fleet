@@ -18,6 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { ROLE_BACKLOG, resolveBacklogRoleAlias } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -261,7 +262,18 @@ export function parseCliArgs(argv) {
  * @returns {Promise<object|undefined>}
  */
 export async function resolveRoleMap(rawValue, deps = {}) {
-    if (rawValue === undefined) return undefined;
+    return (await resolveRoleMapWithWarnings(rawValue, deps)).roleMap;
+}
+
+/**
+ * Same as resolveRoleMap() but also returns the backlog-alias deprecation
+ * warnings, so main() can print them and forward them to the runner (which
+ * logs them in the run log -- the rewritten roleMap no longer carries the
+ * deprecated key, so the runner could not detect it itself).
+ * @returns {Promise<{ roleMap: object|undefined, warnings: string[] }>}
+ */
+export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
+    if (rawValue === undefined) return { roleMap: undefined, warnings: [] };
     const readFile = deps.readFile || fs.readFile;
 
     let jsonText = rawValue;
@@ -299,7 +311,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
     // defensively for callers that bypass the CLI and pass a raw roleMap
     // straight to `engine.executeFile()`) can rely on keys already being in
     // canonical lowercase form. This also covers the 'orchestrator'
-    // application-level pseudo-role key (see runner.js's ROLE_ORCHESTRATOR
+    // application-level pseudo-role key (see runner.js's ROLE_BACKLOG
     // doc comment) -- it is not a vendored contracts.ROLES member but is
     // still just a plain string key here, so the same normalization applies.
     const normalized = {};
@@ -314,7 +326,12 @@ export async function resolveRoleMap(rawValue, deps = {}) {
         normalized[key] = members;
     }
 
-    return normalized;
+    // Deprecated 'orchestrator' key -> 'backlog'; a conflict throws.
+    try {
+        return resolveBacklogRoleAlias(normalized);
+    } catch (err) {
+        throw new Error(`Error: --role-map ${err.message}`);
+    }
 }
 
 /**
@@ -330,7 +347,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -341,6 +358,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     };
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
+    if (Array.isArray(roleMapWarnings) && roleMapWarnings.length > 0) args.roleMapWarnings = roleMapWarnings;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
     // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets,
@@ -632,11 +650,13 @@ async function main() {
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
     let roleMap;
+    let roleMapWarnings = [];
     try {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
-        roleMap = await resolveRoleMap(values['role-map']);
+        ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
+        for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {
         console.error(`Error: ${err.message}`);
         process.exit(1);
@@ -755,14 +775,14 @@ async function main() {
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
     // begins. The orchestrator member mirrors fleet-sprint/runner.js's
-    // `getMemberForRole(ROLE_ORCHESTRATOR)` resolution: roleMap.orchestrator[0]
+    // `getMemberForRole(ROLE_BACKLOG)` resolution: roleMap.backlog[0]
     // if configured, else the first valid member. `roleMap` here is already
     // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
-    // so the canonical lowercase 'orchestrator' key is the only one that can
+    // so the canonical lowercase 'backlog' key is the only one that can
     // be present -- this must NOT read a capitalized 'Orchestrator' key (the
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
-    const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
+    const orchestratorMember = (roleMap && roleMap[ROLE_BACKLOG] && roleMap[ROLE_BACKLOG][0]) || validMembers[0];
     const runProbe = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         const text = res && res.content && res.content[0] ? res.content[0].text : '';
@@ -1032,6 +1052,7 @@ async function main() {
                 maxCycles,
                 requirementsFile,
                 roleMap,
+                roleMapWarnings,
                 budget,
                 dispatchTimeoutS,
                 usageLimitMaxWaitS,

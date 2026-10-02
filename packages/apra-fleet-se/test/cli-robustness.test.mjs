@@ -199,7 +199,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
 
     test('normalizes mixed-case/whitespace-variant --role-map keys to canonical lowercase', async () => {
         const roleMap = await resolveRoleMap('{"  Doer  ":["m1"],"REVIEWER":["m2"],"Orchestrator":["m3"]}');
-        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
         // The normalized roleMap must reach validateArgs() unchanged (it's
         // already canonical) and must not throw.
         const args = buildRunnerArgs({
@@ -207,7 +207,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
             goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap,
         });
         const validated = validateArgs(args);
-        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
     });
 
     test('rejects a --role-map whose keys collide once normalized', async () => {

@@ -95,6 +95,7 @@ import {
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
 import { verifyBeadsIdentity } from './beads-identity-check.mjs';
+import { ROLE_BACKLOG } from './backlog-role.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
@@ -512,10 +513,10 @@ const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
 
 // ---------------------------------------------------------------------------
-// 'orchestrator' pseudo-role
+// 'backlog' pseudo-role
 // ---------------------------------------------------------------------------
 //
-// 'orchestrator' is deliberately NOT a member of `contracts.ROLES` and must
+// 'backlog' (formerly 'orchestrator', see backlog-role.mjs) is deliberately NOT a member of `contracts.ROLES` and must
 // never be added to it: that enum is vendored (it mirrors the `name:`
 // frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md 1:1) and this repo
 // must not diverge from it. 'orchestrator' has no agent definition, no
@@ -528,7 +529,6 @@ const ROLE_REVIEWER = roleConst('reviewer');
 // a `bd show`-derived model-metadata lookup or any vendored schema table.
 // Always reference it via this constant (the canonical lowercase form) rather
 // than a literal, so a roleMap author's lowercase key is always honored.
-const ROLE_ORCHESTRATOR = 'orchestrator';
 
 // ---------------------------------------------------------------------------
 // Fixed-role tier defaults
@@ -1322,8 +1322,8 @@ async function runSprintCycle(context) {
     // file: those call getMemberForRole()/getMembersForRole() for roles that
     // still expect a real git checkout.
     const orchestratorRoleMapMembers = new Set(
-        (validated.roleMap && Array.isArray(validated.roleMap[ROLE_ORCHESTRATOR]))
-            ? validated.roleMap[ROLE_ORCHESTRATOR]
+        (validated.roleMap && Array.isArray(validated.roleMap[ROLE_BACKLOG]))
+            ? validated.roleMap[ROLE_BACKLOG]
             : []
     );
     const unmappedRoleFallbackPool = (() => {
@@ -1359,7 +1359,7 @@ async function runSprintCycle(context) {
         return [unmappedRoleFallbackPool[0]];
     };
 
-    // Uses the canonical ROLE_ORCHESTRATOR constant, not a literal -- see its
+    // Uses the canonical ROLE_BACKLOG constant, not a literal -- see its
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
     //
@@ -1373,7 +1373,11 @@ async function runSprintCycle(context) {
     // not yet implemented) -- otherwise every existing caller that relies on
     // the implicit fallback (including this file's own test harness) breaks.
     // Land 6.2, update callers, THEN make this throw.
-    const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
+    const orchestratorMember = getMemberForRole(ROLE_BACKLOG);
+
+    // Deprecated-alias warnings (roleMap.orchestrator -> roleMap.backlog),
+    // collected by validateArgs() and/or forwarded by bin/cli.mjs.
+    for (const w of (validated.roleMapWarnings || [])) log(`[role-map] WARNING: ${w}`);
 
     // Beads identity precondition: prove which .beads every member's bd
     // resolves to BEFORE the first mutating bd command (the earliest bd
@@ -3318,7 +3322,7 @@ export async function main(context) {
                 const doerMembers = (roleMap && Array.isArray(roleMap[ROLE_DOER])) ? roleMap[ROLE_DOER] : [];
                 const member = harvesterMembers[0]
                     ?? doerMembers[0]
-                    ?? validatedForLock.members.find((m) => !roleMap || !roleMap[ROLE_ORCHESTRATOR] || !roleMap[ROLE_ORCHESTRATOR].includes(m));
+                    ?? validatedForLock.members.find((m) => !roleMap || !roleMap[ROLE_BACKLOG] || !roleMap[ROLE_BACKLOG].includes(m));
                 if (!member) {
                     log('[Terminal History] finalizeAbort() skipped: no harvester/doer/dispatch member could be resolved to push the aborted branch.');
                     throw new Error('no git-capable member resolved for finalizeAbort');

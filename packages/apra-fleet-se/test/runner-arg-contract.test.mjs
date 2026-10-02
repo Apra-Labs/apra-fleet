@@ -144,20 +144,20 @@ describe('validateArgs', () => {
         });
     });
 
-    test('accepts the "orchestrator" pseudo-role as a roleMap key (not a member of ROLES) without throwing', () => {
+    test('accepts the "backlog" pseudo-role as a roleMap key (not a member of ROLES) without throwing', () => {
         const result = validateArgs({
             ...VALID_ARGS,
-            roleMap: { orchestrator: ['member-a'], doer: ['member-b'] },
+            roleMap: { backlog: ['member-a'], doer: ['member-b'] },
         });
-        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'], doer: ['member-b'] });
+        assert.deepStrictEqual(result.roleMap, { backlog: ['member-a'], doer: ['member-b'] });
     });
 
-    test('normalizes a mixed-case "Orchestrator" roleMap key to lowercase "orchestrator"', () => {
+    test('normalizes a mixed-case "Orchestrator" roleMap key to the canonical "backlog" key (deprecated alias)', () => {
         const result = validateArgs({
             ...VALID_ARGS,
             roleMap: { Orchestrator: ['member-a'] },
         });
-        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'] });
+        assert.deepStrictEqual(result.roleMap, { backlog: ['member-a'] });
     });
 
     test('rejects roleMap keys that collide once normalized', () => {
@@ -773,7 +773,7 @@ describe('runner.js mock-level execution', () => {
             branch: 'auto-sprint/rolemap-orchestrator-test',
             base_branch: 'main',
             max_cycles: 1,
-            roleMap: { orchestrator: ['member-y'] },
+            roleMap: { backlog: ['member-y'] },
         }, true);
 
         assert.strictEqual(result.status, 'success');

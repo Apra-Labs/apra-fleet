@@ -7,6 +7,7 @@
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
+import { resolveBacklogRoleAlias } from './backlog-role.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -303,6 +304,26 @@ export function validateArgs(args) {
             normalizedRoleMap[key] = value;
         }
     }
+    // Backlog-role alias: the deprecated 'orchestrator' key is folded into
+    // 'backlog' here (downstream readers only ever see 'backlog'); a conflict
+    // is an arg-contract error. Warnings -- plus any the CLI already collected
+    // (args.roleMapWarnings, since the CLI rewrites the key before the runner
+    // sees it) -- are surfaced on the validated object for the runner to log.
+    const roleMapWarnings = [];
+    if (normalizedRoleMap !== undefined) {
+        try {
+            const resolved = resolveBacklogRoleAlias(normalizedRoleMap);
+            normalizedRoleMap = resolved.roleMap;
+            roleMapWarnings.push(...resolved.warnings);
+        } catch (err) {
+            throw new Error(`[Arg Contract] Invalid roleMap: ${err.message}`);
+        }
+    }
+    if (Array.isArray(args.roleMapWarnings)) {
+        for (const w of args.roleMapWarnings) {
+            if (typeof w === 'string' && !roleMapWarnings.includes(w)) roleMapWarnings.push(w);
+        }
+    }
 
     // --- budget (optional) -----------------------------------------------
     // A USD ceiling for this run's total estimated spend. When provided,
@@ -449,6 +470,7 @@ export function validateArgs(args) {
         maxCycles,
         requirementsFile: args.requirementsFile,
         roleMap: normalizedRoleMap,
+        roleMapWarnings,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
         runId: args.run_id,
