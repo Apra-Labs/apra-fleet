@@ -74,6 +74,12 @@ export const GUARDED_MODULES = [
     // (every member access is injected by runner.js), registered so a future
     // direct call added here is scanned from the start.
     'kb-maintainer.mjs',
+    // KB hint building and KNOWLEDGE BANK injection gating: pure / injected
+    // (the diff-file listing is a runner.js-supplied callback), no direct command().
+    'kb-hints.mjs',
+    'kb-injection.mjs',
+    // Pure lower-quality banner derivation; no command() site.
+    'lower-quality.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
@@ -398,6 +404,11 @@ export const GUARDED_MODULES = [
     // Per-dispatch kb_* and code_* accounting: reads session_stats through the
     // injected memberCall around each dispatch. No command() or agent() site.
     'dispatch-accounting.mjs',
+    // The per-member sprint-init probe: kb_*/code_* calls through the injected
+    // memberCall, member_detail on the orchestrator session, and ONE
+    // member-bound command channel (fleetApi.executeCommand, command strings
+    // built by getSeCommands().wrapForMember) for the remote start-if-down.
+    'member-init-probe.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

@@ -26,6 +26,7 @@
 
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
+import { cleanQueryTerms } from './kb-hints.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
 // pattern (kb.mjs does not import runner.js's private helper, to avoid a
@@ -309,6 +310,8 @@ export function createKbWorkClient(opts = {}) {
 
     /** repo -> queued writes, oldest first: { kind, role, payload }. */
     const queues = new Map();
+    /** repo -> Set of candidate ids the latest promotionCandidates() call offered. */
+    const offeredCandidates = new Map();
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -359,6 +362,79 @@ export function createKbWorkClient(opts = {}) {
         if (repos.length !== 1) return null;
         const m = sel.getKbMaintainer(repos[0]);
         return (m && m.member && m.record) ? m : null;
+    }
+
+    /**
+     * The record knowledge reads run as: the repository kb_maintainer of
+     * `member`'s repository (see reviewMaintainerFor). Without a selector at
+     * all (unit-test seam) the member itself, when it is a record.
+     */
+    function readTarget(member) {
+        const sel = selector();
+        if (!sel) return (member && typeof member === 'object' && member.id) ? member : null;
+        const m = reviewMaintainerFor(memberNameOf(member));
+        return m ? m.record : null;
+    }
+
+    /** kb_query on the target: CONFIRMED, undisputed entries (direct hits, then graph-related). */
+    async function queryEntries(record, query) {
+        try {
+            const res = await memberCall(record, 'kb_query', {
+                query,
+                limit: KB_MAX_KNOWLEDGE_ENTRIES,
+                expand_related: true,
+                confidence: ['CONFIRMED'],
+                exclude_disputed: true,
+            });
+            // apra-fleet-23c: a tool-level failure RESOLVES with {isError:true}
+            // rather than throwing; log it instead of reading it as "no hits".
+            if (isToolError(res)) {
+                log(`[kb-work] kb_query rejected for ${memberLabel(record)} (non-fatal): ${toolErrorText(res)}`);
+                return [];
+            }
+            const parsed = parseResult(res);
+            if (!parsed) return [];
+            const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
+            const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
+            const seen = new Set();
+            const out = [];
+            for (const e of hits) {
+                if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
+                seen.add(e.id);
+                out.push(e);
+            }
+            // Related claims sit BELOW every direct hit and carry a marker.
+            for (const e of related) {
+                if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
+                seen.add(e.id);
+                out.push({ ...e, via: 'kb-graph' });
+            }
+            return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+        } catch (err) {
+            log(`[kb-work] kb_query failed for ${memberLabel(record)} (non-fatal): ${err.message}`);
+            return [];
+        }
+    }
+
+    /** kb_session_prime with the role's hints; only injectable entries survive. */
+    async function primeEntries(record, hintSymbols, hintModules) {
+        try {
+            const res = await memberCall(record, 'kb_session_prime', {
+                ...(hintSymbols.length > 0 ? { hint_symbols: hintSymbols } : {}),
+                ...(hintModules.length > 0 ? { hint_modules: hintModules } : {}),
+                confidence: ['CONFIRMED'],
+            });
+            if (isToolError(res)) {
+                log(`[kb-work] kb_session_prime rejected for ${memberLabel(record)} (non-fatal): ${toolErrorText(res)}`);
+                return [];
+            }
+            const parsed = parseResult(res);
+            const top = parsed && Array.isArray(parsed.top_entries) ? parsed.top_entries : [];
+            return top.filter((e) => typeof e?.id === 'string' && isInjectableKbEntry(e)).slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+        } catch (err) {
+            log(`[kb-work] kb_session_prime failed for ${memberLabel(record)} (non-fatal): ${err.message}`);
+            return [];
+        }
     }
 
     const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
@@ -842,6 +918,9 @@ export function createKbWorkClient(opts = {}) {
             // apra-fleet-tm7 repo-blindness class).
             const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
             if (!target) return [];
+            // Replace (never accumulate) this review scope's offered set up
+            // front, so a failed read leaves nothing offered from a prior round.
+            offeredCandidates.set(target.repo, new Set());
             // Writes still queued for this repository (a capture from this
             // very round) get their chance to land before the read.
             if (queues.has(target.repo)) await flush(target.repo);
@@ -867,12 +946,14 @@ export function createKbWorkClient(opts = {}) {
                     const t = typeof e.created_at === 'string' ? Date.parse(e.created_at) : NaN;
                     return Number.isFinite(t) && t >= since;
                 };
-                return results
+                const offered = results
                     // promote() refuses type='user-directive' outright (activation
                     // is human-terminal, CLI-only), so offering one as a candidate
                     // can only produce a guaranteed refusal.
                     .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e))
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+                offeredCandidates.set(target.repo, new Set(offered.map((e) => e.id)));
+                return offered;
             } catch (err) {
                 log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
@@ -905,54 +986,52 @@ export function createKbWorkClient(opts = {}) {
          * cold KB or an unreachable one all degrade to "no knowledge", never to
          * a failed dispatch.
          */
-        async relevantKnowledge(member, terms) {
-            if (!active || !member || !Array.isArray(terms) || terms.length === 0) return [];
-            const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
-            if (!query) return [];
-            try {
-                const res = await memberCall(member, 'kb_query', {
-                    query,
-                    limit: KB_MAX_KNOWLEDGE_ENTRIES,
-                    expand_related: true,
-                    confidence: ['CONFIRMED'],
-                    exclude_disputed: true,
-                });
-                // apra-fleet-23c: an MCP tool call can RESOLVE with {isError:true}
-                // for a tool-level failure rather than throwing, so this was
-                // the one kb_* failure path in this module that stayed
-                // silent -- parseResult() returns null for that envelope,
-                // taking the `if (!parsed) return [];` branch below and never
-                // reaching the catch. Detect it explicitly so a cold or
-                // misconfigured KB degrades visibly, like every other kb_*
-                // call here.
-                if (isToolError(res)) {
-                    log(`[kb-work] kb_query rejected for ${memberLabel(member)} (non-fatal): ${toolErrorText(res)}`);
-                    return [];
-                }
-                const parsed = parseResult(res);
-                if (!parsed) return [];
-                const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
-                const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
-                const seen = new Set();
-                const out = [];
-                for (const e of hits) {
-                    if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
-                    seen.add(e.id);
-                    out.push(e);
-                }
-                // Related claims sit BELOW every direct hit and carry a marker,
-                // so a role can tell "the KB matched this" from "the KB says
-                // something about what it matched".
-                for (const e of related) {
-                    if (typeof e?.id !== 'string' || !isInjectableKbEntry(e) || seen.has(e.id)) continue;
-                    seen.add(e.id);
-                    out.push({ ...e, via: 'kb-graph' });
-                }
-                return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
-            } catch (err) {
-                log(`[kb-work] kb_query failed for ${memberLabel(member)} (non-fatal): ${err.message}`);
-                return [];
+        async relevantKnowledge(member, hints) {
+            return (await this.knowledgeFor(member, hints)).entries;
+        },
+        /**
+         * The per-dispatch read behind the KNOWLEDGE BANK block: the entries
+         * AND the source they really came from.
+         *
+         * Read from the repository's kb_maintainer through memberCall -- never
+         * from the dispatched member (whose own KB may be cold, absent or on
+         * a different checkout) and never from the orchestrator session. A
+         * client built without a maintainer selector (unit-test seam) reads as
+         * the member it is given.
+         *
+         * `hints` is either a bare term list or {terms, hintSymbols,
+         * hintModules} (kb-hints.mjs roleHints). Order: kb_query on the
+         * terms; when that finds nothing, kb_session_prime ranked by
+         * hint_symbols/hint_modules; when that finds nothing too, NOTHING --
+         * there is deliberately no fall-back to an arbitrary set.
+         *
+         * @returns {Promise<{ entries: object[], source: 'query'|'prime' }>}
+         */
+        async knowledgeFor(member, hints) {
+            const h = Array.isArray(hints)
+                ? { terms: hints, hintSymbols: [], hintModules: [] }
+                : { terms: [], hintSymbols: [], hintModules: [], ...(hints || {}) };
+            const strs = (v) => (Array.isArray(v) ? v.filter((t) => typeof t === 'string' && t.trim()) : []);
+            const terms = strs(h.terms);
+            const hintSymbols = strs(h.hintSymbols);
+            const hintModules = strs(h.hintModules);
+            const nothing = { entries: [], source: terms.length > 0 || hintSymbols.length + hintModules.length === 0 ? 'query' : 'prime' };
+            if (!active || !member) return nothing;
+            if (terms.length === 0 && hintSymbols.length === 0 && hintModules.length === 0) return nothing;
+            const target = readTarget(member);
+            if (!target) {
+                log(`[kb-work] no kb_maintainer to read knowledge from for ${memberLabel(member)} -- no knowledge this dispatch`);
+                return nothing;
             }
+            if (terms.length > 0) {
+                const queried = await queryEntries(target, terms.join(' '));
+                if (queried.length > 0) return { entries: queried, source: 'query' };
+            }
+            if (hintSymbols.length > 0 || hintModules.length > 0) {
+                const primed = await primeEntries(target, hintSymbols, hintModules);
+                if (primed.length > 0) return { entries: primed, source: 'prime' };
+            }
+            return nothing;
         },
         /**
          * Vet a role's KB work and route it to the producing member's
@@ -975,7 +1054,8 @@ export function createKbWorkClient(opts = {}) {
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
 
-            const done = (counts) => ({ ...counts, refused: refused.length });
+            let extraRefused = 0;
+            const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
             if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
             const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
 
@@ -1010,8 +1090,17 @@ export function createKbWorkClient(opts = {}) {
             if (promotions.length > 0 || discards.length > 0) {
                 const review = reviewMaintainerFor(producer);
                 if (review) {
-                    for (const p of promotions) enqueue(review.repo, 'promote', role, p);
-                    for (const d of discards) enqueue(review.repo, 'discard', role, d);
+                    // Only ids offered in this dispatch's candidate block may be
+                    // judged; anything else is refused before any kb_* call.
+                    const offered = offeredCandidates.get(review.repo) || new Set();
+                    const inBlock = (kind, x) => {
+                        if (offered.has(x.id)) return true;
+                        log(`[kb-work] refused -- ${role}: ${kind} ${x.id} not in this dispatch's candidate block`);
+                        extraRefused += 1;
+                        return false;
+                    };
+                    for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
+                    for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
                     repos.add(review.repo);
                 } else {
                     log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
@@ -1058,6 +1147,12 @@ export function createKbWorkClient(opts = {}) {
 
 export function createKbPrimingClient(opts = {}) {
     const { callTool, memberCall, members = [], log = () => {} } = opts;
+    const maintainerSel = () => {
+        const m = typeof opts.maintainers === 'function' ? opts.maintainers() : opts.maintainers;
+        return (m && typeof m.maintainerForMember === 'function') ? m : null;
+    };
+    /** maintainer record id -> entries primed there (a repository is imported and primed once). */
+    const primedByTarget = new Map();
     const active = typeof callTool === 'function' && typeof memberCall === 'function' && members.length > 0;
 
     function parseResult(result) {
@@ -1139,6 +1234,23 @@ export function createKbPrimingClient(opts = {}) {
                         continue;
                     }
                     records.set(member, record);
+                    // Knowledge is read from the repository's kb_maintainer, not
+                    // the member itself. A sprint without a selector primes the
+                    // member's own session (unit-test seam).
+                    const sel = maintainerSel();
+                    const m = sel ? sel.maintainerForMember(member) : null;
+                    const target = sel ? (m && m.record ? m.record : null) : record;
+                    if (!target) {
+                        log(`[kb-prime] no kb_maintainer for member '${member}' -- no knowledge primed`);
+                        primed++;
+                        continue;
+                    }
+                    if (primedByTarget.has(target.id)) {
+                        const shared = primedByTarget.get(target.id);
+                        if (shared.length > 0) knowledge.set(member, shared);
+                        primed++;
+                        continue;
+                    }
                     // Land the committed bible in the WARM KB before priming.
                     //
                     // Without this the bible is reachable only through
@@ -1167,7 +1279,7 @@ export function createKbPrimingClient(opts = {}) {
                     try {
                         // No `path`: the member session imports its OWN folder's
                         // committed bible (<work folder>/.fleet/kb-canonical.json).
-                        const imported = parseResult(await memberCall(record, 'kb_import', { skip_sweep: true }));
+                        const imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }
@@ -1175,14 +1287,16 @@ export function createKbPrimingClient(opts = {}) {
                         log(`[kb-prime] kb_import skipped for '${member}' (non-fatal): ${err.message}`);
                     }
 
-                    const primeResult = parseResult(await memberCall(record, 'kb_session_prime', {}));
+                    const primeResult = parseResult(await memberCall(target, 'kb_session_prime', {}));
                     // Same injection rule as relevantKnowledge, applied BEFORE the
                     // cap so a prime dominated by INFERRED captures does not
                     // crowd out the CONFIRMED entries behind them.
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
                         ? primeResult.top_entries.filter((e) => typeof e?.id === 'string' && isInjectableKbEntry(e))
                         : [];
-                    if (entries.length > 0) knowledge.set(member, entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES));
+                    const capped = entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+                    primedByTarget.set(target.id, capped);
+                    if (capped.length > 0) knowledge.set(member, capped);
                     primed++;
                 } catch (err) {
                     log(`[kb-prime] failed for member '${member}' (non-fatal): ${err.message}`);
@@ -1263,14 +1377,16 @@ export const KB_SELF_INJECTING_ROLES = Object.freeze(new Set([ROLE_DOER, ROLE_RE
  * @returns {string[]}
  */
 export function kbQueryTerms(beads, beadIds) {
-    const terms = [];
+    // Bead TITLES only: tracker ids and stopwords are stripped (they match
+    // nothing useful and only add ranking noise), so a bead id in `beadIds`
+    // never reaches the query -- it is passed solely so a stray id inside a
+    // title is recognised and dropped too.
+    const titles = [];
     for (const b of Array.isArray(beads) ? beads : []) {
-        if (b && typeof b.title === 'string' && b.title.trim()) terms.push(b.title.trim());
+        if (b && typeof b.title === 'string' && b.title.trim()) titles.push(b.title.trim());
     }
-    for (const id of Array.isArray(beadIds) ? beadIds : []) {
-        if (typeof id === 'string' && id.trim()) terms.push(id.trim());
-    }
-    return terms;
+    const knownIds = (Array.isArray(beadIds) ? beadIds : []).filter((id) => typeof id === 'string' && id.trim());
+    return cleanQueryTerms(titles, { knownIds });
 }
 
 // `captureChannel` (default true, the doer/reviewer/final-review prompt
@@ -1279,17 +1395,31 @@ export function kbQueryTerms(beads, beadIds) {
 // role-policies.mjs agentTypeAppliesKbCaptures). When it is not, the block
 // must not promise that the orchestrator records a capture: those roles'
 // prompts tell them to note the finding in their own report instead.
-export function kbKnowledgeBlock(entries, { captureChannel = true } = {}) {
+export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'prime', reportEmpty = false } = {}) {
     if (!Array.isArray(entries)) return [];
-    // Filter only -- the sources (relevantKnowledge, primeAll) own the entry cap,
-    // so this block never drops what a caller deliberately handed it.
-    const injectable = entries.filter(isInjectableKbEntry);
-    if (injectable.length === 0) return [];
+    // CONFIRMED-first, capped at KB_MAX_KNOWLEDGE_ENTRIES. The sources
+    // (relevantKnowledge, primeAll) hand entries over in relevance order, so a
+    // stable CONFIRMED filter + slice keeps the most relevant ones.
+    const injectable = entries.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+    // The label names where the entries really came from: a per-dispatch
+    // kb_query or the hint-driven kb_session_prime.
+    const label = source === 'query' ? 'kb_query --top_entries' : 'kb_session_prime --top_entries';
     const captureLine = captureChannel
         ? 'If you discover something non-obvious and durable while working, report it in the '
             + '`kb_captures` field of your structured output and the orchestrator will record it.\n'
         : 'If you discover something non-obvious and durable while working, note it in your '
             + 'own report.\n';
+    if (injectable.length === 0) {
+        if (!reportEmpty) return [];
+        // Nothing relevant matched: say so explicitly rather than falling back
+        // to an arbitrary set of entries.
+        return [
+            'KNOWLEDGE BANK -- what this repo already knows. No relevant CONFIRMED knowledge-bank '
+            + 'entries were found for this task (source: ' + (source === 'query' ? 'kb_query' : 'kb_session_prime') + '). '
+            + 'Nothing relevant was found, so no entries are provided; proceed from the code itself.\n'
+            + captureLine,
+        ];
+    }
     return [
         'KNOWLEDGE BANK -- what this repo already knows. These entries were captured during '
         + 'earlier work on this repository and are provided so you do not rediscover them the '
@@ -1300,7 +1430,7 @@ export function kbKnowledgeBlock(entries, { captureChannel = true } = {}) {
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need to call any kb_* tool to read these. '
         + captureLine
-        + wrapUntrustedBlock('kb_session_prime --top_entries', JSON.stringify(
+        + wrapUntrustedBlock(label, JSON.stringify(
             injectable.map((e) => ({
                 confidence: e.confidence,
                 title: e.title,

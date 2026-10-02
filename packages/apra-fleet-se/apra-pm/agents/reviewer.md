@@ -178,9 +178,9 @@ Hard limits:
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
 - **Never invent an id.** Only ids from the candidate block in THIS dispatch are
-  promotable or discardable. The orchestrator does not re-check this, so an id from
-  anywhere else -- including one you remember from an earlier round -- would change an
-  entry you never reviewed.
+  promotable or discardable. The orchestrator refuses any other id, so an id from
+  anywhere else -- including one you remember from an earlier round -- is dropped
+  and logged, never applied.
 
 Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
 the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as

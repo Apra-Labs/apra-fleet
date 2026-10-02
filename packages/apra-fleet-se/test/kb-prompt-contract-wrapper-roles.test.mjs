@@ -369,7 +369,7 @@ test('the agent() wrapper derives the capture channel from the dispatch agentTyp
     const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'fleet-sprint', 'runner.js'), 'utf8');
     assert.match(
         runnerSrc,
-        /kbKnowledgeBlock\(kbPriming\.knowledgeOf\(opts\.member_name\), \{\s*captureChannel: agentTypeAppliesKbCaptures\(opts\.agentType\),\s*\}\)/,
-        'runner.js agent() wrapper must pass captureChannel: agentTypeAppliesKbCaptures(opts.agentType)'
+        /const captureChannel = agentTypeAppliesKbCaptures\(opts\.agentType\);[\s\S]*?kbInjection\.blockFor\(\{[\s\S]*?\n\s*captureChannel,/,
+        'runner.js agent() wrapper must pass captureChannel (= agentTypeAppliesKbCaptures(opts.agentType)) to kbInjection.blockFor'
     );
 });

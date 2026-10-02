@@ -106,11 +106,15 @@ describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)',
         // would not exist and every promotion would fail "Entry not found".
         const calls = [];
         const client = createKbWorkClient({
-            memberCall: async (member, name, args) => { calls.push({ name, args, member }); return {}; },
+            memberCall: async (member, name, args) => {
+                calls.push({ name, args, member });
+                return name === 'kb_query' ? { l1_results: [{ id: 'kb-aaa' }] } : {};
+            },
             maintainers: withMaintainer(),
             gPull: async () => {},
             log: () => {},
         });
+        await client.promotionCandidates(REVIEWER);
 
         const result = await client.apply('reviewer', REVIEWER, {
             kb_promotions: [{ id: 'kb-aaa', reason: 'verified against server/transit.js and the reopen test' }],

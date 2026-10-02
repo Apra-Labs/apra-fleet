@@ -93,10 +93,19 @@ function readBible(text) {
  * kb_bible_commit performs the real handler's git operations in the
  * maintainer clone through the fixture's real-git command().
  */
+// ids the fake maintainer's KB offers as promotion candidates (set by offerIds()).
+let offered = [];
+async function offerIds(kbWork, ids) {
+    offered = ids;
+    await kbWork.promotionCandidates('reviewer-1');
+}
+
 function createFakeKb(fixture, { afterBibleCommit } = {}) {
     const kb = new Map();
     const calls = [];
     const memberCall = async (member, tool, args) => {
+        // Candidate read offering ids to the reviewer: bookkeeping, not recorded.
+        if (tool === 'kb_query') return { l1_results: offered.map((id) => ({ id })) };
         calls.push({ tool, member: member.name, args });
         if (tool === 'kb_promote') {
             if (!kb.has(args.id)) kb.set(args.id, { ...entry(args.id), confidence: 'INFERRED' });
@@ -175,6 +184,7 @@ function makeEngine(fixture, fakeKb) {
 
 /** A review round whose reviewer confirmed `ids`, through the real apply path. */
 async function reviewRound(kbWork, ids) {
+    await offerIds(kbWork, ids);
     await kbWork.apply('reviewer', 'reviewer-1', { kb_promotions: ids.map((id) => ({ id, reason: REASON })) });
     return kbWork.commitRound('review');
 }
@@ -321,6 +331,7 @@ describe('review-round bible commit against a real git origin', { skip: support.
             await reviewRound(kbWork, ['e1']);
             const tipAfterRound = fixture.originTip();
 
+            await offerIds(kbWork, ['e2']);
             await kbWork.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: 'e2', reason: REASON }] });
             kbWork.seal(reason);
             const out = await kbWork.commitRound('harvest');

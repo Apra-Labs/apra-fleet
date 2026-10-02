@@ -1,6 +1,7 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { computeSprintProgress } from './sprint-progress.mjs';
 import { DISPATCH_TOOL_CALLS_STATE_NAMESPACE } from './dispatch-accounting.mjs';
+import { MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 
 /**
  * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
@@ -1143,7 +1144,7 @@ export const beadsExtension = {
  * @param {{ dispatches?: object[] }|null|undefined} data
  * @returns {string}
  */
-export function renderKbCodeIntelHtml(data) {
+export function renderKbCodeIntelHtml(data, init) {
     try {
         function isCount(n) {
             return typeof n === 'number' && Number.isInteger(n) && n >= 0;
@@ -1165,7 +1166,27 @@ export function renderKbCodeIntelHtml(data) {
             ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
             : [];
 
-        let html = '<div data-kb-code-intel="true" style="padding: 8px;">';
+        // Lower-quality-of-service section (b4g.65): the sprint banner and one
+        // line per NON-verified member with its reason and one-line fix.
+        // Verified members get no line; with all verified nothing renders.
+        function lowerQualityHtml() {
+            const members = (init && typeof init === 'object' && Array.isArray(init.members))
+                ? init.members.filter(function (m) { return m && typeof m === 'object' && m.verified !== true; })
+                : [];
+            if (members.length === 0) return '';
+            let out = '';
+            if (init && typeof init.banner === 'string' && init.banner) {
+                out += '<div data-kb-lower-quality-banner="true" style="font-size: 11px; font-weight: 600; color: #f59e0b; padding: 4px 8px;">' + escapeHtml(init.banner) + '</div>';
+            }
+            for (const m of members) {
+                out += '<div data-kb-lower-quality-member="' + escapeHtml(String(m.member || '(unknown member)')) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                    + escapeHtml(String(m.member || '(unknown member)')) + ': ' + escapeHtml(String(m.reason || 'unverified'))
+                    + ' -- fix: ' + escapeHtml(String(m.fix || '(none recorded)')) + '</div>';
+            }
+            return out;
+        }
+
+        let html = '<div data-kb-code-intel="true" style="padding: 8px;">' + lowerQualityHtml();
         html += '<div style="font-size: 11px; color: #a1a1aa; padding: 2px 8px;">kb_* and code_* tool calls counted by each member\'s own fleet server, read before and after every dispatch. "unknown" means the count could not be read -- it is not zero.</div>';
         if (records.length === 0) {
             html += '<div data-kb-panel-empty="true" style="font-size: 11px; color: #71717a; padding: 8px;">(no dispatches recorded yet)</div>';
@@ -1222,12 +1243,18 @@ export const kbCodeIntelExtension = {
         ${renderKbCodeIntelHtml.toString()}
 
         let lastDispatchToolCalls = null;
+        let lastMemberInit = null;
 
         function renderKbCodeIntelPanel() {
             const container = document.getElementById('extension-kb-code-intel');
             if (!container) return;
-            container.innerHTML = renderKbCodeIntelHtml(lastDispatchToolCalls);
+            container.innerHTML = renderKbCodeIntelHtml(lastDispatchToolCalls, lastMemberInit);
         }
+
+        document.addEventListener('workflow:state:' + ${JSON.stringify(MEMBER_INIT_STATE_NAMESPACE)}, (e) => {
+            lastMemberInit = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
 
         // String-concat form (not a quoted interpolation) so the per-line
         // shell-command guard does not read it as a member-bound command.

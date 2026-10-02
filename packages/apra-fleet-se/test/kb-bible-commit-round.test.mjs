@@ -16,6 +16,8 @@ import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutation
 const MAINT = { id: 'id-maint', name: 'maint', type: 'local' };
 const REPO = 'example.com/org/repo';
 const REASON = 'verified against the merged code in this round';
+// ids the fake maintainer's KB offers as promotion candidates (set by confirm()).
+let offeredEntries = [];
 const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
 
 /**
@@ -27,6 +29,9 @@ function harness({ pushFailures = 0, committed = true, unpushed = false } = {}) 
     const logs = [];
     let pushesLeftToFail = pushFailures;
     const memberCall = async (member, tool, args) => {
+        // The candidate read that offers ids to the reviewer is bookkeeping,
+        // not part of the round's call order.
+        if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
         if (tool === 'kb_bible_commit') {
             return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed }) }] };
@@ -59,6 +64,8 @@ function harness({ pushFailures = 0, committed = true, unpushed = false } = {}) 
 }
 
 async function confirm(client, ids) {
+    offeredEntries = ids;
+    await client.promotionCandidates('reviewer-1');
     await client.apply('reviewer', 'reviewer-1', { kb_promotions: ids.map((id) => ({ id, reason: REASON })) });
 }
 
@@ -217,6 +224,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         const events = [];
         const client = createKbWorkClient({
             memberCall: async (m, tool, args) => {
+                if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
                 return tool === 'kb_bible_commit' ? { merged: args.ids, skipped: [], committed: false } : {};
             },
@@ -252,7 +260,11 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         const logs = [];
         const events = [];
         const client = createKbWorkClient({
-            memberCall: async (m, tool) => { events.push(tool); return {}; },
+            memberCall: async (m, tool) => {
+                if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+                events.push(tool);
+                return {};
+            },
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
             gPull: async () => {},
             gPush: async () => { events.push('G-push'); },
@@ -320,6 +332,7 @@ function guardHarness({ branchAnswers, pushFailures = 0 }) {
     const toolCalls = [];
     const client = createKbWorkClient({
         memberCall: async (member, tool, args) => {
+            if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
             toolCalls.push(tool);
             if (tool === 'kb_bible_commit') {
                 commands.push({ cmd: '(kb_bible_commit: git commit)', member: member.name });

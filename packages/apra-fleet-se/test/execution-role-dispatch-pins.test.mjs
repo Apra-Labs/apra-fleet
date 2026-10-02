@@ -393,7 +393,7 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             const call = findCallSites(SRC, builderCall.replace('({', ''))[0];
             assert.ok(call, `${builderCall} call site not found in runner.js.`);
             assert.ok(
-                /kbKnowledge:/.test(call.callText),
+                /kbKnowledge:|kbBlock:/.test(call.callText),
                 `${builderCall} must be handed kbKnowledge explicitly -- its role is excluded from the agent() wrapper injection.`
             );
         }

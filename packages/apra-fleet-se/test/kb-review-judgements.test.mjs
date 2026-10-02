@@ -26,7 +26,8 @@ const entry = (id, created_at, extra = {}) => ({
     title: `entry ${id}`, summary: `summary of ${id}`, source_files: ['src/widget-cache.ts'], ...extra,
 });
 
-function harness({ entries = [], invalidateResult } = {}) {
+function harness({ entries: initialEntries = [], invalidateResult } = {}) {
+    let entries = initialEntries;
     const events = [];
     const logs = [];
     const client = createKbWorkClient({
@@ -49,7 +50,17 @@ function harness({ entries = [], invalidateResult } = {}) {
         log: (m) => logs.push(m),
     });
     const shape = () => events.map((e) => (e.type === 'gpull' ? `gpull:${e.member}` : `${e.tool}@${e.member}`));
-    return { client, events, logs, shape };
+    // Offer candidate ids the way a review dispatch does (promotionCandidates),
+    // then forget the bookkeeping calls so each test asserts only what apply() does.
+    const offer = async (ids, member = 'reviewer') => {
+        const saved = entries;
+        entries = ids.map((id) => entry(id, '2026-10-01T11:00:00.000Z'));
+        await client.promotionCandidates(member);
+        entries = saved;
+        events.length = 0;
+        logs.length = 0;
+    };
+    return { client, events, logs, shape, offer };
 }
 
 describe('promotion candidates: the maintainer read and the sprint window', () => {
@@ -141,6 +152,7 @@ describe('promotion candidates: the maintainer read and the sprint window', () =
 describe('CONFIRM and DISCARD on the maintainer', () => {
     test('kb_promotions -> kb_promote {id, reason}; kb_discards -> kb_invalidate {ids: [id]}; after one G-pull', async () => {
         const h = harness();
+        await h.offer(['kb-good', 'kb-wrong']);
         const out = await h.client.apply('reviewer', 'reviewer', {
             kb_promotions: [{ id: 'kb-good', reason: REASON }],
             kb_discards: [{ id: 'kb-wrong', reason: WRONG }],
@@ -153,6 +165,7 @@ describe('CONFIRM and DISCARD on the maintainer', () => {
 
     test('each discard is logged with its reason BEFORE it is attempted', async () => {
         const h = harness();
+        await h.offer(['kb-wrong']);
         // Record the log length at the moment kb_invalidate is called.
         let logsAtCall = -1;
         const events = h.events;
@@ -166,6 +179,7 @@ describe('CONFIRM and DISCARD on the maintainer', () => {
 
     test('a not-found discard is logged as non-fatal and not counted', async () => {
         const h = harness({ invalidateResult: (args) => ({ discarded: [], not_found: args.ids, already_discarded: [] }) });
+        await h.offer(['kb-gone']);
         const out = await h.client.apply('reviewer', 'reviewer', { kb_discards: [{ id: 'kb-gone', reason: WRONG }] });
         assert.equal(out.discarded, 0);
         assert.ok(h.logs.includes('[kb-work] kb_invalidate: entry kb-gone not found on the maintainer -- already gone (non-fatal)'), JSON.stringify(h.logs));
@@ -188,6 +202,7 @@ describe('vetting kb_discards', () => {
 
     test('a discard with a short reason or no id is refused and logged', async () => {
         const h = harness();
+        await h.offer(['kb-1', 'kb-2']);
         const out = await h.client.apply('reviewer', 'reviewer', {
             kb_discards: [{ id: 'kb-1', reason: 'x'.repeat(19) }, { reason: WRONG }, { id: 'kb-2', reason: 'x'.repeat(20) }],
         });
@@ -200,6 +215,7 @@ describe('vetting kb_discards', () => {
 
     test('an id both promoted and discarded in one output is refused on both sides, both logged', async () => {
         const h = harness();
+        await h.offer(['kb-both', 'kb-ok']);
         const out = await h.client.apply('reviewer', 'reviewer', {
             kb_promotions: [{ id: 'kb-both', reason: REASON }, { id: 'kb-ok', reason: REASON }],
             kb_discards: [{ id: 'kb-both', reason: WRONG }],

@@ -392,7 +392,14 @@ const ALPHA = Object.freeze({ id: 'id-alpha', name: 'alpha', type: 'local' });
 
 function recorder() {
     const calls = [];
-    return { calls, memberCall: async (member, name, args) => { calls.push({ name, args, member }); return {}; } };
+    // kb_query serves the promotion candidate read: it offers 'abc123'.
+    return {
+        calls,
+        memberCall: async (member, name, args) => {
+            calls.push({ name, args, member });
+            return name === 'kb_query' ? { l1_results: [{ id: 'abc123' }] } : {};
+        },
+    };
 }
 
 // A tool call can RESOLVE with {isError:true} for a tool-level failure -- it
@@ -426,6 +433,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     test('a reviewer promotion becomes a real kb_promote call', async () => {
         const { calls, memberCall } = recorder();
         const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
+        await client.promotionCandidates(ALPHA);
 
         const out = await client.apply('reviewer', ALPHA, {
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
@@ -484,8 +492,12 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     });
 
     test('an MCP isError result on kb_promote is not counted as promoted', async () => {
-        const { memberCall } = errorRecorder('no such entry');
+        const failing = errorRecorder('no such entry').memberCall;
+        // The candidate read succeeds (offering abc123); only kb_promote fails.
+        const memberCall = async (m, name, args) => (name === 'kb_query' ? { l1_results: [{ id: 'abc123' }] } : failing(m, name, args));
         const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
+        await client.promotionCandidates(ALPHA);
+        await client.promotionCandidates(ALPHA);
 
         const out = await client.apply('reviewer', ALPHA, {
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
@@ -669,7 +681,7 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
             }
             if (name === 'kb_session_prime') return { top_entries: [] };
             if (name === 'kb_list') return { results: opts.candidates ?? [] };
-            if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: [], related_claims: [] }) }] };
+            if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: args && args.tag ? [{ id: 'abc123' }] : [], related_claims: [] }) }] };
             return {};
         });
     }
