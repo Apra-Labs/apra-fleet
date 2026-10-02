@@ -41,7 +41,8 @@ type Registry =
   | { kind: 'missing' }
   | { kind: 'garbage' }
   | { kind: 'unreadable' }
-  | { kind: 'ids'; ids: string[] };
+  | { kind: 'ids'; ids: string[] }
+  | { kind: 'entries'; entries: Array<{ id: string; agentType?: string }> };
 
 interface Member {
   installed: string | null;
@@ -87,7 +88,9 @@ function deps(m: Member, platform: { os: 'linux' | 'windows'; arch: string } = {
           case 'missing': return ok(''); // readMemberFileCommand: a missing file is empty output, exit 0
           case 'garbage': return ok('{not json');
           case 'unreadable': return { stdout: '', stderr: 'Permission denied', code: 1 };
-          case 'ids': return ok(JSON.stringify({ version: '1', agents: m.registry.ids.map(id => ({ id, friendlyName: 'bella' })) }));
+          // A self-registration entry: the member registered itself as LOCAL.
+          case 'ids': return ok(JSON.stringify({ version: '1', agents: m.registry.ids.map(id => ({ id, friendlyName: 'bella', agentType: 'local' })) }));
+          case 'entries': return ok(JSON.stringify({ version: '1', agents: m.registry.entries.map(e => ({ friendlyName: 'bella', ...e })) }));
         }
       }
       if (c.includes("'register-member'")) return ok('Member registered successfully');
@@ -194,6 +197,9 @@ describe('pre-marker member upgrade', () => {
   describe('human full install is never overridden', () => {
     const humanCases: Array<[string, Registry]> = [
       ['a registry without this member id', { kind: 'ids', ids: [] }],
+      // A "remote" member on the orchestrator's own host and user: the file read
+      // returns the ORCHESTRATOR's registry, whose entry for this id is remote.
+      ['a registry holding this id only as a REMOTE entry (same-host member: the orchestrator\'s own registry)', { kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'remote' }] }],
       ['a registry listing only OTHER member ids', { kind: 'ids', ids: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] }],
       ['a missing registry file', { kind: 'missing' }],
       ['an unparseable registry file', { kind: 'garbage' }],
@@ -318,5 +324,12 @@ describe('pre-marker member upgrade', () => {
     expect(await memberRegistryHoldsId(member(), HOME, throwing)).toBe(false);
     const agentsNotArray = { exec: async () => ({ stdout: JSON.stringify({ agents: { id: AGENT_ID } }), stderr: '', code: 0 }) };
     expect(await memberRegistryHoldsId(member(), HOME, agentsNotArray)).toBe(false);
+  });
+
+  it('memberRegistryHoldsId: a REMOTE-type entry with this id is NOT ownership (same-host member reads the orchestrator registry)', async () => {
+    const holds = (registry: Registry) => memberRegistryHoldsId(member(), HOME, deps(newMember({ registry })));
+    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'remote' }] })).toBe(false);
+    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID }] })).toBe(false);
+    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'local' }] })).toBe(true);
   });
 });

@@ -531,7 +531,9 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
  *      install reports at <home>/.apra-fleet/bin, the same path a human full
  *      install uses, and a refusal or observation-only probe records it too.
  *   2. (memberRegistryHoldsId, one member file read) the member's OWN
- *      registry lists an entry whose id equals agent.id. Only this fleet's
+ *      registry lists a LOCAL-type entry whose id equals agent.id (a remote
+ *      entry is the orchestrator's own record, seen when the "remote" member
+ *      is the orchestrator's own host and user). Only this fleet's
  *      self-registration (buildSelfRegisterCommand: register-member --id
  *      <uuid>) creates that entry; a human full install will not hold the
  *      orchestrator-assigned uuid. This covers real pre-marker members:
@@ -583,7 +585,15 @@ export async function memberRegistryHoldsId(
     const reg = await readMemberJson((cmd, t) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS), memberRegistryPath(home, agent), posix);
     const agents = reg.agents;
     if (!Array.isArray(agents)) return false;
-    return agents.some(a => !!a && typeof a === 'object' && (a as { id?: unknown }).id === agent.id);
+    // Only a LOCAL-type entry counts: the self-registration always registers
+    // the member as local (buildSelfRegisterCommand: --type local). A REMOTE
+    // entry with this id is the orchestrator's own record of the member -- it
+    // appears in the file read when the "remote" member is the orchestrator's
+    // own host and user, and counting it would send --force-stop-full-install
+    // at the orchestrator itself.
+    return agents.some(a => !!a && typeof a === 'object'
+      && (a as { id?: unknown }).id === agent.id
+      && (a as { agentType?: unknown }).agentType === 'local');
   } catch {
     return false;
   }

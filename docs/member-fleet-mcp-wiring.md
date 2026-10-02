@@ -117,10 +117,14 @@ one of two ownership signals shows the fleet owns that install (see
    signal (a human full install reports a version at the same path). The
    client `FleetMcpStatus` typedef lists the field.
 2. Member registry uuid signal (checked only after a refusal): the member's
-   OWN apra-fleet registry, `<home>/.apra-fleet/data/registry.json`, holds an
-   entry whose `id` equals this member's fleet uuid. Only the fleet's earlier
-   self-registration (`register-member --type local --id <uuid>`) creates that
-   entry; a human full install does not hold the orchestrator-assigned uuid.
+   OWN apra-fleet registry, `<home>/.apra-fleet/data/registry.json`, holds a
+   LOCAL-type entry whose `id` equals this member's fleet uuid. Only the fleet's
+   earlier self-registration (`register-member --type local --id <uuid>`)
+   creates that entry; a human full install does not hold the
+   orchestrator-assigned uuid. A REMOTE-type entry with the uuid does not count:
+   it is the orchestrator's own record of the member, which the read returns when
+   the "remote" member is the orchestrator's own host and user -- counting it
+   would send the override at the orchestrator itself.
    The file is read directly (path built in JS from the probed home, POSIX or
    PowerShell form per the member's shell, no shell expansion) rather than
    through the installed binary, because a pre-marker build may predate CLI
