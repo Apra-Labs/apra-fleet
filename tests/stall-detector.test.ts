@@ -398,7 +398,7 @@ describe('StallDetector', () => {
   // GitHub #562: a session log that never appears at an AUTHORITATIVE path is
   // an agent that never started -- killed with a distinct reason once the
   // inactivity threshold passes. A guessed path keeps the warn-only behavior.
-  describe('_poll — session log never appears (agent_never_started)', () => {
+  describe('_poll -- session log never appears (agent_never_started)', () => {
     it('authoritative path, no file past the threshold -> onStall("agent_never_started") once', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const onStall = vi.fn();
@@ -466,7 +466,7 @@ describe('StallDetector', () => {
 
   // GitHub #585: the poll awaits a remote probe; the entry can be removed or
   // replaced meanwhile. The stale result must be dropped -- no WARN, no merge.
-  describe('_poll — entry removed or replaced during an in-flight poll', () => {
+  describe('_poll -- entry removed or replaced during an in-flight poll', () => {
     function deferred<T>() {
       let resolve!: (v: T) => void;
       const promise = new Promise<T>((r) => { resolve = r; });

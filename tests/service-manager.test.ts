@@ -132,7 +132,7 @@ describe('WindowsServiceManager', () => {
 
     it('reports enabled=false for a task whose (UTF-16) XML has <Settings><Enabled>false', async () => {
       vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
-        ? Buffer.from('﻿<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')
+        ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')])
         : '"ApraFleet","N/A","Disabled"\r\n') as any);
       expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
     });
