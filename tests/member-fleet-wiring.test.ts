@@ -156,6 +156,45 @@ describe('register_member fleet_install', () => {
     expect(getAllAgents()[0].fleetMcp).toMatchObject({ state: 'available', version: VERSION });
   });
 
+  it('clean member (no apra-fleet, no fleet skills): the orchestrator composes the per-folder entry BEFORE the member self-registers, and fleetMcp ends available', async () => {
+    // Self-registration on the member skips compose_permissions (a member
+    // install has no skill profiles), so the per-folder MCP entry the probe
+    // checks must come from the ORCHESTRATOR's compose. Here the member-side
+    // .claude.json read is served from what that compose actually wrote
+    // through the (mocked) member transport -- not from a canned fixture.
+    const w = newWorld({ installed: null, entry: false });
+    const configExec = makeConfigAwareExec();
+    const written: string[] = [];
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      // Member-side writes of ~/.claude.json (staged as a .tmp heredoc, then
+      // moved): keep each one that carries the per-folder apra-fleet entry.
+      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
+      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`compose-write ${m[1]}`); written.push(m[3]); }
+      return configExec(cmd);
+    });
+    const d = fakeDeps(w);
+    const baseExec = d.exec;
+    d.exec = async (agent, command) => {
+      const c = plain(command);
+      if (c.includes('cat "') && c.includes('.claude.json') && written.length > 0) {
+        w.log.push(c);
+        return { stdout: written[written.length - 1], stderr: '', code: 0 };
+      }
+      return baseExec(agent, command);
+    };
+    __setMemberFleetMcpDeps(d);
+    const result = await registerMember({ ...REMOTE, friendly_name: 'bella', llm_provider: 'claude', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
+    expect(result).toContain('Member registered successfully');
+    const agent = getAllAgents()[0];
+    expect(agent.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
+    expect(installCmds(w)).toHaveLength(1);
+    const composeAt = w.log.findIndex(c => c.startsWith('compose-write '));
+    const registerAt = w.log.findIndex(c => c.includes("'register-member'"));
+    expect(composeAt).toBeGreaterThanOrEqual(0);
+    expect(registerAt).toBeGreaterThan(composeAt);
+    expect(written[written.length - 1]).toContain(`?member=${agent.id}`);
+  });
+
   it('cross-OS member (different arch) gets the release asset, not the orchestrator binary', async () => {
     const w = newWorld({ installed: null, orchestrator: { os: 'macos', arch: 'arm64' } });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));

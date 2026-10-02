@@ -193,6 +193,53 @@ describe.skipIf(skipLive)('compose engine (live local member)', () => {
     });
   }, 60000);
 
+  it('a member-config error records unavailable but keeps the previous fleetInstalledAt', async () => {
+    fs.writeFileSync(path.join(work, 'opencode.json'), '{\n  "theme": "dark"\n}\n');
+    git('add', 'opencode.json');
+    git('commit', '-qm', 'track');
+    await withMember('opencode', async (h, id) => {
+      const T = '2026-01-02T03:04:05.000Z';
+      h.recordFleetMcpStatus(id, { state: 'available', checkedAt: T, fleetInstalledAt: T });
+      const result = await h.composePermissions({ member_id: id, role: 'doer' });
+      expect(result).toContain('fleetMcp unavailable: opencode-config-tracked');
+      expect(h.getAgent(id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'opencode-config-tracked', fleetInstalledAt: T });
+    });
+  }, 60000);
+
+  it('a member-config error never adds fleetInstalledAt to a member without one', async () => {
+    fs.writeFileSync(path.join(work, 'opencode.json'), '{\n  "theme": "dark"\n}\n');
+    git('add', 'opencode.json');
+    git('commit', '-qm', 'track');
+    await withMember('opencode', async (h, id) => {
+      await h.composePermissions({ member_id: id, role: 'doer' });
+      const st = h.getAgent(id)?.fleetMcp;
+      expect(st?.state).toBe('unavailable');
+      expect(st?.fleetInstalledAt).toBeUndefined();
+    });
+  }, 60000);
+
+  it('clearing a stale compose-owned status keeps fleetInstalledAt and no longer reads unavailable', async () => {
+    await withMember('opencode', async (h, id) => {
+      const T = '2026-01-02T03:04:05.000Z';
+      h.recordFleetMcpStatus(id, { state: 'unavailable', reason: 'opencode-config-tracked', checkedAt: T, fleetInstalledAt: T });
+      const result = await h.composePermissions({ member_id: id, role: 'doer' });
+      expect(result).toContain('cleared the stale unavailable status (opencode-config-tracked)');
+      const st = h.getAgent(id)?.fleetMcp;
+      expect(st?.fleetInstalledAt).toBe(T);
+      expect(st?.state).not.toBe('unavailable');
+    });
+  }, 60000);
+
+  it('registry.recordFleetMcpStatus carries the stamp forward unless the new status sets its own', async () => {
+    await withMember('opencode', async (h, id) => {
+      h.recordFleetMcpStatus(id, { state: 'available', checkedAt: 'a', fleetInstalledAt: 'T1' });
+      h.recordFleetMcpStatus(id, { state: 'unavailable', reason: 'x', checkedAt: 'b' });
+      expect(h.getAgent(id)?.fleetMcp?.fleetInstalledAt).toBe('T1');
+      h.recordFleetMcpStatus(id, { state: 'available', checkedAt: 'c', fleetInstalledAt: 'T2' });
+      expect(h.getAgent(id)?.fleetMcp?.fleetInstalledAt).toBe('T2');
+    });
+  }, 60000);
+
   it('a successful compose leaves a non-compose fleetMcp status (install-failed) for a real re-probe', async () => {
     await withMember('opencode', async (h, id) => {
       const status = { state: 'unavailable' as const, reason: 'install-failed', checkedAt: new Date().toISOString() };

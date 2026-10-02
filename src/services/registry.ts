@@ -117,9 +117,13 @@ export function updateAgent(id: string, updates: Partial<Agent>): Agent | undefi
   return registry.agents[idx];
 }
 
-/** Record the latest fleetMcp observation for a member (overwrites; never sticky). */
+/** Record the latest fleetMcp observation for a member (overwrites; never sticky),
+ *  except that the CURRENT fleetInstalledAt stamp is carried forward unless the
+ *  new status sets its own -- it is the only signal this fleet installed the
+ *  member, and observation-only writers (compose errors) must not drop it. */
 export function recordFleetMcpStatus(id: string, status: FleetMcpStatus): Agent | undefined {
-  return updateAgent(id, { fleetMcp: status });
+  const stamp = status.fleetInstalledAt ?? getAgent(id)?.fleetMcp?.fleetInstalledAt;
+  return updateAgent(id, { fleetMcp: stamp ? { ...status, fleetInstalledAt: stamp } : status });
 }
 
 export function removeAgent(id: string): boolean {

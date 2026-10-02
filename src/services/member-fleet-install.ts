@@ -314,10 +314,14 @@ export function chooseInstallSource(
 }
 
 /** The member-mode install command line arguments (exported for tests). */
-export function memberInstallArgs(provider: LlmProvider): string[] {
+export function memberInstallArgs(provider: LlmProvider, opts: { forceStopFullInstall?: boolean } = {}): string[] {
   // --force stops a running member server before the binary is replaced, so an
   // upgrade of a live member does not abort on the running-process guard.
-  return ['install', '--llm', provider, '--member', '--workflows', 'none', '--transport', 'http', '--force'];
+  const args = ['install', '--llm', provider, '--member', '--workflows', 'none', '--transport', 'http', '--force'];
+  // The override is added ONLY for the one retry ensureOnce makes for a member
+  // this fleet installed itself (see fleetPreviouslyInstalled).
+  if (opts.forceStopFullInstall) args.push(FORCE_STOP_FULL_INSTALL_FLAG);
+  return args;
 }
 
 /** Command that makes the staged installer executable and runs it in member mode. */
@@ -326,8 +330,9 @@ export function buildInstallCommand(
   provider: LlmProvider,
   targetOs: TargetOS,
   shell: MemberShell,
+  opts: { forceStopFullInstall?: boolean } = {},
 ): string {
-  const args = memberInstallArgs(provider);
+  const args = memberInstallArgs(provider, opts);
   return memberCommandFor(targetOs, shell, {
     posix: `chmod +x ${posixQuote(installerPath)} && ${posixQuote(installerPath)} ${args.map(posixQuote).join(' ')}`,
     powershell: `& ${psQuote(installerPath)} ${args.map(psQuote).join(' ')}`,
@@ -513,6 +518,88 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
 }
 
 /**
+ * True when this fleet's registry shows it previously installed apra-fleet on
+ * the member, so a running server there is the fleet's own member server.
+ *
+ * This is the FIRST of two ownership signals ensureOnce consults after a
+ * member install is refused as E-FULL-INSTALL-RUNNING:
+ *
+ *   1. (this function, no member exec) Agent.fleetMcp.fleetInstalledAt,
+ *      stamped ONLY when this fleet's own install run succeeded (ensureOnce
+ *      returned installed:true) and carried across later probes.
+ *      fleetMcp.version is NOT the signal: it is just what the member's
+ *      install reports at <home>/.apra-fleet/bin, the same path a human full
+ *      install uses, and a refusal or observation-only probe records it too.
+ *   2. (memberRegistryHoldsId, one member file read) the member's OWN
+ *      registry lists a LOCAL-type entry whose id equals agent.id (a remote
+ *      entry is the orchestrator's own record, seen when the "remote" member
+ *      is the orchestrator's own host and user). Only this fleet's
+ *      self-registration (buildSelfRegisterCommand: register-member --id
+ *      <uuid>) creates that entry; a human full install will not hold the
+ *      orchestrator-assigned uuid. This covers real pre-marker members:
+ *      fleetInstalledAt is written only by builds that also write the
+ *      member-install marker, so signal 1 alone never fires for them.
+ *
+ * Used for members installed by a build that predates the member-install
+ * marker (~/.apra-fleet/data/member-install.json): their running server has no
+ * marker, so `install --member --force` refuses it as E-FULL-INSTALL-RUNNING
+ * (src/cli/install-guard.ts memberForceMayStop). The fleet then retries once
+ * with --force-stop-full-install. Without either signal no override is ever
+ * sent, so a genuine human full install is still protected.
+ */
+export function fleetPreviouslyInstalled(agent: Agent): boolean {
+  const v = agent.fleetMcp?.fleetInstalledAt;
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+/** The member's own apra-fleet registry: <home>/.apra-fleet/data/registry.json
+ *  (FLEET_DIR in src/paths.ts; shape {version, agents:[{id,...}]}, see
+ *  src/services/registry.ts loadRegistry). Built in JS from the probed home. */
+export function memberRegistryPath(home: string, agent: Agent): string {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  return joinMemberPath(home, '.apra-fleet/data/registry.json', targetOs === 'windows', getAgentShell(agent));
+}
+
+/**
+ * Second pre-marker ownership signal (see fleetPreviouslyInstalled): true when
+ * the member's OWN apra-fleet registry holds an entry whose id equals
+ * agent.id -- the entry this fleet's earlier self-registration created.
+ *
+ * Mechanism: a direct read of the registry FILE (readMemberJson, OS/shell-safe
+ * and expansion-free), NOT a query through the member's installed binary. The
+ * pre-marker build running on the member may predate CLI subcommands such as
+ * `call` (src/cli/call.ts was added 2026-10-01), whereas the registry file
+ * location and shape have been stable since the ~/.apra-fleet/data migration,
+ * so a file read is build-independent.
+ *
+ * Any read/parse failure, a missing or empty registry, or a registry without
+ * that id reads as NOT owned (false). Never throws.
+ */
+export async function memberRegistryHoldsId(
+  agent: Agent,
+  home: string,
+  deps: Pick<MemberFleetInstallDeps, 'exec'>,
+): Promise<boolean> {
+  try {
+    const posix = isPosixShell(getAgentOS(agent) as TargetOS, getAgentShell(agent));
+    const reg = await readMemberJson((cmd, t) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS), memberRegistryPath(home, agent), posix);
+    const agents = reg.agents;
+    if (!Array.isArray(agents)) return false;
+    // Only a LOCAL-type entry counts: the self-registration always registers
+    // the member as local (buildSelfRegisterCommand: --type local). A REMOTE
+    // entry with this id is the orchestrator's own record of the member -- it
+    // appears in the file read when the "remote" member is the orchestrator's
+    // own host and user, and counting it would send --force-stop-full-install
+    // at the orchestrator itself.
+    return agents.some(a => !!a && typeof a === 'object'
+      && (a as { id?: unknown }).id === agent.id
+      && (a as { agentType?: unknown }).agentType === 'local');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ensure a REMOTE member runs an apra-fleet at least as new as this
  * orchestrator, installed in HTTP member mode. Never throws: every failure is a
  * typed `unavailable(<reason>)` result so the caller's registration proceeds.
@@ -590,19 +677,36 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       return { state: 'unavailable', reason: 'transfer-failed', detail: why, version: priorVersion };
     }
     const installerPath = memberJoin(targetOs, shell, stagingDir, anyBasename(localPath));
-    const run = await deps.exec(agent, buildInstallCommand(installerPath, provider, targetOs, shell), INSTALL_TIMEOUT_MS);
+    const runInstaller = (forceStopFullInstall: boolean) =>
+      deps.exec(agent, buildInstallCommand(installerPath, provider, targetOs, shell, { forceStopFullInstall }), INSTALL_TIMEOUT_MS);
+    const isRefused = (r: SSHExecResult) => `${r.stdout}\n${r.stderr}`.includes(FULL_INSTALL_RUNNING_CODE);
+    let run = await runInstaller(false);
+    let retried = false;
+    // Pre-marker member: the server this fleet installed earlier has no
+    // member-install marker, so --force alone is refused. Retry exactly once
+    // with the override -- only when this fleet's registry stamp
+    // (fleetInstalledAt, fast path, no exec) or the member's own registry
+    // (an entry for agent.id; read only after a refusal) shows the fleet
+    // owns that install.
+    if (
+      run.code !== 0 && isRefused(run) &&
+      (fleetPreviouslyInstalled(agent) || await memberRegistryHoldsId(agent, home, deps))
+    ) {
+      run = await runInstaller(true);
+      retried = true;
+    }
     if (run.code !== 0) {
       const tail = (run.stderr.trim() || run.stdout.trim()).slice(-400);
-      const refused = `${run.stdout}\n${run.stderr}`.includes(FULL_INSTALL_RUNNING_CODE);
-      if (refused) {
+      const after = retried ? ` (retried once with ${FORCE_STOP_FULL_INSTALL_FLAG})` : '';
+      if (isRefused(run)) {
         return {
           state: 'unavailable',
           reason: 'full-install-running',
-          detail: `a running apra-fleet server on the member was not started by a member install and was left running: ${tail}. Override on the member: apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`,
+          detail: `a running apra-fleet server on the member was not started by a member install and was left running${after}: ${tail}. Override on the member: apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`,
           version: priorVersion,
         };
       }
-      return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
+      return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}${after}: ${tail}`, version: priorVersion };
     }
   } finally {
     if (downloaded) deps.removeLocal(localPath);
@@ -798,6 +902,29 @@ export function buildMemberCallCommand(
   });
 }
 
+/**
+ * Cap on member-side error text recorded in fleetMcp.detail. Large enough that
+ * the leading ERROR line plus its cause (e.g. compose_permissions' full
+ * searched-path list) always survive; only a runaway output is truncated.
+ */
+export const MEMBER_ERROR_DETAIL_MAX = 4000;
+
+/**
+ * The member-side error text to record in fleetMcp.detail. Keeps the HEAD of
+ * the output (the `ERROR: ...` line and its cause come first), never the tail:
+ * a tail slice drops the leading cause and leaves only the end of a long list.
+ */
+export function memberErrorDetail(out: string, max = MEMBER_ERROR_DETAIL_MAX): string {
+  let text = out.trim();
+  if (text.length <= max) return text;
+  // Over the cap: start at the first ERROR line when log noise precedes it,
+  // so the cap is spent on the error and its cause.
+  const errAt = text.search(/^.*\bERROR\b/m);
+  if (errAt > 0) text = text.slice(errAt);
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)} ... [${text.length - max} more chars truncated]`;
+}
+
 /** Last parseable JSON object line in command output. */
 function lastJsonObject(text: string): Record<string, unknown> | null {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -908,6 +1035,20 @@ export async function probeMemberFleetMcp(
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
   opts: { install?: boolean; forceInstall?: boolean } = {},
 ): Promise<FleetMcpStatus> {
+  const ctx = { installedNow: false };
+  const status = await probeMemberFleetMcpInner(agent, deps, opts, ctx);
+  // Stamp fleetInstalledAt only from a successful fleet install in THIS probe;
+  // otherwise carry the previously recorded value forward unchanged.
+  const stamp = ctx.installedNow ? status.checkedAt : agent.fleetMcp?.fleetInstalledAt;
+  return stamp ? { ...status, fleetInstalledAt: stamp } : status;
+}
+
+async function probeMemberFleetMcpInner(
+  agent: Agent,
+  deps: MemberFleetMcpDeps,
+  opts: { install?: boolean; forceInstall?: boolean },
+  ctx: { installedNow: boolean },
+): Promise<FleetMcpStatus> {
   const checkedAt = () => deps.now().toISOString();
   const unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra: Partial<FleetMcpStatus> = {}): FleetMcpStatus => ({
     state: 'unavailable', reason, checkedAt: checkedAt(), ...(detail ? { detail } : {}), ...extra,
@@ -922,7 +1063,7 @@ export async function probeMemberFleetMcp(
     }
 
     if (agent.agentType === 'local') return await probeLocal(agent, deps, unavailable, checkedAt);
-    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true);
+    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx);
   } catch (err: unknown) {
     return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -962,6 +1103,7 @@ async function probeRemote(
   unavailable: Unavailable,
   checkedAt: () => string,
   forceInstall = false,
+  ctx: { installedNow: boolean } = { installedNow: false },
 ): Promise<FleetMcpStatus> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -974,7 +1116,12 @@ async function probeRemote(
   let version: string | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
-    if (r.state === 'available') version = r.version;
+    if (r.state === 'available') { version = r.version; if (r.installed) ctx.installedNow = true; }
+    // A refused install over a running full (non-member) install is reported
+    // as such, never papered over by using that install: the running server
+    // belongs to a human full install, and self-registering the member into it
+    // would wire the member session to a server the fleet does not own.
+    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail);
     else if (r.version) version = r.version; // an older install is still there: try to use it
     else return unavailable(r.reason, r.detail);
   } else {
@@ -989,11 +1136,11 @@ async function probeRemote(
   const reg = await deps.exec(agent, buildSelfRegisterCommand(binPath, agent, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
   if (reg.code !== 0) {
     const out = `${reg.stdout}\n${reg.stderr}`;
-    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', out.trim().slice(-300), withVersion);
+    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', memberErrorDetail(out), withVersion);
     if (/unknown or unexpected argument "--id"/i.test(out) || /unknown (?:option|command|argument)[^\n]*(?:--id|register-member)/i.test(out)) {
       return unavailable('install-too-old', `the member's apra-fleet ${version} does not support register-member --id`, withVersion);
     }
-    return unavailable('register-failed', `register-member exited ${reg.code}: ${out.trim().slice(-300)}`, withVersion);
+    return unavailable('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`, withVersion);
   }
 
   // 3. The per-folder MCP entry compose_permissions writes must point at this member.

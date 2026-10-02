@@ -11,6 +11,8 @@ import {
   removeMemberFromOwnInstall,
   defaultMemberFleetMcpDeps,
   NO_INSTALL_SENTINEL,
+  memberErrorDetail,
+  MEMBER_ERROR_DETAIL_MAX,
   type MemberFleetMcpDeps,
   type MemberSession,
 } from '../src/services/member-fleet-install.js';
@@ -21,10 +23,17 @@ const VERSION = 'v0.4.4';
 const HOME = '/home/bella';
 const WORK = '/home/bella/repo';
 
+/** A real-shaped member-side register-member failure: the ERROR line and its
+ *  cause first, then a long searched-path list (well over 300 chars). */
+const REGISTER_ERROR_HEAD = 'ERROR: member not provisioned -- "bella" was registered but compose_permissions failed: ' +
+  'compose_permissions threw: No complete profiles directory (base-dev.json + base-reviewer.json) found. Searched: ';
+const LONG_REGISTER_ERROR = REGISTER_ERROR_HEAD +
+  Array.from({ length: 40 }, (_, i) => `/home/bella/.apra-fleet/searched/dir-${i}/skills/fleet/profiles`).join(', ');
+
 interface World {
   installed: string | null;
   /** register-member outcome on the member's own install. */
-  register: 'ok' | 'id-rejected' | 'folder-taken' | 'unknown-verb';
+  register: 'ok' | 'id-rejected' | 'folder-taken' | 'unknown-verb' | 'long-error';
   /** ~/.claude.json content on the member. */
   claudeJson: Record<string, unknown> | null;
   listTools: string[];
@@ -54,6 +63,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
           case 'id-rejected': return { stdout: '', stderr: `Error: Unknown or unexpected argument "--id". Run 'apra-fleet register-member --help'.`, code: 1 };
           case 'folder-taken': return { stdout: '', stderr: 'E-FOLDER-TAKEN: folder already registered to another member', code: 1 };
           case 'unknown-verb': return { stdout: '', stderr: "Error: unknown option 'register-member'", code: 1 };
+          case 'long-error': return { stdout: '', stderr: LONG_REGISTER_ERROR, code: 1 };
         }
       }
       if (c.includes("'remove-member'")) return ok('Member removed');
@@ -103,7 +113,7 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     const world = newWorld({ installed: null });
     world.claudeJson = entryFor(agent);
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String) });
+    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String), fleetInstalledAt: expect.any(String) });
     expect(world.transfers).toBe(1); // an install actually ran
     const reg = world.execLog.find(c => c.includes("'register-member'"))!;
     expect(reg).toContain(`'register-member' '--type' 'local' '--id' '${agent.id}' '--name' 'bella' '--path' '${WORK}' '--llm' 'claude'`);
@@ -153,6 +163,24 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     const agent = remoteClaude();
     const s = await probeMemberFleetMcp(agent, deps(newWorld({ register: 'folder-taken', claudeJson: entryFor(agent) })));
     expect(s).toMatchObject({ state: 'unavailable', reason: 'E-FOLDER-TAKEN' });
+  });
+
+  it('a long register-member failure keeps the leading ERROR line and its cause in the detail', async () => {
+    expect(LONG_REGISTER_ERROR.length).toBeGreaterThan(1000);
+    const s = await probeMemberFleetMcp(remoteClaude(), deps(newWorld({ register: 'long-error' })));
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'register-failed', version: VERSION });
+    expect(s.detail).toContain(`register-member exited 1: ${REGISTER_ERROR_HEAD}`);
+    expect(s.detail).toContain('No complete profiles directory');
+    // the whole member-side text survives (it is under the cap)
+    expect(s.detail).toContain('/home/bella/.apra-fleet/searched/dir-39/skills/fleet/profiles');
+  });
+
+  it('a runaway register-member output is capped from the end, never the ERROR head', () => {
+    const noisy = 'log line\n'.repeat(50) + LONG_REGISTER_ERROR + ' tail'.repeat(2000);
+    const d = memberErrorDetail(noisy);
+    expect(d.startsWith(REGISTER_ERROR_HEAD)).toBe(true);
+    expect(d.length).toBeLessThanOrEqual(MEMBER_ERROR_DETAIL_MAX + 60);
+    expect(d).toMatch(/more chars truncated\]$/);
   });
 
   it('PowerShell members get every member-bound command via -EncodedCommand', async () => {

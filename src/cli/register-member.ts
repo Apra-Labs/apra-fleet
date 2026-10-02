@@ -29,7 +29,10 @@ Common:
   --llm <provider>         LLM provider: claude|codex|copilot|agy|opencode|none (default: claude)
   --id <uuid>              Register under this member id (idempotent: the same id again
                            updates that entry; a folder owned by another id fails with
-                           E-FOLDER-TAKEN)
+                           E-FOLDER-TAKEN). This is the member self-registration
+                           form: permissions are NOT composed (the orchestrator
+                           composes them), so run compose_permissions yourself
+                           when using --id by hand.
   --category <label>       Optional group label (e.g. "doers")
   --tags <a,b,c>           Comma-separated free-form tags (max 10)
   --unattended <mode>      Permission mode: false|auto|dangerous
@@ -202,7 +205,14 @@ export async function runRegisterMember(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await registerMember(parsed, memberId ? { id: memberId, skipFleetMcp: true } : { skipFleetMcp: true });
+  // --id marks a member SELF-registration (the orchestrator runs it on the
+  // member's own install): permissions were already composed by the
+  // orchestrating server, and a member install has no skill profiles to compose
+  // from, so compose_permissions is skipped (RegisterMemberOptions.skipCompose).
+  const result = await registerMember(
+    parsed,
+    memberId ? { id: memberId, skipFleetMcp: true, skipCompose: true } : { skipFleetMcp: true },
+  );
   // registerMember returns a human-readable string. The success path always
   // contains "registered successfully"; every failure path returns a message
   // stating the member was NOT registered. Mirror that into an exit code.

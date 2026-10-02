@@ -137,6 +137,19 @@ export interface RegisterMemberOptions {
   /** Set by the shell CLI: it IS the member-side self-registration (or a manual
    *  shell registration), so it never installs/probes fleetMcp (that would recurse). */
   skipFleetMcp?: boolean;
+  /**
+   * Skip the automatic compose_permissions step. Set by the shell CLI for a
+   * member SELF-registration (`register-member --id <uuid>`, run by the
+   * orchestrator on the member's own install via buildSelfRegisterCommand in
+   * src/services/member-fleet-install.ts). The orchestrating server already
+   * composed this member's permissions and wrote its per-folder apra-fleet MCP
+   * entry (?member=<uuid>) before it runs the self-registration, and a member
+   * install (`install --member`) carries no fleet skill profiles, so composing
+   * again member-side would fail with "No complete profiles directory" and, even
+   * with profiles, would overwrite the orchestrator's role/tag composition with
+   * a tagless default.
+   */
+  skipCompose?: boolean;
 }
 
 export async function registerMember(input: RegisterMemberInput, opts: RegisterMemberOptions = {}): Promise<string> {
@@ -569,17 +582,21 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
   // primary-mode resolution). Refusal is the only failure mode: if
   // compose_permissions itself fails, the registration must NOT be reported as
   // fully successful.
-  let composeResult: string;
-  try {
-    composeResult = await composePermissions({
-      member_id: tempAgent.id,
-      role: 'doer',
-      tags: tempAgent.tags,
-    });
-  } catch (e: any) {
-    composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+  // Skipped for a member self-registration (opts.skipCompose): the orchestrator
+  // composed this member already -- see RegisterMemberOptions.skipCompose.
+  let composeResult: string | undefined;
+  if (!opts.skipCompose) {
+    try {
+      composeResult = await composePermissions({
+        member_id: tempAgent.id,
+        role: 'doer',
+        tags: tempAgent.tags,
+      });
+    } catch (e: any) {
+      composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+    }
   }
-  if (!composeResult.startsWith('✅')) {
+  if (composeResult !== undefined && !composeResult.startsWith('✅')) {
     // Strip any leading non-ASCII status glyph from the underlying tool's
     // message so this hard-failure report stays ASCII (repo convention).
     const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');

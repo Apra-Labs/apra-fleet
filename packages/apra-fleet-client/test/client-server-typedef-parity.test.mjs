@@ -42,6 +42,7 @@ const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member
 const sessionStatsSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'session-stats.ts'), 'utf8');
 const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'member-call-counts.ts'), 'utf8');
 const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
+const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
@@ -241,6 +242,16 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    test('FleetMcpStatus matches the FleetMcpStatus interface in src/types.ts', () => {
+        const block = extractBlock(typesSrc, 'export interface FleetMcpStatus {', '\n}');
+        // Interface members may be optional (`name?: T`), which extractTopLevelKeys does not match.
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'FleetMcpStatus');
+        assert.ok(serverFields.has('state') && serverFields.has('checkedAt'), 'sanity: FleetMcpStatus should declare state, checkedAt');
+        assert.ok(serverFields.has('fleetInstalledAt'), 'sanity: server FleetMcpStatus should declare fleetInstalledAt');
+        assertFieldParity('FleetMcpStatus vs src/types.ts', serverFields, typedefFields);
     });
 
     test('SessionStatsOptions matches sessionStatsSchema field-for-field', () => {
