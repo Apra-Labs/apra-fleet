@@ -4,7 +4,10 @@
 // Every command built here carries fully resolved paths -- never $HOME, ~/,
 // $env:..., or backticks for the member's shell to expand -- because that
 // shell may be PowerShell, not POSIX. The caller resolves the member's home
-// in JavaScript (getMemberHomeDir) before handing paths in.
+// in JavaScript (getMemberHomeDir) before handing paths in, and every path is
+// quoted per shell (quotePosixPath / quotePwshPath) so a $, backtick or quote
+// that is part of a real path name is passed through verbatim, never
+// interpolated.
 //
 // The read/write command shapes are deliberately identical to the ones
 // compose_permissions' deliverConfigFile has always issued (cat / heredoc
@@ -101,6 +104,36 @@ export function joinMemberPath(base: string, relPath: string, isWindows: boolean
   return `${base.replace(/\/+$/, '')}/${relPath}`;
 }
 
+/**
+ * Quotes a resolved member-side path for a POSIX shell (bash/sh/zsh, including
+ * Git-for-Windows bash). Wrapped in double quotes with every character that
+ * stays special inside them -- $ (expansion), backtick (command substitution),
+ * " (ends the string), and backslash (the escape character) -- backslash-escaped,
+ * so the member's shell receives the path verbatim. Single quotes are literal
+ * inside double quotes and need nothing. A path with no metacharacter yields
+ * exactly `"<path>"`, the shape these commands have always carried.
+ */
+export function quotePosixPath(p: string): string {
+  return `"${p.replace(/[\\"$`]/g, '\\$&')}"`;
+}
+
+/**
+ * Quotes a resolved member-side path for PowerShell (5.1 and 7). Wrapped in
+ * double quotes with every character that stays special inside them -- $
+ * (expansion), backtick (the escape character), and the double-quote forms
+ * PowerShell recognises (ASCII " and U+201C..U+201E) -- backtick-escaped.
+ * Single quotes are literal inside double quotes and need nothing. A path with
+ * no metacharacter yields exactly `"<path>"`.
+ */
+export function quotePwshPath(p: string): string {
+  return `"${p.replace(/[`$"\u201C-\u201E]/g, '`$&')}"`;
+}
+
+/** quotePosixPath or quotePwshPath (with Windows backslashes) per shell. */
+function quotePath(absPath: string, posix: boolean): string {
+  return posix ? quotePosixPath(absPath) : quotePwshPath(absPath.replace(/\//g, '\\'));
+}
+
 function dirOf(absPath: string, posix: boolean): string {
   return posix
     ? absPath.split('/').slice(0, -1).join('/')
@@ -155,9 +188,9 @@ export class MemberConfigNotJsonError extends MemberConfigError {
  * non-zero exit -- the exit code is never swallowed.
  */
 export function readMemberFileCommand(absPath: string, posix: boolean): string {
-  if (posix) return `if test -e "${absPath}"; then cat "${absPath}"; fi`;
-  const win = absPath.replace(/\//g, '\\');
-  return `if (Test-Path -LiteralPath "${win}") { Get-Content -Raw -LiteralPath "${win}" -ErrorAction Stop }`;
+  const q = quotePath(absPath, posix);
+  if (posix) return `if test -e ${q}; then cat ${q}; fi`;
+  return `if (Test-Path -LiteralPath ${q}) { Get-Content -Raw -LiteralPath ${q} -ErrorAction Stop }`;
 }
 
 /** Read a member-side text file. A missing file reads as ''; an existing file
@@ -170,24 +203,31 @@ export async function readMemberFile(exec: MemberExecFn, absPath: string, posix:
   return r.stdout ?? '';
 }
 
-/** PowerShell existence probe whose exit code reflects the result (a bare
- *  Test-Path prints True/False and exits 0 either way). Single-quoted literal. */
+/** PowerShell regular-file probe whose exit code reflects the result (a bare
+ *  Test-Path prints True/False and exits 0 either way). `-PathType Leaf`
+ *  excludes directories. Single-quoted literal (no expansion at all). */
 export function memberFileExistsPwshCommand(absPath: string): string {
-  const p = absPath.replace(/\//g, '\\').replace(/'/g, "''");
-  return `if (Test-Path -LiteralPath '${p}') { exit 0 } else { exit 1 }`;
+  const p = escapePowerShellArgInner(absPath.replace(/\//g, '\\'));
+  return `if (Test-Path -LiteralPath '${p}' -PathType Leaf) { exit 0 } else { exit 1 }`;
+}
+
+/** POSIX regular-file probe: `test -f` (a directory, or a missing path, exits 1). */
+export function memberFileExistsPosixCommand(absPath: string): string {
+  return `test -f ${quotePosixPath(absPath)}`;
 }
 
 /**
- * True when the member-side file at `absPath` exists (not a directory).
- * Handles all exit codes gracefully: missing file, unreadable file, etc. all
- * read as false. The command carries a resolved path only (no expansion).
+ * True when a regular file exists at the member-side `absPath`. A directory at
+ * that path reads as false (POSIX `test -f`, PowerShell `-PathType Leaf`), as
+ * does a missing path or any other non-zero exit. The command carries a
+ * resolved, quoted path only (no expansion).
  */
 export async function memberFileExists(
   exec: MemberExecFn,
   absPath: string,
   posix: boolean,
 ): Promise<boolean> {
-  const cmd = posix ? `test -e "${absPath}"` : memberFileExistsPwshCommand(absPath);
+  const cmd = posix ? memberFileExistsPosixCommand(absPath) : memberFileExistsPwshCommand(absPath);
   const r = await exec(cmd, FS_OP_TIMEOUT_MS);
   return r.code === 0;
 }
@@ -206,7 +246,8 @@ export async function isGitTracked(
   posix: boolean,
 ): Promise<boolean> {
   const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
-  const r = await exec(`git -C "${wf}" ls-files --error-unmatch -- "${relPath}"`, FS_OP_TIMEOUT_MS);
+  const q = posix ? quotePosixPath : quotePwshPath;
+  const r = await exec(`git -C ${q(wf)} ls-files --error-unmatch -- ${q(relPath)}`, FS_OP_TIMEOUT_MS);
   return r.code === 0;
 }
 
@@ -238,16 +279,17 @@ function stderrExcerpt(r: SSHExecResult): string {
  * read-back mismatch -- a write that did not land is never reported as done.
  */
 export async function writeMemberFile(exec: MemberExecFn, absPath: string, content: string, posix: boolean): Promise<void> {
-  const winPath = absPath.replace(/\//g, '\\');
   const dir = dirOf(absPath, posix);
-  const mkdirCmd = posix ? `mkdir -p "${dir}"` : `New-Item -ItemType Directory -Force "${dir}"`;
+  const qPath = quotePath(absPath, posix);
+  const qDir = quotePath(dir, posix);
+  const mkdirCmd = posix ? `mkdir -p ${qDir}` : `New-Item -ItemType Directory -Force ${qDir}`;
   const mk = await exec(mkdirCmd, FS_OP_TIMEOUT_MS);
   if (mk.code !== 0) throw new Error(`could not create "${dir}" (exit ${mk.code})${stderrExcerpt(mk)}`);
 
   const body = content.replace(/\n+$/, '');
   const writeCmd = posix
-    ? `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${body}\nFLEET_PERMS_EOF`
-    : `[System.IO.File]::WriteAllText("${winPath}", '${escapePowerShellArgInner(body + '\n')}', (New-Object System.Text.UTF8Encoding($false)))`;
+    ? `cat > ${qPath} << 'FLEET_PERMS_EOF'\n${body}\nFLEET_PERMS_EOF`
+    : `[System.IO.File]::WriteAllText(${qPath}, '${escapePowerShellArgInner(body + '\n')}', (New-Object System.Text.UTF8Encoding($false)))`;
   const w = await exec(writeCmd, FS_OP_TIMEOUT_MS);
   if (w.code !== 0) throw new Error(`write of ${absPath} failed (exit ${w.code})${stderrExcerpt(w)}`);
 
@@ -266,8 +308,8 @@ export async function writeMemberJson(exec: MemberExecFn, absPath: string, obj: 
 /** Deletes a member-side file (no error when it is already gone). */
 export async function deleteMemberFile(exec: MemberExecFn, absPath: string, posix: boolean): Promise<void> {
   const cmd = posix
-    ? `rm -f "${absPath}"`
-    : `Remove-Item -Force -ErrorAction SilentlyContinue "${absPath.replace(/\//g, '\\')}"`;
+    ? `rm -f ${quotePosixPath(absPath)}`
+    : `Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath ${quotePath(absPath, false)}`;
   const r = await exec(cmd, FS_OP_TIMEOUT_MS);
   if (r.code !== 0) throw new Error(`delete of ${absPath} failed (exit ${r.code})${stderrExcerpt(r)}`);
 }
@@ -285,7 +327,7 @@ export async function resolveGitExcludePath(
 ): Promise<string | null> {
   const posix = isPosixShell(isWindows, shell);
   const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
-  const r = await exec(`git -C "${wf}" rev-parse --git-path info/exclude`, FS_OP_TIMEOUT_MS);
+  const r = await exec(`git -C ${posix ? quotePosixPath(wf) : quotePwshPath(wf)} rev-parse --git-path info/exclude`, FS_OP_TIMEOUT_MS);
   const out = (r.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? '';
   if (r.code !== 0 || !out) return null;
   const isAbs = out.startsWith('/') || /^[A-Za-z]:[\\/]/.test(out);

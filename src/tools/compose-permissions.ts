@@ -17,6 +17,8 @@ import {
   memberMcpUrl,
   pruneLegacyMcpEntries,
   readMemberFile,
+  quotePosixPath,
+  quotePwshPath,
   MemberConfigError,
   readMemberJson,
   removeGitExcluded,
@@ -513,9 +515,12 @@ async function deliverConfigFile(
   const dir = posix
     ? absPath.split('/').slice(0, -1).join('/')
     : winPath.split('\\').slice(0, -1).join('\\');
+  // Paths are quoted per shell so a $, backtick or quote in a real path name is
+  // passed through verbatim, never interpolated by the member's shell.
+  const qPath = posix ? quotePosixPath(absPath) : quotePwshPath(winPath);
   const mkdirCmd = posix
-    ? `mkdir -p "${dir}"`
-    : `New-Item -ItemType Directory -Force "${dir}"`;
+    ? `mkdir -p ${quotePosixPath(dir)}`
+    : `New-Item -ItemType Directory -Force ${quotePwshPath(dir)}`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -525,8 +530,8 @@ async function deliverConfigFile(
   }
 
   const readCmd = posix
-    ? `cat "${absPath}" 2>/dev/null || true`
-    : `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`;
+    ? `cat ${qPath} 2>/dev/null || true`
+    : `Get-Content -Raw ${qPath} -ErrorAction SilentlyContinue`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -551,8 +556,8 @@ async function deliverConfigFile(
     : JSON.stringify(mergedContent, null, 2);
 
   const writeCmd = posix
-    ? `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
-    : `[System.IO.File]::WriteAllText("${winPath}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false)))`;
+    ? `cat > ${qPath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
+    : `[System.IO.File]::WriteAllText(${qPath}, '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false)))`;
   const writeResult = await strategy.execCommand(writeCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -824,8 +829,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // Branched on the member's SHELL, not just its OS: a gitbash Windows
       // member cannot run Get-Content (apra-fleet-7dir.1.3).
       const readResult = isPosixShell(isWindowsAgent, agentShell)
-        ? await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
-        : await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
+        ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
+        : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
